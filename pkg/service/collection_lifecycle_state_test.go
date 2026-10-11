@@ -48,7 +48,7 @@ type hookKVSvc struct {
 var _ kvService = (*hookKVSvc)(nil)
 
 func newHookKVSvc() *hookKVSvc {
-	return &hookKVSvc{memoryKVSvc: newMemoryKVSvc()}
+	return &hookKVSvc{memoryKVSvc: newResolvedKVSvc()}
 }
 
 func (h *hookKVSvc) fireAfterDocWrite(key string) {
@@ -143,7 +143,7 @@ func putMetadata(t *testing.T, kv kvService, info *CollectionInfo) {
 func TestCollectionService_CreateCollection_FailedIndexUnwinds(t *testing.T) {
 	ctx := context.Background()
 	idxSvc := &nthCreateFailIndexSvc{memoryIndexSvc: newMemoryIndexSvc(), failOn: 2, err: errors.New("boom")}
-	svc := NewCollectionServiceWithIndex(newMemoryKVSvc(), idxSvc)
+	svc := NewCollectionServiceWithIndex(newResolvedKVSvc(), idxSvc)
 	req := &CreateCollectionRequest{
 		Name: "users", Database: "mydb",
 		Indexes: []IndexDefinition{{FieldName: "a"}, {FieldName: "b"}, {FieldName: "c"}},
@@ -172,7 +172,7 @@ func TestCollectionService_CreateCollection_FailedIndexUnwinds(t *testing.T) {
 // stores documents.
 func TestCollectionService_CreatingCollectionIsVisibleButServesNoDocuments(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	now := time.Now()
 	putMetadata(t, kv, &CollectionInfo{
@@ -207,7 +207,7 @@ func TestCollectionService_CreatingCollectionIsVisibleButServesNoDocuments(t *te
 // record written before the lifecycle state existed.
 func TestCollectionService_LegacyMetadataReadsActive(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	require.NoError(t, kv.Put(ctx, collectionMetadataKey("mydb", "old"),
 		[]byte(`{"name":"old","database":"mydb","id_strategy":"unix_nano","created_at":"2026-01-01T00:00:00Z"}`)))
@@ -226,7 +226,7 @@ func TestCollectionService_LegacyMetadataReadsActive(t *testing.T) {
 func TestCollectionService_CreateCollection_ActivationLosesToConcurrentDrop(t *testing.T) {
 	ctx := context.Background()
 	idxSvc := &nthCreateFailIndexSvc{memoryIndexSvc: newMemoryIndexSvc()}
-	svc := NewCollectionServiceWithIndex(newMemoryKVSvc(), idxSvc)
+	svc := NewCollectionServiceWithIndex(newResolvedKVSvc(), idxSvc)
 	var dropErr error
 	idxSvc.beforeCreate = func() {
 		dropErr = svc.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"})
@@ -335,7 +335,7 @@ func TestCollectionService_RecreatedCollectionDoesNotShareAnIncarnation(t *testi
 // were created ownerless, so its drop removes the names it declares.
 func TestCollectionService_DropCollection_LegacyRecordDropsDeclaredIndexes(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idxSvc := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idxSvc)
 	require.NoError(t, idxSvc.CreateIndex(ctx, "mydb.old.email", "email", index.IndexConfig{}))
@@ -434,7 +434,7 @@ func TestCollectionService_SchemaMergeDoesNotRevertDropping(t *testing.T) {
 // a drop on a DROPPING collection finishes it rather than conflicting.
 func TestCollectionService_DropOfDroppingCollectionResumes(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{Name: "users", Database: "mydb"})
 	require.NoError(t, err)
@@ -455,7 +455,7 @@ func TestCollectionService_DropOfDroppingCollectionResumes(t *testing.T) {
 // active one.
 func TestCollectionService_SweepStuckCollections(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idxSvc := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idxSvc)
 	base := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
@@ -513,7 +513,7 @@ func TestCollectionService_SweepStuckCollections_Errors(t *testing.T) {
 	var empty *CollectionEmptyDatabaseError
 	require.ErrorAs(t, err, &empty)
 
-	kv := &failingKVSvc{memoryKVSvc: newMemoryKVSvc()}
+	kv := &failingKVSvc{memoryKVSvc: newResolvedKVSvc()}
 	svc = NewCollectionService(kv)
 	putMetadata(t, kv, &CollectionInfo{Name: "a", Database: "mydb", State: CollectionStateDropping})
 	putMetadata(t, kv, &CollectionInfo{Name: "b", Database: "mydb", State: CollectionStateDropping})

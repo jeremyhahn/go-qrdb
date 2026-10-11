@@ -45,7 +45,7 @@ func TestInsertDocument_RefusesAFieldTheLayoutCannotHold(t *testing.T) {
 	for name, doc := range reservedFieldCases {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			kv := newMemoryKVSvc()
+			kv := newResolvedKVSvc()
 			svc := NewCollectionService(kv)
 			createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 			ins, err := svc.InsertDocument(ctx, &InsertDocumentRequest{Database: "db", Collection: "c", Document: map[string]interface{}{"k": "v"}})
@@ -72,7 +72,7 @@ func TestInsertDocument_RefusesAFieldTheLayoutCannotHold(t *testing.T) {
 // which names the identity rather than a field.
 func TestInsertDocument_StoresWhatTheLayoutCanHold(t *testing.T) {
 	ctx := context.Background()
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 	for _, doc := range []map[string]interface{}{
 		{"fields": map[string]interface{}{"a": 1.0}, "other": "x"},

@@ -16,17 +16,14 @@ package service
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // This is the end-to-end statement of go-qrdb#412: a database dropped and
@@ -44,106 +41,6 @@ import (
 // bare store, which made it a model of the PRE-#441 server -- and a reclaim
 // test written against that model measured the wrong layout. It is the double
 // that was wrong, not the layout.
-
-// namespacedKV is the composite-namespace view every engine is resolved
-// through in production: it prepends "<tenant>/<db>/" to every key and strips
-// it off every enumeration.
-//
-// It is the whole of what pkg/server's registry-resolved wrapper does that
-// matters to a teardown, which is why the teardown can be measured here rather
-// than only one package up.
-type namespacedKV struct {
-	inner *memoryKVSvc
-	ns    string
-}
-
-func newNamespacedKV(inner *memoryKVSvc, tenantID, db string) *namespacedKV {
-	return &namespacedKV{inner: inner, ns: tenant.ComposeNamespace(tenantID, db)}
-}
-
-// Compile-time check: it really is what CollectionService takes.
-var _ kvService = (*namespacedKV)(nil)
-
-func (n *namespacedKV) Put(ctx context.Context, key string, value []byte) error {
-	return n.inner.Put(ctx, n.ns+key, value)
-}
-
-// PutIfAbsent namespaces the key and delegates, so the conditional is decided
-// against the SAME key the collection service will later read. Stubbing this
-// to a constant would make the double narrower than production in exactly the
-// way go-qrdb#489 is about: the guarded insert #466 added exists to report
-// which of two concurrent callers won, and a double that always reports "won"
-// cannot fail the test that checks it.
-func (n *namespacedKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	return n.inner.PutIfAbsent(ctx, n.ns+key, value)
-}
-
-// CompareAndSwap namespaces the key and delegates, for the reason
-// PutIfAbsent does: the guard is decided against the key actually read.
-func (n *namespacedKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return n.inner.CompareAndSwap(ctx, n.ns+key, expected, next)
-}
-
-// CompareAndDelete namespaces the key and delegates.
-func (n *namespacedKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	return n.inner.CompareAndDelete(ctx, n.ns+key, expected)
-}
-
-func (n *namespacedKV) Get(ctx context.Context, key string) ([]byte, error) {
-	return n.inner.Get(ctx, n.ns+key)
-}
-
-func (n *namespacedKV) Delete(ctx context.Context, key string) error {
-	return n.inner.Delete(ctx, n.ns+key)
-}
-
-func (n *namespacedKV) List(ctx context.Context, prefix string) ([]string, error) {
-	keys, err := n.inner.List(ctx, n.ns+prefix)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, strings.TrimPrefix(k, n.ns))
-	}
-	return out, nil
-}
-
-func (n *namespacedKV) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
-	pairs, err := n.inner.Scan(ctx, n.ns+prefix)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string][]byte, len(pairs))
-	for k, v := range pairs {
-		out[strings.TrimPrefix(k, n.ns)] = v
-	}
-	return out, nil
-}
-
-func (n *namespacedKV) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
-	return n.inner.PutWithMode(ctx, n.ns+key, value, mode)
-}
-
-func (n *namespacedKV) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
-	return n.inner.DeleteWithMode(ctx, n.ns+key, mode)
-}
-
-func (n *namespacedKV) GetWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error) {
-	return n.inner.GetWithConsistency(ctx, n.ns+key, opts)
-}
-
-func (n *namespacedKV) ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error) {
-	pairs, err := n.inner.ScanWithConsistency(ctx, n.ns+prefix, opts)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string][]byte, len(pairs))
-	for k, v := range pairs {
-		out[strings.TrimPrefix(k, n.ns)] = v
-	}
-	return out, nil
-}
 
 // dropTeardownStack is the whole stack a DROP DATABASE traverses.
 type dropTeardownStack struct {
@@ -171,7 +68,7 @@ func newDropTeardownStack(t *testing.T) *dropTeardownStack {
 		store: store,
 		colls: make(map[string]*CollectionService),
 		kv: func(ctx context.Context, tenantID, db, key string, value []byte) error {
-			return store.Put(ctx, tenant.ComposeNamespace(tenantID, db)+key, value)
+			return store.view(tenantID, db).Put(ctx, key, value)
 		},
 	}
 }
@@ -182,7 +79,7 @@ func (s *dropTeardownStack) coll(name string) *CollectionService {
 	if c, ok := s.colls[name]; ok {
 		return c
 	}
-	c := NewCollectionService(newNamespacedKV(s.store, tenantid.System, name))
+	c := NewCollectionService(s.store.view(tenantid.System, name))
 	s.colls[name] = c
 	return c
 }

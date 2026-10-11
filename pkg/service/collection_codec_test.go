@@ -156,7 +156,7 @@ func TestCollectionService_ListDocuments_MsgpackCodec(t *testing.T) {
 // documents written before a codec was configured can still be read when
 // a collection's StorageCodec is set to msgpack.
 func TestCollectionService_BackwardCompatibility(t *testing.T) {
-	kvSvc := newMemoryKVSvc()
+	kvSvc := newResolvedKVSvc()
 	ctx := context.Background()
 
 	// Manually write a JSON-encoded document into the KV store,

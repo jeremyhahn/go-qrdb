@@ -38,12 +38,67 @@ import (
 // ---------------------------------------------------------------------------
 
 type memoryKVSvc struct {
-	mu   sync.RWMutex
+	mu   *sync.RWMutex
 	data map[string][]byte
+
+	// ns is the composite "<tenant>/<db>/" namespace this view resolves every
+	// key through, or "" for the raw store. See view.
+	ns string
 }
 
+// Compile-time check: the double is what CollectionService takes.
+var _ kvService = (*memoryKVSvc)(nil)
+
 func newMemoryKVSvc() *memoryKVSvc {
-	return &memoryKVSvc{data: make(map[string][]byte)}
+	return &memoryKVSvc{mu: new(sync.RWMutex), data: make(map[string][]byte)}
+}
+
+// resolvedTenant and resolvedDatabase name the (tenant, database) pair
+// newResolvedKVSvc resolves through. A test that needs a raw key reads it back
+// through rawKeys rather than spelling the prefix out.
+const (
+	resolvedTenant   = "acme"
+	resolvedDatabase = "db"
+)
+
+// newResolvedKVSvc returns the KV service a service under test is handed in
+// production: a view of a store shared with other databases, resolved through
+// the composite "<tenant>/<db>/" namespace. newMemoryKVSvc is the RAW store,
+// for a test of the store itself or of a teardown that has to find several
+// databases' keys in it.
+//
+// Every service the server builds -- the collection service, the sequence
+// service -- is built over the per-(tenant, database) view applyComposite
+// produces, never over the bare engine. A fixture built over the bare store
+// models the pre-#441 server, and a test written against it measures a layout
+// nothing runs (go-qrdb#489).
+func newResolvedKVSvc() *memoryKVSvc {
+	return newMemoryKVSvc().view(resolvedTenant, resolvedDatabase)
+}
+
+// view returns a second window onto the same store resolved through the
+// composite namespace of (tenantID, db): it prepends "<tenant>/<db>/" to every
+// key and strips it off every enumeration, which is the whole of what
+// pkg/server's registry-resolved wrapper does that a service's behaviour can
+// depend on.
+func (m *memoryKVSvc) view(tenantID, db string) *memoryKVSvc {
+	return &memoryKVSvc{mu: m.mu, data: m.data, ns: tenant.ComposeNamespace(tenantID, db)}
+}
+
+// rawKeys returns every key in the underlying store, whichever view asks and
+// whatever its namespace, sorted and unguarded. It is how a test asserts WHERE
+// a write landed.
+func (m *memoryKVSvc) rawKeys(prefix string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var keys []string
+	for k := range m.data {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (m *memoryKVSvc) Put(_ context.Context, key string, value []byte) error {
@@ -51,7 +106,7 @@ func (m *memoryKVSvc) Put(_ context.Context, key string, value []byte) error {
 	defer m.mu.Unlock()
 	cp := make([]byte, len(value))
 	copy(cp, value)
-	m.data[key] = cp
+	m.data[m.ns+key] = cp
 	return nil
 }
 
@@ -66,12 +121,12 @@ func (m *memoryKVSvc) Put(_ context.Context, key string, value []byte) error {
 func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, occupied := m.data[key]; occupied {
+	if _, occupied := m.data[m.ns+key]; occupied {
 		return false, nil
 	}
 	cp := make([]byte, len(value))
 	copy(cp, value)
-	m.data[key] = cp
+	m.data[m.ns+key] = cp
 	return true, nil
 }
 
@@ -80,13 +135,13 @@ func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (
 func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	current, present := m.data[key]
+	current, present := m.data[m.ns+key]
 	if !present || !bytes.Equal(current, expected) {
 		return false, nil
 	}
 	cp := make([]byte, len(next))
 	copy(cp, next)
-	m.data[key] = cp
+	m.data[m.ns+key] = cp
 	return true, nil
 }
 
@@ -94,18 +149,18 @@ func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, ne
 func (m *memoryKVSvc) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	current, present := m.data[key]
+	current, present := m.data[m.ns+key]
 	if !present || !bytes.Equal(current, expected) {
 		return false, nil
 	}
-	delete(m.data, key)
+	delete(m.data, m.ns+key)
 	return true, nil
 }
 
 func (m *memoryKVSvc) Get(_ context.Context, key string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	v, ok := m.data[key]
+	v, ok := m.data[m.ns+key]
 	if !ok {
 		return nil, &KeyNotFoundError{Key: key}
 	}
@@ -117,7 +172,7 @@ func (m *memoryKVSvc) Get(_ context.Context, key string) ([]byte, error) {
 func (m *memoryKVSvc) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.data, key)
+	delete(m.data, m.ns+key)
 	return nil
 }
 
@@ -148,15 +203,10 @@ func (m *memoryKVSvc) ListAll(_ context.Context, prefix string) ([]string, error
 // the shared half of List and ListAll so the two cannot differ in anything but
 // the filter.
 func (m *memoryKVSvc) listAll(prefix string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var keys []string
-	for k := range m.data {
-		if strings.HasPrefix(k, prefix) {
-			keys = append(keys, k)
-		}
+	keys := m.rawKeys(m.ns + prefix)
+	for i, k := range keys {
+		keys[i] = strings.TrimPrefix(k, m.ns)
 	}
-	sort.Strings(keys)
 	return keys
 }
 
@@ -166,10 +216,10 @@ func (m *memoryKVSvc) Scan(_ context.Context, prefix string) (map[string][]byte,
 	defer m.mu.RUnlock()
 	result := make(map[string][]byte)
 	for k, v := range m.data {
-		if strings.HasPrefix(k, prefix) {
+		if strings.HasPrefix(k, m.ns+prefix) {
 			cp := make([]byte, len(v))
 			copy(cp, v)
-			result[k] = cp
+			result[strings.TrimPrefix(k, m.ns)] = cp
 		}
 	}
 	return FilterInternalMap(result, prefix), nil
@@ -270,12 +320,12 @@ func (m *memoryIndexSvc) dropCalls() []string {
 }
 
 func newTestCollectionService() *CollectionService {
-	return NewCollectionService(newMemoryKVSvc())
+	return NewCollectionService(newResolvedKVSvc())
 }
 
 func newTestCollectionServiceWithIndex() (*CollectionService, *memoryIndexSvc) {
 	idxSvc := newMemoryIndexSvc()
-	return NewCollectionServiceWithIndex(newMemoryKVSvc(), idxSvc), idxSvc
+	return NewCollectionServiceWithIndex(newResolvedKVSvc(), idxSvc), idxSvc
 }
 
 // ---------------------------------------------------------------------------

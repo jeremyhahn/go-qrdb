@@ -85,7 +85,7 @@ func TestCollectionService_DropCollection_DropsSecondaryIndexes(t *testing.T) {
 // Deleting the metadata first would strand the index definitions with nothing
 // left in the store naming them.
 func TestCollectionService_DropCollection_DropsIndexesBeforeMetadata(t *testing.T) {
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idxSvc := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idxSvc)
 	ctx := context.Background()
@@ -136,7 +136,7 @@ func (p *metadataProbeKV) CompareAndDelete(ctx context.Context, key string, expe
 // instead of returning success over an orphan. The metadata key survives, so
 // the collection still resolves and the drop is retryable.
 func TestCollectionService_DropCollection_IndexDropFailureIsFatal(t *testing.T) {
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idxSvc := &failingIndexSvc{}
 	svc := NewCollectionServiceWithIndex(kv, idxSvc)
 	ctx := context.Background()
@@ -175,7 +175,7 @@ func TestCollectionService_DropCollection_IndexDropFailureIsFatal(t *testing.T) 
 // composition wrote. The drop has nothing to drop indexes with and still
 // completes.
 func TestCollectionService_DropCollection_WithoutIndexService(t *testing.T) {
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	ctx := context.Background()
 
@@ -215,7 +215,7 @@ func TestCollectionService_DropCollection_NoIndexesDefined(t *testing.T) {
 // would produce exactly the silent orphan this change removes. Every other
 // CollectionService verb already refuses a collection in this state.
 func TestCollectionService_DropCollection_CorruptMetadata(t *testing.T) {
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idxSvc := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idxSvc)
 	ctx := context.Background()
@@ -378,7 +378,7 @@ func TestCollectionService_DropCollection_InterruptedAtEachStage(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			kv := &faultKV{memoryKVSvc: newMemoryKVSvc()}
+			kv := &faultKV{memoryKVSvc: newResolvedKVSvc()}
 			idxSvc := newMemoryIndexSvc()
 			svc := NewCollectionServiceWithIndex(kv, idxSvc)
 
@@ -426,7 +426,7 @@ func TestCollectionService_DropCollection_InterruptedAtEachStage(t *testing.T) {
 // remove something already absent has got what it asked for; anything else
 // would wedge the retry short of the metadata delete.
 func TestCollectionService_DropCollection_ToleratesAlreadyGoneIndex(t *testing.T) {
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idxSvc := &failingIndexSvc{}
 	svc := NewCollectionServiceWithIndex(kv, idxSvc)
 	ctx := context.Background()
@@ -513,7 +513,7 @@ func TestCollectionService_DropCollection_PartialIndexDropIsWiderThanOneWrite(t 
 		failOn:         2,
 		err:            errors.New("raft: not leader"),
 	}
-	svc := NewCollectionServiceWithIndex(newMemoryKVSvc(), idxSvc)
+	svc := NewCollectionServiceWithIndex(newResolvedKVSvc(), idxSvc)
 
 	_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
 		Name:     "users",

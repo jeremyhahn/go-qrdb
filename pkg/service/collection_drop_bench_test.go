@@ -34,7 +34,7 @@ func BenchmarkDropCollection(b *testing.B) {
 			ctx := context.Background()
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
-				kv := newMemoryKVSvc()
+				kv := newResolvedKVSvc()
 				svc := NewCollectionService(kv)
 				info, err := svc.CreateCollection(ctx, &CreateCollectionRequest{Database: "db", Name: "c", IDStrategy: IDStrategyIncrement})
 				if err != nil {

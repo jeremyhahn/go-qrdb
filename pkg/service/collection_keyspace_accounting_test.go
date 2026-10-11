@@ -73,7 +73,7 @@ func (k *afterDocWriteKV) CompareAndDelete(ctx context.Context, key string, expe
 // counted.
 func TestKeyspace_DropReportsExactlyTheBytesItRemoved(t *testing.T) {
 	ctx := context.Background()
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 	docs := []map[string]interface{}{{"k": "one"}, {"k": "twotwo"}, {"k": "three", "n": 3.0}}
 	var want int64
@@ -99,7 +99,7 @@ func TestKeyspace_DropReportsExactlyTheBytesItRemoved(t *testing.T) {
 // them rather than holding them forever.
 func TestKeyspace_PartialDropReportsWhatItRemoved(t *testing.T) {
 	ctx := context.Background()
-	kv := &afterDocWriteKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &afterDocWriteKV{memoryKVSvc: newResolvedKVSvc()}
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 	doc := map[string]interface{}{"k": "same"}
@@ -122,7 +122,7 @@ func TestKeyspace_PartialDropReportsWhatItRemoved(t *testing.T) {
 // TestKeyspace_TeardownStopsOnACancelledContext: a teardown bounded by a
 // deadline stops at its next batch check and reports what it removed.
 func TestKeyspace_TeardownStopsOnACancelledContext(t *testing.T) {
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 	_, err := svc.InsertDocument(context.Background(), &InsertDocumentRequest{Database: "db", Collection: "c", Document: map[string]interface{}{"k": "v"}})
 	require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestKeyspace_TeardownStopsOnACancelledContext(t *testing.T) {
 // incarnation's sequence after its teardown deleted it. The refusal reclaims
 // it, and the process-local generator cached for the dead incarnation.
 func TestKeyspace_StaleWriteReclaimsTheDeadSequence(t *testing.T) {
-	kv := &keyspaceKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &keyspaceKV{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	svc := NewCollectionService(kv).WithSequenceService(NewSequenceService(seqStore, seqStore))
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
@@ -169,7 +169,7 @@ func TestKeyspace_StaleWriteReclaimsTheDeadSequence(t *testing.T) {
 // quota keeps the write's reservation instead of releasing the bytes twice.
 func TestKeyspace_RetractionThatFindsItsWriteGoneIsSuperseded(t *testing.T) {
 	ctx := context.Background()
-	kv := &afterDocWriteKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &afterDocWriteKV{memoryKVSvc: newResolvedKVSvc()}
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "db", "c", IDStrategyUnixNano, "")
 	doc := map[string]interface{}{"k": "v"}
@@ -194,7 +194,7 @@ func TestKeyspace_RetractionThatFindsItsWriteGoneIsSuperseded(t *testing.T) {
 // is still what the caller matches.
 func TestKeyspace_RetractionSequenceFailureIsReported(t *testing.T) {
 	ctx := context.Background()
-	kv := &keyspaceKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &keyspaceKV{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	rec := &recordingSequenceService{SequenceServicer: NewSequenceService(seqStore, seqStore)}
 	svc := NewCollectionService(kv).WithSequenceService(rec)
@@ -222,7 +222,7 @@ func TestKeyspace_RetractionSequenceFailureIsReported(t *testing.T) {
 // name -- with no migration.
 func TestKeyspace_LegacyCollectionKeepsItsUnsuffixedKeyspace(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 	seq := NewSequenceService(seqStore, seqStore)
 	svc := NewCollectionService(kv).WithSequenceService(seq)
@@ -252,7 +252,7 @@ func TestKeyspace_DeleteRefusedOnANonActiveCollection(t *testing.T) {
 	for _, state := range []string{CollectionStateCreating, CollectionStateDropping} {
 		t.Run(state, func(t *testing.T) {
 			ctx := context.Background()
-			kv := newMemoryKVSvc()
+			kv := newResolvedKVSvc()
 			svc := NewCollectionService(kv)
 			createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 			ins, err := svc.InsertDocument(ctx, &InsertDocumentRequest{Database: "db", Collection: "c", Document: map[string]interface{}{"k": "v"}})
@@ -273,7 +273,7 @@ func TestKeyspace_DeleteRefusedOnANonActiveCollection(t *testing.T) {
 // response of a field_hash re-insert names the document it replaced.
 func TestKeyspace_FieldHashReinsertReportsTheDisplacedDocument(t *testing.T) {
 	ctx := context.Background()
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	createCollection(t, svc, "db", "u", IDStrategyFieldHash, "email")
 	first, err := svc.InsertDocument(ctx, &InsertDocumentRequest{Database: "db", Collection: "u", Document: map[string]interface{}{"email": "a@example.com", "n": "1"}})
 	require.NoError(t, err)
@@ -364,7 +364,7 @@ func TestLedgerEntryConsistent(t *testing.T) {
 // a refused record does not stop the pass.
 func TestKeyspace_SweeperStillFinishesConsistentRecordsBesideAnInconsistentOne(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	stale := time.Now().Add(-time.Hour)
 	putMetadata(t, kv, &CollectionInfo{Name: "bad", Database: "db", State: CollectionStateDropping, StateSince: stale, Incarnation: "i", IndexOwner: "someone"})
@@ -396,7 +396,7 @@ func TestDocumentBodyBytes(t *testing.T) {
 // TestStoredDocumentBodyBytes: a stored document is measured by its decoded
 // body, and one that cannot be decoded by its stored size.
 func TestStoredDocumentBodyBytes(t *testing.T) {
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	c := svc.resolveCodec(&CollectionInfo{Database: "db"})
 	data, err := marshalDocument(&dao.DynamicEntity{ID: 3, Fields: map[string]interface{}{"v": "x"}}, c)
 	require.NoError(t, err)
@@ -411,7 +411,7 @@ func TestStoredDocumentBodyBytes(t *testing.T) {
 // must not count it again.
 func TestKeyspace_TeardownDoesNotCountADocumentRemovedUnderIt(t *testing.T) {
 	ctx := context.Background()
-	kv := &keyspaceKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &keyspaceKV{memoryKVSvc: newResolvedKVSvc()}
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 	doc := map[string]interface{}{"k": "v"}
@@ -438,7 +438,7 @@ func TestKeyspace_TeardownDoesNotCountADocumentRemovedUnderIt(t *testing.T) {
 // keys impossible to confuse with another's by construction.
 func TestCreateCollection_RefusesTheIncarnationSeparator(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	for _, name := range []string{"a#0123456789abcdef", "#", "trailing#"} {
 		_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{Database: "db", Name: name})
@@ -455,7 +455,7 @@ func TestCreateCollection_RefusesTheIncarnationSeparator(t *testing.T) {
 // is still read, written and dropped.
 func TestLegacyCollectionWithTheSeparatorKeepsWorking(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	putMetadata(t, kv, &CollectionInfo{Name: "old#x", Database: "db", IDStrategy: IDStrategyUnixNano})
 
@@ -521,7 +521,7 @@ func (k *cancelOnDocDeleteKV) CompareAndDelete(ctx context.Context, key string, 
 func TestKeyspace_TeardownChecksItsContextBeforeEveryDelete(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	kv := &cancelOnDocDeleteKV{memoryKVSvc: newMemoryKVSvc(), cancel: cancel}
+	kv := &cancelOnDocDeleteKV{memoryKVSvc: newResolvedKVSvc(), cancel: cancel}
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "db", "c", IDStrategyIncrement, "")
 	doc := map[string]interface{}{"k": "v"}

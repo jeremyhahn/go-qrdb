@@ -103,7 +103,7 @@ func TestCollectionService_ExplicitIDReservesTheCounter(t *testing.T) {
 // about what a recreated collection does, and the only wiring that matched
 // the documentation was the one that cannot deliver unique IDs at all.
 func TestCollectionService_ExplicitIDReservesTheCounter_ProcessLocalFallback(t *testing.T) {
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
 
 	require.Equal(t, uint64(1), insertDoc(t, svc, "mydb", "users", map[string]interface{}{"_id": 1, "who": "explicit"}))
@@ -127,7 +127,7 @@ func TestCollectionService_ExplicitID_BothIncrementWiringsAgree(t *testing.T) {
 	}
 
 	replicated, _, _ := newIncrementCollectionService()
-	fallback := NewCollectionService(newMemoryKVSvc())
+	fallback := NewCollectionService(newResolvedKVSvc())
 
 	replicatedIDs := run(replicated)
 	fallbackIDs := run(fallback)
@@ -314,7 +314,7 @@ func TestMayOverwrite(t *testing.T) {
 // so a regression names the counter instead of the symptom.
 func TestCollectionService_ReserveExplicitDocumentID_RaisesTheReplicatedCounter(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 	seq := NewSequenceService(seqStore, seqStore)
 	svc := NewCollectionService(kv).WithSequenceService(seq)
@@ -342,7 +342,7 @@ func TestCollectionService_ReserveExplicitDocumentID_NoCounterToReserve(t *testi
 	for _, strategy := range []string{IDStrategyUnixNano, IDStrategyFieldHash, "no-such-strategy"} {
 		t.Run(strategy, func(t *testing.T) {
 			ctx := context.Background()
-			kv := newMemoryKVSvc()
+			kv := newResolvedKVSvc()
 			seqStore := newFakeCatalogStore()
 			svc := NewCollectionService(kv).WithSequenceService(NewSequenceService(seqStore, seqStore))
 
@@ -362,7 +362,7 @@ func TestCollectionService_ReserveExplicitDocumentID_NoCounterToReserve(t *testi
 // is still free to hand out, which is the defect itself.
 func TestCollectionService_ReserveExplicitDocumentID_SequenceFailureFailsTheInsert(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 	svc := NewCollectionService(kv).WithSequenceService(NewSequenceService(seqStore, seqStore))
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
@@ -408,7 +408,7 @@ func (f *failingGuardedKVSvc) PutIfAbsent(ctx context.Context, key string, value
 // claim on the same ID is refused by the write itself.
 func TestCollectionService_StoreNewDocument_GuardedWhenOverwriteRefused(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
 	info, err := svc.loadCollectionInfo(ctx, "mydb", "users")
@@ -439,7 +439,7 @@ func TestCollectionService_StoreNewDocument_GuardedWhenOverwriteRefused(t *testi
 // requested WriteMode changes nothing about it.
 func TestCollectionService_StoreNewDocument_OverwriteAllowedIsGuardedUpsert(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
 	info, err := svc.loadCollectionInfo(ctx, "mydb", "hashed")
@@ -479,7 +479,7 @@ func TestCollectionService_StoreNewDocument_OverwriteAllowedIsGuardedUpsert(t *t
 // rather than a partially applied insert reporting success.
 func TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	failing := &failingGuardedKVSvc{memoryKVSvc: kv, err: assert.AnError}
 	svc := NewCollectionService(failing)
 	createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
@@ -501,7 +501,7 @@ func TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped(t *te
 // the overwrite the guard exists to prevent.
 func TestCollectionService_StoreNewDocument_WriteFailureIsNotAbsence(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	failing := &failingGuardedKVSvc{memoryKVSvc: kv, err: assert.AnError}
 	svc := NewCollectionService(failing)
 

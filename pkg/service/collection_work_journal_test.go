@@ -58,7 +58,7 @@ func (r *recordingJournal) Record(ctx context.Context, database, name string) er
 // re-issued on a collection already DROPPING records nothing new.
 func TestWorkJournal_RecordedBeforeEveryTransition(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	j := &recordingJournal{kv: kv}
 	svc := NewCollectionService(kv).WithWorkJournal(j)
 
@@ -83,7 +83,7 @@ func TestWorkJournal_RecordedBeforeEveryTransition(t *testing.T) {
 // the create or drop before anything changes.
 func TestWorkJournal_FailureFailsTheTransition(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	j := &recordingJournal{kv: kv, err: errors.New("journal unavailable")}
 	svc := NewCollectionService(kv).WithWorkJournal(j)
 

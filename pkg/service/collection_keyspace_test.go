@@ -99,7 +99,7 @@ func (k *keyspaceKV) Get(ctx context.Context, key string) ([]byte, error) {
 
 func keyspaceHarness(t *testing.T, strategy, fieldHash string) (*keyspaceKV, *CollectionService, *SequenceService) {
 	t.Helper()
-	kv := &keyspaceKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &keyspaceKV{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	seq := NewSequenceService(seqStore, seqStore)
 	svc := NewCollectionService(kv).WithSequenceService(seq)
@@ -178,7 +178,7 @@ func TestKeyspace_StaleFieldHashInsertCannotTouchTheNewIncarnation(t *testing.T)
 // is dropped and created again -- and written to -- just after it claimed the
 // name. The stale create used to purge the prefix both incarnations shared.
 func TestKeyspace_StaleCreateCannotTouchTheNewIncarnation(t *testing.T) {
-	kv := &keyspaceKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &keyspaceKV{memoryKVSvc: newResolvedKVSvc()}
 	svc := NewCollectionService(kv)
 	ctx := context.Background()
 	kv.afterMetaClaim = func() {
@@ -243,7 +243,7 @@ func deleteMetadataForTest(ctx context.Context, kv kvService, info *CollectionIn
 // now owns under the same name survives.
 func TestKeyspace_LegacyTeardownDropsIndexesAsTheExplicitOwner(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idx := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idx)
 	putMetadata(t, kv, &CollectionInfo{
@@ -267,7 +267,7 @@ func TestKeyspace_LegacyTeardownDropsIndexesAsTheExplicitOwner(t *testing.T) {
 // incarnation) is not torn down on the sweeper's authority.
 func TestKeyspace_SweeperRefusesAnInconsistentRecord(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idx := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idx)
 	foreign := index.CollectionOwner("db", "other", "x")
@@ -289,7 +289,7 @@ func TestKeyspace_SweeperRefusesAnInconsistentRecord(t *testing.T) {
 // (database, name, incarnation) drops nothing.
 func TestKeyspace_SweeperRefusesAnInconsistentLedgerEntry(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idx := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idx)
 	victimOwner := index.CollectionOwner("db", "victim", "live")

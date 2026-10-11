@@ -132,7 +132,7 @@ func assertNewCollectionIntact(t *testing.T, svc *CollectionService, seq Sequenc
 
 func newIncarnationHarness(t *testing.T) (*raceKV, *CollectionService, SequenceServicer) {
 	t.Helper()
-	kv := &raceKV{memoryKVSvc: newMemoryKVSvc()}
+	kv := &raceKV{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	seq := NewSequenceService(seqStore, seqStore)
 	svc := NewCollectionService(kv).WithSequenceService(seq)
@@ -234,7 +234,7 @@ func TestFence_WriteDecidedAgainstAnEarlierIncarnationIsRetracted(t *testing.T) 
 // nothing a stale create could purge from the live collection.
 func TestCreate_EarlierKeyspacesAreUnreachable(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	dead := &CollectionInfo{Database: "db", Name: "c", Incarnation: "0123456789abcdef"}
 	legacy := &CollectionInfo{Database: "db", Name: "c"}
@@ -262,7 +262,7 @@ func TestCreate_EarlierKeyspacesAreUnreachable(t *testing.T) {
 // re-created name draws a new one.
 func TestCreate_EveryCollectionHasAnIncarnation(t *testing.T) {
 	ctx := context.Background()
-	svc := NewCollectionService(newMemoryKVSvc())
+	svc := NewCollectionService(newResolvedKVSvc())
 	first, err := svc.CreateCollection(ctx, &CreateCollectionRequest{Database: "db", Name: "c"})
 	require.NoError(t, err)
 	require.NotEmpty(t, first.Incarnation)
@@ -300,7 +300,7 @@ func TestValidateIndexDefinitions_RefusesADuplicateField(t *testing.T) {
 // Mutation-checked: without the ledger sweep the orphaned index survives.
 func TestSweep_RemovesIndexesAnOrphanedLedgerNames(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	idx := newMemoryIndexSvc()
 	svc := NewCollectionServiceWithIndex(kv, idx)
 

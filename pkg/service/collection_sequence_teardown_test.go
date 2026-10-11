@@ -37,7 +37,7 @@ import (
 // pkg/server/tenant_host.go and pkg/server/lifecycle), together with the
 // document store and the sequence store so a test can inspect both.
 func newIncrementCollectionService() (*CollectionService, *memoryKVSvc, *fakeCatalogStore) {
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 	svc := NewCollectionService(kv).WithSequenceService(NewSequenceService(seqStore, seqStore))
 	return svc, kv, seqStore
@@ -126,7 +126,7 @@ func TestCollectionService_DropCollection_IncrementAgreesAcrossBothWirings(t *te
 	require.NoError(t, replicated.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"}))
 	replicatedIDs := createIncrementCollection(t, replicated, "mydb", "users", 2)
 
-	fallback := NewCollectionService(newMemoryKVSvc())
+	fallback := NewCollectionService(newResolvedKVSvc())
 	createIncrementCollection(t, fallback, "mydb", "users", 3)
 	require.NoError(t, fallback.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"}))
 	fallbackIDs := createIncrementCollection(t, fallback, "mydb", "users", 2)
@@ -141,7 +141,7 @@ func TestCollectionService_DropCollection_IncrementAgreesAcrossBothWirings(t *te
 // empty at the moment its sequence is deleted.
 func TestCollectionService_DropCollection_DocumentsGoBeforeTheSequence(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 
 	var docPrefix string
@@ -168,7 +168,7 @@ func TestCollectionService_DropCollection_DocumentsGoBeforeTheSequence(t *testin
 // CollectionNotFoundError before getting this far).
 func TestCollectionService_DropCollection_SequenceGoesBeforeTheMetadata(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 
 	rec := &recordingSequenceService{
@@ -192,7 +192,7 @@ func TestCollectionService_DropCollection_SequenceGoesBeforeTheMetadata(t *testi
 // the surviving metadata is what makes the retry possible.
 func TestCollectionService_DropCollection_SequenceDeleteFailureFailsTheDrop(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 	sentinel := errors.New("sequence store unavailable")
 
@@ -221,7 +221,7 @@ func TestCollectionService_DropCollection_SequenceDeleteFailureFailsTheDrop(t *t
 // success.
 func TestCollectionService_DropCollection_RetryAfterSequenceFailureCompletes(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 
 	rec := &recordingSequenceService{
@@ -292,7 +292,7 @@ func TestCollectionService_DropCollection_NonIncrementCollectionProposesNothing(
 // drops exactly what it always did.
 func TestCollectionService_DropCollection_WithoutSequenceServiceIsUnchanged(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 
 	createIncrementCollection(t, svc, "mydb", "users", 2)
@@ -308,7 +308,7 @@ func TestCollectionService_DropCollection_WithoutSequenceServiceIsUnchanged(t *t
 // never reclaim a live collection's counter.
 func TestCollectionService_DropCollection_MissingCollectionNeverTouchesSequence(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	seqStore := newFakeCatalogStore()
 	rec := &recordingSequenceService{SequenceServicer: NewSequenceService(seqStore, seqStore)}
 	svc := NewCollectionService(kv).WithSequenceService(rec)
@@ -325,7 +325,7 @@ func TestCollectionService_DropCollection_MissingCollectionNeverTouchesSequence(
 // counter, or the retry would insert over a document that is still there.
 func TestCollectionService_DropCollection_DocumentFailureLeavesTheSequence(t *testing.T) {
 	ctx := context.Background()
-	kv := &failingKVSvc{memoryKVSvc: newMemoryKVSvc()}
+	kv := &failingKVSvc{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	rec := &recordingSequenceService{SequenceServicer: NewSequenceService(seqStore, seqStore)}
 	svc := NewCollectionService(kv).WithSequenceService(rec)
@@ -349,7 +349,7 @@ func TestCollectionService_DropCollection_DocumentFailureLeavesTheSequence(t *te
 // rather than proceeding to reclaim anything.
 func TestCollectionService_DropCollection_ListFailureIsTyped(t *testing.T) {
 	ctx := context.Background()
-	kv := &failingKVSvc{memoryKVSvc: newMemoryKVSvc()}
+	kv := &failingKVSvc{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	rec := &recordingSequenceService{SequenceServicer: NewSequenceService(seqStore, seqStore)}
 	svc := NewCollectionService(kv).WithSequenceService(rec)
@@ -370,7 +370,7 @@ func TestCollectionService_DropCollection_ListFailureIsTyped(t *testing.T) {
 // counter has restarted, with nothing left to collide with.
 func TestCollectionService_DropCollection_MetadataFailureIsTyped(t *testing.T) {
 	ctx := context.Background()
-	kv := &failingKVSvc{memoryKVSvc: newMemoryKVSvc()}
+	kv := &failingKVSvc{memoryKVSvc: newResolvedKVSvc()}
 	seqStore := newFakeCatalogStore()
 	svc := NewCollectionService(kv).WithSequenceService(NewSequenceService(seqStore, seqStore))
 

@@ -51,7 +51,7 @@ type faultingKVSvc struct {
 var _ kvService = (*faultingKVSvc)(nil)
 
 func newFaultingKVSvc() *faultingKVSvc {
-	return &faultingKVSvc{memoryKVSvc: newMemoryKVSvc()}
+	return &faultingKVSvc{memoryKVSvc: newResolvedKVSvc()}
 }
 
 func (f *faultingKVSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
@@ -225,7 +225,7 @@ func TestSweepStuckCollections_Faults(t *testing.T) {
 	assert.NoError(t, err)
 
 	// The scan itself fails.
-	scanFail := &scanFailKV{memoryKVSvc: newMemoryKVSvc()}
+	scanFail := &scanFailKV{memoryKVSvc: newResolvedKVSvc()}
 	_, err = NewCollectionService(scanFail).SweepStuckCollections(ctx, "db", time.Minute)
 	assert.Equal(t, "list", metadataOp(t, err))
 }
@@ -417,7 +417,7 @@ func TestCollectionService_ClockDefaultsToWallTime(t *testing.T) {
 // every document itself, counting exactly the ones it removed.
 func TestUpdateDocument_RefusedOnADroppingCollection(t *testing.T) {
 	ctx := context.Background()
-	kv := newMemoryKVSvc()
+	kv := newResolvedKVSvc()
 	svc := NewCollectionService(kv)
 	_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{Name: "c", Database: "db"})
 	require.NoError(t, err)
