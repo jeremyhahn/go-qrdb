@@ -13,6 +13,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Breaking: `node.WithAuthenticators` takes a chain position.** Its
+  signature is now `WithAuthenticators(position auth.ChainPosition,
+  authenticators ...auth.Authenticator)`, with `ChainBeforeMTLS` (the
+  authenticator decides every request it accepts, including one that presents
+  a client certificate), `ChainAfterMTLS` (the previous behaviour) and
+  `ChainReplaceMTLS` (mTLS's decision is removed; the transport's TLS stays).
+  `wiring.AuthMiddlewareConfig.ExtraAuthenticators` is now
+  `[]auth.AuthenticatorPlacement`, assembled by `auth.AuthenticatorChain`. An
+  invalid position (including the zero value) is refused with
+  `*auth.InvalidChainPositionError`, and a chain left empty by
+  `ChainReplaceMTLS` with `*auth.EmptyAuthenticatorChainError`; both are
+  re-exported from `sdk/go`. To keep the old order, pass `sdk.ChainAfterMTLS`.
 - **`golang.org/x/net` v0.59.0 → v0.60.0** in the root, `sdk/go`,
   `sdk/go/gorm/conformance` and `test/performance/qrdb` modules, fixing the
   HTTP/2 vulnerabilities `govulncheck` reported against the REST server

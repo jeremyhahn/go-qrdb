@@ -38,6 +38,37 @@ type Authenticator = auth.Authenticator
 // reporting MethodUnobservable true skips only the permitted-method check.
 type UnobservableMethodAuthenticator = auth.UnobservableMethodAuthenticator
 
+// ChainPosition is where an authenticator registered with
+// node.WithAuthenticators sits in the node's one first-success-wins chain,
+// relative to the built-in mTLS authenticator. The zero value is not a
+// position: every registration names one. (Aliases pkg/auth.ChainPosition.)
+type ChainPosition = auth.ChainPosition
+
+// The ChainPosition values.
+const (
+	// ChainBeforeMTLS runs the authenticators ahead of mTLS: they decide
+	// every request they accept, including one that also presents a valid
+	// client certificate.
+	ChainBeforeMTLS = auth.ChainBeforeMTLS
+	// ChainAfterMTLS runs them after mTLS: a request with a valid client
+	// certificate is decided by mTLS.
+	ChainAfterMTLS = auth.ChainAfterMTLS
+	// ChainReplaceMTLS removes the mTLS authenticator and puts them in its
+	// place. The transport's TLS stays: a presented client certificate is
+	// still verified and its state still reaches the chain
+	// (TLSStateFromContext); it just authenticates nobody by itself.
+	ChainReplaceMTLS = auth.ChainReplaceMTLS
+)
+
+// InvalidChainPositionError reports a registration whose position is not one
+// of the ChainPosition values. (Aliases pkg/auth.InvalidChainPositionError.)
+type InvalidChainPositionError = auth.InvalidChainPositionError
+
+// EmptyAuthenticatorChainError reports ChainReplaceMTLS with no authenticator
+// anywhere in the chain to take mTLS's place.
+// (Aliases pkg/auth.EmptyAuthenticatorChainError.)
+type EmptyAuthenticatorChainError = auth.EmptyAuthenticatorChainError
+
 // Authorizer checks whether an identity is allowed to perform an action on a
 // resource.
 type Authorizer = auth.Authorizer

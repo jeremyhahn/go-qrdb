@@ -798,7 +798,7 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	serverOpts := []server.ServerOption{server.WithTLS(tlsCfg), server.WithFactorRegistry(reg)}
 
 	n, err := NewClusteredNode(ctx, cfg, raftMembers(), serverOpts,
-		WithABACLiveReload(), WithAuthenticators(nodeAuthMethodProbe{}))
+		WithABACLiveReload(), WithAuthenticators(auth.ChainAfterMTLS, nodeAuthMethodProbe{}))
 	if err != nil {
 		t.Fatalf("NewClusteredNode: %v", err)
 	}

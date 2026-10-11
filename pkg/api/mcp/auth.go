@@ -15,7 +15,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -25,6 +28,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc/codes"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -67,6 +71,11 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 	// the identity into the request context; a second pass would only
 	// repeat the same chain walk.
 	if auth.IdentityFromContext(ctx) != nil {
+		return ctx
+	}
+	// authenticateHandler has already failed to authenticate this request
+	// and admitted it anonymously; it stays anonymous.
+	if admitted, _ := ctx.Value(anonymousAdmittedKey{}).(bool); admitted {
 		return ctx
 	}
 	ctx = withHTTPRequestCredentials(ctx, r)
@@ -126,9 +135,15 @@ func (s *Server) protectedResourceMetadataHandler(w http.ResponseWriter, r *http
 // configured, and authenticates every HTTP request BEFORE mcp-go reads any of
 // it. A request no configured authenticator accepts is answered 401 at the
 // HTTP layer (or 503/429 when the node could not finish checking it; see
-// writeAuthenticationRefusal), so initialize, ping and tools/list -- which enumerates the whole
-// tool surface -- are never answered to an anonymous caller, and mcp-go never
-// parses an anonymous body. A request that does authenticate proceeds with its
+// writeAuthenticationRefusal), so on a server that declares no public tool,
+// initialize, ping and tools/list are never answered to an anonymous caller,
+// and mcp-go never parses an anonymous body.
+//
+// A server whose modules declare public tools (apimodule.MCPPublicToolLister)
+// answers exactly three things anonymously: the initialize handshake,
+// tools/list -- filtered to the public set by visibleTools -- and a call to a
+// public tool (admitAnonymous). Everything else is still refused 401. A
+// request that does authenticate proceeds with its
 // identity bound into the request context, where authHTTPContext picks it up
 // without re-authenticating, and the per-tool DEFAULT-DENY gate still
 // authorizes every call.
@@ -142,12 +157,88 @@ func (s *Server) authenticateHandler(next http.Handler) http.Handler {
 		// A request a cluster node forwarded on a caller's behalf
 		// authenticates as that caller (docs/replica-forwarding).
 		authCtx, _, err := s.authMW.AuthenticateHTTP(ctx, w, r)
-		if err != nil {
-			writeAuthenticationRefusal(w, err, s.bearerChallenge)
+		if err == nil {
+			next.ServeHTTP(w, r.WithContext(authCtx))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(authCtx))
+		if anon, ok := s.admitAnonymous(r, err); ok {
+			next.ServeHTTP(w, anon)
+			return
+		}
+		writeAuthenticationRefusal(w, err, s.bearerChallenge)
 	})
+}
+
+// mcpNotificationInitialized is the notification that completes the MCP
+// initialize handshake; mcp-go names no constant for it.
+const mcpNotificationInitialized = "notifications/initialized"
+
+// anonymousRequest is the part of a JSON-RPC message the anonymous admission
+// reads: the method, and the tool a tools/call names.
+type anonymousRequest struct {
+	Method string `json:"method"`
+	Params struct {
+		Name string `json:"name"`
+	} `json:"params"`
+}
+
+// anonymousAdmission maps each JSON-RPC method an unauthenticated caller may
+// send, on a server that declares public tools, to the rule that admits it.
+// A method absent from the map -- every other request, a batch, a GET stream
+// or a DELETE -- is refused as before.
+var anonymousAdmission = map[string]func(s *Server, req anonymousRequest, authErr error) bool{
+	string(mcpgo.MethodInitialize): admitWhenUnauthenticated,
+	mcpNotificationInitialized:     admitWhenUnauthenticated,
+	string(mcpgo.MethodToolsList):  admitWhenUnauthenticated,
+	string(mcpgo.MethodToolsCall):  admitPublicToolCall,
+}
+
+// admitWhenUnauthenticated admits the handshake and the listing only when the
+// caller is anonymous (or its credential was refused), never when the node
+// could not finish checking a credential: that caller is told to retry, not
+// handed the anonymous view of a server it may be entitled to see more of.
+func admitWhenUnauthenticated(_ *Server, _ anonymousRequest, authErr error) bool {
+	return authmw.HTTPStatus(authErr, http.StatusUnauthorized) == http.StatusUnauthorized
+}
+
+// admitPublicToolCall admits a call to a declared public tool whatever the
+// authentication outcome, as REST serves a public route without consulting
+// the auth chain at all.
+func admitPublicToolCall(s *Server, req anonymousRequest, _ error) bool {
+	return s.toolPerms.IsPublic(req.Params.Name)
+}
+
+// anonymousAdmittedKey marks a request admitted without an identity, so
+// authHTTPContext does not walk the authenticator chain a second time.
+type anonymousAdmittedKey struct{}
+
+// admitAnonymous decides whether a request the auth chain did not
+// authenticate is served anyway, because the server declares public tools
+// and the request is one an anonymous caller may make: the initialize
+// handshake, tools/list, or a call to a public tool. It reads the body,
+// bounded at the anonymous cap, to learn the method, and hands back a request
+// whose body replays what it read and whose context carries no identity.
+// The per-tool gate still runs on every call, so an admitted request reaches
+// nothing but the public set.
+func (s *Server) admitAnonymous(r *http.Request, authErr error) (*http.Request, bool) {
+	if !s.toolPerms.HasPublic() || r.Method != http.MethodPost || r.Body == nil {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAnonymousRequestBodyBytes+1))
+	if err != nil || int64(len(body)) > maxAnonymousRequestBodyBytes {
+		return nil, false
+	}
+	var req anonymousRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, false
+	}
+	admit, ok := anonymousAdmission[req.Method]
+	if !ok || !admit(s, req, authErr) {
+		return nil, false
+	}
+	anon := r.WithContext(context.WithValue(r.Context(), anonymousAdmittedKey{}, true))
+	anon.Body = io.NopCloser(bytes.NewReader(body))
+	return anon, true
 }
 
 // writeAuthenticationRefusal answers a request the auth chain refused with the
@@ -344,4 +435,53 @@ func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 			return next(ctx, req)
 		}
 	}
+}
+
+// visibleTools is the tools/list filter installed whenever authentication is
+// configured: it narrows the listing to the tools the caller may call. An
+// anonymous caller -- admitted only when the server declares public tools --
+// sees the public set; an authenticated caller sees the public set plus every
+// tool its grants cover (AuthMiddleware.MCPToolVisible). While the node is
+// awaiting its admin credential, the tools that gate admits without an
+// identity are listed too, because they are callable.
+//
+// The listing is advisory. Every call is still authorized by
+// toolAuthzMiddleware, so a tool missing from the list grants nothing and a
+// tool shown on it is refused if the caller's grants change in between.
+func (s *Server) visibleTools(ctx context.Context, tools []mcpgo.Tool) []mcpgo.Tool {
+	awaiting := s.awaitingAdminCredentialProbe != nil && s.awaitingAdminCredentialProbe.AwaitingAdminCredential()
+	visible := make([]mcpgo.Tool, 0, len(tools))
+	for _, t := range tools {
+		if _, admitted := AwaitingAdminCredentialAllowlist[t.Name]; awaiting && admitted {
+			visible = append(visible, t)
+			continue
+		}
+		if s.authMW.MCPToolVisible(ctx, s.toolPerms, t.Name) {
+			visible = append(visible, t)
+		}
+	}
+	return visible
+}
+
+// registerPublicTools records every tool a module declares public
+// (apimodule.MCPPublicToolLister) in the tool registry. It runs after every
+// built-in and module permission registration, so the registry can refuse a
+// declared tool that reaches data (*authmw.PublicMCPToolRefusedError); a
+// declared name no tool answers is refused with *UnknownPublicToolError.
+func (s *Server) registerPublicTools() error {
+	for _, m := range s.modules {
+		lister, ok := m.(apimodule.MCPPublicToolLister)
+		if !ok {
+			continue
+		}
+		for _, name := range lister.PublicMCPTools() {
+			if s.mcpSrv.GetTool(name) == nil {
+				return &UnknownPublicToolError{Tool: name}
+			}
+			if err := s.toolPerms.RegisterPublic(name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

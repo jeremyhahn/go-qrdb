@@ -157,6 +157,10 @@ func (r *QUICMethodRegistry) Entries() map[string]permission.Permission {
 // DEFAULT-DENY semantics — a tool with no entry is denied.
 type MCPToolRegistry struct {
 	reg permRegistry
+	// public holds the tools served WITHOUT authentication (RegisterPublic):
+	// the embedder's declared first-contact surface -- health, liveness,
+	// readiness, login begin/finish. It never holds a tool that reaches data.
+	public map[string]struct{}
 }
 
 // NewMCPToolRegistry creates an empty MCP tool registry.
@@ -168,6 +172,9 @@ func NewMCPToolRegistry() *MCPToolRegistry {
 // permission or a duplicate tool name (construction-time bugs; see
 // permRegistry.register).
 func (r *MCPToolRegistry) Register(toolName string, perm permission.Permission) {
+	if _, eligible := publicEligibleMCPPermissions[perm]; r.IsPublic(toolName) && !eligible {
+		panic("mcp: " + toolName + " is public and cannot carry " + string(perm))
+	}
 	r.reg.register("mcp", toolName, perm)
 }
 
@@ -181,10 +188,59 @@ func (r *MCPToolRegistry) Lookup(toolName string) (permission.Permission, bool) 
 	return r.reg.lookup(toolName)
 }
 
-// Covered reports whether the tool carries a registered permission.
+// Covered reports whether the tool carries a registered permission or was
+// declared public.
 func (r *MCPToolRegistry) Covered(toolName string) bool {
 	_, ok := r.Lookup(toolName)
+	return ok || r.IsPublic(toolName)
+}
+
+// publicEligibleMCPPermissions is the closed set of permissions a tool may
+// carry and still be declared public. Every other permission names a verb
+// that reaches data or changes the node -- KV, SQL, documents, vectors,
+// admin, IAM, seal -- and a tool carrying one is refused. admin:health is
+// the one exception because it is already public on every other transport:
+// REST serves GET /health on its public allowlist and gRPC exempts
+// grpc.health.v1, and it reports node liveness only.
+var publicEligibleMCPPermissions = map[permission.Permission]struct{}{
+	permission.AdminHealth: {},
+}
+
+// RegisterPublic declares a tool served WITHOUT authentication or
+// authorization, as REST does for a RESTRoutePublic route and gRPC for a
+// RegisterPublicGRPCMethods method. A tool carrying a registered permission
+// other than admin:health reaches data or changes the node, and is refused
+// with *PublicMCPToolRefusedError: the declaration is how an embedder opens
+// its first-contact surface, never a way to open a data verb. Declaring the
+// same tool twice is a no-op. Call it after every permission registration,
+// so the refusal sees each tool's permission.
+func (r *MCPToolRegistry) RegisterPublic(toolName string) error {
+	if perm, mapped := r.reg.lookup(toolName); mapped {
+		if _, eligible := publicEligibleMCPPermissions[perm]; !eligible {
+			return &PublicMCPToolRefusedError{Tool: toolName, Permission: perm}
+		}
+	}
+	if r.public == nil {
+		r.public = make(map[string]struct{})
+	}
+	r.public[toolName] = struct{}{}
+	return nil
+}
+
+// IsPublic reports whether toolName was declared with RegisterPublic. A nil
+// registry has no public tools.
+func (r *MCPToolRegistry) IsPublic(toolName string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.public[toolName]
 	return ok
+}
+
+// HasPublic reports whether any tool was declared public. A server with
+// none answers no MCP request anonymously.
+func (r *MCPToolRegistry) HasPublic() bool {
+	return r != nil && len(r.public) > 0
 }
 
 // Entries returns a copy of the tool -> permission entries for the transport

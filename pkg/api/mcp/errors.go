@@ -49,6 +49,19 @@ func (e *TLSNotConfiguredError) Error() string {
 	return "mcp: no TLS configured; the MCP transport is TLS-only, call WithTLS with a TLS 1.3+ config"
 }
 
+// UnknownPublicToolError is returned by Start when a module's
+// apimodule.MCPPublicToolLister declares a tool no registration on the server
+// answers. Refusing the typo at startup keeps the intended tool from silently
+// staying behind authentication.
+type UnknownPublicToolError struct {
+	Tool string
+}
+
+// Error returns a human-readable description.
+func (e *UnknownPublicToolError) Error() string {
+	return "mcp: tool " + e.Tool + " is declared public but is not registered on the server"
+}
+
 // WeakTLSVersionError is returned by Start when WithTLS was given a
 // *tls.Config whose MinVersion is explicitly set below TLS 1.3. TLS 1.3 is
 // the minimum version this codebase supports for the client-certificate

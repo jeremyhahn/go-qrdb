@@ -44,7 +44,7 @@ func TestAuthMethodVocabulary_IsPerNode(t *testing.T) {
 	ctx := context.Background()
 	policy := []string{auth.MethodMTLS, "oauth"}
 
-	withOAuth, err := NewStandaloneNode(ctx, newMemoryNodeCfg(t), nil, WithAuthenticators(oauthAuthenticator{}))
+	withOAuth, err := NewStandaloneNode(ctx, newMemoryNodeCfg(t), nil, WithAuthenticators(auth.ChainAfterMTLS, oauthAuthenticator{}))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = withOAuth.Close() })
 

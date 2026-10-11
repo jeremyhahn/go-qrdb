@@ -125,6 +125,13 @@ type ModuleMCPToolPermissioner = apimodule.MCPToolPermissioner
 // HTTPRegistrar.HandlePublic admits unauthenticated REST routes.
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 
+// ModuleMCPPublicToolLister is the optional ServiceModule extension through
+// which a module declares which MCP tools must be reachable without
+// credentials (health, liveness, readiness, login). The unified MCP server
+// serves them, plus initialize and tools/list, to an unauthenticated caller,
+// and refuses at startup a declared tool that reaches data.
+type ModuleMCPPublicToolLister = apimodule.MCPPublicToolLister
+
 // TenantTargetAuthorizer is the minimal capability a module needs to
 // authorize its own handler against a request-supplied target tenant,
 // under the host's RBAC ScopeCross/ScopeSelf rules (go-qrdb#587). Satisfied

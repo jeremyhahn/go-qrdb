@@ -56,7 +56,7 @@ func TestBuildAuthMiddleware_ExtraAuthenticatorAuthenticates(t *testing.T) {
 		Enabled:             true,
 		RoleService:         adminRoleService(),
 		UserService:         &fakeUserService{},
-		ExtraAuthenticators: []auth.Authenticator{stub},
+		ExtraAuthenticators: afterMTLS(stub),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, mw)
@@ -80,7 +80,7 @@ func TestBuildAuthMiddleware_ExtraAuthenticatorRejects(t *testing.T) {
 		Enabled:             true,
 		RoleService:         adminRoleService(),
 		UserService:         &fakeUserService{},
-		ExtraAuthenticators: []auth.Authenticator{stub},
+		ExtraAuthenticators: afterMTLS(stub),
 	})
 	require.NoError(t, err)
 
@@ -98,7 +98,7 @@ func TestBuildAuthMiddleware_NilExtraAuthenticatorSkipped(t *testing.T) {
 		Enabled:             true,
 		RoleService:         adminRoleService(),
 		UserService:         &fakeUserService{},
-		ExtraAuthenticators: []auth.Authenticator{nil, stub},
+		ExtraAuthenticators: afterMTLS(nil, stub),
 	})
 	require.NoError(t, err)
 
@@ -173,7 +173,7 @@ func TestBuildAuthMiddleware_ExtraAuthenticatorJoinsTheMethodVocabulary(t *testi
 		Enabled:             true,
 		RoleService:         adminRoleService(),
 		UserService:         &fakeUserService{},
-		ExtraAuthenticators: []auth.Authenticator{namedAuthenticator{name: "Wiring-OAuth"}},
+		ExtraAuthenticators: afterMTLS(namedAuthenticator{name: "Wiring-OAuth"}),
 	})
 	require.NoError(t, err)
 	without, err := BuildAuthMiddleware(AuthMiddlewareConfig{

@@ -80,13 +80,35 @@ func (hostTokenAuthenticator) Name() string { return "host-bearer" }
 
 func (hostTokenAuthenticator) MethodUnobservable() bool { return true }
 
+// callerCredential is what a test caller presents: an Authorization value, a
+// client certificate, both or neither.
+type callerCredential struct {
+	authorization string
+	cert          *tls.Certificate
+}
+
+// bearer is a credential carrying only an Authorization value.
+func bearer(authorization string) callerCredential {
+	return callerCredential{authorization: authorization}
+}
+
+// clientTLS is the client side of a call to the node: it trusts the node's
+// CA and presents cred's certificate, if any.
+func (cred callerCredential) clientTLS(ca *qrdbdharness.CA) *tls.Config {
+	cfg := &tls.Config{RootCAs: ca.Pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS13}
+	if cred.cert != nil {
+		cfg.Certificates = []tls.Certificate{*cred.cert}
+	}
+	return cfg
+}
+
 // bearerTransport is one transport's way of making an admin:status call with
-// an optional Authorization value. It returns nil when the call was admitted,
-// and the transport's refusal otherwise.
+// a caller credential. It returns nil when the call was admitted, and the
+// transport's refusal otherwise.
 type bearerTransport struct {
 	name      string
 	configure func(t *testing.T, cfg *qrdbconfig.Config)
-	call      func(ctx context.Context, n *Node, ca *qrdbdharness.CA, authorization string) error
+	call      func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error
 	// unauthenticated reports whether err is the transport's
 	// "unauthenticated" answer, as opposed to any other failure.
 	unauthenticated func(err error) bool
@@ -102,44 +124,49 @@ type bearerTransport struct {
 //
 // QUIC is not in the table: its request frame carries no credential field, so
 // a bearer has nowhere to travel on that transport.
+//
+// It holds in every chain position: a bearer-only caller presents nothing mTLS
+// could accept, so the bearer decides wherever it sits.
 func TestWithAuthenticators_BearerAuthenticatesOnEveryNetworkTransport(t *testing.T) {
-	for _, bt := range bearerTransports() {
-		t.Run(bt.name, func(t *testing.T) {
-			n, ca := newBearerNode(t, bt.configure)
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
+	for _, pos := range []sdk.ChainPosition{sdk.ChainBeforeMTLS, sdk.ChainAfterMTLS, sdk.ChainReplaceMTLS} {
+		for _, bt := range bearerTransports() {
+			t.Run(pos.String()+"/"+bt.name, func(t *testing.T) {
+				n, ca := newBearerNode(t, bt.configure, WithAuthenticators(pos, hostTokenAuthenticator{}))
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
 
-			require.NoError(t, bt.call(ctx, n, ca, hostBearerToken), "a valid bearer was refused")
+				require.NoError(t, bt.call(ctx, n, ca, bearer(hostBearerToken)), "a valid bearer was refused")
 
-			for _, refused := range []struct{ name, authorization string }{
-				{"no credential", ""},
-				{"wrong token", "Bearer forged"},
-				{"right token, wrong scheme", strings.Replace(hostBearerToken, "Bearer", "Basic", 1)},
-			} {
-				err := bt.call(ctx, n, ca, refused.authorization)
-				require.Error(t, err, "%s was admitted", refused.name)
-				require.True(t, bt.unauthenticated(err), "%s: refusal is not unauthenticated: %v", refused.name, err)
-			}
-		})
+				for _, refused := range []struct{ name, authorization string }{
+					{"no credential", ""},
+					{"wrong token", "Bearer forged"},
+					{"right token, wrong scheme", strings.Replace(hostBearerToken, "Bearer", "Basic", 1)},
+				} {
+					err := bt.call(ctx, n, ca, bearer(refused.authorization))
+					require.Error(t, err, "%s was admitted", refused.name)
+					require.True(t, bt.unauthenticated(err), "%s: refusal is not unauthenticated: %v", refused.name, err)
+				}
+			})
+		}
 	}
 }
 
 func bearerTransports() []bearerTransport {
 	grpcUnauthenticated := func(err error) bool { return status.Code(err) == codes.Unauthenticated }
-	grpcStatus := func(target string) func(context.Context, *Node, *qrdbdharness.CA, string) error {
-		return func(ctx context.Context, n *Node, ca *qrdbdharness.CA, authorization string) error {
+	grpcStatus := func(target string) func(context.Context, *Node, *qrdbdharness.CA, callerCredential) error {
+		return func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
 			addr := n.Server().GRPCAddr()
 			if target == "unix" {
 				addr = "unix://" + n.Server().UnixAddr()
 			}
-			creds := credentials.NewTLS(&tls.Config{RootCAs: ca.Pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS13})
+			creds := credentials.NewTLS(cred.clientTLS(ca))
 			conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 			if err != nil {
 				return err
 			}
 			defer func() { _ = conn.Close() }()
-			if authorization != "" {
-				ctx = metadata.AppendToOutgoingContext(ctx, "authorization", authorization)
+			if cred.authorization != "" {
+				ctx = metadata.AppendToOutgoingContext(ctx, "authorization", cred.authorization)
 			}
 			_, err = pb.NewQRDBServiceClient(conn).Status(ctx, &emptypb.Empty{})
 			return err
@@ -152,15 +179,15 @@ func bearerTransports() []bearerTransport {
 				cfg.Protocols.REST = true
 				cfg.Server.AdminPort = freeTCPPort(t)
 			},
-			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, authorization string) error {
+			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+n.Server().RESTAddr()+"/status", nil)
 				if err != nil {
 					return err
 				}
-				if authorization != "" {
-					req.Header.Set("Authorization", authorization)
+				if cred.authorization != "" {
+					req.Header.Set("Authorization", cred.authorization)
 				}
-				resp, err := bearerHTTPClient(ca).Do(req)
+				resp, err := bearerHTTPClient(ca, cred).Do(req)
 				if err != nil {
 					return err
 				}
@@ -199,10 +226,10 @@ func bearerTransports() []bearerTransport {
 				cfg.Protocols.MCP = true
 				cfg.MCP.Port = freeTCPPort(t)
 			},
-			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, authorization string) error {
-				opts := []mcptransport.StreamableHTTPCOption{mcptransport.WithHTTPBasicClient(bearerHTTPClient(ca))}
-				if authorization != "" {
-					opts = append(opts, mcptransport.WithHTTPHeaders(map[string]string{"Authorization": authorization}))
+			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
+				opts := []mcptransport.StreamableHTTPCOption{mcptransport.WithHTTPBasicClient(bearerHTTPClient(ca, cred))}
+				if cred.authorization != "" {
+					opts = append(opts, mcptransport.WithHTTPHeaders(map[string]string{"Authorization": cred.authorization}))
 				}
 				c, err := client.NewStreamableHttpClient("https://"+n.Server().MCPAddr()+"/mcp", opts...)
 				if err != nil {
@@ -237,10 +264,10 @@ func bearerTransports() []bearerTransport {
 	}
 }
 
-// newBearerNode boots a standalone node serving one transport, with the host
-// bearer authenticator registered and the account the token names seeded
+// newBearerNode boots a standalone node serving one transport with opts (the
+// authenticators under test), and the account the host bearer names seeded
 // with admin:status and a WebAuthn-only method policy.
-func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config)) (*Node, *qrdbdharness.CA) {
+func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config), opts ...NodeOption) (*Node, *qrdbdharness.CA) {
 	t.Helper()
 	certDir := t.TempDir()
 	ca, err := qrdbdharness.NewCA(certDir)
@@ -269,8 +296,8 @@ func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config))
 		ClientAuth:   tls.VerifyClientCertIfGiven,
 		MinVersion:   tls.VersionTLS13,
 	}
-	n, err := NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithTLS(tlsCfg)},
-		WithAuthenticators(hostTokenAuthenticator{}))
+	n, err := NewStandaloneNode(context.Background(), cfg,
+		[]server.ServerOption{server.WithTLS(tlsCfg), server.WithCACertPool(ca.Pool)}, opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
 
@@ -292,11 +319,10 @@ func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config))
 	return n, ca
 }
 
-// bearerHTTPClient trusts the node's CA and presents no client certificate.
-func bearerHTTPClient(ca *qrdbdharness.CA) *http.Client {
-	return &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: ca.Pool, MinVersion: tls.VersionTLS13},
-	}}
+// bearerHTTPClient trusts the node's CA and presents cred's client
+// certificate, if any.
+func bearerHTTPClient(ca *qrdbdharness.CA, cred callerCredential) *http.Client {
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: cred.clientTLS(ca)}}
 }
 
 // shortSocketPath returns a unix socket path short enough for sun_path,

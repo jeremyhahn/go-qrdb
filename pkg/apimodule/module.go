@@ -222,6 +222,27 @@ type GRPCPublicMethodLister interface {
 	PublicGRPCMethods() []string
 }
 
+// MCPPublicToolLister is an optional ServiceModule extension. A module whose
+// embedder needs MCP tools reachable without credentials -- health,
+// liveness, readiness, login begin/finish -- declares them by tool name. The
+// name may be one of the module's own tools or a built-in one (qrdb_health).
+// The unified MCP server then serves those tools, plus the MCP initialize
+// handshake and tools/list, to an unauthenticated caller, and answers every
+// other request 401 as before. This is MCP's counterpart of
+// HTTPRegistrar.HandlePublic and GRPCPublicMethodLister.
+//
+// A public tool reaches no data. The server refuses, at startup, a declared
+// tool that carries any permission but admin:health -- a KV, SQL, document,
+// vector, admin, IAM or seal verb -- with
+// *middleware.PublicMCPToolRefusedError, and a declared name no tool on the
+// server answers with *mcp.UnknownPublicToolError. A module's own public
+// tool therefore declares no permission in MCPToolPermissions, and its
+// handler must not reach data on the caller's behalf: there is no caller
+// identity to authorize it against.
+type MCPPublicToolLister interface {
+	PublicMCPTools() []string
+}
+
 // BaseModule provides no-op defaults for every hook except Name, so a module
 // embeds it and overrides only what applies. It does not implement Name, forcing
 // each module to supply its own identity.

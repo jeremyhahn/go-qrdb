@@ -1847,7 +1847,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/kv/compact", permission.MVCCCompact, s.handleCompact)
 	s.route(http.MethodGet, "/kv/revision", permission.MVCCCurrentRevision, s.handleCurrentRevision)
 	s.route(http.MethodPost, "/kv/restore", permission.MVCCRestore, s.handleRestoreToRevision)
-	s.routeIf(s.kvSvc != nil, http.MethodGet, "/kv/scan", permission.KVList, s.handleKVScan)
+	s.routeIf(s.kvSvc != nil, http.MethodGet, "/kv/scan", permission.KVRange, s.handleKVScan)
 
 	// Guarded write verbs (go-qrdb#126). Registered unconditionally like the
 	// MVCC routes above: the handlers resolve the KV service themselves and
@@ -1876,7 +1876,7 @@ func (s *Server) registerRoutes() {
 	if s.kvSvc == nil {
 		kvHandler = s.notImplemented("kv")
 	}
-	s.route(http.MethodGet, "/kv", permission.KVGet, kvHandler)
+	s.route(http.MethodGet, "/kv", permission.KVList, kvHandler)
 	s.route(http.MethodPut, "/kv", permission.KVPut, kvHandler)
 	s.route(http.MethodDelete, "/kv", permission.KVDelete, kvHandler)
 	s.route(http.MethodGet, "/kv/*", permission.KVGet, kvHandler)

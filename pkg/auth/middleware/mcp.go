@@ -38,7 +38,13 @@ import (
 // The permission is authorized in the caller's own tenant, the tenant the
 // authenticated context is bound to. A tool that acts on a tenant its
 // arguments name re-checks there itself (AuthorizeTenantTarget).
+//
+// A tool declared public (MCPToolRegistry.RegisterPublic) is admitted with no
+// identity and no authorization, as REST admits a public route.
 func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, tools *MCPToolRegistry, toolName string) error {
+	if tools.IsPublic(toolName) {
+		return nil
+	}
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return &auth.AuthError{Code: "unauthenticated", Message: "mcp: no authenticated identity"}
@@ -53,4 +59,28 @@ func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, tools *MCPToolRegistr
 	}
 
 	return m.authorize(ctx, identity, perm)
+}
+
+// MCPToolVisible reports whether the caller in ctx may call the named tool,
+// for filtering tools/list down to what the caller can use. A public tool is
+// visible to everyone; any other tool only to an identity whose grants cover
+// its permission, and never to an anonymous caller.
+//
+// It renders the same decision AuthorizeMCP does but is not one: listing
+// grants nothing, so it neither charges the caller's rate limit nor writes an
+// audit record per tool, and it does not run the per-call peer-attestation
+// gate. Every call is still authorized by AuthorizeMCP.
+func (m *AuthMiddleware) MCPToolVisible(ctx context.Context, tools *MCPToolRegistry, toolName string) bool {
+	if tools.IsPublic(toolName) {
+		return true
+	}
+	identity := auth.IdentityFromContext(ctx)
+	if identity == nil {
+		return false
+	}
+	perm, ok := tools.Lookup(toolName)
+	if !ok {
+		return false
+	}
+	return m.decide(ctx, identity, perm) == nil
 }

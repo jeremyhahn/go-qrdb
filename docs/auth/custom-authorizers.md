@@ -26,17 +26,20 @@ type Authorizer interface {
 }
 ```
 
-Authenticators run as a first-success-wins chain; the built-in mTLS
-authenticator always runs first, so mTLS peers keep their behavior and
-requests without a client certificate fall through to embedder-supplied
-authenticators. The authorizer renders every permission decision on the
+Authenticators run as a first-success-wins chain. Each embedder-supplied
+authenticator takes an explicit position relative to the built-in mTLS
+authenticator: before it (it decides every request it accepts, including one
+that also presents a client certificate), after it (only requests mTLS
+declines reach it), or replacing it (a client certificate alone authenticates
+nobody; the transport's TLS stays in place). See
+[identity-rbac/api.md](../identity-rbac/api.md#consumer-authenticators-nodewithauthenticators). The authorizer renders every permission decision on the
 resulting identity.
 
 ## Registration hooks
 
 | Layer | Hook | Use |
 |---|---|---|
-| `pkg/auth/wiring` | `AuthMiddlewareConfig.ExtraAuthenticators` | Append authenticators to the canonical middleware stack |
+| `pkg/auth/wiring` | `AuthMiddlewareConfig.ExtraAuthenticators` | Place authenticators in the canonical chain (`[]auth.AuthenticatorPlacement`: before, after, or replacing mTLS) |
 | `pkg/auth/wiring` | `AuthMiddlewareConfig.WrapAuthorizer` | Decorate the built RBAC[+ABAC] authorizer (compose over / defer to it) |
 | `sdk/go/node` | `node.WithAuthenticators(...)` | Same, for applications embedding qrdb via the SDK node |
 | `sdk/go/node` | `node.WithAuthorizerWrapper(...)` | Same; the wrapped instance is shared by the embedded transport and every network transport |
@@ -92,7 +95,7 @@ node, err := node.NewStandaloneNode(ctx, cfg,
             mcp.WithProtectedResourceMetadata(prmJSON),
         ),
     },
-    node.WithAuthenticators(quicbaasOAuthAuthenticator), // embedder-implemented
+    node.WithAuthenticators(sdk.ChainBeforeMTLS, quicbaasOAuthAuthenticator), // embedder-implemented
     node.WithAuthorizerWrapper(quicbaasScopeAuthorizer), // embedder-implemented, optional
 )
 ```
@@ -100,7 +103,11 @@ node, err := node.NewStandaloneNode(ctx, cfg,
 Without `WithBearerChallenge`, an unauthenticated MCP request is still
 refused with `401` at the HTTP layer, before the MCP layer reads it, but
 without a `WWW-Authenticate` header. `initialize`, `ping` and `tools/list`
-are never answered to an anonymous caller. The challenge rides only a `401`:
+are never answered to an anonymous caller, unless a module declares public
+tools (`MCPPublicToolLister`, see
+[api-server/engineering.md](../api-server/engineering.md#mcp-public-tools)):
+then `initialize` and `tools/list` are answered, the listing shows the
+public set only, and those tools alone may be called. The challenge rides only a `401`:
 a request the node could not finish checking (user store unavailable, rate
 limited) is answered `503` or `429` with `Retry-After`, as REST answers it.
 

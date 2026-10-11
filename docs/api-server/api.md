@@ -63,11 +63,22 @@ Every capability declares its required permission **once**:
 |---|---|
 | gRPC, Unix | the `qrdb.v1.permission` proto option on the RPC, enforced by a shared interceptor |
 | REST | at the route registration site (`Handle`), or `HandlePublic` |
-| MCP | `MCPToolPermissions()` |
+| MCP | `MCPToolPermissions()`, or `PublicMCPTools()` for a tool that reaches no data |
 
 All of them feed one registry with a **default-deny startup assertion**. A
 route, RPC or tool with no declaration fails the assertion at boot rather than
 serving unauthenticated.
+
+**MCP public tools.** A module's `PublicMCPTools()` names the tools an
+anonymous MCP caller may call — its first-contact surface, and optionally the
+built-in `qrdb_health`. While any are declared, an anonymous `initialize` and
+`tools/list` are answered too; the listing shows the public set only, and
+every other request still answers 401. A declared tool carrying any
+permission but `admin:health` is refused (`PublicMCPToolRefusedError`), as is
+a name no tool answers (`UnknownPublicToolError`); the MCP server does not
+start. An authenticated caller's `tools/list` shows the public set plus the
+tools its grants allow. See
+[engineering.md](engineering.md#mcp-public-tools).
 
 **The registry is populated unconditionally**, even for routes a given server
 does not enable, so SO dual-factor gating recognizes SO-permissioned paths on

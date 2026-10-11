@@ -294,11 +294,15 @@ type AuthMiddlewareConfig struct {
 	// Ignored when RateLimitPolicies is nil.
 	RateLimiter ratelimit.Limiter
 
-	// ExtraAuthenticators appends embedder-supplied authenticators to the
-	// chain AFTER the built-in mTLS authenticator. The chain is
-	// first-success-wins, so mTLS peers keep their existing behavior and a
-	// request without a client certificate falls through to the extras.
-	// This is the extension seam for credential schemes qrdb deliberately
+	// ExtraAuthenticators places embedder-supplied authenticators in the
+	// chain, each at an explicit position relative to the built-in mTLS
+	// authenticator: before it, after it, or in its place
+	// (auth.AuthenticatorChain gives the exact order). The chain stays one
+	// ordered, first-success-wins list on every transport, so the position
+	// decides which credential wins for a request that presents more than one.
+	// A placement with no valid position fails BuildAuthMiddleware with
+	// *auth.InvalidChainPositionError, and replacing mTLS with nothing fails
+	// it with *auth.EmptyAuthenticatorChainError. This is the extension seam for credential schemes qrdb deliberately
 	// does not implement itself — e.g. go-quicbaas passes its OAuth 2.1
 	// bearer-token validator here when embedding qrdb, per the MCP
 	// authorization specification. Each authenticator resolves whatever
@@ -307,7 +311,7 @@ type AuthMiddlewareConfig struct {
 	// value, which REST and MCP fill from the header and gRPC and Unix from
 	// the "authorization" metadata). One whose tokens carry no observable
 	// login method implements auth.UnobservableMethodAuthenticator.
-	ExtraAuthenticators []auth.Authenticator
+	ExtraAuthenticators []auth.AuthenticatorPlacement
 
 	// WrapAuthorizer, when non-nil, decorates the fully built
 	// RBAC[+ABAC] authorizer with embedder-supplied authorization logic.
@@ -396,6 +400,12 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	if cfg.SPIFFETrustDomain != "" {
 		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain, mtlsOpts...)
 	}
+	// The embedder's authenticators take the positions they asked for around
+	// mTLS -- or its place -- in the one chain every transport shares.
+	chain, err := auth.AuthenticatorChain(mtlsAuthenticator, cfg.ExtraAuthenticators)
+	if err != nil {
+		return nil, err
+	}
 
 	if cfg.WrapAuthorizer != nil {
 		authorizer = cfg.WrapAuthorizer(authorizer)
@@ -404,8 +414,11 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		}
 	}
 
-	opts := []middleware.Option{
-		middleware.WithAuthenticator(mtlsAuthenticator),
+	opts := make([]middleware.Option, 0, len(chain)+12)
+	for _, a := range chain {
+		opts = append(opts, middleware.WithAuthenticator(a))
+	}
+	opts = append(opts,
 		middleware.WithUserService(cfg.UserService),
 		// The SAME checker on both, sharing one cache: the on-behalf
 		// forwarding path never runs the authenticator chain, so it needs the
@@ -413,7 +426,7 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		middleware.WithRevocationChecker(revocation),
 		middleware.WithMTLSBindingPolicy(cfg.MTLSBindingPolicy),
 		middleware.WithPeerAttestationGate(cfg.PeerAttestation),
-	}
+	)
 	if cfg.IssuerVerifier != nil {
 		// The SAME verifier gates the on-behalf forwarding path
 		// (authenticateOnBehalf), which bypasses the authenticator chain
@@ -426,12 +439,6 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.PendingTenantAdmins != nil {
 		opts = append(opts, middleware.WithPendingTenantAdmins(cfg.PendingTenantAdmins))
-	}
-	for _, a := range cfg.ExtraAuthenticators {
-		if a == nil {
-			continue
-		}
-		opts = append(opts, middleware.WithAuthenticator(a))
 	}
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))

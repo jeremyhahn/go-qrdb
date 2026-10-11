@@ -703,6 +703,23 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   there is no `"fido2"` method: a FIDO2 authenticator is presented through the
   WebAuthn ceremony. PIV and mTLS are separate tokens so a policy can permit one
   without the other.
+- **The chain is assembled in one place, `auth.AuthenticatorChain`.**
+  `wiring.BuildAuthMiddleware` hands it the mTLS authenticator and the
+  composer's `[]auth.AuthenticatorPlacement` (`AuthMiddlewareConfig.ExtraAuthenticators`,
+  which `node.WithAuthenticators` fills) and installs the result in order.
+  Positions are validated against one map (`chainPositionNames`), so the zero
+  `ChainPosition` is refused with `*auth.InvalidChainPositionError` rather than
+  read as a default. A placement with a nil authenticator installs nothing but
+  its position still counts: a `ChainReplaceMTLS` placement removes mTLS
+  whether or not it carries an authenticator, and `node.WithAuthenticators`
+  with no authenticators records its position for the same reason. A chain
+  left empty is `*auth.EmptyAuthenticatorChainError`. The transports need no
+  per-position wiring: each runs the one middleware's chain.
+  `TestWithAuthenticators_PositionDecidesACertificateRequestOnEveryTransport`
+  pins the three positions on REST, gRPC, Unix, MCP and QUIC with a request
+  that presents an enrolled client certificate, and
+  `TestWithAuthenticators_PositionDecidesTheEmbeddedCaller` pins them on the
+  embedded client's forwarding caller.
 - **The vocabulary is the node's own auth chain, enforced on write.** It is
   the built-in `mtls`, `piv` and `webauthn` plus the `Name()` of every
   authenticator in THAT node's chain — including those an embedder plugs in

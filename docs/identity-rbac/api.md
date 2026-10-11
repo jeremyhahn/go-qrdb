@@ -164,6 +164,53 @@ the fact an operator investigating a failed enrolment needs; QUIC and MCP
 answer with their `AlreadyExists` equivalents. Enrolling a thumbprint the
 **same** account already holds is not a conflict.
 
+### Consumer authenticators: `node.WithAuthenticators`
+
+A composer embedding qrdb adds its own authenticators to the node's one
+authentication chain, each at an explicit position relative to mTLS:
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, serverOpts,
+	node.WithAuthenticators(sdk.ChainBeforeMTLS, platformBearer),
+)
+```
+
+```go
+func WithAuthenticators(position auth.ChainPosition, authenticators ...auth.Authenticator) NodeOption
+```
+
+| Position (`sdk.` / `auth.`) | Effect |
+|---|---|
+| `ChainBeforeMTLS` | Runs ahead of mTLS. Decides every request it accepts, including one that also presents a valid client certificate. A request it declines falls through to mTLS. |
+| `ChainAfterMTLS` | Runs after mTLS. A request with a valid client certificate is decided by mTLS; only one mTLS declines reaches it. |
+| `ChainReplaceMTLS` | Removes mTLS from the chain and takes its place. A client certificate authenticates nobody by itself. |
+
+The chain is first-success-wins on every transport, and one list on all of
+them. Several calls compose: every `ChainBeforeMTLS` authenticator in call
+order, then mTLS (or the `ChainReplaceMTLS` authenticators in its slot), then
+every `ChainAfterMTLS` authenticator in call order.
+
+**`ChainReplaceMTLS` does not turn TLS off.** The listener still terminates
+TLS and verifies any client certificate presented against its CA pool; the
+verified state still reaches the chain through `sdk.TLSStateFromContext`, so a
+replacing authenticator can bind its credential to the certificate. What goes
+is the mTLS authenticator's decision.
+
+**Native QUIC carries no bearer.** Its request frames have no credential
+field, so with `ChainReplaceMTLS` a QUIC caller authenticates only if a
+replacing authenticator accepts what QUIC does carry: the verified client
+certificate in `sdk.TLSStateFromContext`.
+
+Construction refuses an invalid chain, wrapped in `*node.AuthMiddlewareWiringError`:
+
+| Error | When |
+|---|---|
+| `*sdk.InvalidChainPositionError` | the position is not one of the three — including the zero value |
+| `*sdk.EmptyAuthenticatorChainError` | `ChainReplaceMTLS` with no authenticator anywhere in the chain |
+
+With auth disabled (`auth.enabled: false`) there is no chain, and the option
+has no effect.
+
 ### Permitted authentication methods
 
 A non-empty `authMethods` policy is enforced at the authentication gate on

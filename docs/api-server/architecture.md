@@ -116,6 +116,7 @@ Optional extensions:
 |---|---|
 | `MCPToolPermissioner` | declare each MCP tool's permission; **a tool registered without one stays fail-closed** |
 | `GRPCPublicMethodLister` | declare gRPC methods reachable without auth, symmetric with `HandlePublic` |
+| `MCPPublicToolLister` | declare MCP tools reachable without auth (first-contact only); **a tool that reaches data is refused at startup** |
 | `ModuleAuthFallback` | authenticate credentials the host does not understand — a capability's own session-token plane |
 | `ConnObserver` | observe each connection opened and closed on every listener (REST, HTTP/3, gRPC, unix, QUIC, MCP), so a host keeps its own active-connection metrics for connections qrdb accepts on its behalf |
 | `ModuleTenantTargetAware` | receive the host's tenant-target authorizer, once, before any Register* hook runs, so a module's own handler can authorize an operation against a caller-named target tenant under the host's RBAC ScopeCross/ScopeSelf rules, on whichever transport it registered on |
@@ -380,7 +381,22 @@ kernel-assigned port.
 - **MCP authenticates before the MCP layer reads anything.** With
   authentication configured, every request to the MCP endpoint is
   authenticated at the HTTP layer, so `initialize`, `ping` and `tools/list`
-  are not answered anonymously, and every request body is bounded.
+  are not answered anonymously, and every request body is bounded. The one
+  exception is the embedder's declared first-contact surface: a module that
+  implements `MCPPublicToolLister` names tools — health, liveness, readiness,
+  login begin/finish — served without credentials, and while any exist an
+  anonymous caller may also `initialize` and `tools/list`, which lists the
+  public set only. `ping` and every other tool still answer `401`.
+- **A public MCP tool cannot reach data.** A declared tool that carries any
+  permission but `admin:health` — a KV, SQL, document, vector, admin, IAM or
+  seal verb — is refused with `PublicMCPToolRefusedError`, and a declared name
+  no tool answers with `UnknownPublicToolError`; either stops the MCP server
+  from starting.
+- **`tools/list` shows what the caller may call.** With authentication
+  configured, the listing is filtered by the same decision that authorizes the
+  call, without auditing it: an authenticated caller sees the public set plus
+  every tool its grants allow. The filter is advisory — every call is still
+  authorized.
 - **A module cannot grant itself authority.** Its fallback returns an identity;
   the host enriches and authorizes it.
 - **The embedder's service principal exists only in process.** A node built

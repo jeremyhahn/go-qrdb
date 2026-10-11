@@ -28,6 +28,55 @@ mTLS certificate  →  identity (CN=username, OU=tenant, SPKI thumbprint)
 - **The PDP is single.** Every transport handler resolves the same permission
   constant against the same decision point.
 
+### One authentication chain, with consumer authenticators placed in it
+
+Authentication is one ordered, first-success-wins list of authenticators,
+built once per node by `wiring.BuildAuthMiddleware` and shared by every
+transport — REST, gRPC, gRPC over a Unix socket, native QUIC, MCP, MySQL,
+PostgreSQL, and the embedded client's forwarding caller. The first
+authenticator that returns an identity decides the request; nothing after it
+runs. qrdb ships one authenticator, mTLS. A composer adds its own
+(`node.WithAuthenticators`, or `AuthMiddlewareConfig.ExtraAuthenticators` for a
+composer that wires the middleware itself) and names, for each, a position:
+
+| Position | Chain | A request presenting a valid client certificate and the consumer's credential |
+|---|---|---|
+| `ChainBeforeMTLS` | consumer…, mTLS | is decided by the consumer authenticator; one it declines falls through to mTLS |
+| `ChainAfterMTLS` | mTLS, consumer… | is decided by mTLS; the consumer authenticator never runs for it |
+| `ChainReplaceMTLS` | consumer… (mTLS removed) | is decided by the consumer authenticator; a certificate alone authenticates nobody |
+
+Positions combine: `auth.AuthenticatorChain` lays out every
+`ChainBeforeMTLS` placement, then mTLS — or, when any placement is
+`ChainReplaceMTLS`, those placements in its slot — then every `ChainAfterMTLS`
+placement, each group in registration order.
+
+**Why the position is the composer's to state.** A host that adds bearer
+authentication with its own checks — token binding, revocation, audience —
+needs those checks to run on every request that carries its bearer. Placed
+after mTLS, they never run for a request that also presents a client
+certificate, because mTLS has already decided it. Placing the bearer before
+mTLS, or in its place, is how the host's checks become the deciding ones.
+
+**Replacing mTLS leaves TLS in place.** `ChainReplaceMTLS` removes only the
+mTLS authenticator's decision. Every listener still terminates TLS, still
+verifies any client certificate presented against its CA pool, and still hands
+the verified connection state to the chain (`auth.TLSStateFromContext`), where
+the replacing authenticator may read it — to bind a bearer to the certificate
+that carried it, for instance. The on-behalf forwarding path between cluster
+nodes is not part of this chain and is unaffected.
+
+**What is refused at construction.** The zero `ChainPosition` is not a
+position, so a placement that never chose one fails node construction with
+`*auth.InvalidChainPositionError`, as does any value outside the three.
+`ChainReplaceMTLS` with no authenticator anywhere in the chain fails with
+`*auth.EmptyAuthenticatorChainError`: a chain no request can pass is a wiring
+bug, not a posture.
+
+**What was rejected.** A mode in which every authenticator must agree. The
+chain stays first-success-wins; a composer that wants its checks applied to
+certificate-bearing requests places its authenticator ahead of mTLS or in its
+place, rather than qrdb running a second, conjunctive chain beside the first.
+
 ### Identity mapping
 
 | Certificate field | User field | Role |
@@ -544,7 +593,8 @@ all — `QUICMethodRegistry.RegisterPublic`), gRPC and the Unix socket
 `RegisterPublic` — so the unary interceptor skips both authentication and
 authorization for it alone), MCP (a SEPARATE public server on
 `/mcp/enroll` carrying exactly that one tool, since the main `/mcp` endpoint
-answers nothing, not even `tools/list`, to an unauthenticated caller) and
+answers an unauthenticated caller nothing beyond the tools an embedder
+declares public) and
 the embedded transport (still gated on the node's seal/boot-state, since a
 sealed barrier can serve no invitation data, but with no identity or
 permission check beyond that).

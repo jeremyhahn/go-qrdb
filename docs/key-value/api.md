@@ -1,6 +1,6 @@
 # Key-Value Store — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-11
 
 Six transports, one capability set. The gRPC service is `qrdb.v1.QRDBService`;
 the **Unix socket transport serves the same gRPC wire over a UDS**, so its
@@ -12,10 +12,10 @@ Go call on the SDK client.
 | Capability | REST | gRPC / Unix (`qrdb.v1.QRDBService/`) | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
 | Put | `PUT /kv/{key}` (also `PUT /kv`) | `Put` | `kv.Put` | `qrdb_put` | `Client.KV().Put` | `kv:put` |
-| Get | `GET /kv/{key}` (also `GET /kv`) | `Get` | `kv.Get` | `qrdb_get` | `Client.KV().Get` | `kv:get` |
+| Get | `GET /kv/{key}` | `Get` | `kv.Get` | `qrdb_get` | `Client.KV().Get` | `kv:get` |
 | Delete | `DELETE /kv/{key}` (also `DELETE /kv`) | `Delete` | `kv.Delete` | `qrdb_delete` | `Client.KV().Delete` | `kv:delete` |
 | List keys | `GET /kv?prefix=` | `List` | `kv.List` | `qrdb_list` | `Client.KV().List` | `kv:list` |
-| Scan (keys + values) | `GET /kv/scan?prefix=` | `Scan` | `kv.Scan` | `qrdb_scan` | `Client.KV().Scan` | `kv:list` |
+| Scan (keys + values) | `GET /kv/scan?prefix=` | `Scan` | `kv.Scan` | `qrdb_scan` | `Client.KV().Scan` | `kv:range` |
 | Exists | derived — client-side `Get` | derived | derived | derived | `Client.KV().Exists` | `kv:exists` |
 | Put if absent | `POST /kv/put-if-absent` | `PutIfAbsent` | `kv.PutIfAbsent` | `qrdb_put_if_absent` | `Client.KV().(GuardedKVClient).PutIfAbsent` | `kv:put` |
 | Compare and delete | `POST /kv/compare-and-delete` | `CompareAndDelete` | `kv.CompareAndDelete` | `qrdb_compare_and_delete` | `Client.KV().(GuardedKVClient).CompareAndDelete` | `kv:delete` |
@@ -28,6 +28,20 @@ Go call on the SDK client.
 | Compact (this database's history) | `POST /kv/compact` | `Compact` | `mvcc.Compact` | `qrdb_mvcc_compact` | `Client.MVCC().Compact` | `mvcc:compact` (`ScopeSelfStrict`) |
 | Restore to revision | `POST /kv/restore` | `RestoreToRevision` | `mvcc.RestoreToRevision` | `qrdb_mvcc_restore_to_revision` | `Client.MVCC().RestoreToRevision` | `mvcc:restore` |
 | Node-keyspace compaction policy (platform) | `GET` / `PUT /admin/node-compaction` | `GetNodeCompaction` / `SetNodeCompaction` | `admin.GetNodeCompaction` / `admin.SetNodeCompaction` | `qrdb_node_compaction` / `qrdb_update_node_compaction` | `Client.Admin().NodeCompaction` / `SetNodeCompaction` | `admin:node_compaction` (`ScopeCross`) |
+
+**Each transport decides the permission, before the service.** The `scp`
+permission in the matrix is checked by the transport's authorize step -- the
+REST route table, the gRPC/Unix method option, the QUIC and MCP handler
+registrations, the embedded transport's operation map -- and a caller that
+lacks it is refused with the transport's typed denial (403 /
+`PERMISSION_DENIED`, QUIC `StatusPermissionDenied`, MCP `-32003`, embedded
+`auth.ErrUnauthorized`). The KV service is never reached, so a refused read is
+never answered as an empty result. Listing returns keys only and needs
+`kv:list`; every read that returns values -- `Get`, `Scan`, `Range` -- needs
+its own permission. *(Corrected: `GET /kv` was documented as a `Get` alias
+under `kv:get`, and `Scan` under `kv:list`; `GET /kv` lists keys under
+`kv:list`, and `Scan` returns values under `kv:range`, on REST as on every
+other transport.)*
 
 **The node-keyspace policy is the platform's.** It governs the keys outside
 every database namespace, so no tenant may read or set it: the permission is

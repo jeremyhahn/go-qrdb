@@ -82,6 +82,12 @@ curl -k https://db.example.com/v1/ca/bootstrap     # only if configured
 
 Everything else needs a certificate.
 
+Over MCP, nothing answers an anonymous caller unless the deployment's embedder
+declared public tools — typically health, liveness, readiness and a login
+ceremony. Then an anonymous client can `initialize`, list exactly those tools
+and call them, and nothing else. Once authenticated, `tools/list` shows the
+tools your grants let you call, not the whole surface.
+
 ## Metrics
 
 ```bash
@@ -122,6 +128,11 @@ configured for the deployment (standalone mode) — see
 **The server refused to start with an authorization assertion.** A route, RPC or
 tool has no permission declaration. This is the default-deny assertion doing its
 job: the failure is at boot instead of an open endpoint in production.
+
+**The MCP server refused to start naming a public tool.** A module declared a
+tool public that reaches data (`PublicMCPToolRefusedError`), or named a tool
+no module registered (`UnknownPublicToolError`). Only tools that reach no data
+may be public; drop the name from the module's declaration.
 
 **The server refused to start naming a route and two owners.** Two
 registrations claim the same REST route — two modules, or a module and a

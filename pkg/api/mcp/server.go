@@ -116,6 +116,11 @@ type Server struct {
 	// with DEFAULT-DENY semantics.
 	toolPerms *authmw.MCPToolRegistry
 
+	// publicToolsErr is the refusal of a module's public-tool declaration
+	// (registerPublicTools), surfaced by Start so the server never serves a
+	// surface it refused.
+	publicToolsErr error
+
 	// toolMiddlewares is the tool handler middleware chain, outermost first,
 	// installed on mcpSrv and applied by SealedWindowTools to the tools it
 	// exports.
@@ -690,6 +695,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	for _, mw := range s.toolMiddlewares {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(mw))
 	}
+	// tools/list shows each caller what it may call (visibleTools).
+	if s.authMW != nil {
+		mcpOpts = append(mcpOpts, mcpserver.WithToolFilter(s.visibleTools))
+	}
 	s.mcpSrv = mcpserver.NewMCPServer(
 		"qrdb",
 		"1.0.0",
@@ -852,6 +861,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 			}
 		}
 	}
+	// Public tools are declared last, once every tool carries its
+	// permission, so a declared tool that reaches data is refused.
+	s.publicToolsErr = s.registerPublicTools()
 
 	return s
 }
@@ -864,6 +876,9 @@ func (s *Server) Start() error {
 	// option-application time; surface it now.
 	if s.tlsErr != nil {
 		return s.tlsErr
+	}
+	if s.publicToolsErr != nil {
+		return s.publicToolsErr
 	}
 	// TLS-only: fail closed rather than bind a plaintext listener. The
 	// orchestrator always supplies a config (operator-provided or
@@ -922,7 +937,9 @@ func (s *Server) Start() error {
 	//   - authentication, whenever it is configured: an unauthenticated
 	//     request is answered 401 (with WWW-Authenticate when a bearer
 	//     challenge is configured) BEFORE mcp-go reads anything, so not even
-	//     initialize or tools/list is answered anonymously. A request that
+	//     initialize or tools/list is answered anonymously -- unless a module
+	//     declares public tools, when exactly those calls, the initialize
+	//     handshake and a tools/list filtered to them are. A request that
 	//     authenticates proceeds with its identity bound into the request
 	//     context, where authHTTPContext reuses it;
 	//   - the request-body bound, on every request: 1 MiB when the caller is

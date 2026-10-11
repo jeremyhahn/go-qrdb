@@ -149,11 +149,31 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
-// WithAuthenticators appends embedder-supplied authenticators to the node's
-// auth middleware chain, AFTER the built-in mTLS authenticator
-// (first-success-wins, so mTLS peers keep their existing behavior and
-// requests without a client certificate fall through to these). This is the
-// extension seam for credential schemes qrdb deliberately does not
+// WithAuthenticators places embedder-supplied authenticators in the node's one
+// authentication chain at an explicit position relative to the built-in mTLS
+// authenticator:
+//
+//   - auth.ChainBeforeMTLS: they run first and decide every request they
+//     accept, including one that also presents a valid client certificate; a
+//     request they decline falls through to mTLS.
+//   - auth.ChainAfterMTLS: a request with a valid client certificate is
+//     decided by mTLS, and only one mTLS declines reaches them.
+//   - auth.ChainReplaceMTLS: mTLS is removed from the chain and they take its
+//     place, so a client certificate authenticates nobody by itself. The
+//     transports' TLS is untouched -- listeners still verify any client
+//     certificate presented and hand the verified state to the chain
+//     (auth.TLSStateFromContext) -- and so is the on-behalf forwarding path
+//     between cluster nodes, which is not part of this chain.
+//
+// The chain stays one ordered, first-success-wins list, shared by every
+// transport; repeated calls keep their order within a position (see
+// auth.AuthenticatorChain). A position that is none of the three fails node
+// construction with *auth.InvalidChainPositionError, and ChainReplaceMTLS with
+// no authenticator anywhere in the chain fails it with
+// *auth.EmptyAuthenticatorChainError, both wrapped in
+// *AuthMiddlewareWiringError.
+//
+// This is the extension seam for credential schemes qrdb deliberately does not
 // implement itself — go-quicbaas passes its OAuth 2.1 bearer-token
 // validator here when embedding qrdb, per the MCP authorization
 // specification. The caller's Authorization value reaches the authenticator
@@ -165,9 +185,18 @@ import (
 // the chain can check against the account's permitted methods; such an
 // authenticator implements auth.UnobservableMethodAuthenticator and the host
 // enforces the policy when it issues the token.
-func WithAuthenticators(authenticators ...auth.Authenticator) NodeOption {
+func WithAuthenticators(position auth.ChainPosition, authenticators ...auth.Authenticator) NodeOption {
 	return func(o *nodeOptions) {
-		o.extraAuthenticators = append(o.extraAuthenticators, authenticators...)
+		// A call with no authenticators still records its position, so it is
+		// validated, and a replacement of mTLS with nothing is refused rather
+		// than quietly keeping mTLS.
+		if len(authenticators) == 0 {
+			o.extraAuthenticators = append(o.extraAuthenticators, auth.AuthenticatorPlacement{Position: position})
+			return
+		}
+		for _, a := range authenticators {
+			o.extraAuthenticators = append(o.extraAuthenticators, auth.AuthenticatorPlacement{Position: position, Authenticator: a})
+		}
 	}
 }
 
@@ -369,10 +398,10 @@ type nodeOptions struct {
 	// WithVolumeKeyProvider.
 	volumeKeyProvider volume.KeyProvider
 
-	// extraAuthenticators are embedder-supplied authenticators appended to
-	// the auth middleware's chain after the built-in mTLS authenticator.
-	// See WithAuthenticators.
-	extraAuthenticators []auth.Authenticator
+	// extraAuthenticators are embedder-supplied authenticators, each with
+	// its position around the built-in mTLS authenticator in the auth
+	// middleware's chain. See WithAuthenticators.
+	extraAuthenticators []auth.AuthenticatorPlacement
 
 	// embeddedCaller is the client certificate the embedded client forwards
 	// as. See WithEmbeddedCaller.
@@ -1085,7 +1114,7 @@ type Node struct {
 	// authn/authz hooks (WithAuthenticators / WithAuthorizerWrapper) from
 	// the node constructor to buildEmbeddedOpts (wrapper) and
 	// wireClientAndServer (authenticator chain).
-	extraAuthenticators []auth.Authenticator
+	extraAuthenticators []auth.AuthenticatorPlacement
 	authorizerWrapper   func(inner auth.Authorizer) auth.Authorizer
 
 	// embeddedCaller is the certificate chain, leaf first, of the identity

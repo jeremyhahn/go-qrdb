@@ -123,6 +123,22 @@ func (e *InvalidPublicGRPCMethodError) Error() string {
 	return "auth/middleware: invalid public gRPC method name (want \"/package.Service/Method\"): " + e.Method
 }
 
+// PublicMCPToolRefusedError is returned by MCPToolRegistry.RegisterPublic when
+// the tool declared public carries a permission that reaches data or changes
+// the node. Refusing it at registration (server startup) means no
+// declaration, mistaken or deliberate, can serve a data verb to an
+// unauthenticated caller.
+type PublicMCPToolRefusedError struct {
+	Tool       string
+	Permission permission.Permission
+}
+
+// Error names the tool and the permission that disqualifies it.
+func (e *PublicMCPToolRefusedError) Error() string {
+	return "auth/middleware: mcp tool " + e.Tool + " requires " + string(e.Permission) +
+		" and cannot be public: only tools that reach no data may be served without credentials"
+}
+
 // AuthMethodNotPermittedError is returned when an account authenticated
 // successfully by a method its own policy does not permit.
 //

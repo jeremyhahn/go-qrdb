@@ -86,6 +86,7 @@ type BaseModule                   = apimodule.BaseModule
 type ModuleHTTPRegistrar          = apimodule.HTTPRegistrar
 type ModuleMCPToolPermissioner    = apimodule.MCPToolPermissioner
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
+type ModuleMCPPublicToolLister    = apimodule.MCPPublicToolLister
 type ModuleAuthFallback           = apimodule.ModuleAuthFallback
 type ModuleConnObserver           = apimodule.ConnObserver
 type ModuleTransport              = apimodule.Transport   // + ModuleTransportGRPC … ModuleTransportQUIC
@@ -156,6 +157,10 @@ type MCPToolPermissioner interface {
 
 type GRPCPublicMethodLister interface {
 	PublicGRPCMethods() []string   // "/package.Service/Method"
+}
+
+type MCPPublicToolLister interface {
+	PublicMCPTools() []string   // see "MCP public tools"
 }
 
 type ModuleAuthFallback interface {
@@ -303,6 +308,7 @@ request.
 | gRPC / Unix server reflection (`/grpc.reflection.*`) | **not public**. qrdb registers none. One a composer registers is authenticated and default-denied like any other unmapped method, unless the composer declares it public through `GRPCPublicMethodLister` |
 | MCP `GET /.well-known/oauth-protected-resource` | **public**, only when `mcp.WithProtectedResourceMetadata` is configured |
 | MCP `/mcp`, every JSON-RPC method (`initialize`, `ping` and `tools/list` included) | **authenticated at the HTTP layer** before the MCP layer reads the request; each tool call then carries a permission |
+| MCP `/mcp` tools a module declares through `MCPPublicToolLister` | **public**, only those tools; while any exist, an anonymous `initialize`, `notifications/initialized` and `tools/list` are answered too (the listing shows the public set). See [MCP public tools](#mcp-public-tools) |
 
 Everything else carries a permission.
 
@@ -310,6 +316,62 @@ Everything else carries a permission.
 own authorization sequence in `pkg/clusterkeys` — CA chain, node SPIFFE SAN,
 certificate revocation, then the placement table — because being off the
 middleware's path means they inherit none of its checks, revocation included.
+
+## MCP public tools
+
+An embedder that needs a pre-authentication MCP surface — a login ceremony,
+liveness and readiness probes — declares it from a service module:
+
+```go
+func (m *Module) PublicMCPTools() []string {
+    return []string{"example_login_begin", "example_login_finish",
+        "example_liveness", "example_readiness", "qrdb_health"}
+}
+```
+
+`apimodule.MCPPublicToolLister` (re-exported from the SDK as
+`ModuleMCPPublicToolLister`) is the declaration seam, the MCP twin of
+`GRPCPublicMethodLister`. A name may be one of the module's own tools or the
+built-in `qrdb_health`.
+
+**Registration.** After every built-in and module tool permission is
+registered, the MCP server records each declared name with
+`MCPToolRegistry.RegisterPublic`:
+
+| Declared name | Outcome |
+|---|---|
+| a module tool with no permission | public |
+| a tool carrying `admin:health` (`qrdb_health`) | public — already public as REST `GET /health` and gRPC health |
+| a tool carrying any other permission | refused: `*middleware.PublicMCPToolRefusedError` |
+| a name no registered tool answers | refused: `*mcp.UnknownPublicToolError` |
+
+A refusal is returned by `Server.Start`, so the server never serves a surface
+it refused. Every permission other than `admin:health` names a verb that
+reaches data or changes the node — KV, SQL, documents, vectors, admin, IAM,
+seal — so the eligible set is closed rather than a deny list a new family
+could slip past. A module's own public tool declares no permission, which
+makes its handler responsible for reaching no data.
+
+**Admission.** The HTTP layer still authenticates every request. When that
+fails and the server has public tools, a single JSON-RPC message sent by
+`POST` (read under the anonymous body bound) is admitted anonymously by
+method:
+
+| Method | Admitted when |
+|---|---|
+| `initialize`, `notifications/initialized`, `tools/list` | the failure is `401`-class; a `503` or `429` answers as before, so a caller with a credential the node could not finish checking is told to retry |
+| `tools/call` | the named tool is public, whatever the failure |
+| anything else, a batch, a `GET` | never — `401` |
+
+An admitted request carries no identity; the tool gate passes a public tool
+and refuses every other with `401`.
+
+**Listing.** With authentication configured, `tools/list` is filtered per
+caller through `AuthMiddleware.MCPToolVisible`: a public tool is always
+listed, an anonymous caller sees nothing else, and an authenticated caller
+sees each tool its grants allow — the authorizer's decision without the audit
+record, rate limit or peer attestation of a call. While the node awaits its
+admin credential, the tools that gate admits are listed as well.
 
 ## Transports
 

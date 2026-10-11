@@ -1,6 +1,6 @@
 # Key-Value Store — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-11
 
 ## Problem
 
@@ -11,10 +11,14 @@ persistence layer and the consistency story fragments.
 
 ## Shape chosen
 
-A three-layer store, with each layer replaceable independently:
+A three-layer store, with each layer replaceable independently, behind the
+transports that admit requests to it:
 
 ```
-        service.KVServicer            request semantics, permission checks,
+        transport handler             authenticate, resolve tenant and database,
+              |                       authorize (RBAC: kv:get, kv:range, ...)
+              v
+        service.KVServicer            request semantics,
               |                       consistency selection, scope resolution
               v
         state machine                 pebble | memory | mvcc  (raft.sm_type)
@@ -50,7 +54,8 @@ backend is the production default.
 
 | Piece | Package | Owner |
 |---|---|---|
-| Request semantics, permissions, scope | `pkg/service` | go-qrdb |
+| Permission decision (RBAC), per transport | `pkg/api/rest`, `pkg/api/grpc` (Unix too), `pkg/api/quic`, `pkg/api/mcp`, `sdk/go/transport/embedded` | go-qrdb |
+| Request semantics, scope | `pkg/service` | go-qrdb |
 | KV operations | `pkg/kv` | go-qrdb |
 | MVCC engine, revision encoding, compaction | `pkg/mvcc` | go-qrdb |
 | Storage engines (file / memory / pebble / namespace) | `pkg/storage` | go-qrdb |
@@ -67,9 +72,12 @@ A write, clustered:
 1. Client calls `KV().Put` on any of the six transports.
 2. The transport handler resolves tenant (from the authenticated mTLS
    identity) and database (from the `X-QRDB-Database` header or its per-transport
-   equivalent), then looks up the per-(tenant, database) servicer in
-   `service.Registry`.
-3. The RBAC PDP checks the `kv:put` permission.
+   equivalent).
+3. The transport's authorize step asks the RBAC PDP for the operation's
+   permission -- `kv:put` here. A caller without it is refused with the
+   transport's typed denial (403 / `PERMISSION_DENIED`) and the service is never
+   reached; only then is the per-(tenant, database) servicer looked up in
+   `service.Registry`. The service layer makes no permission decision.
 4. The servicer encodes a proposal and submits it to go-quicraft.
 5. Raft replicates it; on commit each replica applies it to its state machine.
 6. The state machine writes through to the storage backend under the write mode
@@ -77,13 +85,20 @@ A write, clustered:
 7. When the barrier is engaged, values are encrypted with the tenant DEK before
    they reach the backend — see [../barrier-seal/](../barrier-seal/).
 
-A read takes the same first three steps, then diverges on consistency level:
+A read takes the same first three steps -- authorized as `kv:get`, `kv:list`
+or `kv:range` by what it returns, so a caller lacking the permission gets the
+typed denial and never an empty result -- then diverges on consistency level:
 `Strong` goes through consensus, `Linearizable` (the default) uses the ReadIndex
 protocol, `LeaseRead` serves from the leader's local state under a valid lease,
 and `Eventual` reads any replica's local state.
 
-Embedded mode collapses steps 1–2 into a Go call and, in single-node
-configuration, steps 4–5 into a direct apply.
+Embedded mode collapses steps 1–2 into a Go call -- the embedded transport
+still runs step 3 against its own operation-to-permission map -- and, in
+single-node configuration, steps 4–5 into a direct apply.
+
+*(Corrected: this document placed permission checks in `service.KVServicer`
+and ran the RBAC check after the servicer lookup. The decision has always been
+made in each transport's authorize step, before the service.)*
 
 ## Trust boundaries
 

@@ -57,9 +57,16 @@ func TestCoordinator_SameOnEveryTransport(t *testing.T) {
 
 func coordinationClientForProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) *sdk.Client {
 	t.Helper()
+	return sdkClientForProtocolAs(t, node, proto, node.clientCert, node.clientKey)
+}
+
+// sdkClientForProtocolAs returns an unconnected SDK client for proto against
+// node, authenticated as the identity named by certPath/keyPath.
+func sdkClientForProtocolAs(t *testing.T, node *multiProtoNode, proto multiProtocol, certPath, keyPath string) *sdk.Client {
+	t.Helper()
 
 	opts := []transport.Option{
-		transport.WithMTLS(node.clientCert, node.clientKey, node.ca.CertPath),
+		transport.WithMTLS(certPath, keyPath, node.ca.CertPath),
 	}
 	var (
 		tr  transport.Transport

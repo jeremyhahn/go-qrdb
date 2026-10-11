@@ -102,8 +102,8 @@ qrdb enroll --tenant-id acme --token "$TOKEN" --csr ./alice.csr
 `--server`/`--transport` select where to redeem, the same global flags every
 other command uses, but this is the one command that dials without
 connecting first: on `mcp`, redemption is served by a **separate** public
-server (`/mcp/enroll`) because the main endpoint answers nothing -- not even
-`tools/list` -- to an unauthenticated caller. Served on `rest`, `quic` and
+server (`/mcp/enroll`) because the main endpoint answers an unauthenticated
+caller nothing beyond the tools an embedder declares public. Served on `rest`, `quic` and
 `mcp`, and likewise on `grpc` and `unix`.
 
 A token is single-use: a second `qrdb enroll` with the same token gets the
