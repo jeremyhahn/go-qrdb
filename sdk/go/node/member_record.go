@@ -62,7 +62,7 @@ func (n *Node) startMemberRecord(host leaderReporter, cfg *qrdbconfig.Config) {
 		defer n.memberWG.Done()
 		for ctx.Err() == nil {
 			if _, ok, lerr := host.GetLeaderID(shard.ShardKV); lerr == nil && ok {
-				adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{})
+				adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{}, cluster.WithAdvertiseSealProbe(n))
 				if aerr != nil {
 					logger.Error("member record: advertiser not built", slog.Any("error", aerr))
 					return

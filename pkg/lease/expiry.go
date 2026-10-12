@@ -40,23 +40,37 @@ type RevokeFunc func(ctx context.Context, leaseID int64) error
 //
 // interval <= 0 uses DefaultExpiryInterval. A nil isLeader or revoke
 // disables the sweep (the call returns immediately) — callers that want
-// expiry MUST supply both.
-func (lr *Lessor) RunExpiry(ctx context.Context, interval time.Duration, isLeader func() bool, revoke RevokeFunc, logger *slog.Logger) {
+// expiry MUST supply both. WithExpiryHold suspends the sweep while a
+// condition holds, such as a sealed node barrier.
+func (lr *Lessor) RunExpiry(ctx context.Context, interval time.Duration, isLeader func() bool, revoke RevokeFunc, logger *slog.Logger, opts ...ExpiryOption) {
 	if interval <= 0 {
 		interval = DefaultExpiryInterval
 	}
 	if isLeader == nil || revoke == nil {
 		return
 	}
+	var cfg expiryConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 
 	ticker := lr.clock.NewTicker(interval)
 	defer ticker.Stop()
 
+	held := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
+			if cfg.hold != nil && cfg.hold() {
+				held = true
+				continue
+			}
+			if held {
+				held = false
+				lr.promote()
+			}
 			if !isLeader() {
 				continue
 			}
@@ -71,4 +85,24 @@ func (lr *Lessor) RunExpiry(ctx context.Context, interval time.Duration, isLeade
 			}
 		}
 	}
+}
+
+// ExpiryOption configures RunExpiry.
+type ExpiryOption func(*expiryConfig)
+
+type expiryConfig struct {
+	hold func() bool
+}
+
+// WithExpiryHold suspends the sweep for as long as hold reports true. A held
+// sweep revokes nothing, and when the hold is released every lease is given
+// a full TTL from that moment before the sweep resumes, so a holder is not
+// revoked for keep-alives this node could not take while it was held.
+//
+// The node composers pass the node barrier's IsSealed: a revoke is a Raft
+// proposal, and while the node barrier is sealed the node's log cannot take
+// one -- nor can it take the keep-alives the sweep would be judging leases
+// by. A nil hold never holds.
+func WithExpiryHold(hold func() bool) ExpiryOption {
+	return func(c *expiryConfig) { c.hold = hold }
 }

@@ -46,7 +46,7 @@ import (
 // boots and serves without advertising its own features or watching for
 // newly-activated ones -- exactly as if no gate had been built at all --
 // rather than exiting over an accelerator this build never required.
-func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node) (io.Closer, error) {
+func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node, nodeSeal cluster.SealProbe) (io.Closer, error) {
 	if gate == nil {
 		err := server.WhileSystemShardSettling(ctx, func() error {
 			return featuregate.CheckActivated(ctx, svc.KV)
@@ -60,7 +60,7 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 	var adv *cluster.Advertiser
 	err = server.WhileSystemShardSettling(ctx, func() error {
 		var serr error
-		adv, serr = client.StartFeatureGate(ctx, gate, svc.KV)
+		adv, serr = client.StartFeatureGate(ctx, gate, svc.KV, cluster.WithAdvertiseSealProbe(nodeSeal))
 		return serr
 	})
 	if err != nil {

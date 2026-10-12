@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -59,7 +60,7 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 		defer n.featureWG.Done()
 		for ctx.Err() == nil {
 			if _, ok, err := host.GetLeaderID(shard.ShardKV); err == nil && ok {
-				adv, err := client.StartFeatureGate(ctx, gate, activations)
+				adv, err := client.StartFeatureGate(ctx, gate, activations, cluster.WithAdvertiseSealProbe(n))
 				if err == nil {
 					n.featureAdv.Store(adv)
 					return

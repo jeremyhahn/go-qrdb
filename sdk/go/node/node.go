@@ -1837,6 +1837,9 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 			},
 			leaseSvc.Revoke,
 			n.logger,
+			// A revoke is a proposal the node's log cannot take while the
+			// node barrier is sealed (go-qrdb#662).
+			lease.WithExpiryHold(n.IsSealed),
 		)
 	}()
 }
@@ -3507,7 +3510,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// clustered or not: even a standalone node's ceremony may have
 		// issued one, and the record is harmless (never read) when nothing
 		// downstream calls FirstBootWithCeremony.
-		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, PendingAdminCertStore(svcNode.KV)); err != nil {
+		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, PendingAdminCertStore(svcNode.KV), service.LeadershipTransient); err != nil {
 			return &PendingAdminCertWriteError{Err: err}
 		}
 	}

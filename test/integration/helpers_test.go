@@ -27,6 +27,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -442,6 +443,9 @@ func startNode(t *testing.T, binary string, args []string, prefix string, tee ..
 		t.Fatalf("startNode: %v", err)
 	}
 	cmd := daemon.Cmd()
+	// A killed daemon whose output pipe stays open must not hold cleanup:
+	// Wait gives up on the pipe after WaitDelay.
+	cmd.WaitDelay = nodeWaitDelay
 	t.Cleanup(func() {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
@@ -450,6 +454,10 @@ func startNode(t *testing.T, binary string, args []string, prefix string, tee ..
 	})
 	return cmd
 }
+
+// nodeWaitDelay bounds how long a killed qrdbd's output pipe may keep
+// startNode's cleanup waiting.
+const nodeWaitDelay = 10 * time.Second
 
 // allocatePorts returns n free UDP ports for node listen addresses. The
 // reserved-window allocator lives in sdk/go/testutil/qrdbdharness: ports are
@@ -544,12 +552,40 @@ func waitForHealthy(t *testing.T, dataDir string, timeout time.Duration) {
 // A 30-second timeout prevents tests from hanging if the binary doesn't exit.
 func runCLI(t *testing.T, binary string, args ...string) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cliStepTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	// A killed CLI whose output pipe is still held open must not stall the
+	// test past its step deadline: Wait gives up on the pipe after WaitDelay.
+	cmd.WaitDelay = cliWaitDelay
 	out, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return string(out), &cliStepTimeoutError{args: args, limit: cliStepTimeout, err: err}
+	}
 	return string(out), err
 }
+
+// cliStepTimeout bounds one qrdb CLI invocation end to end; cliWaitDelay
+// bounds how long its output pipe may outlive the killed process.
+const (
+	cliStepTimeout = 30 * time.Second
+	cliWaitDelay   = 5 * time.Second
+)
+
+// cliStepTimeoutError reports a qrdb CLI invocation that runCLI killed at
+// its step deadline, naming the command so a stalled step is identifiable
+// from the failure alone.
+type cliStepTimeoutError struct {
+	args  []string
+	limit time.Duration
+	err   error
+}
+
+func (e *cliStepTimeoutError) Error() string {
+	return fmt.Sprintf("qrdb %s: step exceeded its %v deadline: %v", strings.Join(e.args, " "), e.limit, e.err)
+}
+
+func (e *cliStepTimeoutError) Unwrap() []error { return []error{context.DeadlineExceeded, e.err} }
 
 // allocateTCPPorts returns n free TCP ports for server addresses. It shares
 // the harness reservation table with allocatePorts, so a number handed out for

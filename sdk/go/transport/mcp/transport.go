@@ -243,7 +243,10 @@ func (t *Transport) dialMCP(ctx context.Context, address string) (*mcpclient.Cli
 		Version: "1.0.0",
 	}
 
-	if _, err := client.Initialize(ctx, initReq); err != nil {
+	initCtx, cancel := t.callContext(ctx)
+	_, err = client.Initialize(initCtx, initReq)
+	cancel()
+	if err != nil {
 		_ = client.Close()
 		return nil, &transport.ConnectionError{
 			Address: address,
@@ -1012,7 +1015,22 @@ func (t *Transport) callTool(ctx context.Context, tool string, args map[string]a
 		args["database"] = t.database
 	}
 
+	ctx, cancel := t.callContext(ctx)
+	defer cancel()
 	return callToolOn(ctx, t.client, tool, args)
+}
+
+// callContext derives the per-call context for one MCP request. When the
+// configured timeout is positive it bounds the request's round-trip with
+// context.WithTimeout, as the REST transport's http.Client.Timeout, the gRPC
+// transport's unary interceptor and the QUIC transport's callContext bound
+// theirs; a caller's earlier deadline still wins. When the timeout is zero
+// the context is returned unchanged with a no-op cancel.
+func (t *Transport) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if t.config.Timeout > 0 {
+		return context.WithTimeout(ctx, t.config.Timeout)
+	}
+	return ctx, func() {}
 }
 
 // callToolOn is callTool's wire logic against an explicit client, so

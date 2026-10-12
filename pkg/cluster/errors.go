@@ -155,6 +155,19 @@ func (e *MembershipError) Error() string {
 	return "cluster: membership: " + e.Reason
 }
 
+// NodeSealedError reports that a background membership write was not proposed
+// because the node barrier is sealed: the replicated log cannot take an entry
+// until the barrier is unsealed.
+type NodeSealedError struct {
+	// Op names the write that was not proposed: "register" or "deregister".
+	Op string
+}
+
+// Error returns a human-readable description.
+func (e *NodeSealedError) Error() string {
+	return "cluster: node barrier is sealed: " + e.Op + " not proposed"
+}
+
 // MembershipCauseError is a membership error wrapping an underlying cause.
 type MembershipCauseError struct {
 	// Reason describes the failure.

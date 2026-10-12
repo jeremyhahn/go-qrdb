@@ -449,6 +449,23 @@ func (lr *Lessor) ExpiredLeaseIDs() []int64 {
 	return expired
 }
 
+// promote gives every lease a full TTL from now, never shortening one. It is
+// the etcd lessor's Promote: after a span in which this node could neither
+// take keep-alives nor revoke, no holder is charged for that span.
+func (lr *Lessor) promote() {
+	lr.mu.RLock()
+	defer lr.mu.RUnlock()
+
+	now := lr.clock.Now()
+	for _, l := range lr.leases {
+		l.mu.Lock()
+		if renewed := now.Add(time.Duration(l.ttl) * time.Second); renewed.After(l.expiry) {
+			l.expiry = renewed
+		}
+		l.mu.Unlock()
+	}
+}
+
 // Count returns the number of active leases.
 func (lr *Lessor) Count() int {
 	lr.mu.RLock()

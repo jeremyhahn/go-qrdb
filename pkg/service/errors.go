@@ -372,6 +372,39 @@ func (e *NotLeaderError) Is(target error) bool {
 	return target == ErrNotStored
 }
 
+// leadershipTransient are the Raft errors of a shard electing a leader or
+// moving it: a request that timed out while no leader answered, was aborted
+// by the leadership change, reached a replica that is not, or not yet, the
+// leader, or reached a leader still inside its ReadIndex warm-up.
+var leadershipTransient = []error{
+	quicraft.ErrTimeout,
+	quicraft.ErrAborted,
+	quicraft.ErrNotLeader,
+	quicraft.ErrShardNotReady,
+	quicraft.ErrReadIndexNotReady,
+}
+
+// LeadershipTransient reports whether err, from a read or write through this
+// package, is its shard electing a leader or its leader moving: a state the
+// next attempt, after the election, does not share. Anything else -- a
+// missing key, a refused permission, a sealed or corrupt store, a cancelled
+// request -- is final, and a caller that waits out an election must not retry
+// it.
+//
+// A *NotLeaderError is transient whether or not it names a leader: unnamed,
+// one is being elected; named, leadership moved under the request. A timed-out
+// write may still have committed, so a caller retrying a write must make it
+// idempotent first.
+func LeadershipTransient(err error) bool {
+	for _, transient := range leadershipTransient {
+		if errors.Is(err, transient) {
+			return true
+		}
+	}
+	var nl *NotLeaderError
+	return errors.As(err, &nl)
+}
+
 // MembershipError is returned when a membership change operation fails.
 type MembershipError struct {
 	Op  string

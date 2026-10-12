@@ -564,7 +564,14 @@ and its liveness), whether or not dynamic membership is on. Without dynamic
 membership the record is published by `cluster.Advertiser` alone
 (`sdk.Client.NewNodeAdvertiser`; qrdbd logs `member record published`), with
 no reconfiguration loop; with it, the membership manager publishes the same
-record as part of its own start. Replica forwarding resolves the node it
+record as part of its own start. While the node barrier is sealed neither
+proposes anything: the keep-alive is skipped, a first publication is retried
+after the unseal, and a sealed leader holds its lease-expiry sweep and grants
+every lease a full TTL when it unseals
+([../barrier-seal/engineering.md](../barrier-seal/engineering.md)). An
+unsealed leader still expires a sealed follower's record when its TTL passes:
+a sealed node serves nothing, so it is not offered as a forwarding target.
+Replica forwarding resolves the node it
 forwards to from these records ([../replica-forwarding/](../replica-forwarding/)).
 The endpoints a node publishes come from one derivation,
 `config.(*Config).AdvertisedAPIEndpoints`: the advertise host (else the Raft

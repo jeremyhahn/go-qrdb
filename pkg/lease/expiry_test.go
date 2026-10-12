@@ -26,13 +26,13 @@ const guard = 5 * time.Second
 // its ticker, so the caller's first Advance cannot land before the sweeper is
 // listening for it. The returned stop cancels the sweeper and waits for it to
 // return.
-func startSweeper(t *testing.T, lr *Lessor, fake *clocktest.Fake, interval time.Duration, isLeader func() bool, revoke RevokeFunc) (stop func()) {
+func startSweeper(t *testing.T, lr *Lessor, fake *clocktest.Fake, interval time.Duration, isLeader func() bool, revoke RevokeFunc, opts ...ExpiryOption) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		lr.RunExpiry(ctx, interval, isLeader, revoke, nil)
+		lr.RunExpiry(ctx, interval, isLeader, revoke, nil, opts...)
 	}()
 
 	armCtx, cancelArm := context.WithTimeout(ctx, guard)

@@ -218,6 +218,15 @@ func WithMembershipLogger(l *slog.Logger) MembershipOption {
 	}
 }
 
+// WithMembershipSealProbe hands p to the manager's advertiser (see
+// WithAdvertiseSealProbe), so the local node's registration and its refresh
+// are never proposed while the node barrier is sealed.
+func WithMembershipSealProbe(p SealProbe) MembershipOption {
+	return func(m *MembershipManager) {
+		m.seal = p
+	}
+}
+
 // MembershipManager maintains a node's cluster membership registration and,
 // when a Reconfigurer is supplied and the local node is the leader, reconciles
 // the Raft group as members join and leave. It is built on a MembershipStore
@@ -234,6 +243,7 @@ type MembershipManager struct {
 	shardID  uint64
 	cfg      MembershipConfig
 	logger   *slog.Logger
+	seal     SealProbe
 
 	// advertiser owns the local node's registration: writing the Member
 	// descriptor (Raft address + advertised API endpoints) and refreshing its
@@ -315,7 +325,7 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 	advertiser, err := NewAdvertiser(m.store, m.self, AdvertiseConfig{
 		LeaseTTL:          m.cfg.LeaseTTL,
 		KeepAliveInterval: m.cfg.KeepAliveInterval,
-	}, WithAdvertiseLogger(m.logger))
+	}, WithAdvertiseLogger(m.logger), WithAdvertiseSealProbe(m.seal))
 	if err != nil {
 		m.abortStart(runCtx)
 		return err
@@ -375,9 +385,7 @@ func (m *MembershipManager) abortStart(_ context.Context) {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
-	_ = m.store.DeleteMember(ctx, m.self.NodeID)
-	cancel()
+	_ = m.deregister()
 }
 
 // reconcile loads the current membership snapshot and converges local state to
@@ -674,6 +682,16 @@ func (m *MembershipManager) Close() error {
 
 	// Deregister on a fresh context: the run context is now cancelled. The
 	// store clears its lease state, so a second Close is a no-op.
+	return m.deregister()
+}
+
+// deregister withdraws this node's record on a fresh context. While the node
+// barrier is sealed the withdrawal is not proposed: the record is left to
+// expire with its lease, and the refusal is reported as *NodeSealedError.
+func (m *MembershipManager) deregister() error {
+	if m.seal != nil && m.seal.IsSealed() {
+		return &NodeSealedError{Op: "deregister"}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
 	defer cancel()
 	if err := m.store.DeleteMember(ctx, m.self.NodeID); err != nil {

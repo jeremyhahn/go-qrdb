@@ -193,6 +193,24 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
    is tracked separately — it is a different call site (an in-process
    proposal issued from `cmd/qrdbd`'s own boot sequence, not an incoming
    REST request) with no existing forwarding primitive to reuse.
+
+   **Every boot reaches this step, and only the first one writes.** Both
+   composers call `firstboot.WriteIssuedAdminCertIfAny` on every start, and
+   an in-process recycle or unseal reuses the same ceremony core, which still
+   holds the certificate it issued when the cluster was initialised. The
+   record only ever moves from absent to pending to consumed and is never
+   removed, so once this node's replica holds it, in either state, a
+   create-if-absent write can only lose: the step reads the record from the
+   replica and proposes nothing. A boot on an initialised cluster therefore
+   does not need a Raft leader here, and an election caused by the recycle
+   cannot fail it.
+
+   When the write does run, an attempt that fails because the system shard is
+   electing a leader or moving it (`service.LeadershipTransient`) is retried
+   every 100 ms until it lands, the boot's context ends, or 10 s pass; its
+   error then stands. Any other store error is final at once. A timed-out
+   attempt that committed anyway loses the create-if-absent race to itself
+   on its retry, which the step treats as success.
 3. **First boot waits (bounded) for that record**, or for the admin to
    already hold a binding (nothing to do), builds a pool from the cluster's
    own CA bundle, and passes the certificate to `firstboot.Dependencies` as
@@ -456,8 +474,22 @@ An `admin` user for the system tenant is created alongside, bound to the
   before the flag existed is promoted to it on the same run. An id collision
   with no such admin behind it means the generated id repeated some other
   user's, so the create is retried with a fresh id, a bounded number of
-  times. A username held by anything but the admin is a squatter and is
-  refused.
+  times. A username that resolves to anything but the admin is a squatter
+  and is refused at once.
+- **A username collision whose record cannot be read yet is a race still
+  settling, and the loser converges on the winner.** A user store claims the
+  username before it writes the record (`CreateUser`'s non-atomic path), and
+  a replica may not have applied the winner's entry, so the loser's
+  verification read can find nothing behind a username it was just told is
+  taken. That is neither the admin nor a squatter. First boot waits a short
+  interval and retries the create, within a bounded window: once the
+  winner's record lands it is verified as the admin and adopted, so the one
+  credential the winner binds is the only one; if the winner rolled back and
+  released the username, the retried create makes the admin itself. Only a
+  claim that stays unreadable past the window fails the run, with
+  `AdminUserCreationError` wrapping the `UsernameExistsError`. With no way to
+  read the record back at all (a `Users` that is not a `UserResolver` and no
+  `UserResolver` dependency), the collision is refused without waiting.
 - **Sensitive keys live in the barrier.** After unseal they are available in
   memory through `seal.EncryptionBarrier.Decrypt()`.
 

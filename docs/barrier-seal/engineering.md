@@ -466,11 +466,34 @@ services and to the server, which wraps the node's sealed-window probe with
   `TestSealGate_RefusesEveryRequestOutsideTheAllowlist` walks the method set
   by reflection, so a request method added without the gate fails. The node's
   feature gate advertises through its own ungated in-process client, as
-  `cmd/qrdbd`'s does. The per-database etcd listener, which has no
+  `cmd/qrdbd`'s does; what keeps those writes off a sealed log is the next
+  rule, not the gate. The per-database etcd listener, which has no
   sealed-window middleware, refuses every request and every Watch or
   LeaseKeepAlive open while the node refuses (`Server.nodeRefusal`): the node
   barrier's `*clusterseal.SealedError` when held or sealed,
   `*clusterseal.SealStateUnconfirmedError` when cut off or unconfirmed.
+- **The node proposes nothing on its own behalf while its barrier is sealed.**
+  A sealed node barrier means the node's encrypted log cannot take an entry,
+  and an entry proposed into it halts the shard. The node's own background
+  writers -- the feature-gate advertisement, the member record, the dynamic
+  membership manager, and the lease-expiry sweep -- run through ungated
+  in-process clients, so each consults the node barrier itself (both
+  composers pass it in: `cmd/qrdbd` the `StorageBarrier`, `sdk/go/node` the
+  `Node`). A `cluster.Advertiser` composed with `WithAdvertiseSealProbe`
+  skips its keep-alive while sealed, refuses a registration with
+  `*cluster.NodeSealedError` (the publishers retry it after the unseal), and
+  leaves its record to its lease rather than withdrawing it; a
+  `MembershipManager` composed with `WithMembershipSealProbe` does the same.
+  `Lessor.RunExpiry` composed with `WithExpiryHold` proposes no revoke while
+  sealed, and on the unseal gives every lease a full TTL before it sweeps
+  again, so no record is revoked for keep-alives the sealed node could not
+  take. The probe is the node barrier alone, not `server.NodeSealProbe`: a
+  node whose cluster-seal lease has lapsed still holds its keys and its log
+  still takes entries, and its records must stay alive for it to be found
+  again. The check and the proposal are
+  not atomic, so a seal landing between them still sends one entry to the
+  sealed log; that the log refuses such an entry without halting the shard is
+  the consensus library's side of the contract.
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns

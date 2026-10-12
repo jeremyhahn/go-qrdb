@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestStartNodeAdvertiser_PublishesInTheBackground(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	p, err := startNodeAdvertiser(ctx, memberRecordFlags(), newMockKVStore(map[string][]byte{}), &minimalAdminServicer{},
-		&mockMVCCKVServicer{mockKVServicer: &mockKVServicer{}}, &mockLeaseServicer{}, &mockWatchServicer{})
+		&mockMVCCKVServicer{mockKVServicer: &mockKVServicer{}}, &mockLeaseServicer{}, &mockWatchServicer{}, nil)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return p.adv.Load() != nil }, 10*time.Second, 10*time.Millisecond,
 		"the member record was never published")
@@ -49,11 +50,49 @@ func TestStartNodeAdvertiser_AShutdownDuringBootIsNotAFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	p, err := startNodeAdvertiser(ctx, memberRecordFlags(), newMockKVStore(map[string][]byte{}), &minimalAdminServicer{},
-		&mockMVCCKVServicer{mockKVServicer: &mockKVServicer{}}, &mockLeaseServicer{}, &mockWatchServicer{})
+		&mockMVCCKVServicer{mockKVServicer: &mockKVServicer{}}, &mockLeaseServicer{}, &mockWatchServicer{}, nil)
 	require.NoError(t, err)
 	require.NoError(t, p.Close(), "closing a publisher whose boot was shut down")
 	require.Nil(t, p.adv.Load())
 
-	_, err = startNodeAdvertiser(context.Background(), memberRecordFlags(), nil, nil, nil, nil, nil)
+	_, err = startNodeAdvertiser(context.Background(), memberRecordFlags(), nil, nil, nil, nil, nil, nil)
 	require.Error(t, err, "a node with no services has nothing to publish through")
+}
+
+// fakeNodeSeal is a node barrier probe the test opens and closes.
+type fakeNodeSeal struct{ sealed atomic.Bool }
+
+func (s *fakeNodeSeal) IsSealed() bool { return s.sealed.Load() }
+
+// TestStartNodeAdvertiser_DefersPublicationWhileSealed verifies the member
+// record publisher hands the node barrier to its advertiser (go-qrdb#662): no
+// record is proposed while the barrier is sealed, and it is published once the
+// barrier opens.
+func TestStartNodeAdvertiser_DefersPublicationWhileSealed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	nodeSeal := &fakeNodeSeal{}
+	nodeSeal.sealed.Store(true)
+	p, err := startNodeAdvertiser(ctx, memberRecordFlags(), newMockKVStore(map[string][]byte{}), &minimalAdminServicer{},
+		&mockMVCCKVServicer{mockKVServicer: &mockKVServicer{}}, &mockLeaseServicer{}, &mockWatchServicer{}, nodeSeal)
+	require.NoError(t, err)
+	require.Never(t, func() bool { return p.adv.Load() != nil }, 3*memberRecordRetryInterval, 10*time.Millisecond,
+		"the member record was published while the node barrier was sealed")
+
+	nodeSeal.sealed.Store(false)
+	require.Eventually(t, func() bool { return p.adv.Load() != nil }, 10*time.Second, 10*time.Millisecond,
+		"the member record was not published after the unseal")
+	require.NoError(t, p.Close())
+}
+
+func TestSealedHold_NilProbeNeverHolds(t *testing.T) {
+	require.Nil(t, sealedHold(nil))
+}
+
+func TestSealedHold_FollowsTheProbe(t *testing.T) {
+	nodeSeal := &fakeNodeSeal{}
+	hold := sealedHold(nodeSeal)
+	require.False(t, hold())
+	nodeSeal.sealed.Store(true)
+	require.True(t, hold())
 }

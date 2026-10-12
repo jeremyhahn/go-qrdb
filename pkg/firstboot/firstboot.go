@@ -472,9 +472,34 @@ func userResolver(deps Dependencies) UserResolver {
 	return nil
 }
 
-// adminUserAlreadyExists reports whether tenantID already holds the admin
-// this first boot would have created, verified by reading the record back
-// rather than assumed from the create error's type alone.
+// adminHolder classifies what a single read finds behind the admin username
+// after a create collided on it.
+type adminHolder int
+
+const (
+	// adminHolderUnverifiable: there is no resolver to read the record with,
+	// so nothing about the collision can ever be verified.
+	adminHolderUnverifiable adminHolder = iota
+
+	// adminHolderUnresolved: the lookup failed or found nothing. The username
+	// is claimed by a write this read cannot see yet -- a concurrent first
+	// boot whose record is still being written or replicated -- or by one
+	// that has since rolled back and released the claim. Either resolves
+	// with time.
+	adminHolderUnresolved
+
+	// adminHolderAdmin: the record is the admin this first boot would have
+	// created.
+	adminHolderAdmin
+
+	// adminHolderOther: the record is some other account holding the
+	// username, which no amount of waiting turns into the admin.
+	adminHolderOther
+)
+
+// adminUsernameHolder reports what tenantID's admin username resolves to,
+// verified by reading the record back rather than assumed from the create
+// error's type alone. Only adminHolderAdmin is the admin.
 //
 // "The admin" means every property first boot itself gives the account, not
 // only its username: the persisted record must name adminUsername in
@@ -488,22 +513,25 @@ func userResolver(deps Dependencies) UserResolver {
 // record that is no account at all — deleting, or a state this build does not
 // know — nor an unrelated user that merely holds the username.
 //
-// A nil resolver, a lookup error, or a nil result all report false: this
-// function fails closed, since the caller's only alternative on a false is
-// to refuse the whole first-boot run rather than silently accept a
-// collision it cannot verify.
-func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID, adminRoleID string) bool {
+// The classification comes from ONE read, so a record that becomes visible
+// between two reads can never be mistaken for a squatter. Nothing but
+// adminHolderAdmin is ever adopted: this function fails closed, and the
+// caller refuses a collision it cannot verify.
+func adminUsernameHolder(ctx context.Context, resolver UserResolver, tenantID, adminRoleID string) adminHolder {
 	if resolver == nil {
-		return false
+		return adminHolderUnverifiable
 	}
 	existing, err := resolver.GetUserByUsername(ctx, tenantID, adminUsername)
 	if err != nil || existing == nil {
-		return false
+		return adminHolderUnresolved
 	}
-	return existing.TenantID == tenantID &&
+	if existing.TenantID == tenantID &&
 		existing.Username == adminUsername &&
 		slices.Contains(existing.RoleIDs, adminRoleID) &&
-		existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal()
+		existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal() {
+		return adminHolderAdmin
+	}
+	return adminHolderOther
 }
 
 // RegisterBuiltInRoles installs every role returned by role.BuiltInRoles
@@ -778,6 +806,15 @@ func permissionSetsEqual(a, b []permission.Permission) bool {
 // reports the collision for every id cannot loop first boot forever.
 const adminCreateAttempts = 3
 
+// adminConvergeInterval and adminConvergeWindow bound how long
+// createAdminUser waits for an unresolved admin username to resolve; see
+// adminHolderUnresolved. Variables, not constants, so a test can shrink
+// them rather than waiting out the production window.
+var (
+	adminConvergeInterval = 10 * time.Millisecond
+	adminConvergeWindow   = 5 * time.Second
+)
+
 // createAdminUser creates the platform admin user inside the supplied
 // tenant with a single role grant: Admin in that tenant. When tenantID
 // is the system tenant, this single grant — Admin@system — confers
@@ -899,16 +936,28 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*
 	// when the username collided, or UserIDExistsError when the attempt's
 	// generated id collided (go-qrdb#555's own failure shape — independently
 	// seeded nodes racing first-boot). Either is first checked against the
-	// persisted admin (adminUserAlreadyExists); a verified admin is this run's
+	// persisted admin (adminUsernameHolder); a verified admin is this run's
 	// idempotent success.
+	//
+	// A collision on the username can also come back before the winner's
+	// record is visible to this read: a user store claims the username
+	// before it writes the record, and a replica may not have applied the
+	// winner's entry yet. That lookup finds nothing (adminHolderUnresolved),
+	// which is a race still settling, not a refusal. The create is retried
+	// after adminConvergeInterval, within adminConvergeWindow: it converges
+	// on the winner's admin once the record lands, or creates the admin
+	// itself if the winner rolled back and released the claim.
 	//
 	// An id collision that is NOT the admin — the generated id repeated some
 	// other user's — says nothing about the admin at all: the username was
 	// never the problem. The store generates a fresh id on every call, so it
-	// is retried, a bounded number of times. A username held by anyone but
-	// the admin is never retried: that is a squatter, and first boot refuses.
+	// is retried, a bounded number of times. A username that resolves to
+	// anyone but the admin is never retried: that is a squatter, and first
+	// boot refuses.
 	users := userResolver(deps)
-	for attempt := 1; ; attempt++ {
+	var convergeDeadline time.Time
+	idCollisions := 0
+	for {
 		adminUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
 			// The firstboot admin authenticates by certificate, not by an email
 			// login key, so the omission is declared rather than defaulted (#190).
@@ -940,18 +989,38 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*
 		if !usernameTaken && !idTaken {
 			return nil, false, &AdminUserCreationError{Cause: createErr}
 		}
-		if adminUserAlreadyExists(ctx, users, tenantID, adminRoleID) {
+		holder := adminUsernameHolder(ctx, users, tenantID, adminRoleID)
+		if holder == adminHolderAdmin {
 			deps.Logger.Debug("first-boot: admin user already exists (verified)",
 				slog.String("username", adminUsername),
 				slog.String("tenant", tenantID),
 			)
 			return reconcileExistingAdmin(ctx, deps, tenantID), false, nil
 		}
-		if usernameTaken || attempt >= adminCreateAttempts {
+		if usernameTaken && holder == adminHolderUnresolved {
+			if convergeDeadline.IsZero() {
+				convergeDeadline = time.Now().Add(adminConvergeWindow)
+			}
+			if !time.Now().Before(convergeDeadline) {
+				return nil, false, &AdminUserCreationError{Cause: createErr}
+			}
+			deps.Logger.Debug("first-boot: admin username claimed by a write not yet visible; retrying",
+				slog.String("username", adminUsername),
+				slog.String("tenant", tenantID),
+			)
+			select {
+			case <-ctx.Done():
+				return nil, false, &AdminUserCreationError{Cause: ctx.Err()}
+			case <-time.After(adminConvergeInterval):
+			}
+			continue
+		}
+		idCollisions++
+		if usernameTaken || idCollisions >= adminCreateAttempts {
 			return nil, false, &AdminUserCreationError{Cause: createErr}
 		}
 		deps.Logger.Info("first-boot: generated admin id collided with another user; retrying with a fresh id",
-			slog.Int("attempt", attempt),
+			slog.Int("attempt", idCollisions),
 			slog.String("tenant", tenantID),
 		)
 	}

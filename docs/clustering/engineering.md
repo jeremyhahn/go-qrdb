@@ -445,11 +445,13 @@ func HostMembership(h ShardMembershipReader) MembershipSource
 - The composer (`qrdbd`, `sdk/go/node`) builds the gate with the host, attaches
   it to every adapter over that host (the service host, the bootstrap host, and
   the IsolationRaft factory through `server.TenantInfraConfig.FeatureGate`), and
-  starts it once the services exist: `client.StartFeatureGate(ctx, gate, kv)`
-  checks the activations (`*featuregate.UnsupportedFeatureError`), advertises
-  through `cluster.Advertiser` over
+  starts it once the services exist: `client.StartFeatureGate(ctx, gate, kv,
+  opts...)` checks the activations (`*featuregate.UnsupportedFeatureError`),
+  advertises through `cluster.Advertiser` over
   `client.NewMembershipStoreAt(featuregate.AdvertisementPrefix)`, and starts
-  the gate. `qrdbd` does this synchronously after provisioning, so a refused
+  the gate. The composer passes `cluster.WithAdvertiseSealProbe` with the node
+  barrier, so the advertisement proposes nothing while the barrier is sealed
+  ([../barrier-seal/engineering.md](../barrier-seal/engineering.md)). `qrdbd` does this synchronously after provisioning, so a refused
   binary never serves; `sdk/go/node` does it in the background once the system
   shard has a leader, because a clustered node is built before its peers. It
   cannot refuse to start after the fact, so under a refusal it never

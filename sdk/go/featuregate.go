@@ -30,8 +30,10 @@ import (
 // gate.
 //
 // The returned Advertiser keeps the advertisement alive; closing it
-// withdraws the advertisement. Close gate separately.
-func (c *Client) StartFeatureGate(ctx context.Context, gate *featuregate.Gate, activations featuregate.ActivationKV) (*cluster.Advertiser, error) {
+// withdraws the advertisement. Close gate separately. opts configure the
+// advertiser; a composer passes cluster.WithAdvertiseSealProbe so nothing is
+// proposed while the node barrier is sealed.
+func (c *Client) StartFeatureGate(ctx context.Context, gate *featuregate.Gate, activations featuregate.ActivationKV, opts ...cluster.AdvertiseOption) (*cluster.Advertiser, error) {
 	if err := gate.CheckActivated(ctx, activations); err != nil {
 		return nil, err
 	}
@@ -43,6 +45,7 @@ func (c *Client) StartFeatureGate(ctx context.Context, gate *featuregate.Gate, a
 		c.NewMembershipStoreAt(featuregate.AdvertisementPrefix),
 		cluster.Member{NodeID: self.ReplicaID, Address: self.Address, Features: featuregate.SupportedNames()},
 		cluster.AdvertiseConfig{},
+		opts...,
 	)
 	if err != nil {
 		return nil, err

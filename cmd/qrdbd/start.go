@@ -1773,6 +1773,13 @@ func runStart(f *startFlags) (err error) {
 				barrierRegistry = sealSub.BarrierRegistry
 				pinBackend = sealSub.PINBackend
 			}
+			// nodeSeal is the node barrier as the background proposers see it
+			// (go-qrdb#662): while it is sealed the node's log cannot take an
+			// entry, so the advertisers skip their writes and lease expiry holds.
+			var nodeSeal cluster.SealProbe
+			if sealBarrier != nil {
+				nodeSeal = sealBarrier
+			}
 
 			// Build the replicated volume-pool catalog and attach it as the
 			// registry's volume.Allocator BEFORE lifecycle.BuildServices: the
@@ -2072,7 +2079,7 @@ func runStart(f *startFlags) (err error) {
 			// closed host, and is only the backstop for an error return.
 			var gateCloser io.Closer = nopCloser{}
 			if host != nil {
-				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode)
+				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode, nodeSeal)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					var unsupported *featuregate.UnsupportedFeatureError
@@ -2896,6 +2903,7 @@ func runStart(f *startFlags) (err error) {
 					},
 					leaseSvc.Revoke,
 					slog.Default(),
+					lease.WithExpiryHold(sealedHold(nodeSeal)),
 				)
 			}
 
@@ -2935,7 +2943,7 @@ func runStart(f *startFlags) (err error) {
 			}
 			switch {
 			case f.dynamicMembership && !standalone:
-				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
@@ -2948,7 +2956,7 @@ func runStart(f *startFlags) (err error) {
 					dynamicMembershipStarted()
 				}
 			case !standalone:
-				publisher, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				publisher, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, nodeSeal)
 				if aErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
@@ -3474,6 +3482,7 @@ func startDynamicMembership(
 	mvccSvc service.MVCCKVServicer,
 	leaseSvc service.LeaseServicer,
 	watchSvc service.WatchServicer,
+	nodeSeal cluster.SealProbe,
 ) (*cluster.MembershipManager, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
@@ -3496,6 +3505,7 @@ func startDynamicMembership(
 		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
+		cluster.WithMembershipSealProbe(nodeSeal),
 	)
 	if err != nil {
 		return nil, err
@@ -3555,6 +3565,7 @@ func startNodeAdvertiser(
 	mvccSvc service.MVCCKVServicer,
 	leaseSvc service.LeaseServicer,
 	watchSvc service.WatchServicer,
+	nodeSeal cluster.SealProbe,
 ) (*memberRecordPublisher, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
@@ -3570,7 +3581,7 @@ func startNodeAdvertiser(
 	go func() {
 		defer close(p.done)
 		for pctx.Err() == nil {
-			adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{})
+			adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{}, cluster.WithAdvertiseSealProbe(nodeSeal))
 			if aerr != nil {
 				slog.Error("member record: advertiser not built", slog.Any("error", aerr))
 				return
@@ -3588,6 +3599,15 @@ func startNodeAdvertiser(
 		}
 	}()
 	return p, nil
+}
+
+// sealedHold adapts the node barrier's probe to a lease-expiry hold: the sweep
+// proposes no revoke while the barrier is sealed. A nil probe never holds.
+func sealedHold(p cluster.SealProbe) func() bool {
+	if p == nil {
+		return nil
+	}
+	return p.IsSealed
 }
 
 // newEmbeddedClient builds an in-process (embedded) qrdb SDK client over the
@@ -4130,7 +4150,12 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// already won the race and will be the one first boot binds below, so
 	// this node continues booting normally. Any OTHER error (a genuine store
 	// fault) still fails the boot.
-	if err := firstboot.WriteIssuedAdminCertIfAny(ctx, ceremonyCoreSvc, pendingAdminStore); err != nil {
+	//
+	// A node whose replica already holds the record proposes nothing: every
+	// boot after an in-process recycle or unseal reaches here with the same
+	// core and its certificate (go-qrdb#662). A write that must run waits
+	// out an election (service.LeadershipTransient) rather than exiting.
+	if err := firstboot.WriteIssuedAdminCertIfAny(ctx, ceremonyCoreSvc, pendingAdminStore, service.LeadershipTransient); err != nil {
 		return nil, &AuthBootstrapError{Step: "pending admin credential", Err: err}
 	}
 

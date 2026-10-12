@@ -1145,7 +1145,8 @@ authenticated value — whether or not the authenticator set one.
 | Re-permissioning a built-in role through `UpdateRole` | `SystemRoleImmutableError{Op: "re-permissioned"}` | **yes** |
 | Reconciling another tenant's built-ins as a normal tenant caller | `tenant.CrossTenantDeniedError` | **yes** |
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
-| The linearizable user lookup misses its 500 ms budget for a NON-system tenant | `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
+| The linearizable user lookup misses its 500 ms budget for a NON-system tenant | retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
+| The user lookup fails with anything but an election (a corrupt record, a decrypt refusal, a cancelled request) | that error, at once, with no retry | **yes** |
 | The linearizable role resolution misses its 500 ms budget for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
 | A role a user still holds was deleted (`DeleteRole` does not cascade), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
@@ -1186,8 +1187,22 @@ other tenant it still bounds the wait, and the primary's own error —
 `context.DeadlineExceeded` on a miss — comes back as the retryable
 `*rbac.ResolveError`/503 the row above describes. The externally visible
 effect is the same for both paths: a correctly enrolled non-system tenant
-user gets the retryable error, never a silent deny, and it now arrives within
-the same 500 ms budget either way, for both the user and the role lookup.
+user gets the retryable error, never a silent deny. The role lookup's arrives
+within the 500 ms budget; the user lookup's after the election wait below.
+
+**The user lookup waits out an election of its store's shard.** The 500 ms
+budget bounds one attempt, not the request. When an attempt fails because the
+shard holding the user is electing a leader or moving it — quicraft's
+timeout, aborted, not-leader, shard-not-ready or ReadIndex-not-ready errors,
+or a `*service.NotLeaderError`, as `service.LeadershipTransient` names them —
+`lookupUser` tries again every 100 ms until a leader answers, the request's
+context ends, or `authLookupSettleBudget` (10 s) passes, and only then lets
+the error stand as the retryable 503. A request that arrived during an
+election otherwise failed outright: the resolver's tenant-metadata read timed
+out in Raft while a peer restarted, and every transport answered 503 for a
+tenant whose users were all intact. Any other error ends the lookup at once,
+so a wait never masks a definitive answer. The wait lives in `lookupUser`
+alone because every transport authenticates through it.
 
 **The two grant-voiding controls need no fallback, or any store lookup, at
 all.** A system role's identifier is always its canonical, deterministic

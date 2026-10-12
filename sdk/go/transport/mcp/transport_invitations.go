@@ -110,7 +110,9 @@ func (t *Transport) RedeemInvitation(ctx context.Context, req *transport.RedeemI
 		args["chain_pem"] = req.ChainPEM
 	}
 
-	text, err := callToolOn(ctx, client, toolInvitationRedeem, args)
+	callCtx, cancel := t.callContext(ctx)
+	text, err := callToolOn(callCtx, client, toolInvitationRedeem, args)
+	cancel()
 	if err != nil {
 		return nil, err
 	}

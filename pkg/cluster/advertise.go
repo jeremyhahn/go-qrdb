@@ -210,6 +210,24 @@ func WithAdvertiseLogger(l *slog.Logger) AdvertiseOption {
 	}
 }
 
+// SealProbe reports whether the node barrier is sealed. While it is, the
+// node's replicated log cannot take an entry, and an entry proposed into it
+// halts the shard, so a write that is not a client's request must not be
+// proposed at all.
+type SealProbe interface {
+	IsSealed() bool
+}
+
+// WithAdvertiseSealProbe makes the advertiser consult p before every write it
+// would propose: while the node barrier is sealed a refresh is skipped, a
+// registration is refused with *NodeSealedError, and a withdrawal is left to
+// the record's lease. A nil p writes unconditionally.
+func WithAdvertiseSealProbe(p SealProbe) AdvertiseOption {
+	return func(a *Advertiser) {
+		a.seal = p
+	}
+}
+
 // Advertiser publishes the local node's Member descriptor — its Raft address
 // and its client-facing API endpoints — into the cluster registry and keeps the
 // backing lease alive, so every peer can map a replica ID onto an address it
@@ -225,6 +243,7 @@ type Advertiser struct {
 	self   Member
 	cfg    AdvertiseConfig
 	logger *slog.Logger
+	seal   SealProbe
 
 	mu        sync.Mutex
 	started   bool
@@ -295,6 +314,9 @@ func (a *Advertiser) Start(ctx context.Context) error {
 // refresh loop. MembershipManager calls it directly so it can roll back a
 // failed start before any goroutine exists.
 func (a *Advertiser) Register(ctx context.Context) error {
+	if a.sealed() {
+		return &NodeSealedError{Op: "register"}
+	}
 	data, err := json.Marshal(a.self)
 	if err != nil {
 		return &MembershipCauseError{Reason: "failed to marshal self", Cause: err}
@@ -309,9 +331,18 @@ func (a *Advertiser) Register(ctx context.Context) error {
 	return nil
 }
 
+// sealed reports whether the node barrier is sealed, so a write proposed now
+// would reach a log that cannot take it.
+func (a *Advertiser) sealed() bool {
+	return a.seal != nil && a.seal.IsSealed()
+}
+
 // Deregister removes the local node's descriptor. It runs on a fresh context so
 // shutdown still deregisters after the caller's context is cancelled.
 func (a *Advertiser) Deregister() error {
+	if a.sealed() {
+		return &NodeSealedError{Op: "deregister"}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
 	defer cancel()
 	return a.store.DeleteMember(ctx, a.self.NodeID)
@@ -336,6 +367,13 @@ func (a *Advertiser) keepAlive(runCtx context.Context) {
 		case <-runCtx.Done():
 			return
 		case <-ticker.C:
+			// A sealed barrier is an expected state, not a failure: the
+			// refresh is skipped, and the lease expiry sweep holds while
+			// sealed too, so the record survives until the next tick after
+			// the unseal renews it.
+			if a.sealed() {
+				continue
+			}
 			ctx, cancel := context.WithTimeout(runCtx, a.cfg.KeepAliveInterval)
 			if err := a.store.PutMember(ctx, a.self.NodeID, data, a.cfg.LeaseTTL); err != nil {
 				a.logger.Warn("membership keepalive failed", "node_id", a.self.NodeID, "error", err)

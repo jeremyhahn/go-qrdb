@@ -93,13 +93,13 @@ func TestStartFeatureGate_RefusesAnActivatedFeatureThisBinaryLacks(t *testing.T)
 	store := map[string][]byte{featuregate.ActivationPrefix + "future-opcode": []byte(`{}`)}
 	var unsupported *featuregate.UnsupportedFeatureError
 
-	_, err := startFeatureGate(context.Background(), nil, gateServices(store))
+	_, err := startFeatureGate(context.Background(), nil, gateServices(store), nil)
 	require.ErrorAs(t, err, &unsupported)
 	assert.Equal(t, featuregate.Feature("future-opcode"), unsupported.Feature)
 
 	g := soloGate(t)
 	t.Cleanup(func() { _ = g.Close() })
-	_, err = startFeatureGate(context.Background(), g, gateServices(store))
+	_, err = startFeatureGate(context.Background(), g, gateServices(store), nil)
 	require.ErrorAs(t, err, &unsupported)
 }
 
@@ -107,7 +107,7 @@ func TestStartFeatureGate_RefusesAnActivatedFeatureThisBinaryLacks(t *testing.T)
 // implements is no obstacle.
 func TestStartFeatureGate_WithoutAGateOnlyChecks(t *testing.T) {
 	store := map[string][]byte{featuregate.ActivationPrefix + string(featuregate.GuardedWrites): []byte(`{}`)}
-	closer, err := startFeatureGate(context.Background(), nil, gateServices(store))
+	closer, err := startFeatureGate(context.Background(), nil, gateServices(store), nil)
 	require.NoError(t, err)
 	require.NoError(t, closer.Close())
 }
@@ -117,7 +117,7 @@ func TestStartFeatureGate_WithoutAGateOnlyChecks(t *testing.T) {
 func TestStartFeatureGate_AdvertisesAndActivates(t *testing.T) {
 	store := map[string][]byte{}
 	g := soloGate(t)
-	closer, err := startFeatureGate(context.Background(), g, gateServices(store))
+	closer, err := startFeatureGate(context.Background(), g, gateServices(store), nil)
 	require.NoError(t, err)
 	assert.True(t, g.Activated(featuregate.GuardedWrites))
 	_, recorded := store[featuregate.ActivationPrefix+string(featuregate.GuardedWrites)]
@@ -146,7 +146,7 @@ func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
 	g := soloGate(t)
 	t.Cleanup(func() { _ = g.Close() })
 
-	closer, err := startFeatureGate(context.Background(), g, svc)
+	closer, err := startFeatureGate(context.Background(), g, svc, nil)
 	require.NoError(t, err)
 	require.NoError(t, closer.Close())
 	assert.False(t, g.Activated(featuregate.GuardedWrites),

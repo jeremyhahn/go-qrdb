@@ -102,7 +102,7 @@ func TestWritePendingAdminCert_NilStoreIsNoOp(t *testing.T) {
 // ceremony core (go-qrdb#548 review item 6) is a no-op, not an error.
 func TestWriteIssuedAdminCertIfAny_NilCoreIsNoOp(t *testing.T) {
 	store := newMemPendingAdminCertStore()
-	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), nil, store))
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), nil, store, nil))
 	_, err := store.Get(context.Background(), PendingAdminCertKey)
 	require.Error(t, err, "a nil core must not write a record")
 }
@@ -112,7 +112,7 @@ func TestWriteIssuedAdminCertIfAny_NilCoreIsNoOp(t *testing.T) {
 func TestWriteIssuedAdminCertIfAny_NothingIssuedIsNoOp(t *testing.T) {
 	core := testCeremonyCore(t)
 	store := newMemPendingAdminCertStore()
-	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store))
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store, nil))
 	_, err := store.Get(context.Background(), PendingAdminCertKey)
 	require.Error(t, err, "a core with nothing issued must not write a record")
 }
@@ -133,7 +133,7 @@ func TestWriteIssuedAdminCertIfAny_WritesWhatWasIssued(t *testing.T) {
 	require.NotEmpty(t, wantCertPEM)
 
 	store := newMemPendingAdminCertStore()
-	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store))
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store, nil))
 	got, err := store.Get(context.Background(), PendingAdminCertKey)
 	require.NoError(t, err)
 	require.Equal(t, wantCertPEM, got)
@@ -155,7 +155,7 @@ func TestWriteIssuedAdminCertIfAny_TheRaceLoserIsNotAnError(t *testing.T) {
 	store := newMemPendingAdminCertStore()
 	require.NoError(t, WritePendingAdminCert(context.Background(), store, []byte("another-node-won")))
 
-	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store))
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store, nil))
 	got, err := store.Get(context.Background(), PendingAdminCertKey)
 	require.NoError(t, err)
 	require.Equal(t, []byte("another-node-won"), got, "the winning node's record must be left untouched")

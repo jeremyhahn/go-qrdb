@@ -120,6 +120,14 @@ are lease-backed.
   TTL, and `sync.RWMutex` is not reentrant, so a nested `RLock` deadlocks the
   moment a writer queues between the two acquisitions. Lock ordering is
   `Lessor.mu` then `lease.mu`, never the reverse.
+- **The sweep holds while the node barrier is sealed.** A revoke is a Raft
+  proposal, and a sealed node barrier's log cannot take one. `cmd/qrdbd` and
+  `sdk/go/node` pass `lease.WithExpiryHold` the node barrier's sealed state;
+  a held sweep revokes nothing, and when the hold is released every lease is
+  promoted to a full TTL from that moment (the etcd lessor's `Promote`,
+  extend-only) before the sweep resumes. Holders could not renew while the
+  node was sealed, so they are not revoked for it; a lease still unrenewed a
+  full TTL after the unseal is revoked as usual.
 - **Assert the reap by reading the STORE, not `Lessor.Leases()`.** That getter
   filters expired leases, so a test asserting on it passes whether or not
   anything was reaped — which is how the embedded gap stayed invisible.

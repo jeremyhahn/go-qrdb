@@ -44,6 +44,16 @@ const PendingAdminCertKey = "pending-admin-cert"
 // from "still pending" without a second field or record.
 var pendingAdminCertConsumedMarker = []byte("consumed")
 
+// pendingAdminCertSettleBudget bounds how long WriteIssuedAdminCertIfAny
+// waits out the system shard electing a leader or moving it before the
+// write's error stands. At the default tuning an election times out in 2 s;
+// the budget covers a few rounds of it, a split vote and the new leader's
+// ReadIndex warm-up. A variable so a test can shorten it.
+var pendingAdminCertSettleBudget = 10 * time.Second
+
+// pendingAdminCertSettleInterval is the pause between those attempts.
+const pendingAdminCertSettleInterval = 100 * time.Millisecond
+
 // PendingAdminCertStore is the minimal persistent KV surface
 // WritePendingAdminCert / AwaitPendingAdminCert / ClearPendingAdminCert need.
 // A composer's own guarded/namespaced KV store satisfies this directly: every
@@ -116,21 +126,55 @@ func WritePendingAdminCert(ctx context.Context, store PendingAdminCertStore, cer
 // this node's credential simply is not the one first boot will bind, which
 // is a normal outcome of the race WritePendingAdminCert documents, not a
 // failure this call's caller needs to handle specially.
-func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyService, store PendingAdminCertStore) error {
-	if core == nil {
+//
+// It proposes nothing once the hand-off has happened. A composer's boot
+// reruns this on every start, and an in-process recycle or unseal reuses the
+// SAME core, which still holds the certificate it issued when the cluster was
+// initialised (go-qrdb#662). The record only ever moves from absent to
+// pending to consumed and is never removed, so a record this node's replica
+// already holds -- whatever its value, however stale the read -- means
+// PutIfAbsent can only lose. That case returns before any write, so a boot on
+// an initialised cluster does not need a leader here at all.
+//
+// A write that must run waits out its shard electing a leader or moving it:
+// an attempt whose error transient reports true is retried every
+// pendingAdminCertSettleInterval until it lands, ctx ends, or
+// pendingAdminCertSettleBudget passes; its error then stands. A nil transient
+// retries nothing. Composers pass service.LeadershipTransient, which this
+// package cannot import (pkg/service imports it). A timed-out attempt may
+// still have committed; its retry then loses the create-if-absent race to
+// itself, which is tolerated above, so the retry is idempotent.
+func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyService, store PendingAdminCertStore, transient func(error) bool) error {
+	if core == nil || store == nil {
 		return nil
 	}
 	certPEM, _ := core.LastIssuedAdminCertPEM()
 	if len(certPEM) == 0 {
 		return nil
 	}
-	if err := WritePendingAdminCert(ctx, store, certPEM); err != nil {
+	if recorded, err := store.Get(ctx, PendingAdminCertKey); err == nil && len(recorded) > 0 {
+		return nil
+	}
+	deadline := time.Now().Add(pendingAdminCertSettleBudget)
+	for {
+		err := WritePendingAdminCert(ctx, store, certPEM)
 		var alreadyPending *AdminCredentialAlreadyPendingError
-		if !errors.As(err, &alreadyPending) {
+		if err == nil || errors.As(err, &alreadyPending) {
+			return nil
+		}
+		if transient == nil || !transient(err) || ctx.Err() != nil {
 			return err
 		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(min(pendingAdminCertSettleInterval, remaining)):
+		}
 	}
-	return nil
 }
 
 // AwaitPendingAdminCert waits (bounded by timeout) for either the bootstrap

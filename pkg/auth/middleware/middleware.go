@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -117,6 +118,10 @@ type AuthMiddleware struct {
 	// whole set in one atomic store, and the interceptors' per-request lookup
 	// stays lock-free.
 	publicGRPCMethods atomic.Pointer[map[string]struct{}]
+
+	// lookupSettleBudget bounds how long lookupUser waits out an election of
+	// the user store's shard. Zero reads as authLookupSettleBudget.
+	lookupSettleBudget time.Duration
 }
 
 // authLookupSyncTimeout bounds the per-request linearizable user lookup. A
@@ -125,6 +130,18 @@ type AuthMiddleware struct {
 // stalling the request. Kept sub-second so a brief blip cannot cascade into
 // multi-second per-request latency.
 const authLookupSyncTimeout = 500 * time.Millisecond
+
+// authLookupSettleBudget bounds how long one request's user lookup waits out
+// the user store's shard electing a leader or moving it
+// (service.LeadershipTransient) before its error stands. At the default
+// tuning an election times out in 2 s; the budget covers a few rounds of it,
+// a split vote and the new leader's ReadIndex warm-up. The request's own
+// context ends the wait sooner.
+const authLookupSettleBudget = 10 * time.Second
+
+// authLookupSettlePoll paces the user lookup's attempts while it waits out an
+// election.
+const authLookupSettlePoll = 100 * time.Millisecond
 
 // Option configures an AuthMiddleware.
 type Option func(*AuthMiddleware)
@@ -650,7 +667,39 @@ func convertRoleBindings(bindings []user.RoleBinding) []auth.RoleBinding {
 // optional fallback store (StaleRead from local state machine) when the
 // primary fails with a transient error. The fallback is safe because
 // bootstrap ensures user/role data is replicated before servers start.
+//
+// An attempt that fails because the store's shard is electing a leader or
+// moving it (service.LeadershipTransient) is retried until a leader answers,
+// ctx ends, or authLookupSettleBudget passes; its error then stands. Every
+// transport authenticates through here, so each of them waits out an election
+// rather than answering the request with a 503. Any other error is final at
+// once.
 func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject string) (*user.User, error) {
+	budget := m.lookupSettleBudget
+	if budget == 0 {
+		budget = authLookupSettleBudget
+	}
+	deadline := time.Now().Add(budget)
+	for {
+		u, err := m.lookupUserOnce(ctx, tenantID, subject)
+		if err == nil || !service.LeadershipTransient(err) || ctx.Err() != nil {
+			return u, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(min(authLookupSettlePoll, remaining)):
+		}
+	}
+}
+
+// lookupUserOnce is one attempt of lookupUser: the user store, then, for the
+// system tenant only, its fallback.
+func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID, subject string) (*user.User, error) {
 	// Bound the linearizable (SyncRead) lookup tightly so a transient
 	// ReadIndex slowdown fails over to the StaleRead fallback in well under a
 	// second instead of stalling every authenticated request for seconds. A
