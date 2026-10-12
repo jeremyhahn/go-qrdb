@@ -74,7 +74,7 @@ type replicaForwarder struct {
 // signs the caller assertion.
 func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replicaForwarder {
 	key, nodeID := forward.NodeIdentity(nodeTLS)
-	half := cfg.ForwardTimeout() / 2
+	connect := cfg.ConnectTimeout()
 	return &replicaForwarder{
 		cfg:    cfg,
 		key:    key,
@@ -87,8 +87,8 @@ func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replic
 				MinVersion:           tls.VersionTLS13,
 			},
 			ForceAttemptHTTP2:   true,
-			DialContext:         (&net.Dialer{Timeout: half}).DialContext,
-			TLSHandshakeTimeout: half,
+			DialContext:         (&net.Dialer{Timeout: connect}).DialContext,
+			TLSHandshakeTimeout: connect,
 		},
 	}
 }
@@ -141,27 +141,17 @@ func (f *replicaForwarder) forward(ctx context.Context, req mcpgo.CallToolReques
 
 	var result *mcpgo.CallToolResult
 	send := func(ctx context.Context, t replicaforward.Target) (replicaforward.Result, error) {
-		rt := &onBehalfTransport{base: f.base, caller: caller, key: f.key, nodeID: f.nodeID}
-		cli, err := mcpclient.NewStreamableHttpClient("https://"+t.Endpoint+"/mcp", mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
+		var res *mcpgo.CallToolResult
+		var err error
+		reached := replicaforward.Reconnect(ctx, f.cfg.ConnectTimeout(), func() bool {
+			var sent bool
+			res, sent, err = f.call(ctx, t.Endpoint, caller, req)
+			return sent
+		})
+		if !reached {
+			return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
+		}
 		if err != nil {
-			return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
-		}
-		defer func() { _ = cli.Close() }()
-		if err := cli.Start(ctx); err != nil {
-			return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
-		}
-		if _, err := cli.Initialize(ctx, mcpgo.InitializeRequest{Params: mcpgo.InitializeParams{
-			ProtocolVersion: mcpgo.LATEST_PROTOCOL_VERSION,
-			ClientInfo:      mcpgo.Implementation{Name: mcpForwardClientName, Version: "1"},
-		}}); err != nil {
-			// Nothing of the call has been sent: the session never opened.
-			return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
-		}
-		res, err := cli.CallTool(ctx, mcpgo.CallToolRequest{Params: req.Params})
-		if err != nil {
-			if !rt.callWritten.Load() {
-				return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
-			}
 			return replicaforward.Result{}, &replicaforward.SendError{Protocol: cluster.APIProtocolMCP, Target: t.Endpoint, Err: err}
 		}
 		if out, refused := classifyMCPAnswer(res); refused {
@@ -189,6 +179,33 @@ func (f *replicaForwarder) forward(ctx context.Context, req mcpgo.CallToolReques
 	}
 	result.Meta.AdditionalFields[replicaforward.MetadataForwardedTo] = strconv.FormatUint(target.ReplicaID, 10)
 	return result, nil, true
+}
+
+// call opens a session with endpoint and makes req on it for caller. sent
+// reports whether any of the call left this node; when it did not, the
+// session never opened or the call's headers were never written, and the
+// call may be made again.
+func (f *replicaForwarder) call(ctx context.Context, endpoint string, caller *auth.Identity, req mcpgo.CallToolRequest) (res *mcpgo.CallToolResult, sent bool, err error) {
+	rt := &onBehalfTransport{base: f.base, caller: caller, key: f.key, nodeID: f.nodeID}
+	cli, err := mcpclient.NewStreamableHttpClient("https://"+endpoint+"/mcp", mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = cli.Close() }()
+	if err := cli.Start(ctx); err != nil {
+		return nil, false, err
+	}
+	if _, err := cli.Initialize(ctx, mcpgo.InitializeRequest{Params: mcpgo.InitializeParams{
+		ProtocolVersion: mcpgo.LATEST_PROTOCOL_VERSION,
+		ClientInfo:      mcpgo.Implementation{Name: mcpForwardClientName, Version: "1"},
+	}}); err != nil {
+		return nil, false, err
+	}
+	res, err = cli.CallTool(ctx, mcpgo.CallToolRequest{Params: req.Params})
+	if err != nil {
+		return nil, rt.callWritten.Load(), err
+	}
+	return res, true, nil
 }
 
 // forwardToLeader sends req, unchanged, to the system shard's leader at

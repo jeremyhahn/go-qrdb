@@ -47,3 +47,11 @@ func (c Config) ForwardTimeout() time.Duration {
 	}
 	return c.Timeout
 }
+
+// ConnectTimeout returns the bound on reaching one target: half the
+// forward's, so a target that never answers leaves time for the one retry.
+// A target whose connection fails within it is reconnected to (Reconnect)
+// until it passes.
+func (c Config) ConnectTimeout() time.Duration {
+	return c.ForwardTimeout() / 2
+}

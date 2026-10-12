@@ -877,7 +877,18 @@ and neither opens a listener there — see
   race. The reservation probes at `resolveNoiseHost(f)` and not at a hardcoded
   loopback, because a port proven free at one address says nothing about the
   same number at another. This has reddened CI three times — see
-  `reserveNoisePort` in `cmd/qrdbd/enrollment_resume_test.go` for the history.
+  `reserveNoisePort` in `cmd/qrdbd/noise_port_test.go` for the history.
+  The listener is not only the first node's: every node that serves the CA
+  anchor (`startMemberAnchorAdvertiser`) opens it too, so any `runStart` test
+  that gets past TLS on generated material reaches it, and a test driving
+  `qrdbd start` through cobra gets 63006 from the flag default rather than
+  from zero. `cmd/qrdbd`'s `TestMain` therefore holds 63006 for the whole run
+  (`holdDefaultNoisePort`): a test that forgets the reservation fails on every
+  run, in that test, instead of one run in three somewhere else.
+  `TestDefaultNoisePortIsHeld` fails if the hold is ever dropped. In
+  `pkg/clusterenroll`, the test of the zero-means-63006 rule reads the address
+  at the `newNoiseServer` seam and listens on an ephemeral port, so no unit
+  test binds 63006 at all.
 - **The FIPS ruling is asserted in BOTH runtimes, and nothing is skipped.**
   `clusterenroll.noiseAvailable` is an overridable variable, as `readFileFn`
   already is, so a test can assert the FIPS ruling from an ordinary runtime.

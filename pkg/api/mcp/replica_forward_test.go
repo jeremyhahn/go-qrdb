@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -58,6 +59,12 @@ type mcpTarget struct {
 
 func startMCPTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *mcpTarget {
 	t.Helper()
+	return startMCPTargetTLS(t, ca.TLS(t, nodeID), raftAddr)
+}
+
+// startMCPTargetTLS starts a target serving tlsCfg.
+func startMCPTargetTLS(t *testing.T, tlsCfg *tls.Config, raftAddr string) *mcpTarget {
+	t.Helper()
 	mt := &mcpTarget{raftAddr: raftAddr}
 	kv := newMockKVService()
 	kv.putFn = func(ctx context.Context, _ string, _ []byte) error {
@@ -75,7 +82,7 @@ func startMCPTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr st
 		return nil
 	}
 	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithUserService(authtest.NewBindingUsers()))
-	mt.srv = NewServer(kv, nil, "127.0.0.1:0", WithTLS(ca.TLS(t, nodeID)), WithAuthMiddleware(mw))
+	mt.srv = NewServer(kv, nil, "127.0.0.1:0", WithTLS(tlsCfg), WithAuthMiddleware(mw))
 	if err := mt.srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +406,28 @@ func TestReplicaForwardMCP_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	res := putCall(t, c.client)
 	if p, ok := wire.DecodeErrorPayload(res.StructuredContent); !res.IsError || !ok || p.Code != wire.CodeNotFound || forwardedTo(res) != "1" {
 		t.Fatalf("result %+v (%+v); want the replica's not found", res, p)
+	}
+}
+
+// A replica whose first handshakes fail, as one restarting or loaded does,
+// is reconnected to until one passes: its answer is the answer, not this
+// node's refusal.
+func TestReplicaForwardMCP_AReconnectingReplicaIsWaitedOn(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	refusing, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
+	b := startMCPTargetTLS(t, refusing, "raft-b")
+	b.answer = func(context.Context) error { return &service.KeyNotFoundError{Key: "k1"} }
+	c := newMCPFwdCluster(t, ca, 5*time.Second, b)
+
+	res := putCall(t, c.client)
+	if p, ok := wire.DecodeErrorPayload(res.StructuredContent); !res.IsError || !ok || p.Code != wire.CodeNotFound || forwardedTo(res) != "1" {
+		t.Fatalf("result %+v (%+v); want the reconnecting replica's not found", res, p)
+	}
+	if got := offered.Load(); got < 3 {
+		t.Fatalf("handshakes offered = %d; want two refused, then one that passed", got)
+	}
+	if got := b.calls.Load(); got != 1 {
+		t.Fatalf("replica served %d calls; want one", got)
 	}
 }
 

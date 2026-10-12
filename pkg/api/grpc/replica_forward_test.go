@@ -158,9 +158,15 @@ func serveGRPC(t *testing.T, tlsCfg *tls.Config, svc pb.QRDBServiceServer, chain
 
 func startTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *fakeTarget {
 	t.Helper()
+	return startTargetTLS(t, ca.TLS(t, nodeID), nodeID, raftAddr)
+}
+
+// startTargetTLS starts a target serving tlsCfg.
+func startTargetTLS(t *testing.T, tlsCfg *tls.Config, nodeID, raftAddr string) *fakeTarget {
+	t.Helper()
 	ft := &fakeTarget{raftAddr: raftAddr}
 	served := servedByUnary(nodeID)
-	ft.addr = serveGRPC(t, ca.TLS(t, nodeID), ft, ft.record,
+	ft.addr = serveGRPC(t, tlsCfg, ft, ft.record,
 		func(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 			if ft.unmarked {
 				return h(ctx, req)
@@ -405,6 +411,30 @@ func TestReplicaForwardGRPC_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	}
 	if _, ok := c.cache.Get(42); !ok {
 		t.Fatal("a replica that answered was not cached")
+	}
+}
+
+// TestReplicaForwardGRPC_AReconnectingReplicaIsWaitedOn: the only replica
+// refuses its first handshakes, as one restarting or overloaded does, so the
+// forwarder's connection passes through transient failure before it is
+// ready. The replica is waited on, and its answer is the answer -- not the
+// forwarder's own refusal.
+func TestReplicaForwardGRPC_AReconnectingReplicaIsWaitedOn(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	tlsCfg, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
+	b := startTargetTLS(t, tlsCfg, "node-1", "raft-b")
+	b.answer = func(context.Context) error { return mapServiceError(&service.KeyNotFoundError{Key: "k"}) }
+	c := newFwdCluster(t, ca, 5*time.Second, b)
+
+	_, err := c.client.Get(callerCtx(), &pb.GetRequest{Key: "k"})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("Get = %v; want the reconnecting replica's NotFound", err)
+	}
+	if n := offered.Load(); n != 3 {
+		t.Fatalf("handshakes offered = %d; want two refused, then the one that served", n)
+	}
+	if b.calls.Load() != 1 {
+		t.Fatalf("replica calls = %d; want 1", b.calls.Load())
 	}
 }
 

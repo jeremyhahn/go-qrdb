@@ -423,6 +423,8 @@ func TestMain(m *testing.M) {
 	armSignalGuard()
 	restoreSecureLifecycle := installTestSecureLifecycle()
 	defer restoreSecureLifecycle()
+	releaseNoisePort := holdDefaultNoisePort()
+	defer releaseNoisePort()
 	os.Exit(m.Run())
 }
 

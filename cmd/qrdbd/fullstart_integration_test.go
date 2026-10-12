@@ -71,6 +71,7 @@ func TestRunStart_AuthDisabled_SingleNode_ThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -125,6 +126,7 @@ func TestRunStart_AuthEnabled_SingleNode_ThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -257,6 +259,7 @@ func TestRunStart_AuthDisabled_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -314,6 +317,7 @@ func TestRunStart_SIGHUPThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -387,6 +391,7 @@ func TestRunStart_ServerStartFails_PortInUse(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -445,6 +450,7 @@ func TestRunStart_PebbleSMType_FullStartup_ThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -508,6 +514,7 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -557,6 +564,7 @@ func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {

@@ -62,6 +62,15 @@ type Config struct {
 	RootCAs *x509.CertPool
 	Timeout time.Duration // zero is DefaultTimeout (10s)
 }
+func (c Config) ForwardTimeout() time.Duration
+func (c Config) ConnectTimeout() time.Duration // half of ForwardTimeout
+
+// Reconnect makes attempt again, on a gRPC channel's backoff (100ms base,
+// x1.6, 20% jitter, 2s cap), until one reaches the target, ctx ends or budget
+// passes. An attempt reports false only when nothing of the request left
+// this node. Every transport reaches a target through it.
+func Reconnect(ctx context.Context, budget time.Duration, attempt func() bool) bool
+const ReconnectBaseDelay, ReconnectMultiplier, ReconnectJitter, ReconnectMaxDelay = 100 * time.Millisecond, 1.6, 0.2, 2 * time.Second
 
 // The structured refusal, carried beside the message on every transport.
 const ErrorDomain = "qrdb.v1"
@@ -218,7 +227,18 @@ failed. Its watch path stays unused until that interplay is designed.)
    never retried. Unreachable means provably unsent: gRPC's connection never
    became ready, REST's and MCP's request headers were never written, QUIC's
    stream never opened.
-7. **Forwarding needs a CA pool.** A target's listener certificate is
+7. **A reconnecting target is waited on, not skipped.** A connection that
+   fails before anything is sent -- a refused dial, a failed handshake, as a
+   target restarting or under load gives -- is made again on the reconnect
+   schedule (`replicaforward.Reconnect`, a gRPC channel's backoff) until one
+   passes, the connection budget (`Config.ConnectTimeout`, half the forward's)
+   passes, or the caller's context ends. Only then is the target unreachable.
+   gRPC waits on its channel through transient failure to ready; REST, MCP
+   and QUIC make the unsent attempt again. A dead target therefore costs the
+   connection budget before the next replica is tried, which still leaves the
+   other half for the retry; the leader cache means only the first forward
+   after a leader dies pays it.
+8. **Forwarding needs a CA pool.** A target's listener certificate is
    verified against `server.WithCACertPool`; a server without one forwards
    nothing.
 
@@ -239,7 +259,7 @@ failed. Its watch path stays unused until that interplay is designed.)
 | Key | Default | Meaning |
 |---|---|---|
 | `replica_forwarding.enabled` | `true` | forward on a raft-mode node with a placement table; `false` refuses with the replica set |
-| `replica_forwarding.timeout` | `10s` | bound on one forward, connection included; a connection gets half of it, so an unanswered handshake leaves time for the retry |
+| `replica_forwarding.timeout` | `10s` | bound on one forward, connection included; a connection gets half of it, reconnects included, so an unanswered handshake leaves time for the retry |
 
 There is no setting for the hop limit or the retry count. Both are part of
 the contract.
@@ -257,7 +277,9 @@ every raft node publishes its member record under a lease (ruling 6).
 
 - `pkg/replicaforward`: target ordering, skipping self and non-advertising
   members, the retry choice for each answer, unreachable replicas not
-  spending the retry, at most two answers, the refusal codec, the metrics.
+  spending the retry, at most two answers, the refusal codec, the metrics;
+  `Reconnect` making a failed attempt again until one reaches, stopping at
+  the first that does, at the budget and at the context's end.
 - `pkg/auth/forward`: binding round trips per protocol, every binding field
   tamper-checked, REST assertions byte-identical, `SignCaller`,
   `NodeIdentity`.
@@ -282,8 +304,10 @@ every raft node publishes its member record under a lease (ruling 6).
 - Each transport's forwarding layer, against fake or real target listeners:
   forward and relay as the caller, the hop marker, retry on `NotLeader`,
   unreachable to the next replica, no retry after a send, the target's error
-  relayed, every replica refusing, no caller, streams refused. QUIC also: a
-  dead target's cached connection closes within a keep-alive.
+  relayed, every replica refusing, no caller, streams refused, and a replica
+  whose first two handshakes are refused (`replicaforwardtest.RefuseHandshakes`)
+  reconnected to and its answer relayed. QUIC also: a dead target's cached
+  connection closes within a keep-alive.
 
 **Cache (unit, `pkg/replicaforward`):** a hit skips the member lookup; a
 `NotLeader` updates the entry; a transport error evicts it; a placement event

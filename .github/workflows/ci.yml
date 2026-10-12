@@ -820,9 +820,13 @@ jobs:
   # The tenancy slice above stays as its own job: its selection floor is
   # guarded by test/buildgates/cluster_tenancy_gate_test.go, and it reports the
   # tenant suites separately when this job is red for an unrelated reason.
+  #
+  # It runs on the dedicated `raft` runners: the cluster suite needs an unshared
+  # host, and on oversubscribed shared runners it hits Raft timeouts and the 45m
+  # go-test package timeout.
   integration-cluster:
     name: Integration (cluster)
-    runs-on: ubuntu-latest
+    runs-on: raft
     needs: [build]
     timeout-minutes: 120
     steps:

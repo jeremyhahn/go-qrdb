@@ -68,8 +68,11 @@ answers once, so it is forwarded like any other tool.
 
 A request already on its way to a replica as it died can fail with
 "unavailable": the forwarding node cannot know whether the replica applied it.
-The next request finds the replica unreachable and goes to the next one, or,
-when there is none, is refused with the replica set. A node never answers
+The next request keeps trying to connect to the replica for up to half of
+`replica_forwarding.timeout` (5 seconds by default), so a replica that is
+restarting or briefly overloaded still answers. After that it counts as
+unreachable, and the request goes to the next replica. When there is no next
+replica, the request is refused with the replica set. A node never answers
 from a database it holds no replica of.
 
 ## Troubleshooting

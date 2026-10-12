@@ -59,6 +59,14 @@ the one retry reaches it. A failure after the request may have reached a
 target -- a reset mid-answer, a timeout -- is never retried, because the
 target may have applied it.
 
+A replica is unreachable only once it has stayed so for the connection's
+budget, half the forward's. A target restarting, or failing handshakes under
+load, is **reconnected to** on a gRPC channel's backoff until a connection
+passes, as a gRPC client waits on a channel in transient failure: counting it
+unreachable at its first failed handshake would skip a replica that is about
+to answer, and a single-replica database would get the refusal instead of its
+replica's answer. The wait is bounded by the caller's context as well.
+
 **Endpoint resolution** maps a replica's Raft address to its member record
 (`cluster.Member`, keyed by node, carrying `APIEndpoints` per protocol). The
 forward uses the endpoint for the node-to-node protocol of the ingress

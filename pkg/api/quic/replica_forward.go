@@ -287,10 +287,26 @@ func (f *FrameForwarder) stream(ctx context.Context, endpoint string) (*quicgo.S
 	return s, true
 }
 
-// dial opens a connection to endpoint over a socket connected to it. It gets
-// half the forward's budget, so a target that never answers the handshake
-// leaves time for the one retry.
+// dial opens a connection to endpoint, within the connection budget
+// (Config.ConnectTimeout) so a target that never answers the handshake leaves
+// time for the one retry. A handshake that fails, as a restarting or loaded
+// target's does, is made again on the reconnect schedule until one passes.
 func (f *FrameForwarder) dial(ctx context.Context, endpoint string) (*targetConn, bool) {
+	connect := f.cfg.ConnectTimeout()
+	dctx, cancel := context.WithTimeout(ctx, connect)
+	defer cancel()
+	var cc *targetConn
+	reached := replicaforward.Reconnect(dctx, connect, func() bool {
+		var ok bool
+		cc, ok = f.dialOnce(dctx, endpoint)
+		return ok
+	})
+	return cc, reached
+}
+
+// dialOnce makes one handshake with endpoint, over a socket of its own
+// connected to it.
+func (f *FrameForwarder) dialOnce(ctx context.Context, endpoint string) (*targetConn, bool) {
 	raddr, err := net.ResolveUDPAddr("udp", endpoint)
 	if err != nil {
 		return nil, false
@@ -300,9 +316,7 @@ func (f *FrameForwarder) dial(ctx context.Context, endpoint string) (*targetConn
 		return nil, false
 	}
 	tr := &quicgo.Transport{Conn: connectedPacketConn{udp: udp}}
-	dctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout()/2)
-	defer cancel()
-	conn, err := tr.Dial(dctx, raddr, f.clientTLS, &quicgo.Config{MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: forwardKeepAlive})
+	conn, err := tr.Dial(ctx, raddr, f.clientTLS, &quicgo.Config{MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: forwardKeepAlive})
 	if err != nil {
 		_ = tr.Close()
 		_ = udp.Close()

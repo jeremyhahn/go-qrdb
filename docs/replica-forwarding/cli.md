@@ -12,7 +12,7 @@ Daemon configuration (`qrdbd`):
 | Flag | Config key | Default | Meaning |
 |---|---|---|---|
 | `--replica-forwarding` | `replica_forwarding.enabled` | `true` | forward a request for a database this node holds no replica of. Off, the node refuses such a request with the replica set. Only a raft-mode node with a placement table forwards |
-| `--replica-forwarding-timeout` | `replica_forwarding.timeout` | `10s` | bound on one forward, connection included (a Go duration greater than zero) |
+| `--replica-forwarding-timeout` | `replica_forwarding.timeout` | `10s` | bound on one forward, connection included; reconnecting to a target gets half of it (a Go duration greater than zero) |
 
 A flag given on the command line wins over the config file, and any key can be
 set from the environment as `QRDB_REPLICA_FORWARDING_ENABLED` or

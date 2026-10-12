@@ -518,7 +518,9 @@ type TenantServiceOption func(*TenantService)
 type BarrierReadyHook func(ctx context.Context, tenantID string)
 
 // WithBarrierReadyHook registers a hook run after a tenant barrier is
-// initialized, after it is unsealed, and on every status read that finds it
+// initialized, after it is unsealed -- by key material (TenantBarrierUnseal)
+// or by the holder submission that completes an unseal quorum
+// (TenantBarrierQuorumSubmit) -- and on every status read that finds it
 // initialized and unsealed -- the last so that a hook that failed (or found
 // the identity records still unreadable) is retried by the status polling a
 // tenant admin's tooling already does. qrdb's composers register
@@ -2489,6 +2491,12 @@ func (s *TenantService) TenantBarrierQuorumSubmit(ctx context.Context, tenantID 
 	if out.Complete {
 		s.logger.Info("tenant barrier holder quorum complete",
 			slog.String("tenant_id", tenantID), slog.String("op", string(out.Op)))
+	}
+	// Only the submission that completes an unseal quorum makes the barrier
+	// usable, so only it runs the barrier-ready hook, as TenantBarrierUnseal
+	// does.
+	if out.Complete && out.Op == seal.OpUnseal {
+		s.notifyBarrierReady(ctx, tenantID)
 	}
 	return out, nil
 }

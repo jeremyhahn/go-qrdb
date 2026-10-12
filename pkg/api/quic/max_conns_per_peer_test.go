@@ -23,6 +23,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
 
 // TestWithMaxConnsPerPeer_SetsField mirrors the equivalent test in
@@ -71,28 +72,39 @@ func TestIntegration_MaxConnsPerPeer_RefusesOverCapConnection(t *testing.T) {
 
 	first := env.dialServer(t)
 
+	// The listener counts connections in the order the SERVER completes
+	// their handshakes, which is not the order the client's dials return: a
+	// dial returns once the client has sent its Finished, and if that packet
+	// is late or lost the server can finish the second handshake first,
+	// admit it, and refuse this one. A round trip on a stream proves the
+	// server has accepted (and so admitted) the first connection, because
+	// acceptLoop serves no stream on a connection Accept has not returned.
+	if _, status, _ := roundTrip(t, first, "admin.Health", 1, nil); status != wire.StatusOK {
+		t.Fatalf("expected the first connection to be served, got status %d", status)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	second, err := quicgo.DialAddr(ctx, env.srv.Addr(), env.clientCfg, &quicgo.Config{
 		MaxIdleTimeout: 5 * time.Second,
 	})
 	cancel()
-	if err != nil {
-		// quic-go's handshake can itself observe the refusal as a dial
-		// error rather than a connection that then closes; either is an
-		// acceptable manifestation of "refused", so this path is not a
-		// failure on its own.
-		return
-	}
-	t.Cleanup(func() { _ = second.CloseWithError(0, "test done") })
 
-	select {
-	case <-second.Context().Done():
-	case <-time.After(3 * time.Second):
-		t.Fatal("over-cap connection was not refused within timeout")
+	// quic-go's dial can itself observe the refusal, when the server's close
+	// arrives before the dial has reported its handshake; that is the same
+	// refusal and must carry the same error code.
+	closeErr := err
+	if err == nil {
+		t.Cleanup(func() { _ = second.CloseWithError(0, "test done") })
+
+		select {
+		case <-second.Context().Done():
+		case <-time.After(3 * time.Second):
+			t.Fatal("over-cap connection was not refused within timeout")
+		}
+		closeErr = context.Cause(second.Context())
 	}
 
 	var appErr *quicgo.ApplicationError
-	closeErr := context.Cause(second.Context())
 	if !errors.As(closeErr, &appErr) {
 		t.Fatalf("expected an ApplicationError closing the refused connection, got %v (%T)", closeErr, closeErr)
 	}

@@ -172,18 +172,8 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 	// node one of the tenant's replicas; until then the node cannot read the
 	// tenant's identity records and answers "sealed". Placing one database on
 	// all three nodes is what lets the tests below create through any node.
-	body, st := iraftAPIPost(t, c.tenant, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
-		map[string]interface{}{"name": "sid-anchor", "backend": "pebble", "replicas": 3})
-	if st != http.StatusCreated && st != http.StatusOK {
-		t.Fatalf("create anchor database: status %d, body %s", st, body)
-	}
-	var anchor struct {
-		ShardID uint64 `json:"shardId"`
-	}
-	if err := json.Unmarshal(body, &anchor); err != nil || anchor.ShardID == 0 {
-		t.Fatalf("anchor database: no shard ID in %s", body)
-	}
-	c.anchorShard = anchor.ShardID
+	c.anchorShard = c.createDatabase(t, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
+		"create anchor database", "sid-anchor", 3)
 	for node := range adminPorts {
 		c.waitForTenantOn(t, node)
 	}
@@ -215,22 +205,33 @@ func (c *shardIDsCluster) waitForTenantOn(t *testing.T, node int) {
 func (c *shardIDsCluster) createThrough(t *testing.T, node int, name string) uint64 {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/databases", c.adminPorts[node])
+	return c.createDatabase(t, url, fmt.Sprintf("create %s through node %d", name, node+1), name, 1)
+}
+
+// createDatabase creates the named database through url and returns its
+// shard ID. Placement answers 503 while fewer nodes than replicas are
+// admissible -- a peer's feature advertisement or volume-pool report has
+// lapsed and not yet been re-published -- so a 503 is retried, bounded by a
+// deadline; any other status, or a 503 past the deadline, fails with the last
+// status and body the node returned.
+func (c *shardIDsCluster) createDatabase(t *testing.T, url, what, name string, replicas int) uint64 {
+	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		body, st := iraftAPIPost(t, c.tenant, url, map[string]interface{}{
-			"name": name, "backend": "pebble", "replicas": 1,
+			"name": name, "backend": "pebble", "replicas": replicas,
 		})
 		if st == http.StatusCreated || st == http.StatusOK {
 			var info struct {
 				ShardID uint64 `json:"shardId"`
 			}
 			if err := json.Unmarshal(body, &info); err != nil || info.ShardID == 0 {
-				t.Fatalf("create %s through node %d: no shard ID in %s", name, node+1, body)
+				t.Fatalf("%s: no shard ID in %s", what, body)
 			}
 			return info.ShardID
 		}
 		if st != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("create %s through node %d: status %d, body %s", name, node+1, st, body)
+			t.Fatalf("%s: status %d, body %s", what, st, body)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

@@ -16,6 +16,7 @@ package rest
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -58,6 +59,12 @@ type restTarget struct {
 
 func startRESTTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *restTarget {
 	t.Helper()
+	return startRESTTargetTLS(t, ca.TLS(t, nodeID), nodeID, raftAddr)
+}
+
+// startRESTTargetTLS starts a target serving tlsCfg, which names it nodeID.
+func startRESTTargetTLS(t *testing.T, tlsCfg *tls.Config, nodeID, raftAddr string) *restTarget {
+	t.Helper()
 	rt := &restTarget{raftAddr: raftAddr}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rt.calls.Add(1)
@@ -82,7 +89,7 @@ func startRESTTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr s
 		w.Header().Set("X-Target-Says", "hello")
 		writeJSON(w, map[string]string{"served_by": nodeID, "body": string(body)})
 	}))
-	srv.TLS = ca.TLS(t, nodeID)
+	srv.TLS = tlsCfg
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	rt.addr = strings.TrimPrefix(srv.URL, "https://")
@@ -310,6 +317,29 @@ func TestReplicaForwardREST_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b)
 	if resp := c.put(t, "v"); resp.status != http.StatusNotFound {
 		t.Fatalf("answer %d; want the replica's 404", resp.status)
+	}
+}
+
+// A replica whose first handshakes fail, as one restarting or loaded does,
+// is reconnected to until one passes: its answer is the answer, not this
+// node's refusal.
+func TestReplicaForwardREST_AReconnectingReplicaIsWaitedOn(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	refusing, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
+	b := startRESTTargetTLS(t, refusing, "node-1", "raft-b")
+	b.answer = func(w http.ResponseWriter, _ *http.Request) bool {
+		writeErrorJSON(w, http.StatusNotFound, &service.KeyNotFoundError{Key: "k1"})
+		return true
+	}
+	c := newRESTFwdCluster(t, ca, 5*time.Second, b)
+	if resp := c.put(t, "v"); resp.status != http.StatusNotFound {
+		t.Fatalf("answer %d; want the reconnecting replica's 404", resp.status)
+	}
+	if got := offered.Load(); got != 3 {
+		t.Fatalf("handshakes offered = %d; want two refused, then the one that passed", got)
+	}
+	if got := b.calls.Load(); got != 1 {
+		t.Fatalf("replica served %d requests; want one", got)
 	}
 }
 

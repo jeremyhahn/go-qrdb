@@ -87,7 +87,7 @@ type restReplicaForwarder struct {
 // its key signs the caller assertion.
 func newRESTReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *restReplicaForwarder {
 	key, nodeID := forward.NodeIdentity(nodeTLS)
-	half := cfg.ForwardTimeout() / 2
+	connect := cfg.ConnectTimeout()
 	return &restReplicaForwarder{
 		cfg:    cfg,
 		key:    key,
@@ -99,11 +99,9 @@ func newRESTReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *re
 				GetClientCertificate: nodeTLS.GetClientCertificate,
 				MinVersion:           tls.VersionTLS13,
 			},
-			ForceAttemptHTTP2: true,
-			// A connection gets half the forward's budget, so a target that
-			// never answers leaves time for the one retry.
-			DialContext:         (&net.Dialer{Timeout: half}).DialContext,
-			TLSHandshakeTimeout: half,
+			ForceAttemptHTTP2:   true,
+			DialContext:         (&net.Dialer{Timeout: connect}).DialContext,
+			TLSHandshakeTimeout: connect,
 		}},
 	}
 }
@@ -160,11 +158,10 @@ func (f *restReplicaForwarder) forward(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 
-	var answer *http.Response
-	send := func(ctx context.Context, t replicaforward.Target) (replicaforward.Result, error) {
+	newRequest := func(ctx context.Context, t replicaforward.Target) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, r.Method, "https://"+t.Endpoint+r.URL.RequestURI(), bytes.NewReader(payload))
 		if err != nil {
-			return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
+			return nil, err
 		}
 		for k, vals := range r.Header {
 			if !hopByHopHeaders[http.CanonicalHeaderKey(k)] {
@@ -173,13 +170,31 @@ func (f *restReplicaForwarder) forward(w http.ResponseWriter, r *http.Request, p
 		}
 		req.Header.Set(forward.HeaderAssertion, assertion)
 		req.Header.Set(forward.HeaderSignature, sig)
-		var wrote atomic.Bool
-		req = req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}))
-		resp, err := f.client.Do(req)
-		if err != nil {
-			if !wrote.Load() {
-				return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
+		return req, nil
+	}
+
+	var answer *http.Response
+	send := func(ctx context.Context, t replicaforward.Target) (replicaforward.Result, error) {
+		var resp *http.Response
+		var err error
+		built := true
+		// An attempt is made again only when its headers were never
+		// written: nothing of the request reached t.
+		reached := replicaforward.Reconnect(ctx, f.cfg.ConnectTimeout(), func() bool {
+			req, berr := newRequest(ctx, t)
+			if berr != nil {
+				built = false
+				return true
 			}
+			var wrote atomic.Bool
+			req = req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}))
+			resp, err = f.client.Do(req) //nolint:bodyclose // closed by classifyRESTAnswer on a refusal, else by forward once relayed
+			return err == nil || wrote.Load()
+		})
+		if !reached || !built {
+			return replicaforward.Result{Outcome: replicaforward.Unreachable}, nil
+		}
+		if err != nil {
 			return replicaforward.Result{}, &replicaforward.SendError{Protocol: cluster.APIProtocolREST, Target: t.Endpoint, Err: err}
 		}
 		if res, refused := classifyRESTAnswer(resp); refused {

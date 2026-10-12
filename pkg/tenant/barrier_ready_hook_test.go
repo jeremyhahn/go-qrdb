@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -197,6 +199,125 @@ func TestBarrierReadyHook_NotCalledWhileSealed(t *testing.T) {
 	}
 	if got := hook.count(); got != 0 {
 		t.Fatalf("hook fired %d times on seal alone, want 0 (calls: %v)", got, hook.calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// B2: a holder quorum fires the hook only when it completes an UNSEAL.
+// ---------------------------------------------------------------------------
+
+// newHookQuorumTenant builds a hook-capturing service with a 2-of-2 Shamir
+// tenant barrier whose holders have claimed their envelopes, and clears the
+// hook calls its init made.
+func newHookQuorumTenant(t *testing.T, tenantID string, extra ...TenantServiceOption) (*TenantService, *seal.BarrierRegistry, *hookCapture, []*tenantHolder) {
+	t.Helper()
+	opts := append([]TenantServiceOption{WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)})}, extra...)
+	svc, reg, hook := newHookService(t, opts...)
+	if _, err := svc.CreateTenant(context.Background(), tenantID, "Hook Quorum", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	holders := []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob")}
+	shamirTenantWithClaimedHolders(t, svc, tenantAdminCtx(tenantID), tenantID, holders)
+	hook.reset()
+	return svc, reg, hook, holders
+}
+
+// TestBarrierReadyHook_QuorumUnseal_CalledOnceOnCompletion proves the hook
+// fires exactly once, on the holder submission that completes an unseal
+// quorum, and not on the share below the threshold.
+func TestBarrierReadyHook_QuorumUnseal_CalledOnceOnCompletion(t *testing.T) {
+	const tenantID = "hook-quorum-unseal"
+	svc, _, hook, holders := newHookQuorumTenant(t, tenantID)
+	ctx := tenantAdminCtx(tenantID)
+
+	for _, h := range holders {
+		if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpSeal, h); err != nil {
+			t.Fatalf("seal share %s: %v", h.name, err)
+		}
+	}
+	hook.reset()
+
+	out, err := submitTenant(t, svc, ctx, tenantID, seal.OpUnseal, holders[0])
+	if err != nil || out.Complete {
+		t.Fatalf("first unseal share = %+v, %v; want an incomplete round", out, err)
+	}
+	if got := hook.count(); got != 0 {
+		t.Fatalf("hook fired %d times below the unseal quorum, want 0 (calls: %v)", got, hook.calls)
+	}
+
+	out, err = submitTenant(t, svc, ctx, tenantID, seal.OpUnseal, holders[1])
+	if err != nil || !out.Complete {
+		t.Fatalf("second unseal share = %+v, %v; want a complete quorum", out, err)
+	}
+	if got := hook.count(); got != 1 || hook.calls[0] != tenantID {
+		t.Fatalf("hook calls after the unseal quorum = %v, want [%s]", hook.calls, tenantID)
+	}
+}
+
+// TestBarrierReadyHook_QuorumNonUnseal_NotCalled proves a quorum that
+// completes any other operation never fires the hook: a seal quorum leaves
+// the barrier unusable, and a rekey quorum leaves its seal state unchanged.
+func TestBarrierReadyHook_QuorumNonUnseal_NotCalled(t *testing.T) {
+	tests := map[seal.QuorumOp]func(t *testing.T, svc *TenantService, ctx context.Context, tenantID string){
+		seal.OpSeal: func(*testing.T, *TenantService, context.Context, string) {},
+		seal.OpRekey: func(t *testing.T, svc *TenantService, ctx context.Context, tenantID string) {
+			t.Helper()
+			if _, err := svc.TenantBarrierRekeyStart(ctx, tenantID, 2, seal.FactorPolicyAnyEnrolled); err != nil {
+				t.Fatalf("rekey start: %v", err)
+			}
+		},
+	}
+	for op, start := range tests {
+		t.Run(string(op), func(t *testing.T) {
+			tenantID := "hook-quorum-" + string(op)
+			svc, _, hook, holders := newHookQuorumTenant(t, tenantID)
+			ctx := tenantAdminCtx(tenantID)
+			start(t, svc, ctx, tenantID)
+
+			var out *seal.QuorumOutcome
+			for _, h := range holders {
+				var err error
+				if out, err = submitTenant(t, svc, ctx, tenantID, op, h); err != nil {
+					t.Fatalf("%s share %s: %v", op, h.name, err)
+				}
+			}
+			if !out.Complete || out.Op != op {
+				t.Fatalf("outcome = %+v, want a complete %s quorum", out, op)
+			}
+			if got := hook.count(); got != 0 {
+				t.Fatalf("hook fired %d times on a %s quorum, want 0 (calls: %v)", got, op, hook.calls)
+			}
+		})
+	}
+}
+
+// TestBarrierReadyHook_QuorumUnseal_NotCalledOnError proves an unseal quorum
+// whose cluster seal record cannot be cleared -- which seals the barrier
+// again and fails the submission -- does not fire the hook.
+func TestBarrierReadyHook_QuorumUnseal_NotCalledOnError(t *testing.T) {
+	const tenantID = "hook-quorum-error"
+	sealer := clustersealtest.New(true)
+	svc, reg, hook, holders := newHookQuorumTenant(t, tenantID, WithClusterSealer(sealer))
+	sealer.OnSeal(func(b clusterseal.Barrier) error { return reg.SealTenant(b.Tenant()) })
+	ctx := tenantAdminCtx(tenantID)
+
+	for _, h := range holders {
+		if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpSeal, h); err != nil {
+			t.Fatalf("seal share %s: %v", h.name, err)
+		}
+	}
+	refused := errors.New("no quorum")
+	sealer.SetClearErr(refused)
+	hook.reset()
+
+	if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpUnseal, holders[0]); err != nil {
+		t.Fatalf("first unseal share: %v", err)
+	}
+	if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpUnseal, holders[1]); !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want the clear's error", err)
+	}
+	if got := hook.count(); got != 0 {
+		t.Fatalf("hook fired %d times on a failed unseal quorum, want 0 (calls: %v)", got, hook.calls)
 	}
 }
 

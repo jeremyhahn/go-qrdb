@@ -119,6 +119,43 @@ run `make integration-down INT_PROJECT=<project>`. Two concurrent runs on one
 machine need distinct `INT_PROJECT` values, as before. The devcontainer keeps
 its own stable `go-qrdb-dev:latest`.
 
+### Cluster integration runners
+
+The `integration-cluster` job in `.github/workflows/ci.yml` runs on dedicated
+runners labelled `raft` (declared in `.github/actionlint.yaml`). The cluster
+suite needs an unshared host: on oversubscribed shared runners it hits Raft
+timeouts and the go-test package timeout. Every other job stays on
+`ubuntu-latest`.
+
+### Batch workflow
+
+`.github/workflows/batch.yml` is long-running CPU work that never gates a
+merge: it is `workflow_dispatch` only and runs on runners labelled `batch`,
+which no other workflow uses (`.github/actionlint.yaml` declares the label).
+Dispatch it on `main` after a merge:
+
+```
+POST /repos/{owner}/{repo}/actions/workflows/batch.yml/dispatches
+     {"ref":"main","inputs":{"jobs":"all"}}
+```
+
+`jobs` picks `all`, `fuzz`, `race-full`, `soak` or `bench`; `fuzztime`
+(default `20m`) and `soak_minutes` (default `60`) size the long jobs.
+
+| Job | Runs |
+|---|---|
+| `fuzz` | every `Fuzz*` target in the root module under `BUILD_TAGS`, each for `fuzztime`, over four shards |
+| `race-full` | `make test`'s packages under `BUILD_TAGS` with `-race -count=3` |
+| `soak` | `make integration-test-cluster` in a loop for `soak_minutes`, then `make integration-down` under `always()` |
+| `bench` | every benchmark under `./pkg/...` and `./cmd/...` with `BUILD_TAGS`, `-benchmem -count=5` |
+
+A defect is reported on a log line that starts with `BATCH-FINDING` — a fuzz
+crasher (with its new corpus file), a data race or a failing test in any of
+the three race runs, or a failed soak iteration — and the logs are uploaded as
+artifacts when a job fails. The bench job always uploads `bench-<sha>.txt`; a
+regression is found by comparing it with the previous dispatch on `main` using
+`benchstat`, since a run cannot read another run's artifact.
+
 ## Integration Target
 
 Run `make integration-test-release` for this feature. The target intentionally selects zero Go integration tests because release is a tag/workflow process; the coverage accounting row is `test/integration/COVERAGE.md` under `release`.

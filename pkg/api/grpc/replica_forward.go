@@ -291,7 +291,8 @@ func (f *ReplicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.Cli
 		cc, err = grpc.NewClient(endpoint,
 			grpc.WithTransportCredentials(credentials.NewTLS(f.clientTLS)),
 			grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoff.Config{
-				BaseDelay: 100 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 2 * time.Second,
+				BaseDelay: replicaforward.ReconnectBaseDelay, Multiplier: replicaforward.ReconnectMultiplier,
+				Jitter: replicaforward.ReconnectJitter, MaxDelay: replicaforward.ReconnectMaxDelay,
 			}}),
 			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(DefaultMaxMessageBytes), grpc.MaxCallSendMsgSize(DefaultMaxMessageBytes)),
 		)
@@ -302,19 +303,22 @@ func (f *ReplicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.Cli
 		f.conns[endpoint] = cc
 	}
 	f.mu.Unlock()
-	// A connection gets half the forward's budget, so a target that never
-	// answers the handshake leaves time for the one retry.
-	return cc, awaitReady(ctx, cc, f.cfg.ForwardTimeout()/2)
+	return cc, awaitReady(ctx, cc, f.cfg.ConnectTimeout())
 }
 
 // awaitReady waits until cc is ready, for at most wait. A connection in
-// transient failure is refused at once -- grpc keeps it there until a
-// reconnect succeeds -- and its backoff is reset, so a target that came back
-// is reachable on the next forward rather than after the backoff.
+// transient failure is waited on through its reconnects, as a call that
+// waits for ready is, so a target that is restarting, or that fails a
+// handshake under load, is not counted unreachable at its first failure. A
+// connection already in transient failure has its backoff reset first, so a
+// target that came back is tried at once rather than after the backoff.
 func awaitReady(ctx context.Context, cc *grpc.ClientConn, wait time.Duration) bool {
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	cc.Connect()
+	if cc.GetState() == connectivity.TransientFailure {
+		cc.ResetConnectBackoff()
+	}
 	for {
 		state := cc.GetState()
 		switch state {
@@ -322,9 +326,8 @@ func awaitReady(ctx context.Context, cc *grpc.ClientConn, wait time.Duration) bo
 			return true
 		case connectivity.Shutdown:
 			return false
-		case connectivity.TransientFailure:
-			cc.ResetConnectBackoff()
-			return false
+		case connectivity.Idle:
+			cc.Connect()
 		}
 		if !cc.WaitForStateChange(ctx, state) {
 			return false

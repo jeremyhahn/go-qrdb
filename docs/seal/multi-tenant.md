@@ -295,7 +295,7 @@ implementations. Every transport implements the same methods on `transport.Tenan
 | `TenantBarrierShareClaimBegin(ctx, *TenantShareClaimBeginRequest) (*ShareClaimBeginResponse, error)` | Issue the holder's claim nonce. |
 | `TenantBarrierShareClaimComplete(ctx, *TenantShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)` | Verify the nonce signature; deliver the sealed envelope once. |
 | `TenantBarrierQuorumBegin(ctx, *TenantQuorumBeginRequest) (*QuorumChallenge, error)` | Issue a holder's factor challenge. |
-| `TenantBarrierQuorumSubmit(ctx, *TenantQuorumSubmitRequest) (*QuorumOutcome, error)` | Submit a holder's share to the open round. |
+| `TenantBarrierQuorumSubmit(ctx, *TenantQuorumSubmitRequest) (*QuorumOutcome, error)` | Submit a holder's share to the open round. The share that completes an unseal quorum leaves the barrier usable and runs the tenant service's barrier-ready hook, as `TenantBarrierUnseal` does. |
 | `TenantBarrierRekeyStart(ctx, *TenantRekeyStartRequest) (*QuorumRound, error)` | Open a quorum-gated rekey round. |
 | `TenantBarrierOfficerRevoke(ctx, *TenantOfficerRevokeRequest) (*QuorumRound, error)` | Revoke a holder through a quorum-gated rekey. |
 

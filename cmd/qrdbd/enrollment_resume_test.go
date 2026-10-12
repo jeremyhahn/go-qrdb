@@ -34,37 +34,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
 
-// reserveNoisePort gives the caller's flags a Noise port nothing else on this
-// host holds, probed AT THE HOST THE LISTENER WILL BIND.
-//
-// clusterenroll.Options.NoisePort documents zero as "defaults to
-// DefaultNoisePort" -- 63006, a fixed number -- and NOT as the ":0" the Go
-// convention would read it as. So `bootstrapNoisePort: 0` is not an ephemeral
-// port, it is THE most contended port in the package, and every concurrent
-// copy of these tests wants exactly it. Gitea runs pull_request CI on
-// refs/pull/N/head across five runners sharing one host, so concurrent copies
-// are the normal case rather than the exception: this reddened main's CI on
-// 0676e9af with two of these tests failing 40 ms apart on
-//
-//	listen tcp 127.0.0.1:63006: bind: address already in use
-//
-// and it was the THIRD sighting -- see the comment above
-// TestNewStartCmd_ValidConfigFileApplied in coverage_gaps_test.go for the
-// first, which was misread as a config-loading bug and filed as go-qrdb#84.
-//
-// The host is read back off the flags through resolveNoiseHost rather than
-// assumed to be testBindHost, because a port proven free at one address says
-// nothing about the same number at another -- that is go-qrdb#253, and probing
-// where you actually bind is the whole lesson of go-qrdb#313.
-func reserveNoisePort(t *testing.T, f *startFlags) {
-	t.Helper()
-	port, err := freePortOn(resolveNoiseHost(f), networkTCP)
-	if err != nil {
-		t.Fatalf("reserve a Noise port at %s: %v", resolveNoiseHost(f), err)
-	}
-	f.bootstrapNoisePort = port
-}
-
 // TestResolveTLS_FirstNodeResumesEnrollmentOnRestart: a first node that boots,
 // serves, and restarts must come back with a live enrollment listener.
 //

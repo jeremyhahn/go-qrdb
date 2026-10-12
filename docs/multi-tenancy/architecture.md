@@ -135,8 +135,10 @@ barrier is sealed, and does two things:
    with no onboarded admin admits **nobody** through the window — that posture
    admits no unbound certificate anywhere else either.
 2. **It becomes the account.** The tenant service runs a barrier-ready hook
-   after the barrier is initialized, after each unseal, and on each status read
-   that finds it unsealed; qrdb's composers register
+   after the barrier is initialized, after each unseal — by key material, or
+   by the holder share that completes an unseal quorum (never one below the
+   threshold, a seal or rekey quorum, or a submission that fails) — and on each
+   status read that finds it unsealed; qrdb's composers register
    `bootstrap.CompletePendingTenantAdmin` there, which seeds the tenant's roles,
    creates the admin with the Admin role (or adopts an existing account of that
    name), binds the certificate, and deletes the record. It is idempotent, so a

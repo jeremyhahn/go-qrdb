@@ -2524,8 +2524,8 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_NoPeers(t *testing.T) {
 func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// Test the RunE path with a single peer. This exercises initializeNode
 	// all the way through to runStart: host creation, startShard success,
-	// TLS generation, service creation, and server start. It will block on
-	// waitForSignal, so we send SIGINT shortly after to unblock.
+	// TLS generation, service creation, and server start. It blocks on
+	// waitForSignal, so SIGINT is sent once the node serves to unblock it.
 	//
 	// --sm memory runs all the way through first boot, whose atomic
 	// role/user creation (go-qrdb#555) commits guarded batches: since
@@ -2538,15 +2538,39 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// here would wait forever for a ceremony this test never runs. This
 	// test is about the full start-to-serving handover with a real peer,
 	// which a ceremony is orthogonal to.
+	//
+	// Every listener this boot opens gets a reserved port. The flag
+	// defaults are fixed numbers -- raft 63001, REST 63002, gRPC 63003,
+	// Noise 63006 -- so leaving any of them to its default makes this test
+	// depend on that port being free on the host, and it went red on
+	// "0.0.0.0:63002: bind: address already in use" beside a concurrent
+	// integration run. The bind host moves to testBindHost with the ports,
+	// and is set on the flags before reserveNoisePort so the Noise port is
+	// probed where its listener binds.
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	require.NoError(t, err)
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
+	require.NoError(t, err)
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
+	require.NoError(t, err)
+	raftAddr := net.JoinHostPort(testBindHost, fmt.Sprint(raftPort))
+
 	dir := t.TempDir()
-	cmd := newStartCmd()
+	cmd, f := newStartCmdWithFlags()
+	f.host = testBindHost
+	reserveNoisePort(t, f)
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
 		"--sm", "memory",
 		"--discovery", "static",
-		"--peers", "1=127.0.0.1:63001",
+		"--host", testBindHost,
+		"--listen", net.JoinHostPort(raftListenHost, fmt.Sprint(raftPort)),
+		"--raft-address", raftAddr,
+		"--peers", "1=" + raftAddr,
+		"--admin-port", fmt.Sprint(adminPort),
+		"--grpc-port", fmt.Sprint(grpcPort),
 		"--data-dir", dir,
 		"--shard-id", "1",
 		"--replica-id", "1",
@@ -2558,38 +2582,13 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 		done <- cmd.Execute()
 	}()
 
-	// Allow the node to start. If leader election is still in progress
-	// when SIGINT arrives, the bootstrap cancels cleanly via context.
-	time.Sleep(500 * time.Millisecond)
-
-	// Re-send SIGINT until Execute returns: under full-suite load the
-	// boot can still be several seconds from registering the signal
-	// context when the first SIGINT is raised, and a single signal
-	// delivered in that window is lost — the daemon then starts fully
-	// and waits forever. Retrying makes the test independent of boot
-	// duration.
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	deadline := time.After(30 * time.Second)
-	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
-		t.Fatalf("Kill() error = %v", err)
+	// Signal once the REST listener accepts, and keep signalling until
+	// Execute returns: see signalAfterReady (go-qrdb#83).
+	if err := signalAfterReady(t, done, syscall.SIGINT,
+		listenerReady(net.JoinHostPort(testBindHost, fmt.Sprint(adminPort)))); err != nil {
+		t.Fatalf("Execute() error = %v, want nil (clean shutdown)", err)
 	}
-	for {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Execute() error = %v, want nil (clean shutdown)", err)
-			}
-			resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
-			return
-		case <-ticker.C:
-			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
-				t.Fatalf("Kill() error = %v", err)
-			}
-		case <-deadline:
-			t.Fatal("Execute() did not return within timeout after SIGINT")
-		}
-	}
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // A file-supplied configuration is overridden by the CLI flag for the same

@@ -67,7 +67,12 @@ type quicTarget struct {
 
 func startQUICTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *quicTarget {
 	t.Helper()
-	cfg := ca.TLS(t, nodeID)
+	return startQUICTargetTLS(t, ca.TLS(t, nodeID), raftAddr)
+}
+
+// startQUICTargetTLS starts a target serving cfg.
+func startQUICTargetTLS(t *testing.T, cfg *tls.Config, raftAddr string) *quicTarget {
+	t.Helper()
 	cfg.NextProtos = []string{wire.ProtocolV3}
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -466,6 +471,29 @@ func TestReplicaForwardQUIC_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	c := newQUICFwdCluster(t, ca, 5*time.Second, b)
 	if st, _ := c.put(t, "kv.Put", putPayload(t)); st != wire.StatusNotFound {
 		t.Fatalf("answer %s; want the replica's not found", wire.StatusName(st))
+	}
+}
+
+// A replica whose first handshakes fail, as one restarting or loaded does,
+// is reconnected to until one passes: its answer is the answer, not this
+// node's refusal.
+func TestReplicaForwardQUIC_AReconnectingReplicaIsWaitedOn(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	refusing, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
+	b := startQUICTargetTLS(t, refusing, "raft-b")
+	b.answer = func(context.Context) (uint16, []byte, bool) {
+		st, body := mapServiceError(&service.KeyNotFoundError{Key: "k1"})
+		return st, body, false
+	}
+	c := newQUICFwdCluster(t, ca, 5*time.Second, b)
+	if st, _ := c.put(t, "kv.Put", putPayload(t)); st != wire.StatusNotFound {
+		t.Fatalf("answer %s; want the reconnecting replica's not found", wire.StatusName(st))
+	}
+	if got := offered.Load(); got != 3 {
+		t.Fatalf("handshakes offered = %d; want two refused, then the one that passed", got)
+	}
+	if got := b.calls.Load(); got != 1 {
+		t.Fatalf("replica served %d requests; want one", got)
 	}
 }
 

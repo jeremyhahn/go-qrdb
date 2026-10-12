@@ -1,0 +1,8 @@
+# actionlint configuration. Every runner label a workflow names that is not a
+# GitHub-hosted one is listed here, or actionlint reports it as unknown.
+self-hosted-runner:
+  labels:
+    # .github/workflows/batch.yml: the batch runners, used by nothing else.
+    - batch
+    # .github/workflows/ci.yml: the dedicated runners of the integration-cluster job.
+    - raft

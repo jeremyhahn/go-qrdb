@@ -970,6 +970,7 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1041,6 +1042,7 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 		default:
 		}
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1165,6 +1167,7 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1239,6 +1242,7 @@ func TestRunStart_SealConfig_SoftwareStrategy_SealedWindow_ThenSIGTERM(t *testin
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1333,6 +1337,7 @@ func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 		enableGRPC:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1397,6 +1402,7 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 		enableGRPC:        true,
 		host:              testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1482,6 +1488,7 @@ func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
 		default:
 		}
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {

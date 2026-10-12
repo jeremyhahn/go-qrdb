@@ -512,6 +512,7 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 		enableREST:      true,
 		host:            testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	err = runStart(f)
 	require.Error(t, err,
@@ -621,6 +622,7 @@ func TestRunStart_DynamicMembership_StartsOnPebble(t *testing.T) {
 		default:
 		}
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {
@@ -689,6 +691,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {

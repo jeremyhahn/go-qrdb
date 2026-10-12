@@ -129,6 +129,7 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 		},
 		host: testBindHost,
 	}
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() { done <- runStart(f) }()

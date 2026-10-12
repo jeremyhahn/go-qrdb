@@ -27,6 +27,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -731,21 +732,27 @@ func TestStartAdvertiser_NewNoiseServerFails(t *testing.T) {
 	}
 }
 
-// TestStartAdvertiser_DefaultsNoisePort proves NoisePort: 0 binds
-// DefaultNoisePort rather than failing or binding an OS-chosen ephemeral
-// port, by reading back the advertiser's own bound address.
+// TestStartAdvertiser_DefaultsNoisePort proves NoisePort: 0 asks for
+// DefaultNoisePort rather than failing or an OS-chosen ephemeral port, by
+// reading the address the advertiser hands its Noise server.
 func TestStartAdvertiser_DefaultsNoisePort(t *testing.T) {
 	if !noiseAvailable() {
 		t.Skip("FIPS 140-3 mode: this node starts no Noise listener")
 	}
-	// Reserve and release DefaultNoisePort first: if something else on this
-	// host already holds it, skip rather than fail on an environment issue
-	// unrelated to the behavior under test.
-	ln, err := net.Listen("tcp", net.JoinHostPort(testBindHost, "63006"))
-	if err != nil {
-		t.Skipf("DefaultNoisePort not free on this host: %v", err)
+	// The address the advertiser asks for is read at the newNoiseServer seam
+	// and the listener is then moved to an ephemeral port. Binding 63006 for
+	// real made this test the one thing in the repository that contended for
+	// the port on purpose, against every concurrent copy of this package and
+	// of cmd/qrdbd, whose tests hold it to catch a forgotten reservation.
+	var requested string
+	prev := newNoiseServer
+	newNoiseServer = func(cfg *noiseboot.ServerConfig) (*noiseboot.Server, error) {
+		requested = cfg.ListenAddr
+		moved := *cfg
+		moved.ListenAddr = net.JoinHostPort(testBindHost, "0")
+		return prev(&moved)
 	}
-	ln.Close()
+	t.Cleanup(func() { newNoiseServer = prev })
 
 	mat, err := clustertls.GenerateCABundle()
 	if err != nil {
@@ -757,12 +764,12 @@ func TestStartAdvertiser_DefaultsNoisePort(t *testing.T) {
 	}
 	defer adv.Stop()
 
-	_, portStr, err := net.SplitHostPort(adv.Addr())
-	if err != nil {
-		t.Fatalf("SplitHostPort(%q): %v", adv.Addr(), err)
+	want := net.JoinHostPort(testBindHost, strconv.Itoa(DefaultNoisePort))
+	if requested != want {
+		t.Fatalf("advertiser asked to listen on %q, want %q (DefaultNoisePort)", requested, want)
 	}
-	if portStr != "63006" {
-		t.Fatalf("advertiser bound port %q, want DefaultNoisePort (63006)", portStr)
+	if adv.Addr() == "" {
+		t.Fatal("advertiser started but reports no bound address")
 	}
 }
 

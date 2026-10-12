@@ -57,12 +57,17 @@ func newParityBackends(t *testing.T) []namedBackend {
 	if err != nil {
 		t.Fatalf("objstore.New: %v", err)
 	}
+	omem, err := objstore.New("memory", map[string]string{})
+	if err != nil {
+		t.Fatalf("objstore.New(memory): %v", err)
+	}
 
 	backends := []namedBackend{
 		{"memory", mem},
 		{"pebble", pdb},
 		{"file", fdb},
 		{"objstore", odb},
+		{"objstore-memory", omem},
 	}
 	t.Cleanup(func() {
 		for _, b := range backends {

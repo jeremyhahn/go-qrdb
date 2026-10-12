@@ -124,3 +124,26 @@ func ClosedAddr(t testing.TB) string {
 	_ = ln.Close()
 	return addr
 }
+
+// HandshakeRefusedError is the refusal RefuseHandshakes answers a refused
+// handshake with.
+type HandshakeRefusedError struct{}
+
+func (*HandshakeRefusedError) Error() string {
+	return "replicaforwardtest: handshake refused"
+}
+
+// RefuseHandshakes returns a copy of cfg that refuses its first n
+// handshakes, as a target that is up but restarting or overloaded fails its
+// first connections, and a count of the handshakes it was offered.
+func RefuseHandshakes(cfg *tls.Config, n int32) (*tls.Config, *atomic.Int32) {
+	offered := new(atomic.Int32)
+	refusing := cfg.Clone()
+	refusing.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		if offered.Add(1) <= n {
+			return nil, &HandshakeRefusedError{}
+		}
+		return nil, nil
+	}
+	return refusing, offered
+}

@@ -116,6 +116,14 @@ func NewKVStore(store kvstore.KVStore) *KVStore
 
 `pkg/tenant`: `WithBarrierReadyHook(h BarrierReadyHook) TenantServiceOption`,
 where `type BarrierReadyHook func(ctx context.Context, tenantID string)`.
+The service calls it (through `notifyBarrierReady`) from
+`TenantBarrierInitWithStrategy` and the Shamir init, from
+`TenantBarrierUnseal`, from `TenantBarrierQuorumSubmit` when the submission
+completes an `OpUnseal` quorum and its cluster seal record is cleared, and from
+`TenantBarrierStatus` when the barrier is initialized and unsealed. It is never
+called below the threshold, for any other quorum op, or when the operation
+fails. A ready barrier can raise it more than once (the unseal, then each
+status read), so the hook must be idempotent; `CompletePendingTenantAdmin` is.
 `pkg/auth/middleware`: `WithPendingTenantAdmins(p PendingTenantAdmins) Option`;
 `pkg/auth/wiring.AuthMiddlewareConfig.PendingTenantAdmins`.
 
