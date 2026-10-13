@@ -212,15 +212,22 @@ const shardLeaderPollInterval = 20 * time.Millisecond
 // together, which is the whole thing this discriminator exists to separate.
 const shardLeaderStarvationFactor = 10
 
-// shardLeaderSource is the one thing waitForShardServingWithin needs from a Host: the
-// current leader of a shard. *quicraft.Host satisfies it.
+// LeaderSource is what WaitForShardLeader polls: the current leader of a
+// shard, as a Raft node reports it. *quicraft.Host satisfies it.
+type LeaderSource interface {
+	GetLeaderID(shardID uint64) (uint64, bool, error)
+}
+
+// shardLeaderSource is the two things waitForShardServingWithin needs from a
+// Host: the current leader of a shard, and whether that leader can serve a
+// read. *quicraft.Host satisfies it.
 //
 // It exists so the wait's own failure paths are testable without booting a raft
 // group -- a wait whose three diagnostic branches were only reachable by
 // starving a real host could never be tested for the case it exists to report.
 // pkg/service.RaftHost is the same narrowing for the same reason.
 type shardLeaderSource interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderSource
 	// ReadReady makes one linearizable read probe on shardID: nil once the
 	// leader can serve a read, quicraft.ErrReadIndexNotReady while it has
 	// not yet committed an entry in its term.
@@ -265,6 +272,23 @@ func (s quicraftShardSource) ReadReady(ctx context.Context, shardID uint64) erro
 func WaitForShardServing(ctx context.Context, host *quicraft.Host, shardID uint64) error {
 	return waitForShardServingWithin(ctx, quicraftShardSource{host: host}, shardID,
 		tenantShardLeaderTimeout, shardLeaderPollInterval, realShardLeaderClock{})
+}
+
+// WaitForShardLeader blocks until shardID has a known leader, within budget,
+// and returns *ShardLeaderWaitError -- naming the shard, the budget, the real
+// time spent and whether the host starved the poller -- when none is elected,
+// or ctx's error when ctx ends first.
+//
+// It is the leader phase of WaitForShardServing on its own, for a caller that
+// needs a leader but not a linearizable read -- one about to propose, whose
+// proposal is ordered after the new leader's first entry in its term anyway.
+// The budget is the caller's because the cost of an election is the caller's
+// configuration: a caller derives it from the election timeout its shard was
+// started with, rather than from a fixed count of polls that means a
+// different amount of wall time on every host.
+func WaitForShardLeader(ctx context.Context, src LeaderSource, shardID uint64, budget time.Duration) error {
+	clock := realShardLeaderClock{}
+	return awaitShardLeader(ctx, src, shardID, clock.Now(), budget, shardLeaderPollInterval, clock)
 }
 
 // shardLeaderClock is the time source waitForShardServingWithin reads. It is
@@ -348,25 +372,8 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 	// Each phase's outcome is judged before ctx: a poll that found what it
 	// waited for is a finished wait even when ctx was cancelled at the same
 	// moment. Only an unfinished wait reports ctx's error.
-	leader, ok := pollShard(ctx, clock, start, deadline, interval, func() (bool, error) {
-		_, ok, err := host.GetLeaderID(shardID)
-		return err == nil && ok, err
-	})
-	if !ok {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return &ShardLeaderWaitError{
-			ShardID:  shardID,
-			Timeout:  timeout,
-			Interval: interval,
-			Elapsed:  leader.elapsed,
-			Polls:    leader.polls,
-			MaxGap:   leader.maxGap,
-			ErrCount: leader.errCount,
-			FirstErr: leader.firstErr,
-			LastErr:  leader.lastErr,
-		}
+	if err := awaitShardLeader(ctx, host, shardID, start, timeout, interval, clock); err != nil {
+		return err
 	}
 
 	read, ok := pollShard(ctx, clock, start, deadline, interval, func() (bool, error) {
@@ -397,6 +404,39 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 		}
 	}
 	return nil
+}
+
+// awaitShardLeader is the leader phase of every wait in this file: it polls
+// src until shardID has a leader or the budget that began at start runs out.
+// waitForShardServingWithin runs it before its read phase, against the same
+// start and budget; WaitForShardLeader runs it alone.
+//
+// It returns nil once a leader is known -- even when ctx was cancelled at the
+// same moment, since a finished wait is finished -- ctx's error when the wait
+// was cancelled before it finished, and otherwise *ShardLeaderWaitError
+// carrying what the poll observed.
+func awaitShardLeader(ctx context.Context, src LeaderSource, shardID uint64, start time.Time, timeout, interval time.Duration, clock shardLeaderClock) error {
+	leader, ok := pollShard(ctx, clock, start, start.Add(timeout), interval, func() (bool, error) {
+		_, ok, err := src.GetLeaderID(shardID)
+		return err == nil && ok, err
+	})
+	if ok {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return &ShardLeaderWaitError{
+		ShardID:  shardID,
+		Timeout:  timeout,
+		Interval: interval,
+		Elapsed:  leader.elapsed,
+		Polls:    leader.polls,
+		MaxGap:   leader.maxGap,
+		ErrCount: leader.errCount,
+		FirstErr: leader.firstErr,
+		LastErr:  leader.lastErr,
+	}
 }
 
 // pollStats is what pollShard observed: the measurement the readiness errors

@@ -711,6 +711,24 @@ type ImbalanceReport struct {
   each reporting probe errors, a starved poller, or the genuine failure. Do not
   widen the budget to make either go away. `qrdbd`'s earlier best-effort
   ReadIndex warm-up is gone: the wait replaces it.
+- **`qrdbd` waits for the system shard's leader by time, not by a count of
+  polls.** Before its first Raft write -- the auth bootstrap and first boot,
+  the cluster-CA path, and database provisioning -- `qrdbd` waits until the
+  system shard knows its leader (`awaitLeader` in `cmd/qrdbd`, which calls
+  `server.WaitForShardLeader`: the leader phase of `WaitForShardServing` on its
+  own). The budget is `leaderWaitBudget`: `leaderWaitElections` (120) election
+  timeouts, where the election timeout is `ElectionRTT` × `RTTMillisecond` of
+  the host and shard configurations the daemon starts the shard with, after
+  go-quicraft fills their defaults. That is 15s for a single-node daemon (the
+  transport-less tuning, 5 × 25ms) and 4min at go-quicraft's defaults
+  (10 × 200ms), where the wait also covers the peers' own start-up -- no
+  election completes before a quorum of replicas runs. The caller's ctx bounds
+  it too, so a signal ends the wait at once. It used to give up after 30
+  polls on a capped backoff, about 13s of wall time whatever the election
+  timeout, which a loaded host running a 2-4s election could exhaust; no
+  configuration now waits less than that. A wait that runs out returns
+  `*server.ShardLeaderWaitError`, naming the shard, the budget and the time
+  spent, with the same starvation verdict as the shard-serving wait.
 - **Dynamic membership is off by default.** Raft reconfiguration occurs only
   when a `Reconfigurer` is supplied **and the local node is the leader**.
 - **A first node serves enrollment on every boot, not only its first.** The
@@ -807,6 +825,7 @@ database's owning tenant.
 | A supplied identity contradicting the one committed for that replica or host | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityConflictError`; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
 | A shard opened or reopened whose leader is elected but never commits in its term within 15s | `*server.ShardReadWaitError` (wraps `server.ErrShardNotReadReady`); the host is not handed out. `qrdbd` refuses to start with `*SystemShardServingError` | **yes** |
+| `qrdbd`'s system shard knows no leader within `leaderWaitBudget` (120 election timeouts) | `*server.ShardLeaderWaitError` (wraps `server.ErrTenantShardNoLeader`), naming the shard, the budget, the time spent and whether the poller was starved, wrapped as the `wait for leader` step of `*AuthBootstrapError` or `*DatabaseProvisionError`; `qrdbd` refuses to start | **yes** |
 | The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
 | An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |

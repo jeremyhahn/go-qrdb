@@ -225,7 +225,7 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 	defer cancel()
 
 	err = runFirstBoot(
-		ctx, node, 1,
+		ctx, node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
 		auth.MTLSBindingEnrolled, nil, nil, nil,

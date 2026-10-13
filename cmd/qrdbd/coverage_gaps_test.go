@@ -181,14 +181,14 @@ func TestWaitForLeaderElection_SecondAttempt(t *testing.T) {
 		},
 	}
 
-	err := waitForLeaderElection(context.Background(), node, 1)
+	err := waitForLeaderElection(context.Background(), node, testLeaderWait, 1)
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), callCount.Load())
 }
 
 func TestWaitForLeaderElection_ImmediateSuccess(t *testing.T) {
 	node := &mockRaftNode{} // default: leader ready
-	err := waitForLeaderElection(context.Background(), node, 1)
+	err := waitForLeaderElection(context.Background(), node, testLeaderWait, 1)
 	require.NoError(t, err)
 }
 
@@ -241,7 +241,7 @@ func TestRunFirstBoot_NonLeaderFailurePropagatesItsCause(t *testing.T) {
 	defer cancel()
 
 	node := &mockRaftNode{} // leader ready
-	err := runFirstBoot(ctx, node, 1,
+	err := runFirstBoot(ctx, node, testLeaderWait, 1,
 		&mockUserServicer{
 			getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
 				return nil, &user.UserNotFoundError{Lookup: "admin"}
@@ -284,7 +284,7 @@ func TestRunFirstBoot_NotLeaderFallsToReplicationWait(t *testing.T) {
 			defer cancel()
 
 			node := &mockRaftNode{}
-			err := runFirstBoot(ctx, node, 1,
+			err := runFirstBoot(ctx, node, testLeaderWait, 1,
 				&mockUserServicer{
 					getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
 						return nil, &user.UserNotFoundError{Lookup: "admin"}
@@ -629,7 +629,7 @@ func TestNewPeersCmd_MTLSInvalidCert(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// waitForLeaderElection: exhausts retries returns error
+// waitForLeaderElection: a context that ends mid-wait returns an error
 // ---------------------------------------------------------------------------
 
 func TestWaitForLeaderElection_ContextCanceledDuringWait(t *testing.T) {
@@ -639,11 +639,11 @@ func TestWaitForLeaderElection_ContextCanceledDuringWait(t *testing.T) {
 		},
 	}
 
-	// Use a short context so context cancellation is hit during backoff.
+	// Use a short context so context cancellation is hit during the wait.
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	err := waitForLeaderElection(ctx, node, 1)
+	err := waitForLeaderElection(ctx, node, testLeaderWait, 1)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))

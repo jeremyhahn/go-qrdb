@@ -200,17 +200,6 @@ func (e *SystemShardServingError) Error() string {
 // Unwrap returns the readiness wait's error.
 func (e *SystemShardServingError) Unwrap() error { return e.Err }
 
-// LeaderElectionTimeoutError is the cause recorded when no Raft leader is
-// elected within the bounded number of attempts.
-type LeaderElectionTimeoutError struct {
-	Attempts int
-}
-
-// Error returns a human-readable description of the leader-election timeout.
-func (e *LeaderElectionTimeoutError) Error() string {
-	return "no leader after " + strconv.Itoa(e.Attempts) + " attempts"
-}
-
 // AdminReplicationTimeoutError is the cause recorded in an AuthBootstrapError
 // when the admin user is not replicated to a follower within the timeout.
 type AdminReplicationTimeoutError struct {

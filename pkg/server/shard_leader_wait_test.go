@@ -584,3 +584,90 @@ func TestWaitForShardServing_SuccessWinsOverACancelAtTheSameMoment(t *testing.T)
 		})
 	}
 }
+
+// A leader that is first reported on poll 40 -- past the thirty attempts qrdbd's
+// awaitLeader used to allow -- is found by a wait whose budget has room for it.
+// The leader wait ends on time, not on a count of polls.
+func TestAwaitShardLeader_LeaderPastAFixedAttemptCountIsFound(t *testing.T) {
+	f := &fakeLeaderSource{leaderA: 40}
+	clock := newVirtualClock()
+	if err := awaitShardLeader(context.Background(), f, 7, clock.Now(), pollBudget(100, virtualInterval), virtualInterval, clock); err != nil {
+		t.Fatalf("awaitShardLeader: %v", err)
+	}
+	if got := f.polls.Load(); got != 40 {
+		t.Fatalf("polls = %d, want 40: the wait must stop on the poll that finds the leader", got)
+	}
+	if got := f.reads.Load(); got != 0 {
+		t.Fatalf("ReadReady probes = %d, want 0: the leader wait must not probe a read", got)
+	}
+}
+
+// When no leader is elected the error names the shard, the budget and the time
+// the wait actually spent.
+func TestAwaitShardLeader_TimeoutNamesShardBudgetAndElapsed(t *testing.T) {
+	f := &fakeLeaderSource{}
+	clock := newVirtualClock()
+	budget := pollBudget(6, virtualInterval)
+	err := awaitShardLeader(context.Background(), f, 9, clock.Now(), budget, virtualInterval, clock)
+	var we *ShardLeaderWaitError
+	if !errors.As(err, &we) {
+		t.Fatalf("err = %v, want *ShardLeaderWaitError", err)
+	}
+	wantPolls(t, we, 6)
+	if we.ShardID != 9 || we.Timeout != budget {
+		t.Fatalf("ShardID = %d, Timeout = %v; want 9 and %v", we.ShardID, we.Timeout, budget)
+	}
+	if we.Elapsed <= budget {
+		t.Fatalf("Elapsed = %v, want past the %v budget", we.Elapsed, budget)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "shard 9") || !strings.Contains(msg, "budget "+budget.String()) {
+		t.Fatalf("message %q does not name the shard and the budget", msg)
+	}
+}
+
+// A cancel stops the wait on the poll it lands on: no further poll is made and
+// the caller gets ctx's error, not a timeout.
+func TestAwaitShardLeader_CancelStopsTheWaitAtOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &fakeLeaderSource{onPoll: func(n int64) {
+		if n == 3 {
+			cancel()
+		}
+	}}
+	clock := newVirtualClock()
+	err := awaitShardLeader(ctx, f, 7, clock.Now(), pollBudget(100, virtualInterval), virtualInterval, clock)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if got := f.polls.Load(); got != 3 {
+		t.Fatalf("polls = %d, want 3: the wait must stop on the poll the cancel landed on", got)
+	}
+}
+
+// WaitForShardLeader, on the real clock, returns as soon as a leader is known.
+func TestWaitForShardLeader_ReturnsOnceALeaderIsKnown(t *testing.T) {
+	f := &fakeLeaderSource{leaderA: 2}
+	if err := WaitForShardLeader(context.Background(), f, 7, time.Minute); err != nil {
+		t.Fatalf("WaitForShardLeader: %v", err)
+	}
+	if got := f.polls.Load(); got != 2 {
+		t.Fatalf("polls = %d, want 2", got)
+	}
+}
+
+// WaitForShardLeader, on the real clock, reports ctx's error for a wait
+// cancelled before any leader appears, however large the budget.
+func TestWaitForShardLeader_HonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := &fakeLeaderSource{}
+	start := time.Now()
+	err := WaitForShardLeader(ctx, f, 7, time.Hour)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if waited := time.Since(start); waited > 10*time.Second {
+		t.Fatalf("waited %v after a cancel; the wait must end at once", waited)
+	}
+}

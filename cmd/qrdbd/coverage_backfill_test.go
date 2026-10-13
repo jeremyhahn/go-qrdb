@@ -75,7 +75,7 @@ func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 	node := &mockRaftNode{}
 	// replicaID = 0 triggers idNode = 1 inside bootstrapUserRoleStores.
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, tx, node,
+		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 0, // shardID=1, replicaID=0
 		&mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingEnrolled, nil, nil, nil,
@@ -96,7 +96,7 @@ func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 	node := &mockRaftNode{}
 	// 1024 > snowflakeMaxNode (1023) → NewSnowflakeGenerator returns error.
 	_, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, tx, node,
+		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1024,
 		&mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingEnrolled, nil, nil, nil,
@@ -121,7 +121,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, tx, node,
+		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
@@ -163,7 +163,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, tx, node,
+		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)

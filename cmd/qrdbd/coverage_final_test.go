@@ -150,7 +150,7 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 	node := &mockRaftNode{}
 
 	err = runFirstBoot(
-		context.Background(), node, 1,
+		context.Background(), node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
 		auth.MTLSBindingEnrolled, nil, nil, nil,
@@ -190,7 +190,7 @@ func TestRunFirstBoot_WithBarriers_FreshBoot_ThenFirstBootError(t *testing.T) {
 	defer cancel()
 
 	err = runFirstBoot(
-		ctx, node, 1,
+		ctx, node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
 		auth.MTLSBindingEnrolled, nil, nil, nil,
@@ -288,7 +288,7 @@ func TestBootstrapUserRoleStores_FirstBootFails_NoLeader(t *testing.T) {
 	}
 
 	tx := newMockTransactionServicer(store)
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -757,29 +757,6 @@ func TestNewCertReloader_KeyDirDifferentFromCertDir(t *testing.T) {
 // ---------------------------------------------------------------------------
 // start.go: waitForLeaderElection — max-attempts path
 // ---------------------------------------------------------------------------
-
-func TestWaitForLeaderElection_MaxAttemptsError(t *testing.T) {
-	attempts := 0
-	node := &mockRaftNode{
-		getLeaderFn: func(_ uint64) (uint64, bool, error) {
-			attempts++
-			// Never return a leader.
-			return 0, false, nil
-		},
-	}
-
-	// Use a very long context so the function hits maxAttempts (30) before
-	// context cancellation. Note: 30 attempts × 500ms max backoff ≈ 15s.
-	// Use a shorter context to keep the test fast.
-	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
-	defer cancel()
-
-	err := waitForLeaderElection(ctx, node, 1)
-	require.Error(t, err)
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe))
-	assert.Equal(t, "wait for leader", abe.Step)
-}
 
 // ---------------------------------------------------------------------------
 // seal_subsystem.go: awaitUnseal — lifecycle.BuildSealServicesOnly error path

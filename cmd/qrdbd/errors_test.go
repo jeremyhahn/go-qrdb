@@ -42,19 +42,6 @@ func TestLegacyDataDirError_UnwrapMatchesSealSentinel(t *testing.T) {
 	}
 }
 
-func TestLeaderElectionTimeoutError(t *testing.T) {
-	e := &LeaderElectionTimeoutError{Attempts: 30}
-	if !strings.Contains(e.Error(), "30") || !strings.Contains(e.Error(), "no leader") {
-		t.Errorf("message %q missing attempt count / no-leader", e.Error())
-	}
-	// Recoverable as the cause of an AuthBootstrapError via errors.As.
-	wrapped := &AuthBootstrapError{Step: "wait for leader", Err: e}
-	var target *LeaderElectionTimeoutError
-	if !errors.As(wrapped, &target) || target.Attempts != 30 {
-		t.Errorf("errors.As should extract LeaderElectionTimeoutError, got %v", wrapped)
-	}
-}
-
 func TestAdminReplicationTimeoutError(t *testing.T) {
 	e := &AdminReplicationTimeoutError{Timeout: 30 * time.Second}
 	if !strings.Contains(e.Error(), "30s") || !strings.Contains(e.Error(), "not replicated") {

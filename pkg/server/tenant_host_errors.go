@@ -41,7 +41,8 @@ var ErrTenantMigrationInProgress = errors.New("server: tenant encryption migrati
 // to elect a leader within the readiness timeout.
 var ErrTenantShardNoLeader = errors.New("server: tenant shard did not elect a leader")
 
-// ShardLeaderWaitError reports that waitForShardServingWithin gave up, and -- unlike
+// ShardLeaderWaitError reports that a leader wait -- WaitForShardLeader, or the
+// leader phase of WaitForShardServing -- gave up, and -- unlike
 // the bare ErrTenantShardNoLeader sentinel it wraps -- what it observed while
 // waiting. It exists because five CI incidents (go-qrdb#139) each cost a manual
 // diagnosis to answer one question the error itself should have answered: was

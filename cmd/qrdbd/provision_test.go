@@ -264,7 +264,7 @@ func TestProvisionDatabases_WaitsForALeaderBeforeWriting(t *testing.T) {
 
 // awaitLeader returns as soon as the shard reports a leader.
 func TestAwaitLeader_ReturnsOnceALeaderIsKnown(t *testing.T) {
-	require.NoError(t, awaitLeader(context.Background(), electedLeader{}, 1))
+	require.NoError(t, awaitLeader(context.Background(), electedLeader{}, testLeaderWait, 1))
 }
 
 // flakyProvisioner answers *service.NotLeaderError (leader unknown) for

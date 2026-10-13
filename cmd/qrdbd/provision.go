@@ -51,7 +51,7 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // marker, a Raft write, so it first waits for that shard to know its
 // leader: a proposal made before any leader is elected is refused rather
 // than queued, and a follower's proposal is forwarded only once it knows
-// where to.
+// where to. The wait is bounded by leaderWaitBudget(f) and by ctx.
 //
 // awaitLeader only confirms a leader is locally KNOWN, not that the shard
 // has finished settling onto it (the same ReadIndex warm-up / election
@@ -61,8 +61,8 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // after awaitLeader returned successfully. Every write below is retried
 // through WhileSystemShardSettling for exactly that reason; any other
 // error class is returned at once.
-func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, node leaderReporter) error {
-	if err := awaitLeader(ctx, node, shard.ShardKV); err != nil {
+func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, node server.LeaderSource) error {
+	if err := awaitLeader(ctx, node, leaderWaitBudget(f), shard.ShardKV); err != nil {
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
 	for _, cfg := range configuredDatabases(f) {

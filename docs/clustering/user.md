@@ -479,6 +479,16 @@ as `degraded` until it is upgraded.
 Check the method's inputs: the `raft.peers` list, the DNS SRV record, the
 multicast secret matching on every node, or the token service.
 
+**A node refuses to start at the `wait for leader` step: `server: shard 1: no
+raft leader after ...`.** The system shard did not elect a leader in time. `qrdbd` waits
+for 120 election timeouts: 15 seconds for a single-node daemon and 4 minutes
+for a cluster on the default Raft tuning, long enough for the other founders to
+come up. The message names the budget and the time spent, and says which of
+three things happened: the node could not be asked, the host was too busy to
+poll it on time, or the shard really did not elect. For a cluster, the usual
+cause is too few founders running: start a quorum of them within the budget of
+each other. Stopping the daemon (SIGINT/SIGTERM) ends the wait at once.
+
 **A node refuses to start: `no node identity in Config.MemberIdentities`.** The
 node was not given the identity of the replica the message names. Add it to
 `raft.member_identities` — see

@@ -1995,7 +1995,7 @@ func runStart(f *startFlags) (err error) {
 				// even on a single-node shard -- the same race
 				// waitForLeaderElection exists to close for
 				// bootstrapUserRoleStores below.
-				if err := waitForLeaderElection(sigCtx, rnode, shard.ShardKV); err != nil {
+				if err := waitForLeaderElection(sigCtx, rnode, leaderWaitBudget(f), shard.ShardKV); err != nil {
 					_ = svcNode.Stop(context.Background())
 					_ = shutdownNode(nodeCloser)
 					return err
@@ -2243,7 +2243,7 @@ func runStart(f *startFlags) (err error) {
 			// against THIS node's auth-chain vocabulary (built-ins until the
 			// middleware is bound below, and with auth disabled).
 			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -4014,7 +4014,7 @@ type authBootstrapResult struct {
 // so no transport can make a change that leaves the bootstrap admin unable to
 // log in by certificate (delete, rename, disable or suspend it, drop mtls from
 // its methods, or withdraw its last live binding).
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, leaderWait time.Duration, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -4035,7 +4035,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// second wait is cheap (GetLeaderID is a local, already-known answer
 	// once a leader exists) and keeps this function independently correct
 	// rather than relying on ordering against its caller.
-	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
+	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
 		return nil, &AuthBootstrapError{Step: "wait for leader", Err: err}
 	}
 
@@ -4163,7 +4163,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// create the admin user with the canonical Admin@system grant. The
 	// system-tenant rule in pkg/auth/rbac promotes that single grant to
 	// cross-tenant authority. Idempotent across daemon restarts.
-	if err := runFirstBoot(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
+	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
 		return nil, err
 	}
 
@@ -4582,10 +4582,10 @@ func defaultAuthFactors() []authfactors.Factor {
 // reserved-id rejection on CreateTenant. Production startup always
 // supplies a non-nil tenant servicer; tests do the same via a small
 // in-memory tenant servicer.
-func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
+func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
-	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
+	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
 		return err
 	}
 
@@ -4828,47 +4828,54 @@ func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchK
 	return nil
 }
 
-// waitForLeaderElection polls GetLeaderID until a leader is known, reporting
-// a failure as an auth-bootstrap step (see awaitLeader).
-func waitForLeaderElection(ctx context.Context, node raftNode, shardID uint64) error {
-	if err := awaitLeader(ctx, node, shardID); err != nil {
+// waitForLeaderElection waits, within leaderWait, until shardID has a known
+// leader, reporting a failure as an auth-bootstrap step (see awaitLeader).
+func waitForLeaderElection(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64) error {
+	if err := awaitLeader(ctx, node, leaderWait, shardID); err != nil {
 		return &AuthBootstrapError{Step: "wait for leader", Err: err}
 	}
 	return nil
 }
 
-// leaderReporter is the slice of a Raft node awaitLeader polls.
-type leaderReporter interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+// leaderWaitElections is how many election timeouts of the system shard
+// leaderWaitBudget allows for a leader to become known.
+//
+// One election costs between one and two election timeouts (go-quicraft
+// randomizes each replica's timeout over [T, 2T)), plus a PreVote round, and a
+// split vote repeats it. On a cluster's first boot the wait also covers the
+// peers' own start-up: no election can complete until a quorum of replicas is
+// running. 120 is chosen so that no configuration this daemon builds waits
+// less than the fixed ~13 s budget it replaces: a single-node shard
+// (cluster.SingleNodeElectionRTT x cluster.TransportlessRTTMillisecond, 125 ms)
+// gets 15 s -- the same budget server.WaitForShardServing then gives the
+// shard's first read -- and go-quicraft's defaults (10 x 200 ms) get 4 min.
+const leaderWaitElections = 120
+
+// leaderWaitBudget returns how long qrdbd waits for the system shard to elect
+// a leader: leaderWaitElections election timeouts, where the election timeout
+// is ElectionRTT x RTTMillisecond as go-quicraft computes it from the host and
+// shard configurations this daemon starts the shard with (buildHostConfig,
+// buildShardConfig), after go-quicraft fills their unset fields with its
+// defaults.
+//
+// The budget is time, not a count of polls: a count means a different amount
+// of wall time on every host and under every load, while an election's cost is
+// a function of its configuration.
+func leaderWaitBudget(f *startFlags) time.Duration {
+	hc := buildHostConfig(f, nil)
+	hc.SetDefaults()
+	sc := buildShardConfig(f)
+	sc.SetDefaults()
+	electionTimeout := time.Duration(sc.ElectionRTT*hc.RTTMillisecond) * time.Millisecond
+	return leaderWaitElections * electionTimeout
 }
 
-// awaitLeader polls GetLeaderID until shardID has a known leader, with a
-// capped backoff. It returns *LeaderElectionTimeoutError when none emerges
-// within its attempts, or the context's error.
-func awaitLeader(ctx context.Context, node leaderReporter, shardID uint64) error {
-	backoff := 50 * time.Millisecond
-	const maxAttempts = 30
-	for attempt := range maxAttempts {
-		_, ok, lerr := node.GetLeaderID(shardID)
-		if lerr == nil && ok {
-			return nil
-		}
-		if attempt == maxAttempts-1 {
-			return &LeaderElectionTimeoutError{Attempts: maxAttempts}
-		}
-		slog.Debug("waiting for leader election",
-			"shard_id", shardID, "attempt", attempt+1, "backoff", backoff)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > 500*time.Millisecond {
-			backoff = 500 * time.Millisecond
-		}
-	}
-	return nil
+// awaitLeader waits until shardID has a known leader, for at most leaderWait
+// and no longer than ctx allows. It returns *server.ShardLeaderWaitError --
+// naming the shard, the budget and the time actually spent -- when none is
+// elected, or ctx's error when ctx ends first.
+func awaitLeader(ctx context.Context, node server.LeaderSource, leaderWait time.Duration, shardID uint64) error {
+	return server.WaitForShardLeader(ctx, node, shardID, leaderWait)
 }
 
 // adminExists checks whether the admin user already exists using a local

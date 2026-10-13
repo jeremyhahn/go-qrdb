@@ -61,7 +61,7 @@ func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
+		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{}, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
@@ -93,7 +93,7 @@ func TestBootstrapUserRoleStores_RequiredWithNoCertPathBootsIntoAwaiting(t *test
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
+		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{}, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingRequired, nil, nil, nil,
 	)

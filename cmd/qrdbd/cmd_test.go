@@ -878,6 +878,12 @@ func TestVersionVariables(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // mockRaftNode implements the raftNode interface for unit testing.
+// testLeaderWait is the leader-wait budget tests hand runFirstBoot,
+// bootstrapUserRoleStores and waitForLeaderElection. A mockRaftNode answers
+// at once, so the budget matters only to a test whose node never names a
+// leader; those pass their own, small, budget.
+const testLeaderWait = 10 * time.Second
+
 type mockRaftNode struct {
 	startShardFn func(map[uint64]string, bool, sm.CreateFunc, quicraftconfig.Config) error
 	getLeaderFn  func(uint64) (uint64, bool, error)

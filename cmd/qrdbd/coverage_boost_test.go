@@ -872,7 +872,7 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// A throwaway map backs the guarded-batch mock: this test targets the
 	// List/Scan failure path, not the atomic-identity plane.
 	tx := newMockTransactionServicer(make(map[string][]byte))
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	// The error should be from bootstrap, though user/role stores may
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
@@ -898,7 +898,7 @@ func TestBootstrapAuth_ContextCanceledSkipsBootstrap(t *testing.T) {
 
 	dir := t.TempDir()
 	tx := newMockTransactionServicer(make(map[string][]byte))
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -907,16 +907,16 @@ func TestBootstrapAuth_ContextCanceledSkipsBootstrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// waitForLeaderElection: backoff cap (line 1618-1620)
+// waitForLeaderElection: the caller's deadline
 //
-// Tests that the backoff is capped at 500ms by using a node that never
-// returns a leader and a context that times out after the cap would be hit.
+// Tests that a node that never returns a leader is waited on no longer than
+// the caller's context allows, whatever the leader-wait budget.
 // ---------------------------------------------------------------------------
 
-func TestWaitForLeaderElection_BackoffCapAt500ms(t *testing.T) {
-	// Use a context that expires after a short duration so we hit the
-	// backoff cap (500ms) before exhausting all 30 attempts.
-	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+func TestWaitForLeaderElection_CallerDeadlineEndsTheWait(t *testing.T) {
+	// The caller's deadline falls well inside the leader-wait budget, so it
+	// is what ends the wait.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	node := &mockRaftNode{
@@ -925,10 +925,11 @@ func TestWaitForLeaderElection_BackoffCapAt500ms(t *testing.T) {
 		},
 	}
 
-	err := waitForLeaderElection(ctx, node, 1)
+	err := waitForLeaderElection(ctx, node, time.Hour, 1)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // ---------------------------------------------------------------------------

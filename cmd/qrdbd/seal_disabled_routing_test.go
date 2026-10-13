@@ -48,7 +48,7 @@ func TestBootstrapUserRoleStores_SealDisabled_StillRoutesByTenant(t *testing.T) 
 	tx := newMockTransactionServicer(store)
 
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, tx, &mockRaftNode{},
+		context.Background(), mock, mock, tx, &mockRaftNode{}, testLeaderWait,
 		1, 1,
 		&prefixTenantServicer{}, false,
 		nil, // NO barrier registry: sealing is disabled
