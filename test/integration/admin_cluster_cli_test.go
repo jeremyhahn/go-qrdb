@@ -36,23 +36,20 @@
 //
 //   - `admin topology` is a local, read-only view "as seen from this node"
 //     (service.AdminService.GetTopology never touches Raft consensus), so it
-//     is exercised against BOTH the leader and a follower.
+//     is exercised against every node, leader and followers alike.
 //   - `admin snapshot` (service.AdminService.RequestSnapshot ->
 //     quicraft.Host.RequestSnapshot) triggers a local log-compaction
 //     snapshot and is NOT leader-gated at the quicraft layer, so it too is
-//     exercised against both the leader and a follower.
+//     exercised against every node.
 //   - `admin member add`/`add-observer`/`remove`/`promote` propose Raft
 //     configuration changes, which only the shard's current LEADER can
-//     commit. Every transport except REST returns service.NotLeaderError
-//     verbatim when a write lands on a follower (pkg/api/grpc/errors.go,
-//     pkg/api/quic/errors.go both map *service.NotLeaderError straight
-//     through instead of forwarding -- only pkg/api/rest/server.go
-//     implements forwardToLeader). Follower-forwarding over REST is already
-//     covered by TestCluster_MembershipAdd/Remove_ForwardsToLeader
-//     (cluster_test.go), so this file targets the LEADER directly on every
-//     protocol -- the realistic, documented way any non-REST client
-//     performs a cluster write -- to prove all 5 transports commit
-//     membership changes end-to-end when routed correctly.
+//     commit. Every node serves them on every transport: a follower that
+//     refuses one as *service.NotLeaderError forwards it, single hop, to
+//     the leader under a signed assertion of the original caller (see
+//     docs/replica-forwarding/), and the leader authorizes that caller.
+//     The membership changes are therefore driven against a node that
+//     currently FOLLOWS shard 1's leader, on every protocol, so that
+//     forwarding path is what the test proves.
 package integration_test
 
 import (
@@ -71,6 +68,10 @@ import (
 // adminClusterPassphrase is the shared system-barrier passphrase every node
 // in the 3-node admin-cluster harness is initialized and unsealed with.
 const adminClusterPassphrase = "admin-cluster-harness-passphrase"
+
+// adminClusterTrustDomain is the SPIFFE trust domain of the harness's node
+// certificates, and the --cluster-trust-domain every node is started with.
+const adminClusterTrustDomain = "qrdb.cluster"
 
 // adminClusterSpareReplica is a genesis member of the cluster
 // start3NodeMultiProtocolCluster boots beyond the 3 control nodes, one per
@@ -99,26 +100,26 @@ type adminClusterSpareReplica struct {
 // why removal is deferred to the moment each spare is actually used. It
 // returns the 3 control nodes as *multiProtoNode (the same handle type
 // startMultiProtocolNode uses, so every existing runCLIProto-based test
-// helper works unmodified against a cluster member), the index of the node
-// that won leadership of shard 1, and the spares slice (len(multiProtocols),
-// in the same order).
+// helper works unmodified against a cluster member) and the spares slice
+// (len(multiProtocols), in the same order). It deliberately does not say
+// which control node leads: leadership moves, and every node must serve
+// every admin command whoever holds it (see adminClusterFollower).
 //
 // Shares startMultiProtocolNodeWithSM's (see multi_protocol_helpers_test.go)
-// bring-your-own TLS shape -- ca.clusterNodeTLS is also bring-your-own, so
-// every node's s.ceremonyCA is nil -- which qrdb init supports directly
+// bring-your-own TLS shape -- ca.clusterNodeSPIFFETLS is also
+// bring-your-own, so every node's s.ceremonyCA is nil -- which qrdb init supports directly
 // (go-qrdb#548). Each node's system barrier is local, so each one runs its
 // own ceremony during its own sealed window in parallel, all handed the
 // SAME bring-your-own-certificate admin identity (minted once, before the
 // loop): first boot on whichever node's write lands first binds it, and
 // every other node's write is an idempotent no-op once raft replicates it.
-func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, leaderIdx int, spares []adminClusterSpareReplica) {
+func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
 	t.Helper()
 
 	n := 3 + len(multiProtocols)
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
-	cfgPath := writeMultiProtocolSealConfig(t, "")
 
 	raftPorts := allocatePorts(t, n)
 	quicPorts := allocatePorts(t, n)
@@ -126,7 +127,21 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 	grpcPorts := allocateTCPPorts(t, n)
 	mcpPorts := allocateTCPPorts(t, n)
 	peersFlag := buildPeersFlag(raftPorts)
-	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
+	raftAddrs := make([]string, n)
+	peerAdminURLs := make(map[string]string, n)
+	for i, port := range raftPorts {
+		raftAddrs[i] = fmt.Sprintf("127.0.0.1:%d", port)
+		peerAdminURLs[raftAddrs[i]] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
+	}
+	// Every node shares one host on its own admin port, so REST's leader
+	// forwarding needs each peer's admin URL spelled out: its fallback --
+	// the leader's Raft host on THIS node's admin port -- names this node.
+	cfgPath := writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs))
+	// Node certificates carry the SPIFFE node ID a follower signs its
+	// on-behalf caller assertion with when it forwards a membership change
+	// to shard 1's leader; without it there is no assertion and the leader
+	// sees only the node certificate, which names no account.
+	nodeTLS, memberIDs := ca.clusterNodeSPIFFETLS(t, raftAddrs, adminClusterTrustDomain)
 
 	dataDirs := make([]string, n)
 	unixSockets := make([]string, n)
@@ -148,7 +163,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			"start",
 			"--config", cfgPath,
 			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
-			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
+			"--raft-address", raftAddrs[i],
 			"--data-dir", dataDirs[i],
 			"--sm", "mvcc",
 			"--discovery", "static",
@@ -234,11 +249,10 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 		}
 		spares = append(spares, adminClusterSpareReplica{
 			replicaID: uint64(i + 1),
-			raftAddr:  fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
+			raftAddr:  raftAddrs[i],
 		})
 	}
 
-	leaderIdx = -1
 	for pos, idx := range controlGenesisIdx {
 		nodes[pos] = &multiProtoNode{
 			cli:        cli,
@@ -253,13 +267,6 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			quicPort:   quicPorts[idx],
 			passphrase: adminClusterPassphrase,
 		}
-		if adminPorts[idx] == leaderPort {
-			leaderIdx = pos
-		}
-	}
-	if leaderIdx == -1 {
-		t.Fatalf("start3NodeMultiProtocolCluster: leader admin port %d not found among the control nodes %v",
-			leaderPort, controlGenesisIdx)
 	}
 
 	// Confirm every transport on every control node is actually serving
@@ -270,7 +277,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 		}
 	}
 
-	return nodes, leaderIdx, spares
+	return nodes, spares
 }
 
 // adminTopologyDisplay mirrors transport.TopologyResponse's wire JSON
@@ -361,9 +368,18 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 // CLI binary against every transport, sharing one 3-node cluster across all
 // 5 protocol subtests (each subtest namespaces its own throwaway replica ID
 // so they never collide).
+//
+// Topology and snapshot run against every control node, whichever leads.
+// The membership changes run against a node that follows shard 1's leader
+// at the moment each protocol's turn starts: a follower refuses a membership
+// change as not the leader, so that is the path that proves it reaches the
+// leader on the caller's behalf. Leadership can move mid-turn; a change that
+// lands on a node that has since become the leader is served there, which is
+// equally correct, and a follower that has since lost track of the leader
+// answers with its own refusal, which fails the test rather than being
+// retried.
 func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
-	nodes, leaderIdx, spares := start3NodeMultiProtocolCluster(t)
-	followerIdx := (leaderIdx + 1) % 3
+	nodes, spares := start3NodeMultiProtocolCluster(t)
 
 	// quicraft refuses to re-admit a replica ID -- or a member identity --
 	// it has ever removed ("raft: node was previously removed" /
@@ -380,16 +396,17 @@ func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 	for i, proto := range multiProtocols {
 		proto, spare := proto, spares[i]
 		t.Run(proto.name, func(t *testing.T) {
-			testAdminTopologyOverProtocol(t, nodes[leaderIdx], proto, "leader")
-			testAdminTopologyOverProtocol(t, nodes[followerIdx], proto, "follower")
-
-			testAdminSnapshotOverProtocol(t, nodes[followerIdx], proto, "follower")
-			testAdminSnapshotOverProtocol(t, nodes[leaderIdx], proto, "leader")
+			for j, node := range nodes {
+				role := fmt.Sprintf("node%d", j+1)
+				testAdminTopologyOverProtocol(t, node, proto, role)
+				testAdminSnapshotOverProtocol(t, node, proto, role)
+			}
 
 			// Two throwaway replica IDs this protocol's turn needs: one for
 			// the observer-add/promote-success cycle, one for the
 			// voter-add/promote-refusal cycle below.
-			testAdminMemberLifecycleOverProtocol(t, nodes[leaderIdx], proto, nextReplicaID, nextReplicaID+1, spare)
+			follower := adminClusterFollower(t, nodes, 30*time.Second)
+			testAdminMemberLifecycleOverProtocol(t, follower, proto, nextReplicaID, nextReplicaID+1, spare)
 		})
 		nextReplicaID += 2
 	}
@@ -485,15 +502,14 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 // member of shard 1 dedicated to this protocol, still a CURRENT member at
 // this point (see adminClusterSpareReplica's doc comment) -- then runs TWO
 // add/remove cycles at spare's now-freed real Raft address against the
-// cluster LEADER over proto, each confirmed via `admin peers`: first
+// node over proto -- in practice a follower of shard 1, so every change
+// is one the node forwards to the leader on the caller's behalf -- each
+// confirmed via `admin peers`: first
 // observerReplicaID, added as an OBSERVER (`admin member add-observer`) and
 // promoted to a voter (`admin member promote`) -- the success path, which
 // had no way to be exercised by CLI before add-observer existed -- then
 // newReplicaID, added as an ordinary voter and confirmed REFUSED promotion
-// ("not a committed observer"). This is the realistic non-REST usage
-// pattern documented in this file's header comment (member writes must be
-// routed to the leader on every transport except REST, which alone
-// auto-forwards).
+// ("not a committed observer").
 //
 // Both cycles happen immediately after spare's removal, with no other Raft
 // traffic against shard 1 in between: go-quicraft stops a removed replica
@@ -513,10 +529,10 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 // ADDRESS (across both cycles, and across protocols) is fine: that
 // restriction is keyed on replica ID and member identity, never on
 // address.
-func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, proto multiProtocol, observerReplicaID, newReplicaID uint64, spare adminClusterSpareReplica) {
+func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, observerReplicaID, newReplicaID uint64, spare adminClusterSpareReplica) {
 	t.Helper()
 
-	removeSpareOut, err := runCLIProto(t, leader, proto, "admin", "member", "remove",
+	removeSpareOut, err := runCLIProto(t, node, proto, "admin", "member", "remove",
 		fmt.Sprintf("%d", spare.replicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member remove (spare replica %d): %v\noutput: %s", proto.name, spare.replicaID, err, removeSpareOut)
@@ -535,7 +551,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 	observerSum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-observer-%d", observerReplicaID)))
 	observerIdentity := "spki:" + hex.EncodeToString(observerSum[:])
 
-	addObserverOut, err := runCLIProto(t, leader, proto, "admin", "member", "add-observer", spare.raftAddr,
+	addObserverOut, err := runCLIProto(t, node, proto, "admin", "member", "add-observer", spare.raftAddr,
 		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", observerReplicaID), "--identity", observerIdentity)
 	if err != nil {
 		t.Fatalf("[%s] admin member add-observer (replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, addObserverOut)
@@ -544,7 +560,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 		t.Fatalf("[%s] admin member add-observer: expected OK, got: %s", proto.name, addObserverOut)
 	}
 
-	promoteObserverOut, err := runCLIProto(t, leader, proto, "admin", "member", "promote",
+	promoteObserverOut, err := runCLIProto(t, node, proto, "admin", "member", "promote",
 		fmt.Sprintf("%d", observerReplicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member promote (observer replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, promoteObserverOut)
@@ -555,11 +571,11 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 
 	// Promoted in place: now a voter, so it must show up as an ordinary
 	// peer exactly as a plain `member add` replica does.
-	if !adminPeersContainsReplica(t, leader, proto, observerReplicaID) {
+	if !waitForAdminPeersReplica(t, node, proto, observerReplicaID, true, 15*time.Second) {
 		t.Fatalf("[%s] admin peers: promoted observer replica %d not present after admin member promote", proto.name, observerReplicaID)
 	}
 
-	removeObserverOut, err := runCLIProto(t, leader, proto, "admin", "member", "remove",
+	removeObserverOut, err := runCLIProto(t, node, proto, "admin", "member", "remove",
 		fmt.Sprintf("%d", observerReplicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member remove (promoted observer replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, removeObserverOut)
@@ -576,7 +592,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 	sum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-replica-%d", newReplicaID)))
 	identity := "spki:" + hex.EncodeToString(sum[:])
 
-	out, err := runCLIProto(t, leader, proto, "admin", "member", "add", spare.raftAddr,
+	out, err := runCLIProto(t, node, proto, "admin", "member", "add", spare.raftAddr,
 		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", newReplicaID), "--identity", identity)
 	if err != nil {
 		t.Fatalf("[%s] admin member add (replica %d): %v\noutput: %s", proto.name, newReplicaID, err, out)
@@ -585,7 +601,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 		t.Fatalf("[%s] admin member add: expected OK, got: %s", proto.name, out)
 	}
 
-	if !adminPeersContainsReplica(t, leader, proto, newReplicaID) {
+	if !waitForAdminPeersReplica(t, node, proto, newReplicaID, true, 15*time.Second) {
 		t.Fatalf("[%s] admin peers: replica %d not present after admin member add", proto.name, newReplicaID)
 	}
 
@@ -594,7 +610,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 	// always votes (there is no observer-mode add yet). This proves the
 	// verb dispatches end-to-end on every protocol and that the typed
 	// refusal (service.MemberNotObserverError) reaches the CLI.
-	promoteOut, err := runCLIProto(t, leader, proto, "admin", "member", "promote",
+	promoteOut, err := runCLIProto(t, node, proto, "admin", "member", "promote",
 		fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
 	if err == nil {
 		t.Fatalf("[%s] admin member promote (voter replica %d) unexpectedly succeeded, output: %s", proto.name, newReplicaID, promoteOut)
@@ -605,7 +621,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 
 	// admin member remove takes the replica ID as a positional argument and
 	// --shard-id as a flag.
-	out, err = runCLIProto(t, leader, proto, "admin", "member", "remove", fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
+	out, err = runCLIProto(t, node, proto, "admin", "member", "remove", fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member remove (replica %d): %v\noutput: %s", proto.name, newReplicaID, err, out)
 	}
@@ -613,12 +629,12 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 		t.Fatalf("[%s] admin member remove: expected OK, got: %s", proto.name, out)
 	}
 
-	if adminPeersContainsReplica(t, leader, proto, newReplicaID) {
+	if !waitForAdminPeersReplica(t, node, proto, newReplicaID, false, 15*time.Second) {
 		t.Fatalf("[%s] admin peers: replica %d still present after admin member remove", proto.name, newReplicaID)
 	}
 
 	// admin member remove: an invalid (non-numeric) replica ID argument.
-	out, err = runCLIProto(t, leader, proto, "admin", "member", "remove", "not-a-number", "--shard-id", "1")
+	out, err = runCLIProto(t, node, proto, "admin", "member", "remove", "not-a-number", "--shard-id", "1")
 	if err == nil {
 		t.Fatalf("[%s] admin member remove (non-numeric replica ID) unexpectedly succeeded, output: %s", proto.name, out)
 	}
@@ -645,6 +661,67 @@ func adminPeersContainsReplica(t *testing.T, node *multiProtoNode, proto multiPr
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// waitForAdminPeersReplica reports whether `admin peers` against node over
+// proto comes to list replicaID (present) or to omit it (!present) within
+// timeout. A membership change is acknowledged once the leader commits it;
+// a follower lists it once it has applied that entry too, which can be a
+// moment later. This waits for that replication -- it never re-issues the
+// change itself.
+func waitForAdminPeersReplica(t *testing.T, node *multiProtoNode, proto multiProtocol, replicaID uint64, present bool, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if adminPeersContainsReplica(t, node, proto, replicaID) == present {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// adminClusterFollower returns a control node that, by its own /status,
+// currently follows shard 1's leader, waiting up to timeout for one: right
+// after a leader change a node can briefly know of no leader at all.
+func adminClusterFollower(t *testing.T, nodes [3]*multiProtoNode, timeout time.Duration) *multiProtoNode {
+	t.Helper()
+	client := mtlsHTTPClient(t, nodes[0].ca, 5*time.Second)
+	deadline := time.Now().Add(timeout)
+	for {
+		for _, node := range nodes {
+			status, _ := httpStatusRaw(t, client, node.restPort)
+			if followsShard1Leader(status) {
+				return node
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no control node followed a known leader of shard 1 within %s", timeout)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// followsShard1Leader reports whether a decoded /status body shows its node
+// as a follower of shard 1 that knows which replica leads it.
+func followsShard1Leader(status map[string]interface{}) bool {
+	shards, _ := status["shards"].([]interface{})
+	for _, s := range shards {
+		shard, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, _ := shard["shard_id"].(float64); id != 1 {
+			continue
+		}
+		isLeader, _ := shard["is_leader"].(bool)
+		replicaID, _ := shard["replica_id"].(float64)
+		leaderID, _ := shard["leader_id"].(float64)
+		return !isLeader && leaderID != 0 && leaderID != replicaID
 	}
 	return false
 }

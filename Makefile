@@ -1160,6 +1160,32 @@ integration-down:
 # INTEGRATION_RUN narrows the stage to a -run expression; empty (the default)
 # runs every test in the package, which is what CI's integration-cluster job does.
 INTEGRATION_RUN ?=
+#
+# The stage's resource budget (#682), the same locally and in CI. It applies to
+# the integration-tests compose service: that container holds the `go test`
+# process and every qrdbd and qrdb process the tests spawn. A CI job starts it
+# through the host's dockerd as a container of its own, so a limit on the job
+# (`container: options:`) would not reach them.
+#
+# CLUSTER_CPUS caps the container at that many CPUs (`cpus:`, docker --cpus).
+# Every Go process in it then sizes GOMAXPROCS to the cap instead of the host's
+# thread count: 8 on an 80-thread runner, not 80. The qrdbd processes the
+# suite spawns stop each running 80 Ps, and a GC sized to them, so they stop
+# starving their own Raft tickers under host load. 8 is what the shared runners can
+# honour: eight cluster jobs at once still leave 16 of a runner's 80 threads.
+#
+# CLUSTER_MEM_RESERVATION is a soft floor (mem_reservation, docker
+# --memory-reservation), not a limit: it keeps the container's pages under host
+# memory pressure and never kills a test. 8g is well over the cluster tenancy
+# selection's measured peak of about 3 GiB of anonymous memory.
+#
+# CLUSTER_PARALLEL is go test's -parallel. The one t.Parallel suite here,
+# TestBarrierClusterUnseal_CLI_PerProtocol, otherwise boots five 3-node
+# clusters at once, 15 qrdbd in one CPU budget. The package already runs as
+# one process (-p 1, a single package).
+CLUSTER_CPUS ?= 8
+CLUSTER_MEM_RESERVATION ?= 8g
+CLUSTER_PARALLEL ?= 1
 .PHONY: integration-test-cluster
 integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
@@ -1168,6 +1194,9 @@ integration-test-cluster: integration-image
 		INTEGRATION_TEST_PKGS='./test/integration/' \
 		INTEGRATION_TAGS='$(INT_FEATURE_TAGS)' \
 		INTEGRATION_RUN='$(INTEGRATION_RUN)' \
+		INTEGRATION_CPUS='$(CLUSTER_CPUS)' \
+		INTEGRATION_MEM_RESERVATION='$(CLUSTER_MEM_RESERVATION)' \
+		INTEGRATION_PARALLEL='$(CLUSTER_PARALLEL)' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \

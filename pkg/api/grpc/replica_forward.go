@@ -108,14 +108,24 @@ func (f *ReplicaForwarder) Close() {
 // admitted here before anything is forwarded.
 func (f *ReplicaForwarder) UnaryInterceptor() grpc.UnaryServerInterceptor { return f.unary }
 
-// unary forwards what handler refuses as a non-replica.
+// unary forwards what handler refuses as a non-replica to a replica, and
+// what it refuses as not the leader to the leader that refusal names.
 func (f *ReplicaForwarder) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	resp, err := handler(ctx, req)
 	if err == nil || forwardedIn(ctx) {
 		return resp, err
 	}
 	reason, md, ok := refusalFromStatus(status.Convert(err))
-	if !ok || reason != replicaforward.ReasonNotAReplica {
+	if !ok {
+		return resp, err
+	}
+	if reason == replicaforward.ReasonNotLeader {
+		if reply, ferr, forwarded := f.forwardAdminWrite(ctx, info.FullMethod, req, replicaforward.LeaderRaftAddr(md)); forwarded {
+			return reply, ferr
+		}
+		return resp, err
+	}
+	if reason != replicaforward.ReasonNotAReplica {
 		return resp, err
 	}
 	refusal, derr := replicaforward.ParseNotAReplica(md)
@@ -200,12 +210,12 @@ func (f *ReplicaForwarder) forward(ctx context.Context, fullMethod string, req a
 	return reply, nil
 }
 
-// forwardAdminWrite sends fullMethod/req, unchanged, to the system shard's
-// leader at leaderAddr. Unlike forward it is not a placement-based retry
-// across a replica set -- the shared system shard has no replica set to
-// retry across -- it is the single hop a leader-only write's own refusal
-// (service.AdminCredentialNotLeaderError and its siblings) already names by
-// address. It resolves that address through the SAME member records
+// forwardAdminWrite sends fullMethod/req, unchanged, to the leader at
+// leaderAddr of the shard that refused it. Unlike forward it is not a
+// placement-based retry across a replica set -- a leader is one node, not a
+// set to retry across -- it is the single hop a leader-only write's own
+// refusal (*service.NotLeaderError, service.AdminCredentialNotLeaderError)
+// already names by address. It resolves that address through the SAME member records
 // forward's Locator reads, signs the identical on-behalf assertion, and
 // relays the leader's answer. ok is false whenever the write was not
 // forwarded (no forwarder, unresolvable leader, or a transport failure

@@ -202,12 +202,11 @@ func (f *FrameForwarder) Forward(ctx context.Context, caller *auth.Identity, met
 	return status, body, true
 }
 
-// ForwardToLeader sends method/payload, unchanged, to the system shard's
-// leader at leaderAddr. Unlike Forward it is not a placement-based retry
-// across a replica set -- the shared system shard has none to retry across
-// -- it is the single hop a leader-only write's own refusal
-// (service.AdminCredentialNotLeaderError and its siblings) already names by
-// address. It resolves that address through the SAME member records Forward's
+// ForwardToLeader sends method/payload, unchanged, to the leader at
+// leaderAddr of the shard that refused it. Unlike Forward it is not a
+// placement-based retry across a replica set -- a leader is one node, not a
+// set to retry across -- it is the single hop a leader-only write's own
+// refusal (see service.LeaderAddress) already names by address. It resolves that address through the SAME member records Forward's
 // Locator reads, signs the identical on-behalf assertion, and relays the
 // leader's answer. forwarded is false whenever the write was not sent (no
 // forwarder, unresolvable leader, or a transport failure before any request

@@ -266,20 +266,34 @@ holds no data for it.
   [../clustering/architecture.md](../clustering/architecture.md)) -- so a
   follower forwards it to the leader instead of answering 503 for a request
   the leader would have served (node parity, owner ruling 2026-10-06: "all
-  the nodes are equal..."). The same ruling extends this past REST: gRPC's
-  `qrdbServiceServer.CeremonyInitialize`, QUIC's `handleStream` and MCP's
-  tool middleware each recognize the identical error and relay it through a
-  new `ForwardToLeader` method on their existing per-transport forwarder
-  (`grpc.ReplicaForwarder.forwardAdminWrite`, `quic.FrameForwarder.
-  ForwardToLeader`, `mcp`'s `replicaForwarder.forwardToLeader`) --
-  `MemberByAddress` on the shared `replicaforward.Locator` resolves the
-  leader's address to its member record exactly as the per-database path
-  does, so no new resolution logic was added, only a single-hop send that
-  skips placement and the bounded retry (the system shard has no replica set
-  to retry across). The Unix socket forwards through the same gRPC
+  the nodes are equal..."). The same ruling extends this past REST, and to
+  every leader-only refusal rather than the ceremony's alone: on gRPC, QUIC
+  and MCP, any unary call or tool a follower refuses with
+  `*service.NotLeaderError` -- a membership change (`admin member add`,
+  `add-observer`, `promote`, `remove`), a system-shard write -- or with
+  `*service.AdminCredentialNotLeaderError` is relayed to the leader that
+  refusal names (`service.LeaderAddress` reads it from either). gRPC's
+  forwarding interceptor acts on the `NOT_LEADER` refusal metadata of any
+  unary call; `qrdbServiceServer.CeremonyInitialize` forwards the ceremony
+  refusal itself, because that refusal carries no such metadata. QUIC's
+  `handleStream` and MCP's tool middleware recognize both errors centrally.
+  All of them send through one leader method on their existing per-transport
+  forwarder (`grpc.ReplicaForwarder.forwardAdminWrite`,
+  `quic.FrameForwarder.ForwardToLeader`, `mcp`'s
+  `replicaForwarder.forwardToLeader`) -- `MemberByAddress` on the shared
+  `replicaforward.Locator` resolves the leader's address to its member record
+  exactly as the per-database path does, so no new resolution logic was
+  added, only a single-hop send that skips placement and the bounded retry
+  (a leader is one node, not a set to retry across). The leader's own answer,
+  error or not, is the final result; a forward that never reached the leader,
+  or a refusal naming no leader or one with no member record, answers with
+  the follower's own refusal. The Unix socket forwards through the same gRPC
   interceptor its per-database path uses. The embedded transport forwards
   through its QUIC client transport exactly as it does for a per-database
-  refusal.
+  refusal. REST resolves the leader through its own `auth.peer_admin_urls`
+  registry rather than the `Locator`; when the nodes share a host, the
+  registry must name every node, or the fallback (the leader's Raft host
+  with this node's own admin port) resolves to the follower itself.
 - It does not change who may do what. Authorization happens at ingress and
   again at the target, as the caller both times.
 - It does not cache anything but the per-shard leader hint (ruling 7), and

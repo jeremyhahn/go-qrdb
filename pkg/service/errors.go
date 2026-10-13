@@ -372,6 +372,21 @@ func (e *NotLeaderError) Is(target error) bool {
 	return target == ErrNotStored
 }
 
+// LeaderAddress reports whether err refuses an operation because this node
+// does not lead -- *NotLeaderError, or *AdminCredentialNotLeaderError from
+// the ceremony leader gate -- and, if so, the leader's Raft address it
+// names, "" when no leader is known. It is how a transport decides that a
+// refusal is one it forwards to the leader.
+func LeaderAddress(err error) (string, bool) {
+	if nle, ok := errors.AsType[*NotLeaderError](err); ok {
+		return nle.LeaderAddress, true
+	}
+	if acnle, ok := errors.AsType[*AdminCredentialNotLeaderError](err); ok {
+		return acnle.LeaderAddress, true
+	}
+	return "", false
+}
+
 // leadershipTransient are the Raft errors of a shard electing a leader or
 // moving it: a request that timed out while no leader answered, was aborted
 // by the leadership change, reached a replica that is not, or not yet, the

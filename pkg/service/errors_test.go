@@ -380,3 +380,29 @@ func TestCheckResultError_NonAppErrorData(t *testing.T) {
 		}
 	}
 }
+
+func TestLeaderAddress_NamesTheLeaderOfEveryNotLeaderRefusal(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"not leader":                  {&NotLeaderError{ShardID: 1, LeaderID: 3, LeaderAddress: "raft-3"}, "raft-3"},
+		"not leader, leader unknown":  {&NotLeaderError{ShardID: 1}, ""},
+		"wrapped not leader":          {errors.Join(errors.New("remove"), &NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "raft-2"}), "raft-2"},
+		"admin credential not leader": {&AdminCredentialNotLeaderError{LeaderAddress: "raft-4"}, "raft-4"},
+	}
+	for name, tc := range cases {
+		got, ok := LeaderAddress(tc.err)
+		if !ok || got != tc.want {
+			t.Errorf("%s: LeaderAddress = %q, %v; want %q, true", name, got, ok, tc.want)
+		}
+	}
+}
+
+func TestLeaderAddress_IgnoresEveryOtherError(t *testing.T) {
+	for _, err := range []error{nil, ErrNotStored, &MemberNotObserverError{ShardID: 1, ReplicaID: 7}} {
+		if addr, ok := LeaderAddress(err); ok {
+			t.Errorf("LeaderAddress(%v) = %q, true; want not a not-leader refusal", err, addr)
+		}
+	}
+}

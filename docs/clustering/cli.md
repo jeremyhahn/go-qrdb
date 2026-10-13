@@ -103,6 +103,13 @@ qrdb admin member remove 4 --shard-id 1
 Adding and removing replicas are separately permissioned
 (`admin:add_member`, `admin:remove_member`) from reading peers.
 
+Every `member` command may target any node, on every transport. Only the
+shard's leader can commit a membership change, so a follower forwards the
+request, once, to the leader its refusal names, and the leader authorizes the
+original caller ([../replica-forwarding/](../replica-forwarding/)). A command
+that still answers `not leader` reached a node that knew no leader, or one it
+could not reach; it is not retried.
+
 ## `qrdb admin member promote <replica-id>`
 
 Promote a committed observer of a shard to a voter, keeping the address and

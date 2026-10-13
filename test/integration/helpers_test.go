@@ -529,6 +529,28 @@ func (ca *testCA) clusterNodeTLS(t *testing.T, n int) ([][]string, string) {
 	return flags, memberIdentitiesFlag(t, certPaths)
 }
 
+// clusterNodeSPIFFETLS is clusterNodeTLS for a cluster whose nodes forward
+// to one another: each node's certificate also carries the SPIFFE
+// spiffe://<trustDomain>/node/<raftAddr> URI SAN, which is what makes it a
+// node certificate. A node signs the on-behalf assertion of every forward
+// with that identity, and the receiving node admits the assertion only from
+// a node-scoped peer. The returned flags include --cluster-trust-domain.
+func (ca *testCA) clusterNodeSPIFFETLS(t *testing.T, raftAddrs []string, trustDomain string) ([][]string, string) {
+	t.Helper()
+	flags := make([][]string, len(raftAddrs))
+	certPaths := make([]string, len(raftAddrs))
+	for i, raftAddr := range raftAddrs {
+		kp := ca.issue(t, t.TempDir(),
+			qrdbdharness.WithSubject("test-node", ""),
+			qrdbdharness.WithServerAuth(),
+			qrdbdharness.WithSPIFFEID(trustDomain, "node/"+raftAddr),
+		)
+		flags[i] = append(ca.TLSFlags(kp), "--cluster-trust-domain", trustDomain)
+		certPaths[i] = kp.CertPath
+	}
+	return flags, memberIdentitiesFlag(t, certPaths)
+}
+
 // buildPeersFlag builds the --peers flag value from ports.
 // Format: "1=127.0.0.1:port1,2=127.0.0.1:port2,..."
 func buildPeersFlag(ports []int) string {

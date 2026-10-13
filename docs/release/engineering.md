@@ -121,11 +121,32 @@ its own stable `go-qrdb-dev:latest`.
 
 ### Cluster integration runners
 
-The `integration-cluster` job in `.github/workflows/ci.yml` runs on dedicated
-runners labelled `raft` (declared in `.github/actionlint.yaml`). The cluster
-suite needs an unshared host: on oversubscribed shared runners it hits Raft
-timeouts and the go-test package timeout. Every other job stays on
-`ubuntu-latest`.
+The `integration-cluster` and `integration-cluster-tenancy` jobs in
+`.github/workflows/ci.yml` run on the shared `ubuntu-latest` (bare-metal)
+runners, like every other job. Those runners are loaded (load averages of 40
+to 70 on 80 threads), and load breaks a 3-node cluster's elections and a CLI
+call's 10-second deadline first. So the cluster stage runs in a fixed budget.
+The Makefile sets it, so a local `make integration-test-cluster` runs in the
+same budget:
+
+| Makefile variable | Default | Applied as |
+|---|---|---|
+| `CLUSTER_CPUS` | `8` | `cpus:` on the `integration-tests` compose service (docker `--cpus`) |
+| `CLUSTER_MEM_RESERVATION` | `8g` | `mem_reservation:` on the same service (docker `--memory-reservation`): a soft floor under host memory pressure, never a limit that kills a test |
+| `CLUSTER_PARALLEL` | `1` | `go test -parallel`. The stage already runs `-p 1` over one package, so this bounds the one `t.Parallel` suite, which otherwise boots five 3-node clusters at once |
+
+The budget is on the compose service, not on the job (`container: options:`).
+The job starts that service through the host's dockerd as a container of its
+own, and that container holds the `go test` process and every qrdbd and qrdb
+process the tests spawn. Under the CPU cap each of those Go processes sizes
+`GOMAXPROCS` to 8, not to the runner's 80 threads. Eight cluster jobs at once
+still leave a runner 16 threads. The other integration stages leave both
+variables unset, which docker reads as no limit.
+
+Raft timing is not part of the budget. qrdbd takes no election, heartbeat or
+tick setting from configuration: the values are code defaults
+(`pkg/cluster/raft_tuning.go` and go-quicraft's), so CI cannot select a slower
+profile.
 
 ### Batch workflow
 

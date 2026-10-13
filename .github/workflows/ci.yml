@@ -797,6 +797,14 @@ jobs:
 
       # INT_PROJECT is read from the shell for the same reason as the standalone
       # job above: a per-run compose project, never a shared default.
+      #
+      # The stage's CPU cap, memory reservation and -parallel bound (#682) are
+      # the Makefile's CLUSTER_CPUS, CLUSTER_MEM_RESERVATION and
+      # CLUSTER_PARALLEL, applied to the integration-tests compose service.
+      # They are not `container: options:` on this job: the job starts that
+      # service through the host's dockerd as a container of its own, so a
+      # limit on the job would not reach the test process or the qrdbd nodes
+      # it spawns.
       - name: Integration tests (cluster tenancy)
         run: |
           export INT_PROJECT="qrdb-int-tenancy-${GITHUB_RUN_ID:-local}"
@@ -820,13 +828,9 @@ jobs:
   # The tenancy slice above stays as its own job: its selection floor is
   # guarded by test/buildgates/cluster_tenancy_gate_test.go, and it reports the
   # tenant suites separately when this job is red for an unrelated reason.
-  #
-  # It runs on the dedicated `raft` runners: the cluster suite needs an unshared
-  # host, and on oversubscribed shared runners it hits Raft timeouts and the 45m
-  # go-test package timeout.
   integration-cluster:
     name: Integration (cluster)
-    runs-on: raft
+    runs-on: ubuntu-latest
     needs: [build]
     timeout-minutes: 120
     steps:
@@ -837,7 +841,8 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       # INT_PROJECT is read from the shell for the same reason as the standalone
-      # job above: a per-run compose project, never a shared default.
+      # job above: a per-run compose project, never a shared default. The
+      # stage's resource budget is the tenancy job's, set the same way (#682).
       - name: Integration tests (cluster)
         run: |
           export INT_PROJECT="qrdb-int-cluster-${GITHUB_RUN_ID:-local}"

@@ -110,11 +110,7 @@ const clusterTestTrustDomain = "qrdb.cluster"
 func writePeerAdminURLConfig(t *testing.T, peerAdminURLs map[string]string) string {
 	t.Helper()
 
-	lines := "  peer_admin_urls:\n"
-	for raftAddr, adminURL := range peerAdminURLs {
-		lines += fmt.Sprintf("    - raft_addr: %q\n      admin_url: %q\n", raftAddr, adminURL)
-	}
-	yaml := "auth:\n" + lines
+	yaml := peerAdminURLsYAML(peerAdminURLs)
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
@@ -122,6 +118,17 @@ func writePeerAdminURLConfig(t *testing.T, peerAdminURLs map[string]string) stri
 		t.Fatalf("writePeerAdminURLConfig: write: %v", err)
 	}
 	return cfgPath
+}
+
+// peerAdminURLsYAML renders the auth.peer_admin_urls block mapping each Raft
+// address to its admin (REST) URL, as a list -- Viper splits map keys on
+// ".", which a dotted IP address would not survive.
+func peerAdminURLsYAML(peerAdminURLs map[string]string) string {
+	lines := "  peer_admin_urls:\n"
+	for raftAddr, adminURL := range peerAdminURLs {
+		lines += fmt.Sprintf("    - raft_addr: %q\n      admin_url: %q\n", raftAddr, adminURL)
+	}
+	return "auth:\n" + lines
 }
 
 // startThreeNodeClusterSPIFFE is a variant of startThreeNodeCluster (see

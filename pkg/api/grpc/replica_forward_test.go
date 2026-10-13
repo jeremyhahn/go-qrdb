@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -92,6 +93,17 @@ func (f *fakeTarget) CeremonyInitialize(ctx context.Context, _ *pb.CeremonyIniti
 		}
 	}
 	return &pb.CeremonyInitializeResponse{SpkiPin: "leader-answered"}, nil
+}
+
+// RemoveMember answers as the system shard's leader would: it is where a
+// follower's NotLeader refusal of a membership change must end up.
+func (f *fakeTarget) RemoveMember(ctx context.Context, _ *pb.RemoveMemberRequest) (*emptypb.Empty, error) {
+	if f.answer != nil {
+		if err := f.answer(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return &emptypb.Empty{}, nil
 }
 
 func (f *fakeTarget) record(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {

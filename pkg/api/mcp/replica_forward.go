@@ -96,7 +96,8 @@ func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replic
 // close releases the idle connections to targets.
 func (f *replicaForwarder) close() { f.base.CloseIdleConnections() }
 
-// middleware forwards a tool call next refused as a non-replica. It sits
+// middleware forwards a tool call next refused as a non-replica, or as not
+// the leader, to the node that can serve it. It sits
 // innermost, so the caller has been authenticated, authorized and scoped
 // here before anything is forwarded; a call forwarded here on a caller's
 // behalf is never forwarded again.
@@ -113,14 +114,16 @@ func (f *replicaForwarder) middleware() mcpserver.ToolHandlerMiddleware {
 				}
 				return res, err
 			}
-			// The admin-credential step of qrdb_ceremony_initialize must
-			// commit on the system shard's leader
-			// (service.CeremonyServiceWithLeaderGate); a follower forwards
-			// the identical call to the leader through the SAME session
+			// What only a shard's leader can commit -- a membership
+			// change, a write, the admin-credential step of
+			// qrdb_ceremony_initialize
+			// (service.CeremonyServiceWithLeaderGate) -- a follower
+			// refuses as not the leader. It forwards the identical call to
+			// the leader that refusal names through the SAME session
 			// machinery forward uses above, rather than answering its own
 			// refusal (node parity, owner ruling 2026-10-06).
-			if notLeader, ok := errors.AsType[*service.AdminCredentialNotLeaderError](err); ok {
-				if fwd, ferr, forwarded := f.forwardToLeader(ctx, req, notLeader.LeaderAddress); forwarded {
+			if leaderAddr, ok := service.LeaderAddress(err); ok {
+				if fwd, ferr, forwarded := f.forwardToLeader(ctx, req, leaderAddr); forwarded {
 					return fwd, ferr
 				}
 			}
@@ -208,12 +211,11 @@ func (f *replicaForwarder) call(ctx context.Context, endpoint string, caller *au
 	return res, true, nil
 }
 
-// forwardToLeader sends req, unchanged, to the system shard's leader at
-// leaderAddr. Unlike forward it is not a placement-based retry across a
-// replica set -- the shared system shard has none to retry across -- it is
-// the single hop a leader-only write's own refusal
-// (service.AdminCredentialNotLeaderError and its siblings) already names by
-// address. It resolves that address through the SAME member records
+// forwardToLeader sends req, unchanged, to the leader at leaderAddr of the
+// shard that refused it. Unlike forward it is not a placement-based retry
+// across a replica set -- a leader is one node, not a set to retry across --
+// it is the single hop a leader-only write's own refusal (see
+// service.LeaderAddress) already names by address. It resolves that address through the SAME member records
 // forward's Locator reads, opens an MCP session to the leader's MCP
 // endpoint exactly as forward does, and relays its result. forwarded is
 // false whenever the call was not sent (no resolvable leader, or a

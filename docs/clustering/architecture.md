@@ -808,14 +808,18 @@ cadence is `DefaultMembershipPollInterval`.
   `service.CeremonyServiceWithLeaderGate`) must commit to the system shard,
   so it runs on the leader -- but a follower forwards the identical request
   rather than answering with its own refusal, the same node-parity contract
-  `member add`/`member remove`/`rebalance execute` already honor (owner
-  ruling 2026-10-06: "all the nodes are equal..."). Every transport that
-  serves ceremony-initialize forwards it through that transport's own
-  leader-forwarding path ([../replica-forwarding/](../replica-forwarding/)):
-  REST's existing system-leader forwarding (`tryForwardWrite`/
-  `forwardToLeader`), and gRPC's, QUIC's and MCP's own `ForwardToLeader`
-  methods on the same `FrameForwarder`/`ReplicaForwarder` each already
-  carries for the per-database `NotAReplicaError` path. The Unix socket
+  `member add`/`add-observer`/`promote`/`remove` and `rebalance execute`
+  honor (owner ruling 2026-10-06: "all the nodes are equal..."). Every
+  transport forwards a leader-only refusal -- `*service.NotLeaderError`, or
+  ceremony-initialize's `*service.AdminCredentialNotLeaderError` -- through
+  that transport's own leader-forwarding path
+  ([../replica-forwarding/](../replica-forwarding/)): REST's existing
+  system-leader forwarding (`tryForwardWrite`/`forwardToLeader`), and gRPC's,
+  QUIC's and MCP's own leader methods on the same
+  `FrameForwarder`/`ReplicaForwarder` each already carries for the
+  per-database `NotAReplicaError` path. Before this, gRPC, QUIC and MCP
+  forwarded only the ceremony's refusal, so a membership change sent to a
+  follower over them answered `not leader`. The Unix socket
   forwards as gRPC does -- it serves the gRPC services -- and the embedded
   transport forwards as its QUIC client transport does.
 - **`GET /health` is a public route** so a load balancer can probe an

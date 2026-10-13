@@ -1139,14 +1139,15 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 					return
 				}
 			}
-			// The admin-credential step of CeremonyInitialize must commit on
-			// the system shard's leader (service.CeremonyServiceWithLeaderGate);
-			// a follower forwards the identical request to the leader through
-			// the SAME FrameForwarder the per-database path above uses, rather
-			// than answering its own refusal (node parity, owner ruling
-			// 2026-10-06).
-			if notLeader, ok := errors.AsType[*service.AdminCredentialNotLeaderError](handlerErr); ok {
-				if st, body, forwarded := s.forwarder.ForwardToLeader(ctx, auth.IdentityFromContext(ctx), method, database, payload, notLeader.LeaderAddress); forwarded {
+			// What only a shard's leader can commit -- a membership change,
+			// a write, the admin-credential step of CeremonyInitialize
+			// (service.CeremonyServiceWithLeaderGate) -- a follower refuses
+			// as not the leader. It forwards the identical request to the
+			// leader that refusal names through the SAME FrameForwarder the
+			// per-database path above uses, rather than answering its own
+			// refusal (node parity, owner ruling 2026-10-06).
+			if leaderAddr, ok := service.LeaderAddress(handlerErr); ok {
+				if st, body, forwarded := s.forwarder.ForwardToLeader(ctx, auth.IdentityFromContext(ctx), method, database, payload, leaderAddr); forwarded {
 					_ = s.writeResponse(stream, requestID, st, body)
 					s.logRequest(method, requestID, st, start)
 					return
