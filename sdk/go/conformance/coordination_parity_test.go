@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -248,23 +249,74 @@ func assertLeaseLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 // key goes with it. This is the property a host's leader election rests on,
 // and it holds only when the node runs the expiry sweeper.
 func assertLeaseExpiryDeletesKeys(t *testing.T, ctx context.Context, c *sdk.Client) {
-	l, err := c.Lease().LeaseGrant(ctx, 1)
-	if err != nil {
-		t.Fatalf("grant: %v", err)
-	}
-	if _, err := c.MVCC().PutWithLease(ctx, "cp/expiry/key", []byte("v"), l.ID); err != nil {
-		t.Fatalf("put with lease: %v", err)
-	}
-	deadline := time.Now().Add(15 * time.Second)
+	ttl := attachExpiringKey(t, ctx, c, "cp/expiry/key")
+	// The lease runs out at most ttl after the put returned, the sweeper
+	// notices it within one DefaultExpiryInterval, and its revoke is then a
+	// write like any other.
+	deadline := time.Now().Add(time.Duration(ttl)*time.Second + lease.DefaultExpiryInterval + expiryRevokeAllowance)
 	for {
 		if _, err := c.KV().Get(ctx, "cp/expiry/key"); err != nil {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the key outlived its 1s lease by 15s: nothing swept the expired lease")
+			t.Fatalf("the key outlived its %ds lease by %s: nothing swept the expired lease", ttl, lease.DefaultExpiryInterval+expiryRevokeAllowance)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// expiryRevokeAllowance is how long assertLeaseExpiryDeletesKeys lets the
+// sweeper's revoke take to apply once it has fired: that revoke is an
+// ordinary write through the same store as the put.
+const expiryRevokeAllowance = 10 * time.Second
+
+// maxExpiryTTL bounds the TTL, in seconds, attachExpiringKey grows to.
+const maxExpiryTTL = 16
+
+// attachExpiringKey grants a short lease, attaches key to it, never refreshes
+// it, and returns the TTL the key was attached under.
+//
+// A short TTL races the put that follows the grant: on a loaded host the
+// lease can run out first, and the put is then refused, the documented answer
+// for a write attached to an expired lease (docs/leases/engineering.md). Not
+// every transport types that refusal on the put (REST answers a bare 404), so
+// the lease's own liveness lookup decides it: a lease the server proves gone
+// ran out before the put, which is the property already holding rather than a
+// failure, and the attach is retried under twice the TTL. A put refused while
+// its lease is live fails the test.
+func attachExpiringKey(t *testing.T, ctx context.Context, c *sdk.Client, key string) int64 {
+	t.Helper()
+	for ttl := int64(1); ; ttl *= 2 {
+		l, err := c.Lease().LeaseGrant(ctx, ttl)
+		if err != nil {
+			t.Fatalf("grant: %v", err)
+		}
+		_, putErr := c.MVCC().PutWithLease(ctx, key, []byte("v"), l.ID)
+		if putErr == nil {
+			// The reap assertion that follows must not pass against a key that
+			// was never written: absent now is only acceptable once the lease
+			// is provably gone.
+			if _, err := c.KV().Get(ctx, key); err != nil && !leaseGone(ctx, c, l.ID) {
+				t.Fatalf("key %q attached to live lease %d is not readable: %v", key, l.ID, err)
+			}
+			return ttl
+		}
+		if !leaseGone(ctx, c, l.ID) {
+			t.Fatalf("put with lease (%ds TTL) refused while the lease is live: %v", ttl, putErr)
+		}
+		if ttl >= maxExpiryTTL {
+			t.Fatalf("put with lease: a %ds lease expired before the put attached to it: %v", ttl, putErr)
+		}
+	}
+}
+
+// leaseGone reports whether the server proves lease id absent: a typed
+// not-found or expired answer from its liveness lookup.
+func leaseGone(ctx context.Context, c *sdk.Client, id int64) bool {
+	_, err := c.Lease().LeaseTimeToLive(ctx, id)
+	var notFound *transport.LeaseNotFoundError
+	var expired *transport.LeaseExpiredError
+	return errors.As(err, &notFound) || errors.As(err, &expired)
 }
 
 // eventStream yields a watch's events one at a time. A transport may batch

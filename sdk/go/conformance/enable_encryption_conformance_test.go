@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -129,8 +130,9 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	return sdkClient.Barrier(), n, roleID
 }
 
-// waitForRootStrategy polls until the node's root barrier strategy becomes
-// want, always through the node's OWN BarrierServicer rather than the
+// waitForRootStrategy waits for the migration the caller started to end and
+// requires the node's root barrier strategy to then be want, always reading it
+// through the node's OWN BarrierServicer rather than the
 // transport under test or even the embedded TRANSPORT client.
 //
 // The service layer, not the embedded transport, is deliberate and is no
@@ -159,20 +161,48 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 // simply block until the migration finishes anyway -- but it would leave the
 // test asserting only the synchronous "migration_started" acknowledgment
 // while claiming to pin the REAL, end-to-end migration promise.
-func waitForRootStrategy(t *testing.T, n *node.Node, want seal.StrategyID) {
+//
+// What it waits for is the migration's end, not a strategy reached within a
+// window. The migration has no time budget of its own -- every transport runs
+// it on a context without cancellation, and a passphrase target derives its
+// key twice, so its wall time follows the host's load
+// (docs/barrier-seal/engineering.md) -- and a fixed window is a bet on the
+// scheduler that a loaded host loses. Its end is an event instead: the recycle
+// publishes a new lifecycle.Node whether the migration committed or reopened
+// under the source strategy, so a Services() other than before, the graph the
+// caller read before starting it, means it is over and the strategy it then
+// reports is the outcome. A failed migration therefore fails the cell at once
+// and by name. The only bound is the caller's own deadline: this test's, less
+// callTimeout so the cell still names itself with time left to clean up.
+func waitForRootStrategy(t *testing.T, n *node.Node, before *lifecycle.Node, want seal.StrategyID) {
 	t.Helper()
-	ctx := boundedCtx(t)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		svc := n.Services()
-		if svc != nil && svc.Barrier != nil {
-			if status, err := svc.Barrier.BarrierStatus(ctx); err == nil && status.Strategy == string(want) {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	ctx := context.Background()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-callTimeout))
+		defer cancel()
 	}
-	t.Fatalf("root barrier strategy never became %q", want)
+	start := time.Now()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if svc := n.Services(); svc != nil && svc != before && svc.Barrier != nil {
+			status, err := svc.Barrier.BarrierStatus(boundedCtx(t))
+			if err != nil {
+				t.Fatalf("barrier status once the migration ended: %v", err)
+			}
+			if status.Strategy != string(want) {
+				t.Fatalf("migration ended after %v with root barrier strategy %q, want %q", time.Since(start), status.Strategy, want)
+			}
+			t.Logf("migration to %q ended %v after the call returned", want, time.Since(start))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("migration to %q had not ended %v after the call returned, at the test's deadline", want, time.Since(start))
+		case <-tick.C:
+		}
+	}
 }
 
 // TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport is the
@@ -209,6 +239,7 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 			barrier, n, roleID := bootBarrierNode(t, tk, database.BackendPebble)
 			ctx := barrierCallerCtx(boundedCtx(t), tk, roleID)
 
+			before := n.Services()
 			resp, err := barrier.BarrierEnableEncryption(ctx, &transport.BarrierEnableEncryptionRequest{
 				Strategy:   string(seal.StrategyPassphrase),
 				Passphrase: []byte("conformance-enable-encryption-passphrase"),
@@ -223,7 +254,7 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 				t.Errorf("%s: Scope = %q, want %q", tk, resp.Scope, "system")
 			}
 
-			waitForRootStrategy(t, n, seal.StrategyPassphrase)
+			waitForRootStrategy(t, n, before, seal.StrategyPassphrase)
 		})
 	}
 }
@@ -279,6 +310,7 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport_MemoryBackend(t
 			barrier, n, roleID := bootBarrierNode(t, tk, database.BackendMemory)
 			ctx := barrierCallerCtx(boundedCtx(t), tk, roleID)
 
+			before := n.Services()
 			resp, err := barrier.BarrierEnableEncryption(ctx, &transport.BarrierEnableEncryptionRequest{
 				Strategy:   string(seal.StrategyPassphrase),
 				Passphrase: []byte("conformance-enable-encryption-passphrase-memory"),
@@ -293,7 +325,7 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport_MemoryBackend(t
 				t.Errorf("%s: Scope = %q, want %q", tk, resp.Scope, "system")
 			}
 
-			waitForRootStrategy(t, n, seal.StrategyPassphrase)
+			waitForRootStrategy(t, n, before, seal.StrategyPassphrase)
 		})
 	}
 }

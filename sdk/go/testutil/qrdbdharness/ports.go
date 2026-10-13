@@ -181,11 +181,22 @@ func ReserveUDPPorts(n int) ([]int, error) {
 // hands each number out once for either protocol, certifying it on both lets
 // any caller use it for any listener family.
 func probeBothProtocols(addr string) (io.Closer, error) {
-	ln, err := net.Listen("tcp", addr)
+	return probeWith(net.Listen, net.ListenPacket, addr)
+}
+
+// probeWith is probeBothProtocols over the given listen functions, so a test
+// can observe the very sockets the probe opened instead of re-binding the
+// number, which another process on the host may have taken in between.
+func probeWith(
+	listenTCP func(network, addr string) (net.Listener, error),
+	listenUDP func(network, addr string) (net.PacketConn, error),
+	addr string,
+) (io.Closer, error) {
+	ln, err := listenTCP("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	pc, err := net.ListenPacket("udp", addr)
+	pc, err := listenUDP("udp", addr)
 	if err != nil {
 		_ = ln.Close()
 		return nil, err

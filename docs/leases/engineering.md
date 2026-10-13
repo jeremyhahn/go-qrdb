@@ -288,8 +288,13 @@ when the absence arrives typed.
 
 ## Configuration
 
-No lease-specific configuration keys. The sweep runs on the leader; its cadence
-follows the Raft tick rather than a separate setting.
+No lease-specific configuration keys. The sweep runs on the leader, once every
+`lease.DefaultExpiryInterval` (one second), in every composition that starts it
+(`pkg/server/lifecycle.StartLocalLeaseExpiry`, the raft backend factory, the
+tenant host); there is no setting for it. An unrefreshed lease's keys are
+therefore reaped within its TTL plus one interval, plus the time the revoke
+itself takes to apply. *(Corrected: this said the cadence follows the Raft
+tick, which no composition does.)*
 
 The lessor's time source is a composition seam: `server.WithClock` /
 `node.WithClock` hand the node's `clock.Clock` to the lessor, so lease time and

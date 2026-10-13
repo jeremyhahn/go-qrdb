@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 // TestNewClusteredNode_CancelledContextBuildsNoHost: a clustered boot whose
@@ -115,6 +117,25 @@ func TestNode_TeardownDataPlaneStopsReclaimSweeper(t *testing.T) {
 
 	n.teardownDataPlane()
 	requireStandaloneReclaimSweepers(t, before)
+}
+
+// TestNode_TeardownDataPlaneStopsVolumeReporter pins that the teardown a
+// system-scope encryption migration runs stops the volume-pool Reporter
+// publishing through the data plane being torn down. Left running, its
+// refresh keeps proposing into an engine whose storage teardownDataPlane has
+// closed ("lease table write failed: storage is closed"), and the rebuild's
+// startVolumeReporter replaces the field without closing it, leaking it for
+// the life of the process.
+func TestNode_TeardownDataPlaneStopsVolumeReporter(t *testing.T) {
+	cfg := sealedStandaloneConfig(t, t.TempDir())
+	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
+	n, err := NewStandaloneNode(context.Background(), cfg, nil, WithSealPassphrase([]byte("teardown-reporter")))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	require.NotNil(t, n.volumeReporter, "a node with a volume pool runs a volume-pool Reporter")
+
+	n.teardownDataPlane()
+	require.Nil(t, n.volumeReporter, "teardownDataPlane left the volume-pool Reporter running over the closed data plane")
 }
 
 // standaloneReclaimSweeperOrigin is the stack line every goroutine

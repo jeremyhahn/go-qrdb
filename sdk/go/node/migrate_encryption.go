@@ -477,6 +477,12 @@ func (n *Node) teardownDataPlane() {
 	// The sweepers revoke and reclaim through the data plane being stopped;
 	// the rebuild starts new ones over the new engine and lessor.
 	n.stopStandaloneSweepers()
+	// So does the volume-pool Reporter: its refresh proposes through the
+	// MVCC and lease services of this graph, and left running it would keep
+	// proposing into an engine whose storage is closed below. Its Close
+	// revokes its lease, so it goes while that graph still serves; the
+	// rebuild starts a new Reporter over the new services.
+	n.stopVolumeReporter()
 	if client := n.client.Swap(nil); client != nil {
 		_ = client.Close()
 	}

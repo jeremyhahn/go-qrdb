@@ -564,6 +564,27 @@ recycles the node's data plane in process, so the call returns once the
 migration has *started*. Poll `barrier status` until the strategy changes from
 `none` to the chosen strategy.
 
+The migration has no time budget: every transport runs it on a context with no
+deadline or cancellation, and it derives the new key once when it mints the
+target barrier and again when the reopened barrier unseals, so with a
+passphrase its wall time follows the host's load. A poller bounds the wait by
+its own deadline, never by a fixed window. A migration that fails after it was
+accepted reopens the data plane under the source strategy and logs the error;
+`barrier status` then reports the strategy still `none`, the same answer it
+gave before the migration began, so a remote poller cannot tell a failed
+migration from an unfinished one and only its deadline ends that wait. An
+embedder holding the `Node` can: the recycle publishes a new `Node.Services()`
+graph whether the migration committed or fell back, so a graph other than the
+one read before the call means the migration is over, and the strategy it then
+reports is the outcome.
+
+The recycle stops every background worker of the old data plane before it
+closes that plane's storage — the lease and reclaim sweepers and the
+volume-pool reporter, whose refresh proposes through the old MVCC and lease
+services — and the rebuild starts new ones over the new services. A worker
+left running proposes into closed storage; the engine then fails the apply
+with `storage is closed` and reports that the lessor could not be rebuilt.
+
 A tenant on the **shared** system barrier cannot change its encryption; the
 server rejects the request. `system-barrier` and `none` are the two valid
 enable-encryption source strategies.

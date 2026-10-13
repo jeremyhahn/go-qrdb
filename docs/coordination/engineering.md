@@ -562,9 +562,14 @@ with it, repeated so a single lucky pass cannot make it green.
 a watch opened before the acquire delivers the leased key.
 
 **Parity, on every transport** (`sdk/go/conformance/coordination_parity_test.go`):
-one lease, watch and lock suite against a standalone memory node, a standalone
-pebble node and a raft node on REST, gRPC, Unix, QUIC, MCP and embedded; and the
-file/objstore row, where the lease is refused.
+one lease, watch and lock suite against a standalone memory, file and pebble
+node and a raft node on REST, gRPC, Unix, QUIC, MCP and embedded, and a
+standalone objstore node on embedded. Every backend composes the lease-keeping
+engine, so no row refuses the lease *(corrected: this described a file/objstore
+row where the lease was refused)*. The expiry case attaches its key under a
+one-second lease and, if the host is too loaded for the put to land inside it
+(the server proves the lease gone), retries under twice the TTL; the reap is
+then bounded by that TTL plus one sweep interval plus the revoke's own write.
 
 **Raft, against a real single-replica group** (`coordination_raft_test.go`):
 lease lifecycle; expiry **including the reap of the bound key**, over both

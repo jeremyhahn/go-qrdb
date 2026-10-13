@@ -86,9 +86,49 @@ func TestReservePortsAreDisjointAcrossProcesses(t *testing.T) {
 	}
 }
 
+// probeSockets records the sockets probeWith opens, so a test can ask those
+// sockets whether they were closed instead of re-binding their number: between
+// a release and a re-bind, any other process on the host may take the number.
+type probeSockets struct {
+	tcpAddr func(addr string) string
+	tcp     net.Listener
+	udp     net.PacketConn
+}
+
+// listenTCP binds TCP at p.tcpAddr(addr), or at addr when tcpAddr is nil.
+func (p *probeSockets) listenTCP(network, addr string) (net.Listener, error) {
+	if p.tcpAddr != nil {
+		addr = p.tcpAddr(addr)
+	}
+	ln, err := net.Listen(network, addr)
+	p.tcp = ln
+	return ln, err
+}
+
+// listenUDP binds UDP at addr.
+func (p *probeSockets) listenUDP(network, addr string) (net.PacketConn, error) {
+	pc, err := net.ListenPacket(network, addr)
+	p.udp = pc
+	return pc, err
+}
+
+// assertClosed fails t unless c was already closed. A second Close on a
+// closed socket reports net.ErrClosed; on an open one it closes it, so a leak
+// fails here without outliving the test.
+func assertClosed(t *testing.T, what string, c io.Closer) {
+	t.Helper()
+	if c == nil {
+		t.Fatalf("the probe never opened its %s socket", what)
+	}
+	if err := c.Close(); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("the probe left its %s socket open (second Close: %v)", what, err)
+	}
+}
+
 // TestProbeBothProtocolsRefusesAPortHeldOnUDP: a number free on TCP but held
 // on UDP is not free for a REST listener, whose HTTP/3 sibling binds the same
-// number on UDP. A TCP-only probe certified it (go-qrdb#248).
+// number on UDP. A TCP-only probe certified it (go-qrdb#248). The refused
+// probe must close the TCP listener it opened first.
 func TestProbeBothProtocolsRefusesAPortHeldOnUDP(t *testing.T) {
 	holder, err := net.ListenPacket("udp", net.JoinHostPort(loopbackHost, "0"))
 	if err != nil {
@@ -97,16 +137,18 @@ func TestProbeBothProtocolsRefusesAPortHeldOnUDP(t *testing.T) {
 	defer func() { _ = holder.Close() }()
 	addr := holder.LocalAddr().String()
 
-	if probe, err := probeBothProtocols(addr); err == nil {
+	// The held number is in the kernel's ephemeral range, where any process's
+	// outbound connection may already own it on TCP; the TCP side therefore
+	// binds a kernel-chosen number, so only the UDP refusal is under test.
+	sockets := &probeSockets{tcpAddr: func(string) string { return net.JoinHostPort(loopbackHost, "0") }}
+	if probe, err := probeWith(sockets.listenTCP, sockets.listenUDP, addr); err == nil {
 		_ = probe.Close()
 		t.Fatalf("probe certified %s, which is held on UDP", addr)
 	}
-	// The TCP side the probe opened first was released, not leaked.
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("the refused probe kept %s on TCP: %v", addr, err)
+	if sockets.udp != nil {
+		t.Fatalf("the probe bound %s on UDP while it was held", addr)
 	}
-	_ = ln.Close()
+	assertClosed(t, "TCP", sockets.tcp)
 }
 
 // TestProbeBothProtocolsHoldsBothUntilClosed: a certified port is held on both
@@ -117,7 +159,8 @@ func TestProbeBothProtocolsHoldsBothUntilClosed(t *testing.T) {
 		t.Fatalf("ReserveTCPPort: %v", err)
 	}
 	addr := net.JoinHostPort(loopbackHost, strconv.Itoa(port))
-	probe, err := probeBothProtocols(addr)
+	sockets := &probeSockets{}
+	probe, err := probeWith(sockets.listenTCP, sockets.listenUDP, addr)
 	if err != nil {
 		t.Fatalf("probe %s: %v", addr, err)
 	}
@@ -132,17 +175,26 @@ func TestProbeBothProtocolsHoldsBothUntilClosed(t *testing.T) {
 	if err := probe.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	for _, network := range []string{"tcp", "udp"} {
-		var c io.Closer
-		if network == "tcp" {
-			c, err = net.Listen(network, addr)
-		} else {
-			c, err = net.ListenPacket(network, addr)
-		}
-		if err != nil {
-			t.Fatalf("%s %s still held after Close: %v", network, addr, err)
-		}
-		_ = c.Close()
+	assertClosed(t, "TCP", sockets.tcp)
+	assertClosed(t, "UDP", sockets.udp)
+}
+
+// TestProbeBothProtocolsUsesTheNetwork: probeBothProtocols is probeWith over
+// the real listeners, holding addr on both protocols until Close.
+func TestProbeBothProtocolsUsesTheNetwork(t *testing.T) {
+	port, err := ReserveTCPPort()
+	if err != nil {
+		t.Fatalf("ReserveTCPPort: %v", err)
+	}
+	addr := net.JoinHostPort(loopbackHost, strconv.Itoa(port))
+	probe, err := probeBothProtocols(addr)
+	if err != nil {
+		t.Fatalf("probe %s: %v", addr, err)
+	}
+	defer func() { _ = probe.Close() }()
+	if pc, err := net.ListenPacket("udp", addr); err == nil {
+		_ = pc.Close()
+		t.Fatal("probeBothProtocols does not hold UDP")
 	}
 }
 
