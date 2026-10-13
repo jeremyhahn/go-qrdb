@@ -68,7 +68,7 @@ The per-tenant data Host is built **lazily, only after the barrier is unsealed**
 
 ### System-managed auto-unseal (opt-in convenience)
 
-When `barrier_auto_unseal` is `true`, the tenant root key is AEAD-wrapped under the **system barrier's** master key using the `system-barrier` sealing strategy (the locked "Single KEK/DEK" custody model — see [multi-tenant-isolation-quota.md](../design/multi-tenant-isolation-quota.md)). The barrier is **auto-initialized at create** and **auto-unsealed credential-free at boot** whenever the system barrier is unsealed (which it always is after the daemon's own unseal). No per-tenant credential is held or required.
+When `barrier_auto_unseal` is `true`, the tenant root key is AEAD-wrapped under the **system barrier's** master key using the `system-barrier` sealing strategy (the locked "Single KEK/DEK" custody model — see [multi-tenancy/](../multi-tenancy/)). The barrier is **auto-initialized at create** and **auto-unsealed credential-free at boot** whenever the system barrier is unsealed (which it always is after the daemon's own unseal). No per-tenant credential is held or required.
 
 This trades separation for convenience: the system custodies the tenant key, so a system-tenant operator can reach the tenant's data, and the barrier survives an unattended restart. **It is not suitable for high-security tenants** — those should stay on the self-managed default.
 

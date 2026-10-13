@@ -693,8 +693,7 @@ and, retrying, issues exactly that new request.
 > at initialization and that moving off `none` is "a planned backup/restore
 > migration into a freshly-keyed instance". `barrier enable-encryption` has
 > since shipped and performs an in-place re-encryption. The code is correct and
-> the older prose is stale; the design record is
-> [seal/cluster-enable-encryption-design.md](../seal/cluster-enable-encryption-design.md).
+> the older prose is stale.
 
 ## Error semantics
 

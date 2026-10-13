@@ -39,7 +39,7 @@ and a typed error hierarchy — transport, service, vector, management and featu
 errors, so a frontend can tell "the server refused" from "the connection
 failed".
 
-Full reference: [typescript-sdk/README.md](../typescript-sdk/README.md).
+Full reference: [typescript-sdk/](../typescript-sdk/).
 
 ## Authentication
 
@@ -57,4 +57,4 @@ errors on use.
 
 Not applicable — this feature introduces no routes. The npm package is versioned
 independently of the server; see
-[typescript-sdk/README.md](../typescript-sdk/README.md).
+[typescript-sdk/](../typescript-sdk/).

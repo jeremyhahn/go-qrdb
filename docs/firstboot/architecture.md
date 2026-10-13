@@ -170,7 +170,7 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
    records live in. This is NOT the seal/credential store: that store is
    per-node by design (every cluster node holds its own system barrier and
    master key, never shared — see
-   [../seal/per-node-barrier-architecture.md](../seal/per-node-barrier-architecture.md))
+   [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster))
    and cannot carry a record the Raft LEADER's first boot needs, because
    `qrdb init` may run against any node.
 

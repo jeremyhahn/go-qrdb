@@ -370,7 +370,7 @@ func validateAdminCertProfile(cert *x509.Certificate) error {
 //
 // It is NOT read from any store: the seal/credential store is per-node by
 // design (every cluster node holds its own system barrier and master key,
-// never shared across nodes -- docs/seal/per-node-barrier-architecture.md),
+// never shared across nodes -- docs/barrier-seal/architecture.md),
 // so it cannot carry a record the Raft LEADER's first boot needs, because
 // Initialize may run against any node in the cluster. The composer
 // (cmd/qrdbd, sdk/go/node) reads this immediately after a successful

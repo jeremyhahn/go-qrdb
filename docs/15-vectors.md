@@ -620,5 +620,5 @@ func (e *DimensionMismatchError) Error() string {
 - [API Reference](api-server/api.md) -- REST and gRPC endpoint specifications
 - [Configuration](12-configuration.md) -- YAML configuration reference
 - [Go SDK](api-server/engineering.md) -- Go client library, `Vector()` method
-- [TypeScript SDK](typescript-sdk/README.md) -- `VectorClient` interface
+- [TypeScript SDK](typescript-sdk/) -- `VectorClient` interface
 - [GUI System](gui/README.md) -- Vector views in the desktop/browser GUI

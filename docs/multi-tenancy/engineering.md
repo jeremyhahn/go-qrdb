@@ -898,8 +898,7 @@ an operator grants them. Full reference:
 > (Phase 4d Option C) is **designed but not built**. It would encrypt the
 > tenant's raft log under its own key on the shared host rather than the shared
 > system key. It requires a go-quicraft per-barrier snapshot-pool rework
-> (per-barrier epoch tracking) first. Plan:
-> [design/4d-per-tenant-wal-option-c.md](../design/4d-per-tenant-wal-option-c.md).
+> (per-barrier epoch tracking) first.
 
 ## Deployment requirement
 

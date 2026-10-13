@@ -11,7 +11,7 @@ Licensed under the Apache License, Version 2.0
 This guide covers the operational considerations and deployment patterns for
 running tenant databases with `IsolationRaft` isolation across multiple cluster
 nodes. For the design rationale and implementation details, see
-[design/multi-tenant-isolation-quota.md](design/multi-tenant-isolation-quota.md).
+[multi-tenancy/](multi-tenancy/).
 
 ---
 
@@ -467,5 +467,5 @@ each node (more operational burden, higher security).
   formation
 - [seal/multi-tenant.md](seal/multi-tenant.md) — Barrier lifecycle, key
   management
-- [design/multi-tenant-isolation-quota.md](design/multi-tenant-isolation-quota.md) — Design
+- [multi-tenancy/](multi-tenancy/) — Design
   and implementation details of Phase 4c

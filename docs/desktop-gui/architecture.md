@@ -159,7 +159,7 @@ ServerMode --> [Remote] --> ConnectionConfig --> Summary --> Complete
 
 ## Companion documents
 
-- [typescript-sdk/README.md](../typescript-sdk/README.md) — `@qrdb/sdk` package
+- [typescript-sdk/](../typescript-sdk/) — `@qrdb/sdk` package
   reference: client interface, service interfaces, factory, transports, watch
   streaming, error types, npm packaging.
 - [gui/README.md](../gui/README.md) — the fuller GUI reference including the

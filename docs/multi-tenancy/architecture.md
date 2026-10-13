@@ -1593,6 +1593,3 @@ place of a CSR (phase 3).
   design that moves every non-required tenant record out of the system tenant.
 - [deployment-multi-node-raft.md](../deployment-multi-node-raft.md) — deploying
   multi-node IsolationRaft tenant clusters end to end.
-- [design/multi-tenant-isolation-quota.md](../design/multi-tenant-isolation-quota.md)
-  — the design record, including phases whose status is not fully settled on
-  paper. Read it as history and intent.

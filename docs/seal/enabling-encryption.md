@@ -156,7 +156,7 @@ cluster-wide with **no shared key, no global coordination beyond the intent
 record, and rolling per-node recycling**. Each node independently recycles its own
 replica while the Raft group stays available; zero data loss is guaranteed by the
 logical snapshot boundary and per-node key derivation (see
-[per-node-barrier-architecture.md](per-node-barrier-architecture.md) § 4).
+[barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster)).
 
 ### How cluster enable-encryption works
 

@@ -627,7 +627,3 @@ sits cached in the clear BETWEEN signatures.
   HIPAA mapping.
 - [seal/multi-tenant.md](../seal/multi-tenant.md) — per-tenant barrier
   isolation; see also [../multi-tenancy/](../multi-tenancy/).
-- [seal/per-node-barrier-architecture.md](../seal/per-node-barrier-architecture.md)
-  and [seal/cluster-enable-encryption-design.md](../seal/cluster-enable-encryption-design.md)
-  — design records, including phases marked DEFERRED. Read them as history and
-  intent, not as shipped behaviour.

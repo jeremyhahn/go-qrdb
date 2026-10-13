@@ -31,7 +31,7 @@ import (
 // It is a record in qrdb's own replicated store -- NOT the per-node
 // seal/credential store, which cannot carry it (every cluster node holds its
 // own system barrier and master key, never shared -- see
-// docs/seal/per-node-barrier-architecture.md), and NOT a file in data_dir.
+// docs/barrier-seal/architecture.md), and NOT a file in data_dir.
 // Composers write it under the system tenant's identity namespace, the same
 // store first boot's own role and user records live in.
 const PendingAdminCertKey = "pending-admin-cert"

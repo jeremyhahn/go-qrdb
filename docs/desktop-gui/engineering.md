@@ -38,7 +38,7 @@ getClient()   // auto-detects the runtime, returns WailsClient or RestClient
 
 The service interfaces, error type hierarchy (transport, service, vector,
 management, feature errors), watch streaming and npm packaging are documented in
-[typescript-sdk/README.md](../typescript-sdk/README.md).
+[typescript-sdk/](../typescript-sdk/).
 
 ## Invariants
 

@@ -107,7 +107,7 @@ fi
 # added to stop, because it also reports `ok`.
 #
 # NOT MATCHED, on purpose: a bare `#44`. It is genuinely ambiguous in prose —
-# docs/design/multi-tenant-isolation-quota.md uses `#1` and `#4` as
+# a document can use `#1` and `#4` as
 # back-references to its own numbered list, and that is not a violation of
 # anything. Flagging it would mean rewriting correct prose on the guard's first
 # run, which is how a check acquires its first exclusion and its reputation.
