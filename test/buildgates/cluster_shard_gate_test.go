@@ -87,9 +87,14 @@ func clusterShardProblems(wf shardWorkflow, n int) []string {
 	if !ok {
 		return []string{"ci.yml has no " + clusterJob + " job: the cluster suite does not gate the merge"}
 	}
-	if job.If != "" {
-		problems = append(problems, "job "+clusterJob+" has an `if:` condition ("+job.If+
-			"): a skipped job satisfies `needs`")
+	// The legs are in the full tier (#674): every push to main, every dispatch
+	// and a PR labelled `ci:full`. Any other `if:` -- or none, which puts the
+	// suite back on every PR push -- is a tier ci-gate does not know the job
+	// is in, and a narrower one gets excused as a full-tier skip.
+	if job.If != fullTierIf {
+		problems = append(problems, "job "+clusterJob+"'s `if:` is "+strconv.Quote(job.If)+
+			", not the full-tier condition "+strconv.Quote(fullTierIf)+
+			": it must run on every push to main and on a `ci:full` pull request")
 	}
 
 	shards := job.Strategy.Matrix.Shard
@@ -181,6 +186,7 @@ func TestClusterShardMatrixMatchesMakefile(t *testing.T) {
 // for n = 3.
 const shardWorkflowFixture = `jobs:
   integration-cluster:
+    if: ` + fullTierIf + `
     strategy:
       fail-fast: false
       matrix:
@@ -227,7 +233,8 @@ func TestClusterShardProblems_CanFail(t *testing.T) {
 		{name: "fixed leg", body: strings.Replace(shardWorkflowFixture, "CLUSTER_SHARD=${{ matrix.shard }}/3", "CLUSTER_SHARD=1/3", 1), n: 3},
 		{name: "no leg", body: strings.Replace(shardWorkflowFixture, " CLUSTER_SHARD=${{ matrix.shard }}/3", "", 1), n: 3},
 		{name: "shared compose project", body: strings.Replace(shardWorkflowFixture, "qrdb-int-cluster-${{ matrix.shard }}-1", "qrdb-int-cluster-1", 1), n: 3},
-		{name: "conditional job", body: strings.Replace(shardWorkflowFixture, "  integration-cluster:\n", "  integration-cluster:\n    if: ${{ github.event_name == 'push' }}\n", 1), n: 3},
+		{name: "narrowed to push only", body: strings.Replace(shardWorkflowFixture, "    if: "+fullTierIf+"\n", "    if: ${{ github.event_name == 'push' }}\n", 1), n: 3},
+		{name: "no full-tier if", body: strings.Replace(shardWorkflowFixture, "    if: "+fullTierIf+"\n", "", 1), n: 3},
 		{name: "not required by ci-gate", body: strings.Replace(shardWorkflowFixture, "needs: [integration-cluster]", "needs: []", 1), n: 3},
 		{name: "result not checked", body: strings.Replace(shardWorkflowFixture, "needs.integration-cluster.result", "needs.build.result", 1), n: 3},
 		{name: "no cluster job", body: strings.Replace(shardWorkflowFixture, "  integration-cluster:\n", "  integration-other:\n", 1), n: 3},

@@ -17,7 +17,9 @@ name, is in [Arming the gate](#arming-the-gate).
 
 ## The job
 
-CI runs a nightly `FIPS 140-3` job that executes the full unit suite of **both
+CI runs a nightly `FIPS 140-3` job — dispatched by hand each night,
+since `nightly.yml` has had no `schedule:` trigger as of 2026-10-12 (no
+workflow runs on a cron) — that executes the full unit suite of **both
 modules** under:
 
 ```
@@ -634,7 +636,7 @@ turned this page false twice, which is why [Reproducing this
 measurement](#reproducing-this-measurement) says to re-measure after the last
 commit that touches test code. They have not been re-taken against a later
 commit. Read them as the last measurement, not as the current state: the
-current state is whatever the most recent scheduled nightly reports, and
+current state is whatever the most recent nightly run reports, and
 nothing on this page can report it for you.
 
 What run 17302 ran, step by step, and therefore what this table can claim:
@@ -810,17 +812,19 @@ at thirty:
   not proof, but the difference between "we have not looked" and "we looked".
 - **Five green runs today are not five independent measurements.** They cover
   three distinct commits, and two of those three differ only in the change
-  being demonstrated at the time. Fourteen scheduled runs span two weeks of a
+  being demonstrated at the time. Fourteen nightly runs span two weeks of a
   moving tree, which is what actually tests whether the job survives other
   people's merges rather than one tree's determinism.
 - **Waiting is free.** The nightly runs whether or not anyone is waiting for
   it, so the record accumulates at no cost, while arming early costs ~35
-  minutes on every pull request in the interim.
+  minutes on every run of whichever tier it is armed in.
 
 Arming remains **four moves and one act** when the record is in: move the job
-from `.github/workflows/nightly.yml` into `.github/workflows/ci.yml`, add
-`fips` to `ci-gate`'s `needs`, add `RESULT_FIPS` to its `env` block, and add a
-`check fips` call to its loop. The old instruction to do that "in the change
+from `.github/workflows/nightly.yml` into `.github/workflows/ci.yml` (with the
+full-tier `if:` unless it is armed per pull request), add `fips` to
+`ci-gate`'s `needs`, add `RESULT_FIPS` to its `env` block, and add a
+`check fips "$RESULT_FIPS" <pr|full>` call to its loop;
+`test/buildgates/ci_tiers_test.go` refuses the job with any of them missing. The old instruction to do that "in the change
 that closes the last finding, not later" was right about the hazard and wrong
 about the trigger: a FIPS job that can pass and is not required **is** a
 fail-open gate, and that is the cost being carried deliberately for the length

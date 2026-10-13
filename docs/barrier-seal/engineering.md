@@ -1015,12 +1015,14 @@ distinguishes them.
   every replica; a cut-off node stops serving and resumes; a restarted node
   reads the record before serving.
 - **Integration**: `cluster_enable_encryption_test.go` lives in the **cluster
-  stage** (`make integration-test-cluster`), which CI runs on every push in
-  the `integration-cluster` job, part of the result gate. Its tenant-scope
+  stage** (`make integration-test-cluster`), which CI runs in its full tier
+  (every push to `main`, every dispatch, and a `ci:full` pull request) in the
+  `integration-cluster` job, part of the result gate. Its tenant-scope
   case also runs in the cluster tenancy job (see
   [../multi-tenancy/engineering.md](../multi-tenancy/engineering.md#test-strategy)).
   *(Corrected 2026-10-02: this said the stage was not wired into CI.
-  Corrected 2026-10-05: the stage moved from the nightly to every push.)*
+  Corrected 2026-10-05: the stage moved from the nightly to every push.
+  Corrected 2026-10-12: every push to `main`, not every PR push.)*
 - **Feature target**: `make integration-test-barrier-seal` runs this feature's
   self-spawned suites (`test/integration/features.mk`, no Docker). The
   per-transport accounting, including the embedded-transport gap, is the

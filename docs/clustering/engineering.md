@@ -931,8 +931,9 @@ and neither opens a listener there — see
   `cluster_enable_encryption_test.go` — live in `make integration-test-cluster`.
   **That stage runs in CI** as the `integration-cluster` and
   `integration-cluster-tenancy` jobs (`.github/workflows/ci.yml`), both
-  required by the `ci-gate` job, so cluster behaviour is exercised on every
-  push and pull request.
+  required by the `ci-gate` job in CI's full tier, so cluster behaviour is
+  exercised on every push to `main`, every dispatch, and every pull request
+  labelled `ci:full`.
 
 ## Observability
 

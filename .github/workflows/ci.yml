@@ -10,13 +10,34 @@ name: CI
 # ci-template v1.9 moved the known-red and long-horizon jobs — fips and trivy —
 # to nightly.yml (owner ruling 2026-08-20, go-qrdb#48). trivy's CRITICAL/HIGH
 # gate returned here once it was green (#479, 2026-09-22); its MEDIUM/LOW
-# report and its scheduled run on a quiet tree stay in nightly.yml.
+# report and its run on a quiet tree stay in nightly.yml.
+#
+# Two tiers (go-qrdb#674; handbook sdlc.md §5a, devops.md §1/§5/§8a; the
+# pattern is go-quicraft#294):
+#
+#   PR tier    every run. lint, build, test, test-sdk, test-typescript,
+#              security.
+#   Full tier  push to main, workflow_dispatch (the coordinator's nightly
+#              dispatches this workflow), or a pull_request carrying the label
+#              `ci:full`. integration-standalone, integration-cluster-tenancy,
+#              integration-cluster, trivy.
+#
+# Each full-tier job carries the same `if:`, spelled out per job because
+# Gitea's workflow parser does not expand YAML anchors. ci-gate passes a
+# full-tier job that its tier skipped and nothing else that skipped. A
+# full-tier job may need a PR-tier one; never the reverse. A new job joins one
+# tier explicitly, and test/buildgates/ci_tiers_test.go holds the two to the
+# gate.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` so that adding `ci:full` starts a full-tier run. Any other
+    # label also starts a run, which re-runs the PR tier on the same commit
+    # and supersedes the run in flight on this ref.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:                    # manual rerun — Gitea has no rerun API
 
 # Supersession control (#352). A newer head on the same ref cancels the older
@@ -40,9 +61,12 @@ on:
 #     literal. (Group-key expressions DO evaluate.)
 #   - The group is per-REF: a PR's runs and main's push runs never cancel each
 #     other, and two PRs never cancel each other.
-#   - release-lockstep.yml deliberately does NOT get this — cancelling a
-#     release mid-publish risks a partial tag or publish — nor does
-#     nightly.yml.
+#   - Every workflow triggered on pull_request carries this same group
+#     (devops.md §9b), release-lockstep.yml included since #674: it audits
+#     tags and publishes nothing, so a superseded audit is safe to cancel, and
+#     a tag push is its own ref and supersedes only itself. release.yml, the
+#     one that publishes, has no pull_request trigger and no group: cancelling
+#     it mid-publish risks a partial release. nightly.yml has neither.
 #   - ADOPTION BOUNDARY, expect it exactly once: Gitea groups a run using the
 #     workflow file OF THAT RUN, so the first push after this lands cannot
 #     supersede a run created before it. Check with
@@ -720,6 +744,7 @@ jobs:
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # needs deliberately EXCLUDES lint, and now actually does (#143) — see the
     # `test` job above for the full reasoning and for what this list used to
     # say. `ci-gate` requires lint directly and fails closed on `skipped`.
@@ -783,13 +808,16 @@ jobs:
         if: always()
         run: make integration-down INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}" || true
 
-  # The multi-node tenant suites, on every push (strict tenant isolation, plan
-  # phase 0; owner ruling 2026-10-02). The full cluster stage runs in
-  # integration-cluster below; this is the tenancy slice of it, selected by CLUSTER_TENANCY_RUN in the
-  # Makefile, because every strict-isolation phase proves itself on real
-  # 3-node clusters and a proof that runs only nightly does not gate the merge
-  # it proves. test/buildgates/cluster_tenancy_gate_test.go keeps this job, its
-  # target and its place in ci-gate's needs from drifting apart.
+  # The multi-node tenant suites, on every push to main (strict tenant
+  # isolation, plan phase 0; owner ruling 2026-10-02) and, since the tier split
+  # (#674), on a pull request only when it carries `ci:full`. The full cluster
+  # stage runs in integration-cluster below; this is the tenancy slice of it,
+  # selected by CLUSTER_TENANCY_RUN in the Makefile, because every
+  # strict-isolation phase proves itself on real 3-node clusters and a proof
+  # that runs only nightly does not gate the merge it proves: label a PR that
+  # touches tenant isolation `ci:full`. test/buildgates/cluster_tenancy_gate_test.go
+  # keeps this job, its target, its tier and its place in ci-gate's needs from
+  # drifting apart.
   #
   # #418 kept cluster tests off per-push CI because load-sensitive budgets made
   # a required check fail for reasons unrelated to the diff. This slice was
@@ -797,6 +825,7 @@ jobs:
   integration-cluster-tenancy:
     name: Integration (cluster tenancy)
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
     timeout-minutes: 60
     steps:
@@ -836,6 +865,11 @@ jobs:
   # one was hiding a real boot defect -- a restarted node exiting after its
   # unseal. A suite that only reports after the merge does not gate the merge.
   #
+  # Full tier since #674, like the tenancy slice: every push to main, every
+  # dispatch, and a pull request labelled `ci:full` -- which a change touching
+  # clustering, bootstrap or seal should carry, so the suite gates its merge
+  # rather than reporting after it. All three legs share the job's `if:`.
+  #
   # The tenancy slice above stays as its own job: its selection floor is
   # guarded by test/buildgates/cluster_tenancy_gate_test.go, and it reports the
   # tenant suites separately when this job is red for an unrelated reason.
@@ -853,6 +887,7 @@ jobs:
   integration-cluster:
     name: Integration (cluster ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
     timeout-minutes: 120
     strategy:
@@ -1027,16 +1062,22 @@ jobs:
   # target and #480). A trivy that only runs overnight lets a newly introduced
   # HIGH merge and be found the next morning.
   #
-  # Only the CRITICAL/HIGH gate runs per push. The MEDIUM/LOW report stays in
+  # Full tier since #674 (devops.md §8a: `trivy fs` runs in the full tier or
+  # the nightly, not per pull request): every push to main, every dispatch,
+  # and a PR labelled `ci:full` -- which a dependency bump should carry, so
+  # the advisory surfaces before the merge rather than at it.
+  #
+  # Only the CRITICAL/HIGH gate runs here. The MEDIUM/LOW report stays in
   # nightly.yml, where it "blocks no merge" by design, and so does the
-  # scheduled run -- which is what catches advisories published against a
-  # QUIET tree that nobody pushes to.
+  # dispatched run on a quiet tree -- which is what catches advisories
+  # published against a tree that nobody pushes to.
   #
   # Same DAG position as `security` (needs lint + build) under the staged
   # fail-fast ruling, though trivy itself needs neither.
   trivy:
     name: Trivy
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [lint, build]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -1086,11 +1127,19 @@ jobs:
     # listed explicitly. `join(needs.*.result)` is a GitHub extension that
     # evaluates to an empty string on Gitea, so a gate built on it reports
     # success while jobs fail. Adding a job means adding it to `needs` AND to
-    # the env block and the loop below.
+    # the env block and the loop below, tagged `pr` or `full` to match its
+    # tier; test/buildgates/ci_tiers_test.go asserts all three.
+    #
+    # TIERS (#674). Anything other than `success`, including `cancelled`, is a
+    # failure, with one exception: `skipped` passes for a job tagged `full`
+    # when this run did not select the full tier (FULL_TIER is the same
+    # expression as the full-tier jobs' `if:`). A PR-tier job never skips
+    # legitimately, and in a full-tier run neither does a full-tier job, so
+    # `skipped` there still fails.
     #
     # `fips` is not here because it is not in this workflow: ci-template v1.9
     # moved it to nightly.yml (owner ruling 2026-08-20, go-qrdb#48), and it is
-    # waiting on a stability record of fourteen consecutive green scheduled
+    # waiting on a stability record of fourteen consecutive green nightly
     # runs before it is armed (#20, docs/seal/fips140-mode.md).
     #
     # `trivy` WAS removed under the same ruling and is back (#479, 2026-09-22).
@@ -1120,31 +1169,45 @@ jobs:
           RESULT_INTEGRATION_CLUSTER: ${{ needs.integration-cluster.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
+          FULL_TIER: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
           status=0
-          # skipped is not the same as failed, and BOTH fail the gate. A
-          # skipped job means an upstream stage failed (test, integration and
-          # security all stage behind lint and build), so naming it prevents
-          # the go-qrdb#42 class: a red that reads like a test failure while
-          # the tests never ran at all.
-          check() {
+          echo "full tier selected: ${FULL_TIER}"
+          # An unreadable FULL_TIER cannot say which skips to excuse.
+          case "${FULL_TIER}" in
+            true|false) ;;
+            *) echo "FAIL: FULL_TIER is unreadable ('${FULL_TIER}') - failing closed"; status=1 ;;
+          esac
+          # skipped is not the same as failed, and BOTH fail the gate, except
+          # for a `full` job in a run that did not select the full tier. Any
+          # other skipped job means an upstream stage failed (test, integration
+          # and security all stage behind lint and build), so naming it
+          # prevents the go-qrdb#42 class: a red that reads like a test failure
+          # while the tests never ran at all.
+          check() { # <job> <result> <pr|full>
             name="$1"
             result="$2"
+            tier="$3"
             case "$result" in
               success)  echo "ok:   $name = success" ;;
-              skipped)  echo "SKIP: $name (an upstream stage failed - see its job)"; status=1 ;;
+              skipped)
+                if [ "$tier" = full ] && [ "${FULL_TIER}" != true ]; then
+                  echo "skip: $name (full tier not selected)"
+                else
+                  echo "SKIP: $name (an upstream stage failed - see its job)"; status=1
+                fi ;;
               "")       echo "FAIL: $name result is unreadable - failing closed"; status=1 ;;
               *)        echo "FAIL: $name = $result"; status=1 ;;
             esac
           }
-          check lint "$RESULT_LINT"
-          check build "$RESULT_BUILD"
-          check test "$RESULT_TEST"
-          check test-sdk "$RESULT_TEST_SDK"
-          check test-typescript "$RESULT_TEST_TYPESCRIPT"
-          check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
-          check integration-cluster-tenancy "$RESULT_INTEGRATION_CLUSTER_TENANCY"
-          check integration-cluster "$RESULT_INTEGRATION_CLUSTER"
-          check security "$RESULT_SECURITY"
-          check trivy "$RESULT_TRIVY"
+          check lint "$RESULT_LINT" pr
+          check build "$RESULT_BUILD" pr
+          check test "$RESULT_TEST" pr
+          check test-sdk "$RESULT_TEST_SDK" pr
+          check test-typescript "$RESULT_TEST_TYPESCRIPT" pr
+          check security "$RESULT_SECURITY" pr
+          check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
+          check integration-cluster-tenancy "$RESULT_INTEGRATION_CLUSTER_TENANCY" full
+          check integration-cluster "$RESULT_INTEGRATION_CLUSTER" full
+          check trivy "$RESULT_TRIVY" full
           exit $status

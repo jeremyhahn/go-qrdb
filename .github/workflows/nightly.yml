@@ -32,7 +32,7 @@
 #     history — the twenty-two scheduled runs before it, back to 2026-08-22,
 #     all failed. So it is no longer a known-red job and it stays here anyway,
 #     on a DIFFERENT reason that is written down rather than assumed: arming it
-#     waits on a stability record of fourteen consecutive green scheduled runs
+#     waits on a stability record of fourteen consecutive green nightly runs
 #     on main, because one pass is not a track record and a required check that
 #     is bypassed the first time it fails is worth less than no check. The
 #     other half is shape: required checks gate pull requests, this is a
@@ -61,11 +61,15 @@
 # verdict, all of them tests left behind by bootstrap changes that a push gate
 # would have stopped at the push that made them.
 
+# NO SCHEDULE (go-qrdb#674; owner ruling 2026-10-11, handbook sdlc.md §5a): no
+# workflow runs on a cron. "Nightly" is the coordinator's nightly loop, which
+# dispatches this workflow together with a workflow_dispatch of ci.yml (the
+# full tier). The `0 3 * * *` trigger that ran here until then is gone; the
+# "scheduled runs" counted above are the runs it made before then.
+
 name: Nightly
 
 on:
-  schedule:
-    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:

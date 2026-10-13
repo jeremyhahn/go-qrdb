@@ -1079,10 +1079,13 @@ did not.
 - **Integration**: the multi-node tenant suites —
   `isolation_raft_cluster_test.go`, `isolation_raft_dedicated_wal_test.go`,
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go` — live in
-  the **cluster stage**. CI runs them on **every push** in the
-  `integration-cluster-tenancy` job (`make integration-test-cluster-tenancy`,
+  the **cluster stage**. CI runs them in its **full tier** — every push to
+  `main`, every `workflow_dispatch`, and a pull request labelled `ci:full` —
+  in the `integration-cluster-tenancy` job (`make integration-test-cluster-tenancy`,
   selected by `CLUSTER_TENANCY_RUN` in the Makefile), and the full cluster
-  stage runs on every push too, in the `integration-cluster` job. `test/buildgates/cluster_tenancy_gate_test.go` fails
+  stage runs in the same tier, in the `integration-cluster` job. A plain pull
+  request push runs neither, so a change to tenant isolation carries
+  `ci:full`. `test/buildgates/cluster_tenancy_gate_test.go` fails
   when the selection drops an `isolation_raft_*` suite, selects fewer than its
   floor of tests, or leaves the job out of the CI result gate. The test
   function count behind that floor is **build-constraint aware**: it parses
@@ -1091,10 +1094,13 @@ did not.
   file tagged `!integration` — which never compiles into the binary
   `make integration-test-cluster-tenancy` runs — cannot inflate the count. The
   gate also asserts the workflow's top-level `on:` actually names `push` and
-  `pull_request`, and that the job carries no `if:` — a conditional job can be
-  skipped on exactly the runs this gate exists to cover, and a skipped job
-  satisfies `needs`. *(Corrected 2026-10-02: this said the stage was not wired
-  into CI; it has run nightly since 2026-09-22.)*
+  `pull_request`, that the job's `if:` is exactly the full-tier condition, and
+  that the result gate tags it `full` — any narrower condition would be
+  excused as a tier skip on exactly the pushes to `main` this gate exists to
+  cover. *(Corrected 2026-10-02: this said the stage was not wired
+  into CI; it has run nightly since 2026-09-22. Corrected 2026-10-12:
+  the job moved from every push to the full tier, and the gate asserts the
+  full-tier `if:` where it used to forbid any `if:`.)*
 
 ## Observability
 
@@ -1511,7 +1517,7 @@ Each phase's red test is in the plan above. In addition:
 - **Credential verifiers.** A wrong passphrase on a first-contact node is
   refused before any key is sealed.
 
-**Integration (`test/integration/`, cluster stage, per-push from phase 0):**
+**Integration (`test/integration/`, cluster stage, per-push from phase 0; CI's full tier since 2026-10-12):**
 - **Distinct replica keys.** Every replica's key is distinct, and one
   replica's key does not open another's store.
 - **Snapshot catch-up** works across distinct keys.

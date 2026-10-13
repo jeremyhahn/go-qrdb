@@ -81,6 +81,7 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
 | `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a `gate` job missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate`, a hardcoded `github.com` instead of `github.api_url`, a reintroduced `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
+| `test/buildgates/ci_tiers_test.go` | ci.yml's two tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr` or `full`; a `full` job carries exactly the full-tier `if:` and FULL_TIER is the same expression; a PR-tier job carries no `if:` and needs no full-tier job; the integration jobs and trivy are `full`; the pull_request trigger lists `labeled`. Both tiers' jobs are pinned by name (`prTierJobs`, `fullTierJobs`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, and `cancelled`, `failure`, an unreadable result or an unreadable FULL_TIER fail. It also scans every workflow: one on pull_request has the ref-keyed `cancel-in-progress: true` group, and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
 
 ## Test tooling this feature folder also owns
 
@@ -158,7 +159,10 @@ it had, and lowering parallelism has nothing left to give. So
 (`strategy.matrix.shard: [1, 2, 3]`, `fail-fast: false`), each running
 `make integration-test-cluster CLUSTER_SHARD=<leg>/3` in its own compose
 project. `ci-gate` reads the job's aggregate result, which fails when any leg
-fails.
+fails. The job is in the full tier (architecture.md, "CI tiers"): all three
+legs share its full-tier `if:`, so a plain pull request skips them together and
+`ci-gate` excuses that skip; a push to `main`, a dispatch or a `ci:full` pull
+request runs all three.
 
 | Makefile variable | Default | Effect |
 |---|---|---|
@@ -181,7 +185,8 @@ runs its rejecting branches on fixture lists.
 `test/buildgates/cluster_shard_gate_test.go` fails when the workflow's matrix
 is not exactly `1..CLUSTER_SHARDS`, when the step does not pass
 `CLUSTER_SHARD=${{ matrix.shard }}/N` or a per-leg `INT_PROJECT`, when
-`fail-fast` is not off, or when `ci-gate` stops requiring the job.
+`fail-fast` is not off, when the job's `if:` is not exactly the full-tier
+condition, or when `ci-gate` stops requiring the job.
 
 To run one leg by hand: `make integration-test-cluster CLUSTER_SHARD=2/3`, or
 print its expression with `./scripts/cluster-shard.sh run 2/3` (set

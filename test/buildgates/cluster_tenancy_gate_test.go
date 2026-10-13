@@ -31,6 +31,11 @@ package buildgates
 //     not fail anything else;
 //   - CI runs the target on push AND the result gate requires the job: a job
 //     that can pass and is not required is a fail-open gate.
+//
+// Since the tier split (#674) the job is in ci.yml's full tier: every push to
+// main, every workflow_dispatch, and a pull request labelled `ci:full`. A plain
+// PR push no longer runs it, so a PR that touches tenant isolation carries
+// `ci:full`; the push to main that lands it runs the suites regardless.
 
 import (
 	"bufio"
@@ -40,6 +45,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -291,15 +297,15 @@ func tenancyJobProblems(wf ciWorkflow) []string {
 	if !ok {
 		return append(problems, "ci.yml has no "+tenancyJob+" job: the multi-node tenant suites run only nightly")
 	}
-	// A job-level `if:` can skip the job on exactly the runs the gate exists
-	// to cover (e.g. a fork pull_request), while ci-gate's `needs` check below
-	// treats "skipped" as passing -- a skipped job reports success, so an
-	// `if:` here would be a quiet way to stop running the suites on every
-	// push without the gate noticing.
-	if job.If != "" {
-		problems = append(problems, "job "+tenancyJob+" has an `if:` condition ("+job.If+
-			"): a conditional job can be skipped on exactly the pushes this gate exists to cover, "+
-			"and a skipped job satisfies `needs`")
+	// The job is in the full tier (#674): it runs on every push to main, on
+	// every dispatch and on a PR labelled `ci:full`, and on nothing less. Any
+	// other `if:` -- or none, which would put it back on every PR push -- is
+	// a tier ci-gate does not know it is in: a narrower one gets excused as a
+	// full-tier skip on exactly the pushes to main this gate exists to cover.
+	if job.If != fullTierIf {
+		problems = append(problems, "job "+tenancyJob+"'s `if:` is "+strconv.Quote(job.If)+
+			", not the full-tier condition "+strconv.Quote(fullTierIf)+
+			": it must run on every push to main and on a `ci:full` pull request")
 	}
 	runsTarget := false
 	for _, s := range job.Steps {
@@ -341,19 +347,23 @@ func tenancyJobProblems(wf ciWorkflow) []string {
 			" in needs: the tenancy job's own build dependency is not, by itself, "+
 			"something the result gate is guaranteed to keep waiting on")
 	}
-	checked := false
+	checked, tier := false, ""
 	for _, s := range gate.Steps {
-		if strings.Contains(s.Run, "check "+tenancyJob+" ") {
-			for _, v := range s.Env {
-				if strings.Contains(v, "needs."+tenancyJob+".result") {
-					checked = true
-				}
-			}
+		c, found := gateChecks(s.Run)[tenancyJob]
+		if !found {
+			continue
+		}
+		if m := needsResult.FindStringSubmatch(s.Env[c.envVar]); m != nil && m[1] == tenancyJob {
+			checked, tier = true, c.tier
 		}
 	}
 	if !checked {
 		problems = append(problems, ciGateJob+" needs "+tenancyJob+
 			" but never checks its result: a skipped or failed run would not fail the gate")
+	} else if tier != tierFull {
+		problems = append(problems, ciGateJob+" tags "+tenancyJob+" "+strconv.Quote(tier)+
+			", not full: the gate would fail every plain pull request on its tier skip, "+
+			"or excuse no skip it should")
 	}
 	return problems
 }
@@ -385,12 +395,13 @@ on:
     branches: [main]
 jobs:
   ` + tenancyJob + `:
+    if: ` + fullTierIf + `
     steps:
       - run: make ` + tenancyTarget + `
   ` + ciGateJob + `:
     needs: [` + buildJob + `, ` + tenancyJob + `]
     steps:
-      - run: check ` + tenancyJob + ` result
+      - run: check ` + tenancyJob + ` "$R" full
         env:
           R: ${{ needs.` + tenancyJob + `.result }}
 `
@@ -429,10 +440,22 @@ func TestTenancyJobProblems_CanFail(t *testing.T) {
 			body: strings.Replace(tenancyWorkflow, "  push:\n    branches: [main]\n", "", 1),
 		},
 		{
-			name: "job-level if on the tenancy job",
+			name: "tenancy job narrowed to push only",
 			body: strings.Replace(tenancyWorkflow,
-				"  "+tenancyJob+":\n    steps:",
-				"  "+tenancyJob+":\n    if: ${{ github.event_name == 'push' }}\n    steps:", 1),
+				"    if: "+fullTierIf+"\n",
+				"    if: ${{ github.event_name == 'push' }}\n", 1),
+		},
+		{
+			name: "tenancy job without the full-tier if",
+			body: strings.Replace(tenancyWorkflow, "    if: "+fullTierIf+"\n", "", 1),
+		},
+		{
+			name: "tenancy check tagged pr",
+			body: strings.Replace(tenancyWorkflow, `"$R" full`, `"$R" pr`, 1),
+		},
+		{
+			name: "tenancy check reads another job's result",
+			body: strings.Replace(tenancyWorkflow, "needs."+tenancyJob+".result", "needs."+buildJob+".result", 1),
 		},
 		{
 			name: "ci-gate does not need build",

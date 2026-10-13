@@ -121,7 +121,35 @@ owner ruled a post-release consumer build unnecessary.
 
 The **Release Lockstep** workflow still audits every tag push and every push
 to `main`. It catches what `release-alpha`'s own pre-flight cannot see: a tag
-that is deleted or moved after the fact.
+that is deleted or moved after the fact. It runs on pull requests too, under
+the same ref-keyed `cancel-in-progress: true` concurrency group as CI: it
+publishes nothing, so a superseded audit is safe to cancel, and a tag push is
+its own ref, so it supersedes only a re-push of the same tag. `release.yml`,
+which publishes, has no such group.
+
+## CI tiers
+
+"CI green" above means `ci-gate` on the commit's **push to `main`**, which
+always runs the full tier. CI runs in two tiers:
+
+| Tier | When | Jobs |
+|---|---|---|
+| PR | every run | `lint`, `build`, `test`, `test-sdk`, `test-typescript`, `security`, `ci-gate` |
+| Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone`, `integration-cluster-tenancy`, `integration-cluster`, `trivy` |
+
+`ci-gate` is the one required check in both. It fails on any result other
+than `success`, with one exception: a job tagged `full` that was skipped
+because the run did not select the full tier. In a full-tier run a skipped
+job fails it as before. The `labeled` pull-request trigger is what lets
+adding `ci:full` start a full-tier run on the same head.
+
+No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
+report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
+with `ci.yml`.
+
+`test/buildgates/ci_tiers_test.go` and
+`test/buildgates/cluster_tenancy_gate_test.go` hold the tiers, the gate and
+the triggers together; see engineering.md.
 
 ## Rejected alternatives
 

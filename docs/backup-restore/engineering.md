@@ -240,8 +240,9 @@ path.
 - **Integration**: `backup_restore_test.go` lives in the **cluster stage**
   (`make integration-test-cluster`), which runs in CI as the
   `integration-cluster` job (`.github/workflows/ci.yml`), required by
-  `ci-gate` — so backup and restore are exercised end to end on every push and
-  pull request.
+  `ci-gate` in CI's full tier — so backup and restore are exercised end to end
+  on every push to `main`, every dispatch, and every pull request labelled
+  `ci:full`.
 
 ## Observability
 

@@ -13,6 +13,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **CI runs in two tiers.** A pull request runs the PR tier (`lint`,
+  `build`, `test`, `test-sdk`, `test-typescript`, `security`); a push to
+  `main`, a `workflow_dispatch` or a pull request labelled `ci:full` adds the
+  full tier (`integration-standalone`, `integration-cluster-tenancy`, the
+  three `integration-cluster` legs, `trivy`). `ci-gate` stays the one required
+  check: each check line is tagged `pr` or `full`, and a skip passes only for
+  a `full` job in a run that did not select the full tier. `nightly.yml` no
+  longer runs on a schedule (dispatched by hand), and `release-lockstep.yml`
+  joins the ref-keyed `cancel-in-progress` group. `test/buildgates/ci_tiers_test.go`
+  holds the tags to the jobs. See `docs/release/architecture.md`, "CI tiers".
+
 - **CI runs the cluster integration suite as three legs.** The serial suite
   outgrew its 45-minute package timeout under runner load, so
   `integration-cluster` is a matrix over `CLUSTER_SHARD=1/3`..`3/3`, each leg
