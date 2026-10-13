@@ -16,11 +16,12 @@ limitations under the License.
 
 # Deployment — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 What a host must grant `qrdbd` to run as configured — locked memory — and
 what `qrdbd` takes away from the host in return: the ability of other
-processes to read its memory. Ports, TLS and cluster formation are covered by
+processes to read its memory — and the clock and Raft timing every replica
+must share for lease reads to stay linearizable. Ports, TLS and cluster formation are covered by
 [../configuration/](../configuration/) and [../clustering/](../clustering/).
 
 ## Problem
@@ -138,6 +139,24 @@ still read the process — that is the kernel's rule, and a host's Yama
 `ptrace_scope` setting may restrict ptrace further but is the host's to set.
 Monitoring agents that read `/proc/<pid>/` of other processes as a
 non-root user lose access to `qrdbd`'s entries.
+
+## Replica clocks and Raft timing
+
+go-quicraft serves a lease read from the leader's lease, which runs on the
+leader's monotonic clock from the time it sent a heartbeat round, for
+`ElectionRTT - 2` ticks less 1 % (`leaseDriftDivisor`). The followers' vote
+denial runs on their own clocks and their own `ElectionRTT`, so the lease is
+safe only when:
+
+- the clock rate drift between replicas stays under 1 %, which chrony on every
+  replica provides; and
+- every replica runs the same `ElectionRTT` and tick interval
+  (`RTTMillisecond`).
+
+A wall-clock step does not affect the lease. When the lease is out the read
+falls back to the heartbeat quorum round. [user.md](user.md#keep-replica-clocks-disciplined)
+states the operator requirement; [../05-consistency.md](../05-consistency.md#3-leaseread)
+the read guarantee.
 
 ## Build and CI dev-cache passthrough (2026-10-06)
 

@@ -74,8 +74,17 @@ linearizable to mean anything, so it is always synchronous.
 | `Eventual` | `eventual` | local state machine, no coordination | <1 ms |
 | `FollowerRead` | — | follower confirms applied index via ReadIndex, then reads locally | between `Eventual` and `Strong` |
 
-`LeaseRead` trades a staleness window bounded by the election timeout during a
-leader failover. `Eventual` has no such bound on a partitioned node.
+`LeaseRead` has no staleness window. The raft adapter
+(`pkg/backend/raft/adapter.go`) maps `LeaseRead` and `Linearizable` to the same
+`SyncRead` (ReadIndex) path; with `lease_read` on (the default,
+`pkg/config/config.go`) the leader answers it from its lease without a
+heartbeat round. go-quicraft runs the lease on the monotonic clock, anchored at
+heartbeat send time, for `ElectionRTT - 2` ticks less 1 %
+(`leaseDriftDivisor = 100`); when the lease is out the read falls back to the
+heartbeat quorum round. Reads are linearizable while the clock rate drift
+between replicas stays under 1 % and every replica runs the same `ElectionRTT`
+and `RTTMillisecond`. A wall-clock step does not affect the lease. `Eventual`
+reads local state with no bound on a partitioned node.
 
 ### Write durability — `pkg/writemode`
 

@@ -76,31 +76,50 @@ value, err := kvService.Get(ctx, key)
 
 LeaseRead is a sub-millisecond consistency level based on the **Raft PhD thesis Section 6.4**. When the leader's lease is valid, it serves reads directly from its local state machine without any Raft round-trip.
 
-**Mechanism:** Lease-based replication
+**Mechanism:** Leader lease on the monotonic clock
 
-The leader maintains a lease duration (typically tied to the election timeout). As long as it receives heartbeat acknowledgments from a quorum, the lease is valid and the leader knows no other node can be elected. During the lease period, reads are served directly from the leader's local state machine.
+go-qrdb's Raft adapter (`pkg/backend/raft/adapter.go`) sends `LeaseRead` and
+`Linearizable` down the same path, go-quicraft's `SyncRead` (ReadIndex). Whether
+the leader may answer that read from its lease is the shard's `lease_read`
+setting (`raft.lease_read`, `--lease-read`), which defaults to `true`
+(`pkg/config/config.go`). So the two levels give the same guarantee.
+
+The lease is measured on the leader's **monotonic** clock and anchored at the
+time the leader **sent** a heartbeat round, not the time the acknowledgments
+arrived. It is valid while a quorum of voting members has acknowledged a round
+the leader sent less than the lease length ago. The lease length is
+`ElectionRTT - 2` ticks of real time, shortened by 1 % (go-quicraft
+`leaseDriftDivisor = 100`, rounded so the lease errs short). A follower that
+acknowledges a round sent at T grants no vote to another candidate for at least
+that span, so no other leader can exist before the lease runs out.
 
 ```
-Leader
-
-Lease valid for 150ms (current time: 100ms)
+Leader sends heartbeat round at T (monotonic clock)
 ↓
-Client read
+Quorum acknowledges the round
 ↓
-Local lookup (no Raft, no network)
+Client read at T + d
 ↓
-Result returned (<1ms)
-↓
-Leader heartbeat expires at 150ms
-↓
-If no quorum ack before 150ms: lease expires, leader stops serving reads
+d < (ElectionRTT - 2) ticks less 1 %  →  served from the leader's local state
+otherwise                              →  ReadIndex heartbeat quorum round, then served
 ```
 
-**Latency:** <1ms (purely local lookup, no network round-trip)
+When the lease is out, the read is not refused and is not served stale: it falls
+back to the heartbeat quorum round, the same as a ReadIndex read without a lease.
 
-**Trade-off:** If the leader crashes or the clock drifts, a brief window of stale reads is possible.
+**Latency:** <1ms while the lease holds (local lookup); one heartbeat round trip
+when it does not.
+
+**Guarantee:** Linearizable, with no stale-read window, while the clock **rate**
+drift between replicas stays under 1 %. That 1 % covers a leader clock running
+slow against a follower clock running fast. Anchoring at send time means a
+leader that is paused or descheduled can only shorten its lease, never extend
+it. Because the lease uses the monotonic clock, a wall-clock step (an NTP or
+chrony correction, a manual `date`) does not affect it. The bound does not cover
+a clock that stops or runs backward, which Go's monotonic clock does not do.
 
 **Requirements:**
+
 
 1. **go-quicraft config:** `LeaseRead: true`
 2. **Leader commitment:** `CheckQuorum: true` (leader steps down if it can't reach a quorum)
@@ -116,58 +135,42 @@ If no quorum ack before 150ms: lease expires, leader stops serving reads
    and the lease cannot be lost. That exemption is what
    `cluster.SingleNodeElectionRTT` applies, and only to shards on
    transport-less hosts (go-qrdb#250).
+4. **Same timing on every replica:** every replica of a shard runs the same
+   `ElectionRTT` and tick interval (`RTTMillisecond`); the lease length on the
+   leader is computed from them and assumes the followers' election timers
+   use the same values.
+5. **Clock rate:** clock rate drift between replicas under 1 %. Run chrony on
+   every replica; see [deployment/user.md](deployment/user.md#keep-replica-clocks-disciplined).
 
 **When to use:**
 
 - High-throughput read workloads where latency is critical
-- Scenarios where a brief window of stale reads is acceptable
-- Caching layers where eventual consistency is expected
-- Time-series data reads where seconds-old data is acceptable
+- Any read that needs `Linearizable`: under the requirements above the two
+  levels give the same guarantee
 
-**Example: Caching user session:**
+**Example: Reading a user session:**
 
 ```go
 sessionData, err := kvService.Get(ctx, "session:user123", &service.ReadOptions{
     Consistency: consistency.LeaseRead,
 })
-// Guarantees: None (data may be stale if leader crashed recently)
-// Benefit: Extremely fast, no network involved
-```
-
-**Example: Metrics dashboard:**
-
-```go
-metrics, err := kvService.Scan(ctx, "metrics:", &service.ReadOptions{
-    Consistency: consistency.LeaseRead,
-})
-// Guarantees: None (data may lag by a few seconds)
-// Benefit: Sub-millisecond response, no RTT
+// Guarantees: linearizable (reflects all writes that completed before this read)
+// Benefit: no network round trip while the leader's lease holds
 ```
 
 **Failure scenario:**
 
 ```
-Time=100: Leader's lease valid (good until 250ms)
-         Server: Get("counter") → 100
-
-Time=120: Network partition
-         Quorum is partitioned; leader can't reach quorum
-
-Time=200: Client reads "counter"
-         Leader still thinks lease is valid (until 250ms)
-         Server: Get("counter") → 100 (stale; actual value is now 105)
-
-Time=250: Leader's lease expires
-         Leader steps down (CheckQuorum enforced)
-         New leader elected with counter = 105
+T:      Leader sends a heartbeat round; a quorum acknowledges it
+T+x:    Network partition isolates the leader
+T+y:    Client reads "counter" on the old leader
+        y < lease length: no follower that acknowledged the round at T has
+        voted for another candidate yet, so no new leader exists and no
+        write has committed elsewhere; the local value is current
+        y >= lease length: the lease is out; the read takes the heartbeat
+        quorum round, which cannot complete without a quorum, so the read
+        does not return a value from the isolated leader
 ```
-
-To mitigate this risk:
-
-- Set `ElectionRTT` appropriately (don't make leases too long)
-- Monitor leader restarts and network partitions
-- Use Linearizable (default) for correctness-critical data
-- Combine LeaseRead with application-level checksums or versioning
 
 ## 4. Eventual Consistency
 
@@ -334,7 +337,7 @@ Latency by consistency level (measured on local 3-node cluster):
 |----------|--------|--------------|-----------|----------|
 | Requires Raft consensus | Yes | Yes (heartbeat) | No (lease check) | No |
 | Requires network RTT | Yes | Yes | No | No |
-| Sees all prior writes | Yes | Yes | Maybe | No |
+| Sees all prior writes | Yes | Yes | Yes | No |
 | Latency | 10–50ms | 1–5ms | <1ms | <1ms |
 | Suitable for leader | Yes | Yes | Yes | Yes |
 | Suitable for follower | Yes (forward) | Yes (forward) | No | Yes |

@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 ## Give qrdbd locked memory
 
@@ -94,6 +94,23 @@ The node records every start with the opt-out in its compliance audit trail
 (action `disable-inspection-hardening`), and a FIPS 140-3 build refuses the
 opt-out altogether. Attach the debugger after start: a node started under a
 debugger that is already attached refuses to run unless the opt-out is set.
+
+## Keep replica clocks disciplined
+
+Lease reads (`lease_read`, on by default) are linearizable only while the
+clock rate drift between the replicas of a shard stays under 1 %, and only
+while every replica uses the same Raft timing. For a cluster of more than one
+node:
+
+- **Run chrony on every replica.** The bound is on clock *rate*, not on the
+  time of day: a wall-clock step does not affect the lease, which runs on the
+  monotonic clock.
+- **Run the same `ElectionRTT` and `RTTMillisecond` on every replica.**
+  `qrdbd` exposes no setting for either; it takes them from go-quicraft's
+  defaults. A program that embeds the engine and sets them must set the same
+  values on every replica.
+
+See [../05-consistency.md](../05-consistency.md#3-leaseread) for why.
 
 ## Troubleshooting
 
