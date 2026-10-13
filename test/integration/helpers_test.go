@@ -2410,7 +2410,6 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 		t.Fatalf("initAndUnsealBarrier: read %s: %v", certPath, err)
 	}
 
-	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	body, err := json.Marshal(map[string]any{
 		"so_pin":         harnessSOPIN,
 		"user_pin":       harnessUserPIN,
@@ -2429,32 +2428,88 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 	}
 
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/ceremony/initialize", port)
-	deadline := time.Now().Add(15 * time.Second)
+	statusClient := mtlsHTTPClient(t, ca, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), barrierBootTimeout)
+	defer cancel()
+	// No per-request timeout shorter than the budget: the ceremony derives
+	// keys and runs well past ten seconds on a loaded runner, and a client
+	// that gives up early cannot just retry. The server finishes the
+	// ceremony anyway, unseals the barrier and tears the sealed-window
+	// listener down, so every retry is refused until the full server is up.
+	client := mtlsHTTPClient(t, ca, barrierBootTimeout)
 	var lastErr error
-	for time.Now().Before(deadline) {
-		resp, postErr := client.Post(url, "application/json", bytes.NewReader(body))
-		if postErr != nil {
+	for ctx.Err() == nil {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if reqErr != nil {
+			t.Fatalf("initAndUnsealBarrier: build request: %v", reqErr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, postErr := client.Do(req)
+		if postErr == nil {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode < 300 {
+				return certPath, keyPath
+			}
+			// A retry after the ceremony already completed on this node
+			// (e.g. a second call racing the same node) is the same fact as
+			// success for this helper's purpose: the barrier is unsealed and
+			// an admin is bound either way.
+			if bytes.Contains(respBody, []byte("already")) {
+				return certPath, keyPath
+			}
+			lastErr = fmt.Errorf("status %d, body: %s", resp.StatusCode, respBody)
+		} else {
 			lastErr = postErr
-			time.Sleep(100 * time.Millisecond)
-			continue
 		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode < 300 {
+		// The condition is the barrier's state, not the POST's reply: a
+		// ceremony whose reply was lost (the listener closing under it, or a
+		// node that was not listening yet) is settled by what the node
+		// reports, on whichever listener is serving the port by then.
+		if barrierUnsealedOn(ctx, statusClient, port) {
 			return certPath, keyPath
 		}
-		// A retry after the ceremony already completed on this node (e.g. a
-		// second call racing the same node) is the same fact as success for
-		// this helper's purpose: the barrier is unsealed and an admin is
-		// bound either way.
-		if bytes.Contains(respBody, []byte("already")) {
-			return certPath, keyPath
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
 		}
-		lastErr = fmt.Errorf("status %d, body: %s", resp.StatusCode, respBody)
-		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("ceremony initialize on port %d never succeeded within 15s: %v", port, lastErr)
+	t.Fatalf("ceremony initialize on port %d never unsealed the barrier within %v: %v", port, barrierBootTimeout, lastErr)
 	return "", ""
+}
+
+// barrierBootTimeout bounds initAndUnsealBarrier end to end. It is the
+// budget the cluster tests give a node to reach its sealed window
+// (waitForBarrierStatusReachable) and its full boot (waitForAdmin), because
+// the ceremony spans both: the sealed-window listener serves it, and once it
+// unseals the barrier its outcome is visible only on the full server.
+const barrierBootTimeout = 90 * time.Second
+
+// barrierUnsealedOn reports whether the node on the given admin port answers
+// GET /v1/barrier/status with sealed=false. Any other outcome -- no listener,
+// a listener mid-teardown, a full server that does not yet authenticate the
+// bootstrap admin, or a barrier still sealed -- is false.
+func barrierUnsealedOn(ctx context.Context, client *http.Client, port int) bool {
+	rawURL := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var status struct {
+		Sealed *bool `json:"sealed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil || status.Sealed == nil {
+		return false
+	}
+	return !*status.Sealed
 }
 
 // bootstrapNodes takes freshly started "none"-strategy nodes through their
