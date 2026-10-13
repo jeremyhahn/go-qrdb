@@ -19,9 +19,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -36,8 +38,18 @@ import (
 // opens it, and registers cleanup. It returns both the state machine and lessor.
 func newTestMVCCWithLessor(t *testing.T) (*MVCCStateMachine, *lease.Lessor) {
 	t.Helper()
+	s, lr, _ := newTestMVCCWithLessorClock(t)
+	return s, lr
+}
+
+// newTestMVCCWithLessorClock is newTestMVCCWithLessor with the Lessor on a
+// fake clock, returned so a test asserts lease expiry exactly instead of
+// against the wall clock.
+func newTestMVCCWithLessorClock(t *testing.T) (*MVCCStateMachine, *lease.Lessor, *clocktest.Fake) {
+	t.Helper()
 	dir := t.TempDir()
-	lr := lease.NewLessor()
+	clk := clocktest.New()
+	lr := lease.NewLessor(lease.WithClock(clk))
 	s := NewMVCCStateMachine(nil)
 	s.SetLessor(lr)
 	ctx := context.Background()
@@ -49,7 +61,7 @@ func newTestMVCCWithLessor(t *testing.T) (*MVCCStateMachine, *lease.Lessor) {
 		lr.Close()
 		_ = s.Close(ctx)
 	})
-	return s, lr
+	return s, lr, clk
 }
 
 // applyLeaseEntries applies a set of encoded commands through the state
@@ -321,19 +333,22 @@ func TestMVCCLease_LeaseRevoke_DeletesAttachedKeys(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMVCCLease_LeaseKeepAlive_ResetsExpiry(t *testing.T) {
-	s, lr := newTestMVCCWithLessor(t)
+	s, lr, clk := newTestMVCCWithLessorClock(t)
 
-	// Grant a lease with a short TTL.
 	grantCmd := mustEncode(protocol.EncodeLeaseGrant(10))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
+	// Let most of the TTL run out so the reset is observable.
+	clk.Advance(7 * time.Second)
 	infoBefore := lr.Lookup(leaseID)
 	if infoBefore == nil {
 		t.Fatal("lease not found after grant")
 	}
+	if infoBefore.RemainingTTL != 3 {
+		t.Fatalf("remaining TTL 7s into a 10s lease = %d, want 3", infoBefore.RemainingTTL)
+	}
 
-	// Keep alive.
 	keepAliveCmd := mustEncode(protocol.EncodeLeaseKeepAlive(leaseID))
 	keepAliveResults := applyLeaseEntries(t, s, 2, keepAliveCmd)
 
@@ -346,9 +361,9 @@ func TestMVCCLease_LeaseKeepAlive_ResetsExpiry(t *testing.T) {
 		t.Fatal("lease not found after keep-alive")
 	}
 
-	// Remaining TTL should be close to the full TTL after keep-alive.
-	if infoAfter.RemainingTTL < 8 {
-		t.Fatalf("expected remaining TTL >= 8 after keep-alive, got %d", infoAfter.RemainingTTL)
+	// Keep-alive resets expiry to the full TTL from the clock's now.
+	if infoAfter.RemainingTTL != 10 {
+		t.Fatalf("remaining TTL after keep-alive = %d, want 10", infoAfter.RemainingTTL)
 	}
 }
 
@@ -435,8 +450,8 @@ func TestMVCCLease_Lookup_LeaseTimeToLive(t *testing.T) {
 	if l.GrantedTTL != 120 {
 		t.Fatalf("expected GrantedTTL 120, got %d", l.GrantedTTL)
 	}
-	if l.RemainingTTL <= 0 {
-		t.Fatal("expected positive remaining TTL")
+	if l.RemainingTTL != 120 {
+		t.Fatalf("expected RemainingTTL 120 on an unadvanced clock, got %d", l.RemainingTTL)
 	}
 }
 

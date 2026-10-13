@@ -19,10 +19,13 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -73,7 +76,14 @@ type node struct {
 // openNode starts an incarnation of the replica whose state lives in dir.
 func openNode(t *testing.T, kind smKind, dir string) *node {
 	t.Helper()
-	lr := lease.NewLessor()
+	return openNodeAt(t, kind, dir, clocktest.New())
+}
+
+// openNodeAt is openNode with the Lessor on clk, so a test that restarts a
+// node can carry one fake clock across the restart and assert expiry exactly.
+func openNodeAt(t *testing.T, kind smKind, dir string, clk clock.Clock) *node {
+	t.Helper()
+	lr := lease.NewLessor(lease.WithClock(clk))
 	s := kind.new(lr)
 	if _, err := s.Open(context.Background(), dir, make(chan struct{})); err != nil {
 		t.Fatalf("%s: open: %v", kind.name, err)
@@ -133,7 +143,8 @@ func TestDurableLease_SurvivesRestartAndStillExpiresItsKeys(t *testing.T) {
 			ctx := context.Background()
 			dir := t.TempDir()
 
-			n := openNode(t, kind, dir)
+			clk := clocktest.New()
+			n := openNodeAt(t, kind, dir, clk)
 			l, err := n.lease.Grant(ctx, 60)
 			if err != nil {
 				t.Fatalf("grant: %v", err)
@@ -141,7 +152,9 @@ func TestDurableLease_SurvivesRestartAndStillExpiresItsKeys(t *testing.T) {
 			n.putWithLease(t, "lock/scheduler", "holder-a", l.ID)
 			n.stop(t)
 
-			n = openNode(t, kind, dir)
+			// Most of the TTL elapses while the node is down.
+			clk.Advance(45 * time.Second)
+			n = openNodeAt(t, kind, dir, clk)
 			got, err := n.lease.TimeToLive(ctx, l.ID)
 			if err != nil {
 				t.Fatalf("lease %d did not survive the restart: %v", l.ID, err)
@@ -150,8 +163,8 @@ func TestDurableLease_SurvivesRestartAndStillExpiresItsKeys(t *testing.T) {
 				t.Fatalf("granted TTL after restart = %d, want 60", got.GrantedTTL)
 			}
 			// A recovered lease gets one full granted TTL from recovery.
-			if got.RemainingTTL < 58 {
-				t.Fatalf("remaining TTL after restart = %d, want a full TTL (~60)", got.RemainingTTL)
+			if got.RemainingTTL != 60 {
+				t.Fatalf("remaining TTL after restart = %d, want a full TTL of 60", got.RemainingTTL)
 			}
 			if !hasKey(got, "lock/scheduler") {
 				t.Fatalf("attachment of lock/scheduler lost across the restart: keys=%q", got.Keys)
