@@ -277,6 +277,28 @@ func TestReadBeforeActivationsLoadedIsNotTheBootRead(t *testing.T) {
 	}
 }
 
+// TestActivationsLoadedDuringReadIsNotTheBootRead: the gate loads the
+// activations on its own goroutine, so it can finish while a read begun
+// before it is in flight. That read saw the feature inactive and applied
+// nothing; it must not spend the boot exemption, or the next read treats the
+// sealed node record as a seal this boot has not applied and wipes the key
+// the operator just unsealed instead of holding.
+func TestActivationsLoadedDuringReadIsNotTheBootRead(t *testing.T) {
+	h := newHarness(t)
+	h.gate.setLoaded(false)
+	h.putRecord(t, Record{Barrier: NodeBarrier(), Epoch: 3, Sealed: true, Node: peerB})
+	h.kv.onScan = func() { h.gate.setLoaded(true) }
+	h.poll(t)
+	h.kv.onScan = nil
+	h.poll(t)
+	if got := h.enf.callList(); len(got) != 0 {
+		t.Fatalf("a node restarted under a sealed record sealed itself: %v", got)
+	}
+	if got := h.m.Status(NodeBarrier()).Local; got != LocalHeld {
+		t.Fatalf("local = %q, want held", got)
+	}
+}
+
 // TestRestartRefusesUntilFirstRead: a node holds no lease when it starts, so it
 // refuses until it has read the records once.
 func TestRestartRefusesUntilFirstRead(t *testing.T) {

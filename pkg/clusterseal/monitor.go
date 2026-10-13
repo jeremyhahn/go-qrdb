@@ -385,6 +385,12 @@ func (m *Monitor) poll(ctx context.Context) {
 	if m.cfg.Gate == nil {
 		return
 	}
+	// What the gate knew when this read began, sampled once: it loads the
+	// activations on its own goroutine, and a read that saw the feature
+	// inactive applied nothing, so it must not spend the boot exemption
+	// because the gate finished loading while it was in flight. Loaded is
+	// sampled first; once true, Active is the cluster's answer.
+	loaded := m.cfg.Gate.ActivationsLoaded()
 	active := m.Active()
 	if active {
 		m.checkLease()
@@ -411,7 +417,7 @@ func (m *Monitor) poll(ctx context.Context) {
 			m.applyLocked(ctx, rec, initial)
 		}
 	}
-	if active || m.cfg.Gate.ActivationsLoaded() {
+	if active || loaded {
 		m.primed = true
 	}
 	deadline := start.Add(m.cfg.Lease)

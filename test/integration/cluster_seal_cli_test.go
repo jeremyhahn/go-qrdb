@@ -220,21 +220,22 @@ type cliBarrierStatusFull struct {
 }
 
 // cliBarrierStatusFor runs `barrier status --output json` against node over
-// proto and decodes it, returning ok=false (never failing the test itself)
-// on any error -- a connection failure or a non-JSON error body, both
-// expected for the brief window right after a restart before the listener
-// comes back up. waitForCLIClusterSeal is the only caller and is the one
-// that owns the timeout.
-func cliBarrierStatusFor(t *testing.T, node *multiProtocolSealNode, proto multiProtocol) (st cliBarrierStatusFull, ok bool) {
+// proto and decodes it. It never fails the test itself: a connection failure
+// or a non-JSON error body is expected for the brief window right after a
+// restart, before the listener comes back up. On any failure ok is false and
+// failure says what the CLI answered, so waitForCLIClusterSeal -- the only
+// caller, and the one that owns the timeout -- can report a read that never
+// succeeded as that, not as a zero status.
+func cliBarrierStatusFor(t *testing.T, node *multiProtocolSealNode, proto multiProtocol) (st cliBarrierStatusFull, failure string, ok bool) {
 	t.Helper()
 	out, err := runCLIProto(t, node.multiProtoNode, proto, "--output", "json", "barrier", "status")
 	if err != nil {
-		return cliBarrierStatusFull{}, false
+		return cliBarrierStatusFull{}, err.Error() + ": " + strings.TrimSpace(out), false
 	}
 	if jerr := json.Unmarshal([]byte(out), &st); jerr != nil {
-		return cliBarrierStatusFull{}, false
+		return cliBarrierStatusFull{}, "undecodable output (" + jerr.Error() + "): " + strings.TrimSpace(out), false
 	}
-	return st, true
+	return st, "", true
 }
 
 // waitForCLIClusterSeal polls node (over proto) until cond(barrier status)
@@ -244,17 +245,29 @@ func cliBarrierStatusFor(t *testing.T, node *multiProtocolSealNode, proto multiP
 func waitForCLIClusterSeal(t *testing.T, node *multiProtocolSealNode, proto multiProtocol, timeout time.Duration, what string, cond func(cliBarrierStatusFull) bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
-	var last cliBarrierStatusFull
+	var (
+		last        cliBarrierStatusFull
+		read        bool
+		lastFailure string
+	)
 	for time.Now().Before(deadline) {
-		if st, ok := cliBarrierStatusFor(t, node, proto); ok {
-			last = st
+		st, failure, ok := cliBarrierStatusFor(t, node, proto)
+		if ok {
+			last, read = st, true
 			if cond(last) {
 				return
 			}
+		} else {
+			lastFailure = failure
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("[%s] timed out after %v waiting for %s (last: %+v)", proto.name, timeout, what, last)
+	if !read {
+		t.Fatalf("node %s: timed out after %v waiting for %s: barrier status over %s never answered (last failure: %s)",
+			node.dataDir, timeout, what, proto.name, lastFailure)
+	}
+	t.Fatalf("node %s: timed out after %v waiting for %s (last status over %s: sealed=%t cluster_seal=%+v; last failure: %q)",
+		node.dataDir, timeout, what, proto.name, last.Sealed, last.ClusterSeal, lastFailure)
 }
 
 // TestBarrierClusterUnseal_CLI_PerProtocol drives the full cluster-seal
