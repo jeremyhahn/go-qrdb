@@ -304,14 +304,31 @@ func TestCLI_Start_InvalidDiscovery(t *testing.T) {
 }
 
 func TestCLI_Start_NoPeers(t *testing.T) {
+	// Static discovery without --peers is the documented single-node
+	// default (`--discovery` help: "static (default, single-node)"), not a
+	// refusal: the node bootstraps a one-member cluster and serves.
 	binary := buildBinary(t)
-	_, err := runCLI(t, binary, "start",
+	ca := generateTestCA(t)
+	ports := allocatePorts(t, 1)
+	adminPorts := allocateTCPPorts(t, 1)
+	grpcPorts := allocateTCPPorts(t, 1)
+	nodeTLS, _ := ca.clusterNodeTLS(t, 1)
+	dataDir := t.TempDir()
+
+	args := []string{
+		"start",
+		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
+		"--data-dir", dataDir,
 		"--discovery", "static",
-		"--data-dir", t.TempDir(),
-	)
-	if err == nil {
-		t.Fatal("expected non-zero exit when no peers specified")
+		"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
+		"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
 	}
+	args = append(args, nodeTLS[0]...)
+	startNode(t, binary, args, "[nopeers] ")
+
+	bootstrapNodes(t, ca, adminPorts[0])
+	waitForHealthy(t, dataDir, 30*time.Second)
 }
 
 func TestCLI_Start_InvalidPeerFormat(t *testing.T) {
