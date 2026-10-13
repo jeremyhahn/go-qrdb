@@ -254,6 +254,17 @@ jobs:
       - name: Test the compose-target guard
         run: make test-compose-targets
 
+      # The cluster suite runs as matrix legs, each selecting its tests by an
+      # anchored -run expression built from `go test -list`. A test that no
+      # leg selects would never run and never fail; this applies every leg's
+      # expression to the full list and fails on a test selected by none, or
+      # by more than one.
+      - name: The cluster suite's CI legs partition its tests
+        run: make check-cluster-shards
+
+      - name: Test the cluster-shard partition check
+        run: make test-cluster-shards
+
       # #367. Every `uses:` in every workflow must resolve to a 40-hex commit.
       # A tag is a ref its owner can move, and the review workflow's job held a
       # WRITE-SCOPED token while it existed -- where auto-merge was armed, a
@@ -828,11 +839,26 @@ jobs:
   # The tenancy slice above stays as its own job: its selection floor is
   # guarded by test/buildgates/cluster_tenancy_gate_test.go, and it reports the
   # tenant suites separately when this job is red for an unrelated reason.
+  #
+  # The suite is serial (-p 1, -parallel 1), so its run time is the sum of its
+  # tests: 36.7 min quiet and 43.1 min at 2x CPU oversubscription on a 4-CPU
+  # budget, over the 45 min package timeout it had. Lowering parallelism had
+  # nothing left to give, so it runs as three legs. scripts/cluster-shard.sh
+  # deals the `go test -list` output round-robin into one anchored -run
+  # expression per leg, and `make check-cluster-shards` (Lint) proves the legs
+  # partition the suite. fail-fast is off so one red leg does not cancel the
+  # others' results; ci-gate reads the job's aggregate result, which is
+  # failure when any leg fails. test/buildgates/cluster_shard_gate_test.go
+  # holds this matrix to the Makefile's CLUSTER_SHARDS.
   integration-cluster:
-    name: Integration (cluster)
+    name: Integration (cluster ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     needs: [build]
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -843,15 +869,17 @@ jobs:
       # INT_PROJECT is read from the shell for the same reason as the standalone
       # job above: a per-run compose project, never a shared default. The
       # stage's resource budget is the tenancy job's, set the same way (#682).
-      - name: Integration tests (cluster)
+      # The project carries the leg: the legs can land on one host's dockerd,
+      # and a shared project would tear down a sibling leg's stack.
+      - name: Integration tests (cluster ${{ matrix.shard }}/3)
         run: |
-          export INT_PROJECT="qrdb-int-cluster-${GITHUB_RUN_ID:-local}"
+          export INT_PROJECT="qrdb-int-cluster-${{ matrix.shard }}-${GITHUB_RUN_ID:-local}"
           echo "compose project: $INT_PROJECT"
-          make integration-test-cluster INT_PROJECT="$INT_PROJECT"
+          make integration-test-cluster INT_PROJECT="$INT_PROJECT" CLUSTER_SHARD=${{ matrix.shard }}/3
 
       - name: Tear down the stack
         if: always()
-        run: make integration-down INT_PROJECT="qrdb-int-cluster-${GITHUB_RUN_ID:-local}" || true
+        run: make integration-down INT_PROJECT="qrdb-int-cluster-${{ matrix.shard }}-${GITHUB_RUN_ID:-local}" || true
 
   security:
     name: Security

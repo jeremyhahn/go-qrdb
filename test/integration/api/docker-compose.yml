@@ -462,6 +462,10 @@ services:
       # go test's -parallel. Empty (the default) leaves go test's own default,
       # GOMAXPROCS; the Makefile's cluster stage sets it from CLUSTER_PARALLEL.
       - INTEGRATION_PARALLEL=${INTEGRATION_PARALLEL:-}
+      # go test's -timeout for the package. The Makefile sets it from
+      # INTEGRATION_GO_TIMEOUT; 100m is also the fallback for a direct
+      # `docker compose up`.
+      - INTEGRATION_GO_TIMEOUT=${INTEGRATION_GO_TIMEOUT:-100m}
     working_dir: /workspace/go-qrdb
     networks:
       - qrdb-integration
@@ -475,8 +479,8 @@ services:
       echo 'Checking Unix socket and admin credential...' &&
       test -S /var/run/qrdbd/qrdbd.sock &&
       test -s /data/admin/admin.crt &&
-      echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN', parallel='$$INTEGRATION_PARALLEL')...\" &&
-      go test -p 1 $${INTEGRATION_PARALLEL:+-parallel $$INTEGRATION_PARALLEL} -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout 45m
+      echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN', parallel='$$INTEGRATION_PARALLEL', timeout='$$INTEGRATION_GO_TIMEOUT')...\" &&
+      go test -p 1 $${INTEGRATION_PARALLEL:+-parallel $$INTEGRATION_PARALLEL} -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout $$INTEGRATION_GO_TIMEOUT
       "
 
 volumes:

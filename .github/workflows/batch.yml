@@ -53,10 +53,11 @@
 #                          sdk/go/gorm/conformance, test/performance/*) hold
 #                          no Fuzz* targets.
 #   RACE_PKGS              `make test`'s scope.
-#   SOAK_CMD               `make integration-test-cluster`, exactly as
-#                          ci.yml's integration-cluster job runs it: the
-#                          self-spawned single-node and 3-node suites under
-#                          test/integration, in the per-run compose stack.
+#   SOAK_CMD               `make integration-test-cluster`, the whole suite
+#                          that ci.yml's integration-cluster job splits into
+#                          CLUSTER_SHARD legs: the self-spawned single-node
+#                          and 3-node suites under test/integration, in the
+#                          per-run compose stack.
 #                          The Makefile tears the stack down after every
 #                          iteration; the soak job's always() step catches a
 #                          cancelled one.

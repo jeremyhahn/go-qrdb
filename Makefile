@@ -1186,14 +1186,38 @@ INTEGRATION_RUN ?=
 CLUSTER_CPUS ?= 8
 CLUSTER_MEM_RESERVATION ?= 8g
 CLUSTER_PARALLEL ?= 1
+#
+# INTEGRATION_GO_TIMEOUT is go test's -timeout for the package, read by the
+# compose integration-tests service. The suite is serial, so its run time is
+# the sum of its tests: 36.7 min quiet and 43.1 min at 2x CPU oversubscription
+# on a 4-CPU budget, past the 45 min this used to be. CI splits it into legs
+# (CLUSTER_SHARD below); this bounds one leg, or a whole local run, and stays
+# under the CI job's own 120 min so a hung test reports its goroutines.
+INTEGRATION_GO_TIMEOUT ?= 100m
+#
+# CLUSTER_SHARD=I/N runs leg I of N: scripts/cluster-shard.sh lists the
+# package's tests with `go test -list` under INT_FEATURE_TAGS, sorts them and
+# deals them round-robin into N anchored -run expressions. CI's
+# integration-cluster job is a matrix over CLUSTER_SHARDS legs, and
+# check-cluster-shards proves those legs partition the suite. It replaces
+# INTEGRATION_RUN, so setting both is refused.
+CLUSTER_SHARD ?=
+CLUSTER_SHARDS ?= 3
 .PHONY: integration-test-cluster
 integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
-	@cd test/integration/api && \
+	@run='$(INTEGRATION_RUN)'; \
+		if [ -n '$(CLUSTER_SHARD)' ]; then \
+			if [ -n "$$run" ]; then echo "integration-test-cluster: CLUSTER_SHARD and INTEGRATION_RUN are exclusive" >&2; exit 2; fi; \
+			run=$$(GO='$(GO)' CLUSTER_SHARD_TAGS='$(INT_FEATURE_TAGS)' ./scripts/cluster-shard.sh run '$(CLUSTER_SHARD)') || exit 1; \
+			echo "==> cluster leg $(CLUSTER_SHARD): $$(( $$(printf '%s' "$$run" | tr -cd '|' | wc -c) + 1 )) tests"; \
+		fi; \
+		cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
 		INTEGRATION_TAGS='$(INT_FEATURE_TAGS)' \
-		INTEGRATION_RUN='$(INTEGRATION_RUN)' \
+		INTEGRATION_RUN="$$run" \
+		INTEGRATION_GO_TIMEOUT='$(INTEGRATION_GO_TIMEOUT)' \
 		INTEGRATION_CPUS='$(CLUSTER_CPUS)' \
 		INTEGRATION_MEM_RESERVATION='$(CLUSTER_MEM_RESERVATION)' \
 		INTEGRATION_PARALLEL='$(CLUSTER_PARALLEL)' \
@@ -1883,7 +1907,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-cluster-shards test-cluster-shards check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2223,6 +2247,24 @@ check-compose-targets: ## Every compose `target:` names a real Dockerfile stage
 .PHONY: test-compose-targets
 test-compose-targets: ## Test the compose-target guard
 	@./scripts/check-compose-targets_test.sh
+
+# CI runs the cluster suite as CLUSTER_SHARDS matrix legs (integration-test-cluster
+# with CLUSTER_SHARD=I/N). A test that no leg's -run expression selects would
+# never run and never fail, and nothing in a passing CI run would show it; one
+# that two legs select runs twice. This applies every leg's expression to the
+# `go test -list` output of the package, the way go test would, and fails on
+# either. It compiles the integration package once, with the run's tags.
+# test/buildgates/cluster_shard_gate_test.go holds ci.yml's matrix to
+# CLUSTER_SHARDS.
+.PHONY: check-cluster-shards
+check-cluster-shards: ## The cluster suite's CI legs partition its tests
+	@GO='$(GO)' CLUSTER_SHARD_TAGS='$(INT_FEATURE_TAGS)' ./scripts/cluster-shard.sh check $(CLUSTER_SHARDS)
+
+# The partition check's rejecting branches (a dropped test, a doubly selected
+# test, an empty list), on fixture lists. Same reasoning as test-compose-targets.
+.PHONY: test-cluster-shards
+test-cluster-shards: ## Test the cluster-shard partition check
+	@./scripts/cluster-shard_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:

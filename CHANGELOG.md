@@ -13,6 +13,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **CI runs the cluster integration suite as three legs.** The serial suite
+  outgrew its 45-minute package timeout under runner load, so
+  `integration-cluster` is a matrix over `CLUSTER_SHARD=1/3`..`3/3`, each leg
+  an anchored `-run` expression dealt round-robin from `go test -list` by
+  `scripts/cluster-shard.sh`. `make check-cluster-shards` (Lint) fails when a
+  test is selected by no leg or by two, and
+  `test/buildgates/cluster_shard_gate_test.go` holds the matrix to
+  `CLUSTER_SHARDS`. The package timeout is now `INTEGRATION_GO_TIMEOUT`
+  (default `100m`). See `docs/release/engineering.md`.
+
 - **Breaking: `node.WithAuthenticators` takes a chain position.** Its
   signature is now `WithAuthenticators(position auth.ChainPosition,
   authenticators ...auth.Authenticator)`, with `ChainBeforeMTLS` (the

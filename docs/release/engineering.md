@@ -148,6 +148,46 @@ tick setting from configuration: the values are code defaults
 (`pkg/cluster/raft_tuning.go` and go-quicraft's), so CI cannot select a slower
 profile.
 
+### Cluster suite legs
+
+The full cluster suite is serial (`-p 1`, `-parallel 1`), so its run time is
+the sum of its tests: measured on a 4-CPU budget, 36.7 minutes quiet and 43.1
+minutes at 2x CPU oversubscription. That outgrew the 45-minute package timeout
+it had, and lowering parallelism has nothing left to give. So
+`integration-cluster` is a matrix of three legs
+(`strategy.matrix.shard: [1, 2, 3]`, `fail-fast: false`), each running
+`make integration-test-cluster CLUSTER_SHARD=<leg>/3` in its own compose
+project. `ci-gate` reads the job's aggregate result, which fails when any leg
+fails.
+
+| Makefile variable | Default | Effect |
+|---|---|---|
+| `CLUSTER_SHARD` | empty | `I/N` runs leg `I` of `N`; empty runs the whole suite. It replaces `INTEGRATION_RUN`, so setting both is refused |
+| `CLUSTER_SHARDS` | `3` | the leg count `check-cluster-shards` proves, and the size the workflow's matrix must have |
+| `INTEGRATION_GO_TIMEOUT` | `100m` | `go test -timeout` for the package, read by the `integration-tests` compose service; under the job's 120-minute limit, so a hung test still dumps its goroutines |
+
+`scripts/cluster-shard.sh` builds a leg's `-run` expression: it lists the
+package's tests with `go test -list` under the run's own tags, sorts them
+bytewise and deals them round-robin, so leg `I` takes positions `I`, `I+N`,
+`I+2N`... A new test lands in a leg without anyone editing a list. Each
+expression is anchored, `^(TestA|TestB)$`, because `go test -run` matches
+unanchored and `TestFoo` would otherwise also select `TestFooBar`.
+
+Two Lint steps hold the split honest. `make check-cluster-shards` applies every
+leg's expression to the full `go test -list` output and fails when a test is
+selected by no leg, or by more than one, or when the list is under a floor of
+250 tests (a package that compiled to nothing). `make test-cluster-shards`
+runs its rejecting branches on fixture lists.
+`test/buildgates/cluster_shard_gate_test.go` fails when the workflow's matrix
+is not exactly `1..CLUSTER_SHARDS`, when the step does not pass
+`CLUSTER_SHARD=${{ matrix.shard }}/N` or a per-leg `INT_PROJECT`, when
+`fail-fast` is not off, or when `ci-gate` stops requiring the job.
+
+To run one leg by hand: `make integration-test-cluster CLUSTER_SHARD=2/3`, or
+print its expression with `./scripts/cluster-shard.sh run 2/3` (set
+`CLUSTER_SHARD_TAGS` to the `INT_FEATURE_TAGS` value). The cluster tenancy job
+is not split: its selection runs in 5 to 10 minutes.
+
 ### Batch workflow
 
 `.github/workflows/batch.yml` is long-running CPU work that never gates a
