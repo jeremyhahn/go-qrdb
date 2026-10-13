@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Bootstrap Initialization
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Pointer table to the feature folders that own each startup step.
+
 This document describes the startup and initialization sequence for a fresh go-qrdb daemon (`qrdbd`).
 
 go-qrdb is the **single owner** of bootstrap, first-boot, ceremony, the user/identity model, and the barrier. Higher-level projects (go-xkms, go-quicbaas) drive these only through `go-qrdb/sdk/go` — never by importing `pkg/*` directly or reimplementing them.
@@ -30,202 +33,34 @@ Hardware strategies (`tpm2` / `pkcs11` / cloud KMS / Vault) are xkms-provided ex
 
 Admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thumbprint binding); there are no invite tokens. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
 
-- **System bootstrap** — system barrier + system tenant + system admin + admin-mTLS.
-- **Provision tenant** — minimal control-plane tenant record + tenant-admin cert enrollment (no tenant barrier key held by the system admin).
-- **Initialize tenant barrier** — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
-
-See [users/README.md](identity-rbac/architecture.md) for the user model and SPKI binding.
-
-## Startup Sequence
-
-When `qrdbd start` runs for the first time, it executes the following initialization steps:
-
-### 1. Configuration Loading
-
-```bash
-qrdbd start --config /etc/qrdb/qrdb.yaml --data-dir /var/lib/qrdb
-```
-
-The daemon loads configuration from the YAML file (or uses CLI flag overrides) and validates all parameters: Raft address, listener ports, TLS certificate paths, storage backend, databases, seal strategy, etc.
-
-### 2. TLS Certificate Generation
-
-If no TLS certificates exist, the daemon generates them:
-
-- **CA private key** — Generated and sealed in the barrier (or file if barrier is unavailable)
-- **CA certificate** — Self-signed, written to `$DATA_DIR/ca.pem`
-- **Server TLS key pair** — Written to `$DATA_DIR/qrdb-server.key` and `$DATA_DIR/qrdb-server.pem`
-- **Admin client cert** — For the system tenant, written to `$DATA_DIR/admin.pem`
-
-The CA key is sealed via `seal.EncryptionBarrier` (if the barrier is configured) or stored plaintext (file storage). Once sealed, all subsequent certificate operations require an unsealed barrier.
-
-### 3. Storage Initialization
-
-The daemon initializes the configured storage backend(s):
-
-- **PebbleDB** — Creates/opens the database at `$DATA_DIR/db.pebble`
-- **File Storage** — Creates directory structure for file-backed key-value store
-- **Memory Storage** — Allocates in-memory maps
-
-Each database (configured in YAML) gets its own storage backend instance.
-
-### 4. Raft Initialization
-
-The daemon initializes the Raft consensus layer:
-
-- **Node ID** — Derived from CLI flags or YAML (`--replica-id`, `--deployment-id`)
-- **Peer Discovery** — Uses configured method: static, multicast, DNS, or token. The discovery engine and cluster-formation orchestration live in `pkg/discovery` and `pkg/cluster`; see [discovery.md](clustering/architecture.md) for details.
-- **Shard Creation** — Creates the default KV shard (ID `1`) with the configured state machine type and storage backend
-- **Log Storage** — Opens the Raft WAL in `$DATA_DIR/raft.log`
-
-### 5. Barrier Initialization (if needed)
-
-If no barrier exists (fresh install):
-
-- **Single-Admin Mode** (threshold < 2): Barrier is initialized and unsealed immediately
-- **M-of-N Mode** (threshold >= 2): the named share holders are enrolled, the barrier's unseal key is split to them, and the system enters "enrolling" state until each holder has claimed its sealed envelope
-
-The barrier status is checked via `BarrierStatus`. If sealed, data operations are blocked until `BarrierUnseal` (credential strategies) succeeds, or — for a Shamir barrier — until M share holders complete an `unseal` quorum round (`BarrierQuorumSubmit`).
-
-### 6. Role and User Bootstrap
-
-The daemon creates five system roles deterministically on first init. Each role is
-assigned a fixed UUIDv8 (RFC 9562 §5.8, derived over SHA-256) from its tenant and
-name to ensure cross-cluster stability; see
-[roles/README.md](roles/README.md#storage-schema).
-
-**System Roles** (undeletable, persist at `__sys:role/<id>`):
-
-| Role | UUID | Permissions | Notes |
-|------|------|-----------|-------|
-| Security Officer (SO) | `SystemRoleID(tenantID, "SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
-| Admin | `SystemRoleID(tenantID, "Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
-| Operator | `SystemRoleID(tenantID, "Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
-| User | `SystemRoleID(tenantID, "User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
-| Auditor | `SystemRoleID(tenantID, "Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-
-An admin user for the system tenant is also created:
-
-| Object | ID | Permissions | Notes |
-|--------|----|----|-------|
-| `admin` user | Auto-generated | Bound to `admin` role | Created once, idempotent |
-
-**Phase 1 Note**: These six roles are documented in [docs/auth/roles.md](auth/roles.md) with full FIPS 140-3 AS10.03 separation-of-duties constraints and permission matrix. Phase 2 implements RBAC enforcement.
-
-This bootstrap is **idempotent**: if roles and admin user already exist, the function returns immediately without creating duplicates.
-
-In multi-node clusters, only the **leader** can execute the creation. Followers detect `NotLeader` errors and wait for the leader's writes to replicate.
-
-### 7. Multi-Protocol Servers Start
-
-Once the daemon is operational, all configured protocol servers start listening:
-
-- **Admin Server** (REST API) — Bound to `--listen` (e.g., `127.0.0.1:8443`), HTTPS with client cert auth
-- **gRPC Server** — Bound to `--grpc-port` (e.g., `9090`)
-- **QUIC Server** — Bound to `--quic-port` (e.g., `9443`)
-- **SQL Servers** — MySQL (`--mysql-port 3306`) and PostgreSQL (`--pgsql-port 5432`) if enabled
-- **Unix Socket** — gRPC over UDS at `--unix-socket-path` if enabled
-- **MCP Server** — MCP protocol at `--mcp-endpoint` if enabled
-
-## File Layout
-
-After successful bootstrap, the data directory contains:
-
-```
-$DATA_DIR/
-├── ca.pem                    # CA certificate (readable by operators)
-├── qrdb-server.key           # Server TLS private key (encrypted in barrier)
-├── qrdb-server.pem           # Server TLS certificate
-├── admin.pem                 # Admin client certificate (system tenant)
-├── db.pebble/                # PebbleDB storage (if pebble backend)
-│   ├── MANIFEST
-│   ├── 000001.sst
-│   └── ...
-├── raft.log                  # Raft WAL
-└── .qrdb.lock                # File lock (prevents concurrent daemon instances)
-```
-
-All sensitive keys are stored in the barrier (encrypted). Once unsealed, they are available in memory via `seal.EncryptionBarrier.Decrypt()`.
-
-## Idempotency Guarantees
-
-The bootstrap sequence is **idempotent** and safe to re-run:
-
-- **Certificates** — If certs already exist, they are reused
-- **Admin User** — If admin exists, creation is skipped
-- **Barrier** — If sealed, unseal must be done manually; if unsealed, state remains
-- **Raft** — If a node restarts, it re-joins the cluster using the stored log and snapshots
-
-A fresh start vs. a restart of an existing node follows the same sequence; only the first run performs initialization, subsequent runs skip redundant operations.
-
-## Cluster Bootstrap (Multi-Node)
-
-When joining an existing cluster, the `--join` flag allows a new node to discover and sync with peers:
-
-```bash
-qrdbd start --join --peers node1.example.com:5000,node2.example.com:5000
-```
-
-The new node will:
-
-1. Initialize its local storage and barrier
-2. Contact the peers to request a snapshot and log entries
-3. Apply the snapshot to bring itself up-to-date
-4. Begin participating in Raft consensus
-
-The admin user and roles are not re-created (they already exist from the cluster's initial bootstrap).
-
-## Single-Admin Mode
-
-Quickest to deploy for development and small installations:
-
-```bash
-qrdbd start --threshold 1
-```
-
-The barrier initializes, unseals immediately, and the system is operational without officer coordination.
-
-## M-of-N Mode (Multi-Officer)
-
-For production and high-security environments:
-
-```bash
-qrdbd start --threshold 2 --total 3
-```
-
-After the daemon starts, it is in "enrolling" state. Each share holder claims its sealed envelope (`qrdb barrier officer claim`). Only after every holder has claimed does the system transition to "operational".
-
-## Troubleshooting
-
-### Barrier Sealed
-
-If the barrier is sealed, data operations return `ErrBarrierSealed`. A Shamir
-barrier is unsealed by M share holders, each submitting through the sealed
-window:
-
-```bash
-qrdb barrier quorum submit --op unseal --username alice \
-     --envelope alice.env --key alice.key
-```
-
-See [shamir-custody/user.md](shamir-custody/user.md).
-
-### Admin User Not Created
-
-Check logs for `auth bootstrap` messages. If `firstboot.Initialize` fails on a follower, wait for leader replication. If it fails on the leader, check barrier and storage backend status.
-
-### TLS Certificate Issues
-
-If TLS certs are corrupted or expired:
-
-1. Delete the cert files from `$DATA_DIR/`
-2. Stop the daemon
-3. Restart — new certs will be generated
-4. Regenerate admin client cert via `generateAdminClientCert()`
+- **System bootstrap** (`bootstrap.BootstrapSystem`) — system barrier + system tenant + system admin + admin-mTLS.
+- **Provision tenant** (`bootstrap.ProvisionTenant`) — minimal control-plane tenant record + tenant-admin cert enrollment (no tenant barrier key held by the system admin).
+- **Initialize tenant barrier** (`bootstrap.InitializeTenantBarrier`) — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
+
+See [identity-rbac/architecture.md](identity-rbac/architecture.md) for the user model and SPKI binding.
+
+## Startup sequence
+
+`qrdbd start` runs one sequence on first boot and on every restart; only the
+first run initializes. The steps, in order: configuration loading, TLS
+certificate generation, storage initialization, Raft initialization, barrier
+initialization (if needed), role and user bootstrap, multi-protocol servers
+start. Each step belongs to a feature folder, which is the contract for it:
+
+| Step | Owner |
+|------|-------|
+| Configuration, listeners and flags | [12-configuration.md](12-configuration.md), [api-server/cli.md](api-server/cli.md) |
+| Barrier initialization and unsealing | [barrier-seal/architecture.md](barrier-seal/architecture.md), [seal/README.md](seal/README.md) |
+| M-of-N share enrollment and claim | [ceremony/architecture.md](ceremony/architecture.md), [shamir-custody/architecture.md](shamir-custody/architecture.md) |
+| First admin, built-in roles, idempotency | [firstboot/architecture.md](firstboot/architecture.md) |
+| Joining an existing cluster | [clustering/architecture.md](clustering/architecture.md) |
+
+First-boot orchestration is idempotent: roles and the admin user are created
+once, and a restart skips every step that already completed.
 
 ## See Also
 
-- [ceremony/README.md](ceremony/architecture.md) — Ceremony state machine and officer enrollment
+- [ceremony/architecture.md](ceremony/architecture.md) — Ceremony state machine and share holder enrollment
 - [seal/README.md](seal/README.md) — Barrier architecture and unsealing
 - [12-configuration.md](12-configuration.md) — Full YAML configuration reference
-- [13-operations.md](clustering/cli.md) — Monitoring, health checks, and deployment
+- [clustering/cli.md](clustering/cli.md) — Monitoring, health checks, and deployment

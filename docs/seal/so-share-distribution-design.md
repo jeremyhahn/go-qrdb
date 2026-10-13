@@ -1,5 +1,8 @@
 # Security Officer Share Distribution Design
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · superseded by `docs/shamir-custody/`.
+
 **Status:** Superseded design record — history, **not** shipped behaviour
 **Date:** 2026-06-10
 
@@ -487,7 +490,7 @@ shares already claimed by officers*. A prior-round quorum reconstructs an
 unseal key that no longer decrypts the wrapped root key
 (`seal.ErrUnsealKeyMismatch`). The root key never rotates and no stored data
 is re-encrypted. See `pkg/seal/unsealkey.go` and
-[shamir.md](shamir.md#rekey).
+[../shamir-custody/architecture.md](../shamir-custody/architecture.md).
 
 **New method on OfficerRegistry:**
 

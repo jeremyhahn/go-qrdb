@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Vector Database
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 QRDB includes a namespace-scoped vector database subsystem for similarity
 search operations. The vector feature is gated behind the `qrdb_vector`
 build tag. When disabled, CLI commands return a "feature disabled" error
@@ -266,19 +269,21 @@ tunable accuracy via the `M` (number of connections) and `efConstruction`
 
 Source: `pkg/protocol/vector.go`
 
-Vector operations use op codes 70-78 in the binary wire protocol:
+Vector operations use op codes 70-77 in the binary wire protocol:
 
-| Op Code | Constant                 | Description                          |
-|---------|--------------------------|--------------------------------------|
-| 70      | `OpVectorUpsert`         | Insert or update a single vector     |
-| 71      | `OpVectorDelete`         | Delete a single vector               |
-| 72      | `OpVectorBatchUpsert`    | Batch insert/update vectors          |
-| 73      | `OpVectorBatchDelete`    | Batch delete vectors                 |
-| 74      | `OpNamespaceCreate`      | Create a vector namespace            |
-| 75      | `OpNamespaceDelete`      | Delete a vector namespace            |
-| 76      | `OpVectorUpdateMetadata` | Update vector metadata only          |
-| 77      | `OpVectorRebuildIndex`   | Trigger index rebuild                |
-| 78      | `OpVectorCompact`        | Trigger namespace compaction         |
+| Op Code | Constant                   | Description                                  |
+|---------|----------------------------|----------------------------------------------|
+| 70      | `OpVectorNamespaceCreate`  | Create a vector namespace                    |
+| 71      | `OpVectorNamespaceDelete`  | Delete a vector namespace                    |
+| 72      | `OpVectorUpsert`           | Insert or replace a single vector            |
+| 73      | `OpVectorBatchUpsert`      | Batch insert/replace vectors                 |
+| 74      | `OpVectorDelete`           | Delete a single vector                       |
+| 75      | `OpVectorBatchDelete`      | Batch delete vectors                         |
+| 76      | `OpVectorUpdateMetadata`   | Update vector metadata only                  |
+| 77      | `OpVectorIndexReconfigure` | Record new index parameters                  |
+
+Index rebuild and namespace compaction are service operations
+(`RebuildIndex`, `CompactNamespace`), not wire opcodes.
 
 Write operations (upsert, delete, namespace create/delete) are proposed
 through Raft consensus. Read operations (get, search, list, stats) use
@@ -524,27 +529,29 @@ resp, err := vectorService.SearchSimilar(ctx, &SearchSimilarRequest{
     Namespace:      "embeddings",
     QueryVector:    queryVec,
     K:              10,
-    Consistency:    ConsistencyLevelLinearizable,
+    Consistency:    ConsistencyLinearizable,
 })
 // Returns results from GPU (fast) or CPU (slower but guaranteed to work)
 ```
 
 ### GPU Adapter
 
-Source: `pkg/statemachine/vector_adapter_factory.go`
+Source: `pkg/vector/gpu/factory.go`, `pkg/vector/gpu/adapter.go`
 
-The GPU layer implements the `HNSWIndex` interface, allowing transparent fallback:
+`GPUIndexAdapter` wraps a `GPUIndex` as an `interfaces.HNSWIndex`
+(`pkg/interfaces/hnsw.go`), allowing transparent fallback:
 
 ```go
 type HNSWIndex interface {
-    Insert(vector []float32) (uint64, error)
+    Insert(id uint64, vector []float32) error
     Delete(id uint64) error
-    Search(query []float32, k int) ([]Result, error)
-    Build() error
+    Search(query []float32, k int) ([]*HNSWSearchResult, error)
+    Count() int64
+    GetStats() *HNSWStats
 }
 ```
 
-GPU indexes wrap C calls to cuVS via CGO. On errors, the adapter creates a CPU index for the same namespace.
+GPU indexes wrap C calls to cuVS via CGO. `GPUIndexFactory.CreateIndex` builds the fallback CPU index when GPU creation fails.
 
 ### Device Management
 

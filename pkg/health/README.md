@@ -1,5 +1,8 @@
 # Health Check Package
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Package overview; the code is the contract.
+
 The `health` package provides a generic health-probe framework following
 Kubernetes probe semantics. It is the stack's canonical home for health
 probes; downstream composers (go-xkms, go-quicbaas) consume it directly or

@@ -16,6 +16,8 @@ limitations under the License.
 
 # SQLite VFS Backend (Future Enhancement)
 
+> **Status: PROPOSED — not scheduled, not implemented.** · Last verified: 2026-10-13
+
 **Status: PROPOSED — not scheduled, not implemented.**
 
 This document records the design for making qrdb a **drop-in storage backend

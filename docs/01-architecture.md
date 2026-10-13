@@ -16,6 +16,9 @@ limitations under the License.
 
 # QRDB Architecture Overview
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 ## 1. Overview
 
 QRDB (QuicRaft DB) is a distributed transactional key-value store in the
@@ -634,7 +637,7 @@ and `node.EnableEncryption()`.
 - **Vector storage and embedding as tenant-safe barrier-encrypted primitives.**
   QRDB provides a thin, tenant-scoped RAG ingest/retrieve primitive
   (`pkg/rag/`) backed by a tenant-partitioned vector database
-  (`pkg/vector/`, `pkg/statemachine/vector_statemachine.go`), and an
+  (`pkg/vector/`, `pkg/engine/vector_handlers.go`), and an
   embedding provider-proxy (`pkg/embedding/`) for generating vectors from
   text. Vector namespaces are TENANT-PARTITIONED—the namespace name is
   qualified by the request-context tenant, preventing collision between
@@ -649,7 +652,7 @@ and `node.EnableEncryption()`.
   only the primitives.
 
   Source: `pkg/vector/`, `pkg/embedding/`, `pkg/rag/`
-  Source: `pkg/statemachine/vector_statemachine.go` -- tenant validation, multi-tenant namespace isolation
+  Source: `pkg/engine/vector_handlers.go` -- applies the replicated vector operations
 
 - **Functional options pattern for server configuration.** The REST
   server, gRPC server, multi-protocol orchestrator, and store

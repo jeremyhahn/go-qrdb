@@ -162,6 +162,11 @@ refusals with the same codes (REST no longer answers them `500`).
   "duration": 284000000000, "final_imbalance": 3.1 }
 ```
 
+A node that cannot read the placement records (for example during an
+election) refuses the whole plan before any move with
+`*service.RebalancePlacementReadError`: REST `503`, gRPC/MCP `UNAVAILABLE`.
+Nothing was changed; resubmit the plan.
+
 `ImbalanceReport`:
 
 ```json

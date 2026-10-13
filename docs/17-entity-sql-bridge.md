@@ -1,5 +1,8 @@
 # Entity-to-SQL Bridge
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 The entity-to-SQL bridge provides seamless interoperability between the DAO (NoSQL) and SQL query interfaces. A Go struct registered via `dao.New()` is automatically visible as a SQL table — same data, same indexes, zero extra configuration.
 
 ## Architecture

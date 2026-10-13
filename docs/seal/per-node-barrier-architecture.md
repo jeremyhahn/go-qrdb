@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Per-Node Barrier Architecture
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · implemented; read it against `docs/barrier-seal/architecture.md`, which corrects it.
+
 **Status:** IMPLEMENTED — Phases A, C, D shipped + validated (2026-06-20). Phase B deferred pending xkms integration; Phase E in progress.
 **Correction (2026-10-01):** read this record against
 [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).

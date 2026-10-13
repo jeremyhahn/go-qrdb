@@ -1,5 +1,8 @@
 # Shared-CA-key enrollment does not work over the Noise transport
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · resolved; the owner ruled the cluster CA private key is never distributed.
+
 **Status:** resolved. The owner ruled that the cluster CA private key is
 never distributed, on any transport — the Noise handler's behaviour
 described below was the correct one, and SPKI, DANE and Direct now match it,

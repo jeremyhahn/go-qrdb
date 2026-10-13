@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Example Configurations
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Index of the example configurations; `docs/12-configuration.md` is the key reference.
+
 One exemplar per supported cell of the run-mode × state-machine matrix.
 Terminology is defined in [docs/GLOSSARY.md](../docs/GLOSSARY.md) — read it
 first; "storage backend", "state machine type", and "run mode" are three

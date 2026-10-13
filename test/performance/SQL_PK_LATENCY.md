@@ -1,5 +1,8 @@
 # SQL primary-key point statements vs table size
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Measurements taken 2026-10-01; re-run the benchmark before citing them.
+
 **Date**: 2026-10-01
 **Benchmark**: `test/performance/sqlpk` (`make bench-sqlpk`)
 **Before**: v0.25.2-alpha. **After**: the planner row-count estimate, statement-scoped

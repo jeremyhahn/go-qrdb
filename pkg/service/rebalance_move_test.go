@@ -185,7 +185,10 @@ func TestRebalanceService_SetRebalanceDeps_NilArgumentsAccepted(t *testing.T) {
 
 func TestBuildShardPlacementIndex_NilStore_ReturnsNil(t *testing.T) {
 	svc := &RebalanceService{host: &mockHost{}}
-	idx := svc.buildShardPlacementIndex(context.Background())
+	idx, err := svc.buildShardPlacementIndex(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error with nil store: %v", err)
+	}
 	if idx != nil {
 		t.Fatalf("expected nil index with nil store, got %v", idx)
 	}
@@ -197,7 +200,10 @@ func TestBuildShardPlacementIndex_PopulatedStore_IndexesByShardID(t *testing.T) 
 	store := newTestPlacementStore(t, p1, p2)
 	svc := &RebalanceService{host: &mockHost{}, placementStore: store}
 
-	idx := svc.buildShardPlacementIndex(context.Background())
+	idx, err := svc.buildShardPlacementIndex(context.Background())
+	if err != nil {
+		t.Fatalf("buildShardPlacementIndex: %v", err)
+	}
 	if len(idx) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(idx))
 	}
@@ -1348,20 +1354,80 @@ func TestExecuteRebalance_MixedMoves(t *testing.T) {
 // buildShardPlacementIndex: List failure
 // ---------------------------------------------------------------------------
 
-func TestBuildShardPlacementIndex_ListFailure_ReturnsNil(t *testing.T) {
-	// A KV whose Scan always fails causes Store.List to return an error.
+// newScanFailingPlacementStore returns a placement store holding placements
+// whose every subsequent List fails, and the KV that arms the failure.
+func newScanFailingPlacementStore(t *testing.T, placements ...*placement.Placement) *placement.Store {
+	t.Helper()
 	kv := &failingPutKV{inner: newMemPlacementKV(), failPut: false}
 	store, err := placement.NewStore(kv)
 	if err != nil {
 		t.Fatalf("placement.NewStore: %v", err)
 	}
-	// Arm scan failure.
+	for _, p := range placements {
+		if err := store.Put(context.Background(), p); err != nil {
+			t.Fatalf("placement.Store.Put: %v", err)
+		}
+	}
 	kv.failScan = true
+	return store
+}
 
+func TestBuildShardPlacementIndex_ListFailure_ReturnsError(t *testing.T) {
+	store := newScanFailingPlacementStore(t)
 	svc := &RebalanceService{host: &mockHost{}, placementStore: store}
-	idx := svc.buildShardPlacementIndex(context.Background())
+
+	idx, err := svc.buildShardPlacementIndex(context.Background())
 	if idx != nil {
 		t.Fatalf("expected nil index when List fails, got %v", idx)
+	}
+	var storeErr *placement.StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("expected the *placement.StoreError from List, got %T: %v", err, err)
+	}
+}
+
+// TestExecuteRebalance_PlacementListFailure_FailsClosed proves a plan is not
+// executed against an index it could not read. Without the index a dedicated
+// tenant shard is indistinguishable from a generic one, so the MOVE would fall
+// through to the generic voter add: refused on a non-member (counted as a
+// failed move behind a 200) and, on a member, a voter add that bypasses the
+// tenant-aware observer, key delivery and placement steps.
+func TestExecuteRebalance_PlacementListFailure_FailsClosed(t *testing.T) {
+	store := newScanFailingPlacementStore(t, newTestPlacement("acme", "db1", 10))
+	raftHost := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := NewRebalanceService(hostForMove(t),
+		WithRebalancePlacementStore(store),
+		WithRebalanceSelfNodeID("node-b:9100"),
+		WithRebalanceRaftHost(raftHost),
+	)
+
+	result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{
+		Moves: []RebalanceMovePlan{
+			{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"},
+		},
+	})
+	if result != nil {
+		t.Fatalf("expected no result when placements cannot be read, got %+v", result)
+	}
+	var readErr *RebalancePlacementReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("expected *RebalancePlacementReadError, got %T: %v", err, err)
+	}
+	var storeErr *placement.StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("expected the cause to unwrap to *placement.StoreError, got %v", err)
+	}
+}
+
+func TestRebalancePlacementReadError_ErrorAndUnwrap(t *testing.T) {
+	cause := errors.New("kv: scan unavailable")
+	err := &RebalancePlacementReadError{Err: cause}
+	if !errors.Is(err, cause) {
+		t.Fatal("expected Unwrap to expose the cause")
+	}
+	want := "service: execute rebalance: read placements failed: kv: scan unavailable"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
 

@@ -1,5 +1,8 @@
 # Upstream gaps in go-mysql-server
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Register of go-mysql-server defects QRDB depends on; each is fixed upstream, not compensated here.
+
 QRDB's SQL engine is [go-mysql-server](https://github.com/dolthub/go-mysql-server)
 (GMS) with a vitess-derived parser. A small number of behaviours QRDB depends on
 are defects or omissions in that dependency rather than in QRDB, and the

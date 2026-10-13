@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0.
 
 # Secret-reference resolution (`pkg/secret`)
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 The credentials service (L2) **stores** named, versioned secrets. `pkg/secret`
 sits one layer above it and **resolves references to those secrets** at boot, so
 a binary never embeds a secret and never hand-rolls its own injection logic. It

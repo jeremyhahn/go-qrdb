@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Pluggable Authentication
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 go-qrdb defines pluggable `Authenticator` and `Authorizer` interfaces in `pkg/auth/`. The default implementation extracts identity from mTLS client certificates. go-xkms can inject richer authenticators (JWT, adaptive) when using go-qrdb as a library.
 
 ## Interfaces
@@ -82,8 +85,8 @@ one-way door. Detail:
 
 The authenticator is wired into protocol middleware:
 
-- **REST**: `middleware_auth.go` extracts TLS peer cert, calls `Authenticate()`
-- **gRPC**: `interceptor_auth.go` extracts from gRPC TLS credentials
+- **REST**: `pkg/auth/middleware/rest.go` extracts TLS peer cert, calls `Authenticate()`
+- **gRPC**: `pkg/auth/middleware/grpc.go` extracts from gRPC TLS credentials
 - **Unix**: No auth required (inherently local)
 - **MCP**: OAuth 2.1 Bearer token validation via external mux
 
@@ -91,17 +94,14 @@ The authenticator is wired into protocol middleware:
 
 The `pkg/auth/rbac/` package implements the `auth.Authorizer` interface with role-based access control.
 
-```go
-type RBACAuthorizer struct {
-    roleStore   RoleStore
-    permCache   sync.Map       // permission cache: userID -> cachedPerms
-    cacheTTL    time.Duration  // default 30s
-}
-```
+`RBACAuthorizer` (`pkg/auth/rbac/rbac.go`) resolves roles through a
+`role.RoleServicer`, caches the resolved permission set per identity, and
+optionally takes a stale-read role fallback and a tenant-aware scope
+resolver.
 
 ### Behavior
 
-- Loads the user's assigned roles from the `RoleStore`
+- Loads the user's assigned roles through the `role.RoleServicer`
 - Collects all permissions across the assigned roles (built-in roles use concrete `resource:action` grants; whole-segment wildcards like `resource:*` also match)
 - Allows the request only when the requested `resource:action` is present, and denies otherwise (`PermissionDeniedError`). There is no superadmin role that skips the check — an unknown role simply grants nothing
 - **SO deny-list (FIPS 140-3 AS10.03)**: an identity holding the `so` role is denied cryptographic operations regardless of any grant, and this runs before permissions are resolved. It covers the `keys:*` crypto verbs (`sign`, `encrypt`, `decrypt`, `verify`, `wrap`, `unwrap`, `derive`), hardware-token key use (`piv:use`), and any resource whose action names a cryptographic primitive (`attest`, `quote`, `mac`, `kdf`, ...) -- including permissions contributed by a higher layer. Barrier lifecycle (`seal:unseal`, `seal:seal`) and issuance (`ceremony:sign_csr`, `certs:issue`) are the SO's own duties and are not denied
@@ -119,7 +119,9 @@ The `pkg/auth/middleware/` package provides protocol-specific middleware that wi
 |------|-------------|
 | `middleware/grpc.go` | gRPC unary + stream interceptors that extract TLS peer state and invoke the auth chain |
 | `middleware/rest.go` | REST middleware wrapping the HTTP dispatch mux |
-| `middleware/mapping.go` | Route-to-permission mapping: maps each HTTP route or gRPC method to a `resource:action` permission string |
+| `middleware/rest_routes.go` | HTTP route to `resource:action` permission mapping |
+| `middleware/grpc_descriptor.go` | gRPC method to `resource:action` permission mapping, read from the service descriptors |
+| `middleware/quic.go`, `middleware/mcp.go` | The same chain for QUIC methods and MCP tools (`perm_registry.go`) |
 
 ### Auth Chain Flow
 
@@ -127,7 +129,7 @@ The `pkg/auth/middleware/` package provides protocol-specific middleware that wi
 Request
   -> Extract TLS State (peer certificates)
   -> Authenticator Chain (mTLS -> next -> ...)
-  -> User Lookup (UserStore.GetByUsername)
+  -> User Lookup (AuthMiddleware.lookupUser)
   -> Lifecycle Check (reject any account not in lifecycle active)
   -> RBAC Authorization (Authorizer.Authorize)
   -> Handler

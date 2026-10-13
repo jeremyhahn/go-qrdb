@@ -15,9 +15,13 @@
 package main
 
 import (
+	"context"
+	"io"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
@@ -73,16 +77,107 @@ func reserveNoisePort(t *testing.T, f *startFlags) {
 // repeats). Holding the port here makes the same omission fail on every run,
 // in the test that has it, with "63006: bind: address already in use".
 //
-// It never depends on the port being free. If the listen fails, something
-// else already holds the port, and an occupied port is all the guard needs;
-// TestDefaultNoisePortIsHeld checks that, rather than this function's own
-// success.
+// It never depends on the port being free, and never leans on whoever else
+// holds it: see portHold.
 func holdDefaultNoisePort() func() {
-	ln, err := net.Listen(networkTCP, net.JoinHostPort("", strconv.Itoa(clusterenroll.DefaultNoisePort)))
-	if err != nil {
-		return func() {}
+	return holdPort(clusterenroll.DefaultNoisePort).release
+}
+
+// portHold occupies a TCP port on the wildcard address -- which covers both
+// testBindHost and raftListenHost -- whoever else holds or lets go of the
+// same port meanwhile.
+//
+// Every concurrent copy of this package's tests wants the same fixed port, so
+// a hold that gives up when the port is taken, as this one once did, is held
+// by the OTHER copy: when that copy exits, the port is free for the rest of
+// this run and the guard is gone (go-qrdb CI, "bound 127.0.0.1:63006 during
+// the package's tests"). Two things close that:
+//
+//   - The listener sets SO_REUSEPORT, so every copy of this guard holds the
+//     port at once, each on its own socket. A test's ordinary listen, which
+//     does not set it, still fails against any one of them.
+//   - A holder that is not a copy of this guard -- an older build of it, or
+//     any other process -- cannot be shared with. The guard then connects to
+//     it and blocks on that connection, which ends when the holder closes its
+//     listener or exits, and takes the port at that moment. No polling.
+//
+// A holder that cannot be reached at testBindHost while it still holds the
+// wildcard port leaves the guard unarmed; there is nothing to wait on.
+type portHold struct {
+	addr    string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	armed   chan struct{} // closed once this process holds the port itself
+	stopped chan struct{} // closed once nothing is waiting to take the port
+	mu      sync.Mutex    // orders a late listen against release
+	ln      net.Listener
+}
+
+// holdPort holds port until the returned hold is released. It never blocks:
+// when the port is taken it waits for the holder in the background.
+func holdPort(port int) *portHold {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &portHold{
+		addr:    net.JoinHostPort("", strconv.Itoa(port)),
+		ctx:     ctx,
+		cancel:  cancel,
+		armed:   make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
-	return func() { _ = ln.Close() }
+	if h.listen() {
+		close(h.stopped)
+		return h
+	}
+	go h.await(net.JoinHostPort(testBindHost, strconv.Itoa(port)))
+	return h
+}
+
+// listen takes the port, reporting whether there is nothing left to wait for:
+// the port is held, or the hold was released meanwhile.
+func (h *portHold) listen() bool {
+	lc := net.ListenConfig{Control: reusePort}
+	ln, err := lc.Listen(h.ctx, networkTCP, h.addr)
+	if err != nil {
+		return h.ctx.Err() != nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ctx.Err() != nil {
+		_ = ln.Close()
+		return true
+	}
+	h.ln = ln
+	close(h.armed)
+	return true
+}
+
+// await waits on the holder at addr and takes the port when it lets go.
+func (h *portHold) await(holder string) {
+	defer close(h.stopped)
+	var d net.Dialer
+	for {
+		conn, err := d.DialContext(h.ctx, networkTCP, holder)
+		if err == nil {
+			stop := context.AfterFunc(h.ctx, func() { _ = conn.Close() })
+			_, _ = io.Copy(io.Discard, conn)
+			stop()
+			_ = conn.Close()
+		}
+		if h.listen() || err != nil {
+			return
+		}
+	}
+}
+
+// release lets the port go and returns once nothing is waiting to take it.
+func (h *portHold) release() {
+	h.cancel()
+	h.mu.Lock()
+	if h.ln != nil {
+		_ = h.ln.Close()
+	}
+	h.mu.Unlock()
+	<-h.stopped
 }
 
 // TestDefaultNoisePortIsHeld proves the guard is armed: while this package's
@@ -90,24 +185,103 @@ func holdDefaultNoisePort() func() {
 // these tests bind on. Removing holdDefaultNoisePort from TestMain turns this
 // red on any host where the port is otherwise free.
 func TestDefaultNoisePortIsHeld(t *testing.T) {
-	assertDefaultNoisePortHeld(t)
+	assertPortHeld(t, clusterenroll.DefaultNoisePort)
 }
 
-// TestHoldDefaultNoisePort_SecondHoldIsANoOp: a hold while TestMain's is live
-// cannot listen, and must hand back a release that leaves TestMain's hold in
-// place -- the shape it takes when a concurrent copy of this package already
-// holds the port.
+// TestHoldDefaultNoisePort_SecondHoldIsANoOp: a second hold while TestMain's
+// is live -- the shape it takes when a concurrent copy of this package already
+// holds the port -- must hand back a release that leaves TestMain's hold in
+// place.
 func TestHoldDefaultNoisePort_SecondHoldIsANoOp(t *testing.T) {
 	holdDefaultNoisePort()()
-	assertDefaultNoisePortHeld(t)
+	assertPortHeld(t, clusterenroll.DefaultNoisePort)
 }
 
-// assertDefaultNoisePortHeld fails t if the default Noise port can be bound
-// at either address this package's tests bind on.
-func assertDefaultNoisePortHeld(t *testing.T) {
+// TestPortHold_OutlivesAConcurrentCopy is the shape that reddened CI: a
+// concurrent copy of this package holds the port when this copy's guard arms,
+// then exits. The guard must hold the port on its own afterwards, not lean on
+// a holder that can leave.
+func TestPortHold_OutlivesAConcurrentCopy(t *testing.T) {
+	port := freeHoldPort(t)
+	other := holdPort(port)
+	h := holdPort(port)
+	t.Cleanup(h.release)
+	other.release()
+	awaitArmed(t, h)
+	assertPortHeld(t, port)
+}
+
+// TestPortHold_TakesThePortWhenAForeignHolderLetsGo: a holder that is not a
+// copy of this guard -- an older build of it, or any other process -- cannot
+// share the port, so the guard must take it the moment that holder lets go.
+func TestPortHold_TakesThePortWhenAForeignHolderLetsGo(t *testing.T) {
+	port := freeHoldPort(t)
+	foreign, err := net.Listen(networkTCP, net.JoinHostPort("", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("foreign holder: %v", err)
+	}
+	h := holdPort(port)
+	t.Cleanup(h.release)
+	_ = foreign.Close()
+	awaitArmed(t, h)
+	assertPortHeld(t, port)
+}
+
+// TestPortHold_ReleaseWhileWaitingLeavesThePortFree: a guard released while
+// it waits on a foreign holder stops waiting, and does not take the port when
+// that holder lets go afterwards.
+func TestPortHold_ReleaseWhileWaitingLeavesThePortFree(t *testing.T) {
+	port := freeHoldPort(t)
+	addr := net.JoinHostPort("", strconv.Itoa(port))
+	foreign, err := net.Listen(networkTCP, addr)
+	if err != nil {
+		t.Fatalf("foreign holder: %v", err)
+	}
+	h := holdPort(port)
+	h.release()
+	_ = foreign.Close()
+	ln, err := net.Listen(networkTCP, addr)
+	if err != nil {
+		t.Fatalf("a released guard still holds %s: %v", addr, err)
+	}
+	_ = ln.Close()
+	select {
+	case <-h.armed:
+		t.Fatal("a released guard reported itself armed")
+	default:
+	}
+}
+
+// freeHoldPort returns a port free at every address this package's tests
+// bind, for exercising portHold away from the default Noise port that
+// TestMain holds.
+func freeHoldPort(t *testing.T) int {
+	t.Helper()
+	port, err := freePortOn(raftListenHost, networkTCP)
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+	return port
+}
+
+// awaitArmed fails t unless h comes to hold its port itself. It waits on the
+// guard's own signal, bounded so a guard that never arms fails rather than
+// hangs.
+func awaitArmed(t *testing.T, h *portHold) {
+	t.Helper()
+	select {
+	case <-h.armed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the guard never took the port")
+	}
+}
+
+// assertPortHeld fails t if port can be bound at either address this
+// package's tests bind on.
+func assertPortHeld(t *testing.T, port int) {
 	t.Helper()
 	for _, host := range []string{testBindHost, raftListenHost} {
-		addr := net.JoinHostPort(host, strconv.Itoa(clusterenroll.DefaultNoisePort))
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
 		ln, err := net.Listen(networkTCP, addr)
 		if err == nil {
 			_ = ln.Close()

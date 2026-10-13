@@ -1,5 +1,8 @@
 # Secondary Indexes
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 QRDB provides secondary indexes for efficient lookups and range scans on entity attributes without scanning the entire dataset.
 
 ## 1. Overview

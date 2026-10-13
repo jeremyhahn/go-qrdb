@@ -1,5 +1,8 @@
 # Extension seams
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Inventory of the seams a composer replaces; the options named here are the contract.
+
 An upstream composer (go-xkms with hardware-backed cryptography, go-quicbaas
 with managed key custody) extends go-qrdb by passing enhanced implementations
 through its composition options. This document inventories every capability

@@ -1,5 +1,8 @@
 # Sealed-window endpoint allowlist
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 While the storage barrier is sealed, the daemon serves only the
 endpoints required to drive unseal. Every other request returns
 `503 Service Unavailable` (REST) or `codes.Unavailable` (gRPC) with

@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Ceremony SDK Exposure
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 This document describes the ceremony service as exposed through the go-qrdb
 SDK: the protocol flow, the SDK client interface and transport coverage. The
 requirements contract is [ceremony/](ceremony/); share holders are

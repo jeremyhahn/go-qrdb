@@ -1,5 +1,8 @@
 # GORM conformance suite
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> How the upstream GORM suite is run against QRDB; the suite is the contract.
+
 This directory runs [go-gorm/gorm](https://github.com/go-gorm/gorm)'s own
 upstream test suite against qrdb, over three surfaces:
 

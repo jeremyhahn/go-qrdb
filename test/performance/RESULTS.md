@@ -1,5 +1,8 @@
 # QRDB KV Performance Comparison
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · measurements taken 2026-03-29; re-run the benchmark before citing them.
+
 **Date**: 2026-03-29 04:29:56  
 **Payload**: 128 bytes  
 **TLS**: true  

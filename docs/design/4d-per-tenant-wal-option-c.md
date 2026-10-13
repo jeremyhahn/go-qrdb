@@ -1,5 +1,8 @@
 # Phase 3 / 4d Option C — Per-Tenant WAL Barriers (Implementation Plan)
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · a plan; the shipped design is `pkg/database/multiplex_logdb.go`, not this one.
+
 Status: **design complete (2026-06-17), implementation gated behind Phases 1+2.**
 Decision: maintainer chose Option C (full go-quicraft per-barrier snapshot-pool rework)
 for per-tenant-KEY WAL on shared-host IsolationRaft groups. Effort ~12–17 days

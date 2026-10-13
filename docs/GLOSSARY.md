@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # QRDB Glossary
 
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first.
+
 Standard terminology for qrdb. Use these terms exactly — several look
 interchangeable but name different layers, and most confusion in configs and
 conversation comes from mixing them. The four load-bearing distinctions:

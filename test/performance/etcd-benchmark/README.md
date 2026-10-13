@@ -1,5 +1,8 @@
 # QRDB etcd API vs etcd Performance Benchmarks
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> How to run the etcd comparison benchmark.
+
 Apples-to-apples comparison of QRDB's etcd v3 compatibility layer against a
 standalone etcd server. Both targets are exercised using the etcd v3 client
 library over gRPC with mTLS:

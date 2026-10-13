@@ -1,5 +1,8 @@
 # Consistency Levels
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 QRDB supports four consistency levels for read operations, allowing applications to trade latency for staleness depending on their needs.
 
 | Level | Latency | Guarantee | Use Case |

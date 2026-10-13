@@ -1,5 +1,8 @@
 # Configuration Reference
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference for the YAML keys; the code (`pkg/config`) wins on any disagreement.
+
 QRDB uses YAML-based configuration loaded at startup via the `--config` flag.
 CLI flags override YAML values when both are provided. Omitted fields inherit
 production-ready defaults from `DefaultConfig()`.
@@ -169,7 +172,7 @@ seal:
   # certificate binding depends on `qrdb init` being able to bring the
   # system barrier up at all, which does not exist when the seal is off.
   # A deployment that does not want encryption runs strategy "none" below
-  # rather than omitting this section; see ../barrier-seal/user.md.
+  # rather than omitting this section; see barrier-seal/user.md.
   enabled: true
   strategy: "none"
 
@@ -287,15 +290,14 @@ above for the joining side).
 | Field | Type | Default | CLI Flag | Description |
 |---|---|---|---|---|
 | `enabled`     | bool   | `false` | `--cluster-join-enabled`      | Run the Noise_NK join listener and register the SPKI/Direct `/v1/enroll/join` route |
-| `listen_host` | string | `server.host` | `--cluster-join-listen-host` | Bind host for the Noise_NK join listener |
+| `listen_host` | string | `""` | `--cluster-join-listen-host` | Bind host for the Noise_NK join listener; the flag defaults to `--host`, the YAML key is required when `enabled` is true |
 | `listen_port` | int    | `63007` | `--cluster-join-listen-port`  | TCP port for the Noise_NK join listener |
-| `token_file`  | string | `""` | `--cluster-join-token-file`   | Path to a file holding the admission secret this node checks |
-| `token_env`   | string | `""` | `--cluster-join-token-env`    | Name of an environment variable holding the admission secret |
 
 **Notes:**
 
-- `token_file` and `token_env` are mutually exclusive; `enabled: true` with
-  neither configured fails config validation.
+- There is no admission-token field: a signing member checks presented join
+  tokens against the single-use, identity-bound tokens an admin mints into the
+  replicated store (`clusterenroll.MintJoinToken` / `ConsumeJoinToken`).
 - The SPKI/Direct route needs no listener of its own: it is registered on the
   node's existing admin HTTPS listener, reachable only once the barrier is
   unsealed — the cluster CA (Key A) this node signs with is not available
@@ -707,7 +709,7 @@ Configures authentication and role-based access control (RBAC).
   the system barrier up at all, which does not exist when the seal is off.
   Refused with a typed `*ValidationError` on `seal.enabled` naming the fix
   (`seal.strategy: none` for a deployment that wants no encryption). See
-  [../barrier-seal/user.md](../barrier-seal/user.md).
+  [barrier-seal/user.md](barrier-seal/user.md).
 - `admin_username` must not be empty when `enabled` is `true`.
 - `default_tenant` must not be empty when `enabled` is `true`.
 - `cert_ttl` must be a valid Go duration string (e.g., `"8760h"`, `"720h"`).

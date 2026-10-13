@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Custom Authenticators & Authorizers (Embedder Hooks)
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 go-qrdb ships exactly one first-contact authenticator (mTLS) and one
 authorization stack (RBAC, optionally decorated with ABAC). Everything else
 — OAuth 2.1 bearer validation, external policy engines, adaptive
@@ -120,7 +123,7 @@ Embedder hooks compose with, and never bypass, the built-in rules:
   authenticate but skip RBAC by design; handler-level rules still apply.
 - **Sealed-window semantics:** identities authenticated while their
   tenant's IAM is unreachable are marked and constrained exactly as with
-  mTLS (see `docs/permissions/`).
+  mTLS (see [identity-rbac/architecture.md](../identity-rbac/architecture.md)).
 - A `WrapAuthorizer` decorator receives the inner RBAC[+ABAC] stack and
   chooses when to defer to it; returning nil fails node construction
   closed.

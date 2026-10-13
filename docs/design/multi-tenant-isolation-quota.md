@@ -1,5 +1,8 @@
 # Multi-Tenant Isolation, Quota & Entitlement System — Design
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · superseded by the `docs/multi-tenancy/` feature folder, which is canonical.
+
 Status: **proposed** (awaiting maintainer sign-off on the decisions in Part 5).
 Foundation for a service-based offering on top of qrdb.
 

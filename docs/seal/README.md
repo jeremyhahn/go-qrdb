@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Seal Package — StorageBarrier
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion to `docs/barrier-seal/`, which is the contract.
+
 The `pkg/seal/` package provides transparent at-rest encryption for go-qrdb's storage layer. It extends go-quicraft's minimal barrier with database-layer features: Shamir threshold unsealing, multi-tenant barriers, storage wrapping, recovery keys, rekey, and root token generation.
 
 ## Why this exists

@@ -524,6 +524,9 @@ var placementRules = []rule{
 	// Distributed topology requested and placement is not wired: fail closed
 	// rather than collapse to one local replica.
 	as(&service.RaftDistributedUnavailableError{}, Unavailable),
+	// A rebalance whose placement records could not be read was refused
+	// whole, nothing changed: retryable, as a membership read failure is.
+	as(&service.RebalancePlacementReadError{}, Unavailable),
 	as(&tenant.InvalidTenantIDCharError{}, InvalidArgument),
 	// A replica refused on a node that does not advertise a feature the group
 	// uses: the request is well formed and conflicts with the node's release,

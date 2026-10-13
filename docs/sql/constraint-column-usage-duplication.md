@@ -1,5 +1,8 @@
 # `constraint_column_usage` is served twice
 
+> **Status: OPEN — awaiting owner ruling** · Last verified: 2026-10-13
+> Nothing is broken; this records a which-one-is-canonical question.
+
 **Status:** open decision, measured 2026-08-16. Nothing is broken; the two
 implementations return the same rows. This is a "which one is canonical"
 question, not a bug report.

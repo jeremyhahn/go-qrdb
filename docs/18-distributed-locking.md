@@ -16,6 +16,9 @@ limitations under the License.
 
 # Distributed Locking
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 ## Overview
 
 The distributed lock service in QRDB provides safe coordination of access to shared resources across multiple processes or cluster nodes. Locks are useful for:
@@ -666,11 +669,12 @@ All transports implement the full lock API:
 
 | Transport | Mechanism | File |
 |-----------|-----------|------|
-| Embedded | Direct service call | `sdk/go/transport/embedded/transport_lock.go` |
+| Embedded | Direct service call | `sdk/go/transport/embedded/lock.go` |
 | REST | HTTP JSON POST/GET | `sdk/go/transport/rest/transport_lock.go` |
 | gRPC | Protobuf unary RPC | `sdk/go/transport/grpc/transport_lock.go` |
 | QUIC | Protobuf over QUIC | `sdk/go/transport/quic/transport_lock.go` |
 | Unix | gRPC over UDS | `sdk/go/transport/unix/transport_lock.go` |
+| MCP | MCP tool call | `sdk/go/transport/mcp/transport_lock.go` |
 
 ## Usage Examples
 

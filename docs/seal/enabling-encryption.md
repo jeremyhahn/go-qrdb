@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Enabling, Rotating & Disabling Encryption at Rest
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 This document explains the encryption-at-rest lifecycle for a qrdb deployment:
 how transparent decryption works, why the sealing strategy is fixed at
 initialization, how to enable encryption on an existing unencrypted deployment,

@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Cluster-wide Enable-Encryption — Design
 
+> **Status: ARCHIVE — historical record. Do NOT build from this document.**
+> Last verified: 2026-10-13 · implemented; the design record stays for the reasoning.
+
 > **IMPLEMENTED — Phase C + Phase D** (2026-06-20).
 > The design has been **shipped and validated** via integration tests
 > `TestClusterEnableEncryption_SystemScope_RF3` and

@@ -1,5 +1,8 @@
 # GORM
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 QRDB runs under [GORM](https://gorm.io) through the **stock**
 `gorm.io/driver/mysql` dialector. QRDB ships no dialector of its own. Its SQL
 surface is go-mysql-server, which speaks MySQL, and `sdk/go/driver`, QRDB's

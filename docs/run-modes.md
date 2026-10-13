@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Run Modes & Feature Model (Requirements)
 
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first.
+
 Ratified 2026-08-17. This document is the requirements statement for qrdb's
 run modes and feature composition. Terminology: [GLOSSARY.md](GLOSSARY.md).
 Items marked *(planned)* are approved but not yet landed; everything else
@@ -148,7 +151,7 @@ their repos.
 
 ## Amendment 2026-08-23 — transactions are served in both modes
 
-**Owner ruling, from [go-qrdb#62](../../issues/62).** The transaction /
+**Owner ruling, from go-qrdb issue 62.** The transaction /
 compare-and-swap family is served in **every** run mode. The ruling reverses
 this document's original inclusion of transactions among the raft-only
 families, and settles a conflict between two current normative statements:

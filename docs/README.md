@@ -16,6 +16,9 @@ limitations under the License.
 
 # QRDB Documentation
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Index of the documentation tree.
+
 ![QuicRaft DB Logo](../assets/logo.svg)
 
 > **Start with the [Glossary](GLOSSARY.md)** — the standard terminology for run

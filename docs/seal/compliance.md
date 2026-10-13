@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0
 
 # Compliance Framework Reference
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 Cross-reference of go-qrdb cryptographic capabilities against FIPS 140-3, FedRAMP, PCI-DSS v4, and HIPAA requirements. This document maps each regulatory requirement to the qrdb feature that satisfies it and indicates implementation phase and status.
 
 ## Executive Summary

@@ -16,6 +16,9 @@ limitations under the License.
 
 # Integration test coverage matrix
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Accounting of integration coverage per feature and transport; derived from `test/integration/features.mk`.
+
 CLI-driven, per-transport coverage for every `docs/<feature>/` folder, over
 the six transports the unified API server hosts (`docs/api-server/`): REST,
 gRPC, QUIC, MCP, Unix socket, and embedded (in-process, no network). The

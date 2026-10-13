@@ -1,5 +1,8 @@
 # Query Planner & Fluent Query API
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 ## 1. Overview
 
 QRDB includes an internal query planner that automatically selects optimal execution strategies based on available indexes and query predicates. The planner is not exposed directly to callers; instead, applications use the Data Access Object (DAO) layer which provides a GORM-style fluent query API.
@@ -37,8 +40,8 @@ The `pkg/planner/` package contains:
 
 - **Planner** -- Cost-based query optimizer
 - **Predicate** -- Query filter representation (field, operator, value)
-- **ExecutionPlan** -- Instruction set for execution (FullScan, IndexLookup, IndexScan, PostFilters)
-- **CostModel** -- Hardcoded cost estimates for different strategies
+- **Plan** -- The chosen strategy (`PlanType`: `PlanFullScan`, `PlanIndexLookup`, `PlanIndexScan`, `PlanCompoundIndexLookup`, `PlanCompoundIndexScan`, `PlanIndexIntersection`) plus the post-filters
+- **Cost estimates** (`pkg/planner/cost.go`) -- Hardcoded constants per strategy
 
 ## 3. Cost Model
 
@@ -47,15 +50,19 @@ The planner assigns costs to different execution strategies to guide plan select
 | Strategy | Cost | Reason |
 |----------|------|--------|
 | Unique index lookup (=) | 1 | O(1) hash lookup |
+| Compound index exact match | 3 | One lookup over several fields |
 | Normal index lookup (key match) | 10 | O(k) where k is cardinality |
+| Index intersection | 15 added | Overhead of intersecting two index results |
+| Compound index prefix match | 20 | Bounded scan over a compound prefix |
 | Index range scan (>, >=, <, <=, BETWEEN) | 50 | O(log n + k) with range iteration |
 | Full table scan | 1000 | O(n) linear scan |
 
-The planner combines costs additively. For example:
+Each predicate left to a post-filter adds a penalty of 20. The planner
+combines costs additively. For example:
 
 - Query: `WHERE Status = 'active' AND Age > 30`
-- If `Status` has a unique index: Cost = 10 (index lookup) + ~100 (post-filter Age > 30)
-- If only `Age` is indexed: Cost = 50 (range scan Age > 30) + ~200 (post-filter Status)
+- If `Status` has a unique index: Cost = 1 (unique lookup) + 20 (post-filter Age > 30)
+- If only `Age` is indexed: Cost = 50 (range scan Age > 30) + 20 (post-filter Status)
 - If neither is indexed: Cost = 1000 (full scan)
 
 The planner selects the lowest-cost plan.
@@ -305,8 +312,8 @@ The execution flow from application code through to results is:
    - Is Name indexed? (Used for ordering)
    - Can we satisfy ordering from index scan?
 
-6. Planner selects optimal ExecutionPlan:
-   - Primary strategy: IndexLookup on Status (cost 10)
+6. Planner selects optimal Plan:
+   - Primary strategy: IndexLookup on Status (cost 10, non-unique index)
    - Post-filters: None (Status was indexed, ordering from result order)
    - Limit: 100 items
 
@@ -328,24 +335,9 @@ The planner **always** ensures:
 
 ## 8. Query Plan Caching
 
-For repeated queries with the same structure (same Where/OrderBy/Limit), the execution plan is cached in a `sync.Map` keyed by query signature:
-
-```go
-// Query signature (deterministic):
-sig := hashPredicate(predicates) + ":" + orderingKey + ":" + limitKey
-
-// Lookup cached plan:
-if plan, ok := planCache.Load(sig); ok {
-    return executeExistingPlan(plan, values...)
-}
-
-// Plan not cached: create and cache:
-plan := planner.Plan(predicates)
-planCache.Store(sig, plan)
-return executePlan(plan, values...)
-```
-
-Cache eviction is automatic via memory pressure when the map exceeds ~10,000 entries.
+The planner does not cache plans. Every query is planned when it runs; planning
+is a pass over the entity's declared indexes and costs a handful of constant
+comparisons.
 
 ## 9. Power-User Escape Hatches
 

@@ -62,6 +62,25 @@ func (e *RebalanceExecuteError) Unwrap() error {
 	return e.Err
 }
 
+// RebalancePlacementReadError is returned when ExecuteRebalance cannot read
+// the placement records before executing a plan. Those records are what tells
+// a dedicated tenant shard, which needs the tenant-aware MOVE, from a generic
+// one, so the plan is refused as a whole rather than executed against a guess.
+// Nothing was changed; the plan can be resubmitted.
+type RebalancePlacementReadError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the placement read failure.
+func (e *RebalancePlacementReadError) Error() string {
+	return "service: execute rebalance: read placements failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *RebalancePlacementReadError) Unwrap() error {
+	return e.Err
+}
+
 // RebalanceMoveError is returned when a single dedicated-tenant shard MOVE
 // fails during ExecuteRebalance. It carries the shard, the tenant whose group
 // was being moved, the name of the step that failed, and the underlying cause.

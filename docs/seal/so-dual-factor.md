@@ -1,5 +1,8 @@
 # Security Officer dual-factor (SO PIN)
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 The SO dual-factor gate adds an in-band Security Officer PIN as a
 second factor — on top of the mTLS SO identity — for the governance
 operations that change key material or ceremony membership. It exists

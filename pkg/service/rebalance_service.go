@@ -449,7 +449,12 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 
 	// Build a shardID→Placement index. A shard present in this index belongs to
 	// a dedicated-tenant Raft group and requires the full tenant-aware MOVE.
-	placementIndex := s.buildShardPlacementIndex(ctx)
+	// An index that cannot be read refuses the plan: without it a dedicated
+	// shard would fall through to the generic voter add.
+	placementIndex, err := s.buildShardPlacementIndex(ctx)
+	if err != nil {
+		return nil, &RebalancePlacementReadError{Err: err}
+	}
 
 	for _, move := range plan.Moves {
 		// Dedicated-tenant path.
@@ -565,21 +570,23 @@ func (s *RebalanceService) moveGenericShard(ctx context.Context, info *quicraft.
 }
 
 // buildShardPlacementIndex lists all placements from the store and returns a
-// map of ShardID → *Placement. Returns nil when placementStore is nil or when
-// List fails (callers treat a nil map as an empty index).
-func (s *RebalanceService) buildShardPlacementIndex(ctx context.Context) map[uint64]*placement.Placement {
+// map of ShardID → *Placement. It returns a nil map and no error when
+// placementStore is nil (no dedicated tenant shards exist), and List's error
+// when the records cannot be read: an index missing for that reason is not an
+// empty one.
+func (s *RebalanceService) buildShardPlacementIndex(ctx context.Context) (map[uint64]*placement.Placement, error) {
 	if s.placementStore == nil {
-		return nil
+		return nil, nil
 	}
 	placements, err := s.placementStore.List(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	idx := make(map[uint64]*placement.Placement, len(placements))
 	for _, p := range placements {
 		idx[p.ShardID] = p
 	}
-	return idx
+	return idx, nil
 }
 
 // moveTenantGroupShard executes a single MOVE for a dedicated-tenant Raft

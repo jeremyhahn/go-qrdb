@@ -1,5 +1,8 @@
 # Embedding QRDB
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 QRDB can be embedded directly into Go applications via the `sdk/go/node` package. Two builder functions cover the most common deployment shapes:
 
 | Builder | Description |
