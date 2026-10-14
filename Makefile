@@ -1464,7 +1464,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -1975,8 +1975,27 @@ NOPGSQL_TAGS      := $(subst $(space),$(comma),$(strip $(filter-out qrdb_pgsql,$
 NOSQLFAMILY_TAGS  := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql qrdb_pgsql qrdb_sql,$(BUILD_TAGS))))
 NOETCD_TAGS       := $(subst $(space),$(comma),$(strip $(filter-out qrdb_etcd,$(BUILD_TAGS))))
 
+# ACTIONLINT_VERSION is the actionlint the runner and lane images bake; ci.yml
+# pins the same value and asserts it with scripts/require-tool.sh before the
+# Lint job reaches this target (#636). Never installed over the network.
+ACTIONLINT_VERSION := v1.7.12
+export ACTIONLINT_VERSION
+
+# WORKFLOW_FILES is every workflow file that exists: .github/workflows/ always,
+# .gitea/workflows/ when a repository carries one. actionlint fails on a glob
+# that matches nothing, so the list is resolved here rather than by the shell.
+WORKFLOW_FILES := $(wildcard .github/workflows/*.yml .github/workflows/*.yaml .gitea/workflows/*.yml .gitea/workflows/*.yaml)
+
+# lint-workflows validates workflow syntax, expressions and runner labels before
+# CI does. It fails closed: a missing or wrong-version actionlint is an error,
+# not a skipped check.
+.PHONY: lint-workflows
+lint-workflows:
+	@./scripts/require-tool.sh actionlint "$(ACTIONLINT_VERSION)" github.com/rhysd/actionlint/cmd/actionlint
+	actionlint $(WORKFLOW_FILES)
+
 .PHONY: lint
-lint:
+lint: lint-workflows
 	$(GOLINT) run --build-tags "$(LINT_TAGS)" ./...
 
 # `./...` DOES NOT CROSS A MODULE BOUNDARY, so the target above reaches none of
@@ -2169,6 +2188,18 @@ check-action-pins:
 check-integration-feature-coverage:
 	$(GOTEST) -run '^TestIntegrationFeatureCoverage' ./test/buildgates/...
 
+# A lean standalone embedder -- sdk/go/node on the file backend, the embedded
+# transport and an entity DAO (sdk/go/examples/leanstandalone) -- must not
+# compile features it does not use: the Raft host, PebbleDB, the network API
+# servers, clustering, vectors, time series, metrics, MCP, chi, gin or the
+# object store (#627). The gate reads the example's `go list -deps` graph and
+# compares every import edge into those packages with the ratchet table in
+# test/buildgates/lean_standalone_test.go: a new edge fails, and so does a
+# listed edge that no longer occurs, so the table only shrinks toward empty.
+.PHONY: check-lean-standalone
+check-lean-standalone:
+	$(GOTEST) -run '^TestLeanStandalone' ./test/buildgates/...
+
 # The nightly's verdict has to reach somebody (#478).
 #
 # `nightly.yml`'s signal job turns that workflow's result into a tracking issue
@@ -2307,7 +2338,7 @@ DEADCODE_BASELINE      := test/tools/deadcode/baseline.txt
 dead-code:
 	@go run ./test/tools/deadcode -mod . -name . -tags "$(LINT_TAGS)" \
 		-reflect-roots '$(DEADCODE_REFLECT_ROOTS)' -baseline $(DEADCODE_BASELINE)
-	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -tags "$(LINT_TAGS)" \
+	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -library -tags "$(LINT_TAGS)" \
 		-baseline $(DEADCODE_BASELINE)
 
 # Accepting findings is deliberate and reviewable: the baseline is a tracked
@@ -2318,7 +2349,7 @@ dead-code:
 dead-code-baseline:
 	@go run ./test/tools/deadcode -mod . -name . -tags "$(LINT_TAGS)" \
 		-reflect-roots '$(DEADCODE_REFLECT_ROOTS)' -baseline $(DEADCODE_BASELINE) -write-baseline
-	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -tags "$(LINT_TAGS)" \
+	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -library -tags "$(LINT_TAGS)" \
 		-baseline $(DEADCODE_BASELINE) -write-baseline
 
 # ============================================================================

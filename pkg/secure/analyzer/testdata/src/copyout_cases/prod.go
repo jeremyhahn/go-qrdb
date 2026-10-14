@@ -2,6 +2,7 @@ package copyout_cases
 
 import (
 	"bytes"
+	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -102,7 +103,28 @@ func wipedTooEarly(buf *secure.Buffer) {
 	use(out)
 }
 
+// The scoped Secret open hands its callback the same view, as its LAST
+// argument.
+func unwipedSecretCopy(ctx context.Context, s *secure.Secret) {
+	var out []byte
+	_ = s.WithBytes(ctx, func(b []byte) error {
+		out = append([]byte(nil), b...) // want `append\(\.\.\., view\.\.\.\) copies protected bytes`
+		return nil
+	})
+	use(out)
+}
+
 // --- Silent: the obligation is discharged. --------------------------------
+
+func wipedSecretCopy(ctx context.Context, s *secure.Secret) {
+	var out []byte
+	_ = s.WithBytes(ctx, func(b []byte) error {
+		out = append(out, b...)
+		return nil
+	})
+	defer secure.Wipe(out)
+	use(out)
+}
 
 func deferredWipe(buf *secure.Buffer) {
 	var out []byte

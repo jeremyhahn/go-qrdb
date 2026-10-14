@@ -18,14 +18,36 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// ErrShamirAutoUnseal is returned when a Shamir barrier is configured to
-// auto-unseal. A Shamir barrier opens only when an authenticated quorum of its
-// enrolled share holders submits; no configuration may carry their shares.
-var ErrShamirAutoUnseal = errors.New("embedded: a shamir barrier cannot auto-unseal; it is unsealed by a share-holder quorum")
+// BarrierSealedError indicates that the encrypted-at-rest data plane is
+// unavailable because its seal barrier is sealed: the transport's seal gate
+// refuses a data-plane call with it, and a composer that cannot open its
+// storage before the barrier is unsealed returns it. It always wraps
+// seal.ErrSealed so callers can match via errors.Is.
+type BarrierSealedError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BarrierSealedError) Error() string {
+	if e.Err == nil {
+		return "embedded: data-plane barrier is sealed"
+	}
+	return "embedded: data-plane barrier is sealed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying seal error so errors.Is(err, seal.ErrSealed)
+// matches.
+func (e *BarrierSealedError) Unwrap() error {
+	if e.Err == nil {
+		return seal.ErrSealed
+	}
+	return e.Err
+}
 
 // NilServiceError is returned when a nil service is passed to New or
 // when an operation requires a service that was not injected.

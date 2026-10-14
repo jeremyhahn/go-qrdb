@@ -192,7 +192,7 @@ type Dependencies struct {
 	// generated id) actually names that exact canonical role — same tenant,
 	// name, System flag and permission set — before treating it as this
 	// run's own idempotent re-attempt rather than a genuine, unexplained
-	// conflict (see builtInRoleAlreadySeeded). Leaving it nil is safe when
+	// conflict (see RoleMatchesSeed). Leaving it nil is safe when
 	// Roles itself implements role.NameResolver, which qrdb's own
 	// role.RoleServicer does and which is then used automatically.
 	RoleResolver role.NameResolver
@@ -544,7 +544,7 @@ func adminUsernameHolder(ctx context.Context, resolver UserResolver, tenantID, a
 // RoleIDExistsError) are verified the SAME way, by reading the persisted
 // record back and requiring an EXACT match — id included — against the
 // built-in definition this run would have created; see
-// builtInRoleAlreadySeeded. Neither collision is answered from the error
+// RoleMatchesSeed. Neither collision is answered from the error
 // type alone:
 //
 //   - A name collision only proves SOME record already claims the reserved
@@ -638,13 +638,14 @@ func RegisterBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 	return preexisting, nil
 }
 
-// builtInRoleAlreadySeeded reports whether the tenant already holds a role
-// named want.Name whose persisted id, tenant, name, System flag, and
-// permission set are ALL exactly want's — the only condition under which a
-// collision on a built-in role's create is safe to treat as "this run's own
-// idempotent re-attempt" rather than a genuine, unexplained conflict.
+// RoleMatchesSeed reports whether existing, the role found by want.Name, has a
+// persisted id, tenant, name, System flag, and permission set that are ALL
+// exactly want's — the only condition under which a collision on a built-in
+// role's create is safe to treat as "this run's own idempotent re-attempt"
+// rather than a genuine, unexplained conflict. It is the field-by-field
+// verdict of BuiltInRoleAlreadySeededWithin, which owns the lookup, and
 // RegisterBuiltInRoles' two call sites (a RoleNameExistsError and a
-// RoleIDExistsError) both call this the same way.
+// RoleIDExistsError) reach it through that function the same way.
 //
 // The id is checked unconditionally, on BOTH collision kinds. For a reserved
 // built-in name this is never a false refusal of a legitimate re-attempt:
@@ -679,24 +680,11 @@ func RegisterBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 // the id-collision path, where the record was reached by id rather than by
 // the name this comparison assumes.
 //
-// A nil resolver, a lookup error, a nil result, or any field that does not
-// match all report false: this function fails closed, since the caller's
-// only alternative on a false is to refuse the whole first-boot run rather
-// than silently accept a role it cannot verify.
-func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, tenantID string, want *role.Role) bool {
-	if resolver == nil {
-		return false
-	}
-	existing, err := resolver.GetRoleByName(ctx, tenantID, want.Name)
-	if err != nil || existing == nil {
-		return false
-	}
-	return RoleMatchesSeed(existing, want)
-}
-
-// RoleMatchesSeed is builtInRoleAlreadySeeded's comparison, factored out so
-// BuiltInRoleAlreadySeededWithin can retry the LOOKUP without retrying — or
-// duplicating — the field-by-field verdict once a record is found.
+// Any field that does not match reports false, and so does a nil resolver, a
+// lookup error or a nil result in BuiltInRoleAlreadySeededWithin: the pair
+// fails closed, since the caller's only alternative on a false is to refuse
+// the whole first-boot run rather than silently accept a role it cannot
+// verify.
 func RoleMatchesSeed(existing, want *role.Role) bool {
 	if existing.ID != want.ID {
 		return false
@@ -719,8 +707,8 @@ var (
 	BuiltInRoleSeedRetryWindow   = 5 * time.Second
 )
 
-// BuiltInRoleAlreadySeededWithin is builtInRoleAlreadySeeded, retried with a
-// bounded backoff while the verification lookup itself comes back not-found
+// BuiltInRoleAlreadySeededWithin looks the role up by name and reports
+// RoleMatchesSeed's verdict on it, retrying with a bounded backoff while the verification lookup itself comes back not-found
 // or erroring. Exported because it is the ONE place that answers "is this
 // create collision my own idempotent re-attempt?" for every seeder of a
 // built-in role, not only this package's own RegisterBuiltInRoles:

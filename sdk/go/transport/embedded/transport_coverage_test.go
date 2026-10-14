@@ -2189,74 +2189,8 @@ func TestEmbeddedImportFile_ServiceError(t *testing.T) {
 }
 
 // ===========================================================================
-// Error type coverage: server.go error types
+// Error type coverage: BarrierSealedError
 // ===========================================================================
-
-func TestEmbeddedServerErrors_StorageCreateError(t *testing.T) {
-	wrapped := errors.New("underlying")
-	e := &StorageCreateError{Backend: "memory", Err: wrapped}
-	if !strings.Contains(e.Error(), "memory") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap should match underlying")
-	}
-}
-
-func TestEmbeddedServerErrors_EngineCreateError(t *testing.T) {
-	wrapped := errors.New("engine boom")
-	e := &EngineCreateError{Engine: "pebble", Err: wrapped}
-	if !strings.Contains(e.Error(), "pebble") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_BarrierCreateError(t *testing.T) {
-	wrapped := errors.New("barrier boom")
-	e := &BarrierCreateError{Err: wrapped}
-	if !strings.Contains(e.Error(), "barrier") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_ServerTransportCreateError(t *testing.T) {
-	wrapped := errors.New("transport boom")
-	e := &ServerTransportCreateError{Err: wrapped}
-	if !strings.Contains(e.Error(), "transport") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_ServerClientCreateError(t *testing.T) {
-	wrapped := errors.New("client boom")
-	e := &ServerClientCreateError{Err: wrapped}
-	if !strings.Contains(e.Error(), "client") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_ShutdownError(t *testing.T) {
-	wrapped := errors.New("shutdown boom")
-	e := &ShutdownError{Err: wrapped}
-	if !strings.Contains(e.Error(), "shutdown") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
 
 func TestEmbeddedServerErrors_BarrierSealedError(t *testing.T) {
 	// nil err returns sentinel
@@ -2275,35 +2209,6 @@ func TestEmbeddedServerErrors_BarrierSealedError(t *testing.T) {
 	}
 	if !errors.Is(e2, wrapped) {
 		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_BarrierUnsealError(t *testing.T) {
-	wrapped := errors.New("unseal boom")
-	e := &BarrierUnsealError{Err: wrapped}
-	if !strings.Contains(e.Error(), "unseal") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_SealSentinelError(t *testing.T) {
-	wrapped := errors.New("sentinel boom")
-	e := &SealSentinelError{Err: wrapped}
-	if !strings.Contains(e.Error(), "sentinel") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
-func TestEmbeddedServerErrors_ServerConfigError(t *testing.T) {
-	e := &ServerConfigError{Field: "DataDir", Message: "is required"}
-	if !strings.Contains(e.Error(), "DataDir") {
-		t.Fatalf("Error() = %q", e.Error())
 	}
 }
 

@@ -37,6 +37,10 @@ type ServerOption = qrdbserver.ServerOption
 // qrdb server.
 var WithStrategyRegistry = qrdbserver.WithStrategyRegistry
 
+// WithBarrierKeyProvider attaches the BarrierKeyProvider the embedded qrdb
+// server's tenant barriers resolve each node's sealing strategy through.
+var WithBarrierKeyProvider = qrdbserver.WithBarrierKeyProvider
+
 // WithPINBackend attaches a PIN backend to the embedded qrdb server.
 var WithPINBackend = qrdbserver.WithPINBackend
 

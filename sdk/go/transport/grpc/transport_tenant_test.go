@@ -81,7 +81,7 @@ func (f *fakeTenantServicer) UpdateQuotas(_ context.Context, id string, q *quota
 func (f *fakeTenantServicer) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
-func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster) (*tenantpkg.TenantBarrierInitResult, error) {
+func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster, _ ...tenantpkg.TenantBarrierInitOption) (*tenantpkg.TenantBarrierInitResult, error) {
 	if err := f.callInitFn(ctx, id, string(passphrase), threshold, shares); err != nil {
 		return nil, err
 	}

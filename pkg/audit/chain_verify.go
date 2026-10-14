@@ -287,16 +287,6 @@ func verifyChainSegment(ctx context.Context, dir *trailDir, path string) (*chain
 	return seg, nil
 }
 
-// verifyChainFile verifies one file of a rotation set on its own, reporting
-// *ChainBrokenError at the first record that does not follow its predecessor.
-//
-// It says nothing about where the file sits in the set -- that is
-// verifyChainSet's question.
-func verifyChainFile(ctx context.Context, dir *trailDir, path string) error {
-	_, err := verifyChainSegment(ctx, dir, path)
-	return err
-}
-
 // rotationSetFiles lists the rotation set whose active log is path: the
 // archives in name order, then the active file when it is there. active
 // reports whether it was.

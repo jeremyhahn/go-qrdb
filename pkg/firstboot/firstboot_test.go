@@ -118,7 +118,7 @@ func (f *fakeTenants) UpdateEntitlements(ctx context.Context, id string, e *quot
 func (f *fakeTenants) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
-func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 func (f *fakeTenants) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {

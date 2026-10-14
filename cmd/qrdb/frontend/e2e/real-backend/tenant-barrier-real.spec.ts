@@ -8,7 +8,7 @@
  * configured with a storage volume pool (a prerequisite for per-tenant
  * barriers). Guards the backend contract the TenantManager UI relies on:
  *
- *   - POST /v1/tenants/{id}/barrier/init {passphrase} -> 204, status initialized.
+ *   - POST /v1/tenants/{id}/barrier/init/complete {passphrase} -> 204, status initialized.
  *   - The same call WITHOUT a passphrase -> 400 "empty passphrase" (the bug the
  *     UI fix addresses: the form now collects a passphrase).
  *   - strategy "shamir" splits the tenant's unseal key to the tenant's
@@ -144,7 +144,7 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
     });
     expect(create.status).toBe(201);
 
-    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/acme/barrier/init`, {
+    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/acme/barrier/init/complete`, {
       passphrase: b64("acme-tenant-secret"),
       strategy: "passphrase",
     });
@@ -159,14 +159,14 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
 
   test("init without a passphrase is rejected (400 empty passphrase)", async () => {
     await https("POST", `${daemon.adminUrl}/v1/tenants`, { id: "beta", name: "Beta", isolation_type: "prefix" });
-    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/beta/barrier/init`, { threshold: 3, shares: 5 });
+    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/beta/barrier/init/complete`, { threshold: 3, shares: 5 });
     expect(init.status).toBe(400);
     expect(String(init.json?.error ?? "").toLowerCase()).toContain("passphrase");
   });
 
   test("per-tenant Shamir init without enrolled holders is refused, share-free", async () => {
     await https("POST", `${daemon.adminUrl}/v1/tenants`, { id: "gamma", name: "Gamma", isolation_type: "prefix" });
-    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/gamma/barrier/init`, {
+    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/gamma/barrier/init/complete`, {
       threshold: 2,
       shares: 3,
       strategy: "shamir",
@@ -190,7 +190,7 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
       await req.dispose();
     }
 
-    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/${tenantId}/barrier/init`, {
+    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/${tenantId}/barrier/init/complete`, {
       threshold: 2,
       shares: 3,
       strategy: "shamir",

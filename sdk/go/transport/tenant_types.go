@@ -15,6 +15,7 @@
 package transport
 
 import (
+	"crypto"
 	"strconv"
 	"time"
 )
@@ -358,6 +359,15 @@ type TenantBarrierInitRequest struct {
 	// ("" selects the holder engine's default, "designated"). Ignored when
 	// Officers is empty.
 	Policy string `json:"policy,omitempty"`
+
+	// Signer is the first admin's key. A network transport initializes in
+	// two calls on one connection -- init/begin for a nonce, init/complete
+	// with Signer's signature over it and the connection's TLS exporter
+	// (ProveTenantBarrierInit) -- so the node knows the caller holds the key,
+	// not merely a certificate. It may be backed by a device (TPM, PIV,
+	// PKCS#11) through crypto.Signer; the private key never leaves it. The
+	// embedded transport is trusted in-process and does not use it.
+	Signer crypto.Signer `json:"-"`
 }
 
 // TenantBarrierHolderCert is the certificate issued to one officer of an

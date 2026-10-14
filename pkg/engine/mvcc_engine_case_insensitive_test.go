@@ -52,9 +52,9 @@ func mvccLookupIndex(t *testing.T, eng *MVCCEngine, indexName, probe string) int
 // MVCC-backed node and a lookup for "Alpha" over a stored "alpha" answered
 // empty with a nil error -- the same defect go-qrdb#34 removes from KVEngine.
 //
-// Both branches are exercised because they are two separate implementations:
-// index.MemoryIndex when no PebbleDB is configured, index.PebbleIndex when
-// one is. Covering one would leave the other silently wrong.
+// Both branches are exercised because the engine runs over two storage
+// shapes: a memory store and a PebbleDB one. Covering one would leave the
+// other silently wrong.
 func TestMVCCEngine_IndexCreate_CaseInsensitive(t *testing.T) {
 	for _, backend := range []string{"memory-index", "pebble-index"} {
 		t.Run(backend, func(t *testing.T) {

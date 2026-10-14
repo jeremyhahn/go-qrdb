@@ -27,11 +27,10 @@ import (
 // Put/Delete/Get, whose empty key can be usefully confined to the bare
 // namespace prefix via prefixKeyBytes — an empty compare key has no such
 // well-defined meaning: an un-namespaced request forwards it unchanged to the
-// state machine, whose own compare validation rejects it as malformed
-// (mvcc.RaftCompare.Validate: "compare key cannot be empty"). Namespacing it
-// to the bare "<tenant>/<db>/" prefix instead of rejecting it would silently
-// replace that clean rejection with a real (almost certainly nonexistent)
-// key comparison, changing what the client's malformed request means. The
+// state machine as a compare of no key at all. Namespacing it to the bare
+// "<tenant>/<db>/" prefix instead of rejecting it would silently replace that
+// malformed request with a real (almost certainly nonexistent) key
+// comparison, changing what the client's request means. The
 // namespace layer rejects it up front so the observed behavior matches the
 // un-namespaced case.
 var ErrEmptyCompareKey = errors.New("server: transaction compare key cannot be empty")

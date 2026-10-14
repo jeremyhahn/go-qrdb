@@ -147,9 +147,20 @@ const AuditAppend Feature = "audit-append"
 // apply it (docs/time-series/engineering.md "Retention enforcement").
 const TimeSeriesRetention Feature = "timeseries-retention"
 
+// PerNodeBarrierKeys is per-node barrier initialisation: an isolated tenant's
+// barrier is initialised by every serving node from the barrier owner's signed
+// init statement under "__sys:cluster/barrier/init/" (see pkg/barrierinit),
+// each node holding its own key rather than one carried between them. It adds
+// no Raft command -- the statement rides the existing guarded write -- but a
+// node that predates it neither reads the statement nor initialises its own
+// key, so it would never serve the tenant. Like ClusterSeal it is enforced per
+// node, so it is judged by ACTIVATION: until then an isolated tenant create is
+// refused (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
+const PerNodeBarrierKeys Feature = "per-node-barrier-keys"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine, TimeSeriesRetention}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine, TimeSeriesRetention, PerNodeBarrierKeys}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

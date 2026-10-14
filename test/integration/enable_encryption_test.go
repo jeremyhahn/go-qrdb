@@ -375,12 +375,8 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 
 	// Initialize the self-managed dedicated barrier with an empty secret => a
 	// none (unencrypted) dedicated barrier, unsealed and ready to serve.
-	if initBody, initStatus := iraftAPIPost(t, onboardedAdminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", adminPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
-	); initStatus != http.StatusOK && initStatus != http.StatusNoContent && initStatus != http.StatusCreated {
-		t.Fatalf("tenant barrier init: status %d, body: %s", initStatus, initBody)
-	}
+	initTenantBarrierAsFirstAdmin(t, fmt.Sprintf("https://127.0.0.1:%d", adminPort), ca.CertPath,
+		[]byte(createResp.Admin.CertPEM), adminKeyPEM, tenantID)
 
 	// The onboarded admin's account carries only the pending-admin
 	// completion's own role, not the data-plane permissions the rest of

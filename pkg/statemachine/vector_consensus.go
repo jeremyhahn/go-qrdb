@@ -230,7 +230,7 @@ func (v *VectorConsensusFSM) Update(_ context.Context, entries []sm.Entry, resul
 			v.logger.WithFields(map[string]interface{}{
 				"error":       err,
 				"data_len":    len(data),
-				"first_bytes": fmt.Sprintf("%x", data[:minConsensus(16, len(data))]),
+				"first_bytes": fmt.Sprintf("%x", data[:min(16, len(data))]),
 			}).Warn("Failed to decode vector command - skipping entry to maintain cluster stability")
 			// Return success to prevent panicking
 			// All nodes will skip this entry, maintaining consistency
@@ -749,12 +749,4 @@ func (v *VectorConsensusFSM) RecoverFromSnapshot(_ context.Context, r io.Reader,
 func (v *VectorConsensusFSM) Close(_ context.Context) error {
 	v.logger.Info("Closing vector consensus state machine")
 	return nil
-}
-
-// minConsensus returns the minimum of two integers.
-func minConsensus(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

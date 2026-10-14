@@ -252,6 +252,63 @@ func TestCompletePendingTenantAdmin_Success_CreatesAccount(t *testing.T) {
 	}
 }
 
+// callerKey marks the context a caller raised the hook with.
+type callerKey struct{}
+
+// roleCall is the context one CreateRole ran under, as it stood at the call.
+type roleCall struct {
+	caller      any
+	err         error
+	hasDeadline bool
+}
+
+// contextRoleServicer embeds a REAL role.RoleServicer and records the context
+// each CreateRole runs under before delegating.
+type contextRoleServicer struct {
+	role.RoleServicer
+	seen []roleCall
+}
+
+func (s *contextRoleServicer) CreateRole(ctx context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+	_, hasDeadline := ctx.Deadline()
+	s.seen = append(s.seen, roleCall{caller: ctx.Value(callerKey{}), err: ctx.Err(), hasDeadline: hasDeadline})
+	return s.RoleServicer.CreateRole(ctx, req)
+}
+
+// TestCompletePendingTenantAdmin_RunsAsTheCallerOnItsOwnClock proves the
+// completion keeps the caller's identity but not the caller's deadline: an
+// init that spent its whole request budget waiting for the tenant's groups to
+// elect still gets its first admin.
+func TestCompletePendingTenantAdmin_RunsAsTheCallerOnItsOwnClock(t *testing.T) {
+	users, roles := newRealUserAndRole(t)
+	recording := &contextRoleServicer{RoleServicer: roles}
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	putPending(t, pending, "acme", "admin", spkiThumbprint(t))
+	n := &Node{PendingAdmins: pending, User: users, Role: recording}
+
+	caller, cancel := context.WithCancel(context.WithValue(context.Background(), callerKey{}, "rt1-admin"))
+	cancel() // the request's deadline is already spent
+	n.completePendingTenantAdmin(discardLog())(caller, "acme")
+
+	if len(recording.seen) == 0 {
+		t.Fatal("the completion created no role")
+	}
+	for _, call := range recording.seen {
+		if call.caller != "rt1-admin" {
+			t.Fatal("the completion did not run as the caller")
+		}
+		if call.err != nil {
+			t.Fatalf("the completion ran on the caller's spent clock: %v", call.err)
+		}
+		if !call.hasDeadline {
+			t.Fatal("the completion ran without a deadline of its own")
+		}
+	}
+	if _, err := users.GetUserByUsername(context.Background(), "acme", "admin"); err != nil {
+		t.Fatalf("the admin account was not created: %v", err)
+	}
+}
+
 // TestCompletePendingTenantAdmin_NoRecord_NoOp proves a tenant with no
 // pending admin at all is a harmless no-op -- the common case, since this
 // hook runs on every barrier-ready event for every tenant.

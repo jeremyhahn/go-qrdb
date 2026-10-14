@@ -16,6 +16,7 @@ Composition-plane options (Tier 2), on the server constructor:
 
 ```go
 func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption   // hardware injection, system and tenant barriers
+func WithBarrierKeyProvider(p seal.BarrierKeyProvider) ServerOption // tenant barrier key seam; wins over the registry
 func WithPINBackend(b pin.PINBackend) ServerOption
 ```
 
@@ -50,6 +51,10 @@ resolve, then the one the persisted root key names when it differs (the
 barrier no longer selects its strategy with a `switch` that bypassed the
 registry.
 
+The SDK node builders forward `WithStrategyRegistry` and
+`WithBarrierKeyProvider` into `lifecycle.Infra` before `BuildServices`, because
+the tenant service that consumes them is built there.
+
 `pkg/seal`:
 
 ```go
@@ -62,6 +67,25 @@ type StrategyRegistry interface {
 type StrategyFactory func() (SealingStrategy, error)
 
 func NewDefaultStrategyRegistry() StrategyRegistry
+
+// The per-node barrier key seam (architecture.md, "The barrier key seam").
+type BarrierKeyProvider interface {
+	BarrierStrategy(ctx context.Context, req BarrierKeyRequest) (BarrierKeyStrategy, error)
+}
+type BarrierKeyRequest struct {
+	Barrier    string // clusterseal grammar: "node", "tenant/<t>", "database/<t>/<db>"
+	NodeID     string
+	StrategyID StrategyID
+	KeyRef     string // opaque; never parsed by go-qrdb
+	Epoch      uint64
+}
+type BarrierKeyStrategy struct {
+	Strategy   SealingStrategy
+	Credential CredentialKind // CredentialNone | CredentialPassphrase | CredentialShares
+	Custody    Custody        // CustodyNone | CustodyOwner | CustodyPlatform
+}
+func NewBarrierKeyProvider(reg StrategyRegistry) BarrierKeyProvider // nil reg: NewDefaultStrategyRegistry()
+
 func NewSoftwareStrategy(passphrase []byte) (*SoftwareStrategy, error)
 func NewSoftwareStrategyWithParams(passphrase []byte, time, memory uint32, threads uint8) (*SoftwareStrategy, error) // Argon2id, refused under FIPS
 func NewSoftwareStrategyFIPS(passphrase []byte, iterations int) (*SoftwareStrategy, error)                        // PBKDF2-SHA256
@@ -695,6 +719,234 @@ and, retrying, issues exactly that new request.
 > since shipped and performs an in-place re-encryption. The code is correct and
 > the older prose is stale.
 
+## Per-node barrier keys: init statement
+
+The design is [architecture.md](architecture.md#per-node-barrier-keys). The
+shipped surface, `pkg/barrierinit`:
+
+```go
+type InitStatement struct {
+	Barrier           clusterseal.Barrier
+	Epoch             uint64 // 1, then +1 per re-key or strategy change
+	StrategyID        seal.StrategyID
+	KeyRef            string // opaque; read only by an injected strategy
+	Threshold         int    // Shamir only
+	RosterHash        []byte // Shamir only
+	VerifierSalt      []byte // passphrase only
+	UnsealKeyCheck    []byte // Shamir only
+	SignerSPKI        []byte // DER SubjectPublicKeyInfo of the signing key
+	SignerCertificate []byte // DER; epoch 2 and later
+	Signature         []byte
+}
+func (s InitStatement) Message() []byte
+func Sign(signer crypto.Signer, s InitStatement) (InitStatement, error)
+func Verify(s InitStatement, a Anchors) error
+
+type Anchors struct {
+	FirstAdmin string         // user.PublicKeySPKIThumbprint of the pending first admin
+	CA         *x509.CertPool // the owner's CA, pinned in the system tenant
+	At         time.Time      // certificate validity time; zero is now
+}
+
+const Prefix = "__sys:cluster/barrier/init/"
+type KV interface {
+	Get(ctx context.Context, key string) ([]byte, bool, error)
+	PutIf(ctx context.Context, key string, expected, value []byte) (bool, error)
+	Scan(ctx context.Context, prefix string) (map[string][]byte, error)
+}
+func NewBook(kv KV, required func() error) *Book // nil gates nothing
+func (b *Book) Claim(ctx context.Context, s InitStatement, a Anchors) error   // epoch 1
+func (b *Book) Advance(ctx context.Context, s InitStatement, a Anchors) error // epoch n+1
+func (b *Book) Versions(ctx context.Context, barrier clusterseal.Barrier) ([]InitStatement, error)
+
+// Serves func(ctx, clusterseal.Barrier) (bool, error): an error is retried on the next poll
+func NewWatcher(cfg WatcherConfig) (*Watcher, error) // KV, Anchors, Serves, Handle required
+func (w *Watcher) Run(ctx context.Context) error
+func (w *Watcher) Poll(ctx context.Context) error
+
+// The wire form a client sends beside an init request.
+const MaxEncodedLength = 16 * MaxFieldLength
+func (s InitStatement) Marshal() ([]byte, error)
+func Parse(raw []byte) (InitStatement, error) // *InitStatementError (ReasonMalformed); no signature check
+type Expect struct{ Barrier clusterseal.Barrier; Epoch uint64; StrategyID seal.StrategyID; KeyRef string }
+func (s InitStatement) Matches(e Expect) error // ReasonMismatch
+
+// The epoch-1 anchor: the first admin's SPKI thumbprint, pinned at onboarding.
+func NewPins(kv KV) *Pins
+func (p *Pins) PinFirstAdmin(ctx context.Context, b clusterseal.Barrier, thumbprint string) error // *AnchorConflictError for another admin
+func (p *Pins) FirstAdmin(ctx context.Context, b clusterseal.Barrier) (string, error)
+func (p *Pins) Anchors(ctx context.Context, b clusterseal.Barrier) (Anchors, error)
+
+// The tenant service's claim of a statement before an init.
+type AnchorSource func(ctx context.Context, b clusterseal.Barrier) (Anchors, error)
+func NewClaimer(book *Book, anchors AnchorSource) *Claimer
+func (c *Claimer) ClaimTenantInit(ctx context.Context, tenantID string, strategyID seal.StrategyID, keyRef string, raw []byte) error
+```
+
+The pins live under `__sys:cluster/barrier/anchor/<barrier>` through the same
+`KV`, pinned with a guarded create-if-absent: a retry naming the same admin
+succeeds, another admin gets `*AnchorConflictError` (`AlreadyExists`).
+`bootstrap.Dependencies.BarrierAnchors` (`bootstrap.FirstAdminPinner`) is where
+onboarding pins the pending first admin of an isolated tenant whose identity
+records are behind its barrier.
+
+`pkg/tenant` cannot import `pkg/barrierinit` (`barrierinit` imports `user`,
+which imports `tenant`), so the tenant seam carries the encoded statement:
+`tenant.BarrierInitBook` is the `ClaimTenantInit` method,
+`tenant.WithBarrierInitBook` injects it and `tenant.WithInitStatement` passes
+a request's statement to `TenantBarrierInitWithStrategy`. With a book
+injected, an init claims the statement before this node registers or
+initializes anything, serialised per tenant; an IsolationRaft init with no
+statement is refused with `*tenant.InitStatementRequiredError`
+(`InvalidArgument`). `TenantBarrierSelfInit` is the watcher's delivery: it
+resolves the strategy through the `BarrierKeyProvider`, initializes this
+node's key when the resolved strategy needs no credential, treats an
+already-initialized barrier as done, and leaves a Shamir barrier or one that
+needs a credential for its owner's own init or unseal.
+
+`pkg/server/lifecycle` composes `BarrierInit` (`newBarrierInit`): the system
+store adapter and the pins. Onboarding pins through it, and
+a `Watcher` runs on every node with `TenantBarrierSelfInit` as its `Handle`.
+On a clustered node `startBarrierInitWatcher` starts it with `Serves` "a
+tenant barrier placed on this node" (an unreadable placement table is an
+error, retried); on a standalone node `BuildServices` starts it through
+`startLocalBarrierInitWatcher`, serving every tenant barrier, since the node
+is the only one.
+
+`pkg/server.NewBarrierInitKV(service.KVServicer) barrierinit.KV` is the store
+adapter: `PutIf` is a `service.WriteGuard` comparing the key's value to
+`expected` (an absent key compares equal to the empty value), proposed as
+`protocol.OpGuarded`; a refused guard is `(false, nil)`.
+
+The activation check `NewBook` and `tenant.WithPerNodeBarrierKeysGate` take
+returns the refusal itself: the composer builds the
+`*featuregate.NotActiveError`, so neither package imports `pkg/cluster` and a
+lean standalone build does not compile cluster code through them.
+
+`featuregate.PerNodeBarrierKeys` is in the supported set, so every binary
+advertises it and adopts its activation record. `pkg/server/lifecycle` builds
+the check once per node (`perNodeBarrierKeysRequired`): nil on a host that is
+not a `service.FeatureGatedHost` — a standalone node, which gates nothing —
+and otherwise a function that returns
+`*featuregate.NotActiveError{Feature: per-node-barrier-keys}` until
+`FeatureEnabled(0, PerNodeBarrierKeys)` holds cluster-wide. The same check is
+passed to `tenant.WithPerNodeBarrierKeysGate` and to the book, so neither an
+isolated tenant nor a statement is admitted before every member can
+self-initialise. Pinned by
+`TestCheckActivated_AdoptsPerNodeBarrierKeysActivation`,
+`TestGate_PerNodeBarrierKeysInactiveWithoutRecord`,
+`TestPerNodeBarrierKeysRequired_FollowsTheGate`,
+`TestPerNodeBarrierKeysRequired_NilOnAHostThatGatesNothing`,
+`TestBarrierInitClaimer_RecordsNothingBeforeActivation`,
+`TestBuildServices_IsolatedTenantIsGatedOnPerNodeBarrierKeys` and
+`TestBuildServices_StandaloneIsolatedTenantIsNotGated`.
+
+**Invariants.**
+
+- `Message` is injective: a fixed context string, then every field but
+  `Signature` length-prefixed (uint32 big-endian) or fixed-width (uint64
+  big-endian). Changing any covered field invalidates the signature.
+- `Verify` checks, in order: every field present and within
+  `MaxFieldLength` (16 KiB); the SPKI parses; the signer is the anchor's
+  (epoch 1: its thumbprint equals `Anchors.FirstAdmin`; later: the
+  certificate chains to `Anchors.CA` for client authentication at
+  `Anchors.At` and its SPKI is byte-equal to `SignerSPKI`); the signature
+  verifies (`mtls.VerifyNonceSignature`: ECDSA and RSA over SHA-256, Ed25519).
+- `Claim` and `Advance` verify before they write, so an unverified statement
+  is never stored. Both are idempotent for the stored statement, compared by
+  `Message` alone: an ECDSA signer signs the same statement differently on
+  every call, so a retry that re-signs it still matches, and both sides have
+  already verified.
+- A record decodes only to the barrier's dense epochs from 1; anything else is
+  `*CorruptRecordError` and is never delivered.
+- The watcher holds a per-barrier high-water mark of delivered epochs and
+  calls `Handle` only for a newer epoch that verified. `Handle` must be
+  idempotent.
+- No custody refusal: a statement naming a platform-sealed strategy verifies
+  like any other.
+
+### Composition into a node
+
+```go
+// pkg/barrierinit
+const AnchorPrefix = "__sys:cluster/barrier/anchor/"
+func NewPins(kv KV) *Pins
+func (p *Pins) PinFirstAdmin(ctx context.Context, b clusterseal.Barrier, thumbprint string) error
+func (p *Pins) FirstAdmin(ctx context.Context, b clusterseal.Barrier) (string, error)
+func (p *Pins) Anchors(ctx context.Context, b clusterseal.Barrier) (Anchors, error) // an AnchorSource
+
+func NewClaimer(book *Book, anchors AnchorSource) *Claimer
+func (c *Claimer) ClaimTenantInit(ctx context.Context, tenantID string, strategyID seal.StrategyID, keyRef string, raw []byte) error
+// TenantInit returns the latest claimed statement for tenantID's barrier,
+// verified against its anchors; *NoInitStatementError when none is recorded.
+func (c *Claimer) TenantInit(ctx context.Context, tenantID string) (InitStatement, error)
+
+// SignTenantInit is what every client transport calls: the encoded epoch-1
+// statement for tenantID's barrier, or nil for a nil signer.
+func SignTenantInit(signer crypto.Signer, tenantID, strategy string) ([]byte, error)
+
+// pkg/tenant
+func WithBarrierInitBook(book BarrierInitBook) TenantServiceOption // *barrierinit.Claimer
+func WithInitStatement(raw []byte) TenantBarrierInitOption
+func (s *TenantService) TenantBarrierSelfInit(ctx context.Context, tenantID string, strategyID seal.StrategyID, keyRef string) error
+// BarrierInitBook.TenantInit reports the strategy, key reference and epoch of
+// a barrier's verified statement (found=false when none is recorded); a tenant
+// barrier unseal resolves exactly that strategy through the key provider.
+type BarrierInitTerms struct { StrategyID seal.StrategyID; KeyRef string; Epoch uint64 }
+
+// pkg/seal
+// UnsealWithStrategy opens the root key with strategy alone, never the
+// barrier's registrations; a strategy whose ID is not the sealed one is
+// *UnsealStrategyMismatchError (errors.Is ErrStrategyMismatch).
+func (b *StorageBarrier) UnsealWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error
+func (r *BarrierRegistry) UnsealTenantWithStrategy(ctx context.Context, tenantID string, strategy SealingStrategy, creds Credentials) error
+
+// pkg/bootstrap
+type FirstAdminPinner interface { // *barrierinit.Pins
+	PinFirstAdmin(ctx context.Context, b clusterseal.Barrier, thumbprint string) error
+}
+// Dependencies.BarrierAnchors, service.TenantOnboardingDeps.BarrierAnchors
+```
+
+`pkg/server/lifecycle` builds one `BarrierInit` per node over the system store
+(`Node.BarrierInit`, nil exactly when `Node.Tenant` is): onboarding pins
+through its `Pins`, and `ComposeRaftTenantCluster` — on a
+node with dedicated Raft groups — starts a `Watcher` whose `Serves` asks the
+placement table whether a group of the barrier's tenant has a replica on this
+node (`placement.Placement.ReplicaForNode`, keyed by Raft address) and whose
+`Handle` dispatches on `clusterseal.Kind`; only `KindTenant` is handled, any
+other is `*lifecycle.UnsupportedBarrierKindError` and retried. On a
+standalone node (`*backend.LocalBackend` host) `BuildServices` starts the same
+`Watcher` with `Serves` true for every tenant barrier. The watcher is stopped
+with the node. The tenant service is composed with the book as its
+`Claimer` — `tenant.WithBarrierInitBook(barrierInit.claimer(required))` —
+beside `tenant.WithPerNodeBarrierKeysGate(required)`, both taking the same
+`perNodeBarrierKeysRequired(host)` check, so a statement a transport carries
+reaches `WithInitStatement` and is claimed before the node generates its own
+key.
+
+**Invariants.**
+
+- The anchor is pinned before the tenant create returns, and has no undo: an
+  undone provisioning deletes the tenant, whose ID is retired.
+- A tenant barrier init with a statement claims it before this node generates
+  a key. The statement must name exactly the barrier, epoch 1, the strategy
+  and the key reference the request resolved (`ReasonMismatch` otherwise),
+  then verify against the pinned anchor; a refused claim leaves nothing
+  initialised.
+- `IsolationRaft` without a statement is `*tenant.InitStatementRequiredError`
+  when a book is composed; other isolation types may init without one.
+- `TenantBarrierSelfInit` initialises only a strategy with
+  `seal.CredentialNone`; Shamir and credential-bearing strategies return nil
+  untouched. An already-initialised barrier is nil, so redelivery is
+  harmless. It serialises with the owner's init on the same per-tenant lock,
+  and it runs no barrier-ready hook.
+- The pending-admin completion (the tenant service's barrier-ready hook,
+  `bootstrap.CompletePendingTenantAdmin` composed in `pkg/server/lifecycle`) runs
+  as the caller on `context.WithoutCancel` of the caller's context with its own
+  15-second deadline, so its replicated writes are not cut short by the
+  request's.
+
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |
@@ -715,6 +967,18 @@ and, retrying, issues exactly that new request.
 | Two seal/clear requests race | the loser re-reads; opposite intent → `SealEpochConflictError` | **yes** |
 | Cluster unseal on a node that has not unsealed itself | `ErrSealed` | **yes** |
 | Cluster unseal before `cluster-seal` is activated | `ErrInactive` | **yes** |
+| Init statement malformed, unanchored, by a key other than the owner's, or with a bad signature | `*barrierinit.InitStatementError{Reason}`; nothing stored or delivered | **yes** |
+| Two epoch-1 claims race | one is stored; the other `*BarrierAlreadyInitializedError` | **yes** |
+| Statement epoch does not follow the recorded one, or lost a race | `*EpochConflictError{Epoch, Current}` | **yes** |
+| Init record does not decode to the barrier's dense epochs | `*barrierinit.CorruptRecordError`; that barrier is skipped, the rest delivered | **yes** |
+| Init record write before `guarded-writes` is active | `*GuardedWritesUnavailableError`, never an unguarded write | **yes** |
+| Statement names another barrier, epoch, strategy or key reference than the init it came with | `*InitStatementError{Reason: ReasonMismatch}`; nothing claimed or initialised | **yes** |
+| Raft-isolated tenant barrier init without a statement, on a tenant service composed with an init book | `*tenant.InitStatementRequiredError`; nothing initialised | **yes** |
+| First admin pinned again with another thumbprint | `*barrierinit.AnchorConflictError`; the pin is unchanged | **yes** |
+| Tenant barrier unseal after a restart whose root key is sealed with another strategy than its statement names | `*seal.UnsealStrategyMismatchError`; stays sealed, no same-ID system strategy tried | **yes** |
+| Raft-isolated tenant barrier unseal with no recorded statement | `*tenant.InitStatementMissingError`; stays sealed | **yes** |
+| Statement record for a barrier level the node cannot yet self-initialise | `*lifecycle.UnsupportedBarrierKindError`; retried on the next poll | **yes** |
+| Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*featuregate.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
 | Node lease expired, or no read since start | node gate refuses; streams end with `SealStateUnconfirmedError`; keys kept | **yes** |
 | Enforcement step fails on a node (shard close, key wipe) | logged and retried on the next poll; the gate stays closed | **yes** |
 | Platform operator seals or unseals a tenant's barrier | `403` (`tenant_barrier:*` are tenant-only) and `TenantScopeError` in the service | **yes** |
@@ -912,6 +1176,44 @@ Both the sweep and its module coverage matter. `./...` does not cross a module
 boundary, so `sdk/go` needs its own pass; and a single tag combination reports
 on the files that combination compiles and says nothing about the others.
 
+### Borrowing, liveness, comparison and the empty value
+
+`secure.Buffer` (locked working copy) and `secure.Secret` (sealed at rest)
+share one vocabulary, and `sdk/go/secure` re-exports all of it:
+
+| Need | `Buffer` | `Secret` |
+|---|---|---|
+| Read the bytes for one call, never holding them | `WithBytes(fn)` | `WithBytes(ctx, fn)`: opens, calls `fn`, destroys the opened Buffer |
+| Tell a live value from a destroyed one | `IsAlive()` | `IsAlive()` |
+| Compare without leaking where the contents differ | `Equal(*Buffer)`, `EqualBytes([]byte)` | open it, then the Buffer's |
+| Hold a value of zero bytes | `NewEmptyBuffer()` | `NewEmptySecret()` |
+
+- **The borrow is scoped.** The callback's slice is a view of locked pages;
+  it must not outlive the call, and nothing inside it may call back into
+  `pkg/secure` (the borrow guard reports it). A caller whose signature forces a
+  `[]byte` takes a `CopyOut` copy and wipes it.
+- **`IsAlive` is the liveness test, not `Size`.** A destroyed value and a live
+  empty one both have a `Size` of 0. `IsAlive` is true from construction until
+  `Destroy` and false for nil, zero-value and destroyed values, and for a
+  Buffer whose pages a shutdown `WipeAll` took. A live `Secret` can still be
+  unopenable after that sweep wipes the process sealer: liveness is about the
+  value, not about whether `Open` will succeed.
+- **Comparisons are constant time.** Both use `crypto/subtle`, with every
+  borrow held across the comparison, so neither operand leaves locked memory.
+  The timing reveals whether the lengths differ and nothing else. A nil,
+  destroyed or zero-value operand returns `*NilBufferError` rather than
+  `false`, so "not equal" and "nothing to compare" stay distinct.
+- **The empty value is asked for by name.** `NewBuffer`, `NewBufferFromBytes`
+  and `NewSecret` still refuse a zero length with `*InvalidSizeError`, so a
+  size computation that came out zero cannot quietly produce one. The empty
+  value maps no pages, admits nothing against the locked-memory budget and
+  cannot fail. Its borrow hands the callback an empty slice;
+  `NewSecretFromBuffer` turns an empty Buffer into an empty Secret; `Open` of
+  an empty Secret returns an empty Buffer. `CopyOut` refuses it with
+  `*EmptyBorrowError`, as it refuses every empty borrow: a `[]byte`-returning
+  API cannot tell "empty on purpose" from "the pages are gone", so a caller
+  that accepts an empty value reads it through `WithBytes`.
+
 ### Why rule 3 is scoped
 
 Rule 3's remedy is `*secure.Secret` / `*secure.Buffer`, and that remedy only
@@ -956,7 +1258,9 @@ analyzer in the same tool, `securecopy`, follows every such copy.
 **A copy-out** is `append(x, view...)`, `copy(dst, view)` into a
 non-protected destination, `bytes.Clone`/`slices.Clone` of a view,
 `string(view)`, or a call to a function known to return one. A *view* is the
-`[]byte` a literal `WithBytes` callback receives, or a re-slice of one.
+`[]byte` a literal `WithBytes` callback receives — the callback is the call's
+last argument, so `Secret.WithBytes(ctx, fn)` counts as `Buffer.WithBytes(fn)`
+does — or a re-slice of one.
 
 **The obligation ends** when the variable holding the copy is:
 
@@ -1028,6 +1332,16 @@ distinguishes them.
   lease expiry and resumption with keys kept, restart, held, and the inactive
   gate. Each transport proves the cluster-unseal route, the `cluster_seal`
   status object and a watch ended by a seal.
+- **Init statement, unit**: `pkg/barrierinit` signs with real ECDSA keys and a
+  real test CA. A statement signed by another key is refused with
+  `InitStatementError`; every covered field changes the signature; of two
+  concurrent claims exactly one is stored; the compare-and-set refuses a
+  skipped, repeated or raced epoch; the watcher delivers each epoch once on an
+  injected clock and never an unverified one. `pkg/server` runs the store
+  adapter against a real `KVService` over a `LocalBackend`, with and without
+  guarded writes enabled. `pkg/tenant` proves that an isolated create on a
+  three-member gate is refused with `NotActiveError` before activation and
+  admitted after.
 - **Cluster seal, integration** (cluster stage): a 3-node cluster in which a
   seal through one node makes the other two refuse requests and end their
   watches; each node unseals with its own credential; no key bytes appear in

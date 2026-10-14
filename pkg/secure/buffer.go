@@ -15,6 +15,7 @@
 package secure
 
 import (
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"sync/atomic"
@@ -54,6 +55,30 @@ import (
 type Buffer struct {
 	enc       *enclave.MemoryEnclave
 	destroyed atomic.Bool
+
+	// empty marks the explicit live zero-length value NewEmptyBuffer
+	// returns. go-enclave refuses a zero-length mapping, so an empty Buffer
+	// holds no enclave at all: enc is nil and the value lives until Destroy.
+	// It is set at construction and never changes.
+	empty bool
+}
+
+// NewEmptyBuffer returns a live Buffer that holds zero bytes.
+//
+// A zero length is a legitimate value — an empty passphrase, an absent
+// optional credential — and it must stay distinguishable from a destroyed
+// Buffer, which Size alone cannot do: both report 0. IsAlive reports true for
+// this value until Destroy, WithBytes calls its callback with an empty slice,
+// and Equal and EqualBytes compare it like any other value.
+//
+// NewBuffer and NewBufferFromBytes still refuse a zero length with
+// *InvalidSizeError: an empty value is asked for by name, never produced by a
+// size computation that came out zero. It maps no pages and admits nothing
+// against the process locked-memory budget, so it cannot fail, and a shutdown
+// enclave.WipeAll has nothing of it to wipe. CopyOut refuses it with
+// *EmptyBorrowError, as it refuses every empty borrow.
+func NewEmptyBuffer() *Buffer {
+	return &Buffer{empty: true}
 }
 
 // wrapAllocError translates go-enclave's construction errors into this
@@ -204,14 +229,99 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 // flags any nested call into this package for a test to catch.
 //
 // Returns *NilBufferError when the buffer is nil, destroyed, or a zero value.
-// Any error fn returns is passed through unchanged.
+// Any error fn returns is passed through unchanged. The empty Buffer
+// NewEmptyBuffer returns calls fn with a zero-length slice.
 func (b *Buffer) WithBytes(fn func([]byte) error) error {
-	if b == nil || fn == nil || b.destroyed.Load() {
+	if fn == nil {
 		return &NilBufferError{}
 	}
 	enterBorrow("Buffer.WithBytes")
 	defer exitBorrow()
+	return b.borrow(fn)
+}
+
+// borrow is WithBytes without the borrow guard's bookkeeping, for the one
+// caller that must hold two borrows at once (Equal). It refuses a nil,
+// destroyed or zero-value Buffer with *NilBufferError, hands the empty value
+// an empty slice, and otherwise holds the enclave's own borrow across fn.
+func (b *Buffer) borrow(fn func([]byte) error) error {
+	if b == nil || b.destroyed.Load() {
+		return &NilBufferError{}
+	}
+	if b.empty {
+		return fn([]byte{})
+	}
 	return nilBufferIfGone(b.enc.WithBytes(fn))
+}
+
+// IsAlive reports whether b still holds its value: true from construction
+// until Destroy, including for the empty Buffer NewEmptyBuffer returns, and
+// false for a nil, destroyed or zero-value Buffer, or one whose pages a
+// shutdown enclave.WipeAll has already taken.
+//
+// It is the check Size cannot be: a live empty Buffer and a destroyed one
+// both report a Size of 0.
+func (b *Buffer) IsAlive() bool {
+	if b == nil || b.destroyed.Load() {
+		return false
+	}
+	if b.empty {
+		return true
+	}
+	enterBorrow("Buffer.IsAlive")
+	defer exitBorrow()
+	return b.enc.IsAlive()
+}
+
+// EqualBytes reports, in constant time, whether b holds exactly p. The
+// comparison is crypto/subtle.ConstantTimeCompare, with b's borrow held
+// across it: the timing reveals whether the lengths differ, never where the
+// contents do. An empty p equals the empty Buffer.
+//
+// A nil, destroyed or zero-value b returns (false, *NilBufferError), so a
+// caller can tell "not equal" from "nothing left to compare".
+func (b *Buffer) EqualBytes(p []byte) (bool, error) {
+	equal := false
+	if err := b.WithBytes(func(v []byte) error {
+		equal = subtle.ConstantTimeCompare(v, p) == 1
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	return equal, nil
+}
+
+// Equal reports, in constant time, whether b and o hold the same bytes. Both
+// borrows are held across one crypto/subtle comparison, so neither value is
+// copied out of locked memory; the timing reveals whether the lengths differ,
+// never where the contents do. A Buffer equals itself while it is alive, and
+// two empty Buffers are equal.
+//
+// A nil, destroyed or zero-value b or o returns (false, *NilBufferError).
+//
+// The two borrows are read borrows of two independent enclaves, so two
+// goroutines comparing the same pair in opposite orders do not contend; the
+// one way to wedge them is a Destroy racing a borrow on the same Buffer,
+// which Buffer's single-owner contract already forbids.
+func (b *Buffer) Equal(o *Buffer) (bool, error) {
+	if b == o {
+		if !b.IsAlive() {
+			return false, &NilBufferError{}
+		}
+		return true, nil
+	}
+	equal := false
+	enterBorrow("Buffer.Equal")
+	defer exitBorrow()
+	if err := b.borrow(func(v []byte) error {
+		return o.borrow(func(w []byte) error {
+			equal = subtle.ConstantTimeCompare(v, w) == 1
+			return nil
+		})
+	}); err != nil {
+		return false, err
+	}
+	return equal, nil
 }
 
 // nilBufferIfGone maps go-enclave's "nothing to borrow" failures — the
@@ -225,7 +335,8 @@ func nilBufferIfGone(err error) error {
 }
 
 // Size returns the length of the underlying mlocked buffer. Returns 0
-// after Destroy or on a zero-value Buffer.
+// after Destroy, on a zero-value Buffer, and for the live empty Buffer
+// NewEmptyBuffer returns; IsAlive tells those apart.
 func (b *Buffer) Size() int {
 	if b == nil || b.destroyed.Load() {
 		return 0

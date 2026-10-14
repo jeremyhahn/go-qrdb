@@ -15,14 +15,23 @@
 package quic
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -297,13 +306,101 @@ func TestE2E_UpdateTenantQuotas_HappyPath(t *testing.T) {
 
 func TestE2E_TenantBarrierInit_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("tenant.BarrierInit", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("tenant.BarrierInitBegin", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, []byte(`{}`)
+	})
+	srv.SetResponder("tenant.BarrierInitComplete", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
 	if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID: "t1", Threshold: 2, Shares: 3,
 	}); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
+	}
+	var sent quicTenantBarrierInitRequest
+	if err := json.Unmarshal(srv.LastRequest("tenant.BarrierInitComplete").Payload, &sent); err != nil {
+		t.Fatalf("unmarshal complete: %v", err)
+	}
+	if len(sent.Nonce) != 0 || len(sent.PublicKey) != 0 || len(sent.Signature) != 0 {
+		t.Fatalf("complete carried a proof the node did not ask for: %+v", sent)
+	}
+}
+
+// TestE2E_TenantBarrierInit_ProofBoundToTheQUICConnection is the binding
+// check over a real QUIC handshake: the signature complete carries verifies
+// against the exporter the SERVER derives for the same connection, so the
+// client and server halves agree on the keying material quic-go exports.
+func TestE2E_TenantBarrierInit_ProofBoundToTheQUICConnection(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	nonce := bytes.Repeat([]byte{0x5a}, initproof.NonceSize)
+	srv.SetResponder("tenant.BarrierInitBegin", func(_ []byte) (uint16, []byte) {
+		out, _ := json.Marshal(quicTenantBarrierInitBeginResponse{Nonce: nonce, Expires: 1})
+		return wire.StatusOK, out
+	})
+	srv.SetResponder("tenant.BarrierInitComplete", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, nil
+	})
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+		TenantID: "t1", Signer: key,
+	}); err != nil {
+		t.Fatalf("TenantBarrierInit: %v", err)
+	}
+
+	var sent quicTenantBarrierInitRequest
+	if err := json.Unmarshal(srv.LastRequest("tenant.BarrierInitComplete").Payload, &sent); err != nil {
+		t.Fatalf("unmarshal complete: %v", err)
+	}
+	if !bytes.Equal(sent.Nonce, nonce) {
+		t.Fatalf("complete nonce = %x; want begin's %x", sent.Nonce, nonce)
+	}
+	pub, err := x509.ParsePKIXPublicKey(sent.PublicKey)
+	if err != nil {
+		t.Fatalf("public key: %v", err)
+	}
+	exporter, err := initproof.Exporter(srv.tlsState.Load())
+	if err != nil {
+		t.Fatalf("server exporter: %v", err)
+	}
+	if !initproof.Verify(pub, "t1", sent.Nonce, exporter, sent.Signature) {
+		t.Fatal("the proof does not verify against the server's exporter for this connection")
+	}
+
+	// The same key signed t1's epoch-1 statement for the replicas.
+	statement, err := barrierinit.Parse(sent.InitStatement)
+	if err != nil {
+		t.Fatalf("init_statement: %v", err)
+	}
+	thumbprint, err := user.PublicKeySPKIThumbprint(key.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := barrierinit.Verify(statement, barrierinit.Anchors{FirstAdmin: thumbprint}); err != nil {
+		t.Fatalf("init_statement does not verify against the first admin: %v", err)
+	}
+}
+
+// TestE2E_TenantBarrierInit_SignerRequired: a node that asks a proof is
+// answered with *transport.InitSignerRequiredError, before complete is sent,
+// when the caller has no key to prove with.
+func TestE2E_TenantBarrierInit_SignerRequired(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("tenant.BarrierInitBegin", func(_ []byte) (uint16, []byte) {
+		out, _ := json.Marshal(quicTenantBarrierInitBeginResponse{Nonce: []byte("n"), Expires: 1})
+		return wire.StatusOK, out
+	})
+
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "t1"})
+	var need *transport.InitSignerRequiredError
+	if !errors.As(err, &need) {
+		t.Fatalf("err = %T (%v); want *transport.InitSignerRequiredError", err, err)
+	}
+	if srv.LastRequest("tenant.BarrierInitComplete") != nil {
+		t.Fatal("complete must not be sent without a proof")
 	}
 }
 

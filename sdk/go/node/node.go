@@ -73,8 +73,8 @@
 //	    node.WithSealPassphrase([]byte("my-secret")),
 //	)
 //
-// Hardware crypto options (WithStrategyRegistry, WithPINBackend,
-// WithFactorRegistry) are passed as server.ServerOption and forwarded to
+// Hardware crypto options (WithStrategyRegistry, WithBarrierKeyProvider,
+// WithPINBackend, WithFactorRegistry) are passed as server.ServerOption and forwarded to
 // server.New so embedders retain full composition control.
 package node
 
@@ -806,6 +806,11 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	// keeps the software default inside lifecycle.BuildServices.
 	infra.BackupSink = crypto.BackupSink
 	infra.Clock = crypto.Clock
+	// The TenantService is built inside BuildServices, so the seal
+	// StrategyRegistry and the BarrierKeyProvider that wins over it are
+	// forwarded here rather than through server.New.
+	infra.StrategyRegistry = crypto.StrategyRegistry
+	infra.BarrierKeyProvider = crypto.BarrierKeyProvider
 	infra.DEKProvider = crypto.DEKProvider
 	infra.InvitationRedeemLimiter = crypto.InvitationRedeemLimiter
 	infra.HolderActLimiter = crypto.HolderActLimiter
@@ -1586,6 +1591,9 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// This must happen here (before BuildServices), not via server.New,
 		// because the TenantService is constructed inside BuildServices.
 		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		// An injected BarrierKeyProvider wins over the registry; it is
+		// consumed by the same TenantService.
+		BarrierKeyProvider: server.ResolveCryptoOptions(pending.serverOpts...).BarrierKeyProvider,
 		// Forward an injected (xkms) Key B provider the same way: the
 		// CertProvider is also constructed inside BuildServices.
 		CertKeyProviderFactory: server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
@@ -2141,7 +2149,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService (constructed inside BuildServices) so per-tenant
 		// hardware/cloud seal strategies resolve in clustered mode too.
-		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		StrategyRegistry:   server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		BarrierKeyProvider: server.ResolveCryptoOptions(pending.serverOpts...).BarrierKeyProvider,
 		// Forward an injected (xkms) Key B provider the same way.
 		CertKeyProviderFactory: server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
 		// The tenant defaults qrdbd applies, read from the same configuration
@@ -2837,12 +2846,9 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		InvitationRequireKeyPin: cfg.Auth.InvitationRequireKeyPin,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
-		// Forward an injected (xkms) seal StrategyRegistry into the
-		// TenantService even on the no-seal data path, so the option a
-		// composer passes via server.WithStrategyRegistry is honored rather
-		// than silently dropped.
-		StrategyRegistry: server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
-		// Forward an injected (xkms) Key B provider the same way.
+		// Forward an injected (xkms) Key B provider into BuildServices; the
+		// seal StrategyRegistry and BarrierKeyProvider arrive through
+		// withCryptoInfra.
 		CertKeyProviderFactory: server.ResolveCryptoOptions(serverOpts...).CertKeyProviderFactory,
 		// The tenant defaults qrdbd applies, read from the same configuration
 		// (tenant.default_quotas, tenant.default_entitlements); an explicit

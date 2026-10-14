@@ -144,6 +144,7 @@ fi
 #	golangci-lint   golangci-lint has version 2.14.0 built with go1.27.1 ...
 #	gosec           Version: v2.29.0
 #	govulncheck     Scanner: govulncheck@v1.8.0
+#	actionlint      1.7.12   (first line alone; build details follow)
 #
 # An UNRECOGNISED tool is a hard failure rather than a fallback to something
 # looser. A version format nobody has read is a version that cannot be
@@ -163,6 +164,11 @@ govulncheck)
 	got="$(printf '%s\n' "$report" |
 		sed -n 's/^Scanner:[[:space:]][[:space:]]*govulncheck@\([^[:space:]][^[:space:]]*\).*/\1/p' |
 		head -1)"
+	;;
+actionlint)
+	# The first line is the bare version; the lines after it describe the build.
+	got="$(printf '%s\n' "$report" |
+		sed -n '1s/^\(v\{0,1\}[0-9][0-9.]*\)[[:space:]]*$/\1/p')"
 	;;
 *)
 	echo "FAIL: no documented version format is known for '${bin}'." >&2

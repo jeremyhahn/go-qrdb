@@ -464,7 +464,7 @@ func startTenantEntitlementNode(t *testing.T) *multiProtoNode {
 	}
 	args = append(args, ca.tlsFlags(t)...)
 
-	startNode(t, bin, args, "[tenant-entitlement] ")
+	proc := startNode(t, bin, args, "[tenant-entitlement] ")
 
 	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
 	initAndUnsealBarrier(t, ca, restPort, passphrase)
@@ -487,6 +487,9 @@ func startTenantEntitlementNode(t *testing.T) *multiProtoNode {
 		mcpPort:    mcpPort,
 		quicPort:   quicPort,
 		passphrase: passphrase,
+		bin:        bin,
+		startArgs:  args,
+		proc:       proc,
 	}
 
 	for _, proto := range multiProtocols {

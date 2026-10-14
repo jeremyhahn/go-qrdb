@@ -1664,37 +1664,6 @@ func TestBuildMulticastDiscovery_MissingSecret(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// waitForSignal tests
-// ---------------------------------------------------------------------------
-
-func TestWaitForSignal(t *testing.T) {
-	done := make(chan struct{})
-	go func() {
-		waitForSignal()
-		close(done)
-	}()
-
-	// Give the goroutine time to register the signal handler.
-	time.Sleep(50 * time.Millisecond)
-
-	// Send SIGINT to ourselves.
-	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
-		t.Fatalf("Kill() error = %v", err)
-	}
-
-	select {
-	case <-done:
-		// Success.
-	case <-time.After(2 * time.Second):
-		t.Fatal("waitForSignal() did not return after SIGINT")
-	}
-
-	// Reset the default signal handler so it does not interfere
-	// with subsequent tests.
-	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
-}
-
-// ---------------------------------------------------------------------------
 // newVersionCmd execution test
 // ---------------------------------------------------------------------------
 
@@ -2530,8 +2499,9 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_NoPeers(t *testing.T) {
 func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// Test the RunE path with a single peer. This exercises initializeNode
 	// all the way through to runStart: host creation, startShard success,
-	// TLS generation, service creation, and server start. It blocks on
-	// waitForSignal, so SIGINT is sent once the node serves to unblock it.
+	// TLS generation, service creation, and server start. It blocks until
+	// the process is signalled, so SIGINT is sent once the node serves to
+	// unblock it.
 	//
 	// --sm memory runs all the way through first boot, whose atomic
 	// role/user creation (go-qrdb#555) commits guarded batches: since
@@ -3052,46 +3022,6 @@ func TestGenerateNodeCert_CAVerifiable(t *testing.T) {
 	}
 	_, err = leaf.Verify(opts)
 	assert.NoError(t, err, "node cert should be verifiable by the CA")
-}
-
-// ---------------------------------------------------------------------------
-// generateClientCert tests
-// ---------------------------------------------------------------------------
-
-func TestGenerateClientCert_CorrectCNOU(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateClientCert(caCert, caKey, "admin-user", "tenant-42", adminValidity)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	assert.Equal(t, "admin-user", leaf.Subject.CommonName, "client cert CN should match input")
-	require.Len(t, leaf.Subject.OrganizationalUnit, 1)
-	assert.Equal(t, "tenant-42", leaf.Subject.OrganizationalUnit[0], "client cert OU should match input")
-}
-
-func TestGenerateClientCert_ClientAuthOnly(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateClientCert(caCert, caKey, "user", "org", adminValidity)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	require.Len(t, leaf.ExtKeyUsage, 1, "client cert should have exactly one ExtKeyUsage")
-	assert.Equal(t, x509.ExtKeyUsageClientAuth, leaf.ExtKeyUsage[0],
-		"client cert should only have ExtKeyUsageClientAuth")
 }
 
 // ---------------------------------------------------------------------------

@@ -18,13 +18,16 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
@@ -375,5 +378,52 @@ func TestOnboardTenant_SettlesFailureWhenPostProvisionGetTenantFails(t *testing.
 	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
 	if ev == nil || ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
 		t.Fatalf("event = %+v, want a recorded failure outcome", ev)
+	}
+}
+
+// recordingPinner records each barrier anchor it is asked to pin.
+type recordingPinner struct {
+	pins map[clusterseal.Barrier]string
+}
+
+func (p *recordingPinner) PinFirstAdmin(_ context.Context, b clusterseal.Barrier, thumbprint string) error {
+	if p.pins == nil {
+		p.pins = map[clusterseal.Barrier]string{}
+	}
+	p.pins[b] = thumbprint
+	return nil
+}
+
+// TestOnboardTenant_PinsABehindBarrierAdminAsTheBarrierAnchor proves the
+// TenantOnboardingDeps.BarrierAnchors seam reaches bootstrap: the pending
+// first admin of a tenant behind its own barrier is pinned as that barrier's
+// epoch-1 anchor, and a prefix tenant, which has no barrier of its own, pins
+// nothing.
+func TestOnboardTenant_PinsABehindBarrierAdminAsTheBarrierAnchor(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	deps.Pending = tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	pins := &recordingPinner{}
+	deps.BarrierAnchors = pins
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolated, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "isolated", AdminUsername: "admin", AdminCSRPEM: csrPEM, IsolationType: tenant.IsolationVolume,
+	})
+	if err != nil {
+		t.Fatalf("OnboardTenant(isolated): %v", err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "shared", AdminUsername: "admin", AdminCSRPEM: csrPEM, IsolationType: tenant.IsolationPrefix,
+	}); err != nil {
+		t.Fatalf("OnboardTenant(shared): %v", err)
+	}
+	want := map[clusterseal.Barrier]string{clusterseal.TenantBarrier("isolated"): isolated.Admin.Thumbprint}
+	if isolated.Admin.Thumbprint == "" || !maps.Equal(pins.pins, want) {
+		t.Fatalf("pinned anchors = %v, want %v", pins.pins, want)
 	}
 }

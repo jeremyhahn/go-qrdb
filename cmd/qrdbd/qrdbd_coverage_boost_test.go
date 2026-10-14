@@ -100,28 +100,6 @@ func TestGenerateNodeCert_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// generateClientCert – success
-// ---------------------------------------------------------------------------
-
-func TestGenerateClientCert_Success(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(time.Hour)
-	if err != nil {
-		t.Fatalf("generateCA: %v", err)
-	}
-
-	certPEM, keyPEM, err := generateClientCert(caCert, caKey, "test-client", "system", time.Hour)
-	if err != nil {
-		t.Fatalf("generateClientCert: %v", err)
-	}
-	if len(certPEM) == 0 {
-		t.Error("expected non-empty cert PEM")
-	}
-	if len(keyPEM) == 0 {
-		t.Error("expected non-empty key PEM")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // generateCATLS – success
 // ---------------------------------------------------------------------------
 

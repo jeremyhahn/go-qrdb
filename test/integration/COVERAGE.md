@@ -112,7 +112,7 @@ itself (it is, deliberately, the CLI-selectable set).
 | [audit](../../docs/audit/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
 | [rate-limit](../../docs/rate-limit/) | — | — | — | — | — | — | **Gap.** No integration test. |
 | [attested-caller](../../docs/attested-caller/) | — | — | — | — | — | — | **Gap.** No integration test. |
-| [multi-tenancy](../../docs/multi-tenancy/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `tenant_cli_test.go`, `tenant_isolation_cli_test.go`, `tenant_deleted_cli_test.go` are `_PerProtocol`. `tenant_data_root_cli_test.go` and the `isolation_raft_*` cluster-correctness suites drive REST only. |
+| [multi-tenancy](../../docs/multi-tenancy/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `tenant_cli_test.go`, `tenant_isolation_cli_test.go`, `tenant_deleted_cli_test.go` are `_PerProtocol`. `tenant_barrier_init_proof_cli_test.go` runs `tenant barrier-init`'s proof of possession `_PerProtocol` on the five network transports (no signer, another key's signature, then the real CLI with the first admin's key); embedded asks no proof. `tenant_data_root_cli_test.go` and the `isolation_raft_*` cluster-correctness suites drive REST only. |
 
 ## Interfaces
 

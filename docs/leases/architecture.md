@@ -80,7 +80,7 @@ deleted the keys bound to it.
 
 **Standalone compositions start it too**: the daemon in mode
 `standalone`, `sdk/go/node.NewStandaloneNode` and the flat
-`sdk/go/transport/embedded.NewServer`, all through
+`sdk/go/standalone.NewServer`, all through
 `lifecycle.StartLocalLeaseExpiry`. It is the same `RunExpiry` loop with a
 constant leadership gate — a standalone node is the only replica — and it
 revokes through `LeaseService.Revoke`, the same apply path a raft leader's

@@ -19,6 +19,7 @@ package quic
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -32,7 +33,9 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -148,6 +151,151 @@ func TestHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	}
 	if !errors.Is(err, tenant.ErrTenantNotFound) {
 		t.Fatalf("expected ErrTenantNotFound, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleTenantBarrierInitBegin and the proof of possession
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierInitBegin_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := json.Marshal(quicTenantBarrierInitBeginRequest{TenantID: "acme"})
+
+	_, err := srv.handleTenantBarrierInitBegin(context.Background(), payload)
+	var sncErr *ServiceNotConfiguredError
+	if !errors.As(err, &sncErr) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T (%v)", err, err)
+	}
+}
+
+func TestHandleTenantBarrierInitBegin_InvalidJSON(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+
+	_, err := srv.handleTenantBarrierInitBegin(context.Background(), []byte(`{not-json`))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T (%v)", err, err)
+	}
+}
+
+func TestHandleTenantBarrierInitBegin_MissingTenantID(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+	payload, _ := json.Marshal(quicTenantBarrierInitBeginRequest{})
+
+	_, err := srv.handleTenantBarrierInitBegin(context.Background(), payload)
+	var ie *InvalidArgumentError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *InvalidArgumentError, got %T (%v)", err, err)
+	}
+}
+
+// TestHandleTenantBarrierInitBegin_NoProofAsked pins the unauthenticated
+// deployment: with no auth middleware there is no identity to prove, so
+// begin answers an empty challenge rather than refusing.
+func TestHandleTenantBarrierInitBegin_NoProofAsked(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+	payload, _ := json.Marshal(quicTenantBarrierInitBeginRequest{TenantID: "acme"})
+
+	raw, err := srv.handleTenantBarrierInitBegin(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp quicTenantBarrierInitBeginResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Nonce) != 0 || resp.Expires != 0 {
+		t.Fatalf("challenge = %+v; want none without an auth middleware", resp)
+	}
+}
+
+// uninitializedQUICTenant reports an uninitialized barrier, the state in
+// which init is reachable, and counts the initializations that get through.
+func uninitializedQUICTenant(inits *int) *mockTenantService {
+	return &mockTenantService{
+		barrierStatusFn: func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: id}, nil
+		},
+		barrierInitFn: func(context.Context, string, []byte, int, int) error {
+			*inits++
+			return nil
+		},
+	}
+}
+
+// quicCtxOnConn binds the identity and the server half of conn the way
+// withTLSState and the authenticator bind them on a live QUIC stream.
+func quicCtxOnConn(conn *initprooftest.Conn) context.Context {
+	return auth.WithIdentity(auth.WithTLSState(context.Background(), &conn.Server),
+		&auth.Identity{Subject: "acme-admin", TenantID: "acme"})
+}
+
+// TestHandleTenantBarrierInit_ProofOverTheConnection runs the real
+// middleware end to end: begin issues a nonce bound to this connection,
+// complete redeems it with the client key's signature, and the same proof
+// replayed is refused as unauthenticated without reaching the service again.
+func TestHandleTenantBarrierInit_ProofOverTheConnection(t *testing.T) {
+	inits := 0
+	srv := newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(uninitializedQUICTenant(&inits)),
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})))
+	cert := initprooftest.Certificate(t, "acme-admin")
+	conn := initprooftest.Dial(t, cert)
+	ctx := quicCtxOnConn(conn)
+
+	payload, _ := json.Marshal(quicTenantBarrierInitBeginRequest{TenantID: "acme"})
+	raw, err := srv.handleTenantBarrierInitBegin(ctx, payload)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	var challenge quicTenantBarrierInitBeginResponse
+	if err := json.Unmarshal(raw, &challenge); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(challenge.Nonce) == 0 || challenge.Expires == 0 {
+		t.Fatalf("challenge = %+v; want a nonce and its expiry", challenge)
+	}
+
+	proof := conn.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", challenge.Nonce)
+	payload, _ = json.Marshal(quicTenantBarrierInitRequest{
+		TenantID:   "acme",
+		Passphrase: []byte("pw"),
+		Nonce:      proof.Nonce,
+		PublicKey:  proof.PublicKey,
+		Signature:  proof.Signature,
+	})
+	if _, err := srv.handleTenantBarrierInit(ctx, payload); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	_, err = srv.handleTenantBarrierInit(ctx, payload)
+	var proofErr *tenant.FirstAdminProofError
+	if !errors.As(err, &proofErr) {
+		t.Fatalf("replay err = %T (%v); want *tenant.FirstAdminProofError", err, err)
+	}
+	if inits != 1 {
+		t.Fatalf("tenant service reached %d times; want once", inits)
+	}
+}
+
+// TestHandleTenantBarrierInit_WithoutProofRefused: with an auth middleware
+// configured, complete without a proof is refused before the service runs.
+func TestHandleTenantBarrierInit_WithoutProofRefused(t *testing.T) {
+	inits := 0
+	srv := newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(uninitializedQUICTenant(&inits)),
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})))
+	conn := initprooftest.Dial(t, initprooftest.Certificate(t, "acme-admin"))
+
+	payload, _ := json.Marshal(quicTenantBarrierInitRequest{TenantID: "acme", Passphrase: []byte("pw")})
+	_, err := srv.handleTenantBarrierInit(quicCtxOnConn(conn), payload)
+	var proofErr *tenant.FirstAdminProofError
+	if !errors.As(err, &proofErr) {
+		t.Fatalf("err = %T (%v); want *tenant.FirstAdminProofError", err, err)
+	}
+	if inits != 0 {
+		t.Fatalf("tenant service reached %d times; want never", inits)
 	}
 }
 
@@ -506,7 +654,8 @@ func TestTenantBarrier_DispatchRegistered(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
 	srv.buildHandlers()
 	for _, method := range []string{
-		"tenant.BarrierInit",
+		"tenant.BarrierInitBegin",
+		"tenant.BarrierInitComplete",
 		"tenant.BarrierUnseal",
 		"tenant.BarrierSeal",
 		"tenant.BarrierStatus",
@@ -521,7 +670,8 @@ func TestTenantBarrier_DispatchSkippedWhenServiceAbsent(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 	srv.buildHandlers()
 	for _, method := range []string{
-		"tenant.BarrierInit",
+		"tenant.BarrierInitBegin",
+		"tenant.BarrierInitComplete",
 		"tenant.BarrierUnseal",
 		"tenant.BarrierSeal",
 		"tenant.BarrierStatus",
@@ -629,7 +779,7 @@ func (e *extMockQUICTenantService) UpdateEntitlements(ctx context.Context, id st
 func (e *extMockQUICTenantService) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
-func (e *extMockQUICTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID, roster *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (e *extMockQUICTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID, roster *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, id, passphrase, threshold, total, sid, roster)
 }
 func (e *extMockQUICTenantService) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {

@@ -129,12 +129,34 @@ cfg.Server.AdminPort = 9000
 n, err := node.NewStandaloneNode(ctx, cfg, nil)
 ```
 
+### On-disk, lean (file backend, DAO)
+
+`sdk/go/examples/leanstandalone` is a complete, runnable program for the
+smallest useful embedding:
+
+- a standalone node on the `file` backend (`cfg.Databases[0].Backend = "file"`)
+  with no listeners;
+- an application service principal (`node.WithServicePrincipal` plus
+  `sdk.RegisterPermissionRoleGrant`), so calls over `n.Client()` are
+  authorized;
+- an entity DAO over `sdk.NewKVStoreAdapter`.
+
+Build it with `-tags codec_json`.
+
+The example is the fixture of the lean-standalone build gate
+([run-modes/architecture.md](run-modes/architecture.md#the-lean-standalone-embedding)).
+That gate holds such an embedding to a dependency graph without the Raft host,
+PebbleDB, the network API servers or the unused feature packages. The graph
+does not meet that target yet, and the gate keeps it from growing.
+
 ### Injecting hardware crypto options
 
 `serverOpts` is forwarded verbatim to `server.New`. Pass
-`server.WithStrategyRegistry`, `server.WithPINBackend`, and
-`server.WithFactorRegistry` here so hardware-backed seal strategies and
-authentication factors from go-xkms are wired in at composition time.
+`server.WithStrategyRegistry`, `server.WithBarrierKeyProvider`,
+`server.WithPINBackend`, and `server.WithFactorRegistry` here so hardware-backed
+seal strategies, barrier key providers and authentication factors from go-xkms
+are wired in at composition time. The builders forward the registry and the
+provider into the tenant service before `server.New` runs.
 
 ```go
 n, err := node.NewStandaloneNode(ctx, cfg,

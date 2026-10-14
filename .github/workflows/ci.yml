@@ -141,6 +141,10 @@ env:
   GOLANGCI_LINT_VERSION: "v2.14.0"
   GOSEC_VERSION: "v2.29.0"
   GOVULNCHECK_VERSION: "v1.8.0"
+  # ACTIONLINT_VERSION is baked into the runner and lane images like
+  # GOLANGCI_LINT_VERSION and asserted the same way; `make lint` runs it over
+  # the workflows (#636). It must equal ACTIONLINT_VERSION in the Makefile.
+  ACTIONLINT_VERSION: "v1.7.12"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
   # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
@@ -189,6 +193,15 @@ jobs:
           "${GITHUB_WORKSPACE}/scripts/require-tool.sh" \
             golangci-lint "$GOLANGCI_LINT_VERSION" \
             "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+
+      # Same NO NETWORK INSTALL rule: `make lint` runs actionlint over the
+      # workflows, so the binary on PATH must be the pinned one (#636).
+      - name: Require actionlint at the pinned version
+        run: |
+          set -eu
+          "${GITHUB_WORKSPACE}/scripts/require-tool.sh" \
+            actionlint "$ACTIONLINT_VERSION" \
+            "github.com/rhysd/actionlint/cmd/actionlint"
 
       # The guard's own rejecting branches, which the step above never reaches
       # while the image is healthy. It runs AFTER that step deliberately: if the
@@ -309,6 +322,15 @@ jobs:
       # package, already built by the step above.
       - name: Every feature has an integration-test target, every integration test is selected
         run: make check-integration-feature-coverage
+
+      # #627. An embedder of a standalone file-backend node (sdk/go/node, the
+      # embedded transport, an entity DAO) must not compile features it does
+      # not use. The import graph is a property of the whole tree -- one
+      # innocent import in a shared package pulls PebbleDB or the Raft host
+      # into every embedder -- so it is a gate, not a review item. A ratchet:
+      # the table of remaining edges may only shrink. `go list` only, no build.
+      - name: A lean standalone embedder compiles no unused feature
+        run: make check-lean-standalone
 
       # #478. nightly.yml's `signal` job turns that workflow's verdict into a
       # tracking issue, and it is told which jobs to watch by an explicit `-job`

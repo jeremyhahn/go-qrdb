@@ -37,6 +37,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -464,6 +465,24 @@ func startNode(t *testing.T, binary string, args []string, prefix string, tee ..
 // nodeWaitDelay bounds how long a killed qrdbd's output pipe may keep
 // startNode's cleanup waiting.
 const nodeWaitDelay = 10 * time.Second
+
+// stopNodeProcess sends cmd SIGTERM and waits for it to exit, killing it if
+// it has not within 15 seconds, so a restart can bind the same ports at once.
+func stopNodeProcess(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
+}
 
 // allocatePorts returns n free UDP ports for node listen addresses. The
 // reserved-window allocator lives in sdk/go/testutil/qrdbdharness: ports are

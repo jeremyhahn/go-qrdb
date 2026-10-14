@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/index/internal/indexkey"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
@@ -593,13 +594,13 @@ func (idx *StoragePebbleIndex) ScanWithContext(ctx context.Context, start, end [
 // preserves the trailing-0x00 exclusivity marker that
 // pkg/sql/provider/range_translator.go appends to byte-comparable string
 // bounds. For numeric indexes the marker must instead be resolved after
-// encoding; see resolveNumericScanBound.
+// encoding; see ResolveNumericScanBound.
 func (idx *StoragePebbleIndex) resolveScanBound(raw []byte, op string) ([]byte, error) {
 	if idx.config.ValueType != IndexValueTypeNumeric {
 		normalized, _ := NormalizeFieldValue(raw, idx.config)
 		return normalized, nil
 	}
-	return resolveNumericScanBound(raw, idx.config.Name, op)
+	return ResolveNumericScanBound(raw, idx.config.Name, op)
 }
 
 // checkUniqueConstraint verifies that the field value is unique, against
@@ -640,12 +641,12 @@ func (idx *StoragePebbleIndex) checkUniqueConstraintFrom(reader storage.Reader, 
 // Format: "idx:{indexName}:{fieldValue}:{entityKey}{uint32BE(len(entityKey))}".
 func (idx *StoragePebbleIndex) buildKey(fieldValue []byte, entityKey []byte) []byte {
 	// Pre-allocate buffer to avoid multiple allocations
-	prefixLen := len(keyPrefix) + len(idx.config.Name) + 1
+	prefixLen := len(indexkey.Prefix) + len(idx.config.Name) + 1
 	valueLen := len(fieldValue)
 	totalLen := prefixLen + valueLen + 1 + len(entityKey) + 4 // +1 for separator, +4 for key length suffix
 
 	buf := make([]byte, 0, totalLen)
-	buf = append(buf, keyPrefix...)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	buf = append(buf, fieldValue...)
@@ -663,8 +664,8 @@ func (idx *StoragePebbleIndex) buildKey(fieldValue []byte, entityKey []byte) []b
 // buildValuePrefix constructs the prefix for a specific field value.
 // Format: "idx:{indexName}:{fieldValue}:".
 func (idx *StoragePebbleIndex) buildValuePrefix(fieldValue []byte) []byte {
-	buf := make([]byte, 0, len(keyPrefix)+len(idx.config.Name)+len(fieldValue)+2)
-	buf = append(buf, keyPrefix...)
+	buf := make([]byte, 0, len(indexkey.Prefix)+len(idx.config.Name)+len(fieldValue)+2)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	buf = append(buf, fieldValue...)
@@ -677,8 +678,8 @@ func (idx *StoragePebbleIndex) buildValuePrefix(fieldValue []byte) []byte {
 // where the bound sorts before any key that extends the value prefix.
 // Format: "idx:{indexName}:{fieldValue}".
 func (idx *StoragePebbleIndex) buildScanBound(fieldValue []byte) []byte {
-	buf := make([]byte, 0, len(keyPrefix)+len(idx.config.Name)+len(fieldValue)+1)
-	buf = append(buf, keyPrefix...)
+	buf := make([]byte, 0, len(indexkey.Prefix)+len(idx.config.Name)+len(fieldValue)+1)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	buf = append(buf, fieldValue...)
@@ -688,8 +689,8 @@ func (idx *StoragePebbleIndex) buildScanBound(fieldValue []byte) []byte {
 // buildIndexPrefix constructs the prefix for the entire index.
 // Format: "idx:{indexName}:".
 func (idx *StoragePebbleIndex) buildIndexPrefix() []byte {
-	buf := make([]byte, 0, len(keyPrefix)+len(idx.config.Name)+1)
-	buf = append(buf, keyPrefix...)
+	buf := make([]byte, 0, len(indexkey.Prefix)+len(idx.config.Name)+1)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	return buf

@@ -28,7 +28,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -187,19 +186,7 @@ func startCLIEncNode(t *testing.T, bin string, prefix string) *cliBarrierEncNode
 func (n *cliBarrierEncNode) restart(t *testing.T, bin, prefix string) {
 	t.Helper()
 
-	if n.proc != nil && n.proc.Process != nil {
-		if err := n.proc.Process.Signal(syscall.SIGTERM); err != nil {
-			t.Fatalf("restart: signal previous process: %v", err)
-		}
-		done := make(chan error, 1)
-		go func() { done <- n.proc.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			_ = n.proc.Process.Kill()
-			t.Fatalf("restart: timed out waiting for previous process to exit")
-		}
-	}
+	stopNodeProcess(t, n.proc)
 	n.proc = startNode(t, bin, n.startArgs, prefix)
 }
 
@@ -793,12 +780,8 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 
 	// Initialize the self-managed dedicated barrier as "none" (unencrypted) --
 	// the source state for enable-encryption.
-	if initBody, initStatus := iraftAPIPost(t, onboardedAdminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", adminPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
-	); initStatus != http.StatusOK && initStatus != http.StatusNoContent && initStatus != http.StatusCreated {
-		t.Fatalf("tenant barrier init: status %d, body: %s", initStatus, initBody)
-	}
+	initTenantBarrierAsFirstAdmin(t, fmt.Sprintf("https://127.0.0.1:%d", adminPort), ca.CertPath,
+		[]byte(createResp.Admin.CertPEM), adminKeyPEM, tenantID)
 
 	// The onboarded admin's account carries only the pending-admin
 	// completion's own role, not the data-plane permissions the rest of

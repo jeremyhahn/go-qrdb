@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -111,7 +112,8 @@ func withHTTPRequestCredentials(ctx context.Context, r *http.Request) context.Co
 	if r.TLS != nil {
 		ctx = auth.WithTLSState(ctx, r.TLS)
 	}
-	return auth.WithHTTPAuthorization(ctx, r.Header.Get("Authorization"))
+	ctx = auth.WithHTTPAuthorization(ctx, r.Header.Get("Authorization"))
+	return auth.WithDPoPFromHTTP(ctx, r)
 }
 
 // protectedResourceMetadataHandler serves the embedder-supplied RFC 9728
@@ -373,15 +375,26 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
-// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
-// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
-// — the single cross-transport home of the bootstrap-window semantics). When
-// authMW is nil the gate is a no-op (unauthenticated deployment).
-func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+// beginTenantBarrierInit issues the init nonce through the shared
+// trust-on-first-init rule (middleware.BeginTenantBarrierInit -- the single
+// cross-transport home of the bootstrap-window semantics and the init
+// proof). When authMW is nil the deployment is unauthenticated: there is no
+// identity to prove, and the empty challenge says so.
+func (s *Server) beginTenantBarrierInit(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
+	if s.authMW == nil {
+		return &initproof.Challenge{}, nil
+	}
+	return s.authMW.BeginTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization and
+// redeems its proof of possession (middleware.AuthorizeTenantBarrierInitProof).
+// When authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
 	if s.authMW == nil {
 		return nil
 	}
-	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+	return s.authMW.AuthorizeTenantBarrierInitProof(ctx, tenantID, s.tenantSvc, proof)
 }
 
 // authorizeTenantBarrierSealedOp authorizes the tenant barrier operations

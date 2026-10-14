@@ -120,11 +120,14 @@ a tier is refused without the counters being consulted at all.
 ## The tenant's own barrier
 
 Only for `barrier`, `volume` and `raft` tenants. The tenant's first admin runs
-`barrier-init` with the certificate `tenant create` issued; that also creates
-the admin's account.
+`barrier-init` with the certificate `tenant create` issued and its own key;
+that also creates the admin's account. The CLI proves it holds the key: it
+signs a one-time challenge from the node, tied to this TLS connection, with
+the `--key-file` key. The key never leaves your machine.
 
 ```bash
-qrdb tenant barrier-init --id secure-co --strategy passphrase --passphrase "$PP"
+qrdb --cert-file alice/cert.pem --key-file alice/key.pem \
+     tenant barrier-init --id secure-co --strategy passphrase --passphrase "$PP"
 qrdb tenant barrier-status --id secure-co
 qrdb tenant barrier-unseal --id secure-co --key "$KEY_B64"
 qrdb tenant barrier-seal   --id secure-co
@@ -180,6 +183,14 @@ admin, only the certificate `tenant create` issued or enrolled for that admin
 may initialize the barrier, presented by that admin. Under
 `auth.mtls_binding_policy: required`, a tenant that has no onboarded admin
 cannot have its barrier initialized by any certificate.
+
+**"barrier init proof ... refused".** The node asked for proof that you hold
+the first admin's key and did not get a valid one. Pass that admin's own key
+with `--key-file`, beside its certificate. Each challenge is used once and
+lasts five minutes, so simply rerun the command; nothing was initialized.
+"needs the first admin's key to prove possession, and no signer was given"
+means no `--key-file` was given. The node needs a TLS
+1.3 connection to ask for the proof.
 
 **"was deleted and cannot be reused" when creating a tenant.** That id has
 been used and deleted. It is retired permanently — pick another name. The
@@ -290,6 +301,24 @@ not implemented**.
 > (nothing performs the "first-boot, recorded once" write that default
 > assumes), and moving a strict tenant's records into a home store of its own
 > — the heart of "what a strict tenant gets" below — has not started.
+>
+> **Per-node barrier keys (2026-10-08).** Each node serving an isolated tenant
+> will initialise its own copy of the tenant's key from an init statement the
+> tenant's own admin signs; no key is carried between nodes. That is not
+> shipped yet: today the tenant's key is still delivered to each serving node,
+> and isolated tenants are created as before. Once it ships, on a cluster,
+> creating a `barrier`, `volume` or `raft` tenant, or changing a tenant to one
+> of those types, will be refused as unavailable until every node runs a
+> release with the `per-node-barrier-keys` feature, and will succeed once a
+> retry finds it active. A standalone node is never refused.
+>
+> **Choosing a type for confidentiality.** A `prefix` tenant lives in the
+> shared store, under a barrier the platform manages: **its data is readable
+> by the platform.** A tenant that needs its data kept from the platform
+> operator chooses an isolated type (`barrier`, `volume` or `raft`). Whether
+> an isolated tenant's key auto-unseals is the tenant's own choice, never
+> refused; once per-node keys are complete, its barrier status shows which it
+> chose.
 
 - The tenant keeps all of its own records in its own store: users, roles,
   factors, certificates, its CA, its database catalog, its audit trail and its

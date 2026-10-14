@@ -45,7 +45,6 @@ var cliInProcessComposer = map[string]bool{
 	"cmd/qrdb/database_instance_registry.go": true,
 	"cmd/qrdb/embedded_barrier.go":           true,
 	"cmd/qrdb/host_adapter.go":               true,
-	"cmd/qrdb/kvstore_adapter.go":            true,
 }
 
 // nonSDKImports returns the go-qrdb imports of the Go source at file that are

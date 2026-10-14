@@ -115,31 +115,6 @@ func TestNewVectorRegularCreateFunc_DifferentShardIDs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// vector_consensus.go: minConsensus (66.7% - a < b branch uncovered)
-// ---------------------------------------------------------------------------
-
-func TestMinConsensus_AlessThanB(t *testing.T) {
-	result := minConsensus(3, 5)
-	if result != 3 {
-		t.Fatalf("expected 3, got %d", result)
-	}
-}
-
-func TestMinConsensus_AgreaterThanB(t *testing.T) {
-	result := minConsensus(7, 2)
-	if result != 2 {
-		t.Fatalf("expected 2, got %d", result)
-	}
-}
-
-func TestMinConsensus_Equal(t *testing.T) {
-	result := minConsensus(4, 4)
-	if result != 4 {
-		t.Fatalf("expected 4, got %d", result)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // vector_ops.go: NewCreateNamespaceCommandWithMetric (0% coverage)
 // ---------------------------------------------------------------------------
 

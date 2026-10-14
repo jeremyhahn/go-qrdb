@@ -59,6 +59,11 @@ type e2eServer struct {
 	// the request correctly.
 	recordedRequests []recordedRequest
 	recordMu         sync.Mutex
+
+	// tlsState is the server half of the most recently accepted
+	// connection's TLS state, so a test can check what the SDK bound to the
+	// connection (the init proof's exporter) against the server's view.
+	tlsState atomic.Pointer[tls.ConnectionState]
 }
 
 // recordedRequest is the captured form of a single request handled by
@@ -190,6 +195,8 @@ func (s *e2eServer) acceptLoop() {
 func (s *e2eServer) handleConnection(conn *quicgo.Conn) {
 	defer s.wg.Done()
 	defer func() { _ = conn.CloseWithError(0, "test done") }()
+	cs := conn.ConnectionState().TLS
+	s.tlsState.Store(&cs)
 
 	for {
 		stream, err := conn.AcceptStream(context.Background())

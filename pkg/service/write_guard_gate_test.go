@@ -87,6 +87,29 @@ func TestPropose_EnabledGroupReceivesOpGuarded(t *testing.T) {
 	}
 }
 
+// A Host that does not gate features runs this binary on every replica, so
+// its writes always carry their guard.
+func TestKVService_GuardsEnforced_UngatedHost(t *testing.T) {
+	inner, _ := recordingHost(sm.Result{})
+	if !NewKVService(inner, 1).(*KVService).GuardsEnforced() {
+		t.Fatal("GuardsEnforced = false on a host that gates nothing")
+	}
+}
+
+// A gated Host carries the guard only for a group whose gate has enabled
+// guarded writes; for any other group guardCommand drops it, and
+// GuardsEnforced has to say so.
+func TestKVService_GuardsEnforced_FollowsTheGroupGate(t *testing.T) {
+	inner, _ := recordingHost(sm.Result{})
+	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: true}}
+	if !NewKVService(host, 1).(*KVService).GuardsEnforced() {
+		t.Fatal("GuardsEnforced = false for a group with guarded writes enabled")
+	}
+	if NewKVService(host, 2).(*KVService).GuardsEnforced() {
+		t.Fatal("GuardsEnforced = true for a group whose gate drops the guard")
+	}
+}
+
 // A write with no guard never consults the gate.
 func TestPropose_UnguardedWriteDoesNotConsultTheGate(t *testing.T) {
 	inner, _ := recordingHost(sm.Result{})

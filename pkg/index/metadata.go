@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/index/internal/indexkey"
 )
 
 const (
@@ -358,8 +359,9 @@ func DecodeFieldValue(encoded []byte, config IndexConfig) string {
 	return string(encoded)
 }
 
-// resolveNumericScanBound resolves a Scan boundary value for a numeric
-// index. Callers that translate SQL range predicates into index scans (see
+// ResolveNumericScanBound resolves a Scan boundary value for a numeric
+// index. Every numeric-capable Index implementation resolves its bounds
+// through it, so they agree on the encoded byte domain. Callers that translate SQL range predicates into index scans (see
 // pkg/sql/provider/range_translator.go) express an exclusive bound by
 // appending a trailing 0x00 byte to the bound's decimal text, which is the
 // correct way to advance a byte-comparable string key past its exact value.
@@ -379,7 +381,7 @@ func DecodeFieldValue(encoded []byte, config IndexConfig) string {
 // Returns an InvalidNumericBoundError when the bound cannot be parsed as a
 // number. This must be treated as a hard failure, never silently mapped to
 // an empty result: a malformed bound is a caller error, not "no matches".
-func resolveNumericScanBound(raw []byte, indexName, op string) ([]byte, error) {
+func ResolveNumericScanBound(raw []byte, indexName, op string) ([]byte, error) {
 	base := raw
 	exclusive := false
 	if n := len(raw); n > 0 && raw[n-1] == 0x00 {
@@ -392,7 +394,7 @@ func resolveNumericScanBound(raw []byte, indexName, op string) ([]byte, error) {
 		return nil, &InvalidNumericBoundError{IndexName: indexName, Op: op, Value: raw, Err: err}
 	}
 	if exclusive {
-		encoded = incrementBytes(encoded)
+		encoded = indexkey.Successor(encoded)
 	}
 	return encoded, nil
 }

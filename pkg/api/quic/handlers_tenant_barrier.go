@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -41,15 +43,26 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
-// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
-// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
-// — the single cross-transport home of the bootstrap-window semantics). When
-// authMW is nil the gate is a no-op (unauthenticated deployment).
-func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+// beginTenantBarrierInit issues the init nonce through the shared
+// trust-on-first-init rule (middleware.BeginTenantBarrierInit -- the single
+// cross-transport home of the bootstrap-window semantics and the init
+// proof). When authMW is nil the deployment is unauthenticated: there is no
+// identity to prove, and the empty challenge says so.
+func (s *Server) beginTenantBarrierInit(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
+	if s.authMW == nil {
+		return &initproof.Challenge{}, nil
+	}
+	return s.authMW.BeginTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization and
+// redeems its proof of possession (middleware.AuthorizeTenantBarrierInitProof).
+// When authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
 	if s.authMW == nil {
 		return nil
 	}
-	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+	return s.authMW.AuthorizeTenantBarrierInitProof(ctx, tenantID, s.tenantSvc, proof)
 }
 
 // authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
@@ -69,7 +82,8 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 //
 // Method names dispatched from buildHandlers:
 //
-//	tenant.BarrierInit    -- initialize the per-tenant barrier
+//	tenant.BarrierInitBegin    -- issue the init nonce for this connection
+//	tenant.BarrierInitComplete -- initialize the per-tenant barrier, with proof
 //	tenant.BarrierUnseal  -- unseal the per-tenant barrier
 //	tenant.BarrierSeal    -- seal the per-tenant barrier
 //	tenant.BarrierStatus  -- query barrier sealed/initialized state
@@ -80,8 +94,23 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 // are intentionally schema-light and do not need a generated message type.
 // ---------------------------------------------------------------------------
 
-// quicTenantBarrierInitRequest is the JSON payload for tenant.BarrierInit frames.
-// Passphrase carries the tenant admin's caller-supplied secret (required for
+// quicTenantBarrierInitBeginRequest is the JSON payload for
+// tenant.BarrierInitBegin frames.
+type quicTenantBarrierInitBeginRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+// quicTenantBarrierInitBeginResponse is the JSON response for
+// tenant.BarrierInitBegin frames: the nonce to sign, valid only on this
+// connection, and its expiry in Unix seconds. Both are empty on an
+// unauthenticated deployment, which asks no proof.
+type quicTenantBarrierInitBeginResponse struct {
+	Nonce   []byte `json:"nonce,omitempty"`
+	Expires int64  `json:"expires,omitempty"`
+}
+
+// quicTenantBarrierInitRequest is the JSON payload for
+// tenant.BarrierInitComplete frames. Passphrase carries the tenant admin's caller-supplied secret (required for
 // the passphrase strategy; no derived fallback). Strategy selects the seal
 // strategy; when empty the passphrase (software) strategy is used.
 //
@@ -102,10 +131,23 @@ type quicTenantBarrierInitRequest struct {
 	// Policy is the factor policy Officers enrol under ("" selects the
 	// holder engine's default, "designated").
 	Policy string `json:"policy,omitempty"`
+
+	// Nonce, PublicKey and Signature are the proof of possession: begin's
+	// nonce, the DER SubjectPublicKeyInfo of the first admin's key, and that
+	// key's signature over the tenant, the nonce and this connection's TLS
+	// exporter (pkg/initproof).
+	Nonce     []byte `json:"nonce,omitempty"`
+	PublicKey []byte `json:"public_key,omitempty"`
+	Signature []byte `json:"signature,omitempty"`
+
+	// InitStatement is the first admin's signed epoch-1 init statement for
+	// this barrier (barrierinit.InitStatement): every other node serving the
+	// barrier initializes its own key from it.
+	InitStatement []byte `json:"init_statement,omitempty"`
 }
 
-// quicTenantBarrierInitResponse is the JSON response for tenant.BarrierInit
-// frames. INV-1: share bytes are never included; Security Officers retrieve
+// quicTenantBarrierInitResponse is the JSON response for
+// tenant.BarrierInitComplete frames. INV-1: share bytes are never included; Security Officers retrieve
 // their shares via the per-tenant claim handshake. ShareCount signals how
 // many officer enclaves were provisioned.
 type quicTenantBarrierInitResponse struct {
@@ -159,9 +201,37 @@ func (e *missingTenantIDError) Error() string {
 	return "tenant: tenant_id is required"
 }
 
-// handleTenantBarrierInit initializes the per-tenant barrier. The threshold
-// and shares parameters are forwarded to the tenant service for future Shamir
-// integration; a zero pair selects deterministic credentials.
+// handleTenantBarrierInitBegin issues the nonce tenant.BarrierInitComplete
+// must sign, bound to this connection's TLS exporter.
+func (s *Server) handleTenantBarrierInitBegin(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+	var req quicTenantBarrierInitBeginRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if req.TenantID == "" {
+		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
+	}
+	challenge, err := s.beginTenantBarrierInit(ctx, req.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	resp := quicTenantBarrierInitBeginResponse{Nonce: challenge.Nonce}
+	if !challenge.ExpiresAt.IsZero() {
+		resp.Expires = challenge.ExpiresAt.Unix()
+	}
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleTenantBarrierInit initializes the per-tenant barrier
+// (tenant.BarrierInitComplete), given proof of possession of the first
+// admin's key over this connection.
 func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
@@ -179,7 +249,8 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
 	}
 
-	if err := s.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
+	proof := &authmw.TenantBarrierInitProof{Nonce: req.Nonce, PublicKey: req.PublicKey, Signature: req.Signature}
+	if err := s.authorizeTenantBarrierInit(ctx, req.TenantID, proof); err != nil {
 		return nil, err
 	}
 
@@ -190,7 +261,8 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 			Policy:   seal.FactorPolicy(req.Policy),
 		}
 	}
-	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster)
+	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
+		tenant.WithInitStatement(req.InitStatement))
 	if err != nil {
 		return nil, err
 	}

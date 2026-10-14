@@ -91,6 +91,23 @@ type JournalCorruptError struct {
 	Reason string
 }
 
+// InTreeJournalError reports a store opened with a commit journal inside its
+// data tree: an interrupted batch left by a build that kept the journal there.
+// This build keeps the journal in a sibling tree and would never see it, so
+// the store is refused rather than served half-applied. There is no recovery;
+// restore the store from a backup.
+type InTreeJournalError struct {
+	// Provider is the go-objstore provider whose store was refused.
+	Provider string
+}
+
+// Error implements the error interface.
+func (e *InTreeJournalError) Error() string {
+	return "objstore: the " + e.Provider + " store holds a commit journal (" + journalName +
+		") inside its data tree, left by an interrupted batch of an earlier layout" +
+		" — it cannot be recovered; there is no migration"
+}
+
 // Error returns a human-readable description.
 func (e *JournalCorruptError) Error() string {
 	return "objstore: commit journal corrupt: " + e.Reason

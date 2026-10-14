@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/index/pebbleindex"
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -2110,7 +2111,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	// index:"case_insensitive" definition became a case-SENSITIVE index and a
 	// lookup for "Alpha" over a stored "alpha" answered empty with a nil error
 	// (go-qrdb#34).
-	idx, idxErr := index.NewPebbleIndexWithConfig(s.db, name, index.IndexConfig{
+	idx, idxErr := pebbleindex.NewWithConfig(s.db, name, index.IndexConfig{
 		Name:          name,
 		Unique:        opts.Unique,
 		Sparse:        opts.Sparse,

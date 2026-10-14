@@ -326,7 +326,7 @@ func (s *kvRoleStore) seedMissingRole(ctx context.Context, tenantID string, cano
 // awaitMatchingRole polls, within s.reconcileWindow, for a role named
 // want.Name whose persisted id, tenant, name, System flag and permission
 // set ALL match want exactly — the same verification pkg/firstboot's
-// builtInRoleAlreadySeeded performs over a CreateRole collision, needed
+// RoleMatchesSeed performs over a CreateRole collision, needed
 // here for the identical reason: a collision proves SOME write already
 // claimed the id or the name, not that the write has become visible to
 // THIS read yet. A record that resolves but disagrees with want is a

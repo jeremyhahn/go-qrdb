@@ -371,7 +371,8 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		// authorizeTenantBarrierInit).
 		{"GET", "/v1/tenants/t-1/barrier/status", permission.IdentityGated},
 		{"GET", "/v1/tenants/t-1/barrier/officers", permission.TenantBarrierOfficerList},
-		{"POST", "/v1/tenants/t-1/barrier/init", permission.IdentityGated},
+		{"POST", "/v1/tenants/t-1/barrier/init/begin", permission.IdentityGated},
+		{"POST", "/v1/tenants/t-1/barrier/init/complete", permission.IdentityGated},
 		{"POST", "/v1/tenants/t-1/barrier/unseal", permission.IdentityGated},
 		{"POST", "/v1/tenants/t-1/barrier/seal", permission.TenantBarrierSeal},
 		{"POST", "/v1/tenants/t-1/barrier/officers", permission.TenantBarrierOfficerRegister},

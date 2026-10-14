@@ -15,6 +15,7 @@
 package file
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -120,6 +121,69 @@ func TestOpen_RecoversPublishedJournal(t *testing.T) {
 	}
 }
 
+// TestOpen_RefusedFormatLeavesJournalUnreplayed pins the open order: the
+// on-disk format is validated before a published journal is replayed, so a
+// directory New refuses is not written to first.
+func TestOpen_RefusedFormatLeavesJournalUnreplayed(t *testing.T) {
+	cases := map[string]struct {
+		marker  []byte
+		wantErr func(error) bool
+	}{
+		"version mismatch": {
+			marker: []byte("999"),
+			wantErr: func(err error) bool {
+				var mismatch *FormatVersionMismatchError
+				return errors.As(err, &mismatch)
+			},
+		},
+		"marker missing": {
+			wantErr: func(err error) bool {
+				var missing *FormatMarkerMissingError
+				return errors.As(err, &missing)
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.marker != nil {
+				if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), tc.marker, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			image := encodeJournal([]storage.BufferedOp{{Key: []byte("r1"), Value: []byte("v1")}})
+			if err := os.WriteFile(filepath.Join(dir, journalFileName), image, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			e, err := New(dir)
+			if err == nil {
+				_ = e.Close()
+				t.Fatal("New on a refused format succeeded")
+			}
+			if !tc.wantErr(err) {
+				t.Fatalf("New = %v, want the format refusal", err)
+			}
+
+			got, err := os.ReadFile(filepath.Join(dir, journalFileName))
+			if err != nil || !bytes.Equal(got, image) {
+				t.Fatalf("journal after refused open = %q, %v; want it untouched", got, err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ent := range entries {
+				switch ent.Name() {
+				case formatMarkerFileName, journalFileName, lockFileName:
+				default:
+					t.Errorf("refused open wrote %q into the directory", ent.Name())
+				}
+			}
+		})
+	}
+}
+
 // TestOpen_CorruptJournalFailsClosed pins the fail-closed contract: a
 // checksum-failing journal means the last batch is in an unknown state,
 // and the open must refuse rather than serve it.
@@ -185,9 +249,9 @@ func TestDecodeJournal_RejectsGarbage(t *testing.T) {
 }
 
 // TestSet_LeavesNoTempFiles verifies the atomic-rename write path cleans up
-// after itself and Sync succeeds. The format marker (a permanent,
-// legitimate dot-prefixed file, not a leftover) and the record itself
-// (named by its key's hash, not dot-prefixed) are the only two files this
+// after itself and Sync succeeds. The format marker and the lock file
+// (permanent, legitimate dot-prefixed files, not leftovers) and the record
+// itself (named by its key's hash, not dot-prefixed) are the only files this
 // should find; anything else dot-prefixed is a stray ".tmp-set-*" or
 // ".tmp-journal-*" artifact.
 func TestSet_LeavesNoTempFiles(t *testing.T) {
@@ -210,7 +274,7 @@ func TestSet_LeavesNoTempFiles(t *testing.T) {
 			return err
 		}
 		name := info.Name()
-		if name == formatMarkerFileName || isHashFileName(name) {
+		if name == formatMarkerFileName || name == lockFileName || isHashFileName(name) {
 			return nil
 		}
 		t.Errorf("temp artifact %q left behind", path)

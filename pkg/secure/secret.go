@@ -47,6 +47,27 @@ type Secret struct {
 	// atomic.Pointer rather than atomic.Value gives lock-free, type-safe swap
 	// + load without boxing. Destroy atomically swaps in nil.
 	enclave atomic.Pointer[enclave.SealedEnclave]
+
+	// empty is true while the explicit live zero-length value NewEmptySecret
+	// returns is alive. go-enclave refuses to seal nothing, so an empty
+	// Secret holds no enclave; Destroy clears this flag, which is what
+	// destroys it.
+	empty atomic.Bool
+}
+
+// NewEmptySecret returns a live Secret that holds zero bytes: the at-rest
+// counterpart of NewEmptyBuffer. IsAlive reports true until Destroy, Open
+// returns an empty Buffer, and WithBytes calls its callback with an empty
+// slice.
+//
+// NewSecret still refuses an empty src with *InvalidSizeError; the empty
+// value is asked for by name. Nothing is sealed, so it cannot fail, and a
+// shutdown enclave.WipeAll, which makes every sealed Secret unopenable, leaves
+// it openable: there is no key standing between it and its (empty) plaintext.
+func NewEmptySecret() *Secret {
+	s := &Secret{}
+	s.empty.Store(true)
+	return s
 }
 
 // newSealed indirects enclave.NewSealed so a test can wrap it with an
@@ -85,6 +106,8 @@ func NewSecret(ctx context.Context, src []byte) (*Secret, error) {
 // NewSecretFromBuffer seals buf into a new Secret, consuming buf: buf is
 // destroyed on every return path once it has passed the nil / destroyed /
 // zero-value checks, which return (nil, *NilBufferError) and leave it alone.
+// The empty Buffer NewEmptyBuffer returns becomes the empty Secret
+// NewEmptySecret returns.
 //
 // The plaintext is sealed straight out of buf's own locked pages. There is no
 // intermediate plaintext copy: enclave.NewSealed reads buf's pages inside
@@ -113,7 +136,14 @@ func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
 		return nil, &NilBufferError{}
 	}
 	checkNoBorrow("NewSecretFromBuffer")
-	if buf.destroyed.Load() || buf.enc.Size() == 0 {
+	if buf.destroyed.Load() {
+		return nil, &NilBufferError{}
+	}
+	if buf.empty {
+		buf.Destroy()
+		return NewEmptySecret(), nil
+	}
+	if buf.enc.Size() == 0 {
 		return nil, &NilBufferError{}
 	}
 	defer buf.Destroy()
@@ -163,6 +193,9 @@ func (s *Secret) Open(ctx context.Context) (*Buffer, error) {
 	checkNoBorrow("Secret.Open")
 	sealed := s.enclave.Load()
 	if sealed == nil {
+		if s.empty.Load() {
+			return NewEmptyBuffer(), nil
+		}
 		return nil, &NilSecretError{}
 	}
 	a, err := processAllocator()
@@ -178,6 +211,44 @@ func (s *Secret) Open(ctx context.Context) (*Buffer, error) {
 		return nil, &OpenError{Err: copyErr}
 	}
 	return buf, nil
+}
+
+// WithBytes opens s, calls fn with the plaintext, and destroys the opened
+// Buffer before returning: the scoped form of Open, for a caller that only
+// needs the plaintext for the length of one call and so never holds a Buffer
+// it could forget to destroy.
+//
+// fn's rules are Buffer.WithBytes's: it MUST NOT retain the slice beyond the
+// call, and MUST NOT call into this package (the borrow guard reports it).
+// The empty Secret calls fn with a zero-length slice.
+//
+// Returns *NilSecretError for a nil fn and for a nil, destroyed or zero-value
+// Secret, Open's *OpenError when the plaintext cannot be recovered, and fn's
+// own error unchanged. ctx is Open's.
+func (s *Secret) WithBytes(ctx context.Context, fn func([]byte) error) error {
+	if fn == nil {
+		return &NilSecretError{}
+	}
+	buf, err := s.Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer buf.Destroy()
+	return buf.WithBytes(fn)
+}
+
+// IsAlive reports whether s still holds its value: true from construction
+// until Destroy, including for the empty Secret NewEmptySecret returns, and
+// false for a nil, destroyed or zero-value Secret.
+//
+// It says nothing about whether Open will succeed: a live Secret becomes
+// unopenable, but not destroyed, once a shutdown enclave.WipeAll has wiped
+// the process Sealer's keys.
+func (s *Secret) IsAlive() bool {
+	if s == nil {
+		return false
+	}
+	return s.enclave.Load() != nil || s.empty.Load()
 }
 
 // copyFrozenToWritable copies frozen's plaintext into a freshly allocated,
@@ -218,6 +289,7 @@ func (s *Secret) Destroy() {
 		return
 	}
 	checkNoBorrow("Secret.Destroy")
+	s.empty.Store(false)
 	sealed := s.enclave.Swap(nil)
 	if sealed == nil {
 		return

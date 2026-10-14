@@ -9490,7 +9490,8 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	TenantBarrierService_Init_FullMethodName               = "/qrdb.v1.TenantBarrierService/Init"
+	TenantBarrierService_InitBegin_FullMethodName          = "/qrdb.v1.TenantBarrierService/InitBegin"
+	TenantBarrierService_InitComplete_FullMethodName       = "/qrdb.v1.TenantBarrierService/InitComplete"
 	TenantBarrierService_Unseal_FullMethodName             = "/qrdb.v1.TenantBarrierService/Unseal"
 	TenantBarrierService_Seal_FullMethodName               = "/qrdb.v1.TenantBarrierService/Seal"
 	TenantBarrierService_Status_FullMethodName             = "/qrdb.v1.TenantBarrierService/Status"
@@ -9517,17 +9518,25 @@ const (
 // interceptors; the handlers delegate to pkg/tenant.TenantServicer.
 // ===========================================================================
 type TenantBarrierServiceClient interface {
-	// Init initializes a tenant barrier with the selected strategy. For the
-	// Shamir strategy the share_count field indicates how many officer shares
-	// were sealed; shares are never returned in the response.
+	// InitBegin is the first half of tenant barrier initialization: it issues
+	// a single-use nonce bound to this connection's TLS exporter, which
+	// InitComplete must sign with the first admin's key.
 	//
 	// identity:gated at the interceptor because a self-managed tenant's IAM
 	// is encrypted BEHIND the barrier being initialized: no role able to
 	// satisfy tenant_barrier:init can exist before the first init. The
 	// handler runs the full RBAC check with the shared trust-on-first-init
-	// fallback (middleware.AuthorizeTenantBarrierInit), identical to every
-	// other transport.
-	Init(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
+	// fallback (middleware.BeginTenantBarrierInit), identical to every other
+	// transport.
+	InitBegin(ctx context.Context, in *TenantBarrierInitBeginRequest, opts ...grpc.CallOption) (*TenantBarrierInitBeginResponse, error)
+	// InitComplete initializes a tenant barrier with the selected strategy,
+	// given proof of possession of the first admin's key over this
+	// connection (nonce, public_key, signature). For the Shamir strategy the
+	// share_count field indicates how many officer shares were sealed; shares
+	// are never returned in the response. identity:gated for InitBegin's
+	// reason; the handler authorizes through
+	// middleware.AuthorizeTenantBarrierInitProof.
+	InitComplete(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
 	//
 	// identity:gated at the interceptor: unseal must remain reachable while
@@ -9573,10 +9582,20 @@ func NewTenantBarrierServiceClient(cc grpc.ClientConnInterface) TenantBarrierSer
 	return &tenantBarrierServiceClient{cc}
 }
 
-func (c *tenantBarrierServiceClient) Init(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error) {
+func (c *tenantBarrierServiceClient) InitBegin(ctx context.Context, in *TenantBarrierInitBeginRequest, opts ...grpc.CallOption) (*TenantBarrierInitBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierInitBeginResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_InitBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) InitComplete(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantBarrierInitResponse)
-	err := c.cc.Invoke(ctx, TenantBarrierService_Init_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, TenantBarrierService_InitComplete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -9706,17 +9725,25 @@ func (c *tenantBarrierServiceClient) ShareClaimComplete(ctx context.Context, in 
 // interceptors; the handlers delegate to pkg/tenant.TenantServicer.
 // ===========================================================================
 type TenantBarrierServiceServer interface {
-	// Init initializes a tenant barrier with the selected strategy. For the
-	// Shamir strategy the share_count field indicates how many officer shares
-	// were sealed; shares are never returned in the response.
+	// InitBegin is the first half of tenant barrier initialization: it issues
+	// a single-use nonce bound to this connection's TLS exporter, which
+	// InitComplete must sign with the first admin's key.
 	//
 	// identity:gated at the interceptor because a self-managed tenant's IAM
 	// is encrypted BEHIND the barrier being initialized: no role able to
 	// satisfy tenant_barrier:init can exist before the first init. The
 	// handler runs the full RBAC check with the shared trust-on-first-init
-	// fallback (middleware.AuthorizeTenantBarrierInit), identical to every
-	// other transport.
-	Init(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
+	// fallback (middleware.BeginTenantBarrierInit), identical to every other
+	// transport.
+	InitBegin(context.Context, *TenantBarrierInitBeginRequest) (*TenantBarrierInitBeginResponse, error)
+	// InitComplete initializes a tenant barrier with the selected strategy,
+	// given proof of possession of the first admin's key over this
+	// connection (nonce, public_key, signature). For the Shamir strategy the
+	// share_count field indicates how many officer shares were sealed; shares
+	// are never returned in the response. identity:gated for InitBegin's
+	// reason; the handler authorizes through
+	// middleware.AuthorizeTenantBarrierInitProof.
+	InitComplete(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
 	//
 	// identity:gated at the interceptor: unseal must remain reachable while
@@ -9762,8 +9789,11 @@ type TenantBarrierServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTenantBarrierServiceServer struct{}
 
-func (UnimplementedTenantBarrierServiceServer) Init(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Init not implemented")
+func (UnimplementedTenantBarrierServiceServer) InitBegin(context.Context, *TenantBarrierInitBeginRequest) (*TenantBarrierInitBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InitBegin not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) InitComplete(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InitComplete not implemented")
 }
 func (UnimplementedTenantBarrierServiceServer) Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Unseal not implemented")
@@ -9819,20 +9849,38 @@ func RegisterTenantBarrierServiceServer(s grpc.ServiceRegistrar, srv TenantBarri
 	s.RegisterService(&TenantBarrierService_ServiceDesc, srv)
 }
 
-func _TenantBarrierService_Init_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _TenantBarrierService_InitBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierInitBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).InitBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_InitBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).InitBegin(ctx, req.(*TenantBarrierInitBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_InitComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TenantBarrierInitRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(TenantBarrierServiceServer).Init(ctx, in)
+		return srv.(TenantBarrierServiceServer).InitComplete(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: TenantBarrierService_Init_FullMethodName,
+		FullMethod: TenantBarrierService_InitComplete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TenantBarrierServiceServer).Init(ctx, req.(*TenantBarrierInitRequest))
+		return srv.(TenantBarrierServiceServer).InitComplete(ctx, req.(*TenantBarrierInitRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10043,8 +10091,12 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*TenantBarrierServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Init",
-			Handler:    _TenantBarrierService_Init_Handler,
+			MethodName: "InitBegin",
+			Handler:    _TenantBarrierService_InitBegin_Handler,
+		},
+		{
+			MethodName: "InitComplete",
+			Handler:    _TenantBarrierService_InitComplete_Handler,
 		},
 		{
 			MethodName: "Unseal",

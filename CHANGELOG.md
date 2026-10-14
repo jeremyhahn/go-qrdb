@@ -11,6 +11,47 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Tenant barrier init proves possession of the first admin's key.** Init is
+  now two calls on one TLS 1.3 connection: `init/begin` returns a single-use
+  nonce bound to the connection's exporter (five minutes), and `init/complete`
+  carries a signature over the tenant, nonce and exporter by the key whose SPKI
+  the pending first admin records (`pkg/initproof`). A replayed, expired,
+  other-connection or wrong-key proof is refused with `FirstAdminProofError`
+  (401 / `UNAUTHENTICATED`). It runs on REST, gRPC, the Unix socket, QUIC and
+  MCP; the embedded transport is in process and asks none. The SDK takes a
+  `crypto.Signer` (`TenantBarrierInitRequest.Signer`), and `qrdb tenant
+  barrier-init` signs with `--key-file`. **Breaking:** the REST route
+  `POST /v1/tenants/{id}/barrier/init`, the gRPC `TenantBarrierService.Init`
+  RPC, the QUIC `tenant.BarrierInit` method and the `qrdb_tenant_barrier_init`
+  MCP tool are replaced by `init/begin` + `init/complete`; the TypeScript
+  `tenants.barrierInit` throws `DesktopOnlyError` where the node asks a proof a
+  browser cannot compute.
+
+### Changed
+
+- **Breaking: tenant barrier init resolves its strategy through
+  `seal.BarrierKeyProvider`.** Each node asks the provider for the strategy
+  sealing its own key for a tenant barrier, naming the barrier, its node
+  identity, the strategy ID, an optional key reference and the epoch. Inject a
+  provider with `server.WithBarrierKeyProvider`, `lifecycle.Infra.BarrierKeyProvider`
+  or `sdk.WithBarrierKeyProvider`; it wins over the `StrategyRegistry`, and the
+  default `seal.NewBarrierKeyProvider` maps the registry onto the seam.
+  `tenant.WithStrategyRegistry` is deleted (use `tenant.WithBarrierKeyProvider`),
+  and `TenantBarrierInitWithStrategy` takes variadic
+  `tenant.TenantBarrierInitOption`s. See `docs/barrier-seal/architecture.md`,
+  "The barrier key seam".
+
+### Fixed
+
+- **The `objstore` backend's commit journal is out of the tree a listing
+  walks.** The local provider lists by walking its directory, and the walk
+  fails when an entry it read vanishes before it is stat'ed. The journal is
+  created and removed by every batch, so a time-series query racing a write
+  failed with `lstat ...qrdb-objstore-journal: no such file or directory`. The
+  local provider now keeps its journal in a sibling `<path>.journal` tree.
+
 ## [0.48.0-alpha] - 2026-10-14
 
 ### Added

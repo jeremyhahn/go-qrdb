@@ -307,25 +307,6 @@ func TestGenerateNodeCert_BothAuthUsages(t *testing.T) {
 // tls.go: generateClientCert (lines 220-262) - additional coverage
 // ---------------------------------------------------------------------------
 
-func TestGenerateClientCert_OnlyClientAuth(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(24 * time.Hour)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateClientCert(caCert, caKey, "svc", "tenant-x", time.Hour)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-	cert, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	assert.Contains(t, cert.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
-	for _, ku := range cert.ExtKeyUsage {
-		assert.NotEqual(t, x509.ExtKeyUsageServerAuth, ku,
-			"client cert must not carry ServerAuth")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // bootstrap.go: resolveTLS path 2 with ca-key.pem present
 // ---------------------------------------------------------------------------

@@ -1080,6 +1080,55 @@ configured. Without a pool, tenant creation fails with the existing
 > owner decision is still needed on whether non-strict dedicated tenants keep
 > a shared key permanently (the table's last row) or also get a home store.
 
+> **Decided (owner, 2026-10-08):**
+> [../decisions/tenant-barrier-per-node-init.md](../decisions/tenant-barrier-per-node-init.md).
+> The table below is unchanged until the work packages that replace it land.
+>
+> - Init is node-local where no client credential is needed, and fanned out by
+>   the client where one is (Option A).
+> - A passphrase joiner gets the tenant-wide verifier over HPKE from a serving
+>   peer.
+> - A KMS `KeyRef` names one tenant-controlled key by default; a per-node
+>   template is allowed. `KeyRef` is opaque to qrdb: qrdb ships no hardware or
+>   cloud key code, only the seam an injected go-xkms strategy reads it
+>   through.
+> - **One mechanism for every barrier.** Every barrier's strategy is resolved
+>   per barrier and per node through one `seal.BarrierKeyProvider` seam. That
+>   covers the node barrier (folded in), isolated tenants and databases.
+>   **Shipped for tenant barrier init (PN-1)** — see
+>   [barrier-seal](../barrier-seal/architecture.md#the-barrier-key-seam--barrierkeyprovider).
+>   The node and database barriers follow.
+> - **Auto-unseal is the tenant's choice.** A platform-sealed key is not
+>   refused under any policy. The statement's custody records the tenant's
+>   opt-in, and the tenant's barrier status shows it, so the choice is
+>   auditable.
+> - **Shared tenants have no keys of their own.** The shared Raft group is one
+>   more tenant with its own barrier, which the platform manages. **A shared
+>   tenant's data is readable by the platform.** A tenant that needs
+>   confidentiality from the platform chooses an isolated type.
+> - **The serving set is the tenant's replica count,** a tenant quota the
+>   system owner or a system admin sets through the existing quota and
+>   entitlement records. A tenant admin cannot change its own.
+> - **Opaque database-id placement (MT-17) is not a prerequisite.**
+>
+> **Shipped (PN-2):** the signed, keyless init statement
+> (`pkg/barrierinit.InitStatement`), its verification, its guarded claim and
+> compare-and-set under `__sys:cluster/barrier/init/<barrier>`, the watcher
+> that delivers each verified epoch to a serving node, and the
+> `per-node-barrier-keys` feature gate. See
+> [../barrier-seal/architecture.md](../barrier-seal/architecture.md#per-node-barrier-keys)
+> and [Feature gate and upgrade](#feature-gate-and-upgrade). Every node,
+> standalone or clustered, composes the watcher, which initialises the node's
+> own key for a tenant it serves from a claimed statement, and onboarding pins the
+> tenant's first admin as the statement's anchor. Every transport's tenant
+> barrier init carries the statement the owner's client signs and hands it to
+> the tenant service, which claims it through the init book. The feature is
+> advertised by every binary and gates both an isolated tenant's admission and
+> the claim. Key delivery (`DistributeTenantKey`) still runs beside the
+> watcher; each node keeps whichever key reaches it first and never replaces
+> one.
+> See [../barrier-seal/architecture.md](../barrier-seal/architecture.md#how-a-node-takes-part-tenant-barriers).
+
 **A replica key is created on the node that uses it, the first time that node
 holds a valid credential for the tenant, and it never leaves that node.**
 
@@ -1219,6 +1268,30 @@ A self-managed tenant's identity lives inside the store that is sealed. The
 credential that opens the store therefore cannot be authorized by anything
 inside it. The design breaks the cycle in three places.
 
+> **Decided (owner, 2026-10-08):**
+> [../decisions/tenant-barrier-per-node-init.md](../decisions/tenant-barrier-per-node-init.md).
+> The text below is unchanged until the work packages that replace it land.
+> The joiner's verifier over HPKE from a serving peer is decided, and a
+> platform-sealed key stays the tenant's choice under either policy. The
+> design differs from the text below in five places:
+>
+> - **The init parameters are signed.** The client signs the init statement
+>   with the same `crypto.Signer` as the init proof, so every node verifies
+>   the parameters, not only the connection. The statement, its verification,
+>   its guarded claim and its transport on every init are shipped; the
+>   fan-out of a passphrase or Shamir init to every serving node is not yet.
+> - **Shamir has no pending key.** A Shamir node holds no pending key: it
+>   generates its key when a share quorum, checked against the statement's
+>   unseal-key check value, first reaches it.
+> - **The first admin waits for quorum.** It is written by the home group's
+>   leader, with guarded writes, once a quorum exists, and not inside the
+>   first node's init response.
+> - **A passphrase node computes one tenant-wide verifier** from the
+>   statement's salt, so the serving nodes need no verifier delivery between
+>   them. Only a later joiner needs one.
+> - **A node that missed a credential change** refuses the old credential, and
+>   catches up with the old and new credentials together.
+
 **1. Creation: the tenant's first admin is fixed by the requester's own CSR
 (S7). Already shipped** (`admin_username` plus `admin_csr_pem` or
 `admin_cert_pem`, 2026-10-03) **for every tenant, not only a strict one** —
@@ -1257,6 +1330,15 @@ replica.**
   - This proof replaces trust-on-first-init. A certificate naming the tenant
     no longer opens the window, so a certificate minted by anyone else is
     useless.
+  - **Shipped (2026-10-14), on REST, gRPC, the Unix socket, QUIC and MCP.**
+    The nonce is single-use, lives five minutes, and verifies only against
+    the exporter of the TLS 1.3 connection that asked for it; the SDK runs
+    both calls on one connection and signs with a caller-supplied
+    `crypto.Signer`, so a device-held key never leaves its device. Today the
+    connection is still authenticated by the first admin's certificate issued
+    at create, and the proof is required on top of it; the embedded
+    transport, which is in process and has no connection, asks no proof.
+    Dropping the certificate and fanning out (below) ship with phase 7.
 - **The client sends init to every node in the serving set.** No node relays
   it to another; the SDK and CLI do this fan-out.
   - **Passphrase:** each node generates its own random replica key and seals
@@ -1312,6 +1394,16 @@ unsealed.** Until a quorum of the serving set is unsealed, the home group has no
 quorum. Every request for the tenant is then refused with
 `TenantHomeUnavailableError` (503, retryable), except the identity-gated
 barrier endpoints.
+
+**A system-managed tenant's key reaches every serving node at once.** The node
+that creates the home group delivers the tenant key to all the other serving
+nodes concurrently (`clusterkeys.Sender.DistributeTenantKey`), and reports
+every failed delivery, not only the first. A node answers a delivery only after
+it has imported the key and unsealed. Its unseal audit event belongs in the
+tenant's own trail, which lives in the home group, so recording that event can
+wait for the home group to reach quorum. If the deliveries went one node at a
+time, the first node's answer would wait on deliveries still queued behind it,
+and a home group needing more than one follower for quorum could never form.
 
 ### The isolation policy
 
@@ -1445,6 +1537,30 @@ design depends on that record, and constrains it:
 - **No compatibility layer.** Pre-release tenants are re-created, not
   migrated. `__tiam:`, the identity index, tenant-key delivery and the shared
   resolver branch are deleted outright.
+
+**`per-node-barrier-keys` (`featuregate.PerNodeBarrierKeys`)** is a second
+activation-based feature, built like `cluster-seal`. It adds no Raft command:
+the init statement is written through the existing guarded write.
+
+- **Why it exists.** An isolated tenant's replicas each initialise their own
+  key from the replicated init statement. A node whose binary does not know
+  the statement would wait for a key delivery that never comes, so an
+  isolated tenant is not admitted until every member advertises the feature.
+- **Not yet active:** creating a `barrier`, `volume` or `raft` tenant, or
+  changing an existing tenant to one of those types, is refused with
+  `*featuregate.NotActiveError{Feature: per-node-barrier-keys}` (503,
+  retryable after rollout) and writes nothing. A `prefix` tenant is unaffected.
+  Recording an init statement is refused the same way.
+- **Active:** on a clustered node, once every member advertises the feature;
+  a single-member cluster activates at its first check. A standalone node
+  gates nothing and is active from its first start.
+- **Guarded writes.** The statement's claim and compare-and-set are guarded
+  writes, so a cluster that has not activated `guarded-writes` refuses them
+  with `*barrierinit.GuardedWritesUnavailableError` (503) rather than write
+  them unguarded. Onboarding's first-admin anchor pin is a guarded write too.
+  `guarded-writes` activates by the same rule, and every binary that knows
+  `per-node-barrier-keys` knows it, so the refusal is seen only transiently
+  during a rolling upgrade; nothing activates it by hand.
 
 ### Alternatives rejected
 

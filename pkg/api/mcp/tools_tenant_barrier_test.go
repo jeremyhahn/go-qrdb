@@ -18,6 +18,7 @@ package mcp
 
 import (
 	"context"
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,10 +27,13 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -44,7 +48,7 @@ func TestHandleTenantBarrierInit_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
 	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 
-	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{})
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -67,7 +71,7 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 	}
 	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 
-	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{
 		"tenant_id":  "acme",
 		"passphrase": "supplied-secret",
 		"threshold":  float64(3),
@@ -104,7 +108,7 @@ func TestHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	}
 	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 
-	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{
 		"tenant_id":  "missing",
 		"passphrase": "supplied-secret",
 	})
@@ -116,8 +120,8 @@ func TestHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	if !errors.As(err, &te) {
 		t.Fatalf("expected *ToolError, got %T", err)
 	}
-	if te.Tool != "qrdb_tenant_barrier_init" {
-		t.Errorf("expected tool 'qrdb_tenant_barrier_init', got %q", te.Tool)
+	if te.Tool != "qrdb_tenant_barrier_init_complete" {
+		t.Errorf("expected tool 'qrdb_tenant_barrier_init_complete', got %q", te.Tool)
 	}
 }
 
@@ -136,7 +140,7 @@ func (denyEverything) Authorize(_ context.Context, _ *auth.Identity, _, _ string
 // the MCP half of go-qrdb#560 review item 4: a custodian/SO identity for
 // tenant acme, RBAC denying, the barrier never initialized -- exactly the
 // state that admits an ORDINARY tenant identity through trust-on-first-init
-// -- must still be refused the qrdb_tenant_barrier_init tool.
+// -- must still be refused the qrdb_tenant_barrier_init_complete tool.
 func TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *testing.T) {
 	svc := newMockTenantService()
 	svc.barrierStatusFn = func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
@@ -148,8 +152,8 @@ func TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *t
 	}
 
 	mw := authmw.New(denyEverything{})
-	authorize := func(ctx context.Context, tenantID string) error {
-		return mw.AuthorizeTenantBarrierInit(ctx, tenantID, svc)
+	authorize := func(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
+		return mw.AuthorizeTenantBarrierInitProof(ctx, tenantID, svc, proof)
 	}
 	handler := handleTenantBarrierInit(svc, authorize)
 
@@ -162,7 +166,7 @@ func TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *t
 			}
 			ctx := auth.WithIdentity(context.Background(), id)
 
-			req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
+			req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{
 				"tenant_id":  "acme",
 				"passphrase": "x",
 			})
@@ -174,6 +178,166 @@ func TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *t
 				t.Fatal("expected an MCP error result: a share-holder certificate must never initialize a tenant barrier")
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleTenantBarrierInitBegin and the init proof
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierInitBegin_EmptyID(t *testing.T) {
+	handler := handleTenantBarrierInitBegin(allowAllTenantInitBegin)
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_tenant_barrier_init_begin", map[string]any{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing tenant_id")
+	}
+}
+
+// TestHandleTenantBarrierInitBegin_NoProofAsked proves an unauthenticated
+// node's begin answers an empty nonce and no expiry.
+func TestHandleTenantBarrierInitBegin_NoProofAsked(t *testing.T) {
+	handler := handleTenantBarrierInitBegin(allowAllTenantInitBegin)
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_tenant_barrier_init_begin", map[string]any{"tenant_id": "acme"}))
+	if err != nil || result.IsError {
+		t.Fatalf("begin: err=%v result=%+v", err, result)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(resultText(t, result)), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["nonce"] != "" {
+		t.Errorf("nonce = %v; want empty", payload["nonce"])
+	}
+	if _, ok := payload["expires"]; ok {
+		t.Errorf("expires = %v; want none", payload["expires"])
+	}
+}
+
+// TestHandleTenantBarrierInitBegin_RefusalIsCoded proves begin's refusal
+// reaches the client classified: a connection without an exporter is
+// UNAUTHENTICATED.
+func TestHandleTenantBarrierInitBegin_RefusalIsCoded(t *testing.T) {
+	refuse := func(_ context.Context, tenantID string) (*initproof.Challenge, error) {
+		return nil, &tenant.FirstAdminProofError{TenantID: tenantID, Reason: initproof.ReasonNoExporter}
+	}
+	result, err := handleTenantBarrierInitBegin(refuse)(context.Background(),
+		buildCallToolRequest(t, "qrdb_tenant_barrier_init_begin", map[string]any{"tenant_id": "acme"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code := toolErrorCode(t, result); code != wire.CodeUnauthenticated {
+		t.Fatalf("code = %v; want UNAUTHENTICATED", code)
+	}
+}
+
+// TestHandleTenantBarrierInit_ProofArgumentsReachTheGate proves complete
+// decodes the base64 proof and hands it to the gate unchanged.
+func TestHandleTenantBarrierInit_ProofArgumentsReachTheGate(t *testing.T) {
+	var got *authmw.TenantBarrierInitProof
+	capture := func(_ context.Context, _ string, proof *authmw.TenantBarrierInitProof) error {
+		got = proof
+		return nil
+	}
+	handler := handleTenantBarrierInit(newMockTenantService(), capture)
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{
+		"tenant_id":  "acme",
+		"nonce":      base64.StdEncoding.EncodeToString([]byte("n")),
+		"public_key": base64.StdEncoding.EncodeToString([]byte("k")),
+		"signature":  base64.StdEncoding.EncodeToString([]byte("s")),
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("complete: err=%v result=%+v", err, result)
+	}
+	if got == nil || string(got.Nonce) != "n" || string(got.PublicKey) != "k" || string(got.Signature) != "s" {
+		t.Fatalf("proof at the gate = %+v", got)
+	}
+}
+
+// TestHandleTenantBarrierInit_MalformedProofArgumentRefused proves a proof
+// argument that is not base64 is refused before the gate runs.
+func TestHandleTenantBarrierInit_MalformedProofArgumentRefused(t *testing.T) {
+	gate := func(context.Context, string, *authmw.TenantBarrierInitProof) error {
+		t.Fatal("the gate must not run on a malformed proof argument")
+		return nil
+	}
+	result, err := handleTenantBarrierInit(newMockTenantService(), gate)(context.Background(),
+		buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{"tenant_id": "acme", "signature": "not base64!"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(resultText(t, result), "signature") {
+		t.Fatalf("result = %+v; want a refusal naming the signature argument", result)
+	}
+}
+
+// allowEverything is the RBAC grant: every permission, every tenant.
+type allowEverything struct{}
+
+func (allowEverything) Authorize(context.Context, *auth.Identity, string, string) error { return nil }
+
+// TestHandleTenantBarrierInit_ProofOverTheConnection runs begin and complete
+// through the production middleware on a real TLS 1.3 connection: the proof
+// by the connection certificate's key is accepted once, and a replay of it is
+// refused UNAUTHENTICATED without reaching the tenant service.
+func TestHandleTenantBarrierInit_ProofOverTheConnection(t *testing.T) {
+	svc := newMockTenantService()
+	inits := 0
+	svc.barrierInitFn = func(context.Context, string, []byte, int, int) error {
+		inits++
+		return nil
+	}
+	mw := authmw.New(allowEverything{})
+	begin := handleTenantBarrierInitBegin(func(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
+		return mw.BeginTenantBarrierInit(ctx, tenantID, svc)
+	})
+	complete := handleTenantBarrierInit(svc, func(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
+		return mw.AuthorizeTenantBarrierInitProof(ctx, tenantID, svc, proof)
+	})
+
+	cert := initprooftest.Certificate(t, "acme-admin")
+	conn := initprooftest.Dial(t, cert)
+	ctx := auth.WithIdentity(auth.WithTLSState(context.Background(), &conn.Server),
+		&auth.Identity{Subject: "acme-admin", TenantID: "acme", Roles: []string{"admin"}})
+
+	result, err := begin(ctx, buildCallToolRequest(t, "qrdb_tenant_barrier_init_begin", map[string]any{"tenant_id": "acme"}))
+	if err != nil || result.IsError {
+		t.Fatalf("begin: err=%v result=%+v", err, result)
+	}
+	var challenge struct {
+		Nonce   []byte `json:"nonce"`
+		Expires int64  `json:"expires"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, result)), &challenge); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(challenge.Nonce) == 0 || challenge.Expires == 0 {
+		t.Fatalf("challenge = %+v; want a nonce and its expiry", challenge)
+	}
+	proof := conn.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", challenge.Nonce)
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{
+		"tenant_id":  "acme",
+		"passphrase": "pw",
+		"nonce":      base64.StdEncoding.EncodeToString(proof.Nonce),
+		"public_key": base64.StdEncoding.EncodeToString(proof.PublicKey),
+		"signature":  base64.StdEncoding.EncodeToString(proof.Signature),
+	})
+	result, err = complete(ctx, req)
+	if err != nil || result.IsError {
+		t.Fatalf("complete: err=%v result=%+v", err, result)
+	}
+
+	result, err = complete(ctx, req)
+	if err != nil {
+		t.Fatalf("replay: unexpected error: %v", err)
+	}
+	if code := toolErrorCode(t, result); code != wire.CodeUnauthenticated {
+		t.Fatalf("replay code = %v; want UNAUTHENTICATED", code)
+	}
+	if inits != 1 {
+		t.Fatalf("tenant service reached %d times; want once", inits)
 	}
 }
 
@@ -524,7 +688,7 @@ func (e *extMockMCPTenantService) UpdateEntitlements(ctx context.Context, id str
 func (e *extMockMCPTenantService) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
-func (e *extMockMCPTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID, roster *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (e *extMockMCPTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID, roster *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, id, passphrase, threshold, total, sid, roster)
 }
 func (e *extMockMCPTenantService) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
@@ -592,7 +756,10 @@ func TestTenantBarrierHandlers_ScopeDenied(t *testing.T) {
 		handler mcpserver.ToolHandlerFunc
 		args    map[string]any
 	}{
-		{"init", handleTenantBarrierInit(svc, func(ctx context.Context, tenantID string) error {
+		{"init_begin", handleTenantBarrierInitBegin(func(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
+			return nil, deny(ctx, tenantID, permission.TenantBarrierInit)
+		}), map[string]any{"tenant_id": "victim"}},
+		{"init_complete", handleTenantBarrierInit(svc, func(ctx context.Context, tenantID string, _ *authmw.TenantBarrierInitProof) error {
 			return deny(ctx, tenantID, permission.TenantBarrierInit)
 		}), map[string]any{"tenant_id": "victim", "passphrase": "x"}},
 		{"unseal", handleTenantBarrierUnseal(svc, deny), map[string]any{"tenant_id": "victim"}},

@@ -542,31 +542,3 @@ func TestValidateVolumePools_ContainsDataDir(t *testing.T) {
 		t.Errorf("Field: got %q, want storage.volume_pools[parent].path", ve.Field)
 	}
 }
-
-// TestItoa_NegativeValue exercises the negative-number branch in the local
-// itoa helper by triggering an empty path at a path index that would only
-// arise from a negative index — which is impossible via the range loop. We
-// instead call validateVolumePools directly via the Validate path; negative
-// indices cannot occur in a range loop. To cover the negative branch we call
-// itoa directly since it is a package-level function.
-func TestItoa_Values(t *testing.T) {
-	tests := []struct {
-		n    int
-		want string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{9, "9"},
-		{10, "10"},
-		{99, "99"},
-		{100, "100"},
-		{-1, "-1"},
-		{-42, "-42"},
-	}
-	for _, tc := range tests {
-		got := itoa(tc.n)
-		if got != tc.want {
-			t.Errorf("itoa(%d): got %q, want %q", tc.n, got, tc.want)
-		}
-	}
-}

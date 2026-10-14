@@ -92,7 +92,7 @@ func (t *Transport) RedeemInvitation(ctx context.Context, req *transport.RedeemI
 		return nil, &transport.ClosedError{}
 	}
 
-	client, err := t.dialMCP(ctx, enrollAddress(t.config.Address))
+	client, err := t.dialMCP(ctx, enrollAddress(t.config.Address), nil)
 	if err != nil {
 		return nil, err
 	}

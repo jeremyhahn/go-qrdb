@@ -57,7 +57,7 @@ import "strings"
 //     "__sys:cluster_ca/..." or "__sys:cert_ca/..." key named through
 //     THAT surface cannot physically collide with the real record. The
 //     embedded SDK transport's services
-//     (sdk/go/transport/embedded/server.go) are NOT behind that registry,
+//     (sdk/go/standalone/server.go) are NOT behind that registry,
 //     though: they are constructed directly over the node's default shard
 //     with no namespace prefix at all, the same shape pkg/cakey's own
 //     direct access has, and a data directory that ever established
@@ -70,7 +70,7 @@ import "strings"
 //     embedded services (never around pkg/cakey's own n.KV/n.Transaction
 //     fields, which are not reached through this package's constructors
 //     at all) to close that path: see
-//     sdk/go/transport/embedded/server.go's construction of kvSvc,
+//     sdk/go/standalone/server.go's construction of kvSvc,
 //     mvccSvc, watchSvc and txSvc.
 //
 // Key B was not confined here until go-qrdb#591's security review: it

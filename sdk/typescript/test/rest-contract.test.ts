@@ -683,8 +683,9 @@ describe('Outbound transform — tenants.barrierInit sends tenant_id', () => {
 
         await client.tenants.barrierInit({ tenantId: 'abc', threshold: 2, shares: 3 });
 
-        expect(calls).toHaveLength(1);
-        const body = calls[0].body as Record<string, unknown>;
+        // init/begin, then init/complete.
+        expect(calls).toHaveLength(2);
+        const body = calls[1].body as Record<string, unknown>;
         expect(body['tenant_id']).toBe('abc');
         expect(body['tenantId']).toBeUndefined();
         expect(body['threshold']).toBe(2);

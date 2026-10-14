@@ -101,12 +101,17 @@ func (b *TenantBinding) Delete(id string) error {
 	return nil
 }
 
-// BarrierInit initializes the per-tenant cryptographic barrier.
+// BarrierInit initializes the per-tenant cryptographic barrier, proving
+// possession with the key of the active connection's client certificate.
 func (b *TenantBinding) BarrierInit(req *transport.TenantBarrierInitRequest) error {
 	b.logger.Debug("BarrierInit called", "tenantID", req.TenantID)
 	cl, err := b.conn.loadClient()
 	if err != nil {
 		b.logger.Error("BarrierInit failed", "error", err)
+		return err
+	}
+	if req.Signer, err = initProofSigner(b.conn.keyFile()); err != nil {
+		b.logger.Error("BarrierInit failed", "tenantID", req.TenantID, "error", err)
 		return err
 	}
 	if _, err := cl.Tenants().TenantBarrierInit(context.Background(), req); err != nil {

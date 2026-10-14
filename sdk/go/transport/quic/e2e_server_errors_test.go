@@ -798,9 +798,19 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("tenant.BarrierInit", func(t *testing.T) {
+	t.Run("tenant.BarrierInitBegin", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
-		serverErr(srv, "tenant.BarrierInit", "err")
+		serverErr(srv, "tenant.BarrierInitBegin", "err")
+		if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "t1"}); err == nil {
+			t.Fatal("expected err")
+		}
+	})
+	t.Run("tenant.BarrierInitComplete", func(t *testing.T) {
+		srv, tr := startE2EServer(t)
+		srv.SetResponder("tenant.BarrierInitBegin", func(_ []byte) (uint16, []byte) {
+			return wire.StatusOK, []byte(`{}`)
+		})
+		serverErr(srv, "tenant.BarrierInitComplete", "err")
 		if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "t1"}); err == nil {
 			t.Fatal("expected err")
 		}

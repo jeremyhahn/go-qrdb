@@ -29,6 +29,7 @@ package integration_test
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -72,6 +73,34 @@ type multiProtoNode struct {
 	mcpPort      int
 	quicPort     int
 	passphrase   string
+
+	// bin, startArgs and proc are retained only by a fixture whose node
+	// restarts (startTenantEntitlementNode); see restart.
+	bin       string
+	startArgs []string
+	proc      *exec.Cmd
+}
+
+// restart stops the node and relaunches it with the same start arguments,
+// unseals its system barrier with its passphrase and waits until every
+// transport serves again. Only a fixture that retained its process can
+// restart; any other fails the test.
+func (n *multiProtoNode) restart(t *testing.T, prefix string) {
+	t.Helper()
+	if n.proc == nil {
+		t.Fatal("restart: this node's fixture did not retain its process")
+	}
+	stopNodeProcess(t, n.proc)
+	n.proc = startNode(t, n.bin, n.startArgs, prefix)
+
+	waitForBarrierStatusReachable(t, n.ca, n.restPort, 90*time.Second)
+	unsealOnlyBarrierWithSecret(t, n.ca, n.restPort, []byte(n.passphrase))
+	waitForHealthy(t, n.dataDir, 60*time.Second)
+	waitForAdmin(t, n.ca.Pool, n.restPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, n.ca, []int{n.restPort}, 60*time.Second)
+	for _, proto := range multiProtocols {
+		waitForCLIProtoReady(t, n, proto, 60*time.Second)
+	}
 }
 
 // portFor returns the TCP/UDP port serving the given named protocol ("rest",

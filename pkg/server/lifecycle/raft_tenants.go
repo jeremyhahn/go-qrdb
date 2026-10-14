@@ -218,7 +218,9 @@ func (c *RaftTenantCluster) ServerOptions() []server.ServerOption {
 //   - RebalanceService's placement table, key deliverer and barrier lookup,
 //     for a dedicated tenant group's MOVE;
 //   - with dedicated raft groups, the replica host both services add and
-//     remove replicas through.
+//     remove replicas through, and the barrier init watcher: every tenant
+//     barrier a group placed here belongs to is initialized with this node's
+//     own key from its owner's claimed statement (startBarrierInitWatcher).
 //
 // A missing piece disables what needs it, with a warning, rather than
 // failing the boot: a single-node or passphrase-sealed deployment needs none
@@ -264,6 +266,10 @@ func ComposeRaftTenantCluster(c RaftTenantClusterConfig) *RaftTenantCluster {
 		}
 		if concrete, ok := c.Services.Rebalance.(*service.RebalanceService); ok {
 			concrete.SetRaftHost(replicas)
+		}
+		if err := startBarrierInitWatcher(c.Services, c.RaftAddr, logger); err != nil {
+			logger.Warn("barrier init: watcher not started; this node initializes no tenant barrier from its owner's statement",
+				slog.Any("error", err))
 		}
 	}
 	return out

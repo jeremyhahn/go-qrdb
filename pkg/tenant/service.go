@@ -301,23 +301,23 @@ type TenantServicer interface {
 	TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierInitWithStrategy initializes the per-tenant barrier
-	// using an explicitly selected seal strategy resolved from the
-	// injected StrategyRegistry. When strategyID is empty or equals
-	// seal.StrategyPassphrase the behaviour is identical to
-	// TenantBarrierInit. Hardware and cloud-KMS strategies (tpm2,
-	// pkcs11, aws-kms, gcp-kms, azure-kv, vault) are resolved at call
-	// time from the registry; if the strategy is not registered,
-	// InvalidStrategyError is returned. When no StrategyRegistry was
-	// injected, only the built-in software strategies (passphrase, none,
-	// shamir) are accepted and hardware/cloud strategy requests return
-	// InvalidStrategyError.
+	// using an explicitly selected seal strategy, resolved for this node
+	// through the injected seal.BarrierKeyProvider (WithBarrierKeyProvider).
+	// When strategyID is empty or equals seal.StrategyPassphrase the
+	// behaviour is identical to TenantBarrierInit. A strategy the provider
+	// does not know returns InvalidStrategyError; the default provider
+	// knows only the software strategies go-qrdb owns (passphrase, none),
+	// and Shamir takes its own path. Whether a passphrase is required
+	// follows the credential the provider declares.
 	// passphrase is a borrow the caller may wipe on return; see
 	// TenantBarrierInit.
 	// roster, when non-nil and non-empty, names the inline Shamir officer
 	// roster to validate and register atomically with initialization; it
 	// is refused with RosterRequiresShamirError on any strategy but
 	// Shamir, and ignored (nil-equivalent) there.
-	TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, strategyID seal.StrategyID, roster *TenantBarrierShamirRoster) (*TenantBarrierInitResult, error)
+	// opts pass the barrier owner's KeyRef (WithBarrierKeyRef) to the
+	// provider.
+	TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, strategyID seal.StrategyID, roster *TenantBarrierShamirRoster, opts ...TenantBarrierInitOption) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierUnseal unseals the per-tenant barrier using the
 	// caller-supplied key material. There is no derived credential
@@ -455,12 +455,16 @@ type TenantBarrierHolderCert struct {
 type TenantService struct {
 	store            seal.StorageBackend
 	registry         *seal.BarrierRegistry
-	strategyRegistry seal.StrategyRegistry
 	tenantCeremonies *ceremony.ScopedCeremonyRegistry
-	holderDeps       *ceremony.HolderDeps
-	defaultQuotas    *quota.Quotas
-	defaultEnts      *quota.Entitlements
-	roleSeeder       RoleSeeder
+	// keyProvider resolves the strategy that seals this node's key for a
+	// tenant barrier; see WithBarrierKeyProvider. Never nil.
+	keyProvider seal.BarrierKeyProvider
+	// nodeID names this node to keyProvider; see WithNodeID.
+	nodeID        string
+	holderDeps    *ceremony.HolderDeps
+	defaultQuotas *quota.Quotas
+	defaultEnts   *quota.Entitlements
+	roleSeeder    RoleSeeder
 
 	// volumeAllocator reserves and resolves an IsolationVolume / IsolationRaft
 	// tenant's named volume pool and tenant-relative path (pkg/volume's
@@ -485,6 +489,12 @@ type TenantService struct {
 	// isolationChangeGuard carries UpdateTenant's data probe; see
 	// isolation_change.go.
 	isolationChangeGuard
+	// perNodeBarrierKeysGate refuses an isolated tenant until every node
+	// initialises its own barrier key; see WithPerNodeBarrierKeysGate.
+	perNodeBarrierKeysGate
+	// barrierInitClaims claims a tenant barrier's signed init statement before
+	// this node generates its key; see WithBarrierInitBook.
+	barrierInitClaims
 	// runtimeCloser stops what this node runs for a tenant before
 	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
 	runtimeCloser atomic.Pointer[runtimeCloserBox]
@@ -537,12 +547,36 @@ func (s *TenantService) notifyBarrierReady(ctx context.Context, tenantID string)
 	}
 }
 
-// WithStrategyRegistry injects a StrategyRegistry so that
-// TenantBarrierInitWithStrategy can resolve hardware/cloud seal strategies
-// by name. When no registry is injected, only the built-in software-only
-// strategies (passphrase, none) are accepted for per-tenant barriers.
-func WithStrategyRegistry(reg seal.StrategyRegistry) TenantServiceOption {
-	return func(s *TenantService) { s.strategyRegistry = reg }
+// WithBarrierKeyProvider injects the seam through which this node obtains the
+// strategy that seals its own key for a tenant barrier
+// (seal.BarrierKeyProvider). Without it, the default provider over
+// seal.NewDefaultStrategyRegistry resolves only the software strategies
+// go-qrdb owns (passphrase, none).
+func WithBarrierKeyProvider(p seal.BarrierKeyProvider) TenantServiceOption {
+	return func(s *TenantService) { s.keyProvider = p }
+}
+
+// WithNodeID names this node to the BarrierKeyProvider: every node seals its
+// own key for a barrier, and a provider may resolve a per-node key from it.
+func WithNodeID(id string) TenantServiceOption {
+	return func(s *TenantService) { s.nodeID = id }
+}
+
+// TenantBarrierInitOption configures one TenantBarrierInitWithStrategy call.
+type TenantBarrierInitOption func(*tenantBarrierInitOptions)
+
+// tenantBarrierInitOptions is what the TenantBarrierInitOptions set.
+type tenantBarrierInitOptions struct {
+	keyRef string
+	// statement is the owner's encoded init statement; see WithInitStatement.
+	statement []byte
+}
+
+// WithBarrierKeyRef passes the barrier owner's opaque key reference to the
+// BarrierKeyProvider (seal.BarrierKeyRequest.KeyRef): the key, which the owner
+// controls, that wraps this node's barrier key. go-qrdb never interprets it.
+func WithBarrierKeyRef(ref string) TenantBarrierInitOption {
+	return func(o *tenantBarrierInitOptions) { o.keyRef = ref }
 }
 
 // WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA,
@@ -635,7 +669,7 @@ var (
 // NewTenantService creates a new TenantService. The store parameter is
 // used for persisting tenant metadata, and the registry manages the
 // per-tenant barrier lifecycle. Optional TenantServiceOptions may be
-// supplied; see WithStrategyRegistry.
+// supplied; see WithBarrierKeyProvider.
 func NewTenantService(
 	store seal.StorageBackend,
 	registry *seal.BarrierRegistry,
@@ -660,6 +694,9 @@ func NewTenantService(
 	}
 	for _, o := range opts {
 		o(svc)
+	}
+	if svc.keyProvider == nil {
+		svc.keyProvider = seal.NewBarrierKeyProvider(nil)
 	}
 	return svc, nil
 }
@@ -709,6 +746,9 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, err
 	}
 	if err := ValidateIsolationModeAgainstPolicy(isolationType, EffectiveIsolationPolicy(floor, cfg.isolationPolicy)); err != nil {
+		return nil, err
+	}
+	if err := s.admitIsolated(isolationType); err != nil {
 		return nil, err
 	}
 	// The system tenant is structurally a prefix tenant: its IAM data must
@@ -1021,6 +1061,11 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 	info, err := s.GetTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if patch.IsolationType != "" && patch.IsolationType != info.EffectiveIsolationType() {
+		if err := s.admitIsolated(patch.IsolationType); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
@@ -1848,12 +1893,12 @@ type TenantBarrierShamirRoster struct {
 
 // TenantBarrierInitWithStrategy initializes the per-tenant barrier using the
 // explicitly requested seal strategy. When strategyID is empty it defaults to
-// seal.StrategyPassphrase. The strategy is resolved from the injected
-// StrategyRegistry when one is present; otherwise a built-in default factory
-// is used for the software-only strategies (passphrase, none).
+// seal.StrategyPassphrase. The strategy that seals this node's key is resolved
+// through the BarrierKeyProvider (WithBarrierKeyProvider), which is told the
+// tenant's barrier, this node and the owner's KeyRef (WithBarrierKeyRef).
 //
-// The passphrase field is required for the passphrase strategy; for all other
-// strategies (none, hardware/cloud KMS) it is ignored. It is BORROWED for the
+// The passphrase is required when the provider declares
+// seal.CredentialPassphrase; for every other credential kind it is ignored. It is BORROWED for the
 // duration of the call — copied into protected memory and left as it was for
 // the caller to wipe. The tenant must exist.
 //
@@ -1866,6 +1911,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	threshold, shares int,
 	strategyID seal.StrategyID,
 	roster *TenantBarrierShamirRoster,
+	opts ...TenantBarrierInitOption,
 ) (*TenantBarrierInitResult, error) {
 	if strategyID == "" {
 		strategyID = seal.StrategyPassphrase
@@ -1884,11 +1930,18 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 		return nil, err
 	}
 
+	var initOpts tenantBarrierInitOptions
+	for _, o := range opts {
+		o(&initOpts)
+	}
+
 	// Shamir takes a dedicated path: it cannot be resolved through the
 	// zero-arg strategy registry because it must carry the requested
 	// threshold/total, and its initialization RETURNS the generated shares.
+	// It is admitted by the owner's init statement exactly like every other
+	// strategy.
 	if strategyID == seal.StrategyShamir {
-		return s.tenantBarrierInitShamir(ctx, tenantID, threshold, shares, roster)
+		return s.tenantBarrierInitShamir(ctx, tenantID, threshold, shares, roster, initOpts)
 	}
 
 	// A roster makes sense only for Shamir, which splits its unseal key to
@@ -1899,39 +1952,46 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 		return nil, &RosterRequiresShamirError{Strategy: string(strategyID)}
 	}
 
-	// The passphrase strategy requires caller-supplied key material.
-	// Hardware/cloud strategies wrap the root key via their own KEK;
-	// no passphrase is needed.
-	if seal.IsPassphraseStrategy(strategyID) && len(passphrase) == 0 {
-		return nil, ErrEmptyPassphrase
-	}
-
 	// Verify the tenant exists in metadata.
-	if _, err := s.GetTenant(ctx, tenantID); err != nil {
-		return nil, err
-	}
-
-	// Resolve the sealing strategy from the injected registry when one is
-	// present, or fall back to the built-in software factories for the
-	// strategies qrdb owns directly (passphrase, none). Hardware/cloud
-	// strategies must be registered via WithStrategyRegistry.
-	strategy, err := s.resolveStrategy(strategyID)
+	info, err := s.GetTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build credentials. For the passphrase strategy the Secret carries
+	resolved, err := s.resolveStrategy(ctx, tenantID, strategyID, initOpts.keyRef, 1)
+	if err != nil {
+		return nil, err
+	}
+	strategy := resolved.Strategy
+
+	// A passphrase credential requires caller-supplied key material; every
+	// other kind is released by the strategy's own wrapping key.
+	if resolved.Credential == seal.CredentialPassphrase && len(passphrase) == 0 {
+		return nil, ErrEmptyPassphrase
+	}
+
+	// Build credentials. For a passphrase credential the Secret carries
 	// the tenant admin's passphrase, copied into protected memory (the
 	// caller's slice is borrowed, not consumed) and destroyed once the
-	// initialization has used it. For all other strategies the Credentials
+	// initialization has used it. For every other kind the Credentials
 	// struct is empty (the strategy's KEK handles wrapping).
 	creds := seal.Credentials{}
-	if seal.IsPassphraseStrategy(strategyID) {
+	if resolved.Credential == seal.CredentialPassphrase {
 		var err error
 		if creds, err = seal.CredentialsFor(ctx, passphrase); err != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
 		}
 		defer seal.DestroyCredentials(creds)
+	}
+
+	// Claim the owner's signed init statement before any key exists, so a
+	// concurrent init with other parameters loses here and every other node
+	// serving the barrier initializes its own key from the record. The lock
+	// keeps this node's watcher from initializing the barrier the statement
+	// just announced underneath this call.
+	defer s.lockInit(tenantID)()
+	if err := s.claimInit(ctx, info, initOpts.statement, strategyID, initOpts.keyRef); err != nil {
+		return nil, err
 	}
 
 	// Register a sealed shell when the tenant barrier is not yet
@@ -1999,8 +2059,10 @@ func (s *TenantService) tenantBarrierInitShamir(
 	tenantID string,
 	threshold, total int,
 	roster *TenantBarrierShamirRoster,
+	initOpts tenantBarrierInitOptions,
 ) (*TenantBarrierInitResult, error) {
-	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2009,6 +2071,21 @@ func (s *TenantService) tenantBarrierInitShamir(
 	// or role in the roster itself (validateOfficerCredentials, below).
 	if roster != nil && roster.Policy != "" && !roster.Policy.Valid() {
 		return nil, &InvalidFactorPolicyError{Policy: string(roster.Policy)}
+	}
+
+	// The tenant's holder authority must be installed on the barrier before
+	// initialization: it is the distributor that seals each holder's share
+	// envelope and the verifier that authenticates every later submission.
+	if s.holderDeps == nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrCeremonyDistributorNotConfigured}
+	}
+
+	// Claim the owner's signed init statement before the registry, any
+	// officer or any share is touched, exactly as every other strategy does:
+	// a statement naming another strategy, or another owner's, refuses here.
+	defer s.lockInit(tenantID)()
+	if err := s.claimInit(ctx, info, initOpts.statement, seal.StrategyShamir, initOpts.keyRef); err != nil {
+		return nil, err
 	}
 
 	tb, lookupErr := s.registry.GetTenant(tenantID)
@@ -2049,12 +2126,6 @@ func (s *TenantService) tenantBarrierInitShamir(
 		}
 	}
 
-	// The tenant's holder authority must be installed on the barrier before
-	// initialization: it is the distributor that seals each holder's share
-	// envelope and the verifier that authenticates every later submission.
-	if s.holderDeps == nil {
-		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrCeremonyDistributorNotConfigured}
-	}
 	holders, tcErr := s.tenantCeremony(tenantID)
 	if tcErr != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "ceremony-service", Err: tcErr}
@@ -2084,7 +2155,6 @@ func (s *TenantService) tenantBarrierInitShamir(
 
 	var holderCerts []TenantBarrierHolderCert
 	var res *seal.ShamirInitParams
-	var err error
 	if len(officers) > 0 {
 		var results []*ceremony.RegisterOfficerResult
 		res, results, err = holders.InitializeShamirWithRoster(ctx, tb.Barrier(), officers, enroller, policy)
@@ -2132,39 +2202,32 @@ func (s *TenantService) notifyAfter(ctx context.Context, tenantID string) error 
 	return nil
 }
 
-// resolveStrategy returns the SealingStrategy for the given ID.
-//
-// Resolution order:
-//  1. When a StrategyRegistry is injected, always consult it first. This
-//     allows callers to override even the built-in software strategies.
-//  2. When no registry is present, fall back to the built-in factories for
-//     the software-only strategies qrdb owns (passphrase, none).
-//  3. All other strategy IDs require an injected registry; their absence
-//     returns InvalidStrategyError.
-func (s *TenantService) resolveStrategy(id seal.StrategyID) (seal.SealingStrategy, error) {
-	if s.strategyRegistry != nil {
-		factory, err := s.strategyRegistry.LookupFactory(id)
-		if err != nil {
-			// Surface a user-friendly error with the list of registered names.
-			available := s.strategyRegistry.ListAvailable()
-			names := make([]string, len(available))
-			for i, n := range available {
-				names[i] = string(n)
-			}
-			return nil, &InvalidStrategyError{Strategy: string(id), Available: names}
+// resolveStrategy asks the BarrierKeyProvider for the strategy that seals this
+// node's key for tenantID's barrier at epoch. A strategy the provider does not
+// know is InvalidStrategyError, naming what it does know; any other provider
+// failure is a BarrierError carrying the cause.
+func (s *TenantService) resolveStrategy(ctx context.Context, tenantID string, id seal.StrategyID, keyRef string, epoch uint64) (seal.BarrierKeyStrategy, error) {
+	resolved, err := s.keyProvider.BarrierStrategy(ctx, seal.BarrierKeyRequest{
+		Barrier:    string(clusterseal.TenantBarrier(tenantID)),
+		NodeID:     s.nodeID,
+		StrategyID: id,
+		KeyRef:     keyRef,
+		Epoch:      epoch,
+	})
+	var notRegistered *seal.StrategyNotRegisteredError
+	switch {
+	case errors.As(err, &notRegistered):
+		available := make([]string, len(notRegistered.Available))
+		for i, n := range notRegistered.Available {
+			available[i] = string(n)
 		}
-		return factory()
+		return seal.BarrierKeyStrategy{}, &InvalidStrategyError{Strategy: string(id), Available: available}
+	case err != nil:
+		return seal.BarrierKeyStrategy{}, &BarrierError{TenantID: tenantID, Op: "strategy", Err: err}
+	case resolved.Strategy == nil:
+		return seal.BarrierKeyStrategy{}, &BarrierError{TenantID: tenantID, Op: "strategy", Err: ErrNilBarrierStrategy}
 	}
-
-	// No registry injected: accept only the built-in software strategies.
-	switch id {
-	case seal.StrategyPassphrase:
-		return seal.NewDeferredSoftwareStrategy(), nil
-	case seal.StrategyNone:
-		return seal.NewNoneStrategy(), nil
-	default:
-		return nil, &InvalidStrategyError{Strategy: string(id)}
-	}
+	return resolved, nil
 }
 
 // TenantBarrierUnseal unseals the per-tenant barrier using the
@@ -2185,7 +2248,8 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	}
 
 	// Verify the tenant exists in metadata.
-	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
 		return err
 	}
 
@@ -2198,8 +2262,8 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	}
 	defer seal.DestroyCredentials(creds)
 
-	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
-		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
+	if err := s.unsealBarrier(ctx, info, creds); err != nil {
+		return err
 	}
 	if err := s.clearClusterSeal(ctx, tenantID); err != nil {
 		return err

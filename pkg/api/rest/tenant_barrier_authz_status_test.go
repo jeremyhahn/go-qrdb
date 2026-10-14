@@ -95,7 +95,8 @@ func TestTenantBarrier_AuditFailure_Is503NotForbidden(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path string
 	}{
-		{"init", http.MethodPost, "/v1/tenants/acme/barrier/init"},
+		{"init-begin", http.MethodPost, "/v1/tenants/acme/barrier/init/begin"},
+		{"init-complete", http.MethodPost, "/v1/tenants/acme/barrier/init/complete"},
 		{"unseal", http.MethodPost, "/v1/tenants/acme/barrier/unseal"},
 		{"quorum-submit", http.MethodPost, "/v1/tenants/acme/barrier/quorum/submit"},
 		{"rekey-start", http.MethodPost, "/v1/tenants/acme/barrier/rekey/start"},
@@ -195,7 +196,7 @@ func TestTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *testing
 
 	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
 		t.Run(profile, func(t *testing.T) {
-			rec := holderBarrierRequest(t, srv, http.MethodPost, "/v1/tenants/acme/barrier/init", profile)
+			rec := holderBarrierRequest(t, srv, http.MethodPost, "/v1/tenants/acme/barrier/init/complete", profile)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403: a share-holder certificate must never initialize a tenant barrier", rec.Code)
 			}

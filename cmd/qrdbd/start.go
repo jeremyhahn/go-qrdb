@@ -3430,18 +3430,6 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, compl
 	return host, nil
 }
 
-// resolveAdvertiseHost returns the host peers and clients use to reach this
-// node's APIs: the explicit advertise host when set, else the host portion of
-// the Raft address, which is by definition an address peers already dial. The
-// result may still be a wildcard (an unconfigured node with a wildcard Raft
-// address); callers check cluster.AdvertisableHost before publishing it.
-func resolveAdvertiseHost(f *startFlags) string {
-	if f.advertiseHost != "" {
-		return f.advertiseHost
-	}
-	return cluster.HostFromAddress(f.raftAddress)
-}
-
 // advertisedAPIEndpoints builds the client-facing API endpoint map this node
 // publishes into the cluster registry. Every value comes from this node's own
 // configuration: the advertise host (explicit, else the host portion of the
@@ -3630,15 +3618,6 @@ func newEmbeddedClient(
 		return nil, err
 	}
 	return sdkgo.NewClient(tr)
-}
-
-// waitForSignal blocks until SIGINT or SIGTERM is received.
-func waitForSignal() {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-	sig := <-sigCh
-	slog.Info("received signal, shutting down", "signal", sig.String())
 }
 
 // shutdownNode gracefully closes the node and logs the result.

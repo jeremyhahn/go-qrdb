@@ -219,6 +219,50 @@ security posture or breaks a dependency of everything else:
   standalone composition reached through `sdk/go/node`, not a third mode with
   its own semantics.
 
+## The lean standalone embedding
+
+The always-compiled core above is what the `qrdbd` daemon carries. It is not a
+floor under an application that embeds QRDB: no part of the stack may make a
+consumer compile a feature it does not use.
+
+The requirement is stated against one embedding shape: a standalone node on
+the `file` backend, composed by `sdk/go/node`, reached through the embedded
+transport, with an entity DAO on top. An application of that shape compiles
+none of:
+
+- the Raft host (go-quicraft);
+- PebbleDB;
+- the network API servers (`pkg/api/...`, `pkg/server/...`);
+- clustering (`pkg/cluster/...`);
+- vectors (`pkg/vector/...`) and time series (`pkg/timeseries/...`);
+- Prometheus metrics, MCP, the chi and gin routers, or the object store.
+
+`sdk/go/examples/leanstandalone` is that shape. The lean-standalone build gate
+checks the requirement against the example's import graph.
+
+**Status: not met yet.** The gate is a ratchet. It records every import edge
+by which the example still reaches a forbidden package and refuses any new
+edge. An edge that goes away must also leave the table, so the table only
+shrinks. The remaining edges are packaging rather than behaviour:
+
+- The SDK root re-exports every feature.
+- `sdk/go/node` builds both modes and every backend in one package.
+- `pkg/service` compiles every feature service.
+- `service.Host` is typed by the go-quicraft NodeHost.
+
+Reaching zero is a package split, one feature at a time. The splits so far:
+
+- **The flat composer is its own package.** `standalone.NewServer`
+  (`sdk/go/standalone`) builds a single-node server — storage backend,
+  engine, seal barrier, lease sweeper, audit trail — and hands it to the
+  embedded transport. It used to live in `sdk/go/transport/embedded`, so every
+  importer of the transport compiled PebbleDB and the node lifecycle with it.
+  The transport package now holds only the transport.
+- **The index package does not carry PebbleDB.** The index that works on a
+  raw `*pebble.DB`, which only the Raft state machine builds, is
+  `pkg/index/pebbleindex`. `pkg/index`, which the DAO imports, holds the index
+  types and the storage-backed index, and no longer imports PebbleDB.
+
 ## Component boundaries
 
 | Piece | Package | Owner |

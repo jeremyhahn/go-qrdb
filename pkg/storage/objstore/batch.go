@@ -39,7 +39,7 @@ func newBatch(e *Engine) storage.Batch {
 // can only be discovered by actually attempting the write, which is why
 // applyBufferedOps's own errors still leave the journal in place for
 // recovery to retry.
-func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
+func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -52,28 +52,56 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()
 
+	// A commit an earlier failure left journaled is completed first: the
+	// journal is one object, so publishing this one would overwrite it.
+	if err := e.resolvePendingJournal(); err != nil {
+		return err
+	}
+	// Holding writeMu exclusive from the publish to the failure keeps a Set
+	// or Delete from checking for a pending commit before the failure and
+	// writing after it, where the next write's replay would apply this
+	// batch over it.
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	// From here a failure may leave this commit's journal published, so the
+	// next write must resolve it before it is accepted.
+	defer func() {
+		if err != nil {
+			e.journalPending.Store(true)
+		}
+	}()
 	if err := e.writeJournal(encodeJournal(ops)); err != nil {
 		return err
 	}
 	if err := e.applyBufferedOps(ops); err != nil {
-		// The journal stays in place: recovery at next open completes the
-		// commit, preserving all-or-nothing semantics even when the
-		// in-process apply failed midway.
+		// The journal stays in place: the next write, or recovery at next
+		// open, completes the commit, preserving all-or-nothing semantics
+		// even when the in-process apply failed midway.
 		return err
 	}
 	return e.clearJournal()
 }
 
-// applyBufferedOps writes a batch's operations to the engine in order.
+// applyBufferedOps writes a batch's operations to the engine in order. It
+// runs under journalMu and writeMu held exclusive, from a commit or a
+// journal replay, so it writes through put and remove rather than Set and
+// Delete, which would wait on both to resolve the very journal being
+// applied. Recovery at open runs it before the engine is shared, unlocked.
 func (e *Engine) applyBufferedOps(ops []storage.BufferedOp) error {
 	for _, op := range ops {
+		if e.closed.Load() {
+			return &storage.ClosedError{}
+		}
+		if len(op.Key) == 0 {
+			return storage.ErrEmptyKey
+		}
 		if op.Deleted {
-			if err := e.Delete(op.Key); err != nil {
+			if err := e.remove(op.Key); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := e.Set(op.Key, op.Value); err != nil {
+		if err := e.put(op.Key, op.Value); err != nil {
 			return err
 		}
 	}

@@ -118,15 +118,6 @@ func withClock(now func() time.Time) TokenBucketOption {
 	}
 }
 
-// withSweepTicks drives the reaper from ticks instead of a wall-clock ticker.
-// Unexported for the same reason as withClock: it exists so this package's
-// tests can trigger a sweep explicitly rather than sleep until one happens.
-func withSweepTicks(ticks <-chan time.Time) TokenBucketOption {
-	return func(l *TokenBucketLimiter) {
-		l.ticks = ticks
-	}
-}
-
 // NewTokenBucketLimiter constructs a TokenBucketLimiter and starts its
 // background idle-bucket reaper. Callers must call Close when the limiter is
 // no longer needed to stop the reaper goroutine.

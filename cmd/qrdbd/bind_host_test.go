@@ -203,18 +203,3 @@ func TestNoiseHost_FlagBeatsFile(t *testing.T) {
 	f := resolveWithArgs(t, "--config", cfgPath, "--bootstrap-noise-host", "10.7.7.7")
 	assert.Equal(t, "10.7.7.7", resolveNoiseHost(f))
 }
-
-// TestResolveAdvertiseHost_PrefersExplicit and _FallsBackToRaftAddress cover
-// the host the node publishes as its own admin URL in the leader-forward peer
-// registry. It has to be an address a PEER can dial: the entry is keyed by the
-// Raft address peers identify us by, so a loopback literal there told the
-// cluster to reach this node at 127.0.0.1.
-func TestResolveAdvertiseHost_PrefersExplicit(t *testing.T) {
-	f := &startFlags{advertiseHost: "10.0.0.9", raftAddress: "10.0.0.2:63001"}
-	assert.Equal(t, "10.0.0.9", resolveAdvertiseHost(f))
-}
-
-func TestResolveAdvertiseHost_FallsBackToRaftAddressHost(t *testing.T) {
-	f := &startFlags{raftAddress: "10.0.0.2:63001"}
-	assert.Equal(t, "10.0.0.2", resolveAdvertiseHost(f))
-}

@@ -93,6 +93,12 @@ func (t *TenantBarrier) Unseal(ctx context.Context, creds Credentials) error {
 	return t.barrier.Unseal(ctx, creds)
 }
 
+// UnsealWithStrategy unseals the tenant barrier with exactly strategy; see
+// StorageBarrier.UnsealWithStrategy.
+func (t *TenantBarrier) UnsealWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
+	return t.barrier.UnsealWithStrategy(ctx, strategy, creds)
+}
+
 // InitializeShamir initializes this tenant barrier under Shamir custody and
 // seals the unseal key's M-of-N shares to the tenant's enrolled share holders
 // via the CeremonyDistributor. No share bytes are returned. The tenant

@@ -331,7 +331,7 @@ func WithCollectionService(svc service.CollectionServicer) Option {
 // decorators (service.NewHardConfinedKV and friends) HERE, after options
 // have been applied, rather than by each caller that builds one of these
 // services. New is the one seam every composer of an embedded transport
-// goes through -- NewServer below, sdk/go/node, the desktop's
+// goes through -- sdk/go/standalone.NewServer, sdk/go/node, the desktop's
 // cmd/qrdb/bindings_server.go, and cmd/qrdbd/start.go -- and these
 // services are UN-namespaced (see service.hardConfinedPrefixes' own doc
 // comment): no composite (tenant, db) prefix sits in front of them the

@@ -33,6 +33,17 @@ import (
 // Storage is the low-level storage engine interface.
 type Storage = storage.Storage
 
+// GuardedStorage is the optional interface a Storage backend implements to
+// offer an atomic CompareAndSwap on raw bytes. Memory, File, Pebble and
+// ObjStore storage all implement it; assert for it the way you would for a
+// syncer:
+//
+//	guarded, ok := store.(sdk.GuardedStorage)
+//
+// A losing swap reports false with a nil error, and an absent key is never
+// created.
+type GuardedStorage = storage.GuardedStorage
+
 // StorageBatch is a batch of writes applied atomically.
 type StorageBatch = storage.Batch
 

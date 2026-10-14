@@ -333,30 +333,6 @@ func TestMigrateIfNeeded_CreateDatabasesDirError(t *testing.T) {
 	}
 }
 
-func TestIsTimeSeriesKey(t *testing.T) {
-	tests := []struct {
-		name string
-		key  string
-		want bool
-	}{
-		{"ts_prefix", "ts:metric:cpu", true},
-		{"idx_metric_prefix", "idx:metric:load", true},
-		{"idx_tag_prefix", "idx:tag:host=web1", true},
-		{"retention_prefix", "retention:1h", true},
-		{"kv_key", "user:alice", false},
-		{"empty_key", "", false},
-		{"partial_ts", "timestamp:123", false},
-		{"partial_idx", "idx:other:val", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isTimeSeriesKey(tt.key); got != tt.want {
-				t.Errorf("isTimeSeriesKey(%q) = %v, want %v", tt.key, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestMigrationError_Message(t *testing.T) {
 	cause := os.ErrPermission
 	err := &MigrationError{Step: "create databases dir", Err: cause}

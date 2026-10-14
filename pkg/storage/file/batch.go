@@ -46,7 +46,11 @@ func newBatch(e *Engine) storage.Batch {
 // applyBufferedOps's own errors still leave the journal in place for
 // recovery to retry — retrying is exactly right for a fault that might not
 // recur.
-func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
+//
+// The commit holds the engine's write lock throughout (see Engine), which is
+// what keeps two commits -- in this process or another -- from interleaving
+// publish/apply/clear on the single journal file.
+func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -56,8 +60,10 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
 		}
 	}
 
-	e.journalMu.Lock()
-	defer e.journalMu.Unlock()
+	if err := e.lockWrites(); err != nil {
+		return err
+	}
+	defer func() { err = e.unlockWrites(err) }()
 
 	if err := e.writeJournal(encodeJournal(ops)); err != nil {
 		return err
@@ -72,16 +78,18 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
 }
 
 // applyBufferedOps writes a batch's operations to the engine in order.
-// Each Set/Delete is individually durable (see Engine.Set).
+// Each Set/Delete is individually durable (see Engine.Set). The caller holds
+// the write lock -- a commit, or open-time recovery -- so the unlocked set and
+// del are used.
 func (e *Engine) applyBufferedOps(ops []storage.BufferedOp) error {
 	for _, op := range ops {
 		if op.Deleted {
-			if err := e.Delete(op.Key); err != nil {
+			if err := e.del(op.Key); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := e.Set(op.Key, op.Value); err != nil {
+		if err := e.set(op.Key, op.Value); err != nil {
 			return err
 		}
 	}

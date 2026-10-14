@@ -43,6 +43,17 @@ raft:
   sm_storage: pebble    # pebble (default) | file | memory
 ```
 
+### Sharing a `file` directory between processes
+
+More than one process may open the same `file` data directory — an application
+embedding a library and a daemon that serve the same data, for instance. Writes
+are serialized across them by an advisory lock on `.qrdb-file-lock` in the
+directory, and the guarded writes (`SaveIfAbsent`, `CompareAndSwap`,
+`CompareAndDelete`) stay atomic: of two processes racing the same swap, exactly
+one wins. Keep the directory on a local filesystem (the lock is not dependable
+over NFS), and leave `.qrdb-file-lock` in place. A process that crashes releases
+the lock; nothing needs cleaning up.
+
 ## Per-database storage
 
 Each database chooses its own backend at creation:

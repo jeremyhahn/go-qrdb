@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -138,8 +139,17 @@ type setTenantEntitlementsRequest struct {
 	AllowedVolumePools []string `json:"allowed_volume_pools,omitempty"`
 }
 
+// tenantBarrierInitBeginResponse is the JSON answer to
+// POST /v1/tenants/{id}/barrier/init/begin: the nonce (base64 on the wire)
+// to sign, valid only on this connection, and its expiry in Unix seconds.
+// Both are empty on an unauthenticated deployment, which asks no proof.
+type tenantBarrierInitBeginResponse struct {
+	Nonce   []byte `json:"nonce,omitempty"`
+	Expires int64  `json:"expires,omitempty"`
+}
+
 // tenantBarrierInitRequest is the JSON payload for
-// POST /v1/tenants/{id}/barrier/init. Passphrase is the tenant admin's
+// POST /v1/tenants/{id}/barrier/init/complete. Passphrase is the tenant admin's
 // caller-supplied secret used to seal the per-tenant barrier; it is
 // required for the passphrase strategy (there is no derived fallback). The
 // threshold and shares fields are reserved for Shamir configuration.
@@ -162,6 +172,19 @@ type tenantBarrierInitRequest struct {
 	// Policy is the factor policy Officers enrol under ("" selects the
 	// holder engine's default, "designated").
 	Policy string `json:"policy,omitempty"`
+
+	// Nonce, PublicKey and Signature are the proof of possession: begin's
+	// nonce, the DER SubjectPublicKeyInfo of the first admin's key, and that
+	// key's signature over the tenant, the nonce and this connection's TLS
+	// exporter (pkg/initproof). All base64 on the wire.
+	Nonce     []byte `json:"nonce,omitempty"`
+	PublicKey []byte `json:"public_key,omitempty"`
+	Signature []byte `json:"signature,omitempty"`
+
+	// InitStatement is the first admin's signed epoch-1 init statement for
+	// this barrier (barrierinit.InitStatement), base64 on the wire: every
+	// other node serving the barrier initializes its own key from it.
+	InitStatement []byte `json:"init_statement,omitempty"`
 }
 
 // tenantBarrierUnsealRequest is the JSON payload for
@@ -349,7 +372,8 @@ func (s *Server) handleReconcileDeletedTenants(w http.ResponseWriter, r *http.Re
 //   - DELETE /v1/tenants/{id}                                                -> delete tenant
 //   - PUT    /v1/tenants/{id}                                                -> update tenant
 //   - POST   /v1/tenants/{id}/quotas                                         -> set tenant quotas
-//   - POST   /v1/tenants/{id}/barrier/init                                   -> initialize tenant barrier
+//   - POST   /v1/tenants/{id}/barrier/init/begin                             -> tenant barrier init nonce
+//   - POST   /v1/tenants/{id}/barrier/init/complete                          -> initialize tenant barrier
 //   - POST   /v1/tenants/{id}/barrier/unseal                                 -> unseal tenant barrier
 //   - POST   /v1/tenants/{id}/barrier/seal                                   -> seal tenant barrier
 //   - GET    /v1/tenants/{id}/barrier/status                                 -> tenant barrier status
@@ -392,7 +416,11 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 			s.handleSetTenantQuotas(w, r, id)
 			return
 		}
-		if id, found := strings.CutSuffix(suffix, "/barrier/init"); found && id != "" {
+		if id, found := strings.CutSuffix(suffix, "/barrier/init/begin"); found && id != "" {
+			s.handleTenantBarrierInitBegin(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/init/complete"); found && id != "" {
 			s.handleTenantBarrierInit(w, r, id)
 			return
 		}
@@ -674,15 +702,26 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
-// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
-// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
-// — the single cross-transport home of the bootstrap-window semantics). When
-// authMW is nil the gate is a no-op (unauthenticated deployment).
-func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+// beginTenantBarrierInit issues the init nonce through the shared
+// trust-on-first-init rule (middleware.BeginTenantBarrierInit -- the single
+// cross-transport home of the bootstrap-window semantics and the init
+// proof). When authMW is nil the deployment is unauthenticated: there is no
+// identity to prove, and the empty challenge says so.
+func (s *Server) beginTenantBarrierInit(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
+	if s.authMW == nil {
+		return &initproof.Challenge{}, nil
+	}
+	return s.authMW.BeginTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization and
+// redeems its proof of possession (middleware.AuthorizeTenantBarrierInitProof).
+// When authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
 	if s.authMW == nil {
 		return nil
 	}
-	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+	return s.authMW.AuthorizeTenantBarrierInitProof(ctx, tenantID, s.tenantSvc, proof)
 }
 
 // authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
@@ -724,10 +763,28 @@ func writeAuthzErrorJSON(w http.ResponseWriter, err error) {
 	writeErrorJSON(w, authmw.HTTPStatus(err, http.StatusForbidden), err)
 }
 
-// handleTenantBarrierInit handles POST /v1/tenants/{id}/barrier/init --
-// initializes the per-tenant barrier with the given threshold and shares.
-// Both fields are optional; when both are zero, the service uses default
-// credentials derived from the tenant ID. Returns 204 No Content on success.
+// handleTenantBarrierInitBegin handles
+// POST /v1/tenants/{id}/barrier/init/begin -- issues the nonce init/complete
+// must sign, bound to this connection's TLS exporter.
+func (s *Server) handleTenantBarrierInitBegin(w http.ResponseWriter, r *http.Request, id string) {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	challenge, err := s.beginTenantBarrierInit(ctx, id)
+	if err != nil {
+		writeAuthzErrorJSON(w, err)
+		return
+	}
+	out := tenantBarrierInitBeginResponse{Nonce: challenge.Nonce}
+	if !challenge.ExpiresAt.IsZero() {
+		out.Expires = challenge.ExpiresAt.Unix()
+	}
+	writeJSON(w, out)
+}
+
+// handleTenantBarrierInit handles POST /v1/tenants/{id}/barrier/init/complete
+// -- initializes the per-tenant barrier with the selected strategy, given
+// proof of possession of the first admin's key over this connection. Returns
+// 204 No Content on success unless officer shares were sealed.
 func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request, id string) {
 	// Decode the body when present. An empty body is permitted because
 	// both threshold and shares default to zero.
@@ -745,7 +802,8 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	if err := s.authorizeTenantBarrierInit(ctx, id); err != nil {
+	proof := &authmw.TenantBarrierInitProof{Nonce: req.Nonce, PublicKey: req.PublicKey, Signature: req.Signature}
+	if err := s.authorizeTenantBarrierInit(ctx, id, proof); err != nil {
 		writeAuthzErrorJSON(w, err)
 		return
 	}
@@ -756,7 +814,8 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 			Policy:   seal.FactorPolicy(req.Policy),
 		}
 	}
-	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster)
+	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
+		tenant.WithInitStatement(req.InitStatement))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

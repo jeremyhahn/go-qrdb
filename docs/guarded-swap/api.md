@@ -72,6 +72,17 @@ All are matched with `errors.As`. **None is returned when a write landed.**
 | `SwapStalledError` | guard refused, record did NOT move | **yes** — the store is not honouring the guard, or does not evaluate the compare target |
 | `SwapConfigError` | unusable request: no key, nil `Decide`, negative `MaxAttempts` | yes — a caller programming error |
 
+## Raw-byte compare-and-swap
+
+The primitive underneath `Swap` is `CompareAndSwap(ctx, key, expected, next)
+(bool, error)`. It is honoured on every engine (Memory, File, Pebble, ObjStore)
+and by the tenant-routed store, the per-database store and the barrier-wrapped
+(sealed-window) store. A losing swap, whether a mismatch or an absent key,
+reports `false` with a nil error and never creates the key; inside the sealed
+window the call fails closed with the typed sealed error instead of reporting
+`false`. Consumers holding a storage engine directly assert for the optional
+`GuardedStorage` interface (`docs/storage-engines/api.md`).
+
 ## Transport requirements
 
 The client must implement `SwapPlane` — both the transaction execution and the

@@ -18,6 +18,7 @@ package grpc
 
 import (
 	"context"
+	"crypto"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -101,15 +103,89 @@ func ctxWithIdentity(tenantID string) context.Context {
 	})
 }
 
+// ctxOnConn binds tenantID's admin identity and the server end of conn to the
+// context, the way the gRPC auth interceptor does for a call on conn.
+func ctxOnConn(tenantID string, conn *initprooftest.Conn) context.Context {
+	return auth.WithTLSState(ctxWithIdentity(tenantID), &conn.Server)
+}
+
 // TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed proves a tenant admin
-// may init their OWN tenant's barrier through the handler gate.
+// may init their OWN tenant's barrier through the handler gate: InitBegin
+// issues a nonce on the connection and InitComplete accepts it signed, with
+// that connection's exporter, by the key of the certificate it presented.
 func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 	srv := newBarrierGateServer()
-	ctx := ctxWithIdentity("acme")
-	req := &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: []byte("pw")}
-	if _, err := srv.Init(ctx, req); err != nil {
+	cert := initprooftest.Certificate(t, "acme-admin")
+	conn := initprooftest.Dial(t, cert)
+	ctx := ctxOnConn("acme", conn)
+
+	begin, err := srv.InitBegin(ctx, &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("InitBegin: %v", err)
+	}
+	if len(begin.GetNonce()) == 0 || begin.GetExpires() == 0 {
+		t.Fatalf("InitBegin = %+v; want a nonce and its expiry", begin)
+	}
+	proof := conn.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", begin.GetNonce())
+	req := &pb.TenantBarrierInitRequest{
+		TenantId: "acme", Passphrase: []byte("pw"),
+		Nonce: proof.Nonce, PublicKey: proof.PublicKey, Signature: proof.Signature,
+	}
+	if _, err := srv.InitComplete(ctx, req); err != nil {
 		t.Fatalf("tenant admin init own barrier: %v", err)
 	}
+
+	// The nonce was spent: the same request again is a replay.
+	_, err = srv.InitComplete(ctx, req)
+	requireCode(t, err, codes.Unauthenticated)
+}
+
+// TestTenantBarrierGate_InitCompleteWithoutProof_Unauthenticated proves an
+// RBAC grant admits the caller to the gate but never past the proof: a
+// complete carrying none is refused as unauthenticated.
+func TestTenantBarrierGate_InitCompleteWithoutProof_Unauthenticated(t *testing.T) {
+	srv := newBarrierGateServer()
+	conn := initprooftest.Dial(t, initprooftest.Certificate(t, "acme-admin"))
+	_, err := srv.InitComplete(ctxOnConn("acme", conn), &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: []byte("pw")})
+	requireCode(t, err, codes.Unauthenticated)
+}
+
+// TestTenantBarrierGate_InitCompleteOnAnotherConnection_Unauthenticated
+// proves a proof made on one connection is refused on another: the exporter
+// it signed is not the one the node derives there.
+func TestTenantBarrierGate_InitCompleteOnAnotherConnection_Unauthenticated(t *testing.T) {
+	srv := newBarrierGateServer()
+	cert := initprooftest.Certificate(t, "acme-admin")
+	first := initprooftest.Dial(t, cert)
+	begin, err := srv.InitBegin(ctxOnConn("acme", first), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("InitBegin: %v", err)
+	}
+	proof := first.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", begin.GetNonce())
+	second := initprooftest.Dial(t, cert)
+	_, err = srv.InitComplete(ctxOnConn("acme", second), &pb.TenantBarrierInitRequest{
+		TenantId: "acme", Passphrase: []byte("pw"),
+		Nonce: proof.Nonce, PublicKey: proof.PublicKey, Signature: proof.Signature,
+	})
+	requireCode(t, err, codes.Unauthenticated)
+}
+
+// TestTenantBarrierGate_InitBeginWithoutTLS_Unauthenticated proves begin
+// refuses a connection with no TLS 1.3 exporter: no complete could succeed
+// on it.
+func TestTenantBarrierGate_InitBeginWithoutTLS_Unauthenticated(t *testing.T) {
+	srv := newBarrierGateServer()
+	_, err := srv.InitBegin(ctxWithIdentity("acme"), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
+	requireCode(t, err, codes.Unauthenticated)
+}
+
+// TestTenantBarrierGate_InitBeginCrossTenant_Denied proves begin admits only
+// whom complete would: a tenant admin of acme gets no nonce for bob-corp.
+func TestTenantBarrierGate_InitBeginCrossTenant_Denied(t *testing.T) {
+	srv := newBarrierGateServer()
+	conn := initprooftest.Dial(t, initprooftest.Certificate(t, "acme-admin"))
+	_, err := srv.InitBegin(ctxOnConn("acme", conn), &pb.TenantBarrierInitBeginRequest{TenantId: "bob-corp"})
+	requireCode(t, err, codes.PermissionDenied)
 }
 
 // TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied proves the gate denies
@@ -118,7 +194,7 @@ func TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity("acme")
 	req := &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: []byte("pw")}
-	_, err := srv.Init(ctx, req)
+	_, err := srv.InitComplete(ctx, req)
 	if err == nil {
 		t.Fatal("cross-tenant init must be denied")
 	}
@@ -135,7 +211,7 @@ func TestTenantBarrierGate_SystemAdmin_Denied(t *testing.T) {
 	ctx := ctxWithIdentity(tenantid.System)
 	for _, target := range []string{"acme", tenantid.System} {
 		req := &pb.TenantBarrierInitRequest{TenantId: target, Passphrase: []byte("pw")}
-		_, err := srv.Init(ctx, req)
+		_, err := srv.InitComplete(ctx, req)
 		if err == nil {
 			t.Fatalf("system admin init on %q must be denied", target)
 		}
@@ -173,7 +249,7 @@ func TestTenantBarrierGate_AuditFailure_IsUnavailableNotPermissionDenied(t *test
 	ctx := ctxWithIdentity("acme")
 
 	t.Run("Init", func(t *testing.T) {
-		_, err := srv.Init(ctx, &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: []byte("pw")})
+		_, err := srv.InitComplete(ctx, &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: []byte("pw")})
 		requireUnavailable(t, err)
 	})
 	t.Run("Unseal", func(t *testing.T) {
@@ -216,7 +292,7 @@ func requireUnavailable(t *testing.T, err error) {
 func TestTenantBarrierGate_OrdinaryDenialIsStillPermissionDenied(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity("acme")
-	_, err := srv.Init(ctx, &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: []byte("pw")})
+	_, err := srv.InitComplete(ctx, &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: []byte("pw")})
 	if err == nil {
 		t.Fatal("cross-tenant init must be denied")
 	}

@@ -20,8 +20,6 @@ import {
   raftClusterState,
   injectError,
   clearError,
-  updateMockState,
-  type MockState,
 } from "./fixtures/wails-mock.ts";
 import type { Page } from "@playwright/test";
 
@@ -33,66 +31,81 @@ const LOAD_TIMEOUT = 10_000;
 // ---------------------------------------------------------------------------
 
 /**
- * Overrides the AdminBinding methods on the page to return realistic data.
- * Must be called after page.goto() since addInitScript runs before load.
+ * Replaces the mock AdminBinding methods with ones returning realistic data.
+ * It runs in the browser, so it must stay self-contained.
+ */
+function installAdminBindings(): void {
+  const w = window as unknown as Record<string, unknown>;
+  const go = w.go as {
+    main: {
+      AdminBinding: Record<
+        string,
+        (...args: unknown[]) => Promise<unknown>
+      >;
+    };
+  };
+
+  go.main.AdminBinding.Health = async () => ({
+    status: "ok",
+    isLeader: true,
+  });
+
+  go.main.AdminBinding.Status = async () => ({
+    nodeId: 42,
+    raftAddress: "10.0.0.1:63001",
+    isLeader: true,
+    leaderId: 42,
+    shardCount: 3,
+    isDraining: false,
+  });
+
+  go.main.AdminBinding.Capabilities = async () => ({
+    kv: true,
+    mvcc: true,
+    transaction: true,
+    batch: true,
+    watch: true,
+    lease: true,
+    index: true,
+    timeSeries: false,
+    vector: false,
+  });
+
+  go.main.AdminBinding.Peers = async () => ({
+    shards: [
+      {
+        shardId: 1,
+        peers: [
+          { replicaId: 1, address: "10.0.0.1:63001", isLeader: true },
+          { replicaId: 2, address: "10.0.0.2:63001", isLeader: false },
+        ],
+      },
+      {
+        shardId: 2,
+        peers: [
+          { replicaId: 1, address: "10.0.0.1:63002", isLeader: false },
+          { replicaId: 3, address: "10.0.0.3:63002", isLeader: true },
+        ],
+      },
+    ],
+  });
+}
+
+/**
+ * Installs the realistic AdminBinding methods before the app's scripts run on
+ * every later navigation, so the dashboard's first fetch already returns them.
+ * Must be called before page.goto(); this init script runs after the mock's.
+ */
+async function overrideAdminBindingsOnLoad(page: Page): Promise<void> {
+  await page.addInitScript(installAdminBindings);
+}
+
+/**
+ * Installs the realistic AdminBinding methods on the already-loaded page. A
+ * mounted view sees them only on its next fetch.
  */
 async function overrideAdminBindings(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const w = window as unknown as Record<string, unknown>;
-    const go = w.go as {
-      main: {
-        AdminBinding: Record<
-          string,
-          (...args: unknown[]) => Promise<unknown>
-        >;
-      };
-    };
-
-    go.main.AdminBinding.Health = async () => ({
-      status: "ok",
-      isLeader: true,
-    });
-
-    go.main.AdminBinding.Status = async () => ({
-      nodeId: 42,
-      raftAddress: "10.0.0.1:63001",
-      isLeader: true,
-      leaderId: 42,
-      shardCount: 3,
-      isDraining: false,
-    });
-
-    go.main.AdminBinding.Capabilities = async () => ({
-      kv: true,
-      mvcc: true,
-      transaction: true,
-      batch: true,
-      watch: true,
-      lease: true,
-      index: true,
-      timeSeries: false,
-      vector: false,
-    });
-
-    go.main.AdminBinding.Peers = async () => ({
-      shards: [
-        {
-          shardId: 1,
-          peers: [
-            { replicaId: 1, address: "10.0.0.1:63001", isLeader: true },
-            { replicaId: 2, address: "10.0.0.2:63001", isLeader: false },
-          ],
-        },
-        {
-          shardId: 2,
-          peers: [
-            { replicaId: 1, address: "10.0.0.1:63002", isLeader: false },
-            { replicaId: 3, address: "10.0.0.3:63002", isLeader: true },
-          ],
-        },
-      ],
-    });
-  });
+  await page.evaluate(installAdminBindings);
 }
 
 // ---------------------------------------------------------------------------
@@ -101,19 +114,13 @@ async function overrideAdminBindings(page: Page): Promise<void> {
 
 /** Navigates to admin mode and waits for the Dashboard to load. */
 async function navigateToDashboard(page: Page): Promise<void> {
+  // Dashboard is the landing view, so its first fetch must see the overrides.
+  await overrideAdminBindingsOnLoad(page);
+
   await page.goto("/");
   await expect(
     page.locator(".breadcrumbs").getByText("Dashboard"),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-  // Override admin bindings with realistic data
-  await overrideAdminBindings(page);
-
-  // Admin sections are always in the sidebar — click Dashboard directly.
-  await page.locator("aside").getByText("Dashboard").click();
-  await expect(
-    page.locator(".breadcrumbs").getByText("Dashboard"),
-  ).toBeVisible();
 }
 
 /** Navigates to admin mode and clicks a specific sidebar link. */
@@ -121,12 +128,12 @@ async function navigateToAdminSection(
   page: Page,
   section: string,
 ): Promise<void> {
+  await overrideAdminBindingsOnLoad(page);
+
   await page.goto("/");
   await expect(
     page.locator(".breadcrumbs").getByText("Dashboard"),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-  await overrideAdminBindings(page);
 
   // Admin sections are always in the sidebar — no toggle required.
   await page.locator("aside").getByText(section).click();
@@ -234,45 +241,30 @@ test.describe("Admin - Dashboard", () => {
     await expect(main.getByText("Vectors")).toBeVisible();
   });
 
-  test("displays databases table when databases exist", async ({ page }) => {
-    // Seed databases in the mock state
-    const stateWithDbs: MockState = {
-      ...secondLaunchEmbeddedState,
-      databases: [
-        { name: "mydb", backend: "pebble", status: "open" },
-        {
-          name: "tsdb",
-          backend: "pebble",
-          status: "open",
-        },
-      ],
-    };
+  test.describe("with databases", () => {
+    // Seeded through the fixture, so the dashboard's first fetch lists them.
+    test.use({
+      mockState: {
+        ...secondLaunchEmbeddedState,
+        databases: [
+          { name: "mydb", backend: "pebble", status: "open" },
+          { name: "tsdb", backend: "pebble", status: "open" },
+        ],
+      },
+    });
 
-    await page.goto("/");
+    test("displays databases table when databases exist", async ({ page }) => {
+      await navigateToDashboard(page);
 
-    // Update mock state to include databases
-    await updateMockState(page, stateWithDbs);
+      const main = page.locator("main");
 
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    await overrideAdminBindings(page);
-
-    // Navigate to Dashboard to see the databases table.
-    await page.locator("aside").getByText("Dashboard", { exact: true }).click();
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    const main = page.locator("main");
-
-    // Wait for database heading to render in main content
-    await expect(
-      main.getByRole("heading", { name: "Databases" }),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
-    await expect(main.getByText("mydb")).toBeVisible();
-    await expect(main.getByText("tsdb")).toBeVisible();
+      // Wait for database heading to render in main content
+      await expect(
+        main.getByRole("heading", { name: "Databases" }),
+      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(main.getByText("mydb")).toBeVisible();
+      await expect(main.getByText("tsdb")).toBeVisible();
+    });
   });
 
   test("shows error alert when dashboard data fails to load", async ({

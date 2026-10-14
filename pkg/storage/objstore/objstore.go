@@ -43,7 +43,12 @@ var _ storage.Storage = (*Engine)(nil)
 
 // Engine is a key-value storage engine backed by a go-objstore Storage.
 type Engine struct {
-	store    objcommon.Storage
+	store objcommon.Storage
+
+	// journal holds the commit journal. It is store itself unless the
+	// provider lists by walking a directory tree, in which case it is a
+	// separate store the walk never visits (see openStores).
+	journal  objcommon.Storage
 	provider string
 	closed   atomic.Bool
 
@@ -51,6 +56,22 @@ type Engine struct {
 	// object per engine, so two concurrent commits must not interleave
 	// publish/apply/clear.
 	journalMu sync.Mutex
+
+	// journalPending is set when a batch commit fails after it may have
+	// published its journal, so the commit is neither complete nor known to
+	// be absent. Every later write resolves it first (resolvePendingJournal)
+	// rather than deciding against, or writing under, a half-applied batch.
+	journalPending atomic.Bool
+
+	// writeMu makes CompareAndSwap and a batch commit atomic against every
+	// other writer in this process: Set and Delete hold it shared from their
+	// check for a pending commit through their write (enterWrite);
+	// CompareAndSwap, a batch commit and the resolution of a pending commit
+	// hold it exclusive, so journalPending changes only under it.
+	// Lock order is journalMu, then writeMu. The provider offers no
+	// conditional put through this interface, so atomicity does not extend
+	// to a second process writing the same bucket.
+	writeMu sync.RWMutex
 }
 
 // New constructs an objstore-backed engine for the given go-objstore provider.
@@ -77,7 +98,11 @@ func New(provider string, settings map[string]string) (*Engine, error) {
 		}
 		return nil, err
 	}
-	e := &Engine{store: store, provider: provider}
+	store, journal, err := openStores(provider, settings, store)
+	if err != nil {
+		return nil, err
+	}
+	e := &Engine{store: store, journal: journal, provider: provider}
 	if err := e.ensureFormatMarker(); err != nil {
 		return nil, err
 	}
@@ -169,11 +194,54 @@ func (e *Engine) Set(key, value []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
+	if err := e.enterWrite(); err != nil {
+		return err
+	}
+	defer e.writeMu.RUnlock()
+	return e.put(key, value)
+}
+
+// put writes the object for key. The caller holds writeMu.
+func (e *Engine) put(key, value []byte) error {
 	name, hashed := objectName(key)
 	if hashed {
 		return e.store.Put(name, hashedRecord(key, value))
 	}
 	return e.store.Put(name, bytes.NewReader(value))
+}
+
+// CompareAndSwap implements storage.GuardedStorage. The read, compare and
+// write run under the exclusive in-process lock, so concurrent swaps on a key
+// serialise. It does not guard against a second process writing the bucket.
+func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if e.closed.Load() {
+		return false, &storage.ClosedError{}
+	}
+	if len(key) == 0 {
+		return false, storage.ErrEmptyKey
+	}
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	if err := e.resolvePendingJournal(); err != nil {
+		return false, err
+	}
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	current, err := e.Get(key)
+	if err != nil {
+		return false, err
+	}
+	if current == nil || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	if err := e.put(key, next); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Delete removes a key. A missing key is not an error (idempotent).
@@ -184,6 +252,16 @@ func (e *Engine) Delete(key []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
+	if err := e.enterWrite(); err != nil {
+		return err
+	}
+	defer e.writeMu.RUnlock()
+	return e.remove(key)
+}
+
+// remove deletes the object for key; a missing object is not an error. The
+// caller holds writeMu.
+func (e *Engine) remove(key []byte) error {
 	name, _ := objectName(key)
 	if err := e.store.Delete(name); err != nil && !notFound(err) {
 		return err

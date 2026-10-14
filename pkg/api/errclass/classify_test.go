@@ -22,9 +22,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -420,6 +422,38 @@ func TestClassify_ClusterSeal(t *testing.T) {
 		{"node cut off from the seal records", &clusterseal.SealStateUnconfirmedError{}, Unavailable},
 		{"corrupt seal record", &clusterseal.CorruptRecordError{Barrier: clusterseal.NodeBarrier()}, Internal},
 		{"malformed barrier name", &clusterseal.InvalidBarrierError{Name: "x"}, InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassify_BarrierInit pins how every transport answers a barrier init
+// statement condition: a statement the owner did not sign is never a
+// retryable or internal fault, and a store failure inside the package's
+// wrapper is classified by its cause.
+func TestClassify_BarrierInit(t *testing.T) {
+	b := clusterseal.TenantBarrier("t")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"statement signed by another key", &barrierinit.InitStatementError{Barrier: b, Epoch: 1, Reason: barrierinit.ReasonWrongSigner}, PermissionDenied},
+		{"barrier already claimed", &barrierinit.BarrierAlreadyInitializedError{Barrier: b}, AlreadyExists},
+		{"anchor pinned to another admin", &barrierinit.AnchorConflictError{Barrier: b}, AlreadyExists},
+		{"epoch does not follow", &barrierinit.EpochConflictError{Barrier: b, Epoch: 3, Current: 1}, Aborted},
+		{"corrupt init record", &barrierinit.CorruptRecordError{Key: barrierinit.Prefix + string(b)}, Internal},
+		{"guarded writes not active", &barrierinit.GuardedWritesUnavailableError{}, Unavailable},
+		{"raft tenant init without a statement", &tenant.InitStatementRequiredError{TenantID: "t"}, InvalidArgument},
+		{"raft tenant unseal without a statement", &tenant.InitStatementMissingError{TenantID: "t"}, FailedPrecondition},
+		{"unseal strategy is not the sealed one", &tenant.BarrierError{TenantID: "t", Op: "unseal", Err: &seal.UnsealStrategyMismatchError{Sealed: seal.StrategyPassphrase, Requested: seal.StrategyNone}}, FailedPrecondition},
+		{"stored statement no longer verifies", &tenant.BarrierError{TenantID: "t", Op: "init statement", Err: &barrierinit.InitStatementError{Barrier: b, Epoch: 1, Reason: barrierinit.ReasonWrongSigner}}, PermissionDenied},
+		{"per-node barrier keys not active", &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}, Unavailable},
+		{"store failure is its cause", &barrierinit.StoreError{Op: "claim init record", Err: context.DeadlineExceeded}, Classify(context.DeadlineExceeded)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Classify(wrapped{tc.err}); got != tc.want {

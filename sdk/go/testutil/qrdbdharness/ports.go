@@ -221,7 +221,12 @@ func (a *allocator) reserve(network string, n int, listen func(addr string) (io.
 	ports := make([]int, 0, n)
 	var listeners, locks []io.Closer
 	var lastErr error
-	for attempt := 0; len(ports) < n && attempt < maxReservationAttempts; attempt++ {
+	// Only a bind probe spends an attempt. A port another test process holds
+	// is skipped for free: every process walks the window from its base, so a
+	// late one meets every port the others still hold before a free one, and
+	// in a busy module those outnumber the budget. nextPort's window
+	// exhaustion bounds that walk.
+	for attempt := 0; len(ports) < n && attempt < maxReservationAttempts; {
 		port, err := a.nextPort()
 		if err != nil {
 			closeAll(listeners)
@@ -233,6 +238,7 @@ func (a *allocator) reserve(network string, n int, listen func(addr string) (io.
 			lastErr = err // handed out by another test process; draw the next candidate
 			continue
 		}
+		attempt++
 		conn, err := listen(net.JoinHostPort(loopbackHost, strconv.Itoa(port)))
 		if err != nil {
 			_ = lock.Close()

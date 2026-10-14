@@ -86,6 +86,11 @@ type Transport struct {
 	// baseRT is the underlying RoundTripper (HTTP/2 transport) shared across
 	// database-scoped clones so they reuse the same connection pool.
 	baseRT http.RoundTripper
+
+	// httpTransport is the connection pool ensureClient built, kept so a call
+	// that must stay on one connection (tenant barrier init's proof of
+	// possession) can clone its TLS configuration into a pinned client.
+	httpTransport *http.Transport
 }
 
 // New creates a new REST transport with the given options. The transport
@@ -138,6 +143,7 @@ func (t *Transport) ensureClient() error {
 	// Every request made with a context bound by transport.WithSOPIN carries
 	// the SO PIN header -- over https to the configured host only, on every
 	// hop including redirects.
+	t.httpTransport = httpTransport
 	t.baseRT = transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
@@ -934,6 +940,7 @@ func (t *Transport) withDatabase(database string) *Transport {
 		config:         t.config,
 		baseURL:        t.baseURL,
 		baseRT:         t.baseRT,
+		httpTransport:  t.httpTransport,
 		activeDatabase: db,
 	}
 	clone.closed.Store(t.closed.Load())

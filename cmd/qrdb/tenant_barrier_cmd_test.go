@@ -77,6 +77,7 @@ func (m *strategyCapturingTenantService) TenantBarrierInitWithStrategy(
 	threshold, shares int,
 	strategy seal.StrategyID,
 	_ *tenant.TenantBarrierShamirRoster,
+	_ ...tenant.TenantBarrierInitOption,
 ) (*tenant.TenantBarrierInitResult, error) {
 	// passphrase is a BORROW valid only for this call — the CLI zeroizes the
 	// request's slice once TenantBarrierInit returns — so the recorded copy

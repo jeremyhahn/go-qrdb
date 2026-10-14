@@ -46,6 +46,9 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateUser"}
 	}
+	if req == nil {
+		return nil, nilRequestError("CreateUser")
+	}
 	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersCreate); err != nil {
 		return nil, err
 	}
@@ -195,6 +198,9 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateUser"}
 	}
+	if req == nil {
+		return nil, nilRequestError("UpdateUser")
+	}
 	if err := t.authorizeUserTarget(ctx, req.ID, permission.UsersUpdate); err != nil {
 		return nil, err
 	}
@@ -250,6 +256,9 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ListUsers"}
+	}
+	if req == nil {
+		return nil, nilRequestError("ListUsers")
 	}
 	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersList); err != nil {
 		return nil, err
@@ -357,6 +366,9 @@ func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleReq
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateRole"}
 	}
+	if req == nil {
+		return nil, nilRequestError("UpdateRole")
+	}
 	if err := t.authorizeRoleTarget(ctx, req.ID, permission.RolesUpdate); err != nil {
 		return nil, err
 	}
@@ -393,6 +405,9 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ListRoles"}
+	}
+	if req == nil {
+		return nil, nilRequestError("ListRoles")
 	}
 	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesList); err != nil {
 		return nil, err
@@ -769,4 +784,11 @@ func formatLastAuth(at *time.Time) string {
 		return ""
 	}
 	return at.UTC().Format(time.RFC3339)
+}
+
+// nilRequestError is the typed refusal of a nil request, returned before the
+// call is authorized: there is no request to name a target, and a nil
+// pointer is a caller's bug, not an authorization question.
+func nilRequestError(method string) error {
+	return &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
 }

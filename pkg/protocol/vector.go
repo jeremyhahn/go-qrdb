@@ -153,21 +153,6 @@ func readVectorName(payload []byte, off int, reason string) (string, int, error)
 	return string(payload[off : off+nameLen]), off + nameLen, nil
 }
 
-// paramBlockSize is ParamBlockSize; kept as an unexported alias so every
-// call site in this file reads the same as before the export (go-qrdb
-// vector-replicated review, B1/N6).
-func paramBlockSize(params map[string]string) (int, error) { return ParamBlockSize(params) }
-
-// writeParamBlock is WriteParamBlock; see paramBlockSize.
-func writeParamBlock(buf []byte, off int, params map[string]string) (int, error) {
-	return WriteParamBlock(buf, off, params)
-}
-
-// readParamBlock is ReadParamBlock; see paramBlockSize.
-func readParamBlock(payload []byte, off int, reason string) (map[string]string, int, error) {
-	return ReadParamBlock(payload, off, reason)
-}
-
 // ParamBlockSize returns the encoded size of a count-prefixed run of
 // length-prefixed (key, value) string pairs. Metadata and index-parameter
 // maps share this exact shape time-series tags do (tagBlockSize), but are
@@ -345,7 +330,7 @@ func upsertItemSize(item VectorUpsertParams) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	metaSize, err := paramBlockSize(item.Metadata)
+	metaSize, err := ParamBlockSize(item.Metadata)
 	if err != nil {
 		return 0, err
 	}
@@ -367,7 +352,7 @@ func writeUpsertItem(buf []byte, off int, item VectorUpsertParams) (int, error) 
 	if off, err = writeEmbedding(buf, off, item.Embedding); err != nil {
 		return 0, err
 	}
-	return writeParamBlock(buf, off, item.Metadata)
+	return WriteParamBlock(buf, off, item.Metadata)
 }
 
 // readUpsertItem reads one OpVectorBatchUpsert element from payload[off:] and
@@ -385,7 +370,7 @@ func readUpsertItem(payload []byte, off int, reason string) (VectorUpsertParams,
 	if err != nil {
 		return VectorUpsertParams{}, 0, err
 	}
-	metadata, off, err := readParamBlock(payload, off, reason)
+	metadata, off, err := ReadParamBlock(payload, off, reason)
 	if err != nil {
 		return VectorUpsertParams{}, 0, err
 	}
@@ -398,7 +383,7 @@ func EncodeVectorNamespaceCreate(p VectorNamespaceCreateParams) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	paramSize, err := paramBlockSize(p.IndexParams)
+	paramSize, err := ParamBlockSize(p.IndexParams)
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +407,7 @@ func EncodeVectorNamespaceCreate(p VectorNamespaceCreateParams) ([]byte, error) 
 	off++
 	binary.LittleEndian.PutUint64(buf[off:], uint64(p.CreatedAtUnixNano))
 	off += 8
-	if _, err = writeParamBlock(buf, off, p.IndexParams); err != nil {
+	if _, err = WriteParamBlock(buf, off, p.IndexParams); err != nil {
 		return nil, err
 	}
 	return buf, nil
@@ -447,7 +432,7 @@ func DecodeVectorNamespaceCreate(payload []byte) (VectorNamespaceCreateParams, e
 	off++
 	createdAt := int64(binary.LittleEndian.Uint64(payload[off:]))
 	off += 8
-	params, _, err := readParamBlock(payload, off, reason)
+	params, _, err := ReadParamBlock(payload, off, reason)
 	if err != nil {
 		return VectorNamespaceCreateParams{}, err
 	}
@@ -709,7 +694,7 @@ func EncodeVectorUpdateMetadata(p VectorUpdateMetadataParams) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	metaSize, err := paramBlockSize(p.Metadata)
+	metaSize, err := ParamBlockSize(p.Metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +714,7 @@ func EncodeVectorUpdateMetadata(p VectorUpdateMetadataParams) ([]byte, error) {
 	off += 8
 	binary.LittleEndian.PutUint64(buf[off:], uint64(p.TimestampUnixNano))
 	off += 8
-	if _, err = writeParamBlock(buf, off, p.Metadata); err != nil {
+	if _, err = WriteParamBlock(buf, off, p.Metadata); err != nil {
 		return nil, err
 	}
 	return buf, nil
@@ -749,7 +734,7 @@ func DecodeVectorUpdateMetadata(payload []byte) (VectorUpdateMetadataParams, err
 	off += 8
 	timestamp := int64(binary.LittleEndian.Uint64(payload[off:]))
 	off += 8
-	metadata, _, err := readParamBlock(payload, off, reason)
+	metadata, _, err := ReadParamBlock(payload, off, reason)
 	if err != nil {
 		return VectorUpdateMetadataParams{}, err
 	}
@@ -763,7 +748,7 @@ func EncodeVectorIndexReconfigure(p VectorIndexReconfigureParams) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	paramSize, err := paramBlockSize(p.IndexParams)
+	paramSize, err := ParamBlockSize(p.IndexParams)
 	if err != nil {
 		return nil, err
 	}
@@ -781,7 +766,7 @@ func EncodeVectorIndexReconfigure(p VectorIndexReconfigureParams) ([]byte, error
 	}
 	buf[off] = p.IndexType
 	off++
-	if _, err = writeParamBlock(buf, off, p.IndexParams); err != nil {
+	if _, err = WriteParamBlock(buf, off, p.IndexParams); err != nil {
 		return nil, err
 	}
 	return buf, nil
@@ -799,7 +784,7 @@ func DecodeVectorIndexReconfigure(payload []byte) (VectorIndexReconfigureParams,
 	}
 	indexType := payload[off]
 	off++
-	params, _, err := readParamBlock(payload, off, reason)
+	params, _, err := ReadParamBlock(payload, off, reason)
 	if err != nil {
 		return VectorIndexReconfigureParams{}, err
 	}

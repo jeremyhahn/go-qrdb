@@ -78,7 +78,9 @@ a daemon (or embedded node) configured with `seal.enabled: true` and
 `seal.strategy: none` — a barrier-present-but-unencrypted store (zero-epoch
 plaintext) that is initialized with an empty secret and serves normally until
 migrated. A self-managed tenant barrier reaches the same state via
-`POST /v1/tenants/{id}/barrier/init` with `{"strategy":"none"}`.
+`POST /v1/tenants/{id}/barrier/init/complete` with `{"strategy":"none"}` and
+the proof of possession `init/begin` asked for (`qrdb tenant barrier-init
+--strategy none` runs both calls).
 
 ```
 # system barrier (admin)

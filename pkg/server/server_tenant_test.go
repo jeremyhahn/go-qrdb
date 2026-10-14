@@ -58,7 +58,7 @@ func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _ string, _ []
 	return nil, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 

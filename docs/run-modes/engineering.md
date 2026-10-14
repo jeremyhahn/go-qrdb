@@ -40,7 +40,7 @@ and runs the expiry sweeper over. `NewLocalEngine` gained `lr` on 2026-10-01
 for a composition that serves no leases. `stop` cancels the sweeper and
 waits for it to exit; every composer calls it before closing the backend the
 sweeper revokes through -- the daemon on shutdown, `node.Node` on `Close` and on
-an encryption-migration teardown, `embedded.Server.Shutdown`, and the `qrdb`
+an encryption-migration teardown, `standalone.Server.Shutdown`, and the `qrdb`
 GUI's `StopEmbedded`.
 
 The daemon selects the mode with `mode: standalone | raft` in YAML or
@@ -76,13 +76,13 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   by one conformance suite against both modes on all six transports.
 - **A standalone node always runs its lease-expiry sweeper**
   (`lifecycle.StartLocalLeaseExpiry`), in the daemon, `node.NewStandaloneNode`
-  and the flat `embedded.NewServer` alike. A composition that grants leases
+  and the flat `standalone.NewServer` alike. A composition that grants leases
   without sweeping them is one-directional: it can fence a dead holder and
   never elect a replacement.
 - **Standalone skips the raft identity requirements**; only `raft.data_dir`
   stays mandatory.
 - **Every composer can keep the compliance audit trail.** The flat
-  `embedded.NewServer` keeps it when `ServerConfig.AuditTrail` names its file
+  `standalone.NewServer` keeps it when `ServerConfig.AuditTrail` names its file
   (relative to `DataDir`; `audit.DefaultTrailFile` is qrdbd's name; empty,
   the default, keeps none): `audit.OpenTrailIn`, confined to `DataDir` -- or
   an absolute path's own directory -- so a symbolic link cannot carry it
@@ -303,7 +303,7 @@ registry; it was deleted on 2026-10-01, and `embedded.WithStandaloneMode` with i
   (`server.WithMVCC/WithLease/WithWatch/WithLockService` in both modes),
   `node.NewStandaloneNode` (the same options, and the embedded transport's
   `WithMVCCService/WithLeaseService/WithWatchService/WithLockService`), and the
-  flat `embedded.NewServer`, which also gained the watch hub it was built
+  flat `standalone.NewServer`, which also gained the watch hub it was built
   without (its watches registered on a hub nothing published to) and a lock
   service.
 - **Lessor.** Each root builds the lessor and passes it to
@@ -314,13 +314,14 @@ registry; it was deleted on 2026-10-01, and `embedded.WithStandaloneMode` with i
 - **Sweeper lifetime.** `node.NewStandaloneNode` runs one sweeper per data
   plane: an in-process encryption migration's teardown stops it, and the
   rebuild starts one over the new engine's lessor. The daemon's runs for the
-  process; `embedded.Server.Shutdown` stops its own before closing the backend.
+  process; `standalone.Server.Shutdown` stops its own before closing the backend.
 - **Errors.** The embedded transport now translates the lease or MVCC refusal
   under a lock (`translateLockError`) and `service.MVCCBackendRequiredError` to
   `transport.CapabilityUnsupportedError`, matching the network transports.
 
 ## The always-compiled core
 
+Excluded from build tags because removing any of these either violates the
 security posture or breaks a dependency of everything else:
 
 | Core component | Why it cannot be optional |
@@ -335,6 +336,56 @@ security posture or breaks a dependency of everything else:
 | Audit (`pkg/audit`) | Compliance posture; services emit unconditionally |
 | REST + gRPC transports | A server with no transport is unusable; enabled per `protocols.*` |
 
+This table describes the daemon. An embedder is held to a narrower graph,
+described in the next section.
+
+## The lean-standalone import gate
+
+`make check-lean-standalone` runs the gate. It runs
+`TestLeanStandaloneImportGraph` and `TestLeanStandaloneEdgeDetection` in
+`test/buildgates/lean_standalone_test.go`, and the CI Lint job runs the same
+target. The gate works as follows:
+
+- **Fixture.** `sdk/go/examples/leanstandalone` is a standalone `file`-backend
+  node built by `node.NewStandaloneNode` with REST and gRPC off. It is reached
+  through `Node.Client()` (the embedded transport), runs as a service
+  principal (`node.WithServicePrincipal` with a role grant of the `kv:*` and
+  `index:*` permissions it uses), and saves and reads one entity through
+  `sdk.NewDAO`.
+- **Graph.** `go list -deps -json -tags codec_json` runs over the fixture from
+  the `sdk/go` module. `codec_json` is the only tag in the set, because the
+  DAO's codec needs it at run time. Anything a plain `go build` by an
+  embedder would not enable stays out.
+- **Forbidden set.** go-quicraft, PebbleDB, `pkg/api`, `pkg/server`,
+  `pkg/cluster`, `pkg/vector`, `pkg/timeseries`, mcp-go, the Prometheus
+  client, gin, chi and go-objstore. A path matches at a path-segment boundary,
+  so `pkg/api` forbids `pkg/api/rest` but not `pkg/apimodule`.
+- **What is compared.** The gate compares edges, not packages: every import
+  from a package that is not forbidden to one that is. An edge inside the
+  forbidden set disappears with the edge that reached it. Comparing edges
+  points a failure at the import line to remove, rather than at a package
+  reached through some unspecified chain.
+- **Ratchet.** `leanStandaloneEdges` lists the remaining edges, grouped with
+  the reason for each. A new edge fails the gate. A listed edge that no longer
+  occurs also fails it. A change that removes a dependency therefore deletes
+  its lines in the same commit, and the table can only shrink.
+- **Discovery floors.** The graph must hold at least 200 packages. It must
+  also contain the fixture, `sdk/go/node`, `sdk/go/transport/embedded` and
+  `pkg/dao`, so an empty or wrong graph cannot pass. `TestLeanStandaloneEdgeDetection`
+  runs the edge finder on a synthetic graph whose answer is known.
+- **Splits, not tags.** Where a forbidden dependency is structural — a package
+  that both a lean and a full composition import, holding code only the full
+  one needs — the fix is to move that code to its own package, not to put it
+  behind a build tag. The first such move took `NewServer` and its
+  `ServerConfig`, `BarrierConfig` and constructor error types out of
+  `sdk/go/transport/embedded` into `sdk/go/standalone`, and removed the
+  transport's edges to PebbleDB and `pkg/server/lifecycle`.
+  `BarrierSealedError` stayed in the transport, whose seal gate returns it.
+  The second moved the index over a raw `*pebble.DB` out of `pkg/index` into
+  `pkg/index/pebbleindex`, with the key layout shared through the internal
+  `pkg/index/internal/indexkey`. `pkg/index` — which the DAO imports — no
+  longer imports PebbleDB; the moved package is reached only through the Raft
+  state machine in `pkg/store`.
 
 ## Storage selection in raft mode
 
@@ -412,6 +463,14 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
 config validation, so pure-config validation stays build-independent.
 
 ## Behavior change notice
+
+**2026-10-13: the flat composer moved to `sdk/go/standalone`.**
+`embedded.NewServer`, `embedded.Server`, `embedded.ServerConfig`,
+`embedded.BarrierConfig`, `embedded.ErrShamirAutoUnseal` and the server's
+constructor error types are now `standalone.NewServer`, `standalone.Server`,
+and so on, with the same fields and behaviour. Nothing is left at the old
+names. The embedded transport (`embedded.New`, its options and
+`embedded.BarrierSealedError`) did not move.
 
 **2026-10-01: standalone serves MVCC, watch, lease and lock.**
 Code that relied on the refusal — a host's in-process fallback, a check for

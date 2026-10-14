@@ -413,13 +413,6 @@ func appendUint64(buf []byte, v uint64) []byte {
 	return append(buf, b...)
 }
 
-// Helper: Encode uint64 as big-endian bytes.
-func encodeUint64(v uint64) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, v)
-	return b
-}
-
 // Helper: Decode uint64 from big-endian bytes.
 func decodeUint64(b []byte) (uint64, error) {
 	if len(b) != 8 {

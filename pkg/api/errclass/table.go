@@ -25,6 +25,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -39,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -147,6 +149,19 @@ var dominantRules = []rule{
 	is(clusterseal.ErrInactive, FailedPrecondition),
 	as(&clusterseal.CorruptRecordError{}, Internal),
 	as(&clusterseal.InvalidBarrierError{}, InvalidArgument),
+
+	// Barrier init statements. A statement the barrier owner did not sign is
+	// refused outright; a claim of a barrier another statement already
+	// claimed is AlreadyExists; an epoch that does not follow the recorded
+	// one, or lost a race, is a conflict the caller re-reads; a cluster that
+	// has not enabled guarded writes cannot record a claim yet. A barrier
+	// whose epoch-1 anchor is already pinned to another first admin exists.
+	as(&barrierinit.InitStatementError{}, PermissionDenied),
+	as(&barrierinit.BarrierAlreadyInitializedError{}, AlreadyExists),
+	as(&barrierinit.AnchorConflictError{}, AlreadyExists),
+	as(&barrierinit.EpochConflictError{}, Aborted),
+	as(&barrierinit.CorruptRecordError{}, Internal),
+	as(&barrierinit.GuardedWritesUnavailableError{}, Unavailable),
 
 	// A system-scope encryption migration is rebuilding the data plane; the
 	// service is back once it finishes. It can arrive wrapped in whatever
@@ -918,6 +933,10 @@ var tenantRules = []rule{
 	is(tenant.ErrNilQuotas, InvalidArgument),
 	is(tenant.ErrNilEntitlements, InvalidArgument),
 	as(&tenant.InvalidStrategyError{}, InvalidArgument),
+	as(&tenant.InitStatementRequiredError{}, InvalidArgument),
+	// A raft-isolated tenant's barrier with no recorded init statement has
+	// nothing to reattach from: no retry or other credential changes that.
+	as(&tenant.InitStatementMissingError{}, FailedPrecondition),
 	is(tenant.ErrBarrierIsolationUnavailable, Unprocessable),
 	is(tenant.ErrBarrierNotEnabled, Unprocessable),
 	is(tenant.ErrTenantAlreadyExists, AlreadyExists),
@@ -1143,6 +1162,9 @@ var ceremonyRules = []rule{
 	is(seal.ErrAlreadyUnsealed, FailedPrecondition),
 	is(seal.ErrAlreadyInitialized, FailedPrecondition),
 	is(seal.ErrNotInitialized, FailedPrecondition),
+	// The root key is sealed with another strategy than the one the unseal
+	// was resolved for -- the barrier's init statement names it.
+	is(seal.ErrStrategyMismatch, FailedPrecondition),
 	is(ceremony.ErrCertThumbprintMismatch, PermissionDenied),
 	// An anonymous officer registration after enrollment closed: retrying
 	// will not help; register through an authenticated listener.
@@ -1448,6 +1470,8 @@ var authSamples = []error{
 	&authmw.CertBindingNotPermittedError{},
 	&authmw.FirstInitCertificateMismatchError{},
 	&authmw.FirstInitNotOnboardedError{},
+	&tenant.FirstAdminProofError{Reason: initproof.ReasonBadSignature},
+	&initproof.TooManyChallengesError{Limit: initproof.DefaultMaxOutstanding},
 	&authmw.AuthChainError{},
 	&authmw.CertSerialUnresolvableError{},
 	&authmw.RateLimitedError{},

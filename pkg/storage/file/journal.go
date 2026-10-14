@@ -157,20 +157,20 @@ func (e *Engine) writeJournal(image []byte) error {
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(image); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return &JournalWriteError{Err: err}
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return &JournalWriteError{Err: err}
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return &JournalWriteError{Err: err}
 	}
 	if err := fsync.Rename(tmpName, filepath.Join(e.dir, journalFileName)); err != nil {
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return &JournalWriteError{Err: err}
 	}
 	return nil
@@ -202,6 +202,16 @@ func (e *Engine) recoverJournal() error {
 		}
 	}
 
+	return e.replayJournal()
+}
+
+// replayJournal completes a commit whose journal was left behind, then removes
+// the journal. The caller holds the write lock. It is the cheap half of
+// recoverJournal (one failed open when nothing is pending), run every time the
+// lock is acquired: another process may have died between writing a journal and
+// applying it, and the next writer must finish that commit before it journals
+// or writes anything of its own.
+func (e *Engine) replayJournal() error {
 	data, err := os.ReadFile(filepath.Join(e.dir, journalFileName))
 	if err != nil {
 		if os.IsNotExist(err) {

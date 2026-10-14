@@ -32,14 +32,14 @@ of them.
 
 ### Operational requirements
 
-A per-tenant cryptographic barrier (an `IsolationBarrier` tenant, or `POST /v1/tenants/{id}/barrier/init` for any tenant) is backed by a dedicated per-tenant store allocated from a storage **volume pool**. The daemon must therefore have `storage.volume_pools` configured; without one, barrier registration fails with `volume pool not configured on barrier registry`, and creating an `IsolationBarrier` tenant fails before the volume pool is wired.
+A per-tenant cryptographic barrier (an `IsolationBarrier` tenant, or `POST /v1/tenants/{id}/barrier/init/begin` + `/init/complete` for any tenant) is backed by a dedicated per-tenant store allocated from a storage **volume pool**. The daemon must therefore have `storage.volume_pools` configured; without one, barrier registration fails with `volume pool not configured on barrier registry`, and creating an `IsolationBarrier` tenant fails before the volume pool is wired.
 
-Per the platform architecture the **tenant admin chooses the per-tenant barrier strategy** — `none` / `passphrase` / `shamir` (or an injected hardware strategy) — via `POST /v1/tenants/{id}/barrier/init` (`TenantBarrierInitWithStrategy`), defaulting to `passphrase` for back-compat. The passphrase strategy requires a passphrase (no derived fallback).
+Per the platform architecture the **tenant admin chooses the per-tenant barrier strategy** — `none` / `passphrase` / `shamir` (or an injected hardware strategy) — via `POST /v1/tenants/{id}/barrier/init/begin` + `/init/complete` (`TenantBarrierInitWithStrategy`), defaulting to `passphrase` for back-compat. The passphrase strategy requires a passphrase (no derived fallback).
 
 Per-tenant `shamir` is fully supported and follows the **share-holder model** of [shamir-custody](../shamir-custody/): share material is never returned from init or rekey. Tenant barriers wrap `StorageBarrier`, so they inherit **unseal-key indirection** and the **holder roster**: the tenant's holders' shares carry a random unseal key that AEAD-wraps the tenant root key (wrapped blob at `tenant/<id>/root-key.wrapped`, bound to its path and roster through the AEAD associated data), and a tenant rekey cryptographically revokes all prior tenant shares. A tenant seal reaches every replica once the cluster has activated `cluster-seal`; an unseal acts on the node that receives it — see [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster). The flow:
 
 1. **Enrol tenant holders.** `POST /v1/tenants/{id}/barrier/officers` (`{username, role, csr_pem, …}`) has the ceremony CA issue each holder a certificate with a CA-assigned identity, `CN=<username>`, `OU=[<tenant>, <profile>]`, no SAN, which authenticates with no roles. `GET /v1/tenants/{id}/barrier/officers` lists them and their claim state.
-2. **Initialize.** `POST /v1/tenants/{id}/barrier/init` with `strategy: "shamir"` (and `threshold`/`shares`, where `shares` equals the enrolled holder count) splits the tenant unseal key and seals one HPKE envelope per holder into a `secure.Secret`. The response is **share-free** (`{threshold, total_shares, share_count}`).
+2. **Initialize.** `POST /v1/tenants/{id}/barrier/init/begin` + `/init/complete` with `strategy: "shamir"` (and `threshold`/`shares`, where `shares` equals the enrolled holder count) splits the tenant unseal key and seals one HPKE envelope per holder into a `secure.Secret`. The response is **share-free** (`{threshold, total_shares, share_count}`).
 3. **Claim.** Each holder claims its envelope exactly once over a connection presenting its certificate: `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` (nonce) → sign → `.../claim/complete`. The claim routes are **identity-gated**: the handler matches the presented certificate against the **target tenant's** holder registry, so a cross-tenant claim fails.
 4. **Unseal.** M holders each submit to `POST /v1/tenants/{id}/barrier/quorum/submit` with `op: unseal`, after a challenge from `.../quorum/begin`; each is counted once, authenticated against the tenant roster. Each tenant barrier owns its own quorum rounds, so quorum state is isolated per tenant. The single-credential `POST /v1/tenants/{id}/barrier/unseal` is for the credential strategies and refuses a Shamir barrier.
 5. **Seal.** Sealing a Shamir tenant barrier also requires a quorum: single-admin `POST /v1/tenants/{id}/barrier/seal` is refused, and M holders submit with `op: seal` instead. `none`/`passphrase` tenant barriers seal directly.
@@ -61,7 +61,7 @@ A dedicated-isolation tenant (`IsolationBarrier` or `IsolationVolume`) chooses *
 
 When `barrier_auto_unseal` is `false` (the default), `CreateTenant` registers the per-tenant barrier but does **not** initialize it — the barrier comes up **sealed**. The tenant admin then drives the barrier lifecycle through the tenant-barrier API:
 
-1. **Initialize** — `POST /v1/tenants/{id}/barrier/init` (`TenantBarrierInitWithStrategy`) with the chosen strategy (`passphrase` default, `none`, `shamir`, or an injected hardware strategy). See [Per-Tenant Seal Strategy Selection](#per-tenant-seal-strategy-selection-2026-06-02).
+1. **Initialize** — `POST /v1/tenants/{id}/barrier/init/begin` + `/init/complete` (`TenantBarrierInitWithStrategy`) with the chosen strategy (`passphrase` default, `none`, `shamir`, or an injected hardware strategy). See [Per-Tenant Seal Strategy Selection](#per-tenant-seal-strategy-selection-2026-06-02).
 2. **Unseal** — `POST /v1/tenants/{id}/barrier/unseal` (single key) or, for Shamir, the holder quorum (`POST /v1/tenants/{id}/barrier/quorum/submit`).
 
 The per-tenant data Host is built **lazily, only after the barrier is unsealed**. After a daemon restart the barrier comes up sealed again and the tenant's data is unreachable until it is re-unsealed. This is the strongest posture: the infrastructure operator and the system barrier hold no copy of the tenant key, so they cannot read the tenant's data at rest.
@@ -221,64 +221,82 @@ call `TenantBarrierInitWithStrategy` via any transport by including a non-empty 
 field in the init request:
 
 ```go
-// SDK call — select "none" strategy (plaintext, test/dev only)
-err := client.TenantBarrierInit(ctx, &transport.TenantBarrierInitRequest{
-    TenantID:  "acme",
-    Passphrase: "",        // ignored for non-passphrase strategies
-    Strategy:  "none",
+// SDK call — select "none" strategy (plaintext, test/dev only). adminKey is
+// the first admin's crypto.Signer: over a network transport the SDK proves
+// possession of it on the connection (init/begin + init/complete).
+_, err := client.TenantBarrierInit(ctx, &transport.TenantBarrierInitRequest{
+    TenantID: "acme",
+    Strategy: "none",
+    Signer:   adminKey,
 })
 
 // Select hardware TPM-backed strategy (requires go-xkms injection at composition time)
-err = client.TenantBarrierInit(ctx, &transport.TenantBarrierInitRequest{
+_, err = client.TenantBarrierInit(ctx, &transport.TenantBarrierInitRequest{
     TenantID: "secure-tenant",
-    Strategy: "tpm2",     // resolved from server's StrategyRegistry
+    Strategy: "tpm2", // resolved from server's StrategyRegistry
+    Signer:   adminKey,
 })
 ```
 
 ### Strategy resolution order
 
-1. When the server's `TenantService` was constructed with a `seal.StrategyRegistry`
-   (injected via `WithStrategyRegistry` in lifecycle `Infra.StrategyRegistry` or the
-   server option `WithStrategyRegistry`), the strategy is resolved from the registry.
-   This enables hardware/cloud strategies (tpm2, pkcs11, aws-kms, gcp-kms, azure-kv,
-   vault) registered by go-xkms at composition time.
-2. When no registry is injected, only the built-in software strategies are accepted:
-   `"passphrase"` (default) and `"none"`.
-3. An unregistered strategy name returns `InvalidStrategyError` with the list of
-   available strategies.
+The tenant service resolves every strategy through one seam,
+`seal.BarrierKeyProvider` (see
+[barrier-seal architecture](../barrier-seal/architecture.md#the-barrier-key-seam--barrierkeyprovider)).
+It asks for this node's key for `tenant/<id>`, passing the node's identity and
+the tenant's opaque `KeyRef` (`tenant.WithBarrierKeyRef`).
+
+1. A provider injected with `WithBarrierKeyProvider` (server option, or
+   `lifecycle.Infra.BarrierKeyProvider`) answers. go-xkms supplies hardware- and
+   KMS-backed providers; go-qrdb ships none.
+2. Otherwise the default provider, `seal.NewBarrierKeyProvider`, resolves the
+   name from the `StrategyRegistry` injected with `WithStrategyRegistry`
+   (`lifecycle.Infra.StrategyRegistry`), or from the default registry when none
+   is: `"passphrase"` (default) and `"none"`.
+3. A name the provider does not know returns `InvalidStrategyError` with the
+   list of available strategies. Any other provider failure returns
+   `BarrierError{Op: "strategy"}` carrying the cause.
 
 ### Passphrase requirement by strategy
 
-| Strategy | Passphrase required? | Notes |
-|----------|---------------------|-------|
-| `passphrase` (default) | Yes | Tenant admin's caller-supplied secret; no derived fallback. |
-| `none` | No | Plaintext barrier; use only where OS-level FDE provides equivalent protection. |
-| `shamir` | No (shares at unseal) | Threshold/shares configured at init time via Shamir flow. |
-| `tpm2`, `pkcs11`, `aws-kms`, etc. | No | Root key wrapped by hardware/cloud KEK; operator cannot unseal without the external backend. |
+The provider declares what a client must supply (`CredentialKind`); the tenant
+service requires a passphrase exactly when it says `CredentialPassphrase`.
 
-### Security property: operator isolation
+| Strategy | Credential | Notes |
+|----------|------------|-------|
+| `passphrase` (default) | passphrase | Tenant admin's caller-supplied secret; no derived fallback. |
+| `none` | none | Plaintext barrier; use only where OS-level FDE provides equivalent protection. |
+| `shamir` | shares | Threshold/shares configured at init time via Shamir flow. |
+| injected (`tpm2`, a KMS key, …) | as the provider declares | Root key wrapped by the provider's key; go-qrdb never parses the `KeyRef`. |
 
-When a hardware or cloud-KMS strategy is selected for a tenant barrier, the tenant root key is
-wrapped by a KEK that lives outside the qrdb process (TPM, HSM, cloud KMS). An infrastructure
-operator with file-system access cannot unseal the tenant's barrier without the external
-credential, realising **"per-tenant hardware/cloud-rooted barrier — the infrastructure
-operator cannot access the tenant's keys"**.
+### Who can release the key
 
-### Wiring the StrategyRegistry into TenantService
+The provider also declares `Custody`: who can release the key without the
+tenant present. When the tenant's strategy wraps under a key the tenant itself
+controls, the provider declares `owner`, and an operator with file-system
+access cannot unseal the barrier without that key. When the tenant opts into
+auto-unseal — `system-barrier`, or a key held on the node — the provider
+declares `platform`. That is the tenant's choice to make. The default provider
+reports `platform` for every registered strategy it cannot see into; only a
+composer that knows the key is the tenant's declares `owner`.
+
+### Wiring the provider into TenantService
 
 ```go
-// lifecycle.Infra field (pkg/server/lifecycle)
+// lifecycle.Infra fields (pkg/server/lifecycle)
 infra := lifecycle.Infra{
-    SealBarrier:      barrier,
-    BarrierRegistry:  barrierRegistry,
-    StrategyRegistry: myStrategyRegistry, // inject xkms-populated registry here
+    SealBarrier:        barrier,
+    BarrierRegistry:    barrierRegistry,
+    BarrierKeyProvider: myProvider,         // xkms-supplied; wins over the registry
+    StrategyRegistry:   myStrategyRegistry, // used by the default provider otherwise
     ...
 }
 node, err := lifecycle.BuildServices(ctx, infra)
 
 // Direct construction
 svc, err := tenant.NewTenantService(store, registry, logger,
-    tenant.WithStrategyRegistry(myStrategyRegistry),
+    tenant.WithBarrierKeyProvider(seal.NewBarrierKeyProvider(myStrategyRegistry)),
+    tenant.WithNodeID(nodeID),
 )
 ```
 
@@ -311,8 +329,19 @@ type TenantBarrierInitRequest struct {
     Threshold  int    // Shamir threshold
     Shares     int    // Shamir shares
     Strategy   string // seal strategy ID; empty = "passphrase"
+    Officers   []OfficerRegisterRequest // inline Shamir roster
+    Policy     string                   // factor policy for Officers
+    Signer     crypto.Signer            // first admin's key; never serialized
 }
 ```
+
+`Signer` is how a caller proves it holds the pending first admin's key. A
+network transport asks the node for a single-use nonce (`init/begin`), signs
+it bound to the connection's TLS 1.3 exporter, and sends the signature with
+the init (`init/complete`), on one connection. A `crypto.Signer` may be
+device-held, so the private key never leaves its device; the embedded
+transport is in process and does not use it. See
+[../multi-tenancy/api.md](../multi-tenancy/api.md#barrier-init-proof-of-possession).
 
 `Passphrase` is `[]byte`, matching `TenantBarrierUnsealRequest.Key`. A Go
 string is immutable and so cannot be zeroized; a byte slice can, and both ends
@@ -323,10 +352,10 @@ REST and QUIC JSON encodings therefore carry it as base64.
 
 | Protocol | Server-side | Wire format | Strategy field |
 |----------|-------------|-------------|----------------|
-| **REST** | `POST /v1/tenants/{id}/barrier/{init,unseal,seal}`, `GET /v1/tenants/{id}/barrier/status`, holder routes under `/v1/tenants/{id}/barrier/officers`, `/quorum/{begin,submit}`, `/rekey/start` | JSON | `strategy` in body |
-| **gRPC** | `qrdb.v1.TenantBarrierService/{Init,Unseal,Seal,Status,OfficerRegister,OfficerList,ShareClaimBegin,ShareClaimComplete,QuorumBegin,QuorumSubmit,RekeyStart,OfficerRevoke}` | JSON-over-gRPC | `strategy` in JSON payload |
-| **QUIC** | `tenant.BarrierInit`, `tenant.BarrierUnseal`, `tenant.BarrierSeal`, `tenant.BarrierStatus`, `tenant.BarrierOfficerRegister/OfficerList/OfficerRevoke`, `tenant.BarrierShareClaimBegin/ShareClaimComplete`, `tenant.BarrierQuorumBegin/QuorumSubmit`, `tenant.BarrierRekeyStart` | JSON | `strategy` in JSON frame |
-| **MCP** | `qrdb_tenant_barrier_init`, `..._unseal`, `..._seal`, `..._status`, `..._officer_register/officer_list/officer_revoke`, `..._share_claim_begin/share_claim_complete`, `..._quorum_begin/quorum_submit`, `..._rekey_start` | JSON-RPC 2.0 | `strategy` tool arg |
+| **REST** | `POST /v1/tenants/{id}/barrier/{init/begin,init/complete,unseal,seal}`, `GET /v1/tenants/{id}/barrier/status`, holder routes under `/v1/tenants/{id}/barrier/officers`, `/quorum/{begin,submit}`, `/rekey/start` | JSON | `strategy` in body |
+| **gRPC** | `qrdb.v1.TenantBarrierService/{InitBegin,InitComplete,Unseal,Seal,Status,OfficerRegister,OfficerList,ShareClaimBegin,ShareClaimComplete,QuorumBegin,QuorumSubmit,RekeyStart,OfficerRevoke}` | JSON-over-gRPC | `strategy` in JSON payload |
+| **QUIC** | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete`, `tenant.BarrierUnseal`, `tenant.BarrierSeal`, `tenant.BarrierStatus`, `tenant.BarrierOfficerRegister/OfficerList/OfficerRevoke`, `tenant.BarrierShareClaimBegin/ShareClaimComplete`, `tenant.BarrierQuorumBegin/QuorumSubmit`, `tenant.BarrierRekeyStart` | JSON | `strategy` in JSON frame |
+| **MCP** | `qrdb_tenant_barrier_init_begin`, `..._init_complete`, `..._unseal`, `..._seal`, `..._status`, `..._officer_register/officer_list/officer_revoke`, `..._share_claim_begin/share_claim_complete`, `..._quorum_begin/quorum_submit`, `..._rekey_start` | JSON-RPC 2.0 | `strategy` tool arg |
 | **Unix** | gRPC-over-UDS reuses `qrdb.v1.TenantBarrierService` | JSON-over-gRPC | `strategy` in JSON payload |
 | **Embedded** | Direct `tenant.TenantServicer` call | Go function call | `req.Strategy` field |
 

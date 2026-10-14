@@ -269,7 +269,7 @@ the identity fails.
 
 | scope | tenant-local identity | system-tenant identity |
 |---|---|---|
-| `ScopeSelf` | own tenant only | **lifted across all tenants** |
+| `ScopeSelf` | own tenant only | **own tenant only** (the system-tenant lift is removed; identical to `ScopeSelfStrict`) |
 | `ScopeCross` | denied | any tenant |
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
 | `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |

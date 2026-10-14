@@ -57,9 +57,9 @@ var WithBarrierAutoUnseal = tenant.WithBarrierAutoUnseal
 //
 // NewServiceTenantService (types_service.go) re-exports the TenantService
 // constructor; these aliases let a composing service supply its options
-// (notably a hardware-backed StrategyRegistry) through the SDK boundary. The
-// tenant-variant WithStrategyRegistry is named WithTenantStrategyRegistry to
-// avoid colliding with the embedded-server option WithStrategyRegistry
+// (notably a hardware-backed BarrierKeyProvider) through the SDK boundary. The
+// tenant-variant WithBarrierKeyProvider is named WithTenantBarrierKeyProvider
+// to avoid colliding with the embedded-server option WithBarrierKeyProvider
 // (types_server.go).
 // ---------------------------------------------------------------------------
 
@@ -67,10 +67,22 @@ var WithBarrierAutoUnseal = tenant.WithBarrierAutoUnseal
 // pkg/tenant.TenantServiceOption.)
 type TenantServiceOption = tenant.TenantServiceOption
 
-// WithTenantStrategyRegistry injects a StrategyRegistry so per-tenant barrier
-// initialization can resolve hardware/cloud seal strategies by name. (Aliases
-// pkg/tenant.WithStrategyRegistry.)
-var WithTenantStrategyRegistry = tenant.WithStrategyRegistry
+// WithTenantBarrierKeyProvider injects the BarrierKeyProvider per-tenant
+// barrier initialization resolves each node's sealing strategy through.
+// (Aliases pkg/tenant.WithBarrierKeyProvider.)
+var WithTenantBarrierKeyProvider = tenant.WithBarrierKeyProvider
+
+// WithTenantNodeID names the node a TenantService asks its
+// BarrierKeyProvider for keys on behalf of. (Aliases pkg/tenant.WithNodeID.)
+var WithTenantNodeID = tenant.WithNodeID
+
+// TenantBarrierInitOption configures one tenant barrier initialization.
+// (Aliases pkg/tenant.TenantBarrierInitOption.)
+type TenantBarrierInitOption = tenant.TenantBarrierInitOption
+
+// WithBarrierKeyRef passes the tenant's opaque key reference to the
+// BarrierKeyProvider at barrier init. (Aliases pkg/tenant.WithBarrierKeyRef.)
+var WithBarrierKeyRef = tenant.WithBarrierKeyRef
 
 // WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA
 // and the factor registry) per-tenant ceremonies are built with. (Aliases pkg/tenant.WithTenantHolderDeps.)
@@ -109,10 +121,46 @@ type EntitlementError = quota.EntitlementError
 // ---------------------------------------------------------------------------
 
 // StrategyRegistry resolves seal strategies by name. A composing service
-// registers its hardware/cloud strategy factories here and injects the registry
-// via WithTenantStrategyRegistry / WithStrategyRegistry. (Aliases
-// pkg/seal.StrategyRegistry.)
+// registers its strategy factories here and injects the registry via
+// WithStrategyRegistry, or wraps it with NewBarrierKeyProvider for
+// WithTenantBarrierKeyProvider. (Aliases pkg/seal.StrategyRegistry.)
 type StrategyRegistry = seal.StrategyRegistry
+
+// BarrierKeyProvider is the seam through which a node obtains the strategy
+// that seals its own key for one barrier. go-qrdb ships only the software
+// provider; a composer injects hardware- or KMS-backed ones. (Aliases
+// pkg/seal.BarrierKeyProvider.)
+type BarrierKeyProvider = seal.BarrierKeyProvider
+
+// BarrierKeyRequest names one node's key for one barrier. (Aliases
+// pkg/seal.BarrierKeyRequest.)
+type BarrierKeyRequest = seal.BarrierKeyRequest
+
+// BarrierKeyStrategy is a resolved strategy, the credential unsealing needs,
+// and who holds the wrapping key. (Aliases pkg/seal.BarrierKeyStrategy.)
+type BarrierKeyStrategy = seal.BarrierKeyStrategy
+
+// CredentialKind is what a client must supply to initialize or unseal a
+// barrier key. (Aliases pkg/seal.CredentialKind.)
+type CredentialKind = seal.CredentialKind
+
+// Custody records who can release a barrier key: the owner's own choice,
+// declared by the provider. (Aliases pkg/seal.Custody.)
+type Custody = seal.Custody
+
+// The CredentialKind and Custody values. (Aliases pkg/seal.)
+const (
+	CredentialNone       = seal.CredentialNone
+	CredentialPassphrase = seal.CredentialPassphrase
+	CredentialShares     = seal.CredentialShares
+	CustodyNone          = seal.CustodyNone
+	CustodyOwner         = seal.CustodyOwner
+	CustodyPlatform      = seal.CustodyPlatform
+)
+
+// NewBarrierKeyProvider returns the default BarrierKeyProvider over a
+// StrategyRegistry. (Aliases pkg/seal.NewBarrierKeyProvider.)
+var NewBarrierKeyProvider = seal.NewBarrierKeyProvider
 
 // SystemBarrierStrategy seals a tenant root key under the already-unsealed
 // system barrier, enabling credential-free system-managed auto-unseal. (Aliases

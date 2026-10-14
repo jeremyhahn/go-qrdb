@@ -816,9 +816,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.tenantSvc != nil {
 		s.addTools(tenantTools(s.tenantSvc, s.onboarding, s.authMW)...)
 		s.addTools(tenantBarrierTools(s.tenantSvc, tenantBarrierAuthorizers{
-			Op:     s.authorizeTenantBarrierOp,
-			Init:   s.authorizeTenantBarrierInit,
-			Sealed: s.authorizeTenantBarrierSealedOp,
+			Op:        s.authorizeTenantBarrierOp,
+			InitBegin: s.beginTenantBarrierInit,
+			Init:      s.authorizeTenantBarrierInit,
+			Sealed:    s.authorizeTenantBarrierSealedOp,
 		})...)
 	}
 	if s.volumeSvc != nil {

@@ -204,6 +204,23 @@ qrdb database unseal secure --secret "$SECRET"
 A database seal, like a tenant seal, reaches every node once `cluster-seal` is
 activated; only the tenant that owns the database may seal or unseal it.
 
+## Per-node barrier keys
+
+`qrdb tenant barrier-init` signs the barrier's epoch-1 init statement
+([architecture.md](architecture.md#per-node-barrier-keys)) with the key in the
+global `--key-file` — the first admin's, the same key that signs the init
+proof — and sends it with the init. No flag controls it. Without
+`--key-file` no statement is sent, and the init of a `raft` tenant's barrier
+is refused (`needs the barrier owner's signed init statement`); a `barrier` or `volume` tenant's init
+proceeds without one. The node that takes the init records the statement, and
+every other node serving the barrier initialises its own key from it; no
+command shows the record. On a cluster that has not activated
+`per-node-barrier-keys`, `qrdb tenant create --isolation-type
+barrier|volume|raft` fails as unavailable (exit status non-zero,
+`cluster feature "per-node-barrier-keys" is not active yet`) and creates
+nothing; a standalone node never refuses it. See
+[../multi-tenancy/cli.md](../multi-tenancy/cli.md#qrdb-tenant-create).
+
 ## Parity
 
 Every verb here has a `CommandDefinition` in the integration parity suite. Note

@@ -197,12 +197,13 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_rebalance_plan":                 permission.RebalancePlan,
 	"qrdb_rebalance_execute":              permission.RebalanceExecute,
 	"qrdb_rebalance_report":               permission.RebalanceReport,
-	// Init/Unseal/UnsealShare/Status are IdentityGated at the tool layer —
-	// the RBAC check runs inside the handlers with the shared
-	// trust-on-first-init / sealed-window fallbacks (see
-	// middleware.AuthorizeTenantBarrierInit / AuthorizeTenantBarrierSealedOp),
-	// identical to REST, gRPC, and QUIC.
-	"qrdb_tenant_barrier_init":                   permission.IdentityGated,
+	// Init begin/complete, Unseal, UnsealShare and Status are IdentityGated
+	// at the tool layer — the RBAC check runs inside the handlers with the
+	// shared trust-on-first-init / sealed-window fallbacks (see
+	// middleware.BeginTenantBarrierInit / AuthorizeTenantBarrierInitProof /
+	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and QUIC.
+	"qrdb_tenant_barrier_init_begin":             permission.IdentityGated,
+	"qrdb_tenant_barrier_init_complete":          permission.IdentityGated,
 	"qrdb_tenant_barrier_unseal":                 permission.IdentityGated,
 	"qrdb_tenant_barrier_seal":                   permission.TenantBarrierSeal,
 	"qrdb_tenant_barrier_status":                 permission.IdentityGated,

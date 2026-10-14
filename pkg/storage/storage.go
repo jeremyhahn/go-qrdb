@@ -14,6 +14,8 @@
 
 package storage
 
+import "context"
+
 // Reader is the read half of a key-value view: point lookups and ordered
 // range scans. Storage, Snapshot, and Batch all provide it, so code that only
 // reads can be written once and pointed at committed storage, at a
@@ -78,6 +80,20 @@ type Storage interface {
 type Syncer interface {
 	// Sync flushes pending writes to stable storage.
 	Sync() error
+}
+
+// GuardedStorage is an optional interface a Storage backend implements to offer
+// an atomic compare-and-swap on raw bytes. It sits beside Storage rather than
+// inside it, so existing Storage implementations are unaffected; assert for it
+// the same way as for Syncer.
+type GuardedStorage interface {
+	// CompareAndSwap atomically replaces key's value with next only when its
+	// stored value still equals expected. It reports swapped=true when this
+	// call replaced the value, and swapped=false with a nil error when the key
+	// was absent or held a different value, in which case storage is
+	// unchanged. An absent key is never created. A non-nil error means the
+	// outcome is unknown.
+	CompareAndSwap(ctx context.Context, key, expected, next []byte) (swapped bool, err error)
 }
 
 // Batch groups multiple writes into an atomic operation.

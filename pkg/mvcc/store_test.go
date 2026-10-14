@@ -17,6 +17,7 @@ package mvcc
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2161,5 +2162,143 @@ func TestCompact_ThenReadLatest(t *testing.T) {
 	}
 	if !bytes.Equal(kv2.Value, []byte("v3")) {
 		t.Errorf("Value at rev 3: got %q, want %q", kv2.Value, "v3")
+	}
+}
+
+// TestGetInBatch_SeesTheBatchsUncommittedWrite pins that GetInBatch reads
+// through the batch: a key written earlier in the same batch is visible to
+// it before the commit, while a read of the store is not.
+func TestGetInBatch_SeesTheBatchsUncommittedWrite(t *testing.T) {
+	s := newTestStore(t)
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+
+	if _, err := s.PutInBatch(batch, []byte("bk"), []byte("staged"), 0, 1); err != nil {
+		t.Fatalf("PutInBatch: %v", err)
+	}
+	kv, err := s.GetInBatch(batch, []byte("bk"))
+	if err != nil {
+		t.Fatalf("GetInBatch: %v", err)
+	}
+	if !bytes.Equal(kv.Value, []byte("staged")) || kv.ModRevision != 1 {
+		t.Errorf("GetInBatch = (%q, rev %d), want (%q, rev 1)", kv.Value, kv.ModRevision, "staged")
+	}
+	if _, err := s.Get([]byte("bk")); err == nil {
+		t.Error("Get on the store saw the uncommitted batch write")
+	}
+}
+
+// TestGetInBatch_MissingKey pins that a key absent from both the batch and
+// the store is reported as not found.
+func TestGetInBatch_MissingKey(t *testing.T) {
+	s := newTestStore(t)
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+
+	_, err := s.GetInBatch(batch, []byte("absent"))
+	var notFound *KeyNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *KeyNotFoundError", err)
+	}
+}
+
+// TestRangeInBatch_SeesTheBatchsUncommittedWrites pins that RangeInBatch
+// enumerates through the batch: keys staged in it join the committed ones
+// in the result, and the store alone still answers without them.
+func TestRangeInBatch_SeesTheBatchsUncommittedWrites(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Put([]byte("a"), []byte("committed"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+	if _, err := s.PutInBatch(batch, []byte("b"), []byte("staged"), 0, 2); err != nil {
+		t.Fatalf("PutInBatch: %v", err)
+	}
+	s.SetRevision(2) // as the apply loop advances it entry by entry
+
+	kvs, count, _, err := s.RangeInBatch(batch, []byte("a"), []byte("c"))
+	if err != nil {
+		t.Fatalf("RangeInBatch: %v", err)
+	}
+	if got := rangeKeys(kvs); count != 2 || !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("RangeInBatch = %v (count %d), want [a b] (count 2)", got, count)
+	}
+	committed, _, _, err := s.Range([]byte("a"), []byte("c"))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if got := rangeKeys(committed); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("Range on the store = %v, want [a]", got)
+	}
+}
+
+// TestRangeInBatch_EmptyBatchMatchesTheStore pins that a batch with no
+// writes answers exactly as the committed store does.
+func TestRangeInBatch_EmptyBatchMatchesTheStore(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Put([]byte(k), []byte("v"), 0); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+
+	kvs, count, rev, err := s.RangeInBatch(batch, []byte("b"), []byte("d"))
+	if err != nil {
+		t.Fatalf("RangeInBatch: %v", err)
+	}
+	if got := rangeKeys(kvs); count != 2 || !slices.Equal(got, []string{"b", "c"}) || rev != s.CurrentRevision() {
+		t.Errorf("RangeInBatch = %v (count %d, rev %d), want [b c] (count 2, rev %d)", got, count, rev, s.CurrentRevision())
+	}
+}
+
+// TestRange_Historical_ExcludesShorterKeysBelowStart pins the historical
+// enumeration's start bound for keys shorter than start. The scan seeks each
+// key length at start truncated to that length, so it lands on "a" and "ab"
+// for start "abc"; both sort below start and must not be returned, while the
+// shorter "b" sorts above it and must be.
+func TestRange_Historical_ExcludesShorterKeysBelowStart(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"a", "ab", "abc", "abd", "b"} {
+		if _, err := s.Put([]byte(k), []byte("v1"), 0); err != nil {
+			t.Fatalf("Put %q: %v", k, err)
+		}
+	}
+	rev := s.CurrentRevision()
+	if _, err := s.Put([]byte("abd"), []byte("v2"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	kvs, count, _, err := s.Range([]byte("abc"), []byte("c"), service.WithRevision(rev))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	got := rangeKeys(kvs)
+	slices.Sort(got)
+	if want := []string{"abc", "abd", "b"}; count != 3 || !slices.Equal(got, want) {
+		t.Errorf("historical Range = %v (count %d), want %v (count 3)", got, count, want)
+	}
+}
+
+// TestRange_SingleKey_CountOnly pins that a count-only single-key range
+// reports the key's presence without returning it.
+func TestRange_SingleKey_CountOnly(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Put([]byte("k"), []byte("v"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	kvs, count, _, err := s.Range([]byte("k"), nil, service.WithCountOnly())
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if kvs != nil || count != 1 {
+		t.Errorf("Range = (%v, count %d), want (nil, count 1)", kvs, count)
+	}
+	_, count, _, err = s.Range([]byte("missing"), nil, service.WithCountOnly())
+	if err != nil || count != 0 {
+		t.Errorf("Range of a missing key = (count %d, %v), want (count 0, nil)", count, err)
 	}
 }

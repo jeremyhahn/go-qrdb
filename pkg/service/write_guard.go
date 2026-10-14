@@ -207,6 +207,14 @@ func guardCommand(ctx context.Context, host Host, shardID uint64, cmd []byte) ([
 	return g.wrap(cmd)
 }
 
+// GuardsEnforced reports whether a write this service proposes carries its
+// context's WriteGuard: always, unless the Host gates features and has not
+// enabled guarded writes for the group (see guardCommand).
+func (s *KVService) GuardsEnforced() bool {
+	gated, ok := s.host.(FeatureGatedHost)
+	return !ok || gated.FeatureEnabled(s.shardID, featuregate.GuardedWrites)
+}
+
 // propose is the single path every synchronous Raft write in this package
 // takes: the command is wrapped with the context's WriteGuard, if any, and
 // proposed to shardID.

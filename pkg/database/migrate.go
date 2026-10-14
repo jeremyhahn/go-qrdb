@@ -19,13 +19,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
-
-// timeSeriesPrefixes are the key prefixes used by the time-series engine.
-var timeSeriesPrefixes = []string{"ts:", "idx:metric:", "idx:tag:", "retention:"}
 
 // MigrateIfNeeded checks whether a one-time migration from the flat
 // PebbleDB layout to the per-database directory structure is required.
@@ -120,16 +116,6 @@ func MigrateIfNeeded(logger *slog.Logger, dataDir string) error {
 
 	logger.Info("migration complete")
 	return nil
-}
-
-// isTimeSeriesKey reports whether the key belongs to the time-series engine.
-func isTimeSeriesKey(key string) bool {
-	for _, prefix := range timeSeriesPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // writeMetaFile writes a DatabaseMeta as JSON to the given path.

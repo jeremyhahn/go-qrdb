@@ -17,17 +17,22 @@ package rest
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -126,7 +131,7 @@ func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID stri
 	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
@@ -1153,7 +1158,7 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 	srv := newTenantServer(svc)
 
 	body := `{"passphrase":"c3VwZXItc2VjcmV0","threshold":3,"shares":5}` // passphrase is []byte: base64 on the wire
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1184,7 +1189,7 @@ func TestHandleTenantBarrierInit_EmptyBodyDefaults(t *testing.T) {
 	srv := newTenantServer(svc)
 
 	// Empty body — both threshold/shares must default to zero.
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1197,7 +1202,7 @@ func TestHandleTenantBarrierInit_EmptyBodyDefaults(t *testing.T) {
 func TestHandleTenantBarrierInit_InvalidBody(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader("not-json"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader("not-json"))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1212,7 +1217,7 @@ func TestHandleTenantBarrierInit_NotFound(t *testing.T) {
 	}
 	srv := newTenantServer(svc)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/ghost/barrier/init", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/ghost/barrier/init/complete", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1227,11 +1232,11 @@ func TestHandleTenantBarrierInit_EmptyID(t *testing.T) {
 	}
 	srv := newTenantServer(svc)
 
-	// "/v1/tenants//barrier/init" → CutSuffix yields id="" which is rejected
+	// "/v1/tenants//barrier/init/complete" → CutSuffix yields id="" which is rejected
 	// by the dispatcher's empty-id guard before reaching the handler. We
 	// exercise the handler-level error instead by providing a valid id but
 	// having the service return ErrEmptyTenantID.
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1241,7 +1246,7 @@ func TestHandleTenantBarrierInit_EmptyID(t *testing.T) {
 func TestHandleTenantBarrierInit_ServiceNil(t *testing.T) {
 	srv := newTenantServer(nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1256,11 +1261,160 @@ func TestHandleTenantBarrierInit_BarrierError(t *testing.T) {
 	}
 	srv := newTenantServer(svc)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tenants/{id}/barrier/init/begin (TenantBarrierInitBegin)
+// ---------------------------------------------------------------------------
+
+// TestHandleTenantBarrierInitBegin_NoProofAsked pins the unauthenticated
+// deployment: there is no identity to prove, so begin answers an empty
+// challenge rather than refusing.
+func TestHandleTenantBarrierInitBegin_NoProofAsked(t *testing.T) {
+	srv := newTenantServer(&mockTenantService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/begin", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	var out tenantBarrierInitBeginResponse
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Nonce) != 0 || out.Expires != 0 {
+		t.Fatalf("challenge = %+v; want none without an auth middleware", out)
+	}
+}
+
+func TestHandleTenantBarrierInitBegin_ServiceNil(t *testing.T) {
+	srv := newTenantServer(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/begin", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+// TestHandleTenantBarrierInitBegin_WithoutTLSUnauthenticated: a challenge is
+// bound to the connection's TLS exporter, so a request with no TLS state has
+// nothing to bind it to and is refused 401 rather than answered unbound.
+func TestHandleTenantBarrierInitBegin_WithoutTLSUnauthenticated(t *testing.T) {
+	srv := newTenantServer(&mockTenantService{})
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}))(srv)
+
+	rec := barrierRequest(t, srv, http.MethodPost, "/v1/tenants/acme/barrier/init/begin")
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+// tenantBarrierInitOnConn drives one init route with the identity and the
+// server half of conn bound the way the auth middleware binds them.
+func tenantBarrierInitOnConn(t *testing.T, srv *Server, conn *initprooftest.Conn, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, reader)
+	ctx := auth.WithIdentity(auth.WithTLSState(req.Context(), &conn.Server),
+		&auth.Identity{Subject: "acme-admin", TenantID: "acme"})
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req.WithContext(ctx))
+	return rec
+}
+
+// TestHandleTenantBarrierInit_ProofOverTheConnection runs the real
+// middleware end to end: begin issues a nonce bound to this connection,
+// complete redeems it with the client key's signature, and the same proof
+// replayed is refused 401 without reaching the tenant service again.
+func TestHandleTenantBarrierInit_ProofOverTheConnection(t *testing.T) {
+	inits := 0
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: tenantID}, nil
+		},
+		tenantBarrierInitFn: func(context.Context, string, []byte, int, int) error {
+			inits++
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}))(srv)
+
+	cert := initprooftest.Certificate(t, "acme-admin")
+	conn := initprooftest.Dial(t, cert)
+
+	rec := tenantBarrierInitOnConn(t, srv, conn, "/v1/tenants/acme/barrier/init/begin", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var challenge tenantBarrierInitBeginResponse
+	if err := json.NewDecoder(rec.Body).Decode(&challenge); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(challenge.Nonce) == 0 || challenge.Expires == 0 {
+		t.Fatalf("challenge = %+v; want a nonce and its expiry", challenge)
+	}
+
+	proof := conn.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", challenge.Nonce)
+	body := tenantBarrierInitRequest{
+		Passphrase: []byte("pw"),
+		Nonce:      proof.Nonce,
+		PublicKey:  proof.PublicKey,
+		Signature:  proof.Signature,
+	}
+	rec = tenantBarrierInitOnConn(t, srv, conn, "/v1/tenants/acme/barrier/init/complete", body)
+	assertStatus(t, rec, http.StatusNoContent)
+
+	rec = tenantBarrierInitOnConn(t, srv, conn, "/v1/tenants/acme/barrier/init/complete", body)
+	assertStatus(t, rec, http.StatusUnauthorized)
+	if inits != 1 {
+		t.Fatalf("tenant service reached %d times; want once", inits)
+	}
+}
+
+// TestHandleTenantBarrierInit_ProofOnAnotherConnectionRefused: a proof
+// signed over one connection's exporter does not verify on another, so a
+// relayed proof is refused even with the right key and a live nonce.
+func TestHandleTenantBarrierInit_ProofOnAnotherConnectionRefused(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: tenantID}, nil
+		},
+		tenantBarrierInitFn: func(context.Context, string, []byte, int, int) error {
+			t.Fatal("the tenant service must not be reached with a relayed proof")
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}))(srv)
+
+	cert := initprooftest.Certificate(t, "acme-admin")
+	first := initprooftest.Dial(t, cert)
+	second := initprooftest.Dial(t, cert)
+
+	rec := tenantBarrierInitOnConn(t, srv, first, "/v1/tenants/acme/barrier/init/begin", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var challenge tenantBarrierInitBeginResponse
+	if err := json.NewDecoder(rec.Body).Decode(&challenge); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	proof := first.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", challenge.Nonce)
+	rec = tenantBarrierInitOnConn(t, srv, second, "/v1/tenants/acme/barrier/init/complete", tenantBarrierInitRequest{
+		Passphrase: []byte("pw"),
+		Nonce:      proof.Nonce,
+		PublicKey:  proof.PublicKey,
+		Signature:  proof.Signature,
+	})
+	assertStatus(t, rec, http.StatusUnauthorized)
 }
 
 // ---------------------------------------------------------------------------

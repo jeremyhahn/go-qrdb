@@ -125,7 +125,7 @@ of them stub the call locally.
 | Database barrier status | `GET /v1/databases/{name}/barrier/status` | `databases:barrier_status` |
 | Database seal / unseal | `POST /v1/databases/{name}/seal` · `/unseal` | `databases:seal` · `databases:unseal` |
 | Database barrier config | `PATCH /v1/databases/{name}/barrier` | `databases:update` |
-| Tenant barrier init | `POST /v1/tenants/{id}/barrier/init` | identity-gated |
+| Tenant barrier init | `POST /v1/tenants/{id}/barrier/init/begin` · `/init/complete`, on one connection, with proof of possession of the first admin's key ([../multi-tenancy/api.md](../multi-tenancy/api.md#barrier-init-proof-of-possession)) | identity-gated |
 | Tenant barrier status | `GET /v1/tenants/{id}/barrier/status` | identity-gated |
 | Tenant barrier seal | `POST /v1/tenants/{id}/barrier/seal` | `TenantBarrierSeal` |
 | Tenant barrier unseal | `POST /v1/tenants/{id}/barrier/unseal` | identity-gated |
@@ -326,6 +326,51 @@ that is deliberate, since it is how an operator finds out what to do next.
 
 Share-holder and quorum errors are classified in
 [../shamir-custody/api.md](../shamir-custody/api.md#error-classes).
+
+**Per-node barrier keys.** The init statement's conditions
+([architecture.md](architecture.md#per-node-barrier-keys)) are classified once
+in `pkg/api/errclass`, so every transport answers them alike.
+
+A tenant barrier init carries the owner's signed epoch-1 statement, encoded as
+`barrierinit.InitStatement.Marshal` produces it, beside the init proof:
+
+| Transport | Field |
+|---|---|
+| REST | `init_statement` (base64) in the `POST /v1/tenants/{id}/barrier/init/complete` body |
+| gRPC / Unix | `bytes init_statement = 11` on `TenantBarrierInitRequest` |
+| QUIC | `init_statement` on the `tenant.BarrierInitComplete` request |
+| MCP | `init_statement` (base64) on `qrdb_tenant_barrier_init_complete`; bad base64 is refused before authorization |
+| Embedded | `Tenants().TenantBarrierInit` signs it from the request's `Signer` and passes it in process |
+
+The Go SDK signs it from `TenantBarrierInitRequest.Signer`
+(`barrierinit.SignTenantInit`); a request without a signer sends none. The
+TypeScript SDK cannot sign and sends none, so it initialises only barriers
+served by one node.
+
+Every node's tenant service claims the statement through the init book before
+it generates its own key, and every other node serving the barrier initialises
+its own key from the claimed record. On a clustered node both the claim and an
+isolated tenant create wait for `per-node-barrier-keys`; a standalone node
+gates neither.
+
+| Condition | REST | gRPC / Unix |
+|---|---|---|
+| Isolated tenant create, update to an isolated type, or a statement recorded, before `per-node-barrier-keys` is activated | 503 | `UNAVAILABLE` — `featuregate.NotActiveError`; retry after the rollout |
+| Init statement not signed by the barrier's owner, or malformed | 403 | `PERMISSION_DENIED` — `barrierinit.InitStatementError` |
+| The barrier's first epoch is already claimed by another statement | 409 | `ALREADY_EXISTS` — `barrierinit.BarrierAlreadyInitializedError` |
+| The statement's epoch does not follow the recorded one, or lost a race | 409 | `ABORTED` — `barrierinit.EpochConflictError`; read the record and retry |
+| The init record is corrupt | 500 | `INTERNAL` — `barrierinit.CorruptRecordError` |
+| Guarded writes are not active on the cluster | 503 | `UNAVAILABLE` — `barrierinit.GuardedWritesUnavailableError`; retry after the rollout |
+| Raft-isolated tenant barrier init without a statement | 400 | `INVALID_ARGUMENT` — `tenant.InitStatementRequiredError`; sign one with the first admin's key |
+| The barrier's first admin is already pinned to another key | 409 | `ALREADY_EXISTS` — `barrierinit.AnchorConflictError` |
+| Tenant barrier unseal: the root key is sealed with another strategy than the init statement names | 409 | `FAILED_PRECONDITION` — `seal.UnsealStrategyMismatchError` (matches `seal.ErrStrategyMismatch`); the barrier stays sealed |
+| Tenant barrier unseal: the recorded init statement no longer verifies against the pinned first admin | 403 | `PERMISSION_DENIED` — `barrierinit.InitStatementError` inside `tenant.BarrierError` |
+| Tenant barrier unseal: a raft-isolated tenant has no recorded init statement | 409 | `FAILED_PRECONDITION` — `tenant.InitStatementMissingError` |
+
+A tenant barrier unseal resolves its strategy from the barrier's claimed init
+statement through the node's `BarrierKeyProvider`, so the request carries only
+the credential, never a strategy or key reference; the restart behaviour is in
+[architecture.md](architecture.md#how-a-node-takes-part-tenant-barriers).
 
 ## Known limitation — share and PIN fields are still text strings
 

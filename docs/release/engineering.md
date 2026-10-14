@@ -61,6 +61,11 @@ limitations under the License.
   `make lint`, `go build ./...`, `make build-server`, `make coverage`,
   `make test-tags`) against the exact tagged tree, not a re-run of every
   ci.yml step — see architecture.md for why the rest is skipped.
+  `make lint` includes `lint-workflows`, which runs actionlint over
+  `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
+  the pinned `ACTIONLINT_VERSION` (Makefile, mirrored in ci.yml's env). The
+  tool is baked into the runner and lane images and never installed over the
+  network; a missing or mismatched actionlint fails the gate (#636).
 - **`publish` needs both `validate` and `gate`**, and addresses the forge's
   own releases API through `${{ github.api_url }}` rather than a hardcoded
   host, so the same workflow file publishes correctly on Gitea and on

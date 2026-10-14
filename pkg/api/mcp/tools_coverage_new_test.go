@@ -26,9 +26,11 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -145,18 +147,27 @@ func allowAllTenantScope(_ context.Context, _ string, _ permission.Permission) e
 }
 
 // allowAllTenantInit is the init-gate sibling of allowAllTenantScope: it
-// permits every tenant barrier initialization, isolating handler-behavior
-// tests from the trust-on-first-init authorization rule.
-func allowAllTenantInit(_ context.Context, _ string) error { return nil }
+// permits every tenant barrier initialization, proof or none, isolating
+// handler-behavior tests from the trust-on-first-init authorization rule.
+func allowAllTenantInit(_ context.Context, _ string, _ *authmw.TenantBarrierInitProof) error {
+	return nil
+}
 
-// allowAllTenantBarrierAuthz builds a tenantBarrierAuthorizers whose three
-// gates all permit every invocation, for registration/coverage tests that
-// exercise handler behavior rather than authorization.
+// allowAllTenantInitBegin is init/begin's sibling of allowAllTenantInit: it
+// admits every caller and asks no proof, as an unauthenticated node does.
+func allowAllTenantInitBegin(_ context.Context, _ string) (*initproof.Challenge, error) {
+	return &initproof.Challenge{}, nil
+}
+
+// allowAllTenantBarrierAuthz builds a tenantBarrierAuthorizers whose gates
+// all permit every invocation, for registration/coverage tests that exercise
+// handler behavior rather than authorization.
 func allowAllTenantBarrierAuthz() tenantBarrierAuthorizers {
 	return tenantBarrierAuthorizers{
-		Op:     allowAllTenantScope,
-		Init:   allowAllTenantInit,
-		Sealed: allowAllTenantScope,
+		Op:        allowAllTenantScope,
+		InitBegin: allowAllTenantInitBegin,
+		Init:      allowAllTenantInit,
+		Sealed:    allowAllTenantScope,
 	}
 }
 
@@ -231,7 +242,7 @@ func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id string, pas
 	}
 	return &tenant.TenantBarrierInitResult{TenantID: id, Strategy: string(seal.StrategyPassphrase)}, nil
 }
-func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 func (m *covMockTenantSvc) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
@@ -959,7 +970,7 @@ func TestCovWithTenantService(t *testing.T) {
 		t.Error("tenantSvc not set")
 	}
 	tools := s.MCPServer().ListTools()
-	for _, name := range []string{"qrdb_tenant_create", "qrdb_tenant_get", "qrdb_tenant_barrier_init"} {
+	for _, name := range []string{"qrdb_tenant_create", "qrdb_tenant_get", "qrdb_tenant_barrier_init_complete"} {
 		if _, ok := tools[name]; !ok {
 			t.Errorf("tool %s not registered", name)
 		}
@@ -1279,15 +1290,15 @@ func TestCovHandleTenantUpdateQuotas_ServiceError(t *testing.T) {
 func TestCovTenantBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantBarrierTools(svc, allowAllTenantBarrierAuthz())
-	// init, unseal, seal, status + the eight share-holder tools.
-	if len(tools) != 12 {
-		t.Fatalf("expected 12 tools, got %d", len(tools))
+	// init begin/complete, unseal, seal, status + the eight share-holder tools.
+	if len(tools) != 13 {
+		t.Fatalf("expected 13 tools, got %d", len(tools))
 	}
 }
 
 func TestCovHandleTenantBarrierInit_Success(t *testing.T) {
 	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantInit)
-	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{
 		"tenant_id": "acme", "passphrase": "secret", "threshold": float64(2), "shares": float64(3),
 	})
 	result, err := handler(context.Background(), req)
@@ -1301,7 +1312,7 @@ func TestCovHandleTenantBarrierInit_Success(t *testing.T) {
 
 func TestCovHandleTenantBarrierInit_MissingID(t *testing.T) {
 	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantInit)
-	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{})
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
 		t.Errorf("expected error result")
@@ -1314,7 +1325,7 @@ func TestCovHandleTenantBarrierInit_ServiceError(t *testing.T) {
 		return tenant.ErrTenantNotFound
 	}
 	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
-	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{"tenant_id": "missing"})
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init_complete", map[string]any{"tenant_id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error")

@@ -179,12 +179,13 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"barrier.QuorumSubmit":               permission.IdentityGated,
 	"barrier.RekeyStart":                 permission.SealRekey,
 	"barrier.OfficerRevoke":              permission.SealOfficerRevoke,
-	// Init/Unseal/Status are IdentityGated at dispatch — the
-	// RBAC check runs inside the handlers with the shared
+	// InitBegin/InitComplete/Unseal/Status are IdentityGated at dispatch —
+	// the RBAC check runs inside the handlers with the shared
 	// trust-on-first-init / sealed-window fallbacks (see
-	// middleware.AuthorizeTenantBarrierInit / AuthorizeTenantBarrierSealedOp),
-	// identical to REST, gRPC, and MCP.
-	"tenant.BarrierInit":               permission.IdentityGated,
+	// middleware.BeginTenantBarrierInit / AuthorizeTenantBarrierInitProof /
+	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and MCP.
+	"tenant.BarrierInitBegin":          permission.IdentityGated,
+	"tenant.BarrierInitComplete":       permission.IdentityGated,
 	"tenant.BarrierUnseal":             permission.IdentityGated,
 	"tenant.BarrierSeal":               permission.TenantBarrierSeal,
 	"tenant.BarrierStatus":             permission.IdentityGated,

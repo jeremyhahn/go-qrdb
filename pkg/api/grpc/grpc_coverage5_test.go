@@ -622,7 +622,7 @@ func TestTenantBarrier_Init_EmptyPassphrase(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
 	server := &tenantBarrierServer{svc: svc, authMW: nil}
 
-	_, err := server.Init(context.Background(), &pb.TenantBarrierInitRequest{
+	_, err := server.InitComplete(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId:   "t1",
 		Passphrase: []byte(""),
 		Strategy:   "shamir",

@@ -16,9 +16,11 @@ package conformance
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"strings"
 	"testing"
 
@@ -528,9 +530,12 @@ func TestTenantOnboarding_DedicatedTenantAdminInitializesItsBarrier(t *testing.T
 				t.Fatalf("%s: a barrier-isolated tenant's admin must be issued now and created at barrier init: %+v", tk, resp.Admin)
 			}
 
-			init := func(cl *sdk.Client) error {
+			// init proves possession of signer's key over the connection the
+			// call runs on (init/begin then init/complete).
+			init := func(cl *sdk.Client, signer crypto.Signer) error {
 				_, err := cl.Tenants().TenantBarrierInit(boundedCtx(t), &transport.TenantBarrierInitRequest{
 					TenantID: "vault", Strategy: "passphrase", Passphrase: []byte("correct horse battery staple"),
+					Signer: signer,
 				})
 				return err
 			}
@@ -539,19 +544,34 @@ func TestTenantOnboarding_DedicatedTenantAdminInitializesItsBarrier(t *testing.T
 			if err != nil {
 				t.Fatalf("issue eve: %v", err)
 			}
+			eveKey := pemSigner(t, eveKP.CertPEM, eveKP.KeyPEM)
 			// eve's certificate is trusted at the TLS layer and the tenant's
 			// identity records are sealed, so she reaches the barrier's
 			// first-init window; the window itself must refuse her, and say
 			// why -- a refusal for any other reason would not prove the gate.
 			eve := c.mustLogin(t, eveKP.CertPEM, eveKP.KeyPEM)
-			if err := init(eve); err == nil {
+			if err := init(eve, eveKey); err == nil {
 				t.Fatalf("%s: a certificate other than the onboarded admin's initialized the tenant's barrier", tk)
 			} else if !strings.Contains(err.Error(), "may be initialized only with the certificate its first admin") {
 				t.Fatalf("%s: eve was refused, but not by the first-init gate: %v", tk, err)
 			}
 
+			// The admin's own connection with no key to prove with, and with
+			// a key that is not the admin's: neither initializes. The second
+			// is the wrong-key case over the wire -- the connection is vera's,
+			// so only the proof can refuse it.
 			vera := c.mustLogin(t, []byte(resp.Admin.CertPEM), keyPEM)
-			if err := init(vera); err != nil {
+			var need *transport.InitSignerRequiredError
+			if err := init(vera, nil); !errors.As(err, &need) {
+				t.Fatalf("%s: init without a key = %v; want *transport.InitSignerRequiredError", tk, err)
+			}
+			if err := init(vera, eveKey); err == nil {
+				t.Fatalf("%s: a proof signed by a key other than the admin's initialized the barrier", tk)
+			} else if !strings.Contains(err.Error(), "barrier init proof") {
+				t.Fatalf("%s: the wrong key was refused, but not by the proof: %v", tk, err)
+			}
+
+			if err := init(vera, pemSigner(t, []byte(resp.Admin.CertPEM), keyPEM)); err != nil {
 				t.Fatalf("%s: the onboarded admin could not initialize its tenant's barrier: %v", tk, err)
 			}
 			// The account is created when the barrier becomes usable; a
@@ -559,4 +579,19 @@ func TestTenantOnboarding_DedicatedTenantAdminInitializesItsBarrier(t *testing.T
 			assertAdminOf(t, tk, c.mustLogin(t, []byte(resp.Admin.CertPEM), keyPEM), "vault")
 		})
 	}
+}
+
+// pemSigner returns the test-generated key of the certificate/key pair as the
+// crypto.Signer a tenant barrier init proves possession with.
+func pemSigner(t *testing.T, certPEM, keyPEM []byte) crypto.Signer {
+	t.Helper()
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("key pair: %v", err)
+	}
+	signer, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		t.Fatalf("key %T is not a crypto.Signer", pair.PrivateKey)
+	}
+	return signer
 }

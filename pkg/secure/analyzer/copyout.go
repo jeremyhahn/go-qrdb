@@ -44,9 +44,9 @@ import (
 // # Sources: a copy of protected bytes into ordinary memory
 //
 // A VIEW is protected memory seen as a []byte: the parameter of a function
-// literal passed to a WithBytes(func([]byte) error) error method (any type —
-// secure.Buffer, secret.SecretValue, a go-enclave enclave, a Borrower), or a
-// re-slice of one. A COPY-OUT is:
+// literal passed as the last argument of a WithBytes method (any type —
+// secure.Buffer, secure.Secret's WithBytes(ctx, fn), secret.SecretValue, a
+// go-enclave enclave, a Borrower), or a re-slice of one. A COPY-OUT is:
 //
 //   - append(x, view...)
 //   - copy(dst, view) where dst is not itself a view
@@ -509,15 +509,16 @@ func (st *copyState) views(body *ast.BlockStmt) map[*types.Var]struct{} {
 	return out
 }
 
-// withBytesCallback returns the literal callback when call is a
-// WithBytes(func([]byte) error) error call whose argument is a function
-// literal.
+// withBytesCallback returns the literal callback when call is a WithBytes
+// call whose LAST argument is a func([]byte) error literal: the one-argument
+// borrow of secure.Buffer and its kin, and the scoped
+// secure.Secret.WithBytes(ctx, fn), whose callback receives the same view.
 func withBytesCallback(info *types.Info, call *ast.CallExpr) *ast.FuncLit {
 	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != "WithBytes" || len(call.Args) != 1 {
+	if !ok || sel.Sel.Name != "WithBytes" || len(call.Args) == 0 {
 		return nil
 	}
-	lit, ok := ast.Unparen(call.Args[0]).(*ast.FuncLit)
+	lit, ok := ast.Unparen(call.Args[len(call.Args)-1]).(*ast.FuncLit)
 	if !ok {
 		return nil
 	}

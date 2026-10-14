@@ -471,6 +471,11 @@ selects the database's store but never a separate index implementation.
   registration, encoding round-trips including the `\x00` escape), `pkg/planner`
   (plan selection for each row of the prefix-matching table, cost comparison,
   plan cache hit/miss).
+- **Conformance**: `pkg/index/indextest` holds the numeric-scan, string-scan
+  and case-folding contracts as suites. `index.MemoryIndex`,
+  `index.StoragePebbleIndex` and `pebbleindex.Index` each run them against
+  themselves, so one contract holds every implementation without `pkg/index`
+  importing the backends.
 - **Security tests** are first-class here: unknown field, non-whitelisted
   operator, and an attempted injection through a value must each be refused.
 - **Error tests** per function, happy path plus error path.

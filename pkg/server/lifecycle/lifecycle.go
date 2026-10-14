@@ -163,11 +163,17 @@ type Infra struct {
 	RaftAddrToNodeID map[string]string
 
 	// StrategyRegistry is the canonical name→factory lookup for sealing
-	// strategies. When non-nil it is injected into the TenantService so
-	// operators can select hardware/cloud seal strategies (tpm2, pkcs11,
-	// aws-kms, etc.) for per-tenant barriers. When nil the TenantService
-	// falls back to the built-in software-only strategies (passphrase, none).
+	// strategies. When BarrierKeyProvider is nil, the TenantService resolves
+	// per-tenant barrier strategies through seal.NewBarrierKeyProvider over
+	// this registry. When both are nil it knows only the built-in software
+	// strategies (passphrase, none).
 	StrategyRegistry seal.StrategyRegistry
+
+	// BarrierKeyProvider is the seam through which this node obtains the
+	// strategy that seals its own key for a tenant barrier. A composer
+	// (go-xkms) injects a hardware- or KMS-backed provider here; it wins
+	// over StrategyRegistry.
+	BarrierKeyProvider seal.BarrierKeyProvider
 
 	// CredentialCoreSvc is the core credential service built on top of the
 	// SealBarrier. Required when SealBarrier is non-nil.
@@ -575,6 +581,11 @@ type Node struct {
 	// PendingAdmins holds the first admins of tenants whose identity records
 	// are behind their own not-yet-initialized barrier (pkg/tenantadmin).
 	PendingAdmins tenantadmin.Store
+
+	// BarrierInit is the per-node barrier init records and anchors
+	// (pkg/barrierinit) every tenant barrier init claims its owner's
+	// statement through. Nil exactly when Tenant is.
+	BarrierInit *BarrierInit
 
 	// CertEnrollment is the certificate issue/enrol and trust-anchor service
 	// every transport delegates to; TenantOnboarding the tenant-create one.
@@ -1260,6 +1271,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			"hint", "encryption cannot be added in place; provision a new node/tenant with seal.enabled: true and migrate data via backup/restore")
 	}
 
+	// A standalone node serves every tenant barrier. A clustered node starts
+	// its watcher over the placement table once its tenants' Raft groups are
+	// composed (ComposeRaftTenantCluster).
+	if standaloneHost(infra.Host) {
+		if err := startLocalBarrierInitWatcher(n, log); err != nil {
+			log.Warn("barrier init: watcher not started; this node initializes no tenant barrier from its owner's statement",
+				slog.Any("error", err))
+		}
+	}
+
 	return n, nil
 }
 
@@ -1507,6 +1528,18 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// tenant's own `roles list` can never see. See tenant.RoleSeeder's
 		// doc comment.
 		tenantOpts = append(tenantOpts, tenant.WithRoleSeeder(roleSeederAdapter{shared: authStore}))
+		// Every node serving an isolated tenant initializes its own key from
+		// the owner's signed epoch-1 init statement (startBarrierInitWatcher,
+		// startLocalBarrierInitWatcher), so an isolated tenant is admitted, and
+		// its statement claimed, only once every member can: both wait on the
+		// per-node-barrier-keys activation, which a standalone node does not
+		// gate. Onboarding pins each tenant's first admin as the anchor its
+		// statements verify against.
+		barrierInit := newBarrierInit(n.KV)
+		perNodeKeys := perNodeBarrierKeysRequired(infra.Host)
+		tenantOpts = append(tenantOpts,
+			tenant.WithPerNodeBarrierKeysGate(perNodeKeys),
+			tenant.WithBarrierInitBook(barrierInit.book(perNodeKeys)))
 		// Tenant metadata (TenantInfo) is replicated cluster state: back it with
 		// the REPLICATED system shard via the KV service — exactly like the
 		// user, role, and placement stores — so a tenant created on one node is
@@ -1522,6 +1555,8 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			return &TenantServiceError{Err: err}
 		}
 		n.Tenant = tenantSvcInst
+		barrierInit.selfInit = tenantSvcInst
+		n.BarrierInit = barrierInit
 
 		// One-time, non-fatal compatibility migration: older builds persisted
 		// TenantInfo to the node-local seal store. Copy any such records that are
@@ -1615,7 +1650,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		service.WithEnrollmentTrustDomain(infra.SPIFFETrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
 		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy))
-	n.TenantOnboarding = service.NewTenantOnboardingService(service.TenantOnboardingDeps{
+	onboardingDeps := service.TenantOnboardingDeps{
 		Tenants:     n.Tenant,
 		Users:       n.User,
 		Roles:       n.Role,
@@ -1626,7 +1661,13 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
-	})
+	}
+	// The anchor every node verifies a tenant barrier's epoch-1 init statement
+	// against is the first admin onboarding records.
+	if n.BarrierInit != nil {
+		onboardingDeps.BarrierAnchors = n.BarrierInit.Anchors
+	}
+	n.TenantOnboarding = service.NewTenantOnboardingService(onboardingDeps)
 
 	// Invitation self-enrolment. invitationUsers is n.User (the FINAL,
 	// tenant-routed service this function runs after) asserted to
@@ -1753,10 +1794,12 @@ func resolveReplicaID(id uint64) uint64 {
 }
 
 // buildTenantServiceOpts returns the TenantServiceOptions derived from the
-// Infra. When Infra.StrategyRegistry is non-nil, WithStrategyRegistry is
-// included so the TenantService can resolve hardware/cloud seal strategies.
+// Infra. The TenantService resolves barrier strategies through
+// Infra.BarrierKeyProvider, else the default provider over
+// Infra.StrategyRegistry, and names this node by nodeIdentity in every
+// barrier-key request.
 func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
-	var opts []tenant.TenantServiceOption
+	opts := []tenant.TenantServiceOption{tenant.WithNodeID(nodeIdentity(infra.Host))}
 	// Reserve the node's own data directory so an operator-supplied dedicated
 	// DataRoot (WithDataRoot) can never be placed equal to, above, or below the
 	// system data dir — which would nest a tenant's dedicated disk inside the
@@ -1766,8 +1809,11 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 	if infra.DataDir != "" {
 		opts = append(opts, tenant.WithReservedDataRoots(infra.DataDir))
 	}
-	if infra.StrategyRegistry != nil {
-		opts = append(opts, tenant.WithStrategyRegistry(infra.StrategyRegistry))
+	switch {
+	case infra.BarrierKeyProvider != nil:
+		opts = append(opts, tenant.WithBarrierKeyProvider(infra.BarrierKeyProvider))
+	case infra.StrategyRegistry != nil:
+		opts = append(opts, tenant.WithBarrierKeyProvider(seal.NewBarrierKeyProvider(infra.StrategyRegistry)))
 	}
 	if infra.DefaultTenantQuotas != nil {
 		opts = append(opts, tenant.WithDefaultQuotas(infra.DefaultTenantQuotas))

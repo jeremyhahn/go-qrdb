@@ -20,6 +20,7 @@ package file
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -31,6 +32,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
@@ -38,6 +40,9 @@ import (
 var (
 	_ storage.Storage = (*Engine)(nil)
 	_ storage.Syncer  = (*Engine)(nil)
+
+	_ storage.Exclusive  = (*Engine)(nil)
+	_ storage.ReadWriter = lockedView{}
 )
 
 // Engine is a file-based storage engine with a hashed, flat on-disk layout.
@@ -62,14 +67,36 @@ var (
 // replaced one-file/one-directory per key with this one) and the two are
 // incompatible: New refuses to open a non-empty data directory that was not
 // written by this exact format (see formatMarkerFileName).
+//
+// # Sharing a directory between processes
+//
+// More than one process may open the same directory (an application that loads
+// a PKCS#11 module and the daemon that serves it, say). Every mutation -- Set,
+// Delete, a batch commit, open-time recovery -- holds an exclusive advisory OS
+// lock (flock(2) / LockFileEx, on lockFileName in the root) for its duration,
+// and Exclusive lets a caller hold the same lock across a read-check-write, so
+// a guarded write (compare-and-swap, save-if-absent) is atomic across
+// processes. Readers take no lock and stay correct: a record is replaced by
+// renaming a fully written temporary file over it, so a Get sees the old record
+// or the new one, never a torn one.
+//
+// The lock is advisory and is honoured only by processes using this engine, and
+// it excludes only writers that reach the files through the same lock file; the
+// directory must be on a local filesystem (flock is not reliable over NFS).
 type Engine struct {
 	dir    string
 	closed atomic.Bool
 
-	// journalMu serializes batch commits: the commit journal is a single
-	// file in the engine root, so two concurrent commits must not
-	// interleave publish/apply/clear.
-	journalMu sync.Mutex
+	// writeMu is the in-process half of the engine's write exclusion, and
+	// lock the cross-process half; lockWrites takes both, in that order. Every
+	// mutation holds them: a Set, a Delete, a batch commit (whose journal is a
+	// single file in the engine root, so two commits must not interleave
+	// publish/apply/clear) and the open-time recovery. An OS file lock belongs
+	// to the open file, so two goroutines sharing lock would both hold it --
+	// writeMu is what stops that. A nil lock (an Engine built by hand in a
+	// test) is only ever used through the unlocked internals.
+	writeMu sync.Mutex
+	lock    *filelock.File
 
 	// durableShardDirs remembers, by path, every shard directory this
 	// Engine has already confirmed durable (see ensureShardDirDurable): a
@@ -90,6 +117,12 @@ const (
 	// non-empty data directory, and writes when creating a fresh one. See
 	// FormatMarkerMissingError and FormatVersionMismatchError.
 	formatMarkerFileName = ".qrdb-file-format"
+
+	// lockFileName names the file in the engine root that carries the
+	// cross-process write lock (see Engine). It holds no data and is never
+	// removed. ensureFormatMarker does not count it as content, because New
+	// creates it before deciding whether the directory is fresh.
+	lockFileName = ".qrdb-file-lock"
 
 	// formatVersion is this build's on-disk format. Bump it, and the error
 	// messages that name it, whenever the layout or record format changes
@@ -134,6 +167,13 @@ const (
 // An interrupted batch commit from a previous process is completed here (see
 // recoverJournal); a corrupt journal fails the open rather than silently
 // serving a half-applied batch.
+//
+// The open-time work (format marker, journal recovery, stray temp-file cleanup)
+// runs under the same cross-process write lock as every write, so a second
+// process opening a directory the first is writing to waits for the write in
+// flight instead of removing its temporary file or replaying its journal. The
+// lock is released on every return path and the lock file is closed when the
+// open fails.
 func New(dir string) (*Engine, error) {
 	if dir == "" {
 		return nil, storage.ErrInvalidPath
@@ -141,18 +181,113 @@ func New(dir string) (*Engine, error) {
 	if err := mkdirAllDurable(dir); err != nil {
 		return nil, err
 	}
-	e := &Engine{dir: dir}
-	if err := e.ensureFormatMarker(); err != nil {
+	lock, err := filelock.Open(filepath.Join(dir, lockFileName))
+	if err != nil {
 		return nil, err
 	}
-	if err := e.recoverJournal(); err != nil {
-		return nil, err
-	}
-	if err := e.cleanupTempSetFiles(); err != nil {
+	e := &Engine{dir: dir, lock: lock}
+	if err := e.recoverUnderLock(); err != nil {
+		_ = lock.Close()
 		return nil, err
 	}
 	return e, nil
 }
+
+// recoverUnderLock performs the open-time work of New while holding the write
+// lock.
+func (e *Engine) recoverUnderLock() (err error) {
+	if err := e.acquireWrites(); err != nil {
+		return err
+	}
+	defer func() { err = e.unlockWrites(err) }()
+
+	// The format is validated before the journal is replayed: a directory
+	// this build refuses must not be written to on the way to refusing it.
+	if err := e.ensureFormatMarker(); err != nil {
+		return err
+	}
+	if err := e.recoverJournal(); err != nil {
+		return err
+	}
+	return e.cleanupTempSetFiles()
+}
+
+// lockWrites takes the engine's write exclusion (see acquireWrites) and then
+// finishes any commit a dead process left journaled, so no mutation is
+// admitted over a half-applied batch. On any error nothing is held.
+func (e *Engine) lockWrites() error {
+	if err := e.acquireWrites(); err != nil {
+		return err
+	}
+	// A process that died mid-commit left its journal behind; finish that
+	// commit before admitting any other mutation.
+	if err := e.replayJournal(); err != nil {
+		_ = e.lock.Unlock()
+		e.writeMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// acquireWrites takes writeMu, then the cross-process lock, without touching
+// the directory's contents. It refuses a closed Engine, and re-checks after
+// taking writeMu because Close takes writeMu before closing the lock file, so
+// a lock file observed open here stays open until unlockWrites. On any error
+// nothing is held.
+func (e *Engine) acquireWrites() error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	e.writeMu.Lock()
+	if e.closed.Load() {
+		e.writeMu.Unlock()
+		return &storage.ClosedError{}
+	}
+	if err := e.lock.Lock(); err != nil {
+		e.writeMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// unlockWrites releases what lockWrites took and returns err, or the release
+// failure when err is nil, so a write that succeeded but could not give the lock
+// back is reported rather than hiding a stuck lock. writeMu is released even
+// then; filelock.Unlock closes the file on failure so the OS lets go regardless.
+func (e *Engine) unlockWrites(err error) error {
+	uerr := e.lock.Unlock()
+	e.writeMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return uerr
+}
+
+// Exclusive runs fn while holding the engine's exclusive write lock, in this
+// process and across every process sharing the directory. See storage.Exclusive.
+func (e *Engine) Exclusive(fn func(storage.ReadWriter) error) (err error) {
+	if err := e.lockWrites(); err != nil {
+		return err
+	}
+	defer func() { err = e.unlockWrites(err) }()
+	return fn(lockedView{e})
+}
+
+// lockedView is the storage.ReadWriter Exclusive hands to its callback: reads
+// and writes that do not take the write lock, because the caller already holds
+// it.
+type lockedView struct {
+	e *Engine
+}
+
+// Get reads key.
+func (v lockedView) Get(key []byte) ([]byte, error) { return v.e.Get(key) }
+
+// Set writes key without taking the write lock.
+func (v lockedView) Set(key, value []byte) error { return v.e.set(key, value) }
+
+// Delete removes key without taking the write lock.
+func (v lockedView) Delete(key []byte) error { return v.e.del(key) }
 
 // walkShardDirs calls fn once for every path filepath.Walk would report
 // beneath one of this engine's own shard directories -- never for the
@@ -359,14 +494,30 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 // renamed into place, then that directory is fsynced. A crash therefore
 // leaves either the old record or the new one, never a torn file — the
 // durability contract the raft state-machine storage seam (raft.sm_storage:
-// file) relies on.
-func (e *Engine) Set(key, value []byte) error {
+// file) relies on. It holds the write lock (see Engine) for the duration.
+func (e *Engine) Set(key, value []byte) (err error) {
+	if err := e.lockWrites(); err != nil {
+		return err
+	}
+	defer func() { err = e.unlockWrites(err) }()
+	return e.set(key, value)
+}
+
+// set is Set without the write lock, for callers that already hold it: the
+// open-time recovery, a batch commit and Exclusive.
+func (e *Engine) set(key, value []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
 	if err := checkKey(key); err != nil {
 		return err
 	}
+	return e.writeRecord(key, value)
+}
+
+// writeRecord durably replaces the record for key. The caller holds the write
+// lock.
+func (e *Engine) writeRecord(key, value []byte) error {
 	dir, path := e.recordPaths(key)
 	if err := e.ensureShardDirDurable(dir); err != nil {
 		return err
@@ -379,31 +530,137 @@ func (e *Engine) Set(key, value []byte) error {
 	record := encodeRecord(key, value)
 	if _, err := tmp.Write(record); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
+		return err
+	}
+	// Chmod the open handle, not the path: the record is private to the owner
+	// whatever the umask or the temp-file default.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		e.discardTemp(tmpName)
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
+
 	// fsync.Rename is the rename and its directory sync as one operation. The
 	// temp file and the target share dir, so it is synced exactly once -- the
 	// same work the separate os.Rename + directory-fsync pair did, with no second
 	// place for the pairing to be got wrong (go-qrdb#268).
 	if err := fsync.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
 	return nil
+}
+
+// CompareAndSwap implements storage.GuardedStorage. The read, compare and write
+// run under the engine's write lock, in this process and across every process
+// sharing the directory (see Engine), so concurrent swaps on a key serialise
+// wherever they run. The write goes through the same path as Set.
+func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte) (swapped bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := checkKey(key); err != nil {
+		return false, err
+	}
+	if err := e.lockWrites(); err != nil {
+		return false, err
+	}
+	defer func() { err = e.unlockWrites(err) }()
+
+	current, err := e.Get(key)
+	if err != nil {
+		return false, err
+	}
+	if current == nil || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	if err := e.set(key, next); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// removeRecord removes the record file at path through an *os.Root opened on
+// the store directory, so a path derived from a caller's key cannot name
+// anything outside the store.
+func (e *Engine) removeRecord(path string) error {
+	rel, err := filepath.Rel(e.dir, path)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(e.dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return root.Remove(rel)
+}
+
+// mkdirShardDurable is mkdirAllDurable for a directory beneath the store root,
+// which exists since New: it walks the components below the root through an
+// *os.Root, creating each missing one and fsyncing its parent, so a path
+// derived from a caller's key cannot reach outside the store.
+func (e *Engine) mkdirShardDurable(dir string) error {
+	rel, err := filepath.Rel(e.dir, dir)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(e.dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	cur := "."
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		next := filepath.Join(cur, part)
+		info, err := root.Stat(next)
+		switch {
+		case err == nil:
+			if !info.IsDir() {
+				return &os.PathError{Op: "mkdir", Path: filepath.Join(e.dir, next), Err: os.ErrExist}
+			}
+		case os.IsNotExist(err):
+			// A concurrent creator may win the race; either way the entry must
+			// be durable before the caller writes into it.
+			if err := root.Mkdir(next, 0o700); err != nil && !os.IsExist(err) {
+				return err
+			}
+		default:
+			return err
+		}
+		if err := fsync.Dir(filepath.Join(e.dir, cur)); err != nil {
+			return err
+		}
+		cur = next
+	}
+	return nil
+}
+
+// discardTemp removes the temp file name, best effort, on a failed write. The
+// temp path derives from the caller's key, so it is removed through an
+// *os.Root opened on the store directory: the removal cannot leave the store
+// whatever the path holds.
+func (e *Engine) discardTemp(name string) {
+	rel, err := filepath.Rel(e.dir, name)
+	if err != nil {
+		return
+	}
+	root, err := os.OpenRoot(e.dir)
+	if err != nil {
+		return
+	}
+	defer func() { _ = root.Close() }()
+	_ = root.Remove(rel)
 }
 
 // Delete removes a key from storage. The key's shard directories are left in
@@ -412,8 +669,18 @@ func (e *Engine) Set(key, value []byte) error {
 // every key that happens to hash into them, so pruning would race a
 // concurrent Set of an unrelated key hashing into the same shard — and
 // unlike the previous per-key directory layout, there is no unbounded growth
-// to prune in the first place.
-func (e *Engine) Delete(key []byte) error {
+// to prune in the first place. It holds the write lock (see Engine) for the
+// duration.
+func (e *Engine) Delete(key []byte) (err error) {
+	if err := e.lockWrites(); err != nil {
+		return err
+	}
+	defer func() { err = e.unlockWrites(err) }()
+	return e.del(key)
+}
+
+// del is Delete without the write lock, for callers that already hold it.
+func (e *Engine) del(key []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -421,7 +688,7 @@ func (e *Engine) Delete(key []byte) error {
 		return err
 	}
 	dir, path := e.recordPaths(key)
-	if rmErr := os.Remove(path); rmErr != nil {
+	if rmErr := e.removeRecord(path); rmErr != nil {
 		if os.IsNotExist(rmErr) {
 			return nil
 		}
@@ -529,7 +796,8 @@ func (e *Engine) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	return newIterator(e, opts)
 }
 
-// Snapshot creates a point-in-time snapshot for consistent reads.
+// Snapshot creates a point-in-time snapshot for consistent reads. Like every
+// read it takes no lock (see Engine).
 func (e *Engine) Snapshot() (storage.Snapshot, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
@@ -547,10 +815,19 @@ func (e *Engine) Sync() error {
 	return fsync.Dir(e.dir)
 }
 
-// Close marks the engine as closed. Subsequent operations return ClosedError.
+// Close marks the engine as closed and closes its lock file, releasing the
+// cross-process lock. Subsequent operations return ClosedError. It waits for a
+// write in flight, and is idempotent.
 func (e *Engine) Close() error {
-	e.closed.Store(true)
-	return nil
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	if e.closed.Swap(true) {
+		return nil
+	}
+	if e.lock == nil {
+		return nil
+	}
+	return e.lock.Close()
 }
 
 // ensureShardDirDurable is mkdirAllDurable for one of e's own shard
@@ -571,7 +848,7 @@ func (e *Engine) ensureShardDirDurable(dir string) error {
 	if _, ok := e.durableShardDirs.Load(dir); ok {
 		return nil
 	}
-	if err := mkdirAllDurable(dir); err != nil {
+	if err := e.mkdirShardDurable(dir); err != nil {
 		return err
 	}
 	e.durableShardDirs.Store(dir, struct{}{})
@@ -653,6 +930,9 @@ func (e *Engine) ensureFormatMarker() error {
 			if ent.IsDir() && ent.Name() == lostAndFoundDirName {
 				continue
 			}
+			if !ent.IsDir() && ent.Name() == lockFileName {
+				continue
+			}
 			return &FormatMarkerMissingError{Dir: e.dir}
 		}
 		return e.writeFormatMarker()
@@ -672,20 +952,20 @@ func (e *Engine) writeFormatMarker() error {
 	tmpName := tmp.Name()
 	if _, err := tmp.WriteString(formatVersion); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
 	if err := fsync.Rename(tmpName, filepath.Join(e.dir, formatMarkerFileName)); err != nil {
-		_ = os.Remove(tmpName)
+		e.discardTemp(tmpName)
 		return err
 	}
 	return nil

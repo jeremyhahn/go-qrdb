@@ -275,6 +275,14 @@ func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
 	return secure.NewSecretFromBuffer(ctx, buf)
 }
 
+// NewEmptySecret is the SDK re-export of secure.NewEmptySecret: a live
+// Secret holding zero bytes, distinct from a destroyed one (see IsAlive).
+func NewEmptySecret() *Secret { return secure.NewEmptySecret() }
+
+// NewEmptyBuffer is the SDK re-export of secure.NewEmptyBuffer: a live
+// Buffer holding zero bytes, distinct from a destroyed one (see IsAlive).
+func NewEmptyBuffer() *Buffer { return secure.NewEmptyBuffer() }
+
 // NewBuffer is the SDK re-export of secure.NewBuffer.
 func NewBuffer(size int) (*Buffer, error) { return secure.NewBuffer(size) }
 

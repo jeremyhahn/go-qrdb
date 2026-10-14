@@ -638,7 +638,7 @@ func ExecuteGuardedBatch(ctx context.Context, tx service.TransactionServicer, gu
 // real, reachable state for a malformed or pre-migration record, and a
 // value compare cannot tell the two apart. Version can: every engine here
 // reports version/revision 0 only for a key that has never been written
-// (pkg/mvcc's RaftCompare.evaluate: "missing key means version...0"; pebble
+// (pkg/mvcc's Evaluate: "missing key means version...0"; pebble
 // degrades the same way), so a nil guard is expressed as a version compare
 // instead, matching the existsGuard/PutIfAbsent pattern already used
 // elsewhere in this file.

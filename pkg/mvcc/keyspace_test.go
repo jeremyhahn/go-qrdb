@@ -841,3 +841,32 @@ func TestEncodeDataKey_Keyspace_ZeroRevisionRoundtrip(t *testing.T) {
 		t.Errorf("revision: got %d, want 0", gotRev)
 	}
 }
+
+func TestEncodeDecodeRevIndexKey_Keyspace_Roundtrip(t *testing.T) {
+	rev, key, err := DecodeRevIndexKey(EncodeRevIndexKey(77, []byte("user/key")))
+	if err != nil {
+		t.Fatalf("DecodeRevIndexKey: %v", err)
+	}
+	if rev != 77 || !bytes.Equal(key, []byte("user/key")) {
+		t.Errorf("DecodeRevIndexKey = (%d, %q), want (77, %q)", rev, key, "user/key")
+	}
+}
+
+func TestDecodeRevIndexKey_Keyspace_TooShort(t *testing.T) {
+	encoded := EncodeRevIndexKey(5, nil)
+	_, _, err := DecodeRevIndexKey(encoded[:len(encoded)-1])
+	var encErr *EncodingError
+	if !errors.As(err, &encErr) || encErr.Reason != "rev index key too short" {
+		t.Fatalf("err = %v, want *EncodingError for a key shorter than its revision", err)
+	}
+}
+
+func TestDecodeRevIndexKey_Keyspace_WrongPrefix(t *testing.T) {
+	encoded := EncodeRevIndexKey(5, []byte("k"))
+	encoded[0] = prefixData
+	_, _, err := DecodeRevIndexKey(encoded)
+	var encErr *EncodingError
+	if !errors.As(err, &encErr) || encErr.Reason != "invalid rev index key prefix" {
+		t.Fatalf("err = %v, want *EncodingError for a data-key prefix", err)
+	}
+}

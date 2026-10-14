@@ -58,6 +58,7 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		// authenticator sees it exactly as it does on REST and MCP.
 		ctx = injectTLSState(ctx)
 		ctx = injectAuthorization(ctx)
+		ctx = injectDPoP(ctx, info.FullMethod)
 
 		// Authenticate the caller: the ORIGINAL caller of a request a cluster
 		// peer forwarded on its behalf, otherwise whoever presented
@@ -207,6 +208,7 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 		// authenticator sees it exactly as it does on REST and MCP.
 		ctx = injectTLSState(ctx)
 		ctx = injectAuthorization(ctx)
+		ctx = injectDPoP(ctx, info.FullMethod)
 
 		// Authenticate the caller.
 		ctx, identity, authnErr := m.authenticate(ctx)
@@ -349,6 +351,33 @@ func injectAuthorization(ctx context.Context) context.Context {
 		return ctx
 	}
 	return auth.WithHTTPAuthorization(ctx, values[0])
+}
+
+// injectDPoP carries the caller's "dpop" metadata with the HTTP method and
+// target URI of the call into ctx through auth.WithDPoPRequest, the carrier
+// REST and MCP fill from the HTTP request. A gRPC call is always an HTTP/2
+// POST to /<service>/<method>, so the method is "POST" and the URI is the
+// ":authority" the client addressed plus fullMethod, https when the
+// connection carries TLS state (call injectTLSState first). Absent "dpop"
+// metadata stores nothing.
+func injectDPoP(ctx context.Context, fullMethod string) context.Context {
+	proofs := metadata.ValueFromIncomingContext(ctx, "dpop")
+	if len(proofs) == 0 {
+		return ctx
+	}
+	scheme := "http"
+	if auth.TLSStateFromContext(ctx) != nil {
+		scheme = "https"
+	}
+	var authority string
+	if values := metadata.ValueFromIncomingContext(ctx, ":authority"); len(values) > 0 {
+		authority = values[0]
+	}
+	return auth.WithDPoPRequest(ctx, auth.DPoPRequest{
+		Proof:  proofs[0],
+		Method: "POST",
+		URI:    scheme + "://" + authority + fullMethod,
+	})
 }
 
 // mapGRPCAuthError converts authentication/authorization errors to gRPC

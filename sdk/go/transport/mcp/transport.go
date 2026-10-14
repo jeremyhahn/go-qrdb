@@ -174,7 +174,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 
-	client, err := t.dialMCP(ctx, t.config.Address)
+	client, err := t.dialMCP(ctx, t.config.Address, nil)
 	if err != nil {
 		return err
 	}
@@ -183,13 +183,41 @@ func (t *Transport) Connect(ctx context.Context) error {
 	return nil
 }
 
+// connCapture pins a dialled MCP client's HTTP traffic to one connection and
+// records that connection's TLS state, so a tenant barrier init's begin and
+// complete tool calls travel -- and are proved -- over one TLS session. Should
+// the server close the connection between them, complete is sent on another
+// one and the node refuses it as a connection mismatch: the pin fails closed.
+type connCapture struct {
+	next  http.RoundTripper
+	state atomic.Pointer[tls.ConnectionState]
+}
+
+// RoundTrip sends r and records the TLS state of the connection it was
+// answered on.
+func (c *connCapture) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.next.RoundTrip(r)
+	if err == nil && resp.TLS != nil {
+		c.state.Store(resp.TLS)
+	}
+	return resp, err
+}
+
+// TLSState returns the TLS state of the connection the last response arrived
+// on, or nil when none arrived over TLS.
+func (c *connCapture) TLSState() *tls.ConnectionState {
+	return c.state.Load()
+}
+
 // dialMCP builds and initializes an MCP client against address: an
 // in-process client when this transport wraps an *mcpserver.MCPServer
 // directly, otherwise a Streamable HTTP client. It is Connect's network
 // setup, factored out so RedeemInvitation can dial the separate, public
 // enrolment endpoint (enrollAddress) the same way without disturbing this
-// transport's own t.client.
-func (t *Transport) dialMCP(ctx context.Context, address string) (*mcpclient.Client, error) {
+// transport's own t.client. A non-nil capture pins the network client to one
+// connection and records its TLS state (connCapture); an in-process client
+// has no connection, and capture records nothing.
+func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCapture) (*mcpclient.Client, error) {
 	var (
 		client *mcpclient.Client
 		err    error
@@ -215,10 +243,14 @@ func (t *Transport) dialMCP(ctx context.Context, address string) (*mcpclient.Cli
 		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request -- over
 		// https to the configured host only, on every hop including
 		// redirects.
+		rt := transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(address))
+		if capture != nil {
+			base.MaxConnsPerHost = 1
+			capture.next = rt
+			rt = capture
+		}
 		client, err = mcpclient.NewStreamableHttpClient(address,
-			mcptransport.WithHTTPBasicClient(&http.Client{
-				Transport: transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(address)),
-			}))
+			mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
 	}
 	if err != nil {
 		return nil, &transport.ConnectionError{

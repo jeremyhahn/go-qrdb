@@ -131,7 +131,7 @@ func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id string, pa
 	return &tenant.TenantBarrierInitResult{TenantID: id, Strategy: string(seal.StrategyPassphrase)}, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 
@@ -745,7 +745,8 @@ func TestWithTenantService_ToolsRegistered(t *testing.T) {
 		"qrdb_tenant_update",
 		"qrdb_tenant_delete",
 		"qrdb_tenant_update_quotas",
-		"qrdb_tenant_barrier_init",
+		"qrdb_tenant_barrier_init_begin",
+		"qrdb_tenant_barrier_init_complete",
 		"qrdb_tenant_barrier_unseal",
 		"qrdb_tenant_barrier_seal",
 		"qrdb_tenant_barrier_status",

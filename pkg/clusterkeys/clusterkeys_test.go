@@ -318,6 +318,28 @@ func (s *staticURLResolver) ResolveAdminURL(raftAddr string) string {
 	return ""
 }
 
+// mapURLResolver resolves each raft address in it to its admin URL.
+type mapURLResolver map[string]string
+
+func (m mapURLResolver) ResolveAdminURL(raftAddr string) string {
+	return m[raftAddr]
+}
+
+// newFollowerServer serves node's delivery certificate at
+// /v1/cluster/nodekey and answers /v1/cluster/keydelivery with delivery.
+func newFollowerServer(t *testing.T, node *testNodeBundle, delivery http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/cluster/nodekey", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		_, _ = w.Write(node.pem)
+	})
+	mux.HandleFunc("/v1/cluster/keydelivery", delivery)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // countingHandler wraps an http.Handler and counts requests.
 type countingHandler struct {
 	http.Handler
@@ -1234,6 +1256,106 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	}
 	if followerTB.IsSealed() {
 		t.Error("follower tenant barrier must be unsealed after DistributeTenantKey")
+	}
+}
+
+// TestDistributeTenantKey_DeliversToFollowersConcurrently pins the shape an
+// isolated tenant's home group depends on: a follower whose import cannot
+// finish until the other followers also hold the key. Every follower here
+// answers only once all of them have been reached, so serial delivery would
+// stall on the first one until its deadline.
+func TestDistributeTenantKey_DeliversToFollowersConcurrently(t *testing.T) {
+	leaderReg, leaderAlloc := newTestRegistry(t)
+	initTestSystemBarrier(t, leaderReg)
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-quorum")
+
+	ca := newTestCA(t)
+	followers := []string{"follower-1", "follower-2", "follower-3"}
+	var arrived atomic.Int64
+	allArrived := make(chan struct{})
+	resolver := mapURLResolver{}
+	p := &placement.Placement{
+		TenantID: "tenant-quorum", Database: "__home", ShardID: 7, RF: 4, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"}},
+	}
+	for i, id := range followers {
+		srv := newFollowerServer(t, newTestNodeCert(t, ca, "cluster.local", id), func(w http.ResponseWriter, r *http.Request) {
+			if arrived.Add(1) == int64(len(followers)) {
+				close(allArrived)
+			}
+			select {
+			case <-allArrived:
+				w.WriteHeader(http.StatusOK)
+			case <-r.Context().Done():
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		})
+		addr := id + ":9000"
+		resolver[addr] = srv.URL
+		p.Replicas = append(p.Replicas, placement.Replica{ReplicaID: uint64(i + 2), NodeID: id, RaftAddr: addr})
+	}
+	sender, err := clusterkeys.NewSender(resolver, &http.Client{}, ca.pool, "cluster.local", nil, newTestLogger())
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sender.DistributeTenantKey(ctx, p, leaderBarrier, "leader", true); err != nil {
+		t.Fatalf("DistributeTenantKey: %v", err)
+	}
+	if n := arrived.Load(); n != int64(len(followers)) {
+		t.Errorf("deliveries = %d, want %d", n, len(followers))
+	}
+}
+
+// TestDistributeTenantKey_JoinsEveryFollowerError verifies that one follower's
+// failure neither stops delivery to the others nor hides their failures: both
+// distinct errors come back joined.
+func TestDistributeTenantKey_JoinsEveryFollowerError(t *testing.T) {
+	leaderReg, leaderAlloc := newTestRegistry(t)
+	initTestSystemBarrier(t, leaderReg)
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-errs")
+
+	ca := newTestCA(t)
+	var posts atomic.Int64
+	refusing := newFollowerServer(t, newTestNodeCert(t, ca, "cluster.local", "refusing"), func(w http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	accepting := newFollowerServer(t, newTestNodeCert(t, ca, "cluster.local", "accepting"), func(w http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	resolver := mapURLResolver{"refusing:9000": refusing.URL, "accepting:9000": accepting.URL}
+	p := &placement.Placement{
+		TenantID: "tenant-errs", Database: "db-main", ShardID: 3, RF: 4, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
+			{ReplicaID: 2, NodeID: "refusing", RaftAddr: "refusing:9000"},
+			{ReplicaID: 3, NodeID: "unresolvable", RaftAddr: "unresolvable:9000"},
+			{ReplicaID: 4, NodeID: "accepting", RaftAddr: "accepting:9000"},
+		},
+	}
+	sender, err := clusterkeys.NewSender(resolver, &http.Client{}, ca.pool, "cluster.local", nil, newTestLogger())
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = sender.DistributeTenantKey(ctx, p, leaderBarrier, "leader", true)
+	if !errors.Is(err, clusterkeys.ErrDelivery) {
+		t.Errorf("want ErrDelivery from the refusing follower, got %v", err)
+	}
+	if !errors.Is(err, clusterkeys.ErrResolveURL) {
+		t.Errorf("want ErrResolveURL from the unresolvable follower, got %v", err)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); !ok || len(joined.Unwrap()) != 2 {
+		t.Errorf("want exactly the two failures joined, got %v", err)
+	}
+	if n := posts.Load(); n != 2 {
+		t.Errorf("POSTs = %d, want 2 (both reachable followers attempted)", n)
 	}
 }
 

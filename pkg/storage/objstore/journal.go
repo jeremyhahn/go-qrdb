@@ -19,9 +19,97 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"maps"
+	"path/filepath"
+
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
+	objfactory "github.com/jeremyhahn/go-objstore/pkg/factory"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
+
+// walkedRoots maps each provider whose List walks a directory tree to the
+// setting naming that tree's root. The walk stats every entry it reads, and a
+// commit journal is created and removed by every batch, so a journal inside
+// the walked tree makes a concurrent List fail with "no such file or
+// directory" the moment a commit finishes. Such a provider keeps its journal
+// in a sibling tree (rootSetting + journalTreeSuffix) no listing visits;
+// every other provider keeps it beside the data.
+var walkedRoots = map[string]string{"local": "path"}
+
+// journalTreeSuffix is appended to a walked provider's root to name the
+// sibling tree that holds its commit journal.
+const journalTreeSuffix = ".journal"
+
+// openStores returns the data store and the store that holds its commit
+// journal. For a provider outside walkedRoots both are store itself. For a
+// provider in walkedRoots the data store is rooted at the physical directory,
+// every symlink in the configured root resolved, and the journal in a store
+// rooted beside that directory: the provider's walk does not descend into a
+// symlinked root, and every spelling of the root -- a symlink, its target, a
+// path through a symlinked parent -- must list one tree and reach the one
+// journal recovery has to find.
+func openStores(provider string, settings map[string]string, store objcommon.Storage) (data, journal objcommon.Storage, err error) {
+	rootSetting, walked := walkedRoots[provider]
+	if !walked {
+		return store, store, nil
+	}
+	// The provider has created its root by now, so it resolves.
+	physical, err := filepath.EvalSymlinks(settings[rootSetting])
+	if err != nil {
+		return nil, nil, err
+	}
+	if physical != settings[rootSetting] {
+		dataSettings := maps.Clone(settings)
+		dataSettings[rootSetting] = physical
+		if store, err = objfactory.NewStorage(provider, dataSettings); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := refuseInTreeJournal(provider, store); err != nil {
+		return nil, nil, err
+	}
+	root, err := journalRoot(physical)
+	if err != nil {
+		return nil, nil, err
+	}
+	journalSettings := maps.Clone(settings)
+	journalSettings[rootSetting] = root
+	if journal, err = objfactory.NewStorage(provider, journalSettings); err != nil {
+		return nil, nil, err
+	}
+	return store, journal, nil
+}
+
+// journalRoot names the sibling tree that holds the journal of a store rooted
+// at root, which openStores has already resolved to its physical
+// directory. The root is made absolute and cleaned first, so "/data/db/." and
+// "/data/db/" both yield "/data/db.journal" rather than a path inside the
+// data tree.
+func journalRoot(root string) (string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs) + journalTreeSuffix, nil
+}
+
+// refuseInTreeJournal fails the open of a walked provider's store that still
+// holds a commit journal inside its data tree, the layout earlier builds
+// used. Such a journal is an interrupted batch this build would never look
+// at, so serving the store would serve a half-applied batch. There is no
+// recovery path: the store is refused.
+func refuseInTreeJournal(provider string, store objcommon.Storage) error {
+	rc, err := store.Get(journalName)
+	if err != nil {
+		if notFound(err) {
+			return nil
+		}
+		return err
+	}
+	_ = rc.Close()
+	return &InTreeJournalError{Provider: provider}
+}
 
 // The commit journal gives the objstore backend atomic (all-or-nothing after
 // recovery) batch commits, matching the file backend's contract: go-objstore
@@ -144,7 +232,7 @@ func decodeJournal(data []byte) ([]storage.BufferedOp, error) {
 // After it returns nil the batch WILL be applied -- by the caller now, or by
 // recovery after a crash.
 func (e *Engine) writeJournal(image []byte) error {
-	if err := e.store.Put(journalName, bytes.NewReader(image)); err != nil {
+	if err := e.journal.Put(journalName, bytes.NewReader(image)); err != nil {
 		return &JournalWriteError{Err: err}
 	}
 	return nil
@@ -153,7 +241,7 @@ func (e *Engine) writeJournal(image []byte) error {
 // clearJournal removes the committed journal object after its operations
 // have been fully applied, making the commit final.
 func (e *Engine) clearJournal() error {
-	if err := e.store.Delete(journalName); err != nil && !notFound(err) {
+	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
 		return &JournalWriteError{Err: err}
 	}
 	return nil
@@ -165,7 +253,7 @@ func (e *Engine) clearJournal() error {
 // last batch is in an unknown state and silently serving it would break the
 // state machine determinism contract.
 func (e *Engine) recoverJournal() error {
-	rc, err := e.store.Get(journalName)
+	rc, err := e.journal.Get(journalName)
 	if err != nil {
 		if notFound(err) {
 			return nil
@@ -185,4 +273,51 @@ func (e *Engine) recoverJournal() error {
 		return err
 	}
 	return e.clearJournal()
+}
+
+// resolvePendingJournal completes a commit an earlier failure left
+// journaled (see journalPending), so the caller's write is decided against,
+// and lands after, the whole batch. While the provider still cannot apply it
+// the journal stays pending and the caller's write is refused. The caller
+// holds journalMu; the replay takes writeMu exclusive.
+func (e *Engine) resolvePendingJournal() error {
+	if !e.journalPending.Load() {
+		return nil
+	}
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	if err := e.recoverJournal(); err != nil {
+		return err
+	}
+	e.journalPending.Store(false)
+	return nil
+}
+
+// settlePendingJournal is resolvePendingJournal for a writer that does not
+// hold journalMu. The common case, nothing pending, costs one atomic load.
+func (e *Engine) settlePendingJournal() error {
+	if !e.journalPending.Load() {
+		return nil
+	}
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	return e.resolvePendingJournal()
+}
+
+// enterWrite takes writeMu shared for a Set or Delete with no commit
+// pending, resolving a pending one first. journalPending changes only under
+// writeMu held exclusive, so the check made here holds until the caller's
+// write is done: no write lands where the next write's replay would apply a
+// failed batch over it. On success the caller releases writeMu with RUnlock.
+func (e *Engine) enterWrite() error {
+	for {
+		e.writeMu.RLock()
+		if !e.journalPending.Load() {
+			return nil
+		}
+		e.writeMu.RUnlock()
+		if err := e.settlePendingJournal(); err != nil {
+			return err
+		}
+	}
 }

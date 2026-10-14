@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -82,6 +83,11 @@ type AuthMiddleware struct {
 	// window of a tenant barrier admits only that admin's certificate (see
 	// checkFirstInitCertificate). Nil reads as "no tenant has one".
 	pendingAdmins PendingTenantAdmins
+
+	// initChallenges holds the tenant barrier init nonces this node issued
+	// and has not yet seen completed (BeginTenantBarrierInit). New supplies
+	// one on the real clock when WithInitChallengeBook did not.
+	initChallenges *initproof.Book
 
 	// revocation gates the ON-BEHALF forwarding path, which bypasses the
 	// authenticator chain entirely and therefore does not inherit the mTLS
@@ -155,6 +161,9 @@ func New(authorizer auth.Authorizer, opts ...Option) *AuthMiddleware {
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.initChallenges == nil {
+		m.initChallenges = initproof.NewBook(nil, 0)
 	}
 	// Every authenticator in the chain names a method a permitted-method
 	// policy may be written with ON THIS NODE. The set is this instance's, not

@@ -2149,7 +2149,7 @@ func (s *Server) registerRoutes() {
 	// permissions (ScopeCross), so a tenant Admin cannot raise its own limits.
 	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsSetQuotas, s.handleTenantByID)
 	s.route(http.MethodPatch, "/v1/tenants/{id}/entitlements", permission.TenantsSetEntitlements, s.handleTenantByID)
-	// barrier/status, like barrier/init and barrier/unseal below, is
+	// barrier/status, like barrier/init/{begin,complete} and barrier/unseal below, is
 	// IdentityGated at the ROUTE level: a self-managed dedicated-isolation
 	// tenant's IAM is encrypted behind its own barrier, so on a node where
 	// that barrier is sealed (or its key not yet delivered) NO role can be
@@ -2160,15 +2160,18 @@ func (s *Server) registerRoutes() {
 	// (middleware.IdentityIAMSealed); see authorizeTenantBarrierSealedOp.
 	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/status", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, s.handleTenantByID)
-	// barrier/init is IdentityGated at the ROUTE level because its real
-	// authorization is conditional and lives in the handler
-	// (authorizeTenantBarrierInit): an initialized barrier demands the full
-	// tenant_barrier:init RBAC check, while a NEVER-initialized barrier
-	// accepts the tenant's own authenticated identity — trust-on-first-init.
-	// Without that window a self-managed tenant can never be provisioned:
-	// its IAM lives behind the very barrier this endpoint initializes, so no
-	// role able to satisfy the RBAC check can exist before the call.
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init", permission.IdentityGated, s.handleTenantByID)
+	// barrier/init/{begin,complete} are IdentityGated at the ROUTE level
+	// because their real authorization is conditional and lives in the
+	// handlers (beginTenantBarrierInit, authorizeTenantBarrierInit): an
+	// initialized barrier demands the full tenant_barrier:init RBAC check,
+	// while a NEVER-initialized barrier accepts the tenant's own first admin
+	// -- trust-on-first-init, proved by possession of that admin's key over
+	// this connection. Without that window a self-managed tenant can never
+	// be provisioned: its IAM lives behind the very barrier these endpoints
+	// initialize, so no role able to satisfy the RBAC check can exist before
+	// the call.
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init/begin", permission.IdentityGated, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init/complete", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)

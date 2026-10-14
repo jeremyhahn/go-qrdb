@@ -1396,13 +1396,32 @@ func (r *BarrierRegistry) InitializeTenantWithStrategy(ctx context.Context, tena
 // its own to bring back; one that runs after it finds the system barrier
 // sealed.
 func (r *BarrierRegistry) UnsealTenant(ctx context.Context, tenantID string, creds Credentials) error {
+	return r.unsealTenant(tenantID, func(tb *TenantBarrier) error {
+		return tb.Unseal(ctx, creds)
+	})
+}
+
+// UnsealTenantWithStrategy unseals the tenant barrier identified by tenantID
+// with exactly strategy, never with a strategy the barrier's shell was
+// registered with under the same ID; a root key sealed by a different
+// strategy is refused with *UnsealStrategyMismatchError. It is ordered
+// against a whole-node seal exactly as UnsealTenant is.
+func (r *BarrierRegistry) UnsealTenantWithStrategy(ctx context.Context, tenantID string, strategy SealingStrategy, creds Credentials) error {
+	return r.unsealTenant(tenantID, func(tb *TenantBarrier) error {
+		return tb.UnsealWithStrategy(ctx, strategy, creds)
+	})
+}
+
+// unsealTenant runs unseal against the registered tenant barrier under
+// sealMu and, on success, drops the tenant from the node-seal record.
+func (r *BarrierRegistry) unsealTenant(tenantID string, unseal func(*TenantBarrier) error) error {
 	tb, err := r.GetTenant(tenantID)
 	if err != nil {
 		return err
 	}
 	r.sealMu.Lock()
 	defer r.sealMu.Unlock()
-	if err := tb.Unseal(ctx, creds); err != nil {
+	if err := unseal(tb); err != nil {
 		return err
 	}
 	delete(r.nodeSealed, tenantID)

@@ -434,6 +434,32 @@ func (b *StorageBarrier) initializeWithStrategy(ctx context.Context, strategy Se
 // with the matching strategy via the EpochBarrier, and transitions
 // the barrier to the unsealed state.
 func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
+	return b.unseal(ctx, nil, creds)
+}
+
+// UnsealWithStrategy unseals the barrier with exactly strategy rather than
+// whichever strategy the barrier has registered under the persisted root
+// key's strategy ID. It refuses a root key sealed by a different strategy
+// with *UnsealStrategyMismatchError, and on success registers strategy under
+// its ID, replacing any registration the barrier was constructed with, so a
+// later rotation or reseal uses the strategy that unsealed it.
+//
+// This is the reattach seam for a tenant barrier whose strategy a key
+// provider resolved at init (see tenant.TenantService.TenantBarrierUnseal):
+// the shell a node registers on restart carries the node's default strategy
+// set, which may lack that strategy or hold a differently configured one
+// under the same ID.
+func (b *StorageBarrier) UnsealWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
+	if strategy == nil {
+		return ErrNoStrategySpecified
+	}
+	return b.unseal(ctx, strategy, creds)
+}
+
+// unseal is the shared unseal core. A nil chosen strategy resolves the
+// persisted root key's strategy from the barrier's registrations; a non-nil
+// one must be the strategy the root key names.
+func (b *StorageBarrier) unseal(ctx context.Context, chosen SealingStrategy, creds Credentials) error {
 	if b.state.Load() == stateUnsealed {
 		return ErrAlreadyUnsealed
 	}
@@ -451,11 +477,21 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 		return ErrCorruptRootKey
 	}
 
-	strategy, ok := b.strategyByID(sealed.Strategy)
-	if !ok {
+	strategy := chosen
+	switch {
+	case chosen == nil:
+		registered, ok := b.strategyByID(sealed.Strategy)
+		if !ok {
+			emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
+				"deny", map[string]string{"error": ErrStrategyNotFound.Error(), "strategy": string(sealed.Strategy)})
+			return ErrStrategyNotFound
+		}
+		strategy = registered
+	case chosen.ID() != sealed.Strategy:
+		mismatch := &UnsealStrategyMismatchError{Sealed: sealed.Strategy, Requested: chosen.ID()}
 		emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
-			"deny", map[string]string{"error": ErrStrategyNotFound.Error(), "strategy": string(sealed.Strategy)})
-		return ErrStrategyNotFound
+			"deny", map[string]string{"error": mismatch.Error(), "strategy": string(sealed.Strategy)})
+		return mismatch
 	}
 
 	// Load the sealed root key data into the EpochBarrier for unseal.
@@ -470,6 +506,9 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 		return err
 	}
 
+	if chosen != nil {
+		b.setStrategy(sealed.Strategy, chosen)
+	}
 	b.activeStrategy.Store(sealed.Strategy)
 	b.state.Store(stateUnsealed)
 	b.notifyUnsealed(ctx)

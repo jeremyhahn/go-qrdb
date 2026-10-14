@@ -887,15 +887,14 @@ func TestTenantService_BarrierInitWithStrategy_NoneStrategy(t *testing.T) {
 }
 
 // TestTenantService_BarrierInitWithStrategy_RegistryInjection proves that
-// when a StrategyRegistry is injected via WithStrategyRegistry, the service
-// resolves the strategy from the registry. Requesting the "none" strategy
-// via the registry succeeds; requesting an unregistered name returns
-// InvalidStrategyError.
+// when the default BarrierKeyProvider over a StrategyRegistry is injected via
+// WithBarrierKeyProvider, the service resolves the strategy from that
+// registry: requesting the "none" strategy succeeds.
 func TestTenantService_BarrierInitWithStrategy_RegistryInjection(t *testing.T) {
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	stratReg := seal.NewDefaultStrategyRegistry()
-	svc, err := NewTenantService(store, reg, testLogger(), WithStrategyRegistry(stratReg))
+	provider := seal.NewBarrierKeyProvider(seal.NewDefaultStrategyRegistry())
+	svc, err := NewTenantService(store, reg, testLogger(), WithBarrierKeyProvider(provider))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -927,44 +926,12 @@ func TestTenantService_BarrierInitWithStrategy_RegistryInjection(t *testing.T) {
 	}
 }
 
-// TestTenantService_BarrierInitWithStrategy_UnknownStrategy proves that
-// requesting an unregistered strategy name returns InvalidStrategyError.
-func TestTenantService_BarrierInitWithStrategy_UnknownStrategy(t *testing.T) {
-	store := seal.NewMemoryBackend()
-	reg := newTestBarrierRegistry(t)
-	stratReg := seal.NewDefaultStrategyRegistry()
-	svc, err := NewTenantService(store, reg, testLogger(), WithStrategyRegistry(stratReg))
-	if err != nil {
-		t.Fatalf("NewTenantService: %v", err)
-	}
-
-	ctx := context.Background()
-	const tenantID = "unknown-strategy"
-
-	if _, err := svc.CreateTenant(ctx, tenantID, "Unknown Strategy", ""); err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-	// Entitle the tenant to "tpm2" so the barrier-mode governance gate passes and
-	// the request reaches the strategy-resolution path under test.
-	if _, err := svc.UpdateEntitlements(ctx, tenantID, &quota.Entitlements{AllowedBarrierModes: []string{"tpm2"}}); err != nil {
-		t.Fatalf("UpdateEntitlements: %v", err)
-	}
-
-	_, err = svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("irrelevant"), 0, 0, "tpm2", nil)
-	var invErr *InvalidStrategyError
-	if !errors.As(err, &invErr) {
-		t.Fatalf("expected InvalidStrategyError, got %v", err)
-	}
-	if invErr.Strategy != "tpm2" {
-		t.Errorf("Strategy = %q, want %q", invErr.Strategy, "tpm2")
-	}
-}
-
 // TestTenantService_BarrierInitWithStrategy_NoRegistryUnknown proves that
-// when no StrategyRegistry is injected, requesting a hardware/cloud strategy
-// returns InvalidStrategyError (no registry fallback).
+// when no BarrierKeyProvider is injected, requesting a hardware/cloud strategy
+// returns InvalidStrategyError: the default provider knows only the software
+// strategies go-qrdb owns.
 func TestTenantService_BarrierInitWithStrategy_NoRegistryUnknown(t *testing.T) {
-	svc, _ := newTestService(t) // no WithStrategyRegistry
+	svc, _ := newTestService(t) // no WithBarrierKeyProvider
 	ctx := context.Background()
 
 	const tenantID = "no-registry-hw"

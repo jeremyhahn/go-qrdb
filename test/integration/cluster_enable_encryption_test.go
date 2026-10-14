@@ -429,12 +429,8 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
 
 	// Initialize the dedicated barrier as none (unsealed) on the leader.
-	if b, s := iraftAPIPost(t, onboardedAdminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", leaderPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
-	); s != http.StatusOK && s != http.StatusNoContent && s != http.StatusCreated {
-		t.Fatalf("tenant barrier init: status %d, body: %s", s, b)
-	}
+	initTenantBarrierAsFirstAdmin(t, fmt.Sprintf("https://127.0.0.1:%d", leaderPort), ca.CertPath,
+		[]byte(createResp.Admin.CertPEM), adminKeyPEM, tenantID)
 
 	// The onboarded admin's account carries only the pending-admin
 	// completion's own role, not the data-plane permissions the rest of

@@ -1199,7 +1199,7 @@ func TestHandleTenantBarrierInit_BadBodyWithLength(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
 
 	body := "not-json"
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init",
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete",
 		strings.NewReader(body))
 	req.ContentLength = int64(len(body))
 	rec := httptest.NewRecorder()

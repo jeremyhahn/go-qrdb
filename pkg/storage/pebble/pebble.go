@@ -57,9 +57,13 @@ var _ storage.Storage = (*PebbleStorage)(nil)
 // and it already carries the drain-on-close wait, so hand-rolling it with
 // atomics would reproduce sync.RWMutex with more code and no fast path.
 type PebbleStorage struct {
-	db       *pebble.DB
-	config   *Config
-	gate     sync.RWMutex
+	db     *pebble.DB
+	config *Config
+	gate   sync.RWMutex
+	// casMu makes CompareAndSwap atomic against every other writer: Set,
+	// Delete and batch commits hold it shared, CompareAndSwap exclusive.
+	// Lock order is gate, then casMu.
+	casMu    sync.RWMutex
 	closed   atomic.Bool
 	readSem  chan struct{}
 	writeSem chan struct{}
@@ -111,7 +115,7 @@ func NewFromDB(db *pebble.DB, syncWrites bool) *PebbleStorage {
 }
 
 // DB returns the underlying PebbleDB instance. This is used by subsystems
-// like index.NewPebbleIndex and timeseries.New that require direct PebbleDB
+// like pebbleindex.New and timeseries.New that require direct PebbleDB
 // access.
 //
 // The returned handle is OUTSIDE the close gate: a caller that keeps it past
@@ -163,6 +167,8 @@ func (s *PebbleStorage) Set(key, value []byte) error {
 		return storage.ErrEmptyKey
 	}
 
+	s.casMu.RLock()
+	defer s.casMu.RUnlock()
 	s.writeSem <- struct{}{}
 	defer func() { <-s.writeSem }()
 
@@ -188,6 +194,8 @@ func (s *PebbleStorage) Delete(key []byte) error {
 		return storage.ErrEmptyKey
 	}
 
+	s.casMu.RLock()
+	defer s.casMu.RUnlock()
 	s.writeSem <- struct{}{}
 	defer func() { <-s.writeSem }()
 
@@ -200,6 +208,52 @@ func (s *PebbleStorage) Delete(key []byte) error {
 		return &storage.OpError{Op: "delete", Err: err}
 	}
 	return nil
+}
+
+// CompareAndSwap implements storage.GuardedStorage. The read, compare and
+// write run under the exclusive casMu, so concurrent swaps on a key serialise
+// and no Set, Delete or batch commit interleaves between compare and write.
+func (s *PebbleStorage) CompareAndSwap(ctx context.Context, key, expected, next []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return false, &storage.ClosedError{}
+	}
+	if len(key) == 0 {
+		return false, storage.ErrEmptyKey
+	}
+
+	s.casMu.Lock()
+	defer s.casMu.Unlock()
+	s.writeSem <- struct{}{}
+	defer func() { <-s.writeSem }()
+
+	value, closer, err := s.db.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return false, nil
+		}
+		return false, &storage.OpError{Op: "compare-and-swap", Err: err}
+	}
+	matches := bytes.Equal(value, expected)
+	if err := closer.Close(); err != nil {
+		return false, &storage.OpError{Op: "compare-and-swap", Err: err}
+	}
+	if !matches {
+		return false, nil
+	}
+
+	writeOpts := pebble.NoSync
+	if s.config.SyncWrites {
+		writeOpts = pebble.Sync
+	}
+	if err := s.db.Set(key, next, writeOpts); err != nil {
+		return false, &storage.OpError{Op: "compare-and-swap", Err: err}
+	}
+	return true, nil
 }
 
 // List returns all keys matching the given prefix. An empty or nil prefix

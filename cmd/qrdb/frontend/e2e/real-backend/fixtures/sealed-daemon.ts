@@ -93,7 +93,7 @@ export interface SealedDaemonOptions {
  * A single-path volume pool rooted under the data directory is always
  * configured: per-tenant dedicated barriers allocate tenant stores from the
  * pool (RegisterTenantPooled), and without one POST
- * /v1/tenants/{id}/barrier/init fails with ErrPoolNotConfigured (HTTP 500).
+ * /v1/tenants/{id}/barrier/init/complete fails with ErrPoolNotConfigured (HTTP 500).
  */
 function writeSealConfig(
   configPath: string,

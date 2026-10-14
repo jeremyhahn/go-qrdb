@@ -65,7 +65,7 @@ func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig, trail audit.AuditL
 	err error,
 ) {
 	// Persistent on-disk seal store. Mirrors the layout used by the SDK
-	// embedded server (sdk/go/transport/embedded/server.go::setupBarrier).
+	// embedded server (sdk/go/standalone/server.go::setupBarrier).
 	sealDir := filepath.Join(dataDir, "seal")
 	// SyncWrites is forced on: this store is the sole persisted copy of the
 	// root-key blob and epoch/rotation state, not a Raft-replicated store,

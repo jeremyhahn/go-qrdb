@@ -92,7 +92,7 @@ func newFaultEngine(t *testing.T) (*Engine, *faultStore) {
 		readFails: map[string]bool{},
 		listFails: map[string]bool{},
 	}
-	e := &Engine{store: fs, provider: "memory"}
+	e := &Engine{store: fs, journal: fs, provider: "memory"}
 	require.NoError(t, e.ensureFormatMarker())
 	return e, fs
 }

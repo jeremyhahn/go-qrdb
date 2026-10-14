@@ -28,6 +28,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
+import { DesktopOnlyError } from '../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Routing fetch mock
@@ -331,7 +332,8 @@ describe('seal client – secret-bearing fields are base64 on the wire', () => {
     it('base64-encodes the tenant barrier-init passphrase', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({
-            'POST /v1/tenants/acme/barrier/init': { status: 204 },
+            'POST /v1/tenants/acme/barrier/init/begin': { body: {} },
+            'POST /v1/tenants/acme/barrier/init/complete': { status: 204 },
         });
 
         await client.tenants.barrierInit({
@@ -342,7 +344,18 @@ describe('seal client – secret-bearing fields are base64 on the wire', () => {
             strategy: 'passphrase',
         });
 
-        const req = calls.find((c) => c.path === '/v1/tenants/acme/barrier/init');
+        const req = calls.find((c) => c.path === '/v1/tenants/acme/barrier/init/complete');
         expect((req?.body as Record<string, unknown>)?.passphrase).toBe('dGVuYW50LXB3');
+    });
+
+    it('refuses tenant barrier-init when the node asks a proof a browser cannot give', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/tenants/acme/barrier/init/begin': { body: { nonce: 'AAAA', expires: 1 } },
+        });
+
+        await expect(client.tenants.barrierInit({ tenantId: 'acme', threshold: 0, shares: 0, strategy: 'none' }))
+            .rejects.toBeInstanceOf(DesktopOnlyError);
+        expect(calls.some((c) => c.path.endsWith('/init/complete'))).toBe(false);
     });
 });

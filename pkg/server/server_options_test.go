@@ -105,7 +105,7 @@ func (s *stubTenantServicerForRegistry) TenantBarrierInit(_ context.Context, _ s
 	return nil, nil
 }
 
-func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 func (s *stubTenantServicerForRegistry) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {

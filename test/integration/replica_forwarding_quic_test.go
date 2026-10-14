@@ -67,6 +67,13 @@ func (quicFwdTransport) call(t *testing.T, c *fwdCluster, i int, caller fwdCalle
 	if err != nil {
 		return 0, nil, err
 	}
+	// The context bounds only the dial and the stream open; the deadline
+	// bounds the answer, so a node that never replies fails this call
+	// instead of the suite's timeout.
+	deadline, _ := ctx.Deadline()
+	if err := stream.SetDeadline(deadline); err != nil {
+		return 0, nil, err
+	}
 	if err := wire.WriteRequest(stream, method, db, 1, payload); err != nil {
 		return 0, nil, err
 	}

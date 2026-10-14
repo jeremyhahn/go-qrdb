@@ -159,6 +159,41 @@ key just created, or that simply finds it already there, fsyncs the parent
 itself before proceeding rather than trust that the creator's own fsync has
 already landed — the two are unordered with respect to each other.
 
+**Several processes on one directory.** The engine may be opened on the same
+directory by more than one process — an application that loads a PKCS#11
+module and the daemon serving the same token, for example. Every mutation
+(`Set`, `Delete`, a batch commit, and the open-time recovery) holds an
+exclusive advisory operating-system lock, `flock(2)` on Unix and `LockFileEx`
+on Windows, taken on a permanent, empty file in the engine root
+(`.qrdb-file-lock`; like `lost+found`, it does not count as content when `New`
+decides a directory is fresh). The lock is the kernel's, not a protocol of our
+own, so a process that dies releases it. A mutex in the engine covers the other
+goroutines of the same process, since an OS lock belongs to the open file.
+`New` takes the lock around the format marker, journal replay and stray
+temp-file cleanup, so a second process opening the directory waits for a write
+in flight instead of deleting its temporary file or replaying its journal. The
+format marker is checked first: a directory `New` refuses (a missing marker
+beside content, or another format version) is refused before its journal is
+replayed, so the refusal writes nothing.
+
+*Guarded writes.* `SaveIfAbsent`, `CompareAndSwap` and `CompareAndDelete` on a
+database whose backend is `file` read a key and then write it, and that pair
+must be indivisible. The engine therefore implements the optional
+`storage.Exclusive` seam: `Exclusive(fn)` runs `fn` with the same lock held,
+handing it a read/write view that does not take the lock again, and the
+standalone backend runs each guarded verb inside it. Two processes racing a
+swap on one counter cannot both pass the compare.
+
+*Readers take no lock* and stay correct: a record is replaced by renaming a
+fully written temporary file over it, so a read sees the old record or the new
+one. `Snapshot` and iteration are as consistent as they have always been — per
+record, not across a batch committing in another process. The lock is advisory
+and only binds processes using this engine; the directory must be on a local
+filesystem, because `flock` is not dependable over network filesystems. Sharing
+covers the `file` engine opened directly; an engine wrapped by another storage
+engine (the namespace wrapper) does not forward `Exclusive`, so its guarded
+verbs get in-process exclusion only.
+
 This is a **breaking on-disk format change**, and it is wider than
 `raft.sm_storage: file` (`sm_type: disk`/`fast`) alone: `file.New` also
 backs

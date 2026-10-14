@@ -367,7 +367,7 @@ The SDK node records on the trail its caller supplies (`server.WithAuditLogger`)
 which exists before the node does, so its sealed window is recorded too. The
 desktop's embedded server keeps the same trail when it is enabled
 (`EmbeddedConfig.Audit`, off by default), and so does the SDK's flat
-`embedded.NewServer` (`ServerConfig.AuditTrail`, off by default), on the same
+`standalone.NewServer` (`ServerConfig.AuditTrail`, off by default), on the same
 rules: opened before the seal barrier, confined to the data directory -- a
 symbolic link in it cannot carry the trail outside -- and a configured trail
 that cannot be opened stops the start. No composer is left without one.

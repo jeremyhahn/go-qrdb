@@ -16,6 +16,7 @@ package memory
 
 import (
 	"bytes"
+	"context"
 	"sync"
 	"sync/atomic"
 
@@ -104,6 +105,32 @@ func (s *MemoryStorage) Set(key, value []byte) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// CompareAndSwap implements storage.GuardedStorage. The compare and the write
+// happen under one write lock, so concurrent swaps on a key serialise.
+func (s *MemoryStorage) CompareAndSwap(ctx context.Context, key, expected, next []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if s.closed.Load() {
+		return false, &storage.ClosedError{}
+	}
+	if len(key) == 0 {
+		return false, storage.ErrEmptyKey
+	}
+
+	nextCopy := make([]byte, len(next))
+	copy(nextCopy, next)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.tree.Get(entry{key: key})
+	if !ok || !bytes.Equal(item.value, expected) {
+		return false, nil
+	}
+	s.tree.Set(entry{key: item.key, value: nextCopy})
+	return true, nil
 }
 
 // Delete removes a key-value pair. Deleting a non-existent key is a no-op.

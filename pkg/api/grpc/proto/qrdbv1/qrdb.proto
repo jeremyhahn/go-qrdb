@@ -5146,17 +5146,28 @@ message SQLQueryResponse {
 // interceptors; the handlers delegate to pkg/tenant.TenantServicer.
 // ===========================================================================
 service TenantBarrierService {
-    // Init initializes a tenant barrier with the selected strategy. For the
-    // Shamir strategy the share_count field indicates how many officer shares
-    // were sealed; shares are never returned in the response.
+    // InitBegin is the first half of tenant barrier initialization: it issues
+    // a single-use nonce bound to this connection's TLS exporter, which
+    // InitComplete must sign with the first admin's key.
     //
     // identity:gated at the interceptor because a self-managed tenant's IAM
     // is encrypted BEHIND the barrier being initialized: no role able to
     // satisfy tenant_barrier:init can exist before the first init. The
     // handler runs the full RBAC check with the shared trust-on-first-init
-    // fallback (middleware.AuthorizeTenantBarrierInit), identical to every
-    // other transport.
-    rpc Init(TenantBarrierInitRequest) returns (TenantBarrierInitResponse) {
+    // fallback (middleware.BeginTenantBarrierInit), identical to every other
+    // transport.
+    rpc InitBegin(TenantBarrierInitBeginRequest) returns (TenantBarrierInitBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // InitComplete initializes a tenant barrier with the selected strategy,
+    // given proof of possession of the first admin's key over this
+    // connection (nonce, public_key, signature). For the Shamir strategy the
+    // share_count field indicates how many officer shares were sealed; shares
+    // are never returned in the response. identity:gated for InitBegin's
+    // reason; the handler authorizes through
+    // middleware.AuthorizeTenantBarrierInitProof.
+    rpc InitComplete(TenantBarrierInitRequest) returns (TenantBarrierInitResponse) {
         option (qrdb.v1.permission) = "identity:gated";
     }
 
@@ -5230,12 +5241,29 @@ service TenantBarrierService {
 
 }
 
-// TenantBarrierInitRequest initializes the barrier for tenant_id.
-// passphrase is `bytes` so callers can zeroize it. officers, when non-empty,
-// is the inline Shamir share-holder roster to validate and register
-// atomically with initialization (shamir strategy only; refused on any
-// other); policy is the factor policy those officers enrol under ("" =
-// designated).
+// TenantBarrierInitBeginRequest asks for an init nonce for tenant_id.
+message TenantBarrierInitBeginRequest {
+    string tenant_id = 1;
+}
+
+// TenantBarrierInitBeginResponse carries the init nonce and its expiry (Unix
+// seconds). The nonce is valid only on the connection that requested it.
+message TenantBarrierInitBeginResponse {
+    bytes nonce   = 1;
+    int64 expires = 2;
+}
+
+// TenantBarrierInitRequest initializes the barrier for tenant_id
+// (InitComplete). passphrase is `bytes` so callers can zeroize it. officers,
+// when non-empty, is the inline Shamir share-holder roster to validate and
+// register atomically with initialization (shamir strategy only; refused on
+// any other); policy is the factor policy those officers enrol under ("" =
+// designated). nonce is InitBegin's, public_key the DER SubjectPublicKeyInfo
+// of the first admin's key, and signature that key's signature over the
+// tenant id, the nonce and this connection's TLS exporter (pkg/initproof).
+// init_statement is the first admin's signed epoch-1 init statement for the
+// barrier (barrierinit.InitStatement), from which every other node serving
+// it initializes its own key.
 message TenantBarrierInitRequest {
     string tenant_id  = 1;
     bytes  passphrase = 2;
@@ -5244,6 +5272,10 @@ message TenantBarrierInitRequest {
     string strategy   = 5;
     repeated CeremonyOfficer officers = 6;
     string policy = 7;
+    bytes  nonce      = 8;
+    bytes  public_key = 9;
+    bytes  signature  = 10;
+    bytes  init_statement = 11;
 }
 
 // TenantBarrierInitResponse carries the init outcome. For the Shamir strategy

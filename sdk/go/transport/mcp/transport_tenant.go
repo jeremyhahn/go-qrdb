@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -44,8 +45,16 @@ type mcpTenantInfo struct {
 	UpdatedAt string                   `json:"updated_at"`
 }
 
+// mcpTenantBarrierInitBeginResponse mirrors the JSON shape returned by the
+// qrdb_tenant_barrier_init_begin tool: a base64 nonce, empty when the node
+// asks no proof, and its expiry in Unix seconds.
+type mcpTenantBarrierInitBeginResponse struct {
+	Nonce   []byte `json:"nonce"`
+	Expires int64  `json:"expires,omitempty"`
+}
+
 // mcpTenantBarrierInitResponse mirrors the JSON shape returned by the
-// qrdb_tenant_barrier_init tool.
+// qrdb_tenant_barrier_init_complete tool.
 type mcpTenantBarrierInitResponse struct {
 	TenantID    string                              `json:"tenant_id"`
 	Strategy    string                              `json:"strategy"`
@@ -363,10 +372,13 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
 }
 
-// TenantBarrierInit initializes a per-tenant barrier by calling the
-// qrdb_tenant_barrier_init MCP tool. For the Shamir strategy the response
-// carries the generated M-of-N shares; for none/passphrase the share fields
-// are empty.
+// TenantBarrierInit initializes a per-tenant barrier through the
+// qrdb_tenant_barrier_init_begin and qrdb_tenant_barrier_init_complete MCP
+// tools, proving possession of req.Signer's key. Both calls run on a client
+// dialled for the purpose and pinned to one connection (connCapture), since
+// the proof binds that connection's TLS exporter. For the Shamir strategy the
+// response carries the generated M-of-N shares; for none/passphrase the share
+// fields are empty.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -399,7 +411,42 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		args["policy"] = req.Policy
 	}
 
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_init", args)
+	capture := &connCapture{}
+	client, err := t.dialMCP(ctx, t.config.Address, capture)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.Close() }()
+
+	beginText, err := callToolOn(ctx, client, "qrdb_tenant_barrier_init_begin", map[string]any{"tenant_id": req.TenantID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	var begin mcpTenantBarrierInitBeginResponse
+	if jsonErr := json.Unmarshal([]byte(beginText), &begin); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	proof, err := transport.ProveTenantBarrierInit(req.Signer, req.TenantID, begin.Nonce, capture.TLSState())
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	proofArgs := map[string][]byte{
+		"nonce":          proof.Nonce,
+		"public_key":     proof.PublicKey,
+		"signature":      proof.Signature,
+		"init_statement": statement,
+	}
+	for name, value := range proofArgs {
+		if len(value) > 0 {
+			args[name] = base64.StdEncoding.EncodeToString(value)
+		}
+	}
+
+	text, err := callToolOn(ctx, client, "qrdb_tenant_barrier_init_complete", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}

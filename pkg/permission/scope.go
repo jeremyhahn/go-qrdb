@@ -199,12 +199,3 @@ func IsCrossScope(p Permission) bool {
 	s, err := LookupScope(p)
 	return err == nil && s == ScopeCross
 }
-
-// resetScopeRegistryForTesting clears the scope registry. It is intended
-// for use by tests that need to reset state between cases. The function
-// is unexported and not part of the public API.
-func resetScopeRegistryForTesting() {
-	scopeMu.Lock()
-	defer scopeMu.Unlock()
-	scopeRegistry = map[Permission]Scope{}
-}

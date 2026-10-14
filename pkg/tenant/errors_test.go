@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -173,5 +174,30 @@ func TestIsTransientCause_NonDecryptCause(t *testing.T) {
 func TestIsTransientCause_DecryptCause(t *testing.T) {
 	if isTransientCause(seal.ErrDecryptionFailed) {
 		t.Fatal("isTransientCause(seal.ErrDecryptionFailed) must be false")
+	}
+}
+
+func TestFirstAdminProofError_NamesTenantReasonAndCause(t *testing.T) {
+	cause := &initproof.ChallengeError{Reason: initproof.ReasonExpired}
+	err := &FirstAdminProofError{TenantID: "acme", Reason: initproof.ReasonExpired, Err: cause}
+	got := err.Error()
+	for _, want := range []string{`"acme"`, string(initproof.ReasonExpired), cause.Error()} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Error() = %q, want it to contain %q", got, want)
+		}
+	}
+	var ce *initproof.ChallengeError
+	if !errors.As(err, &ce) {
+		t.Fatal("FirstAdminProofError does not unwrap to its cause")
+	}
+}
+
+func TestFirstAdminProofError_WithoutCause(t *testing.T) {
+	err := &FirstAdminProofError{TenantID: "acme", Reason: initproof.ReasonWrongKey}
+	if err.Unwrap() != nil {
+		t.Fatal("Unwrap of a causeless error is not nil")
+	}
+	if !strings.HasSuffix(err.Error(), string(initproof.ReasonWrongKey)) {
+		t.Fatalf("Error() = %q", err.Error())
 	}
 }

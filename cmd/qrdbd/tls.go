@@ -39,10 +39,6 @@ const (
 	// nodeValidity is the default validity duration for auto-generated
 	// node (leaf) certificates.
 	nodeValidity = clustertls.NodeValidity
-
-	// adminValidity is the default validity duration for auto-generated
-	// admin client certificates.
-	adminValidity = clustertls.ClientValidity
 )
 
 // TLSBundle holds the CA and leaf certificate material generated for a
@@ -250,12 +246,6 @@ func generateCA(validity time.Duration) (caCertPEM, caKeyPEM []byte, caCert *x50
 // is provided and non-empty it is embedded as a URI SAN.
 func generateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validity time.Duration, nodeURI ...string) (certPEM, keyPEM []byte, err error) {
 	return clustertls.GenerateNodeCert(caCert, caKey, validity, nodeURI...)
-}
-
-// generateClientCert creates an ECDSA P-256 client certificate signed by the
-// given CA. CN is set to cn and OU to ou.
-func generateClientCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn, ou string, validity time.Duration) (certPEM, keyPEM []byte, err error) {
-	return clustertls.GenerateClientCert(caCert, caKey, cn, ou, validity)
 }
 
 // generateCATLS creates an ephemeral ECDSA P-256 CA and a leaf certificate

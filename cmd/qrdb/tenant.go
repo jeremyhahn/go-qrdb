@@ -15,6 +15,7 @@
 package main
 
 import (
+	"crypto"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -430,7 +431,11 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			"roster inline: every officer is validated as one batch and registered\n" +
 			"atomically with initialization, rolled back together on any failure. Their\n" +
 			"combined count must equal --shares. Once initialized, later holder changes\n" +
-			"go through ordinary RBAC via `tenant barrier-officer register`/`list`.",
+			"go through ordinary RBAC via `tenant barrier-officer register`/`list`.\n\n" +
+			"On a network transport initialization is two calls on one connection: the\n" +
+			"node issues a single-use nonce, and the key in --key-file signs it together\n" +
+			"with the connection's TLS exporter, proving the caller holds the key and not\n" +
+			"merely a certificate. The key never leaves this process.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			officerRoster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
@@ -449,6 +454,12 @@ func newTenantBarrierInitCmd() *cobra.Command {
 				}
 			}
 
+			keyFile, _ := cmd.Root().PersistentFlags().GetString("key-file")
+			signer, err := initProofSigner(keyFile)
+			if err != nil {
+				return err
+			}
+
 			req := &transport.TenantBarrierInitRequest{
 				TenantID:   tenantID,
 				Passphrase: secretBytes(passphrase),
@@ -457,6 +468,7 @@ func newTenantBarrierInitCmd() *cobra.Command {
 				Strategy:   strategy,
 				Officers:   officerRoster,
 				Policy:     policy,
+				Signer:     signer,
 			}
 			defer secure.Wipe(req.Passphrase)
 
@@ -485,6 +497,19 @@ func newTenantBarrierInitCmd() *cobra.Command {
 		"Factor policy for --officers/--custodians: designated (default) or any-enrolled")
 
 	return cmd
+}
+
+// initProofSigner loads keyFile, the key of the client certificate the
+// connection authenticates with, as the signer of the tenant barrier init
+// proof of possession. An empty keyFile leaves the signer nil: a node that
+// asks no proof (the embedded transport, an unauthenticated deployment)
+// needs none, and one that does refuses with a typed
+// transport.InitSignerRequiredError.
+func initProofSigner(keyFile string) (crypto.Signer, error) {
+	if keyFile == "" {
+		return nil, nil
+	}
+	return readSigner(keyFile)
 }
 
 // parseTenantOfficerFlags parses repeatable holder flag values

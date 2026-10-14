@@ -448,6 +448,20 @@ func (b *ConnectionManagerBinding) ActiveClient() (*sdk.Client, error) {
 	return conn.client, nil
 }
 
+// activeKeyFile returns the client key file the active external connection
+// was dialed with, or "" when the active connection is embedded or none is.
+func (b *ConnectionManagerBinding) activeKeyFile() string {
+	v, ok := b.connections.Load(b.GetActiveProfileID())
+	if !ok {
+		return ""
+	}
+	conn, _ := v.(*managedConnection)
+	if conn == nil || conn.profile.External == nil {
+		return ""
+	}
+	return conn.profile.External.KeyFile
+}
+
 // IsEmbeddedAvailable delegates to the package-level build-tag function
 // to report whether embedded server support is compiled in.
 func (b *ConnectionManagerBinding) IsEmbeddedAvailable() bool {

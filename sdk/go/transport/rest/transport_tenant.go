@@ -17,6 +17,7 @@ package rest
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -50,9 +52,16 @@ type restTenant struct {
 	UpdatedAtAlt string                   `json:"updated_at"`
 }
 
-// restTenantBarrierInitRequest is the on-wire JSON for the init endpoint.
-// It matches the server-side handler payload (omitting the tenant ID, which
-// is carried in the URL path).
+// restTenantBarrierInitBeginResponse is the on-wire JSON returned by the
+// init/begin endpoint.
+type restTenantBarrierInitBeginResponse struct {
+	Nonce   []byte `json:"nonce,omitempty"`
+	Expires int64  `json:"expires,omitempty"`
+}
+
+// restTenantBarrierInitRequest is the on-wire JSON for the init/complete
+// endpoint. It matches the server-side handler payload (omitting the tenant
+// ID, which is carried in the URL path).
 type restTenantBarrierInitRequest struct {
 	Passphrase []byte                             `json:"passphrase,omitempty"`
 	Threshold  int                                `json:"threshold,omitempty"`
@@ -60,6 +69,12 @@ type restTenantBarrierInitRequest struct {
 	Strategy   string                             `json:"strategy,omitempty"`
 	Officers   []transport.OfficerRegisterRequest `json:"officers,omitempty"`
 	Policy     string                             `json:"policy,omitempty"`
+	Nonce      []byte                             `json:"nonce,omitempty"`
+	PublicKey  []byte                             `json:"public_key,omitempty"`
+	Signature  []byte                             `json:"signature,omitempty"`
+	// InitStatement is the first admin's signed init statement
+	// (barrierinit.SignTenantInit).
+	InitStatement []byte `json:"init_statement,omitempty"`
 }
 
 // restTenantBarrierUnsealRequest is the on-wire JSON for the unseal endpoint.
@@ -389,11 +404,60 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: wire.toTenantInfo()}, nil
 }
 
-// TenantBarrierInit initializes a per-tenant barrier.
-// Maps to POST /v1/tenants/{id}/barrier/init.
-// For the Shamir strategy the server returns 200 with a JSON body carrying the
-// generated shares; for none/passphrase it returns 204 No Content and the
-// response is populated from the request fields.
+// tenantBarrierInitBegin calls POST /v1/tenants/{id}/barrier/init/begin and
+// returns the nonce with the client-side TLS state of the connection that
+// answered, which init/complete must reuse.
+func (t *Transport) tenantBarrierInitBegin(ctx context.Context, client *http.Client, tenantID string) ([]byte, *tls.ConnectionState, error) {
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/barrier/init/begin"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, http.NoBody)
+	if err != nil {
+		return nil, nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, t.decodeErrorResponse("TenantBarrierInit", resp)
+	}
+	var wire restTenantBarrierInitBeginResponse
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonDecodeError{Err: err}}
+	}
+	return wire.Nonce, resp.TLS, nil
+}
+
+// initProofClient returns the client tenant barrier init runs begin and
+// complete on, and the function that releases it. The proof is bound to one
+// connection's TLS exporter, so the client is a clone of the connection pool
+// limited to a single connection per host: begin and complete then ride the
+// same connection, and if that connection dies between them the server
+// refuses the proof rather than accepting it elsewhere. A transport wired
+// with a caller-supplied client (no pool of its own to clone) uses that
+// client as is.
+func (t *Transport) initProofClient() (*http.Client, func()) {
+	if t.httpTransport == nil {
+		return t.client, func() {}
+	}
+	pinned := t.httpTransport.Clone()
+	pinned.MaxConnsPerHost = 1
+	return &http.Client{
+		Transport: transport.SOPINRoundTripper(pinned, "rest", transport.ConfiguredHost(t.baseURL)),
+		Timeout:   t.client.Timeout,
+	}, pinned.CloseIdleConnections
+}
+
+// TenantBarrierInit initializes a per-tenant barrier. Maps to
+// POST /v1/tenants/{id}/barrier/init/begin, then .../init/complete carrying
+// the proof of possession of req.Signer's key over the connection begin
+// answered on -- the client's pooled HTTP/2 or HTTP/3 connection, which
+// both requests share. For the Shamir strategy the server returns 200 with a
+// JSON body counting the sealed shares; otherwise it returns 204 No Content
+// and the response is populated from the request fields.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -404,25 +468,43 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if req.TenantID == "" {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &emptyTenantIDError{}}
 	}
+	client, release := t.initProofClient()
+	defer release()
+	nonce, cs, err := t.tenantBarrierInitBegin(ctx, client, req.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	proof, err := transport.ProveTenantBarrierInit(req.Signer, req.TenantID, nonce, cs)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
 	wireReq := restTenantBarrierInitRequest{
-		Passphrase: req.Passphrase,
-		Threshold:  req.Threshold,
-		Shares:     req.Shares,
-		Strategy:   req.Strategy,
-		Officers:   req.Officers,
-		Policy:     req.Policy,
+		Passphrase:    req.Passphrase,
+		Threshold:     req.Threshold,
+		Shares:        req.Shares,
+		Strategy:      req.Strategy,
+		Officers:      req.Officers,
+		Policy:        req.Policy,
+		Nonce:         proof.Nonce,
+		PublicKey:     proof.PublicKey,
+		Signature:     proof.Signature,
+		InitStatement: statement,
 	}
 	data, err := json.Marshal(wireReq)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonEncodeError{Err: err}}
 	}
-	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/init"
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/init/complete"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, bytes.NewReader(data))
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := t.client.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}

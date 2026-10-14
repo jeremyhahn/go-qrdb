@@ -115,6 +115,7 @@ type TenantOnboardingService struct {
 	logger      *slog.Logger
 	audit       audit.AuditLogger
 	auditPolicy audit.FailurePolicy
+	barrierPins bootstrap.FirstAdminPinner
 }
 
 // Compile-time interface check.
@@ -139,6 +140,11 @@ type TenantOnboardingDeps struct {
 	// AuditPolicy is the node's audit failure posture for OnboardTenant's
 	// gating record. The zero value, audit.FailClosed, is the default.
 	AuditPolicy audit.FailurePolicy
+	// BarrierAnchors pins a pending first admin's thumbprint as the tenant
+	// barrier's epoch-1 anchor (bootstrap.Dependencies.BarrierAnchors). Nil
+	// pins nothing, which is right only for a node whose tenant service claims
+	// no init statements.
+	BarrierAnchors bootstrap.FirstAdminPinner
 }
 
 // NewTenantOnboardingService returns the production TenantOnboardingServicer.
@@ -154,6 +160,7 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		logger:      deps.Logger,
 		audit:       deps.Audit,
 		auditPolicy: deps.AuditPolicy,
+		barrierPins: deps.BarrierAnchors,
 	}
 }
 
@@ -230,14 +237,15 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		AdminEnrollment: bootstrap.AdminEnrollCert,
 		Exclusive:       true,
 	}, bootstrap.Dependencies{
-		Tenants:       s.tenants,
-		Users:         s.users,
-		Roles:         s.roles,
-		Signer:        &bootstrap.KeyBSigner{Certs: s.certs},
-		TrustAnchors:  s.anchors,
-		PendingAdmins: s.pending,
-		TrustDomain:   s.trustDomain,
-		Logger:        s.logger,
+		Tenants:        s.tenants,
+		Users:          s.users,
+		Roles:          s.roles,
+		Signer:         &bootstrap.KeyBSigner{Certs: s.certs},
+		TrustAnchors:   s.anchors,
+		PendingAdmins:  s.pending,
+		BarrierAnchors: s.barrierPins,
+		TrustDomain:    s.trustDomain,
+		Logger:         s.logger,
 	})
 	if err != nil {
 		settle(err)

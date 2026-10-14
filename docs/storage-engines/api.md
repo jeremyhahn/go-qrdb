@@ -13,6 +13,36 @@ What is observable over the wire is a database's configured backend, through
 [../databases/api.md](../databases/api.md): `DatabaseInfo.Backend`
 (`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`.
 
+### Optional `GuardedStorage`
+
+Beside `Storage`, `pkg/storage` declares an optional interface (re-exported as
+`GuardedStorage` in the SDK) that a backend implements to offer an atomic
+compare-and-swap on raw bytes:
+
+```go
+CompareAndSwap(ctx context.Context, key, expected, next []byte) (swapped bool, err error)
+```
+
+Memory, File, Pebble and ObjStore all implement it; discover it by type
+assertion, as for `Syncer`. `Storage` itself is unchanged. A swap replaces the
+value only when it still equals `expected`; a mismatch or an absent key is
+`false` with a nil error (an absent key is never created); an error means the
+outcome is unknown. The compare and the write happen under one lock that `Set`,
+`Delete` and batch commits also respect, so a concurrent writer cannot land
+between them. On the File engine that is the cross-process write lock, so the
+guarantee holds across processes sharing the directory. Memory, Pebble and
+ObjStore hold an in-process lock only; across processes sharing an ObjStore
+bucket the guarantee does not hold.
+
+Two optional in-process seams sit beside `Storage`: `storage.Syncer` (flush on
+demand) and `storage.Exclusive` (`Exclusive(fn func(storage.ReadWriter) error)
+error`), implemented by the `file` engine. `Exclusive` runs `fn` holding the
+engine's cross-process write lock, so a read-check-write cannot be interleaved
+by any writer on the same directory in this process or another; `fn` writes
+through the `ReadWriter` it is handed, never through the engine. Errors from
+the lock are `*filelock.Error` (`pkg/util/filelock`); a closed engine returns
+`*storage.ClosedError`.
+
 The one cross-process form of the interface is the `qrdb` storage engine
 (`storage.engine: qrdb`), which reaches a remote node through the SDK client
 rather than a local store. go-xkms uses the same pattern from its side.

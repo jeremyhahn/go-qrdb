@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -479,6 +480,12 @@ func buildRoutedIAMNode(t *testing.T) (*lifecycle.Node, *seal.BarrierRegistry) {
 
 	host := newLocalHost()
 	t.Cleanup(func() { _ = host.Close() })
+	return buildRoutedIAMNodeOn(t, host)
+}
+
+// buildRoutedIAMNodeOn is buildRoutedIAMNode over a caller-supplied host.
+func buildRoutedIAMNodeOn(t *testing.T, host service.Host) (*lifecycle.Node, *seal.BarrierRegistry) {
+	t.Helper()
 
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
@@ -576,6 +583,51 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 		if !errors.As(err, &notFound) {
 			t.Fatalf("system-tenant lookup: want UserNotFoundError, got %v", err)
 		}
+	}
+}
+
+// unactivatedHost is a host whose groups can hold other binaries, as the raft
+// adapter's is, and on which no feature has been activated.
+type unactivatedHost struct {
+	*backend.LocalBackend
+}
+
+func (unactivatedHost) FeatureEnabled(uint64, featuregate.Feature) bool { return false }
+
+var _ service.FeatureGatedHost = unactivatedHost{}
+
+// Every member serving an isolated tenant initialises its own key from the
+// owner's statement, so on a host whose groups can hold other binaries an
+// isolated tenant is refused until per-node-barrier-keys is activated, and
+// nothing is written.
+func TestBuildServices_IsolatedTenantIsGatedOnPerNodeBarrierKeys(t *testing.T) {
+	host := unactivatedHost{LocalBackend: newLocalHost()}
+	t.Cleanup(func() { _ = host.Close() })
+	node, _ := buildRoutedIAMNodeOn(t, host)
+
+	ctx := context.Background()
+	const isolated = "isolated-tenant"
+	var notActive *featuregate.NotActiveError
+	if _, err := node.Tenant.CreateTenant(ctx, isolated, "Isolated Tenant", tenant.IsolationBarrier); !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys {
+		t.Fatalf("CreateTenant(barrier) before activation = %v, want NotActiveError(%s)", err, featuregate.PerNodeBarrierKeys)
+	}
+	if _, err := node.Tenant.GetTenant(ctx, isolated); err == nil {
+		t.Fatal("GetTenant after a refused create succeeded; the refusal wrote the tenant")
+	}
+}
+
+// A standalone node holds only this binary and gates nothing: an isolated
+// tenant is admitted and its barrier initialised from its first start.
+func TestBuildServices_StandaloneIsolatedTenantIsNotGated(t *testing.T) {
+	node, registry := buildRoutedIAMNode(t)
+
+	ctx := context.Background()
+	const isolated = "isolated-tenant"
+	if _, err := node.Tenant.CreateTenant(ctx, isolated, "Isolated Tenant", tenant.IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant(barrier) on a standalone node: %v", err)
+	}
+	if err := registry.InitializeTenant(ctx, isolated, seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(barrier): %v", err)
 	}
 }
 
@@ -926,9 +978,10 @@ func TestBuildServices_WithSuppliedDatabaseManager(t *testing.T) {
 	}
 }
 
-// TestBuildServices_WithStrategyRegistry verifies that injecting a
-// StrategyRegistry wires the registry into the TenantService (exercises
-// the non-nil branch of buildTenantServiceOpts).
+// TestBuildServices_WithStrategyRegistry verifies that BuildServices builds
+// the TenantService with a StrategyRegistry injected; that the registry feeds
+// the default BarrierKeyProvider is pinned by
+// TestBuildTenantServiceOpts_ProviderWinsOverRegistry.
 func TestBuildServices_WithStrategyRegistry(t *testing.T) {
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()

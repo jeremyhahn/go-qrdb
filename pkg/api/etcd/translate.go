@@ -60,42 +60,7 @@ func responseHeader(clusterID, memberID uint64, revision int64, raftTerm uint64)
 	}
 }
 
-// prefixEnd returns the end key for a prefix scan. Given a key prefix,
-// it returns the key that would come after all keys with that prefix.
-// This matches etcd's range_end semantics for prefix queries where
-// the client sends key=prefix and range_end=prefixEnd(prefix).
-func prefixEnd(prefix []byte) []byte {
-	end := make([]byte, len(prefix))
-	copy(end, prefix)
-	for i := len(end) - 1; i >= 0; i-- {
-		if end[i] < 0xff {
-			end[i]++
-			return end[:i+1]
-		}
-	}
-	// All 0xff — return "\x00" which means all keys in etcd semantics.
-	return []byte{0}
-}
-
 // isAllKeys returns true when the range covers all keys (key="\x00", end="\x00").
 func isAllKeys(key, rangeEnd []byte) bool {
 	return len(key) == 1 && key[0] == 0 && len(rangeEnd) == 1 && rangeEnd[0] == 0
-}
-
-// isPrefixRange returns true when rangeEnd represents the prefix-end
-// of key (the client-side helper sets rangeEnd = prefixEnd(key)).
-func isPrefixRange(key, rangeEnd []byte) bool {
-	if len(rangeEnd) == 0 {
-		return false
-	}
-	computed := prefixEnd(key)
-	if len(computed) != len(rangeEnd) {
-		return false
-	}
-	for i := range computed {
-		if computed[i] != rangeEnd[i] {
-			return false
-		}
-	}
-	return true
 }

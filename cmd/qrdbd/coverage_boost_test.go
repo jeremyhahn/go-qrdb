@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -321,44 +320,6 @@ func TestGenerateNodeCert_ValidKeyPair(t *testing.T) {
 	// Verify that the PEM pair is a valid tls.Certificate.
 	_, err = tls.X509KeyPair(certPEM, keyPEM)
 	require.NoError(t, err)
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: generateClientCert happy path
-// ---------------------------------------------------------------------------
-
-func TestGenerateClientCert_ReturnsPEM(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, keyPEM, err := generateClientCert(caCert, caKey, "admin", "default", adminValidity)
-	require.NoError(t, err)
-
-	assert.NotEmpty(t, certPEM)
-	assert.NotEmpty(t, keyPEM)
-}
-
-func TestGenerateClientCert_ValidKeyPair(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, keyPEM, err := generateClientCert(caCert, caKey, "svc-account", "tenant-1", adminValidity)
-	require.NoError(t, err)
-
-	// Parse and verify the cert has ClientAuth extended key usage.
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	require.NoError(t, err)
-
-	parsedCert, err := x509.ParseCertificate(tlsCert.Certificate[0])
-	require.NoError(t, err)
-
-	hasClientAuth := false
-	for _, eku := range parsedCert.ExtKeyUsage {
-		if eku == x509.ExtKeyUsageClientAuth {
-			hasClientAuth = true
-		}
-	}
-	assert.True(t, hasClientAuth, "client cert must have ClientAuth extended key usage")
 }
 
 // ---------------------------------------------------------------------------

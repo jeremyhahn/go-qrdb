@@ -277,6 +277,11 @@ type serverOptions struct {
 	// register hardware-backed strategies into it.
 	strategyRegistry seal.StrategyRegistry
 
+	// barrierKeyProvider is the seam through which this node obtains the
+	// strategy that seals its own key for a tenant barrier. Nil means the
+	// default provider over strategyRegistry.
+	barrierKeyProvider seal.BarrierKeyProvider
+
 	// keyWrapRegistry is the canonical name->factory lookup for key-wrap
 	// (KEK) providers the Backup service resolves BackupOptions.
 	// KeyProviderID through. qrdb provides a default registry holding only
@@ -1035,10 +1040,12 @@ func WithSOAuthenticator(a *auth.SOAuthenticator) ServerOption {
 }
 
 // WithStrategyRegistry injects a populated StrategyRegistry so per-tenant
-// barriers can resolve hardware/cloud seal strategies (TPM2, PKCS#11, cloud
-// KMS, Vault) by name. qrdb provides a default registry pre-populated with
-// Software + None; higher layers (xkms via quicbaas composition) call Register
-// on the supplied registry to add hardware-backed strategies.
+// barriers can resolve composer-supplied seal strategies by name: the default
+// BarrierKeyProvider (seal.NewBarrierKeyProvider) resolves over it.
+// qrdb provides a default registry pre-populated with Software + None; higher
+// layers (xkms via quicbaas composition) call Register on the supplied
+// registry to add hardware-backed strategies. WithBarrierKeyProvider, when
+// also given, wins.
 //
 // The TenantService that consumes this registry is constructed during
 // lifecycle.BuildServices — before server.New runs — so the SDK node builders
@@ -1049,6 +1056,21 @@ func WithSOAuthenticator(a *auth.SOAuthenticator) ServerOption {
 // injection to take effect.
 func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
 	return func(o *serverOptions) { o.strategyRegistry = reg }
+}
+
+// WithBarrierKeyProvider injects the seam through which each node obtains
+// the strategy that seals its own key for a tenant barrier. The provider is
+// handed the barrier, this node's identity, the owner's chosen strategy and
+// the owner's opaque KeyRef, and declares what unsealing needs and who holds
+// the wrapping key. go-qrdb ships only the software provider over a
+// StrategyRegistry; a composer (go-xkms) injects hardware- or KMS-backed ones.
+//
+// Like WithStrategyRegistry, the TenantService that consumes it is built
+// during lifecycle.BuildServices, before server.New runs: the SDK node
+// builders resolve it via ResolveCryptoOptions and forward it into
+// lifecycle.Infra.BarrierKeyProvider up front.
+func WithBarrierKeyProvider(p seal.BarrierKeyProvider) ServerOption {
+	return func(o *serverOptions) { o.barrierKeyProvider = p }
 }
 
 // WithKeyWrapRegistry injects a populated keywrap.Registry so the Backup
@@ -1187,6 +1209,7 @@ func WithTrustAnchors(r trustanchor.Registry) ServerOption {
 // injection would silently no-op.
 type CryptoOptions struct {
 	StrategyRegistry       seal.StrategyRegistry
+	BarrierKeyProvider     seal.BarrierKeyProvider
 	PINBackend             pin.PINBackend
 	FactorRegistry         *authfactors.FactorRegistry
 	CertKeyProviderFactory cakey.ProviderFactory
@@ -1241,6 +1264,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 	}
 	return CryptoOptions{
 		StrategyRegistry:       o.strategyRegistry,
+		BarrierKeyProvider:     o.barrierKeyProvider,
 		PINBackend:             o.pinBackend,
 		FactorRegistry:         o.factorRegistry,
 		CertKeyProviderFactory: o.certKeyProviderFactory,

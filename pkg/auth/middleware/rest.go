@@ -67,6 +67,9 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// registered via wiring.AuthMiddlewareConfig.ExtraAuthenticators);
 		// qrdb ships no token-validating authenticator itself.
 		ctx = auth.WithHTTPAuthorization(ctx, r.Header.Get("Authorization"))
+		// And the RFC 9449 DPoP proof with the method and target URI it
+		// must be bound to; verification is the embedder's authenticator.
+		ctx = auth.WithDPoPFromHTTP(ctx, r)
 
 		// A small set of endpoints is public -- skip authentication entirely.
 		// Load balancers and probes must reach /health without a client

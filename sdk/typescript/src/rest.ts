@@ -2362,11 +2362,23 @@ export class RestClient implements Client {
             },
             barrierInit: async (req: TenantBarrierInitRequest): Promise<TenantBarrierInitResponse> => {
                 this.ensureConnected();
+                // Init is two calls: init/begin asks for a nonce, and
+                // init/complete must carry a signature by the first admin's key
+                // over it and the connection's TLS exporter. fetch exposes
+                // neither the connection nor its exporter, so when the node asks
+                // for that proof this client cannot give it: the desktop app,
+                // whose Go bindings sign with the connection's key, and the CLI
+                // can. An unauthenticated node asks none.
+                const base = `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/init`;
+                const challenge = await this.fetchJSON<{ nonce?: string }>(`${base}/begin`, { method: 'POST' });
+                if (challenge?.nonce) {
+                    throw new DesktopOnlyError('tenants.barrierInit with proof of possession');
+                }
                 // "none" and "passphrase" strategies respond 204 No Content;
                 // "shamir" responds 200 with threshold/share_count but NO shares.
                 // fetchJSON cannot parse an empty body, so we issue the request
                 // directly and synthesize a response for the 204 case.
-                const path = `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/init`;
+                const path = `${base}/complete`;
                 // passphrase is base64 on the wire; the server field is
                 // `[]byte` so it can be zeroized. See seal.initialize.
                 const initBody: Record<string, unknown> = { ...req };

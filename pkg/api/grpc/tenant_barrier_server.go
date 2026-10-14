@@ -26,6 +26,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -87,15 +88,26 @@ func (s *tenantBarrierServer) authorizeTenantBarrierOp(ctx context.Context, tena
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
-// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
-// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
-// — the single cross-transport home of the bootstrap-window semantics). When
-// authMW is nil the gate is a no-op (unauthenticated deployment).
-func (s *tenantBarrierServer) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+// beginTenantBarrierInit issues the init nonce through the shared
+// trust-on-first-init rule (middleware.BeginTenantBarrierInit -- the single
+// cross-transport home of the bootstrap-window semantics and the init
+// proof). When authMW is nil the deployment is unauthenticated: there is no
+// identity to prove, and the empty challenge says so.
+func (s *tenantBarrierServer) beginTenantBarrierInit(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
+	if s.authMW == nil {
+		return &initproof.Challenge{}, nil
+	}
+	return s.authMW.BeginTenantBarrierInit(ctx, tenantID, s.svc)
+}
+
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization and
+// redeems its proof of possession (middleware.AuthorizeTenantBarrierInitProof).
+// When authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *tenantBarrierServer) authorizeTenantBarrierInit(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
 	if s.authMW == nil {
 		return nil
 	}
-	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.svc)
+	return s.authMW.AuthorizeTenantBarrierInitProof(ctx, tenantID, s.svc, proof)
 }
 
 // authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
@@ -121,9 +133,30 @@ func RegisterTenantBarrierService(srv *grpc.Server, svc tenantpkg.TenantServicer
 	pb.RegisterTenantBarrierServiceServer(srv, &tenantBarrierServer{svc: svc, authMW: authMW})
 }
 
-// Init initializes a per-tenant barrier. The response is share-free: shares
-// are distributed to officers via the officer claim flow.
-func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierInitRequest) (*pb.TenantBarrierInitResponse, error) {
+// InitBegin issues the nonce InitComplete must sign, bound to this
+// connection's TLS exporter.
+func (s *tenantBarrierServer) InitBegin(ctx context.Context, req *pb.TenantBarrierInitBeginRequest) (*pb.TenantBarrierInitBeginResponse, error) {
+	if s.svc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
+	}
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	challenge, err := s.beginTenantBarrierInit(ctx, req.GetTenantId())
+	if err != nil {
+		return nil, authzError(err)
+	}
+	out := &pb.TenantBarrierInitBeginResponse{Nonce: challenge.Nonce}
+	if !challenge.ExpiresAt.IsZero() {
+		out.Expires = challenge.ExpiresAt.Unix()
+	}
+	return out, nil
+}
+
+// InitComplete initializes a per-tenant barrier, given proof of possession
+// of the first admin's key over this connection. The response is share-free:
+// shares are distributed to officers via the officer claim flow.
+func (s *tenantBarrierServer) InitComplete(ctx context.Context, req *pb.TenantBarrierInitRequest) (*pb.TenantBarrierInitResponse, error) {
 	if s.svc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
 	}
@@ -134,7 +167,12 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	if err := s.authorizeTenantBarrierInit(ctx, req.GetTenantId()); err != nil {
+	proof := &authmw.TenantBarrierInitProof{
+		Nonce:     req.GetNonce(),
+		PublicKey: req.GetPublicKey(),
+		Signature: req.GetSignature(),
+	}
+	if err := s.authorizeTenantBarrierInit(ctx, req.GetTenantId(), proof); err != nil {
 		return nil, authzError(err)
 	}
 
@@ -151,7 +189,8 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 	}
 
 	result, err := s.svc.TenantBarrierInitWithStrategy(ctx, req.GetTenantId(), req.GetPassphrase(),
-		int(req.GetThreshold()), int(req.GetShares()), seal.StrategyID(req.GetStrategy()), roster)
+		int(req.GetThreshold()), int(req.GetShares()), seal.StrategyID(req.GetStrategy()), roster,
+		tenantpkg.WithInitStatement(req.GetInitStatement()))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

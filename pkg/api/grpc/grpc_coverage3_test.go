@@ -763,7 +763,7 @@ func TestTenantBarrierInitHandler_WithInterceptor(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	_, err = pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+	_, err = pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId: "t1", Passphrase: []byte("s"),
 	})
 	if err != nil {
@@ -879,7 +879,7 @@ func TestTenantBarrierStatusHandler_WithInterceptor(t *testing.T) {
 func TestTenantBarrierInitHandler_DecodeError(t *testing.T) {
 	// nil svc triggers Unimplemented — exercises the handler's nil-check branch.
 	srv := &tenantBarrierServer{svc: nil}
-	_, err := srv.Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "t1"})
+	_, err := srv.InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "t1"})
 	if err == nil {
 		t.Fatal("expected error from nil svc")
 	}

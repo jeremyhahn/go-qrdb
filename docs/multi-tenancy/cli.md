@@ -52,6 +52,15 @@ qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
 
 There is no `--data-root` flag: the API field of that name is retired and the server refuses it (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`), because a tenant's location is a named volume pool resolved on each node, never a path. *(Corrected 2026-10-06: this guide listed a `--data-root` flag and omitted `--pool` and `--allowed-volume-pools`.)*
 
+On a cluster, a `barrier`, `volume` or `raft` create, and a
+`qrdb tenant update --isolation-type barrier`, fail as unavailable
+(503 / `UNAVAILABLE`,
+`cluster feature "per-node-barrier-keys" is not active yet`) until every node
+runs a release that initialises its own tenant barrier key; they write
+nothing, and a retry after the rollout succeeds. A single-member cluster
+activates the feature at its first check, a standalone node never refuses, and
+a `prefix` tenant is never refused for it.
+
 A `volume` or `raft` tenant is allocated a directory from the node's volume
 pool. The replicated record names the pool and the slot within it, never a
 path, and each node resolves that slot to its own directory, `{pool path}/{tenant}`.
@@ -238,6 +247,16 @@ initialize the barrier, and the admin's account is created as soon as the
 barrier is usable. Under `auth.mtls_binding_policy: required` a tenant with no
 onboarded admin cannot have its barrier initialized at all.
 
+Over a network transport the command also **proves possession** of the first
+admin's key: it asks the node for a nonce (`init/begin`) and signs it, bound
+to the connection's TLS 1.3 exporter, with the key in the global `--key-file`
+(`init/complete`), all on one connection. Run it with the first admin's own
+`--cert-file`/`--key-file`. Without `--key-file` the node's request for a
+proof is refused locally (`InitSignerRequiredError`); a key file that cannot
+be read is refused before anything is sent. A signature by any other key is
+refused by the node with `FirstAdminProofError`. The key is used only to sign
+and is never sent. An embedded connection is in process and asks no proof.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--id` | string | tenant ID |
@@ -347,7 +366,7 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 | `qrdb cluster isolation-policy set strict` | Tightens the floor. Loosening is refused. |
 | `qrdb tenant create --id acme ... --admin-username alice --admin-csr ./alice.csr --isolation-policy strict` | `--admin-username`/`--admin-csr` are already required today (see [tenant create](#qrdb-tenant-create) above); `--isolation-policy` is this ruling's only new flag. Once implemented, prints the serving set in addition to today's admin SPKI thumbprint and state. |
 | `qrdb tenant set-isolation-policy acme strict` | The tenant's own Admin opts the tenant into strict. It cannot be undone. |
-| `qrdb tenant barrier-init --id acme --admin-key ./alice.key ...` | Proves possession of the first admin's key, then initializes the barrier on **every** serving node and reports per node. |
+| `qrdb tenant barrier-init --id acme --cert-file ./alice.crt --key-file ./alice.key ...` | Proves possession of the first admin's key, then initializes the barrier on **every** serving node and reports per node. *(Corrected 2026-10-14: this named an `--admin-key` flag. The proof shipped signing with the global `--key-file`, the key the connection already authenticates with, so no new flag exists; it initializes the node the CLI is connected to until the phase 7 fan-out ships.)* |
 | `qrdb tenant barrier-unseal --id acme ...` / `barrier-unseal-share` | Sends the credential, or this holder's share, to every serving node and reports per node. `--node` limits it to one node, for example one that has just joined. |
 | `qrdb tenant barrier-status --id acme` | One line per serving node: sealed, unsealed or pending. Also shows the bound admin thumbprint, and each shard's WAL, which is always `tenant` for a strict tenant. |
 | `qrdb users get --tenant acme <id>` (and the other identity verbs) | Operator verbs on a named tenant. They work only where that tenant's effective policy is `operator-access`. Without `--tenant`, identity verbs act in the caller's own tenant. |

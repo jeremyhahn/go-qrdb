@@ -310,16 +310,6 @@ func TestGenerateNodeCert_CertificateFields(t *testing.T) {
 
 // TestGenerateClientCert_CertificateFields verifies that the client certificate
 // has the expected CN and OU, exercising lines 231-262 of tls.go.
-func TestGenerateClientCert_CertificateFields(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	certPEM, keyPEM, err := generateClientCert(caCert, caKey, "testuser", "test-tenant", time.Hour)
-	require.NoError(t, err)
-	require.NotEmpty(t, certPEM)
-	require.NotEmpty(t, keyPEM)
-}
-
 // ---------------------------------------------------------------------------
 // start.go: generateReplicaID — basic properties already tested; add
 // concurrency/race sanity check

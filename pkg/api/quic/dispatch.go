@@ -423,9 +423,10 @@ func (s *Server) buildHandlers() {
 	// layer: a self-managed tenant's IAM is encrypted behind the very
 	// barrier these operate on, so the RBAC check runs inside the handlers
 	// with the shared trust-on-first-init / sealed-window fallbacks
-	// (middleware.AuthorizeTenantBarrierInit / AuthorizeTenantBarrierSealedOp),
-	// identical to REST, gRPC, and MCP.
-	s.handleIf(tenantOn, "tenant.BarrierInit", permission.IdentityGated, s.handleTenantBarrierInit)
+	// (middleware.BeginTenantBarrierInit / AuthorizeTenantBarrierInitProof /
+	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and MCP.
+	s.handleIf(tenantOn, "tenant.BarrierInitBegin", permission.IdentityGated, s.handleTenantBarrierInitBegin)
+	s.handleIf(tenantOn, "tenant.BarrierInitComplete", permission.IdentityGated, s.handleTenantBarrierInit)
 	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.IdentityGated, s.handleTenantBarrierUnseal)
 	s.handleIf(tenantOn, "tenant.BarrierSeal", permission.TenantBarrierSeal, s.handleTenantBarrierSeal)
 	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.IdentityGated, s.handleTenantBarrierStatus)

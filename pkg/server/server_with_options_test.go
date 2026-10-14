@@ -47,6 +47,28 @@ func TestWithStrategyRegistry_Applied(t *testing.T) {
 	}
 }
 
+// TestWithBarrierKeyProvider_Resolved asserts that an injected
+// BarrierKeyProvider is stored and that ResolveCryptoOptions carries it out,
+// beside the registry, to the builders that forward it into lifecycle.Infra.
+func TestWithBarrierKeyProvider_Resolved(t *testing.T) {
+	reg := seal.NewDefaultStrategyRegistry()
+	provider := seal.NewBarrierKeyProvider(reg)
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
+		WithBarrierKeyProvider(provider),
+	)
+	if srv.opts.barrierKeyProvider != provider {
+		t.Fatal("barrierKeyProvider not stored in opts")
+	}
+
+	got := ResolveCryptoOptions(WithStrategyRegistry(reg), WithBarrierKeyProvider(provider))
+	if got.BarrierKeyProvider != provider || got.StrategyRegistry != reg {
+		t.Fatalf("ResolveCryptoOptions = %+v, want the provider and the registry", got)
+	}
+	if ResolveCryptoOptions().BarrierKeyProvider != nil {
+		t.Fatal("BarrierKeyProvider resolved without being injected")
+	}
+}
+
 // TestWithPINBackend_Applied asserts that an injected PINBackend is
 // reachable from the server's serverOptions for the ceremony service.
 func TestWithPINBackend_Applied(t *testing.T) {

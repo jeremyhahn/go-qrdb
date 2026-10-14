@@ -70,11 +70,19 @@ func (e *RangeIteratorError) Unwrap() error {
 // never compared against. An advisory guarantee is worse than a refusal,
 // because a refusal is at least honest about what the caller did not get.
 //
-// The scope of the guarantee is writes through this Backend, which is the whole
-// of the store's writers by construction: the store is created and handed to
-// NewStandaloneBackend by a factory that keeps no reference to it (see
-// EmbeddedBackendFactory.Create and Manager.openBarrierMetaBackend), and the
-// backend is thereafter the store's sole owner.
+// The scope of the guarantee within one process is writes through this Backend,
+// which is the whole of the store's writers by construction: the store is
+// created and handed to NewStandaloneBackend by a factory that keeps no
+// reference to it (see EmbeddedBackendFactory.Create and
+// Manager.openBarrierMetaBackend), and the backend is thereafter the store's
+// sole owner.
+//
+// Across processes it is the store's guarantee, not writeMu's. A store that more
+// than one process can open (the file engine) implements storage.Exclusive, and
+// the guarded verbs then run their read-check-write under its cross-process
+// write lock, while the store takes the same lock for every unguarded write, so
+// two processes sharing one directory cannot both pass a guard. A store that
+// implements neither is single-owner and writeMu is all it needs.
 type StandaloneBackend struct {
 	store storage.Storage
 
@@ -119,6 +127,22 @@ func (b *StandaloneBackend) Delete(_ context.Context, key []byte) error {
 	return b.store.Delete(key)
 }
 
+// guarded runs a guarded verb's read-check-write indivisibly. It takes writeMu,
+// and when the store is shared between processes (it implements
+// storage.Exclusive, as the file engine does) it runs fn under the store's
+// cross-process write lock as well, so no writer in another process can land
+// between the read and the write. The store hands fn a ReadWriter that does not
+// take the lock a second time; for a store that is not shared, fn gets the
+// store itself and writeMu is the whole of the exclusion.
+func (b *StandaloneBackend) guarded(fn func(storage.ReadWriter) error) error {
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	if x, ok := b.store.(storage.Exclusive); ok {
+		return x.Exclusive(fn)
+	}
+	return fn(b.store)
+}
+
 // PutIfAbsent stores value under key only when the key is absent, reporting
 // whether this call created it.
 //
@@ -128,60 +152,66 @@ func (b *StandaloneBackend) Delete(_ context.Context, key []byte) error {
 // not used because it would be a second trip through the store for an answer
 // Get already carries.
 func (b *StandaloneBackend) PutIfAbsent(_ context.Context, key, value []byte) (bool, error) {
-	b.writeMu.Lock()
-	defer b.writeMu.Unlock()
-
-	current, err := b.store.Get(key)
-	if err != nil {
-		return false, err
-	}
-	if current != nil {
-		return false, nil
-	}
-	if err := b.store.Set(key, value); err != nil {
-		return false, err
-	}
-	return true, nil
+	var stored bool
+	err := b.guarded(func(rw storage.ReadWriter) error {
+		current, err := rw.Get(key)
+		if err != nil {
+			return err
+		}
+		if current != nil {
+			return nil
+		}
+		if err := rw.Set(key, value); err != nil {
+			return err
+		}
+		stored = true
+		return nil
+	})
+	return stored && err == nil, err
 }
 
 // CompareAndDelete removes key only when its stored value still equals
 // expected, reporting whether this call removed it. The same mutex that makes
 // PutIfAbsent indivisible makes the compare and the delete one operation here.
 func (b *StandaloneBackend) CompareAndDelete(_ context.Context, key, expected []byte) (bool, error) {
-	b.writeMu.Lock()
-	defer b.writeMu.Unlock()
-
-	current, err := b.store.Get(key)
-	if err != nil {
-		return false, err
-	}
-	if current == nil || !bytes.Equal(current, expected) {
-		return false, nil
-	}
-	if err := b.store.Delete(key); err != nil {
-		return false, err
-	}
-	return true, nil
+	var deleted bool
+	err := b.guarded(func(rw storage.ReadWriter) error {
+		current, err := rw.Get(key)
+		if err != nil {
+			return err
+		}
+		if current == nil || !bytes.Equal(current, expected) {
+			return nil
+		}
+		if err := rw.Delete(key); err != nil {
+			return err
+		}
+		deleted = true
+		return nil
+	})
+	return deleted && err == nil, err
 }
 
 // CompareAndSwap replaces key's value with next only when its stored value
 // still equals expected, reporting whether this call replaced it. An absent key
 // is left absent -- a swap is not a create (go-qrdb#56).
 func (b *StandaloneBackend) CompareAndSwap(_ context.Context, key, expected, next []byte) (bool, error) {
-	b.writeMu.Lock()
-	defer b.writeMu.Unlock()
-
-	current, err := b.store.Get(key)
-	if err != nil {
-		return false, err
-	}
-	if current == nil || !bytes.Equal(current, expected) {
-		return false, nil
-	}
-	if err := b.store.Set(key, next); err != nil {
-		return false, err
-	}
-	return true, nil
+	var swapped bool
+	err := b.guarded(func(rw storage.ReadWriter) error {
+		current, err := rw.Get(key)
+		if err != nil {
+			return err
+		}
+		if current == nil || !bytes.Equal(current, expected) {
+			return nil
+		}
+		if err := rw.Set(key, next); err != nil {
+			return err
+		}
+		swapped = true
+		return nil
+	})
+	return swapped && err == nil, err
 }
 
 // List returns all keys matching the given prefix as strings. The context

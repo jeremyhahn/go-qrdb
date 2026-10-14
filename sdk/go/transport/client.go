@@ -1101,9 +1101,11 @@ type TenantClient interface {
 	// caller's own) by fingerprint; it stops vouching for logins at once.
 	RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error
 
-	// TenantBarrierInit initializes a per-tenant barrier. For the Shamir
-	// strategy the response carries the generated M-of-N shares; for
-	// none/passphrase the share fields are empty.
+	// TenantBarrierInit initializes a per-tenant barrier. A network transport
+	// runs init/begin and init/complete on one connection, proving
+	// possession of req.Signer's key (see TenantBarrierInitRequest.Signer).
+	// Share material is never returned; for the Shamir strategy the response
+	// counts the shares sealed to officers.
 	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
 
 	// TenantBarrierUnseal unseals a per-tenant barrier using a single key.

@@ -87,6 +87,16 @@ func (c *ConnectionBinding) loadClient() (*sdk.Client, error) {
 	return cl, nil
 }
 
+// keyFile returns the client key file the active connection authenticates
+// with, or "" when it has none: an embedded connection, or a client injected
+// with SetClient.
+func (c *ConnectionBinding) keyFile() string {
+	if c.manager == nil {
+		return ""
+	}
+	return c.manager.activeKeyFile()
+}
+
 // IsConnected returns true when a client connection is active.
 func (c *ConnectionBinding) IsConnected() bool {
 	if c.manager != nil {

@@ -163,7 +163,7 @@ func (m *mockTransactionServicer) Execute(_ context.Context, compares []service.
 			// is all a version-0 ("absent") or version->0 ("present") compare
 			// needs. A present key with an EMPTY value must still count as
 			// version 1, matching every real engine (pkg/mvcc's
-			// RaftCompare.evaluate, pkg/store's pebbleEvaluateCompare): a
+			// Evaluate, pkg/store's pebbleEvaluateCompare): a
 			// value-based mock here would make this exact defect (an empty
 			// value satisfying a nil guard) invisible again.
 			_, exists := m.store[string(c.Key)]

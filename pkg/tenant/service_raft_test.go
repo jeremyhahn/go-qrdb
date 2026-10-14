@@ -37,12 +37,12 @@ func raftEntitlements() *quota.Entitlements {
 
 // newRaftService builds a TenantService whose default entitlements permit raft
 // isolation, backed by a pooled barrier registry.
-func newRaftService(t *testing.T) (*TenantService, *seal.BarrierRegistry) {
+func newRaftService(t *testing.T, opts ...TenantServiceOption) (*TenantService, *seal.BarrierRegistry) {
 	t.Helper()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	svc, err := NewTenantService(store, reg, testLogger(),
-		WithDefaultEntitlements(raftEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
+	opts = append([]TenantServiceOption{WithDefaultEntitlements(raftEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg))}, opts...)
+	svc, err := NewTenantService(store, reg, testLogger(), opts...)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

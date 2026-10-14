@@ -947,7 +947,7 @@ func TestTenantBarrierService_Init_Success(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId: "acme", Passphrase: []byte("secret"), Threshold: 2, Shares: 3,
 	})
 	if err != nil {
@@ -960,7 +960,7 @@ func TestTenantBarrierService_Init_EmptyTenantID(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId: "", Passphrase: []byte("secret"),
 	})
 	if err == nil {
@@ -978,7 +978,7 @@ func TestTenantBarrierService_Init_ServiceError(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId: "acme", Passphrase: []byte("s"),
 	})
 	if err == nil {
@@ -1194,7 +1194,7 @@ func (m *mockTenantBarrierOnlySvc) GetQuotaUsage(_ context.Context, _ string, _ 
 func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster, _ ...tenantpkg.TenantBarrierInitOption) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
 func (m *mockTenantBarrierOnlySvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {

@@ -16,12 +16,14 @@ package quic
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
@@ -336,8 +338,21 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 // in pkg/api/quic/handlers_tenant_barrier.go.
 // ---------------------------------------------------------------------------
 
+// quicTenantBarrierInitBeginRequest mirrors the server-side wire schema for
+// tenant.BarrierInitBegin.
+type quicTenantBarrierInitBeginRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+// quicTenantBarrierInitBeginResponse mirrors the server-side wire schema of
+// the tenant.BarrierInitBegin answer.
+type quicTenantBarrierInitBeginResponse struct {
+	Nonce   []byte `json:"nonce,omitempty"`
+	Expires int64  `json:"expires,omitempty"`
+}
+
 // quicTenantBarrierInitRequest mirrors the server-side wire schema for
-// tenant.BarrierInit.
+// tenant.BarrierInitComplete.
 type quicTenantBarrierInitRequest struct {
 	TenantID   string                             `json:"tenant_id"`
 	Passphrase []byte                             `json:"passphrase,omitempty"`
@@ -346,6 +361,12 @@ type quicTenantBarrierInitRequest struct {
 	Strategy   string                             `json:"strategy,omitempty"`
 	Officers   []transport.OfficerRegisterRequest `json:"officers,omitempty"`
 	Policy     string                             `json:"policy,omitempty"`
+	Nonce      []byte                             `json:"nonce,omitempty"`
+	PublicKey  []byte                             `json:"public_key,omitempty"`
+	Signature  []byte                             `json:"signature,omitempty"`
+	// InitStatement is the first admin's signed init statement
+	// (barrierinit.SignTenantInit).
+	InitStatement []byte `json:"init_statement,omitempty"`
 }
 
 // quicTenantBarrierUnsealRequest mirrors the server-side wire schema for
@@ -367,8 +388,6 @@ type quicTenantBarrierStatusRequest struct {
 	TenantID string `json:"tenant_id"`
 }
 
-// quicTenantBarrierInitResponse mirrors the server-side wire schema for
-// tenant.BarrierInit responses.
 // quicTenantBarrierInitResponse mirrors the server's ACTUAL wire shape
 // (pkg/api/quic/handlers_tenant_barrier.go's quicTenantBarrierInitResponse):
 // the server sends "share_count" as an int, never a "shares" array -- this
@@ -409,9 +428,20 @@ func (e *nilTenantBarrierRequestError) Error() string {
 	return "transport: " + e.Method + ": nil request"
 }
 
+// tlsState returns the TLS state of this transport's QUIC connection, or nil
+// when it carries frames over no connection of its own (NewFrameTransport).
+func (t *Transport) tlsState() *tls.ConnectionState {
+	if t.conn == nil {
+		return nil
+	}
+	cs := t.conn.ConnectionState().TLS
+	return &cs
+}
+
 // TenantBarrierInit initializes a per-tenant barrier via the QUIC
-// tenant.BarrierInit handler. For the Shamir strategy the response carries the
-// generated M-of-N shares; for none/passphrase the share fields are empty.
+// tenant.BarrierInitBegin and tenant.BarrierInitComplete handlers, proving
+// possession of req.Signer's key over this transport's one connection. Share
+// material is never returned.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -420,20 +450,45 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierInit"}}
 	}
 
+	beginPayload, err := json.Marshal(quicTenantBarrierInitBeginRequest{TenantID: req.TenantID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	beginBytes, err := t.call(ctx, "tenant.BarrierInitBegin", beginPayload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	var begin quicTenantBarrierInitBeginResponse
+	if err := json.Unmarshal(beginBytes, &begin); err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	proof, err := transport.ProveTenantBarrierInit(req.Signer, req.TenantID, begin.Nonce, t.tlsState())
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+
 	payload, err := json.Marshal(quicTenantBarrierInitRequest{
-		TenantID:   req.TenantID,
-		Passphrase: req.Passphrase,
-		Threshold:  req.Threshold,
-		Shares:     req.Shares,
-		Strategy:   req.Strategy,
-		Officers:   req.Officers,
-		Policy:     req.Policy,
+		TenantID:      req.TenantID,
+		Passphrase:    req.Passphrase,
+		Threshold:     req.Threshold,
+		Shares:        req.Shares,
+		Strategy:      req.Strategy,
+		Officers:      req.Officers,
+		Policy:        req.Policy,
+		Nonce:         proof.Nonce,
+		PublicKey:     proof.PublicKey,
+		Signature:     proof.Signature,
+		InitStatement: statement,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}
 
-	respBytes, err := t.call(ctx, "tenant.BarrierInit", payload)
+	respBytes, err := t.call(ctx, "tenant.BarrierInitComplete", payload)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}

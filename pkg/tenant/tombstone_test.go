@@ -641,7 +641,7 @@ func (foreignTenantServicer) GetQuotaUsage(context.Context, string, quota.Resour
 func (foreignTenantServicer) TenantBarrierInit(context.Context, string, []byte, int, int) (*TenantBarrierInitResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
-func (foreignTenantServicer) TenantBarrierInitWithStrategy(context.Context, string, []byte, int, int, seal.StrategyID, *TenantBarrierShamirRoster) (*TenantBarrierInitResult, error) {
+func (foreignTenantServicer) TenantBarrierInitWithStrategy(context.Context, string, []byte, int, int, seal.StrategyID, *TenantBarrierShamirRoster, ...TenantBarrierInitOption) (*TenantBarrierInitResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
 func (foreignTenantServicer) TenantBarrierUnseal(context.Context, string, []byte) error {

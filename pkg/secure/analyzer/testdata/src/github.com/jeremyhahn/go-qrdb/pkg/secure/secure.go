@@ -2,13 +2,24 @@
 // the analyzer's rules to resolve types against, with none of the behaviour.
 package secure
 
-import "github.com/jeremyhahn/go-enclave"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-enclave"
+)
 
 // Buffer stands in for the mlocked working copy.
 type Buffer struct{ b []byte }
 
 // WithBytes is the only accessor.
 func (b *Buffer) WithBytes(fn func([]byte) error) error { return fn(b.b) }
+
+// Secret stands in for the sealed at-rest value.
+type Secret struct{ b []byte }
+
+// WithBytes is the scoped open: the view is the callback's parameter, which
+// is the LAST argument.
+func (s *Secret) WithBytes(_ context.Context, fn func([]byte) error) error { return fn(s.b) }
 
 // Wipe is inferred a consumer: it hands its argument to enclave.Wipe.
 func Wipe(b []byte) { // want Wipe:"consumes\\(0\\)"

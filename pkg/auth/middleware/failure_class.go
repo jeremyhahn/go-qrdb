@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -406,6 +407,19 @@ var authFailureRules = []struct {
 	{"FirstInitNotOnboardedError", func(err error) (AuthFailureClass, bool) {
 		var e *FirstInitNotOnboardedError
 		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
+	// A tenant barrier init completed without proof of possession of the
+	// first admin's key over this connection: the caller has not proved who
+	// it is, and a fresh nonce from init/begin is the remedy -- 401, not 403.
+	{"FirstAdminProofError", func(err error) (AuthFailureClass, bool) {
+		var e *tenant.FirstAdminProofError
+		return AuthFailureUnauthenticated, errors.As(err, &e)
+	}},
+	// The node holds its limit of unexpired init challenges; one lapsing is
+	// what lets the next begin through, so the caller backs off and retries.
+	{"TooManyChallengesError", func(err error) (AuthFailureClass, bool) {
+		var e *initproof.TooManyChallengesError
+		return AuthFailureRateLimited, errors.As(err, &e)
 	}},
 	{"AuthChainError", func(err error) (AuthFailureClass, bool) {
 		var e *AuthChainError

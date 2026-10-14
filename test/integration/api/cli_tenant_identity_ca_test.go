@@ -205,10 +205,14 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 			// Step 2: tenant create --admin-username --admin-csr --out. The
 			// tenant and its first admin are created together; the admin's
 			// certificate is signed by the tenant's own Key B CA and written
-			// to admin-cert.pem.
+			// to admin-cert.pem. The tenant is isolated behind its own
+			// barrier, so the admin waits as the pending first admin whose
+			// SPKI is pinned as the barrier's epoch-1 anchor -- the anchor
+			// the barrier-init statement in step 5 is judged against.
 			certDir := t.TempDir()
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"tenant", "create", "--id", tenantID, "--name", tenantName,
+				"--isolation-type", "barrier",
 				"--admin-username", username, "--admin-csr", csrFile, "--out", certDir)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)

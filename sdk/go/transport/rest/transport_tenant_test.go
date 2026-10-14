@@ -17,6 +17,11 @@ package rest
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +31,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -40,6 +49,7 @@ type tenantBarrierServer struct {
 	gotInitTenant    atomic.Value // string
 	gotInitThreshold atomic.Int64
 	gotInitShares    atomic.Int64
+	gotInitStatement atomic.Value // []byte
 	gotUnsealTenant  atomic.Value // string
 	gotUnsealKey     atomic.Value // []byte
 	gotSealTenant    atomic.Value // string
@@ -52,16 +62,27 @@ func (s *tenantBarrierServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/barrier/init") && r.Method == http.MethodPost:
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/tenants/"), "/barrier/init")
+		case strings.HasSuffix(r.URL.Path, "/barrier/init/begin") && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			if r.TLS == nil {
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"nonce": proofNonce, "expires": 1})
+		case strings.HasSuffix(r.URL.Path, "/barrier/init/complete") && r.Method == http.MethodPost:
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/tenants/"), "/barrier/init/complete")
 			if s.matchNotFound(id) {
 				http.Error(w, "tenant not found", http.StatusNotFound)
 				return
 			}
 			s.gotInitTenant.Store(id)
 			var req struct {
-				Threshold int `json:"threshold,omitempty"`
-				Shares    int `json:"shares,omitempty"`
+				Threshold int    `json:"threshold,omitempty"`
+				Shares    int    `json:"shares,omitempty"`
+				Nonce     []byte `json:"nonce,omitempty"`
+				PublicKey []byte `json:"public_key,omitempty"`
+				Signature []byte `json:"signature,omitempty"`
+				Statement []byte `json:"init_statement,omitempty"`
 			}
 			if r.ContentLength > 0 {
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -69,8 +90,13 @@ func (s *tenantBarrierServer) handler() http.Handler {
 					return
 				}
 			}
+			if r.TLS != nil && !verifyProofOn(r.TLS, id, req.Nonce, req.PublicKey, req.Signature) {
+				http.Error(w, "proof of possession refused", http.StatusUnauthorized)
+				return
+			}
 			s.gotInitThreshold.Store(int64(req.Threshold))
 			s.gotInitShares.Store(int64(req.Shares))
+			s.gotInitStatement.Store(req.Statement)
 			if s.failNext.Swap(false) {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return
@@ -175,6 +201,44 @@ func newTenantBarrierTestTransport(t *testing.T) (*Transport, *tenantBarrierServ
 	return rt, srv, httpSrv
 }
 
+// proofNonce is the challenge the stub's init/begin issues over TLS.
+var proofNonce = bytes.Repeat([]byte{0x5a}, initproof.NonceSize)
+
+// verifyProofOn reports whether signature proves possession of publicKey's
+// private key for tenantID and proofNonce over the connection whose
+// server-side TLS state is cs -- the check the node makes.
+func verifyProofOn(cs *tls.ConnectionState, tenantID string, nonce, publicKey, signature []byte) bool {
+	if !bytes.Equal(nonce, proofNonce) {
+		return false
+	}
+	pub, err := x509.ParsePKIXPublicKey(publicKey)
+	if err != nil {
+		return false
+	}
+	exporter, err := initproof.Exporter(cs)
+	if err != nil {
+		return false
+	}
+	return initproof.Verify(pub, tenantID, nonce, exporter, signature)
+}
+
+// newTenantBarrierTLSTransport serves the stub over TLS 1.3 and gives the
+// transport the stub client's connection pool, the shape ensureClient builds,
+// so init runs on a pinned clone of it.
+func newTenantBarrierTLSTransport(t *testing.T) (*Transport, *tenantBarrierServer) {
+	t.Helper()
+	srv := &tenantBarrierServer{}
+	httpSrv := httptest.NewTLSServer(srv.handler())
+	t.Cleanup(httpSrv.Close)
+	rt := newWiredTransport(httpSrv)
+	pool, ok := httpSrv.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("httptest client transport is %T; want *http.Transport", httpSrv.Client().Transport)
+	}
+	rt.httpTransport = pool
+	return rt, srv
+}
+
 // ---------------------------------------------------------------------------
 // TenantBarrierInit
 // ---------------------------------------------------------------------------
@@ -199,6 +263,83 @@ func TestTenantBarrierInit_Success(t *testing.T) {
 	}
 	if got := srv.gotInitShares.Load(); got != 5 {
 		t.Fatalf("server saw shares = %d, want 5", got)
+	}
+}
+
+// TestTenantBarrierInit_ProofBoundToTheConnection runs begin and complete
+// over TLS 1.3: the stub verifies the signature against the exporter of the
+// connection complete arrived on, so it passes only when the pinned client
+// kept both calls on one connection and signed that connection's exporter.
+func TestTenantBarrierInit_ProofBoundToTheConnection(t *testing.T) {
+	rt, srv := newTenantBarrierTLSTransport(t)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	if _, err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+		TenantID: "acme", Signer: key, Strategy: "none",
+	}); err != nil {
+		t.Fatalf("TenantBarrierInit: %v", err)
+	}
+	if got := srv.seenInitTenant(); got != "acme" {
+		t.Fatalf("server saw tenantID = %q, want acme", got)
+	}
+
+	// The same key signed acme's epoch-1 statement, which every replica
+	// verifies against the pinned first admin before initializing its key.
+	raw, _ := srv.gotInitStatement.Load().([]byte)
+	statement, err := barrierinit.Parse(raw)
+	if err != nil {
+		t.Fatalf("init_statement: %v", err)
+	}
+	thumbprint, err := user.PublicKeySPKIThumbprint(key.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statement.Barrier != clusterseal.TenantBarrier("acme") || statement.StrategyID != "none" {
+		t.Fatalf("init_statement = %+v, want acme's none statement", statement)
+	}
+	if err := barrierinit.Verify(statement, barrierinit.Anchors{FirstAdmin: thumbprint}); err != nil {
+		t.Fatalf("init_statement does not verify against the first admin: %v", err)
+	}
+}
+
+// TestTenantBarrierInit_SignerRequired: a node that asks a proof is answered
+// with *transport.InitSignerRequiredError, and complete is never sent.
+func TestTenantBarrierInit_SignerRequired(t *testing.T) {
+	rt, srv := newTenantBarrierTLSTransport(t)
+
+	_, err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
+	var need *transport.InitSignerRequiredError
+	if !errors.As(err, &need) {
+		t.Fatalf("err = %T (%v); want *transport.InitSignerRequiredError", err, err)
+	}
+	if got := srv.seenInitTenant(); got != "" {
+		t.Fatalf("complete reached the server for %q without a proof", got)
+	}
+}
+
+func TestInitProofClient_PinsOneConnection(t *testing.T) {
+	rt, _ := newTenantBarrierTLSTransport(t)
+
+	client, release := rt.initProofClient()
+	defer release()
+	if client == rt.client {
+		t.Fatal("init must not share the pooled client")
+	}
+	if rt.httpTransport.MaxConnsPerHost == 1 {
+		t.Fatal("pinning must clone the pool, not limit the shared one")
+	}
+}
+
+func TestInitProofClient_CallerSuppliedClientUsedAsIs(t *testing.T) {
+	rt, _, _ := newTenantBarrierTestTransport(t)
+
+	client, release := rt.initProofClient()
+	defer release()
+	if client != rt.client {
+		t.Fatal("without a pool of its own the transport's client is used as is")
 	}
 }
 

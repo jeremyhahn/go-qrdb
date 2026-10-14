@@ -18,12 +18,16 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/peertls"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
@@ -249,8 +253,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 // ---------------------------------------------------------------------------
 
 // TenantBarrierInit initializes a per-tenant barrier via the
-// TenantBarrierService.Init RPC. For the Shamir strategy the response carries
-// the generated M-of-N shares; for none/passphrase the share fields are empty.
+// TenantBarrierService InitBegin and InitComplete RPCs, proving possession of
+// req.Signer's key over the connection InitBegin answered on. Share material
+// is never returned.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -263,14 +268,32 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}
 
-	resp, err := pb.NewTenantBarrierServiceClient(t.conn).Init(ctx, &pb.TenantBarrierInitRequest{
-		TenantId:   req.TenantID,
-		Passphrase: req.Passphrase,
-		Threshold:  int32(req.Threshold), //nolint:gosec // share threshold is a small count
-		Shares:     int32(req.Shares),    //nolint:gosec // share count is small
-		Strategy:   req.Strategy,
-		Officers:   officers,
-		Policy:     req.Policy,
+	client := pb.NewTenantBarrierServiceClient(t.conn)
+	var p peer.Peer
+	begin, err := client.InitBegin(ctx, &pb.TenantBarrierInitBeginRequest{TenantId: req.TenantID}, grpc.Peer(&p))
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierInit", err)
+	}
+	proof, err := transport.ProveTenantBarrierInit(req.Signer, req.TenantID, begin.GetNonce(), peertls.State(&p))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	resp, err := client.InitComplete(ctx, &pb.TenantBarrierInitRequest{
+		TenantId:      req.TenantID,
+		Passphrase:    req.Passphrase,
+		Threshold:     int32(req.Threshold), //nolint:gosec // share threshold is a small count
+		Shares:        int32(req.Shares),    //nolint:gosec // share count is small
+		Strategy:      req.Strategy,
+		Officers:      officers,
+		Policy:        req.Policy,
+		Nonce:         proof.Nonce,
+		PublicKey:     proof.PublicKey,
+		Signature:     proof.Signature,
+		InitStatement: statement,
 	})
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierInit", err)

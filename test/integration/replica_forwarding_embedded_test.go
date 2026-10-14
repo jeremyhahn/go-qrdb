@@ -37,6 +37,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -45,6 +46,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
@@ -310,8 +312,19 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 		}
 		return err
 	})
-	c.eventually(t, "create tenant", func(n *node.Node) error {
-		_, err := n.Services().Tenant.CreateTenant(ctx, efTenant, "Embedded Forwarding", tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
+	// The tenant is onboarded, as every transport creates one: an isolated
+	// tenant's records live in its home group, and onboarding is what places
+	// that group and delivers the tenant's key to its replicas. A bare tenant
+	// record has no home, and every record written below would fail sealed.
+	_, adminCSR, err := certtest.NewCSR(efTenant + "-admin")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
+	c.eventually(t, "onboard tenant", func(n *node.Node) error {
+		_, err := n.Services().TenantOnboarding.OnboardTenant(ctx, &service.OnboardTenantRequest{
+			ID: efTenant, Name: "Embedded Forwarding", IsolationType: tenant.IsolationRaft, BarrierAutoUnseal: true,
+			AdminUsername: efTenant + "-admin", AdminCSRPEM: adminCSR,
+		})
 		if errors.Is(err, tenant.ErrTenantAlreadyExists) {
 			return nil
 		}
@@ -500,8 +513,12 @@ func TestReplicaForwarding_Embedded(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("the writer's forwarded Put to %s: %v", db.name, err)
 		}
-		got, err := c.scopedKV(t, db.replica, db.name).Get(ctx, "ef/k1")
-		if err != nil || string(got) != "from-the-writer" {
+		// The replica authorizes the read against roles in the tenant's home
+		// group, whose read is bounded and answers a slow ReadIndex -- the
+		// tenant's databases are still starting -- with a retryable error.
+		kv := c.scopedKV(t, db.replica, db.name)
+		var got []byte
+		if err := retry(func() (err error) { got, err = kv.Get(ctx, "ef/k1"); return err }); err != nil || string(got) != "from-the-writer" {
 			t.Fatalf("the replica of %s holds %q (%v); want the writer's value", db.name, got, err)
 		}
 	})

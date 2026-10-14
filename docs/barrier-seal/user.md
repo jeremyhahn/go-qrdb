@@ -266,6 +266,22 @@ requests, ends its streams and closes every SQL connection, keeping its keys.
 When it can read them again it resumes on its own — unless something was
 sealed in the meantime, in which case it seals first. SQL clients reconnect.
 
+**Every node gets its own key (rolling out).** An isolated tenant's barrier is
+moving to one key per node, each initialised on its node from an init
+statement the tenant's own first admin signs; no key will be carried between
+nodes. What you see today:
+
+- Creating a `barrier`, `volume` or `raft` tenant works as before: the
+  tenant's key is still delivered to each node that serves it. Once per-node
+  keys ship, on a cluster such a create will be refused as unavailable until
+  every node runs a release with the `per-node-barrier-keys` feature, which
+  activates on its own once they all do; retry after the rollout. A
+  standalone node will not be affected.
+- Whether a tenant's key auto-unseals stays the tenant's choice. A `prefix`
+  tenant has no key of its own: its data is under the platform's barrier and
+  readable by the platform; choose an isolated type to keep data from the
+  platform.
+
 ## Troubleshooting
 
 **Everything returns "unavailable" or "barrier sealed".** The barrier is

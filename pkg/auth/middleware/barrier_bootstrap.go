@@ -16,13 +16,16 @@ package middleware
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // This file is the single home of the tenant-barrier BOOTSTRAP authorization
@@ -38,7 +41,12 @@ import (
 // self-managed tenant's IAM records are encrypted BEHIND the barrier being
 // initialized, so before the first successful init no role able to satisfy
 // tenant_barrier:init can exist. The window closes at initialization and
-// never reopens.
+// never reopens. Over the network, init is two calls: init/begin
+// (BeginTenantBarrierInit) issues a nonce bound to the connection, and
+// init/complete (AuthorizeTenantBarrierInitProof) demands, on top of the
+// window, a signature over it and the connection's TLS exporter by the first
+// admin's key (pkg/initproof). Nothing -- certificate, role or operator
+// permission -- substitutes for that proof.
 //
 // Window 2 — the sealed window (AuthorizeTenantBarrierSealedOp): on a node
 // where the tenant's barrier is sealed (or its key not yet delivered), IAM
@@ -155,6 +163,124 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// configured audit failure policy decides, exactly as it does for every
 	// other grant (see auditDecision).
 	return m.grantBootstrapFallback(ctx, caller, permission.TenantBarrierInit)
+}
+
+// TenantBarrierInitProof is the proof of possession a tenant barrier
+// init/complete carries (pkg/initproof): the nonce init/begin issued on this
+// connection, the DER SubjectPublicKeyInfo of the signing key, and its
+// signature over the tenant id, the nonce and this connection's TLS exporter.
+// Every field is public; the private key never leaves the caller's signer.
+type TenantBarrierInitProof struct {
+	Nonce     []byte
+	PublicKey []byte
+	Signature []byte
+}
+
+// WithInitChallengeBook replaces the book of tenant barrier init challenges
+// New creates on the real clock. Tests use it to put the book on a fake
+// clock; nothing else needs to.
+func WithInitChallengeBook(b *initproof.Book) Option {
+	return func(m *AuthMiddleware) { m.initChallenges = b }
+}
+
+// BeginTenantBarrierInit is init/begin: it admits the caller exactly as
+// AuthorizeTenantBarrierInit does -- the pending first admin's certificate
+// authenticates it -- and issues a single-use nonce bound to this
+// connection's TLS exporter, which init/complete must sign.
+//
+// A connection with no TLS 1.3 exporter is refused with
+// *tenant.FirstAdminProofError: no complete could ever succeed on it. A node
+// holding initproof.DefaultMaxOutstanding unexpired challenges refuses with
+// *initproof.TooManyChallengesError until some lapse.
+func (m *AuthMiddleware) BeginTenantBarrierInit(ctx context.Context, tenantID string, status TenantBarrierStatusReader) (*initproof.Challenge, error) {
+	if err := m.AuthorizeTenantBarrierInit(ctx, tenantID, status); err != nil {
+		return nil, err
+	}
+	exporter, err := initproof.Exporter(auth.TLSStateFromContext(ctx))
+	if err != nil {
+		return nil, &tenant.FirstAdminProofError{TenantID: tenantID, Reason: initproof.ReasonNoExporter, Err: err}
+	}
+	return m.initChallenges.Issue(tenantID, exporter)
+}
+
+// AuthorizeTenantBarrierInitProof is init/complete's gate: the caller must
+// pass AuthorizeTenantBarrierInit AND present proof of possession of the
+// first admin's key over this connection. No certificate, role or operator
+// permission substitutes for the proof -- an RBAC grant admits the caller to
+// the gate, never past the proof.
+//
+// The key the proof must be by is the one the tenant's pending first admin
+// records. A tenant with no pending admin -- its admin was bound at create,
+// or the record was consumed by an earlier init -- is held to the key of the
+// certificate on this connection, so the proof still binds the request to
+// the authenticated key and to this connection.
+//
+// Every refusal of the proof itself is *tenant.FirstAdminProofError; the
+// nonce is spent by the attempt whatever its outcome.
+func (m *AuthMiddleware) AuthorizeTenantBarrierInitProof(ctx context.Context, tenantID string, status TenantBarrierStatusReader, proof *TenantBarrierInitProof) error {
+	if err := m.AuthorizeTenantBarrierInit(ctx, tenantID, status); err != nil {
+		return err
+	}
+	return m.verifyTenantBarrierInitProof(ctx, tenantID, proof)
+}
+
+// verifyTenantBarrierInitProof checks proof against this connection and the
+// first admin's key. The nonce is redeemed before the key and signature are
+// examined, so a wrong-key attempt spends it exactly as a right one does.
+func (m *AuthMiddleware) verifyTenantBarrierInitProof(ctx context.Context, tenantID string, proof *TenantBarrierInitProof) error {
+	refuse := func(reason initproof.Reason, err error) error {
+		return &tenant.FirstAdminProofError{TenantID: tenantID, Reason: reason, Err: err}
+	}
+	if proof == nil || len(proof.Nonce) == 0 || len(proof.PublicKey) == 0 || len(proof.Signature) == 0 {
+		return refuse(initproof.ReasonAbsent, nil)
+	}
+	exporter, err := initproof.Exporter(auth.TLSStateFromContext(ctx))
+	if err != nil {
+		return refuse(initproof.ReasonNoExporter, err)
+	}
+	if err := m.initChallenges.Consume(tenantID, proof.Nonce, exporter); err != nil {
+		var ce *initproof.ChallengeError
+		if errors.As(err, &ce) {
+			return refuse(ce.Reason, err)
+		}
+		return refuse(initproof.ReasonUnknownNonce, err)
+	}
+	pub, err := x509.ParsePKIXPublicKey(proof.PublicKey)
+	if err != nil {
+		return refuse(initproof.ReasonMalformedKey, err)
+	}
+	want, err := m.initProofThumbprint(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if want == "" {
+		return refuse(initproof.ReasonNoPendingAdmin, nil)
+	}
+	got, err := user.PublicKeySPKIThumbprint(pub)
+	if err != nil || got != want {
+		return refuse(initproof.ReasonWrongKey, err)
+	}
+	if !initproof.Verify(pub, tenantID, proof.Nonce, exporter, proof.Signature) {
+		return refuse(initproof.ReasonBadSignature, nil)
+	}
+	return nil
+}
+
+// initProofThumbprint returns the SPKI thumbprint the init proof must be by:
+// the pending first admin's, or with none recorded, the certificate's on this
+// connection. Empty means there is no key the proof could be by. A failure to
+// read the record fails closed.
+func (m *AuthMiddleware) initProofThumbprint(ctx context.Context, tenantID string) (string, error) {
+	if m.pendingAdmins != nil {
+		pending, err := m.pendingAdmins.Get(ctx, tenantID)
+		if err != nil {
+			return "", &StoreUnavailableError{Err: err}
+		}
+		if pending != nil {
+			return pending.Thumbprint, nil
+		}
+	}
+	return presentedThumbprint(ctx), nil
 }
 
 // PendingTenantAdmins reads the first admin a tenant was onboarded with

@@ -126,6 +126,79 @@ The same registry can be used to inject test/fake strategies in integration test
 - **The system barrier** resolves its strategies through it too: `seal.NewSystemStrategyRegistry` overlays a composer's registry on the software strategies, and an injected `WithSealStrategy` is registered under its ID. See [extension-seams](../release/extension-seams.md).
 - **The seal store** is node-local by design and is not a composition seam: per-node seal keys are the one node-local state the architecture allows.
 
+### The barrier key seam — `BarrierKeyProvider`
+
+Every node seals its own copy of a barrier's key. `seal.BarrierKeyProvider`
+(`pkg/seal/barrier_key_provider.go`) is the seam through which one node obtains
+the `SealingStrategy` that seals that key. go-qrdb ships one implementation, the
+software provider over a `StrategyRegistry`; it ships no HSM, TPM, PKCS#11 or
+cloud-KMS code. A composer (go-xkms, composed by go-quicbaas) injects its own
+provider, and that provider decides what a key reference means.
+
+```go
+type BarrierKeyProvider interface {
+    BarrierStrategy(ctx context.Context, req BarrierKeyRequest) (BarrierKeyStrategy, error)
+}
+
+type BarrierKeyRequest struct {
+    Barrier    string     // "node", "tenant/<tenant>", "database/<tenant>/<database>"
+    NodeID     string     // the node whose key this is
+    StrategyID StrategyID // the strategy the barrier's owner chose
+    KeyRef     string     // the owner's opaque key reference; go-qrdb never parses it
+    Epoch      uint64     // 1 at init
+}
+
+type BarrierKeyStrategy struct {
+    Strategy   SealingStrategy
+    Credential CredentialKind // none | passphrase | shares
+    Custody    Custody        // none | owner | platform
+}
+```
+
+The provider answers two questions besides the strategy:
+
+- **`Credential`** — what a client must supply to initialize and unseal. The
+  tenant service requires a passphrase when, and only when, the provider says
+  `CredentialPassphrase`; it no longer infers that from the strategy's name.
+- **`Custody`** — who can release the key without the owner present. It
+  records the owner's own choice: an owner that opts into auto-unseal hands
+  custody to the platform, and that is the owner's posture to choose. go-qrdb
+  cannot inspect a KMS key's policy, so the composer that injects a provider
+  vouches for what it declares.
+
+The default provider, `seal.NewBarrierKeyProvider(reg)`, resolves
+`req.StrategyID` from `reg` (a nil `reg` is `NewDefaultStrategyRegistry()`) and
+reports:
+
+| Strategy | Credential | Custody |
+|----------|------------|---------|
+| `passphrase` | passphrase | owner |
+| `shamir` | shares | owner |
+| `system-barrier` | none | platform |
+| `none` | none | none |
+| any other registered name | none | platform |
+
+It never claims owner custody for a strategy it knows nothing about: a
+composer whose strategy wraps under a key the owner controls injects its own
+provider to say so. An unregistered name is refused with
+`*seal.StrategyNotRegisteredError`, which names what is registered; a factory's
+error reaches the caller unchanged.
+
+**Injection.** `server.WithBarrierKeyProvider(p)` (also `sdk.WithBarrierKeyProvider`).
+The tenant service is built in `lifecycle.BuildServices`, before `server.New`
+runs, so the SDK node builders resolve the option through
+`server.ResolveCryptoOptions` and forward it into
+`lifecycle.Infra.BarrierKeyProvider`. An injected provider wins; otherwise the
+default provider runs over `WithStrategyRegistry`'s registry. The node names
+itself by its Raft address, or `local` on a standalone node.
+
+**Scope today.** Tenant barrier initialization resolves through the seam. The
+Shamir tenant path keeps its own constructor, because a parameterless factory
+cannot carry a threshold and share count. The node barrier and database
+barriers move onto the same seam as the
+[per-node init decision](../decisions/tenant-barrier-per-node-init.md) lands;
+until then they keep `WithSealStrategy` and the registry.
+
 
 ### Alternatives rejected
 
@@ -164,6 +237,8 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
   > key per replica waits on a separate design for where a dedicated tenant's identity records
   > are stored: today they are encrypted with the tenant key and replicated through the system
   > shard, so every node that serves the tenant must hold the same key.
+  > That design is decided; see [Per-node barrier keys](#per-node-barrier-keys) for what has
+  > shipped of it.
 - **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
   over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication — chain validity, the
@@ -566,6 +641,192 @@ sits cached in the clear BETWEEN signatures.
 > This constrains the cluster-wide sealing design: its unseal model for the
 > tenant scope must be per node, with client fan-out, rather than delivery of
 > a root-key context from the unsealing node.
+
+## Per-node barrier keys
+
+> **Status: DECIDED (owner, 2026-10-08) — partly implemented.** The design is
+> [../decisions/tenant-barrier-per-node-init.md](../decisions/tenant-barrier-per-node-init.md).
+> Shipped: the init statement, its verification, its record and the watcher
+> (`pkg/barrierinit`); the definition of the `per-node-barrier-keys`
+> feature; the first admin pinned as a tenant barrier's epoch-1 anchor at
+> onboarding; the owner's signed statement on every tenant barrier init
+> transport, claimed by the tenant service through the init book; the watcher
+> composed into every node, which initialises the node's own key for a tenant
+> it serves from a claimed statement; and the feature, advertised by every
+> binary and wired as the gate on isolated tenants and on the claim (see
+> **Feature gate** below). Not yet: per-node init of a passphrase or Shamir
+> tenant barrier on the nodes that did not take the owner's call; database and
+> node barriers; the owner-CA anchor a later epoch verifies against; and the
+> removal of key delivery (`DistributeTenantKey`), which still runs beside the
+> watcher — a node keeps whichever key reaches it first, and never replaces
+> one.
+
+Every node that serves a barrier — an isolated tenant's, a database's, and the
+node barrier, all through one `BarrierKeyProvider` seam — initialises **its
+own** key from one replicated, signed, keyless **init statement**. No key is
+carried between nodes.
+
+**The statement** (`barrierinit.InitStatement`) names the barrier
+(`clusterseal.Barrier`: `node`, `tenant/<t>`, `database/<t>/<d>`), an epoch
+(1 at init, one more per re-key or strategy change), the sealing strategy, the
+strategy's opaque `KeyRef`, and the strategy's public parameters: a Shamir
+threshold, roster hash and unseal-key check value, or a passphrase KDF salt.
+It carries no key, no share and no passphrase check value, which would be an
+offline-guessing oracle.
+
+- **`KeyRef` is opaque to qrdb.** qrdb ships no hardware, HSM or cloud KMS
+  code. An injected strategy — go-xkms supplies those — reads the reference;
+  qrdb only carries it.
+- **The encoding signed** is the context `qrdb-barrier-init-statement-v1`
+  followed by every field but the signature, each byte or string field
+  prefixed with its uint32 big-endian length and each integer as a uint64
+  big-endian: the `initproof.Message` pattern with its own context, so a
+  signature over a statement can never be replayed as an init proof or an
+  mTLS challenge, and no two statements share an encoding. Every
+  variable-length field is capped at 16 KiB.
+
+**Who may sign.** The barrier's owner, and only the owner:
+
+| Epoch | Signer | Anchor the node verifies against |
+|---|---|---|
+| 1 | the pending first admin | the SPKI thumbprint recorded at tenant create (at first boot, for the node barrier) |
+| 2 and later | a holder of a client certificate from the owner's CA | the owner's CA certificate, pinned in the system tenant; the certificate must be valid when verified |
+
+The statement carries the signer's whole DER `SubjectPublicKeyInfo`, and
+after epoch 1 its certificate. *(Deviation from the decision draft, which
+carried a SHA-256 of the SPKI: a thumbprint cannot verify a signature, and
+the epoch-1 anchor is itself a thumbprint, so the key has to travel with the
+statement.)* Signing goes through a `crypto.Signer`, the same seam the init
+proof uses, so a device-held key signs without leaving its device. A
+statement the platform, or one compromised node, writes — naming a key the
+platform controls, say — fails on every honest node with
+`*barrierinit.InitStatementError`.
+
+**The record.** One per barrier, in the system store under
+`__sys:cluster/barrier/init/<barrier>`, beside the cluster seal records and,
+like them, holding only public fields. It keeps every epoch, epoch 1 first,
+so a joiner can verify the chain.
+
+- **Epoch 1 is a guarded create-if-absent.** Of two concurrent claims exactly
+  one is stored; the other gets `*BarrierAlreadyInitializedError` before any
+  key exists. A retry of the stored statement succeeds, signed again or not:
+  the record is compared by what the statement says, its signer among it, not
+  by its signature bytes.
+- **Later epochs are a guarded compare-and-set** over the record read. A
+  statement that skips, repeats or rewinds an epoch, or lost a race, gets
+  `*EpochConflictError` naming the recorded epoch.
+- Both are the existing guarded write (`protocol.OpGuarded`), evaluated by the
+  state machine on every replica: **no Raft opcode of its own.** A standalone
+  node keeps the same record in its own store.
+- A cluster that has not activated `guarded-writes` refuses the write with
+  `*GuardedWritesUnavailableError` rather than propose it unguarded.
+
+**The watcher** (`barrierinit.Watcher`) runs on every node. It polls the
+records, and for each barrier the node serves delivers the latest epoch it
+has not yet delivered — once, and only if it verifies against the node's own
+anchors — to the node's barrier initialisation. A statement that does not
+verify is logged and never delivered; a delivery that fails is retried on the
+next poll; one corrupt record does not hold up the others.
+
+### How a node takes part (tenant barriers)
+
+1. **Onboarding pins the anchor.** When a tenant is created with its first
+   admin, the admin's SPKI thumbprint is pinned under
+   `__sys:cluster/barrier/anchor/tenant/<t>` with a guarded create-if-absent.
+   The pending-admin record is consumed once the admin's account exists; the
+   pin is not, because a node that initialises its key later (one that was
+   down, a joiner) still verifies epoch 1 against it. Pinning the same
+   thumbprint again succeeds, so a re-run onboarding completes; any other is
+   refused (`*barrierinit.AnchorConflictError`). A tenant ID is retired on
+   delete and never reused, so a pin never names a stale tenant.
+2. **The owner's client signs the statement.** The client that initialises
+   the barrier signs the epoch-1 statement — the tenant's barrier, the
+   strategy (empty means `passphrase`), no key reference — with the same
+   `crypto.Signer` that signs the init proof, and sends it with the init
+   request on every transport. A client without a signer sends none.
+3. **The node that takes the call claims it first.** Before it generates its
+   own key, it checks that the statement names exactly the barrier, strategy
+   and key reference the request initialises, verifies it against the pinned
+   anchor, and records it. Every strategy is admitted this way, Shamir
+   included: a Shamir init claims its statement before it registers a roster
+   officer or splits a share, so a statement naming another strategy refuses
+   it with nothing written. A raft-isolated tenant, whose barrier every node of
+   its groups serves, is refused without a statement
+   (`*tenant.InitStatementRequiredError`): the other nodes could never
+   initialise. A `barrier` or `volume` tenant, served by one node, may still
+   be initialised without one.
+4. **Every other node initialises its own key.** On a clustered node with
+   dedicated Raft groups, the watcher delivers the claimed statement for each
+   tenant one of whose groups — its home group or a dedicated database — has a
+   replica placed on the node, and the node initialises its own key through
+   its own `BarrierKeyProvider` from the statement's strategy and key
+   reference. Only a strategy whose key needs no caller credential (`none`,
+   or an injected strategy reading its `KeyRef`) is initialised this way: a
+   passphrase key needs the owner's passphrase on each node and a Shamir key
+   the holders' ceremony, and both wait for the client fan-out.
+5. **A restarted node reattaches from the statement.** After a restart a
+   tenant barrier comes back as a sealed shell carrying the node's system
+   strategies, which need not include the tenant's — a passphrase-sealed
+   node has no `none`, and an injected strategy is keyed by the tenant's
+   `KeyRef`, not by its ID alone. So an unseal reads the barrier's latest
+   claimed statement, verifies it against the pinned anchor, asks the node's
+   `BarrierKeyProvider` for the strategy, key reference and epoch it names,
+   and unseals with exactly that strategy. A root key sealed with another
+   strategy is refused (`*seal.UnsealStrategyMismatchError`) rather than
+   opened, and a system strategy that merely shares the stated ID is never
+   used. A raft-isolated tenant with no statement is refused
+   (`*tenant.InitStatementMissingError`): it could not have been initialised
+   without one. Three cases unseal through the shell's registrations as
+   before: a Shamir barrier, whose shares are the credential; a `barrier` or
+   `volume` tenant initialised without a statement; and a tenant whose
+   statement names `none` but whose root key `enable-encryption` has since
+   re-sealed with a passphrase, because that migration records no later
+   statement.
+
+**The first admin's account is completed once, by the owner's call.** The
+barrier-ready step that creates the pending first admin's roles, account and
+certificate binding runs on the node that took the owner's init, as the owner,
+on a 15-second clock of its own rather than the request's deadline: the writes
+it makes are replicated, and a Raft election in a freshly created group can
+use most of a request's deadline. A node that initialised its key from the
+statement does not run it — it has no caller to run it as; a later status read
+or unseal on any node runs it as that caller should anything remain.
+
+**Guarded writes are not a separate prerequisite.** The record and the anchor
+are written only through the guarded write, and a cluster that has not
+activated `guarded-writes` refuses them with
+`*barrierinit.GuardedWritesUnavailableError` (`Unavailable`, retryable) rather
+than write unguarded. Both features activate automatically once every member
+runs a binary that knows them, and a binary that knows `per-node-barrier-keys`
+knows `guarded-writes`; an isolated tenant cannot be created until
+`per-node-barrier-keys` is active. So on a cluster where a claim can be
+reached at all, guarded writes are already enforced, and the error is seen
+only transiently during a rolling upgrade. Nothing activates it by hand.
+
+**Custody is the tenant's choice.** A platform-sealed key — one that
+auto-unseals because the platform holds what wraps it — is not refused under
+any isolation policy. The statement's strategy records the tenant's opt-in,
+and the barrier status will show it, so the choice is auditable.
+
+**Shared tenants have no keys of their own.** The shared Raft group is one
+more tenant with its own barrier, which the platform manages. A shared
+(`prefix`) tenant's data is therefore readable by the platform; a tenant that
+needs confidentiality from the platform chooses an isolated type.
+
+**The serving set** is the tenant's replica count: a tenant quota the system
+owner or a system admin sets through the existing quota and entitlement
+records, never the tenant's own admin.
+
+**Feature gate.** `per-node-barrier-keys` is activation-based, built like
+`cluster-seal`. Until every member advertises it, an isolated tenant is not
+created (nor a tenant changed to an isolated type) and no statement is
+recorded: `*featuregate.NotActiveError`. See
+[../multi-tenancy/architecture.md](../multi-tenancy/architecture.md#feature-gate-and-upgrade).
+A single-member cluster activates it at its first check. A standalone node
+holds only its own binary and gates nothing.
+
+Every node composes the watcher: a clustered node with its tenant placements
+as the barriers it serves, a standalone node with every tenant barrier.
 
 ## Trust boundaries
 

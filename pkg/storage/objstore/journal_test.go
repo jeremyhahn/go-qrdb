@@ -58,7 +58,7 @@ func TestBatchCommit_AppliesAllAndClearsJournal(t *testing.T) {
 	if v, _ := e.Get([]byte("stale")); v != nil {
 		t.Fatal("deleted key survived the batch")
 	}
-	if _, err := e.store.Get(journalName); !notFound(err) {
+	if _, err := e.journal.Get(journalName); !notFound(err) {
 		t.Fatalf("journal not cleared after a successful commit (err=%v)", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestOpen_RecoversPublishedJournal(t *testing.T) {
 			t.Fatalf("recovered Get(%q) = %q, %v; want %q", key, got, err, want)
 		}
 	}
-	if _, err := e2.store.Get(journalName); !notFound(err) {
+	if _, err := e2.journal.Get(journalName); !notFound(err) {
 		t.Fatalf("journal not cleared after recovery (err=%v)", err)
 	}
 }
@@ -157,7 +157,7 @@ func TestOpen_NoJournalMeansBatchNeverHappened(t *testing.T) {
 	if v, _ := e2.Get([]byte("never-committed")); v != nil {
 		t.Fatalf("a never-committed batch's key is present after reopen: %q", v)
 	}
-	if _, err := e2.store.Get(journalName); !notFound(err) {
+	if _, err := e2.journal.Get(journalName); !notFound(err) {
 		t.Fatalf("no journal was ever published, but one is present at reopen (err=%v)", err)
 	}
 }

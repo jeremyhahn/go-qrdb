@@ -54,6 +54,7 @@ Implementations: `pkg/storage/file`, `pkg/storage/memory`,
 ```go
 type FormatMarkerMissingError struct{ Provider string }   // non-empty store, no marker
 type FormatVersionMismatchError struct{ Found, Want string }
+type InTreeJournalError struct{ Provider string }
 type RecordCorruptError struct{ Name, Reason string }     // hashed record unparseable
 type KeyMismatchError struct{ Name string }               // hashed record holds another key
 ```
@@ -212,6 +213,7 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
+| Objstore `local` store holding a commit journal inside its data tree (an interrupted batch of the earlier in-tree layout; the journal now lives in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
 | A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
@@ -238,6 +240,11 @@ an error value, so an unchecked call panics rather than failing cleanly.
   an intermediate design that never shipped, and why — is a breaking
   on-disk format change with no migration; see
   [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
+  Writes are serialized across processes by an advisory OS lock on
+  `.qrdb-file-lock` (`pkg/util/filelock`, a thin wrapper over `flock(2)` /
+  `LockFileEx`) plus an in-process mutex; `Exclusive` exposes it for a guarded
+  read-check-write; see
+  [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
   `Delete` removes only the record, never its (fixed, bounded) shard
   directories, for the reason that doc gives: concurrent per-key workers
   (the `fast` state machine's write-through) make pruning them on a
@@ -261,6 +268,18 @@ an error value, so an unchecked call panics rather than failing cleanly.
   written by the previous verbatim-name layout is refused, not misread.
   There is no migration. See
   [architecture.md](architecture.md#the-objstore-engine-encoded-object-names-breaking).
+  A batch commits through a single journal object (publish, apply, clear;
+  `pkg/storage/objstore/journal.go`), replayed at open. A commit that fails
+  after it may have published its journal leaves the engine with a pending
+  commit, and the next `Set`, `Delete`, `CompareAndSwap` or batch commit
+  completes it before being accepted: a swap is never decided against a
+  half-applied batch, and no write lands where a later replay would apply the
+  batch over it. A batch commit excludes every other writer from its journal
+  publish to its outcome, and a `Set` or `Delete` checks for a pending commit
+  and writes under one lock, so a commit cannot fail between that check and
+  that write; `Set` and `Delete` still run concurrently with each other. While
+  the provider still cannot apply the journal, that next write fails and the
+  journal stays.
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.
 - **Namespace engine**: no storage of its own; it rewrites keys.
@@ -272,6 +291,18 @@ an error value, so an unchecked call panics rather than failing cleanly.
 - **Namespace wrapper**: prefixing on write, prefix filtering on `List`, and
   that a second tenant's keys are invisible.
 - **File engine journal**: crash-mid-write replay at open.
+- **File engine cross-process lock** (`pkg/storage/file/exclusive_test.go`,
+  `pkg/util/filelock`): `Exclusive` blocking another engine's `Set` and batch
+  commit until it returns, and `New` waiting for a writer in flight; the lock
+  and the in-process mutex released on a callback error, a callback panic, a
+  failed lock and a failed unlock; `Close` releasing the lock and idempotent.
+  The proof that the guarantee holds across *processes* is
+  `pkg/database/backend_standalone_multiprocess_test.go`: the test binary
+  re-executes itself as four children that open one `file` database in a temp
+  directory and race forty `CompareAndSwap` increments each on one counter (the
+  final value must equal the increments and no counter value may be won twice)
+  and forty `SaveIfAbsent` rounds (exactly one winner per key). Disabling the
+  lock makes both go red.
 - **File engine hashed layout** (`pkg/storage/file/hashed_layout_test.go`):
   the format marker refusing an old-layout or mismatched-version directory
   and accepting a fresh or empty one; a key nested thousands of segments

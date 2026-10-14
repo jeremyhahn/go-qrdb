@@ -48,6 +48,7 @@ costs.
 | Cost-based planner, plan cache | `pkg/planner` | go-qrdb |
 | DAO fluent query API (`Find`, `Where`, `QueryBuilder`, `Condition`) | `pkg/dao` | go-qrdb |
 | Index storage (`StoragePebbleIndex`, any `storage.Storage` backend) | `pkg/index`, `pkg/storage` | go-qrdb |
+| Index over a raw `*pebble.DB` (the Raft state machine's) | `pkg/index/pebbleindex` | go-qrdb |
 | SDK surface | `sdk/go` (`Client.Index()`, `Client.KVStore()`) | go-qrdb |
 | Full-text search | `pkg/fts` — see [../full-text-search/](../full-text-search/) | go-qrdb |
 

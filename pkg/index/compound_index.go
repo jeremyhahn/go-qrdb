@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/index/internal/indexkey"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -562,11 +563,11 @@ func (idx *CompoundIndex) checkUniqueConstraint(entityKey, compoundValue []byte)
 // buildKey constructs the full compound index key.
 // Format: "idx:{indexName}:{compoundValue}:{entityKey}{uint32BE(len(entityKey))}".
 func (idx *CompoundIndex) buildKey(compoundValue []byte, entityKey []byte) []byte {
-	prefixLen := len(keyPrefix) + len(idx.config.Name) + 1
+	prefixLen := len(indexkey.Prefix) + len(idx.config.Name) + 1
 	totalLen := prefixLen + len(compoundValue) + 1 + len(entityKey) + 4
 
 	buf := make([]byte, 0, totalLen)
-	buf = append(buf, keyPrefix...)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	buf = append(buf, compoundValue...)
@@ -583,8 +584,8 @@ func (idx *CompoundIndex) buildKey(compoundValue []byte, entityKey []byte) []byt
 // buildValuePrefix constructs the prefix for a specific compound value.
 // Format: "idx:{indexName}:{compoundValue}:".
 func (idx *CompoundIndex) buildValuePrefix(compoundValue []byte) []byte {
-	buf := make([]byte, 0, len(keyPrefix)+len(idx.config.Name)+len(compoundValue)+2)
-	buf = append(buf, keyPrefix...)
+	buf := make([]byte, 0, len(indexkey.Prefix)+len(idx.config.Name)+len(compoundValue)+2)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	buf = append(buf, compoundValue...)
@@ -595,8 +596,8 @@ func (idx *CompoundIndex) buildValuePrefix(compoundValue []byte) []byte {
 // buildScanBound constructs a scan bound without trailing separator.
 // Format: "idx:{indexName}:{compoundValue}".
 func (idx *CompoundIndex) buildScanBound(compoundValue []byte) []byte {
-	buf := make([]byte, 0, len(keyPrefix)+len(idx.config.Name)+len(compoundValue)+1)
-	buf = append(buf, keyPrefix...)
+	buf := make([]byte, 0, len(indexkey.Prefix)+len(idx.config.Name)+len(compoundValue)+1)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	buf = append(buf, compoundValue...)
@@ -606,8 +607,8 @@ func (idx *CompoundIndex) buildScanBound(compoundValue []byte) []byte {
 // buildIndexPrefix constructs the prefix for the entire index.
 // Format: "idx:{indexName}:".
 func (idx *CompoundIndex) buildIndexPrefix() []byte {
-	buf := make([]byte, 0, len(keyPrefix)+len(idx.config.Name)+1)
-	buf = append(buf, keyPrefix...)
+	buf := make([]byte, 0, len(indexkey.Prefix)+len(idx.config.Name)+1)
+	buf = append(buf, indexkey.Prefix...)
 	buf = append(buf, idx.config.Name...)
 	buf = append(buf, ':')
 	return buf

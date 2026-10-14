@@ -60,8 +60,9 @@ func (ei EntityIndex) IsCompound() bool {
 }
 
 // uniqueIndexChecker is the optional capability an index exposes to report
-// whether it enforces a unique constraint. MemoryIndex and PebbleIndex (the
-// only index types the engine creates) implement it; an index that does not is
+// whether it enforces a unique constraint. Every index type the engines and
+// state machines create (index.StoragePebbleIndex, index.MemoryIndex and
+// pebbleindex.Index) implements it; an index that does not is
 // treated as non-unique and cannot raise a unique-constraint conflict.
 type uniqueIndexChecker interface {
 	IsUnique() bool

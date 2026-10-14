@@ -551,8 +551,33 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine, TimeSeriesRetention}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine, TimeSeriesRetention, PerNodeBarrierKeys}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(PerNodeBarrierKeys)}, SupportedNames())
+}
+
+// TestCheckActivated_AdoptsPerNodeBarrierKeysActivation pins that this binary
+// implements per-node-barrier-keys: its activation record is adopted, not
+// refused as unsupported, and the gate reports the feature active.
+func TestCheckActivated_AdoptsPerNodeBarrierKeysActivation(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(PerNodeBarrierKeys), []byte(`{}`))
+	require.NoError(t, err)
+
+	require.NoError(t, CheckActivated(context.Background(), kv))
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+	assert.True(t, g.Activated(PerNodeBarrierKeys))
+	assert.True(t, g.Enabled(0, PerNodeBarrierKeys))
+}
+
+// TestGate_PerNodeBarrierKeysInactiveWithoutRecord pins the other side: with
+// no activation record the feature is not active, whatever the members
+// advertise, until the gate itself activates it.
+func TestGate_PerNodeBarrierKeysInactiveWithoutRecord(t *testing.T) {
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), newMemKV()))
+	assert.False(t, g.Activated(PerNodeBarrierKeys))
+	assert.False(t, g.Enabled(0, PerNodeBarrierKeys))
 }
 
 // fakeReader is a quicraft membership reader.

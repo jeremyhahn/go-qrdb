@@ -162,27 +162,15 @@ func newUnsealKey() (*secure.Buffer, error) {
 	return key, nil
 }
 
-// wrapRootKey AEAD-encrypts rootKey under key for domain, binding the given
-// roster, and returns the serialized blob ready for persistence together with
-// the roster digest. Neither key slice is wiped; the caller owns both.
+// wrapRootKeyWith AEAD-encrypts rootKey under an AEAD built from the domain
+// key for domain, binding the given roster, and returns the serialized blob
+// and the roster digest. Taking the AEAD rather than the key lets the key stay
+// in protected memory while the root key is borrowed. The caller owns rootKey
+// and is responsible for wiping it.
 //
 // The AEAD samples its own nonce and prepends it to the sealed output (see
 // the Nonce framing note above); the prefix is split back off so the envelope
 // keeps carrying it as its own field.
-func (b *StorageBarrier) wrapRootKey(domain QuorumDomain, key, rootKey []byte, roster *HolderRoster) ([]byte, []byte, error) {
-	if roster == nil || roster.Domain != domain {
-		return nil, nil, &InvalidRosterError{Reason: "roster belongs to another domain"}
-	}
-	aead, err := b.unsealKeyAEAD(key)
-	if err != nil {
-		return nil, nil, err
-	}
-	return b.wrapRootKeyWith(domain, aead, rootKey, roster)
-}
-
-// wrapRootKeyWith is wrapRootKey under an AEAD already built from the domain
-// key, so the key can stay in protected memory while the root key is
-// borrowed.
 func (b *StorageBarrier) wrapRootKeyWith(domain QuorumDomain, aead cipher.AEAD, rootKey []byte, roster *HolderRoster) ([]byte, []byte, error) {
 	if roster == nil || roster.Domain != domain {
 		return nil, nil, &InvalidRosterError{Reason: "roster belongs to another domain"}

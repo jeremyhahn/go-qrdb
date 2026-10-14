@@ -129,6 +129,7 @@ func main() {
 		extra    = flag.String("reflect-roots", "", "regexp of qualified symbols invoked by reflection, added as roots")
 		baseline = flag.String("baseline", "", "baseline file of accepted findings")
 		write    = flag.Bool("write-baseline", false, "rewrite the baseline from this run")
+		library  = flag.Bool("library", false, "enter the module through its exported surface even when it contains main packages")
 	)
 	flag.Parse()
 
@@ -137,7 +138,7 @@ func main() {
 		label = *modDir
 	}
 
-	findings, err := analyse(*modDir, label, *tags, *extra)
+	findings, err := analyse(*modDir, label, *tags, *extra, *library)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "deadcode: %v\n", err)
 		os.Exit(2)
@@ -152,7 +153,7 @@ func main() {
 
 // analyse loads one module, builds SSA, runs RTA from that module's roots and
 // returns what the roots cannot reach.
-func analyse(dir, label, tags, reflectRoots string) ([]finding, error) {
+func analyse(dir, label, tags, reflectRoots string, library bool) ([]finding, error) {
 	var reflectRE *regexp.Regexp
 	if reflectRoots != "" {
 		var err error
@@ -200,7 +201,7 @@ func analyse(dir, label, tags, reflectRoots string) ([]finding, error) {
 	prog, ssaPkgs := ssautil.AllPackages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()
 
-	roots, err := rootsFor(ssaPkgs)
+	roots, err := rootsFor(ssaPkgs, library)
 	if err != nil {
 		return nil, err
 	}
@@ -353,18 +354,24 @@ func tryRTA(roots []*ssa.Function) (reachable map[*ssa.Function]bool, rts []type
 // rootsFor picks the roots RTA starts from. A module with main packages is
 // entered through them; a library module is entered through its exported
 // surface, because its callers are repositories this analysis cannot see.
-func rootsFor(ssaPkgs []*ssa.Package) ([]*ssa.Function, error) {
+//
+// A library module may still contain main packages -- sdk/go has a code
+// generator -- and those must not turn it into a binary: with library set the
+// mains' main and init functions are roots beside the exported surface, rather
+// than instead of it. Without that, a generator's presence collapses the root
+// set to two functions and every exported SDK symbol reads as unreachable.
+func rootsFor(ssaPkgs []*ssa.Package, library bool) ([]*ssa.Function, error) {
 	var roots []*ssa.Function
 	mains := ssautil.MainPackages(ssaPkgs)
-	if len(mains) > 0 {
-		for _, m := range mains {
-			if fn := m.Func("main"); fn != nil {
-				roots = append(roots, fn)
-			}
-			if fn := m.Func("init"); fn != nil {
-				roots = append(roots, fn)
-			}
+	for _, m := range mains {
+		if fn := m.Func("main"); fn != nil {
+			roots = append(roots, fn)
 		}
+		if fn := m.Func("init"); fn != nil {
+			roots = append(roots, fn)
+		}
+	}
+	if len(mains) > 0 && !library {
 		if len(roots) == 0 {
 			return nil, fmt.Errorf("found %d main packages but no main function -- roots are empty", len(mains))
 		}
@@ -593,7 +600,32 @@ func isTestSupport(path string) bool {
 		strings.Contains(path, "/internal/sqltest/"):
 		return true
 	}
-	return false
+	return testSupportPackages[strings.TrimPrefix(path, "github.com/jeremyhahn/go-qrdb/")]
+}
+
+// testSupportPackages are the <pkg>test packages: in-memory doubles and
+// fixtures a package ships beside itself for its own tests and for downstream
+// ones, after the standard library's httptest. Each is listed by hand, per the
+// rule above.
+var testSupportPackages = map[string]bool{
+	"pkg/api/dbwire/dbwiretest":             true,
+	"pkg/api/grpc/grpctest":                 true,
+	"pkg/auth/authtest":                     true,
+	"pkg/authfactors/authfactorstest":       true,
+	"pkg/authfactors/factortest":            true,
+	"pkg/ceremony/ceremonytest":             true,
+	"pkg/cert/certtest":                     true,
+	"pkg/clock/clocktest":                   true,
+	"pkg/clusterseal/clustersealtest":       true,
+	"pkg/dek/dektest":                       true,
+	"pkg/index/indextest":                   true,
+	"pkg/initproof/initprooftest":           true,
+	"pkg/kvstore/kvstoretest":               true,
+	"pkg/pin/pintest":                       true,
+	"pkg/replicaforward/replicaforwardtest": true,
+	"pkg/seal/sealtest":                     true,
+	"pkg/service/servicetest":               true,
+	"pkg/volume/volumetest":                 true,
 }
 
 // skipFunc drops the symbols that are noise in every report of this kind:

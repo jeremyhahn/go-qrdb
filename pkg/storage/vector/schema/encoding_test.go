@@ -15,6 +15,7 @@ package schema
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -441,7 +442,7 @@ func TestUint64Encoding(t *testing.T) {
 	}
 
 	for _, val := range tests {
-		encoded := encodeUint64(val)
+		encoded := binary.BigEndian.AppendUint64(nil, val)
 		if len(encoded) != 8 {
 			t.Errorf("encoded length should be 8, got %d", len(encoded))
 		}

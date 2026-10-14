@@ -7,12 +7,12 @@
  * Per-tenant barrier initialization and status on a seal-enabled+unsealed daemon.
  *
  * Per-tenant barrier routes (requires seal.enabled=true daemon):
- *   POST /v1/tenants/{id}/barrier/init   {passphrase}  -> 204
+ *   POST /v1/tenants/{id}/barrier/init/complete {passphrase}  -> 204
  *   GET  /v1/tenants/{id}/barrier/status               -> 200 {tenant_id, sealed, initialized, strategy, hardware_backed}
  *   POST /v1/tenants/{id}/barrier/unseal {key}         -> key must be BASE64 encoded
  *
  * API asymmetry note:
- *   POST .../barrier/init takes the `passphrase` as base64 bytes.
+ *   POST .../barrier/init/complete takes the `passphrase` as base64 bytes.
  *   POST .../barrier/unseal expects a BASE64-encoded `key` field.
  *   Providing a plaintext string to the unseal endpoint returns 400
  *   "illegal base64 data at input byte N". This is the current server
@@ -71,7 +71,7 @@ test.describe("Per-tenant barrier", () => {
 
     // Initialize per-tenant barrier with a passphrase.
     const barrierInit = await request.post(
-      `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/init`,
+      `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/init/complete`,
       {
         data: { passphrase: b64("tenant-passphrase") },
         headers: { "Content-Type": "application/json" },
@@ -146,7 +146,7 @@ test.describe("Per-tenant barrier", () => {
 
     // Initialize per-tenant barrier.
     await request.post(
-      `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/init`,
+      `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/init/complete`,
       {
         data: { passphrase: b64("my-tenant-secret") },
         headers: { "Content-Type": "application/json" },

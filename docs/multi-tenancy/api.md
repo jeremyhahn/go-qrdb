@@ -432,11 +432,42 @@ leaks to a caller with no access to the tier.
 | Create a tenant | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create`. `admin_username` plus `admin_csr_pem`/`admin_cert_pem` are **already required** (shipped 2026-10-03, independent of this ruling). What this ruling adds: the request may also carry `isolation_policy: strict`. |
 | Read another tenant's registry entry | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | own tenant: `tenants:read`; any other: **`tenants:read:cross`** |
 | Delete another tenant (S8) | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | own tenant: `tenants:delete`; any other: **`tenants:delete:cross`**, audited |
-| Tenant barrier init, as proof of possession of the first admin's key | `POST /v1/tenants/{id}/barrier/init/begin`, `…/init/complete` | `InitBegin`, `InitComplete` | `tenantbarrier.InitBegin`, `tenantbarrier.InitComplete` | `qrdb_tenant_barrier_init_begin`, `qrdb_tenant_barrier_init_complete` | `TenantBarrier().Init` | **identity-gated by the CSR key**; the client sends it to every serving node |
+| Tenant barrier init, as proof of possession of the first admin's key | `POST /v1/tenants/{id}/barrier/init/begin`, `…/init/complete` | `TenantBarrierService.InitBegin`, `InitComplete` | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_begin`, `qrdb_tenant_barrier_init_complete` | `Tenants().TenantBarrierInit` (in process: no connection to bind, no proof asked) | **identity-gated by the CSR key**: `complete` carries a signature by the pending first admin's key over the tenant, the `begin` nonce and the connection's TLS 1.3 exporter, and the owner's signed epoch-1 init statement (`init_statement`; see [../barrier-seal/api.md](../barrier-seal/api.md#status-and-error-mapping)), which the node claims before its key and from which every other serving node initialises its own. Today the client sends it to the node it is connected to; sending a passphrase or Shamir init to every serving node ships with phase 7 |
 | Tenant barrier unseal and rekey | unchanged routes | unchanged | unchanged | unchanged | unchanged | unchanged; the client sends it to every serving node, and each node answers for itself |
 | Operator: read a named tenant's users, roles, factors and bindings | `GET /v1/tenants/{id}/identity/users[/{uid}]`, `…/roles[/{rid}]` | `TenantIdentityRead` | `tenantidentity.Read` | `qrdb_tenant_identity_read` | `TenantIdentity().Read` | `tenant_identity:read` (ScopeCross; only where the target's effective policy is `operator-access`) |
 | Operator: change a named tenant's identity records | `POST`, `PUT`, `DELETE` `/v1/tenants/{id}/identity/...` | `TenantIdentityWrite` | `tenantidentity.Write` | `qrdb_tenant_identity_write` | `TenantIdentity().Write` | `tenant_identity:write` (the same) |
 | Back up a strict tenant's groups (S10) | `POST /v1/tenants/{id}/backups` | `TenantBackupCreate` | `tenant.BackupCreate` | `qrdb_tenant_backup_create` | `TenantBackups().Create` | `backup:tenant` (ScopeTenantOnly) |
+
+> **Correction (2026-10-14):** the barrier-init row named the QUIC methods
+> `tenantbarrier.InitBegin`/`InitComplete` and the embedded call
+> `TenantBarrier().Init`. What shipped is `tenant.BarrierInitBegin`/
+> `tenant.BarrierInitComplete`, beside the other `tenant.Barrier*` QUIC
+> methods, and the existing `Tenants().TenantBarrierInit`, which on a network
+> transport runs `begin` and `complete` on one connection when the request
+> carries a `Signer`.
+
+#### Barrier init proof of possession
+
+A self-managed tenant's barrier is initialized in two calls on **one** TLS 1.3
+connection:
+
+1. **`init/begin`** (`POST /v1/tenants/{id}/barrier/init/begin`, empty body)
+   is authorized like init itself and returns
+   `{"nonce": "<base64, 32 bytes>", "expires": <Unix seconds>}`. The nonce is
+   single-use, bound to this connection's exporter, and expires after five
+   minutes. An unauthenticated deployment returns neither and asks no proof.
+2. **`init/complete`** (`POST /v1/tenants/{id}/barrier/init/complete`)
+   carries the usual init fields plus `nonce`, `public_key` (DER
+   SubjectPublicKeyInfo) and `signature`. The signature is by the key whose
+   SPKI the pending first admin records, over the tenant, the nonce and the
+   connection's exporter (`pkg/initproof`).
+
+A proof that is absent, replayed, issued on another connection, expired, or by
+another key returns `FirstAdminProofError` (401 / `UNAUTHENTICATED`) and
+initializes nothing; ask a fresh nonce. The SDK takes a `crypto.Signer` on
+`TenantBarrierInitRequest.Signer`, never key bytes, so a device-held key signs
+in place. A connection that is not TLS 1.3 has no exporter, and `begin` is
+refused.
 
 **Removed:**
 - the system-tenant lift on every `ScopeSelf` permission;
@@ -509,6 +540,7 @@ and the response carries the issued certificate.
 | The credential does not match this node's verifier | 403 | `PERMISSION_DENIED` — `*seal.CredentialVerifierError` |
 | A database replica outside the serving set | 409 | `FAILED_PRECONDITION` — `*placement.ReplicaOutsideServingSetError` |
 | `strict-isolation` not yet activated cluster-wide | 409 | `FAILED_PRECONDITION` — `*featuregate.FeatureNotActiveError` |
+| Creating a `barrier`, `volume` or `raft` tenant, or updating a tenant to one of those types, before `per-node-barrier-keys` is activated cluster-wide (retry after rollout). **Not raised yet:** no release advertises the feature or wires its gate, so these requests are admitted ([architecture.md](architecture.md#feature-gate-and-upgrade)) | 503 | `UNAVAILABLE` — `*featuregate.NotActiveError` |
 
 ## Pagination
 

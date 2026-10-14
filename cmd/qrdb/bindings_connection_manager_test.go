@@ -23,15 +23,6 @@ import (
 	"testing"
 )
 
-// newTestConnectionManager creates a ConnectionManagerBinding with
-// XDG_CONFIG_HOME pointed at a temp dir so persistence never touches
-// the real user config directory.
-func newTestConnectionManager(t *testing.T) *ConnectionManagerBinding {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	return NewConnectionManagerBinding(testLogger(t))
-}
-
 // ---------------------------------------------------------------------------
 // ListProfiles
 // ---------------------------------------------------------------------------

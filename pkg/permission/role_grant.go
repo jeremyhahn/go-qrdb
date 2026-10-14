@@ -183,12 +183,3 @@ func HasRoleGrant(role string, p Permission) bool {
 	_, granted := roles[role]
 	return granted
 }
-
-// resetRoleGrantRegistryForTesting clears the role-grant registry. It is
-// intended for use by tests that need to reset state between cases. The
-// function is unexported and not part of the public API.
-func resetRoleGrantRegistryForTesting() {
-	roleGrantMu.Lock()
-	defer roleGrantMu.Unlock()
-	roleGrantRegistry = map[Permission]map[string]struct{}{}
-}

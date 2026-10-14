@@ -270,3 +270,60 @@ func TestRevisionNotFoundError_RevisionNotFound_EmptyKeyZeroRevision(t *testing.
 		t.Errorf("RevisionNotFound: revision got %d, want 0", revision)
 	}
 }
+
+func TestCompactRevisionInvalidError_Error_ContainsRevision(t *testing.T) {
+	got := (&CompactRevisionInvalidError{Revision: -7}).Error()
+	if want := "mvcc: compaction revision -7 is invalid (must be at least 1)"; got != want {
+		t.Errorf("Error = %q, want %q", got, want)
+	}
+}
+
+func TestCompactRevisionInvalidError_ReturnedForRevisionZero(t *testing.T) {
+	s := newTestStore(t)
+	err := s.CompactPrefix(nil, 0)
+	var invalid *CompactRevisionInvalidError
+	if !errors.As(err, &invalid) || invalid.Revision != 0 {
+		t.Fatalf("CompactPrefix(0) err = %v, want *CompactRevisionInvalidError{Revision: 0}", err)
+	}
+	if !strings.Contains(err.Error(), "revision 0 is invalid") {
+		t.Errorf("Error = %q, want it to name revision 0", err.Error())
+	}
+}
+
+func TestCompactRevisionFutureError_Error_ContainsBothRevisions(t *testing.T) {
+	got := (&CompactRevisionFutureError{Requested: 12, Current: 5}).Error()
+	if want := "mvcc: compaction revision 12 is a future revision (current: 5)"; got != want {
+		t.Errorf("Error = %q, want %q", got, want)
+	}
+}
+
+func TestCompactRevisionFutureError_ReturnedPastCurrent(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Put([]byte("k"), []byte("v"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+	err := s.CompactPrefixInBatch(batch, nil, 9)
+	var future *CompactRevisionFutureError
+	if !errors.As(err, &future) || future.Requested != 9 || future.Current != 1 {
+		t.Fatalf("CompactPrefixInBatch(9) err = %v, want *CompactRevisionFutureError{Requested: 9, Current: 1}", err)
+	}
+	if !strings.Contains(err.Error(), "(current: 1)") {
+		t.Errorf("Error = %q, want it to name the current revision", err.Error())
+	}
+}
+
+func TestUnsupportedSortTargetError_Error_ContainsTarget(t *testing.T) {
+	got := (&UnsupportedSortTargetError{Target: 42}).Error()
+	if want := "mvcc: unsupported sort target: 42"; got != want {
+		t.Errorf("Error = %q, want %q", got, want)
+	}
+}
+
+func TestUnsupportedSortTargetError_Error_ZeroTarget(t *testing.T) {
+	got := (&UnsupportedSortTargetError{}).Error()
+	if !strings.HasSuffix(got, ": 0") {
+		t.Errorf("Error = %q, want the zero target named", got)
+	}
+}

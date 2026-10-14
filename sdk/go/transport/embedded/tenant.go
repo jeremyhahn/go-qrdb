@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -550,7 +551,14 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		}
 	}
 
-	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster)
+	// The owner's signed statement lets every replica of a clustered tenant
+	// initialize its own barrier key; without a Signer there is none.
+	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
+	if err != nil {
+		return nil, err
+	}
+	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
+		tenant.WithInitStatement(statement))
 	if err != nil {
 		return nil, err
 	}

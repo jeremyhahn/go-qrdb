@@ -23,6 +23,8 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -41,15 +43,17 @@ type tenantScopeAuthorizer func(ctx context.Context, tenantID string, perm permi
 
 // tenantBarrierAuthorizers carries the three authorization gates the tenant
 // barrier tools dispatch over. Op is the plain tenant-scoped RBAC check
-// (seal, officer management); Init is the trust-on-first-init gate and
-// Sealed the sealed-window gate — both route through the shared
-// cross-transport rules in pkg/auth/middleware (AuthorizeTenantBarrierInit /
+// (seal, officer management); InitBegin and Init are the trust-on-first-init
+// gate with its proof of possession, and Sealed the sealed-window gate — all
+// route through the shared cross-transport rules in pkg/auth/middleware
+// (BeginTenantBarrierInit / AuthorizeTenantBarrierInitProof /
 // AuthorizeTenantBarrierSealedOp) so the fallback semantics cannot drift
 // from REST, gRPC, and QUIC.
 type tenantBarrierAuthorizers struct {
-	Op     tenantScopeAuthorizer
-	Init   func(ctx context.Context, tenantID string) error
-	Sealed tenantScopeAuthorizer
+	Op        tenantScopeAuthorizer
+	InitBegin func(ctx context.Context, tenantID string) (*initproof.Challenge, error)
+	Init      func(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error
+	Sealed    tenantScopeAuthorizer
 }
 
 // tenantBarrierTools returns the MCP tool registrations for per-tenant
@@ -62,6 +66,7 @@ type tenantBarrierAuthorizers struct {
 func tenantBarrierTools(svc tenant.TenantServicer, authz tenantBarrierAuthorizers) []serverTool {
 	authorize := authz.Op
 	tools := []serverTool{
+		{Tool: toolTenantBarrierInitBegin(), Perm: permission.IdentityGated, Handler: handleTenantBarrierInitBegin(authz.InitBegin)},
 		{Tool: toolTenantBarrierInit(), Perm: permission.IdentityGated, Handler: handleTenantBarrierInit(svc, authz.Init)},
 		{Tool: toolTenantBarrierUnseal(), Perm: permission.IdentityGated, Handler: handleTenantBarrierUnseal(svc, authz.Sealed)},
 		{Tool: toolTenantBarrierSeal(), Perm: permission.TenantBarrierSeal, Handler: handleTenantBarrierSeal(svc, authorize)},
@@ -71,13 +76,54 @@ func tenantBarrierTools(svc tenant.TenantServicer, authz tenantBarrierAuthorizer
 }
 
 // ---------------------------------------------------------------------------
-// qrdb_tenant_barrier_init
+// qrdb_tenant_barrier_init_begin
 // ---------------------------------------------------------------------------
 
-// toolTenantBarrierInit defines the qrdb_tenant_barrier_init tool schema.
+// toolTenantBarrierInitBegin defines the qrdb_tenant_barrier_init_begin tool
+// schema.
+func toolTenantBarrierInitBegin() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_init_begin",
+		mcp.WithDescription("Begin initializing a per-tenant barrier: returns a base64 nonce, valid only on this connection, that qrdb_tenant_barrier_init_complete must carry signed by the first admin's key together with this connection's TLS exporter. Both fields are empty on an unauthenticated deployment, which asks no proof."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose barrier is to be initialized."),
+		),
+	)
+}
+
+// handleTenantBarrierInitBegin returns a tool handler that issues the init
+// nonce through begin.
+func handleTenantBarrierInitBegin(begin func(ctx context.Context, tenantID string) (*initproof.Challenge, error)) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		challenge, err := begin(ctx, tenantID)
+		if err != nil {
+			return authzToolError(err), nil
+		}
+		resp := map[string]any{"nonce": base64.StdEncoding.EncodeToString(challenge.Nonce)}
+		if !challenge.ExpiresAt.IsZero() {
+			resp["expires"] = challenge.ExpiresAt.Unix()
+		}
+		data, jsonErr := json.Marshal(resp)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_begin", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_init_complete
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierInit defines the qrdb_tenant_barrier_init_complete tool
+// schema.
 func toolTenantBarrierInit() mcp.Tool {
-	return mcp.NewTool("qrdb_tenant_barrier_init",
-		mcp.WithDescription("Initialize a per-tenant barrier. Tenant must already exist."),
+	return mcp.NewTool("qrdb_tenant_barrier_init_complete",
+		mcp.WithDescription("Initialize a per-tenant barrier, given proof of possession of the first admin's key over this connection (see qrdb_tenant_barrier_init_begin). Tenant must already exist."),
 		mcp.WithString("tenant_id",
 			mcp.Required(),
 			mcp.Description("The tenant whose barrier should be initialized."),
@@ -100,19 +146,77 @@ func toolTenantBarrierInit() mcp.Tool {
 		mcp.WithString("policy",
 			mcp.Description("Factor policy the officers roster enrols under: designated (default) or any-enrolled. Ignored when officers is empty."),
 		),
+		mcp.WithString("nonce",
+			mcp.Description("Base64 nonce from qrdb_tenant_barrier_init_begin on this connection."),
+		),
+		mcp.WithString("public_key",
+			mcp.Description("Base64 DER SubjectPublicKeyInfo of the first admin's key."),
+		),
+		mcp.WithString("signature",
+			mcp.Description("Base64 signature by that key over the tenant id, the nonce and this connection's TLS exporter."),
+		),
+		mcp.WithString("init_statement",
+			mcp.Description("Base64 epoch-1 barrier init statement signed by the same key. Required on a clustered node once per-node-barrier-keys is active; every replica initializes its own barrier key from it."),
+		),
 	)
 }
 
+// initStatementArg decodes the base64 init_statement argument of
+// qrdb_tenant_barrier_init_complete; an absent argument decodes to nil.
+func initStatementArg(req mcp.CallToolRequest) ([]byte, error) {
+	encoded := mcp.ParseString(req, "init_statement", "")
+	if encoded == "" {
+		return nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, &ToolArgumentError{Argument: "init_statement", Reason: "must be valid base64: " + err.Error()}
+	}
+	return decoded, nil
+}
+
+// initProofArgs decodes the base64 proof-of-possession arguments of
+// qrdb_tenant_barrier_init_complete; an absent argument decodes to nil.
+func initProofArgs(req mcp.CallToolRequest) (*authmw.TenantBarrierInitProof, error) {
+	proof := &authmw.TenantBarrierInitProof{}
+	fields := map[string]*[]byte{
+		"nonce":      &proof.Nonce,
+		"public_key": &proof.PublicKey,
+		"signature":  &proof.Signature,
+	}
+	for name, dst := range fields {
+		encoded := mcp.ParseString(req, name, "")
+		if encoded == "" {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, &ToolArgumentError{Argument: name, Reason: "must be valid base64: " + err.Error()}
+		}
+		*dst = decoded
+	}
+	return proof, nil
+}
+
 // handleTenantBarrierInit returns a tool handler that initializes the
-// per-tenant barrier for the given tenant. When the strategy field is empty
-// or omitted the passphrase (software) strategy is selected.
-func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx context.Context, tenantID string) error) mcpserver.ToolHandlerFunc {
+// per-tenant barrier for the given tenant, given proof of possession of the
+// first admin's key. When the strategy field is empty or omitted the
+// passphrase (software) strategy is selected.
+func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		if tenantID == "" {
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
-		if err := authorize(ctx, tenantID); err != nil {
+		proof, err := initProofArgs(req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		statement, err := initStatementArg(req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if err := authorize(ctx, tenantID, proof); err != nil {
 			return authzToolError(err), nil
 		}
 
@@ -126,7 +230,7 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 		if officersRaw := mcp.ParseString(req, "officers", ""); officersRaw != "" {
 			var officers []transport.OfficerRegisterRequest
 			if err := json.Unmarshal([]byte(officersRaw), &officers); err != nil {
-				return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: err}
+				return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_complete", Err: err}
 			}
 			roster = &tenant.TenantBarrierShamirRoster{
 				Officers: holderwire.TenantBarrierRosterFrom(officers),
@@ -134,9 +238,10 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 			}
 		}
 
-		result, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy), roster)
+		result, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy), roster,
+			tenant.WithInitStatement(statement))
 		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: err}
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_complete", Err: err}
 		}
 
 		// INV-1/INV-11: shares are NEVER returned in init responses.
@@ -151,7 +256,7 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 		}
 		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: jsonErr}
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_complete", Err: jsonErr}
 		}
 		return mcp.NewToolResultText(string(data)), nil
 	}

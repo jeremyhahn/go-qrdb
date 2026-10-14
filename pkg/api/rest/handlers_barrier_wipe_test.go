@@ -203,7 +203,7 @@ func TestHandleTenantBarrierInit_WipesDecodedPassphrase(t *testing.T) {
 	srv := newTenantServer(svc)
 
 	body := `{"passphrase":"` + b64("tenant-pw") + `","strategy":"passphrase"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init",
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete",
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

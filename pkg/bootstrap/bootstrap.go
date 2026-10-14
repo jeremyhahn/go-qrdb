@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -73,6 +74,14 @@ const (
 	// StrategyShamir splits the root key into M-of-N Shamir shares.
 	StrategyShamir = seal.StrategyShamir
 )
+
+// FirstAdminPinner pins the SPKI thumbprint of a barrier's first admin as
+// the signer of its epoch-1 init statement. The pin is written once: pinning
+// the same thumbprint again succeeds, any other is refused.
+// *barrierinit.Pins implements it.
+type FirstAdminPinner interface {
+	PinFirstAdmin(ctx context.Context, b clusterseal.Barrier, thumbprint string) error
+}
 
 // Dependencies carries the seams every entry point composes. The same struct
 // is shared by all three entry points; an individual call uses only the fields
@@ -146,6 +155,15 @@ type Dependencies struct {
 	// creates the account. Required by ProvisionTenant in cert mode for such
 	// a tenant.
 	PendingAdmins tenantadmin.Store
+
+	// BarrierAnchors pins a pending first admin's SPKI thumbprint as its
+	// tenant barrier's epoch-1 anchor, the signer every node verifies that
+	// barrier's init statement against (docs/barrier-seal/architecture.md
+	// "Per-node barrier init"). The pending record is consumed when the admin's
+	// account is created, the pin is not: a node that initializes its key later
+	// still needs it. Nil pins nothing, which is right only for a composition
+	// that claims no init statements (tenant.WithBarrierInitBook).
+	BarrierAnchors FirstAdminPinner
 
 	// TrustDomain is the SPIFFE trust domain the node's mTLS authenticator
 	// pins, so a bring-your-own admin certificate's identity is read exactly
@@ -831,7 +849,11 @@ func provisionPendingAdmin(ctx context.Context, cfg TenantProvisionConfig, deps 
 	}
 	if existing != nil && !cfg.Exclusive {
 		// A re-run of a provisioning whose admin is already pending: keep the
-		// recorded credential rather than rotating it.
+		// recorded credential rather than rotating it, and pin it, which
+		// completes a run that recorded the admin and stopped before its pin.
+		if err := pinFirstAdmin(ctx, deps, cfg.TenantID, existing.Thumbprint); err != nil {
+			return fail(err)
+		}
 		return &TenantProvisionResult{
 			TenantID:               cfg.TenantID,
 			AdminUsername:          existing.Username,
@@ -851,6 +873,11 @@ func provisionPendingAdmin(ctx context.Context, cfg TenantProvisionConfig, deps 
 	undo.push("delete pending admin", func(ctx context.Context) error {
 		return deps.PendingAdmins.Delete(ctx, cfg.TenantID)
 	})
+	// The pin has no undo: it is written once, and an undone provisioning
+	// deletes the tenant, whose id is then retired and never reused.
+	if err := pinFirstAdmin(ctx, deps, cfg.TenantID, c.thumbprint); err != nil {
+		return fail(err)
+	}
 	deps.Logger.Info("bootstrap: tenant provisioned; admin awaits the tenant barrier",
 		slog.String("tenant", cfg.TenantID),
 		slog.String("admin", adminUsername))
@@ -862,6 +889,18 @@ func provisionPendingAdmin(ctx context.Context, cfg TenantProvisionConfig, deps 
 		AdminCertThumbprint:    c.thumbprint,
 		AdminAwaitsBarrierInit: true,
 	}, nil
+}
+
+// pinFirstAdmin pins thumbprint, the pending first admin's, as the epoch-1
+// anchor of tenantID's barrier through deps.BarrierAnchors; nil pins nothing.
+func pinFirstAdmin(ctx context.Context, deps Dependencies, tenantID, thumbprint string) error {
+	if deps.BarrierAnchors == nil {
+		return nil
+	}
+	if err := deps.BarrierAnchors.PinFirstAdmin(ctx, clusterseal.TenantBarrier(tenantID), thumbprint); err != nil {
+		return &PendingTenantAdminError{Op: "pin barrier anchor", Cause: err}
+	}
+	return nil
 }
 
 // maxAdminUsernameLen bounds an admin username signed into a certificate's

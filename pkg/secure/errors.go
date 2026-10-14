@@ -109,6 +109,10 @@ func (e *NestedBorrowError) Error() string {
 // the pages — and the caller must hear about that rather than receive a
 // correctly sized run of zeros, which is the fail-open corruption found in
 // review of go-qrdb#74.
+//
+// The live empty Buffer NewEmptyBuffer returns is refused too: CopyOut sees
+// only the borrow, and an empty borrow cannot say whether it is empty on
+// purpose. A caller that accepts an empty value reads it through WithBytes.
 type EmptyBorrowError struct{}
 
 // Error implements the error interface.

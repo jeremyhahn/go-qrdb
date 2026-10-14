@@ -285,8 +285,28 @@ func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Po
 // tempSocketPath returns a unique socket path under os.TempDir for tests.
 func tempSocketPath(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	// A unix socket path must fit sun_path (108 bytes on Linux, 104 on
+	// macOS). t.TempDir embeds the full test name, so a long subtest name
+	// overflows it; a short directory directly under the temp root does not.
+	dir, err := os.MkdirTemp("", "q")
+	if err != nil {
+		t.Fatalf("socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return filepath.Join(dir, "qrdb-test.sock")
+}
+
+// TestTempSocketPath_FitsSunPath: a unix socket path must fit sun_path (104
+// bytes on macOS, 108 on Linux), and the temp root is the environment's to
+// choose, so the helper may add only a short suffix to it, whatever the test
+// is called -- never the test name t.TempDir embeds.
+func TestTempSocketPath_FitsSunPath(t *testing.T) {
+	t.Run(strings.Repeat("a_very_long_subtest_name_", 6), func(t *testing.T) {
+		p := tempSocketPath(t)
+		if added := len(p) - len(os.TempDir()); added > 32 {
+			t.Fatalf("socket helper adds %d bytes to the temp root (%s); sun_path leaves no room for a test name", added, p)
+		}
+	})
 }
 
 // dialUnix creates a gRPC client connection to the given Unix socket path.

@@ -256,6 +256,18 @@ var TLSStateFromContext = auth.TLSStateFromContext
 // credential.
 var HTTPAuthorizationFromContext = auth.HTTPAuthorizationFromContext
 
+// DPoPRequest is the RFC 9449 request metadata a proof-of-possession
+// authenticator verifies against: the raw DPoP header, and the HTTP method and
+// target URI (without query) the proof must be bound to.
+type DPoPRequest = auth.DPoPRequest
+
+// DPoPRequestFromContext returns the request's DPoP metadata; the bool is
+// false when the request carried no proof. REST and MCP fill it from the HTTP
+// request, gRPC and Unix from the "dpop" metadata. Native QUIC, embedded and
+// MCP stdio have no HTTP request, so DPoP does not apply there. qrdb carries
+// the data only and never verifies the proof.
+var DPoPRequestFromContext = auth.DPoPRequestFromContext
+
 // ErrUnauthenticated is what an Authenticator returns when the request
 // carries no credential it accepts. The chain then tries the next
 // authenticator, and when none succeeds every transport answers its

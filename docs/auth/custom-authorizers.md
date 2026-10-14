@@ -65,6 +65,24 @@ An embedder authenticator resolves its credential from the request context:
 - **QUIC (native frames):** mTLS only; the framing carries no
   bearer-credential field.
 
+### DPoP (RFC 9449) request metadata
+
+A sender-constrained-token authenticator also needs the `DPoP` proof and the
+method and URI it is bound to (`htm`, `htu`). The context carries them as
+`auth.DPoPRequestFromContext(ctx)` (SDK: `sdk.DPoPRequestFromContext`), a
+`DPoPRequest{Proof, Method, URI}`; the bool is false when the request had no
+`DPoP` header. qrdb only carries the data: it does not verify proofs, track
+`jti` replay or issue nonces, and the authenticator order is unchanged.
+
+- **REST and MCP (HTTP/2 and HTTP/3):** the `DPoP` header, `r.Method`, and
+  `scheme://host/path` (https when the connection is TLS; no query or
+  fragment, per RFC 9449 section 4.2).
+- **gRPC / gRPC-over-UDS:** the `dpop` metadata, method `POST` (every gRPC
+  call is one), and `scheme://:authority/<service>/<method>`.
+- **Not applicable:** native QUIC frames, the embedded transport and MCP
+  stdio are not HTTP requests, so DPoP is REST/gRPC-only and the context
+  never carries it there.
+
 ## MCP authorization (OAuth 2.1, RFC 9728)
 
 Per the MCP authorization specification, an MCP server acting as an OAuth

@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -65,6 +66,10 @@ var (
 	// ErrEmptyShare is returned when a holder quorum submission carries no
 	// share value.
 	ErrEmptyShare = errors.New("tenant: empty shamir share")
+
+	// ErrNilBarrierStrategy is the cause a BarrierError carries when a
+	// BarrierKeyProvider answers without error but with no strategy.
+	ErrNilBarrierStrategy = errors.New("tenant: barrier key provider returned no strategy")
 
 	// ErrNilStore is returned when a nil storage backend is provided
 	// to the tenant service constructor.
@@ -328,8 +333,8 @@ func (e *VolumePoolReserveError) Error() string {
 func (e *VolumePoolReserveError) Unwrap() error { return e.Err }
 
 // InvalidStrategyError is returned when the caller requests a seal strategy
-// that is not registered in the injected StrategyRegistry, or when an empty
-// strategy ID is supplied to TenantBarrierInitWithStrategy.
+// the BarrierKeyProvider does not know (*seal.StrategyNotRegisteredError).
+// Available names the strategies it does know.
 type InvalidStrategyError struct {
 	Strategy  string
 	Available []string
@@ -616,3 +621,29 @@ type InvalidIsolationPolicyError struct {
 func (e *InvalidIsolationPolicyError) Error() string {
 	return "tenant: invalid isolation policy " + strconv.Quote(e.Value)
 }
+
+// FirstAdminProofError is returned when a tenant barrier init is completed
+// without a valid proof of possession of the first admin's key: the proof is
+// absent, its nonce is unknown, spent, expired or was issued on another
+// connection, the connection has no TLS exporter to bind to, or the
+// signature is by any key other than the one the pending first admin
+// records (pkg/initproof). It is 401 on REST and UNAUTHENTICATED elsewhere:
+// the caller has not proved who it is, and the remedy is a fresh nonce from
+// init/begin on the connection that completes it.
+type FirstAdminProofError struct {
+	TenantID string
+	Reason   initproof.Reason
+	// Err is the underlying refusal, when there is one.
+	Err error
+}
+
+func (e *FirstAdminProofError) Error() string {
+	msg := "tenant: barrier init proof for " + strconv.Quote(e.TenantID) + " refused: " + string(e.Reason)
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying refusal.
+func (e *FirstAdminProofError) Unwrap() error { return e.Err }

@@ -601,3 +601,26 @@ func (e *TenantPathIsSymlinkError) Error() string {
 
 // Unwrap returns why the path could not be resolved, if that is the reason.
 func (e *TenantPathIsSymlinkError) Unwrap() error { return e.Err }
+
+// UnsealStrategyMismatchError refuses an unseal whose caller-chosen strategy
+// is not the one that sealed the barrier's root key. A barrier reattached
+// from its signed init statement unseals with exactly the strategy that
+// statement names; a persisted root key naming another one means the
+// statement and the barrier disagree, and the barrier stays sealed rather
+// than trying whichever strategy happens to be registered under the
+// persisted ID. It matches ErrStrategyMismatch under errors.Is.
+type UnsealStrategyMismatchError struct {
+	// Sealed is the strategy the persisted root key was sealed with.
+	Sealed StrategyID
+	// Requested is the strategy the caller asked to unseal with.
+	Requested StrategyID
+}
+
+// Error returns a human-readable description.
+func (e *UnsealStrategyMismatchError) Error() string {
+	return "qrdb/seal: root key is sealed with strategy " + string(e.Sealed) +
+		", refusing to unseal it with " + string(e.Requested)
+}
+
+// Unwrap returns ErrStrategyMismatch.
+func (e *UnsealStrategyMismatchError) Unwrap() error { return ErrStrategyMismatch }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -247,6 +248,56 @@ func TestAllocatorReserveSkipsPortsLockedElsewhere(t *testing.T) {
 	}
 	if len(probed) != 1 {
 		t.Fatalf("probed %v; a port locked elsewhere must not even be probed", probed)
+	}
+}
+
+// TestAllocatorReserveLockCollisionsDoNotSpendAttempts pins that ports held by
+// other test processes do not count against the bind-verify budget. Every
+// process walks the window from its base, so a late process in a parallel
+// `go test ./...` meets every port the earlier ones still hold -- more than
+// maxReservationAttempts of them in a busy module -- before reaching a free
+// one. Spending an attempt per held lock made that process fail its first
+// reservation with "bind: address already in use" from the lock socket.
+func TestAllocatorReserveLockCollisionsDoNotSpendAttempts(t *testing.T) {
+	base := 32768 - portWindow
+	held := maxReservationAttempts + 10
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), func(port int) (io.Closer, error) {
+		if port < base+held {
+			return nil, errors.New("address already in use")
+		}
+		return unlocked(port)
+	})
+	probed := 0
+	ports, err := a.reserve("UDP", 2, func(string) (io.Closer, error) {
+		probed++
+		return closerFunc(func() error { return nil }), nil
+	})
+	if err != nil {
+		t.Fatalf("reserve past %d ports held elsewhere: %v", held, err)
+	}
+	if want := []int{base + held, base + held + 1}; !slices.Equal(ports, want) {
+		t.Fatalf("ports = %v, want %v", ports, want)
+	}
+	if probed != 2 {
+		t.Fatalf("probed %d ports, want 2: a port locked elsewhere must not be probed", probed)
+	}
+}
+
+// TestAllocatorReserveLockCollisionsEndAtWindowExhaustion pins that, with
+// lock collisions outside the attempt budget, the window itself bounds the
+// walk: a window held entirely by other processes reports exhaustion rather
+// than looping.
+func TestAllocatorReserveLockCollisionsEndAtWindowExhaustion(t *testing.T) {
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), func(int) (io.Closer, error) {
+		return nil, errors.New("address already in use")
+	})
+	_, err := a.reserve("UDP", 1, func(string) (io.Closer, error) {
+		t.Fatal("a port locked elsewhere must not be probed")
+		return nil, nil
+	})
+	var exhaustedErr *PortExhaustedError
+	if !errors.As(err, &exhaustedErr) {
+		t.Fatalf("err = %v, want *PortExhaustedError", err)
 	}
 }
 

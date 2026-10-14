@@ -2022,31 +2022,6 @@ func validateVolumePools(pools []VolumePoolConfig, dataDir string) error {
 	return nil
 }
 
-// itoa returns the decimal representation of n. Local helper so the
-// validation builder doesn't pull strconv into the file's import set
-// solely for one call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}
-
 // validWriteModes contains the accepted write mode strings.
 var validWriteModes = map[string]struct{}{
 	"sync":        {},

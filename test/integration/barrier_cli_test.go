@@ -102,7 +102,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -270,18 +269,7 @@ func launchSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, 
 // afterward.
 func stopSealNode(t *testing.T, n *sealNode) {
 	t.Helper()
-	if n.cmd.Process == nil {
-		return
-	}
-	_ = n.cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- n.cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		_ = n.cmd.Process.Kill()
-		<-done
-	}
+	stopNodeProcess(t, n.cmd)
 }
 
 // loadDaemonCA reads the CA certificate and private key the daemon

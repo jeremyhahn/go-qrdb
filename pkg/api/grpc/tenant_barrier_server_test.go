@@ -81,7 +81,7 @@ func TestTenantBarrier_Init_Success(t *testing.T) {
 	}
 
 	conn := connect(t, svc)
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId: "acme", Passphrase: []byte("supplied-secret"), Threshold: 3, Shares: 5,
 	})
 	if err != nil {
@@ -94,7 +94,7 @@ func TestTenantBarrier_Init_Success(t *testing.T) {
 
 func TestTenantBarrier_Init_NilService(t *testing.T) {
 	srv := &tenantBarrierServer{svc: nil}
-	_, err := srv.Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"})
+	_, err := srv.InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -108,7 +108,7 @@ func TestTenantBarrier_Init_EmptyTenantID(t *testing.T) {
 	conn, cleanup := startTenantBarrierTestServer(t, svc)
 	defer cleanup()
 
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: ""})
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: ""})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -125,7 +125,7 @@ func TestTenantBarrier_Init_NotFound(t *testing.T) {
 	conn, cleanup := startTenantBarrierTestServer(t, svc)
 	defer cleanup()
 
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "missing"})
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "missing"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -142,13 +142,51 @@ func TestTenantBarrier_Init_BarrierError(t *testing.T) {
 	conn, cleanup := startTenantBarrierTestServer(t, svc)
 	defer cleanup()
 
-	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"})
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if st, _ := status.FromError(err); st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
 	}
+}
+
+// ---------------------------------------------------------------------------
+// InitBegin handler tests
+// ---------------------------------------------------------------------------
+
+// TestTenantBarrier_InitBegin_Unauthenticated_NoProofAsked proves a node
+// without an auth middleware asks no proof: begin answers an empty nonce and
+// no expiry, and a complete carrying no proof then succeeds.
+func TestTenantBarrier_InitBegin_Unauthenticated_NoProofAsked(t *testing.T) {
+	conn, cleanup := startTenantBarrierTestServer(t, newMockTenantService())
+	defer cleanup()
+
+	c := pb.NewTenantBarrierServiceClient(conn)
+	resp, err := c.InitBegin(context.Background(), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("InitBegin: %v", err)
+	}
+	if len(resp.GetNonce()) != 0 || resp.GetExpires() != 0 {
+		t.Fatalf("InitBegin = %+v; want no nonce and no expiry", resp)
+	}
+	if _, err := c.InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("InitComplete: %v", err)
+	}
+}
+
+func TestTenantBarrier_InitBegin_NilService(t *testing.T) {
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.InitBegin(context.Background(), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
+	requireCode(t, err, codes.Unimplemented)
+}
+
+func TestTenantBarrier_InitBegin_EmptyTenantID(t *testing.T) {
+	conn, cleanup := startTenantBarrierTestServer(t, newMockTenantService())
+	defer cleanup()
+
+	_, err := pb.NewTenantBarrierServiceClient(conn).InitBegin(context.Background(), &pb.TenantBarrierInitBeginRequest{})
+	requireCode(t, err, codes.InvalidArgument)
 }
 
 // ---------------------------------------------------------------------------
@@ -527,8 +565,11 @@ func TestTenantBarrier_AllHandlers_Interceptor(t *testing.T) {
 	defer cleanup()
 
 	c := pb.NewTenantBarrierServiceClient(conn)
-	if _, err := c.Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"}); err != nil {
-		t.Fatalf("Init: %v", err)
+	if _, err := c.InitBegin(context.Background(), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("InitBegin: %v", err)
+	}
+	if _, err := c.InitComplete(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("InitComplete: %v", err)
 	}
 	if _, err := c.Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{TenantId: "acme", Key: []byte("k")}); err != nil {
 		t.Fatalf("Unseal: %v", err)
@@ -541,7 +582,8 @@ func TestTenantBarrier_AllHandlers_Interceptor(t *testing.T) {
 	}
 
 	for _, m := range []string{
-		"/qrdb.v1.TenantBarrierService/Init",
+		"/qrdb.v1.TenantBarrierService/InitBegin",
+		"/qrdb.v1.TenantBarrierService/InitComplete",
 		"/qrdb.v1.TenantBarrierService/Unseal",
 		"/qrdb.v1.TenantBarrierService/Seal",
 		"/qrdb.v1.TenantBarrierService/Status",

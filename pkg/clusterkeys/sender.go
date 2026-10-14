@@ -26,6 +26,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/jeremyhahn/go-enclave"
 
@@ -245,6 +246,14 @@ func (s *Sender) Deliver(ctx context.Context, target placement.Replica, meta key
 // the leader's ImportedKey context; for self-managed mode (autoUnseal=false) it
 // exports the sealed blob verbatim. All replicas are attempted; errors are
 // accumulated via errors.Join.
+//
+// The deliveries run concurrently, and they must. A follower answers only once
+// its import has unsealed its barrier, and the unseal's audit event can wait
+// for the very Raft group these deliveries are forming: an isolated tenant's
+// home group writes that event to the tenant's own trail, which has no leader
+// until a quorum of replicas holds the key. Delivered one at a time, the first
+// follower waits on a quorum the queued deliveries have not yet made, and the
+// tenant creation deadlocks until the follower's readiness bound expires.
 func (s *Sender) DistributeTenantKey(
 	ctx context.Context,
 	p *placement.Placement,
@@ -252,35 +261,45 @@ func (s *Sender) DistributeTenantKey(
 	selfNodeID string,
 	autoUnseal bool,
 ) error {
-	var errs []error
-	for _, replica := range p.Replicas {
+	errs := make([]error, len(p.Replicas))
+	var wg sync.WaitGroup
+	for i, replica := range p.Replicas {
 		if replica.NodeID == selfNodeID {
 			continue // skip the leader itself
 		}
-		meta := keydelivery.Meta{
-			TenantID:     p.TenantID,
-			Database:     p.Database,
-			ShardID:      p.ShardID,
-			ReplicaID:    replica.ReplicaID,
-			TargetNodeID: replica.NodeID,
-		}
-		var deliverErr error
-		if autoUnseal {
-			meta.Mode = keydelivery.ModeSystemManaged
-			deliverErr = s.deliverSystemManaged(ctx, replica, meta, leaderTenantBarrier)
-		} else {
-			meta.Mode = keydelivery.ModeSelfManaged
-			deliverErr = s.deliverSelfManaged(ctx, replica, meta, leaderTenantBarrier)
-		}
-		if deliverErr != nil {
-			errs = append(errs, deliverErr)
-			s.logger.Error("clusterkeys: delivery failed",
-				slog.String("node", replica.NodeID),
-				slog.String("mode", string(meta.Mode)),
-				slog.String("error", deliverErr.Error()))
-		}
+		wg.Go(func() {
+			errs[i] = s.distributeTo(ctx, p, replica, leaderTenantBarrier, autoUnseal)
+		})
 	}
+	wg.Wait()
 	return errors.Join(errs...)
+}
+
+// distributeTo delivers the tenant barrier key to one follower replica and
+// logs a failure against that replica's node.
+func (s *Sender) distributeTo(ctx context.Context, p *placement.Placement, replica placement.Replica, b *seal.StorageBarrier, autoUnseal bool) error {
+	meta := keydelivery.Meta{
+		TenantID:     p.TenantID,
+		Database:     p.Database,
+		ShardID:      p.ShardID,
+		ReplicaID:    replica.ReplicaID,
+		TargetNodeID: replica.NodeID,
+	}
+	var err error
+	if autoUnseal {
+		meta.Mode = keydelivery.ModeSystemManaged
+		err = s.deliverSystemManaged(ctx, replica, meta, b)
+	} else {
+		meta.Mode = keydelivery.ModeSelfManaged
+		err = s.deliverSelfManaged(ctx, replica, meta, b)
+	}
+	if err != nil {
+		s.logger.Error("clusterkeys: delivery failed",
+			slog.String("node", replica.NodeID),
+			slog.String("mode", string(meta.Mode)),
+			slog.String("error", err.Error()))
+	}
+	return err
 }
 
 // deliverSystemManaged exports the leader's ImportedKey context, marshals it as

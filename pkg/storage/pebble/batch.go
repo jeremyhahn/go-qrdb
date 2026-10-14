@@ -180,6 +180,9 @@ func (b *pebbleBatch) Commit() error {
 		return &storage.BatchError{Op: "commit", Err: &storage.ClosedError{}}
 	}
 
+	b.store.casMu.RLock()
+	defer b.store.casMu.RUnlock()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

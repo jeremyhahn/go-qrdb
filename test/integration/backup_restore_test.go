@@ -214,9 +214,16 @@ func (n *restoreDRNode) restartWithOfflineRestore(t *testing.T, bin, prefix, bac
 // survived.
 func unsealOnlyBarrier(t *testing.T, ca *testCA, port int) {
 	t.Helper()
+	unsealOnlyBarrierWithSecret(t, ca, port, nil)
+}
+
+// unsealOnlyBarrierWithSecret is unsealOnlyBarrier for a barrier sealed with
+// a passphrase: it unseals with secret.
+func unsealOnlyBarrierWithSecret(t *testing.T, ca *testCA, port int, secret []byte) {
+	t.Helper()
 
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
-	body, err := json.Marshal(map[string]interface{}{"secret": []byte(nil)})
+	body, err := json.Marshal(map[string]interface{}{"secret": secret})
 	if err != nil {
 		t.Fatalf("unsealOnlyBarrier: marshal unseal body: %v", err)
 	}

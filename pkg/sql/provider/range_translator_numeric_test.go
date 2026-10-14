@@ -27,11 +27,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/index/pebbleindex"
 )
 
 // ---------------------------------------------------------------------------
 // End-to-end regression coverage: SQL range predicate -> translateMySQLRange
-// -> a real numeric-typed PebbleIndex. This is the full path a query like
+// -> a real numeric-typed pebbleindex.Index. This is the full path a query like
 //
 //	SELECT * FROM t WHERE n > 5
 //
@@ -56,7 +57,7 @@ func (q *indexBackedQueryer) Scan(_ context.Context, _ string, start, end []byte
 	return q.idx.Scan(start, end)
 }
 
-// newNumericIndexQueryer builds a real PebbleIndex over an in-memory Pebble
+// newNumericIndexQueryer builds a real pebbleindex.Index over an in-memory Pebble
 // instance, populated with a fixed numeric fixture, wrapped as an
 // indexQueryer.
 func newNumericIndexQueryer(t *testing.T) *indexBackedQueryer {
@@ -67,9 +68,9 @@ func newNumericIndexQueryer(t *testing.T) *indexBackedQueryer {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	idx, err := index.NewPebbleIndex(db, "n", false, index.IndexValueTypeNumeric)
+	idx, err := pebbleindex.New(db, "n", false, index.IndexValueTypeNumeric)
 	if err != nil {
-		t.Fatalf("NewPebbleIndex: %v", err)
+		t.Fatalf("pebbleindex.New: %v", err)
 	}
 
 	for _, v := range []string{"-10", "-3", "0", "1", "3.5", "5", "10", "15", "100"} {
