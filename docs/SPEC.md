@@ -12,24 +12,50 @@
 
 ## Purpose
 
-go-qrdb (QuicRaft DB) is a distributed key-value store on multi-group Raft
-consensus with QUIC transport, built on go-quicraft. It is the portfolio's core
-database and clustering engine, run embedded, standalone or Raft-clustered, and
-the software-only crypto and interface layer of the stack. go-xkms adapts
-hardware backends to its interfaces and go-quicbaas composes it; both reach it
-through `sdk/go`. Terms: [GLOSSARY.md](GLOSSARY.md).
+go-qrdb (QuicRaft DB) is the cluster engine and database system for every
+project in the stack. The stack is one product in layers, each project a
+library and framework for the one above, inheriting all of its functionality
+and re-exporting every lower service through its own SDK. go-qrdb embeds
+go-quicraft, the Raft library, and builds on it a distributed key-value store
+and the database services over it, run embedded, standalone or Raft-clustered.
+Its SDK, `sdk/go`, and its service interfaces are the base of everything above:
+
+- go-xkms adds hardware crypto, auth factors, KMS, CA, ACME and TPM policies as
+  services on top of go-qrdb through the `ServiceModule` abstraction, so the
+  go-qrdb client works unchanged against an xkms node;
+- go-quicbaas, the application-layer framework, exposes the database services
+  via go-qrdb and composes go-xkms on top with the hardware crypto
+  implementations passed in, so every go-qrdb seam is filled by hardware
+  crypto.
+
+Terms: [GLOSSARY.md](GLOSSARY.md).
 
 ## Boundaries
 
+go-qrdb embeds go-quicraft as a library and inherits from it:
+
+- multi-group Raft consensus and the QUIC Raft transport, through
+  `quicraft.Host`, on which every shard of the store runs;
+- the `EpochBarrier`, the L1 sealing strategies `StrategyNone` and
+  `StrategyPassphrase`, the software strategy, its KDF and AEAD primitives,
+  and Shamir secret sharing.
+
+go-qrdb re-exports those through `sdk/go`: `EpochBarrier`,
+`EpochBarrierConfig`, `DefaultEpochBarrierConfig`, `StrategyNone`,
+`StrategyPassphrase`, `SealingStrategy`, `Credentials`, `SoftwareStrategy`
+and the KDF and AEAD types (`types_seal.go`, `types_seal_strategy.go`); the
+Shamir share types (`types_shamir.go`); `ErrDecryptionFailed`; and
+`RaftMTLSConfig` (`sdk/go/node`).
+
 go-qrdb owns:
 
-- the distributed KV store, Raft consensus and QUIC transport;
+- the distributed key-value store and the database services over it, on the
+  inherited Raft consensus;
 - `pkg/seal`: `StorageBarrier` over go-quicraft's `EpochBarrier`,
   `BarrierRegistry` and `TenantBarrier` for per-tenant isolation, the
   `StrategyRegistry` that go-xkms hardware strategies are injected into, the
   Shamir application subsystem (quorum, recovery, rekey, root token) and
-  `StrategyShamir`; `StrategyNone` and `StrategyPassphrase` are go-quicraft's
-  and are re-exported;
+  `StrategyShamir`;
 - `pkg/pin`: the `PINBackend` interface and one software backend, in memory or
   over a storage; callers pass `PINBackend` handles, never raw PIN bytes;
 - `pkg/credentials`: versioned named-credential rotation;
@@ -39,8 +65,20 @@ go-qrdb owns:
   factor;
 - `pkg/firstboot`: the canonical first-boot orchestration that go-xkms and
   go-quicbaas delegate to through `sdk/go/node`;
+- the `ServiceModule` abstraction through which a layer above adds its
+  services;
 - per-shard composition through `WithStrategyRegistry`, `WithSealStrategy`,
   `WithPINBackend` and `WithFactorRegistry`.
+
+One cluster engine and one datastore per deployment. A project above embeds
+go-qrdb as a library, never as a second product: no second database, cluster or
+engine, and no disjoint store or service for the same thing. System-level
+records of every layer live in the system tenant and tenant data in its tenant;
+tenants are strictly isolated, and there is no shared cross-tenant client. A
+feature a layer above needs from go-qrdb is a seam row in both SPECs and a
+re-export in that layer's SDK, never a parallel implementation; the layer above
+adds services and never wraps, filters or re-models go-qrdb's under its own
+names.
 
 go-qrdb never:
 
