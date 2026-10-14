@@ -437,6 +437,12 @@ func (s testLogSink) Write(p []byte) (int, error) {
 // harness.
 func startNode(t *testing.T, binary string, args []string, prefix string, tee ...io.Writer) *exec.Cmd {
 	t.Helper()
+	// A listener the test left at its fixed default port would collide with
+	// any other daemon on the host doing the same, so it gets a reserved one.
+	args, err := qrdbdharness.ReserveListenerPorts(args)
+	if err != nil {
+		t.Fatalf("startNode: %v", err)
+	}
 	out := io.MultiWriter(append([]io.Writer{&logWriter{t: t, prefix: prefix}}, tee...)...)
 	daemon, err := qrdbdharness.Start(binary, args, qrdbdharness.WithOutput(out))
 	if err != nil {

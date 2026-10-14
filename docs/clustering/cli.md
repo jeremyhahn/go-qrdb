@@ -465,6 +465,6 @@ feature the cluster has activated exits with an error naming the feature; see
 ## Parity
 
 Every verb here has a `CommandDefinition` in the integration parity suite. The
-3-node behaviour they drive is exercised by `make integration-test-cluster`,
-which runs in CI as the `integration-cluster` job
+3-node behaviour they drive is exercised by `make integration-test-clustering`,
+which runs in CI as the `clustering` leg of the `integration-features` job
 (`.github/workflows/ci.yml`), required by `ci-gate`.

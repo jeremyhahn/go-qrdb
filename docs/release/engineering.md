@@ -82,7 +82,7 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
 | `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a `gate` job missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate`, a hardcoded `github.com` instead of `github.api_url`, a reintroduced `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
-| `test/buildgates/ci_tiers_test.go` | ci.yml's two tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr` or `full`; a `full` job carries exactly the full-tier `if:` and FULL_TIER is the same expression; a PR-tier job carries no `if:` and needs no full-tier job; the integration jobs and trivy are `full`; the pull_request trigger lists `labeled`. Both tiers' jobs are pinned by name (`prTierJobs`, `fullTierJobs`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, and `cancelled`, `failure`, an unreadable result or an unreadable FULL_TIER fail. It also scans every workflow: one on pull_request has the ref-keyed `cancel-in-progress: true` group, and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_tiers_test.go` | ci.yml's two tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr` or `full`; a `full` job carries exactly the full-tier `if:` and FULL_TIER is the same expression; a PR-tier job carries no `if:` and needs no full-tier job; the integration jobs and trivy are `full`; the pull_request trigger lists `labeled`. Both tiers' jobs are pinned by name (`prTierJobs`, `fullTierJobs`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, and `cancelled`, `failure`, an unreadable result or an unreadable FULL_TIER fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: one on pull_request has the ref-keyed `cancel-in-progress: true` group, and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
 
 ## Test tooling this feature folder also owns
 
@@ -96,10 +96,13 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `integration-test-%` | the pattern rule, one target per feature (`make integration-test-<feature>`), that reads `features.mk`, extracts the mapped files' `Test` function names and runs exactly them over the self-spawned `sdk/go/testutil/qrdbdharness` suites — no Docker |
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
+| `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs only `make integration-test-${{ matrix.feature }}`; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
-| `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run (`make integration-test-standalone`, `-cluster`, `-cluster-tenancy`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
+| `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
-| `test/buildgates/integration_image_tag_test.go` | every service a `test/integration/api` compose file builds names its image through a required interpolation (`${VAR:?...}`, never a literal tag or a `${VAR:-default}`); each such variable is exported from a Makefile variable derived from `INT_PROJECT`; `integration-image` tags its build with it; every stage that brings the stack up passes `-p $(INT_PROJECT)` and ends with `integration-down`, which removes the images; no workflow runs `docker compose` itself, and every job that runs a stage tears down through `make integration-down` under `always()` with the stage's own `INT_PROJECT` |
+| `test/buildgates/integration_image_tag_test.go` | every service a `test/integration/api` compose file builds names its image through a required interpolation (`${VAR:?...}`, never a literal tag or a `${VAR:-default}`); each such variable is exported from a Makefile variable derived from `INT_PROJECT`; `integration-image` tags its build with it; every stage that brings the stack up passes `-p $(INT_PROJECT)` and ends with `integration-down`, which removes the images; no workflow runs `docker compose` itself, and every job that runs one of those stages (the Makefile targets that bring the stack up, not a per-feature `integration-test-<feature>`) tears down through `make integration-down` under `always()` with the stage's own `INT_PROJECT` |
+| `test/buildgates/integration_job_names_test.go` | with CI's run and attempt in the environment, every `integration-test-<feature>` leg, a second attempt and another run derive distinct `INT_PROJECT`, `INT_IMAGE` and `INT_GPU_IMAGE` on one host, each a valid compose project name and image tag, and one job derives the same names on every invocation, so its teardown finds them |
 
 `AGENTS.md`'s Testing section is where a lane reads "how do I test my feature
 in isolation" first; this table is the engineering-level index of where that
@@ -117,82 +120,108 @@ server that predated the RPC. Each run now builds and runs its own tag, derived
 from `INT_PROJECT`, and removes it when the run ends. The compose files require
 the tag (`${QRDB_INT_IMAGE:?...}`) and refuse every command without it, `down`
 included, so a stack is always driven through `make`; to tear one down by hand,
-run `make integration-down INT_PROJECT=<project>`. Two concurrent runs on one
-machine need distinct `INT_PROJECT` values, as before. The devcontainer keeps
+run `make integration-down INT_PROJECT=<project>`. The devcontainer keeps
 its own stable `go-qrdb-dev:latest`.
 
-### Cluster integration runners
+`INT_PROJECT` defaults to `qrdb-int-<host>`, and in CI to
+`qrdb-int-<host>-<run id>-<attempt>-<feature>`, the feature being the
+`integration-test-<feature>` goal the job runs. The host alone is not an
+identity: a runner that runs jobs on the host gives them all its hostname, and
+the per-feature legs below run several at once there. With the host alone,
+`rag`'s build met another job's `go-qrdb-int:qrdb-int-<host>` ("already
+exists") and its teardown found nothing of its own to remove. Each leg, and
+each attempt of it, now owns its project, image tags and teardown;
+`test/buildgates/integration_job_names_test.go` derives the names for every
+leg on one host and fails when two match. Outside CI, two concurrent runs on
+one machine still need distinct `INT_PROJECT` values.
 
-The `integration-cluster` and `integration-cluster-tenancy` jobs in
-`.github/workflows/ci.yml` run on the shared `ubuntu-latest` (bare-metal)
-runners, like every other job. Those runners are loaded (load averages of 40
-to 70 on 80 threads), and load breaks a 3-node cluster's elections and a CLI
-call's 10-second deadline first. So the cluster stage runs in a fixed budget.
-The Makefile sets it, so a local `make integration-test-cluster` runs in the
-same budget:
+### Per-feature integration jobs
+
+CI runs the self-spawned integration suites (`test/integration` and
+`test/integration/auth`, no Docker) as `integration-features` in
+`.github/workflows/ci.yml`: one matrix leg per feature, each running
+`make integration-test-<feature>`, the same target a developer or lane runs
+for one feature. The legs run in parallel, each under its own
+`timeout-minutes: 45`; the 45-minute limit is not raised. A feature whose
+`features.mk` entry is empty is not a leg: it would run zero tests and pass.
+`fail-fast` is `false`, so one red leg does not cancel the others.
+
+Each leg ends with a teardown step under `if: always()`,
+`make integration-down-<feature>`, which runs on a pass, a failure or a
+cancellation. A leg's compose project and image tags carry the run, the attempt
+and the feature (the Makefile's `INT_GOAL` and `INT_PROJECT`), so no
+later run would ever remove a cancelled leg's leftovers. The target derives the
+same names `make integration-test-<feature>` does and hands them to
+`make integration-down`; the workflow repeats none of the naming. A leg's
+selection starts no compose stack today, and removing names nobody created is
+not an error. `test/buildgates/integration_job_names_test.go` holds the two
+goals to one set of names, and `feature_jobs_gate_test.go` requires the step.
+
+The leg list is `make -s print-integration-features`. Gitea cannot expand a
+matrix computed at run time (handbook devops.md §1, "Write matrices
+literally"), so ci.yml spells the list out and
+`test/buildgates/feature_jobs_gate_test.go` fails when the two differ, printing
+the line to paste. A new test needs no list edit; a new feature, or an entry
+that gains or loses its last file, needs that one line changed.
+
+`make integration-test-<feature>` is the Makefile's `integration-test-%`
+pattern rule, and GNU make prefers an explicit rule to a pattern rule. An
+explicit target named for a feature therefore hides that feature's selection,
+from the leg and from anyone typing the target: an explicit
+`integration-test-rag` once started the Docker stack with the Ollama sidecar on
+the `rag` leg. That target is now `integration-test-rag-ollama`, and
+`test/buildgates/feature_target_shadow_test.go` (in
+`make check-integration-feature-coverage`) fails when any `features.mk` feature
+has an explicit rule of its own. Give a new Docker or opt-in target a name that
+is not a feature's.
+
+`ci-gate` needs the job once. A matrix job's `needs.<job>.result` is the
+aggregate over its legs, `failure` when any leg fails, so one failed leg turns
+the gate red; `ci_tiers_test.go` runs the gate's script with a failed, a
+cancelled and a skipped leg. The job is in the full tier (architecture.md, "CI
+tiers"): every leg shares its full-tier `if:`, so a plain pull request skips
+them together and `ci-gate` excuses that skip; a push to `main`, a dispatch or
+a `ci:full` pull request runs all of them.
+
+Each leg runs on a shared `ubuntu-latest` (bare-metal) runner, like every other
+job. Those runners are loaded (load averages of 40 to 70 on 80 threads), and
+load breaks a 3-node cluster's elections and a CLI call's 10-second deadline
+first. A leg runs outside compose, so it carries the CPU half of the cluster
+stage's budget (below) as job env, `GOMAXPROCS: "8"`: the `go test` process
+and every qrdbd and qrdb process the harness spawns inherit it, rather than
+sizing themselves to the runner's 80 threads. `make integration-test-<feature>`
+runs `go test -timeout=30m` per package, under the job's limit, so a hung test
+still dumps its goroutines.
+
+Measured on a shared host (load average about 66 on 80 threads, no
+`GOMAXPROCS` cap), each well under the limit: `barrier-seal` 6.8 minutes,
+`multi-tenancy` 5.1 minutes, `clustering` 3.9 minutes.
+
+Raft timing is not part of any budget. qrdbd takes no election, heartbeat or
+tick setting from configuration: the values are code defaults
+(`pkg/cluster/raft_tuning.go` and go-quicraft's), so CI cannot select a slower
+profile.
+
+### Cluster stage, locally
+
+`make integration-test-cluster` runs the whole `test/integration` package in
+one compose container, for a local run; CI does not run it. The suite is serial
+(`-p 1`, `-parallel 1`), so its run time is the sum of its tests: measured on a
+4-CPU budget, 36.7 minutes quiet and 43.1 minutes at 2x CPU oversubscription.
+The Makefile sets its budget:
 
 | Makefile variable | Default | Applied as |
 |---|---|---|
 | `CLUSTER_CPUS` | `8` | `cpus:` on the `integration-tests` compose service (docker `--cpus`) |
 | `CLUSTER_MEM_RESERVATION` | `8g` | `mem_reservation:` on the same service (docker `--memory-reservation`): a soft floor under host memory pressure, never a limit that kills a test |
 | `CLUSTER_PARALLEL` | `1` | `go test -parallel`. The stage already runs `-p 1` over one package, so this bounds the one `t.Parallel` suite, which otherwise boots five 3-node clusters at once |
+| `INTEGRATION_RUN` | empty | a `-run` expression narrowing the stage; empty runs every test |
+| `INTEGRATION_GO_TIMEOUT` | `100m` | `go test -timeout` for the package, read by the `integration-tests` compose service, so a hung test still dumps its goroutines |
 
-The budget is on the compose service, not on the job (`container: options:`).
-The job starts that service through the host's dockerd as a container of its
-own, and that container holds the `go test` process and every qrdbd and qrdb
-process the tests spawn. Under the CPU cap each of those Go processes sizes
-`GOMAXPROCS` to 8, not to the runner's 80 threads. Eight cluster jobs at once
-still leave a runner 16 threads. The other integration stages leave both
-variables unset, which docker reads as no limit.
-
-Raft timing is not part of the budget. qrdbd takes no election, heartbeat or
-tick setting from configuration: the values are code defaults
-(`pkg/cluster/raft_tuning.go` and go-quicraft's), so CI cannot select a slower
-profile.
-
-### Cluster suite legs
-
-The full cluster suite is serial (`-p 1`, `-parallel 1`), so its run time is
-the sum of its tests: measured on a 4-CPU budget, 36.7 minutes quiet and 43.1
-minutes at 2x CPU oversubscription. That outgrew the 45-minute package timeout
-it had, and lowering parallelism has nothing left to give. So
-`integration-cluster` is a matrix of three legs
-(`strategy.matrix.shard: [1, 2, 3]`, `fail-fast: false`), each running
-`make integration-test-cluster CLUSTER_SHARD=<leg>/3` in its own compose
-project. `ci-gate` reads the job's aggregate result, which fails when any leg
-fails. The job is in the full tier (architecture.md, "CI tiers"): all three
-legs share its full-tier `if:`, so a plain pull request skips them together and
-`ci-gate` excuses that skip; a push to `main`, a dispatch or a `ci:full` pull
-request runs all three.
-
-| Makefile variable | Default | Effect |
-|---|---|---|
-| `CLUSTER_SHARD` | empty | `I/N` runs leg `I` of `N`; empty runs the whole suite. It replaces `INTEGRATION_RUN`, so setting both is refused |
-| `CLUSTER_SHARDS` | `3` | the leg count `check-cluster-shards` proves, and the size the workflow's matrix must have |
-| `INTEGRATION_GO_TIMEOUT` | `100m` | `go test -timeout` for the package, read by the `integration-tests` compose service; under the job's 120-minute limit, so a hung test still dumps its goroutines |
-
-`scripts/cluster-shard.sh` builds a leg's `-run` expression: it lists the
-package's tests with `go test -list` under the run's own tags, sorts them
-bytewise and deals them round-robin, so leg `I` takes positions `I`, `I+N`,
-`I+2N`... A new test lands in a leg without anyone editing a list. Each
-expression is anchored, `^(TestA|TestB)$`, because `go test -run` matches
-unanchored and `TestFoo` would otherwise also select `TestFooBar`.
-
-Two Lint steps hold the split honest. `make check-cluster-shards` applies every
-leg's expression to the full `go test -list` output and fails when a test is
-selected by no leg, or by more than one, or when the list is under a floor of
-250 tests (a package that compiled to nothing). `make test-cluster-shards`
-runs its rejecting branches on fixture lists.
-`test/buildgates/cluster_shard_gate_test.go` fails when the workflow's matrix
-is not exactly `1..CLUSTER_SHARDS`, when the step does not pass
-`CLUSTER_SHARD=${{ matrix.shard }}/N` or a per-leg `INT_PROJECT`, when
-`fail-fast` is not off, when the job's `if:` is not exactly the full-tier
-condition, or when `ci-gate` stops requiring the job.
-
-To run one leg by hand: `make integration-test-cluster CLUSTER_SHARD=2/3`, or
-print its expression with `./scripts/cluster-shard.sh run 2/3` (set
-`CLUSTER_SHARD_TAGS` to the `INT_FEATURE_TAGS` value). The cluster tenancy job
-is not split: its selection runs in 5 to 10 minutes.
+The budget is on the compose service: that container holds the `go test`
+process and every qrdbd and qrdb process the tests spawn, and under the CPU cap
+each of those Go processes sizes `GOMAXPROCS` to 8. The other compose stages
+leave the budget variables unset, which docker reads as no limit.
 
 ### Batch workflow
 

@@ -53,23 +53,31 @@ are not reconstructed here — their history is in the git log.
 - **CI runs in two tiers.** A pull request runs the PR tier (`lint`,
   `build`, `test`, `test-sdk`, `test-typescript`, `security`); a push to
   `main`, a `workflow_dispatch` or a pull request labelled `ci:full` adds the
-  full tier (`integration-standalone`, `integration-cluster-tenancy`, the
-  three `integration-cluster` legs, `trivy`). `ci-gate` stays the one required
+  full tier (`integration-standalone`, the `integration-features` legs,
+  `trivy`). `ci-gate` stays the one required
   check: each check line is tagged `pr` or `full`, and a skip passes only for
   a `full` job in a run that did not select the full tier. `nightly.yml` no
   longer runs on a schedule (dispatched by hand), and `release-lockstep.yml`
   joins the ref-keyed `cancel-in-progress` group. `test/buildgates/ci_tiers_test.go`
   holds the tags to the jobs. See `docs/release/architecture.md`, "CI tiers".
 
-- **CI runs the cluster integration suite as three legs.** The serial suite
-  outgrew its 45-minute package timeout under runner load, so
-  `integration-cluster` is a matrix over `CLUSTER_SHARD=1/3`..`3/3`, each leg
-  an anchored `-run` expression dealt round-robin from `go test -list` by
-  `scripts/cluster-shard.sh`. `make check-cluster-shards` (Lint) fails when a
-  test is selected by no leg or by two, and
-  `test/buildgates/cluster_shard_gate_test.go` holds the matrix to
-  `CLUSTER_SHARDS`. The package timeout is now `INTEGRATION_GO_TIMEOUT`
-  (default `100m`). See `docs/release/engineering.md`.
+- **CI runs the self-spawned integration suites as one job per feature.**
+  `integration-features` is a matrix with one leg per feature that
+  `test/integration/features.mk` maps a file to (40 today), each running
+  `make integration-test-<feature>` under its own `timeout-minutes: 45`, in
+  parallel, with `fail-fast: false` and `GOMAXPROCS=8`. It replaces the
+  `integration-cluster` and `integration-cluster-tenancy` jobs and the
+  integration-standalone job's in-memory auth step. `make -s
+  print-integration-features` prints the legs, and
+  `test/buildgates/feature_jobs_gate_test.go` fails when ci.yml's literal list
+  differs from it. `ci-gate` reads the job's aggregate result, which fails
+  when any leg fails. Removed: `make integration-test-cluster-tenancy`,
+  `CLUSTER_TENANCY_RUN`, `CLUSTER_SHARD`/`CLUSTER_SHARDS`,
+  `make check-cluster-shards`, `make test-cluster-shards` and
+  `scripts/cluster-shard.sh`. `make integration-test-cluster` stays for a
+  whole local run, with a package timeout of `INTEGRATION_GO_TIMEOUT`
+  (default `100m`). See `docs/release/engineering.md`, "Per-feature
+  integration jobs".
 
 - **Breaking: `node.WithAuthenticators` takes a chain position.** Its
   signature is now `WithAuthenticators(position auth.ChainPosition,

@@ -10,7 +10,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.embedding.yml up
 #
 # It is driven by `make integration-test-embedding` and
-# `make integration-test-rag`, which scope the run via INTEGRATION_RUN and
+# `make integration-test-rag-ollama`, which scope the run via INTEGRATION_RUN and
 # compile the ollama-gated e2e tests via INTEGRATION_TAGS=integration,ollama.
 #
 # The e2e suite lives in test/integration/api/cli_embedding_rag_test.go behind

@@ -26,7 +26,6 @@
 package integration_test
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,8 +62,10 @@ func writeVolumeBootConfig(t *testing.T, poolPath string, allowDegraded bool) st
 
 // singleNodeVolumeBootArgs returns the minimal `qrdbd start` argument list
 // for a single-node, single-shard boot against dataDir and cfgPath, plus
-// any extra args (e.g. "--allow-degraded-volume-boot").
-func singleNodeVolumeBootArgs(dataDir, cfgPath string, extra ...string) []string {
+// any extra args (e.g. "--allow-degraded-volume-boot"), with a reserved port
+// for every listener it would otherwise bind at a fixed default.
+func singleNodeVolumeBootArgs(t *testing.T, dataDir, cfgPath string, extra ...string) []string {
+	t.Helper()
 	args := []string{
 		"start",
 		"--config", cfgPath,
@@ -76,7 +77,11 @@ func singleNodeVolumeBootArgs(dataDir, cfgPath string, extra ...string) []string
 		"--shard-id", "1",
 		"--replica-id", "1",
 	}
-	return append(args, extra...)
+	args, err := qrdbdharness.ReserveListenerPorts(append(args, extra...))
+	if err != nil {
+		t.Fatalf("singleNodeVolumeBootArgs: %v", err)
+	}
+	return args
 }
 
 // TestQrdbdStart_UnopenableVolumePool_DefaultFailsLoud proves the default:
@@ -90,8 +95,10 @@ func TestQrdbdStart_UnopenableVolumePool_DefaultFailsLoud(t *testing.T) {
 	missingPool := filepath.Join(t.TempDir(), "does-not-exist")
 	cfgPath := writeVolumeBootConfig(t, missingPool, false)
 
-	var out bytes.Buffer
-	daemon, err := qrdbdharness.Start(binary, singleNodeVolumeBootArgs(dataDir, cfgPath), qrdbdharness.WithOutput(&out))
+	// nodeLog, not a bare bytes.Buffer: the exec copy goroutine is still
+	// writing while the test reads.
+	out := &nodeLog{}
+	daemon, err := qrdbdharness.Start(binary, singleNodeVolumeBootArgs(t, dataDir, cfgPath), qrdbdharness.WithOutput(out))
 	if err != nil {
 		t.Fatalf("qrdbdharness.Start: %v", err)
 	}
@@ -132,10 +139,10 @@ func TestQrdbdStart_UnopenableVolumePool_DegradedBootOverrideStarts(t *testing.T
 	missingPool := filepath.Join(t.TempDir(), "does-not-exist")
 	cfgPath := writeVolumeBootConfig(t, missingPool, false)
 
-	var out bytes.Buffer
+	out := &nodeLog{}
 	daemon, err := qrdbdharness.Start(binary,
-		singleNodeVolumeBootArgs(dataDir, cfgPath, "--allow-degraded-volume-boot"),
-		qrdbdharness.WithOutput(&out))
+		singleNodeVolumeBootArgs(t, dataDir, cfgPath, "--allow-degraded-volume-boot"),
+		qrdbdharness.WithOutput(out))
 	if err != nil {
 		t.Fatalf("qrdbdharness.Start: %v", err)
 	}
@@ -165,8 +172,8 @@ func TestQrdbdStart_UnopenableVolumePool_ConfigFileOverrideStarts(t *testing.T) 
 	missingPool := filepath.Join(t.TempDir(), "does-not-exist")
 	cfgPath := writeVolumeBootConfig(t, missingPool, true)
 
-	var out bytes.Buffer
-	daemon, err := qrdbdharness.Start(binary, singleNodeVolumeBootArgs(dataDir, cfgPath), qrdbdharness.WithOutput(&out))
+	out := &nodeLog{}
+	daemon, err := qrdbdharness.Start(binary, singleNodeVolumeBootArgs(t, dataDir, cfgPath), qrdbdharness.WithOutput(out))
 	if err != nil {
 		t.Fatalf("qrdbdharness.Start: %v", err)
 	}

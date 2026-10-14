@@ -372,8 +372,8 @@ keep-alive starts returning not-found does anyway.
   a loaded runner.
 - **Integration**: lease parity across transports in the standalone stage.
   Multi-node expiry (leader change mid-lease) belongs to the cluster stage
-  (`make integration-test-cluster`), which runs in CI as the
-  `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  (`make integration-test-cluster`). CI runs that stage's tests in
+  the `integration-features` job (`.github/workflows/ci.yml`), one leg per feature (`make integration-test-<feature>`), required by
   `ci-gate`.
 - **Fault injection**: the leader seam allows a leadership change to be forced
   between grant and expiry.

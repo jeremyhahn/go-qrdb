@@ -207,6 +207,13 @@ func (l *nodeLog) Contains(s string) bool {
 	return strings.Contains(l.buf.String(), s)
 }
 
+// String returns everything the node has logged so far.
+func (l *nodeLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
 // ---------------------------------------------------------------------------
 // Single-node KV tests
 // ---------------------------------------------------------------------------

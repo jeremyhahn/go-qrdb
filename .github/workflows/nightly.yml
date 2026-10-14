@@ -59,7 +59,9 @@
 # here from 2026-09-22 and moved to ci.yml on 2026-10-05, into ci-gate's
 # `needs`: nine of its tests had gone red on main with nobody reading the
 # verdict, all of them tests left behind by bootstrap changes that a push gate
-# would have stopped at the push that made them.
+# would have stopped at the push that made them. Since 2026-10-14 ci.yml runs
+# those suites as integration-features, one job per feature; none of them is
+# a job here, so the watch list below has nothing to add.
 
 # NO SCHEDULE (go-qrdb#674; owner ruling 2026-10-11, handbook sdlc.md §5a): no
 # workflow runs on a cron. "Nightly" is the coordinator's nightly loop, which

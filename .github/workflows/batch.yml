@@ -54,8 +54,8 @@
 #                          no Fuzz* targets.
 #   RACE_PKGS              `make test`'s scope.
 #   SOAK_CMD               `make integration-test-cluster`, the whole suite
-#                          that ci.yml's integration-cluster job splits into
-#                          CLUSTER_SHARD legs: the self-spawned single-node
+#                          that ci.yml's integration-features job runs one
+#                          feature per job: the self-spawned single-node
 #                          and 3-node suites under test/integration, in the
 #                          per-run compose stack.
 #                          The Makefile tears the stack down after every

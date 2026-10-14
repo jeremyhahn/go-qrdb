@@ -16,7 +16,7 @@ limitations under the License.
 
 # Release — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 The composition seams a release exposes to upstream composers (go-xkms,
 go-quicbaas) are inventoried in [extension-seams.md](extension-seams.md).
@@ -135,7 +135,7 @@ always runs the full tier. CI runs in two tiers:
 | Tier | When | Jobs |
 |---|---|---|
 | PR | every run | `lint`, `build`, `test`, `test-sdk`, `test-typescript`, `security`, `ci-gate` |
-| Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone`, `integration-cluster-tenancy`, `integration-cluster`, `trivy` |
+| Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone`, `integration-features` (one job per feature), `trivy` |
 
 `ci-gate` is the one required check in both. It fails on any result other
 than `success`, with one exception: a job tagged `full` that was skipped
@@ -147,9 +147,14 @@ No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`.
 
+`integration-features` is one job with a matrix leg per feature: each leg runs
+`make integration-test-<feature>` under its own 45-minute limit, and the legs
+run in parallel. `ci-gate` needs the job once and reads its aggregate result,
+which is `failure` when any leg fails.
+
 `test/buildgates/ci_tiers_test.go` and
-`test/buildgates/cluster_tenancy_gate_test.go` hold the tiers, the gate and
-the triggers together; see engineering.md.
+`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the gate, the
+triggers and the per-feature legs together; see engineering.md.
 
 ## Rejected alternatives
 

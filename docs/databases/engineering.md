@@ -859,8 +859,8 @@ How a claim works:
   refused; an update that names another shard refused; a restore of the store
   onto a fresh data directory issues no ID twice; a create writes nothing to
   the node's data directory but the database's own entry) and
-  `TestIsolationRaft_ShardIDs_*` (three real nodes, in the full-tier cluster
-  tenancy job: distinct IDs for databases created through different nodes, and
+  `TestIsolationRaft_ShardIDs_*` (three real nodes, in the full-tier
+  `multi-tenancy` leg of the `integration-features` job: distinct IDs for databases created through different nodes, and
   no reuse of a dropped database's ID when its name is created again through
   another node).
 

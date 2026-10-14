@@ -10,7 +10,7 @@
 // pulled, and a qrdbd server configured with an OpenAI-compatible embedding
 // provider pointing at it (see config.test.yaml + docker-compose.embedding.yml).
 // They are gated behind the `ollama` build tag so they compile ONLY for the
-// dedicated `make integration-test-embedding` / `make integration-test-rag`
+// dedicated `make integration-test-embedding` / `make integration-test-rag-ollama`
 // runs and never weigh down the default fast suite.
 //
 // Embedding and RAG have no CLI surface; their real protocol surface is REST

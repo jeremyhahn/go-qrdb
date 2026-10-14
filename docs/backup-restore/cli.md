@@ -126,5 +126,6 @@ because it overwrites shard state** — it is not implied by any of the others.
 
 Every verb here has a `CommandDefinition` in the integration parity suite. Note
 that the end-to-end backup/restore integration test lives in the **cluster
-stage** (`make integration-test-cluster`), which runs in CI as the
-`integration-cluster` job (`.github/workflows/ci.yml`), required by `ci-gate`.
+stage** (`make integration-test-cluster`). CI runs it as the `backup-restore`
+leg of the `integration-features` job (`.github/workflows/ci.yml`), required by
+`ci-gate`.

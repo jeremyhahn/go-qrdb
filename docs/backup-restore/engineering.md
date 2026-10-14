@@ -238,9 +238,9 @@ path.
   explicit `none` writes plaintext and warns/audits) lives in
   `sdk/go/conformance`.
 - **Integration**: `backup_restore_test.go` lives in the **cluster stage**
-  (`make integration-test-cluster`), which runs in CI as the
-  `integration-cluster` job (`.github/workflows/ci.yml`), required by
-  `ci-gate` in CI's full tier — so backup and restore are exercised end to end
+  (`make integration-test-cluster`). CI runs it as the `backup-restore` leg
+  of the `integration-features` job (`make integration-test-backup-restore`,
+  `.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier — so backup and restore are exercised end to end
   on every push to `main`, every dispatch, and every pull request labelled
   `ci:full`.
 

@@ -160,8 +160,8 @@ store's ordering.
 - **Error tests** for each function, minimum happy path plus error path.
 - **Integration**: lock parity across transports in the standalone stage.
   Contention across nodes and lock survival through a leader change belong to
-  the cluster stage (`make integration-test-cluster`), which runs in CI as the
-  `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  the cluster stage (`make integration-test-cluster`). CI runs that stage's
+  tests in the `integration-features` job (`.github/workflows/ci.yml`), one leg per feature (`make integration-test-<feature>`), required by
   `ci-gate`.
 
 ## Known documentation drift

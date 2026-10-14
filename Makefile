@@ -1027,12 +1027,23 @@ test-playwright: test-e2e
 # project name defaults to the compose file's directory, `api`, identical for
 # every checkout.
 #
-# Keyed on hostname rather than a random value, deliberately: stable means the
-# `down -v` below still clears a crashed run's leftovers instead of leaking a
-# volume set per run, and each CI job container has its own hostname so
-# concurrent jobs on one runner are isolated. It does NOT isolate two people on
-# the SAME machine — pass INT_PROJECT=... for that.
-INT_PROJECT ?= qrdb-int-$(shell hostname | tr -cd '[:alnum:]' | tail -c 16)
+# Keyed on the host and, in CI, the job, never on a random value: stable means
+# the `down -v` below still clears a crashed run's leftovers instead of leaking
+# a volume set per run. The host alone is not enough: a runner that executes
+# jobs on the host itself gives every job the same hostname, and CI's
+# one-job-per-feature matrix runs several of them there at once, each building
+# and tearing down "the" project. INT_JOB_ID adds the run, its attempt and the
+# feature the job runs (the integration-test-<feature> goal), which is what
+# tells one matrix leg from another. Outside CI it is empty, and two people on
+# the SAME machine pass INT_PROJECT=... to tell themselves apart.
+# test/buildgates/integration_job_names_test.go holds two legs apart.
+#
+# integration-down-<feature> derives the same INT_GOAL as
+# integration-test-<feature>, so CI's always() teardown step on a leg names
+# exactly the project and images that leg's test step created, and no other.
+INT_GOAL   := $(firstword $(foreach g,integration-test-% integration-down-%,$(patsubst $(g),%,$(filter $(g),$(MAKECMDGOALS)))))
+INT_JOB_ID := $(if $(GITHUB_RUN_ID),-$(GITHUB_RUN_ID)-$(or $(GITHUB_RUN_ATTEMPT),1)$(if $(INT_GOAL),-$(INT_GOAL)))
+INT_PROJECT ?= $(shell printf '%s' "qrdb-int-$$(hostname | tr -cd '[:alnum:]' | tail -c 16)$(INT_JOB_ID)" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
 
 # All integration tests run in a docker compose stack with a qrdbd server
 # that has ALL protocols enabled (REST, gRPC, QUIC, Unix, MCP).
@@ -1141,8 +1152,9 @@ _integration-server-logs:
 # integration-down ends a run: it removes the stack (containers, networks,
 # volumes, and any overlay service such as ollama, hence --remove-orphans) and
 # then the run's own images, so per-run tags do not pile up on a host. Every
-# stage calls it after its tests, pass or fail, and CI's always() teardown step
-# calls it with the job's INT_PROJECT for a run that was interrupted. It is the
+# stage calls it after its tests, pass or fail, and CI's always() teardown steps
+# call it with the job's INT_PROJECT for a run that was interrupted (the
+# integration-features legs through integration-down-<feature>, below). It is the
 # one place a run is torn down: a bare `docker compose down` cannot stand in for
 # it, because the compose files require QRDB_INT_IMAGE and refuse every command,
 # `down` included, without it. It removes only the tags derived from
@@ -1153,19 +1165,34 @@ integration-down:
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v --remove-orphans || true
 	@docker image rm $(INT_IMAGE) $(INT_GPU_IMAGE) >/dev/null 2>&1 || true
 
+# integration-down-<feature> is integration-down for the names
+# integration-test-<feature> derives (INT_GOAL above): the always() teardown
+# step of CI's integration-features job, which runs it on every leg, cancelled
+# or not. A leg's selection spawns no compose stack today; this is what keeps
+# one that comes to need it, or a cancelled leg, from leaving that leg's
+# project, volumes and image tags on the runner, where no later run's names
+# would ever match them again.
+.PHONY: integration-down-%
+integration-down-%:
+	@$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT)
+
 # Cluster stage: the self-spawning tests in ./test/integration (single-node +
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
 # These start their own qrdbd nodes and do not use the docker servers.
 #
+# CI does not run this stage as one job: it runs the same tests one feature per
+# job, `make integration-test-<feature>` in ci.yml's integration-features
+# matrix (see INT_FEATURES). This target is the whole suite in one container,
+# for a local run.
+#
 # INTEGRATION_RUN narrows the stage to a -run expression; empty (the default)
-# runs every test in the package, which is what CI's integration-cluster job does.
+# runs every test in the package.
 INTEGRATION_RUN ?=
 #
-# The stage's resource budget (#682), the same locally and in CI. It applies to
-# the integration-tests compose service: that container holds the `go test`
-# process and every qrdbd and qrdb process the tests spawn. A CI job starts it
-# through the host's dockerd as a container of its own, so a limit on the job
-# (`container: options:`) would not reach them.
+# The stage's resource budget (#682). It applies to the integration-tests
+# compose service: that container holds the `go test` process and every qrdbd
+# and qrdb process the tests spawn. CI's per-feature jobs run outside compose
+# and carry the GOMAXPROCS half of it as job env (ci.yml, integration-features).
 #
 # CLUSTER_CPUS caps the container at that many CPUs (`cpus:`, docker --cpus).
 # Every Go process in it then sizes GOMAXPROCS to the cap instead of the host's
@@ -1190,33 +1217,17 @@ CLUSTER_PARALLEL ?= 1
 # INTEGRATION_GO_TIMEOUT is go test's -timeout for the package, read by the
 # compose integration-tests service. The suite is serial, so its run time is
 # the sum of its tests: 36.7 min quiet and 43.1 min at 2x CPU oversubscription
-# on a 4-CPU budget, past the 45 min this used to be. CI splits it into legs
-# (CLUSTER_SHARD below); this bounds one leg, or a whole local run, and stays
-# under the CI job's own 120 min so a hung test reports its goroutines.
+# on a 4-CPU budget, past the 45 min this used to be, so a whole local run
+# gets 100 min and a hung test still reports its goroutines.
 INTEGRATION_GO_TIMEOUT ?= 100m
-#
-# CLUSTER_SHARD=I/N runs leg I of N: scripts/cluster-shard.sh lists the
-# package's tests with `go test -list` under INT_FEATURE_TAGS, sorts them and
-# deals them round-robin into N anchored -run expressions. CI's
-# integration-cluster job is a matrix over CLUSTER_SHARDS legs, and
-# check-cluster-shards proves those legs partition the suite. It replaces
-# INTEGRATION_RUN, so setting both is refused.
-CLUSTER_SHARD ?=
-CLUSTER_SHARDS ?= 3
 .PHONY: integration-test-cluster
 integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
-	@run='$(INTEGRATION_RUN)'; \
-		if [ -n '$(CLUSTER_SHARD)' ]; then \
-			if [ -n "$$run" ]; then echo "integration-test-cluster: CLUSTER_SHARD and INTEGRATION_RUN are exclusive" >&2; exit 2; fi; \
-			run=$$(GO='$(GO)' CLUSTER_SHARD_TAGS='$(INT_FEATURE_TAGS)' ./scripts/cluster-shard.sh run '$(CLUSTER_SHARD)') || exit 1; \
-			echo "==> cluster leg $(CLUSTER_SHARD): $$(( $$(printf '%s' "$$run" | tr -cd '|' | wc -c) + 1 )) tests"; \
-		fi; \
-		cd test/integration/api && \
+	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
 		INTEGRATION_TAGS='$(INT_FEATURE_TAGS)' \
-		INTEGRATION_RUN="$$run" \
+		INTEGRATION_RUN='$(INTEGRATION_RUN)' \
 		INTEGRATION_GO_TIMEOUT='$(INTEGRATION_GO_TIMEOUT)' \
 		INTEGRATION_CPUS='$(CLUSTER_CPUS)' \
 		INTEGRATION_MEM_RESERVATION='$(CLUSTER_MEM_RESERVATION)' \
@@ -1226,28 +1237,6 @@ integration-test-cluster: integration-image
 		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
 		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
-
-# Cluster tenancy stage: the multi-node tenant suites, run on EVERY push
-# (strict tenant isolation, plan phase 0; owner ruling 2026-10-02). It is the
-# cluster stage narrowed by CLUSTER_TENANCY_RUN, through the same compose path,
-# so a test behaves identically here and in the full run.
-#
-# Measured before this was armed (2026-10-02, host load average 19-57 on a
-# shared host): the selection takes 3-4 minutes of test time. Before the fix
-# below, 9 of 10 runs of its two halves passed. The one failure was not a slow
-# test: it was a false 403 from the auth middleware's StaleRead user fallback,
-# which answered "no such user" for a tenant it does not hold whenever the
-# linearizable lookup missed its 500 ms budget. That is fixed in
-# pkg/auth/middleware, not by a larger budget here, and the full selection
-# passed on every run after it.
-#
-# The expression is read by test/buildgates/cluster_tenancy_gate_test.go,
-# which fails if it selects fewer than its floor of tests or drops any
-# isolation_raft_* suite. Keep it free of spaces and of '$'.
-CLUSTER_TENANCY_RUN := ^(TestIsolationRaft|TestTenantIsolation_|TestTenant_|TestTenantBarrier_|TestClusterEnableEncryption_TenantScope|TestEnableEncryption_TenantScope|TestCLI_TenantCreate_DataRoot|TestKVRestore_CLI_TenantIsolation|TestSQL_MultiTenant_Isolation|TestSQL_REST_TenantScoping)
-.PHONY: integration-test-cluster-tenancy
-integration-test-cluster-tenancy:
-	@$(MAKE) -s -C $(CURDIR) integration-test-cluster INT_PROJECT=$(INT_PROJECT) INTEGRATION_RUN='$(CLUSTER_TENANCY_RUN)'
 
 # DAO/entity-storage stage: the real-binary GenericDAO suites (entity CRUD,
 # every index kind and query operator, WithDatabase tenant scoping,
@@ -1337,6 +1326,22 @@ integration-test-local:
 # rule below appends it to this feature's own tag set only, leaving every
 # other feature's tags (and this variable) unchanged.
 INT_FEATURE_TAGS = $(LINT_TAGS),integration
+
+# INT_FEATURES is every feature whose features.mk entry maps at least one
+# file, sorted: the legs of CI's integration-features job, one job per feature,
+# each running `make integration-test-<feature>` under its own limit. An empty
+# entry is not a leg; it would run zero tests and pass.
+#
+# Gitea cannot expand a matrix computed at run time (handbook devops.md §1),
+# so ci.yml spells this list literally and
+# test/buildgates/feature_jobs_gate_test.go fails when the two differ. After
+# adding or emptying an entry, paste `make -s print-integration-features`
+# into the job's `feature:` list; the gate's failure message prints the line.
+INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter INTTEST_%,$(.VARIABLES)),$(if $(strip $($(v))),$(v))))))
+
+.PHONY: print-integration-features
+print-integration-features:
+	@printf '%s\n' $(INT_FEATURES)
 
 .PHONY: integration-test-%
 integration-test-%:
@@ -1907,7 +1912,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-cluster-shards test-cluster-shards check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2247,24 +2252,6 @@ check-compose-targets: ## Every compose `target:` names a real Dockerfile stage
 .PHONY: test-compose-targets
 test-compose-targets: ## Test the compose-target guard
 	@./scripts/check-compose-targets_test.sh
-
-# CI runs the cluster suite as CLUSTER_SHARDS matrix legs (integration-test-cluster
-# with CLUSTER_SHARD=I/N). A test that no leg's -run expression selects would
-# never run and never fail, and nothing in a passing CI run would show it; one
-# that two legs select runs twice. This applies every leg's expression to the
-# `go test -list` output of the package, the way go test would, and fails on
-# either. It compiles the integration package once, with the run's tags.
-# test/buildgates/cluster_shard_gate_test.go holds ci.yml's matrix to
-# CLUSTER_SHARDS.
-.PHONY: check-cluster-shards
-check-cluster-shards: ## The cluster suite's CI legs partition its tests
-	@GO='$(GO)' CLUSTER_SHARD_TAGS='$(INT_FEATURE_TAGS)' ./scripts/cluster-shard.sh check $(CLUSTER_SHARDS)
-
-# The partition check's rejecting branches (a dropped test, a doubly selected
-# test, an empty list), on fixture lists. Same reasoning as test-compose-targets.
-.PHONY: test-cluster-shards
-test-cluster-shards: ## Test the cluster-shard partition check
-	@./scripts/cluster-shard_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
@@ -3563,8 +3550,13 @@ integration-test-embedding: ## Run embedding e2e tests (opt-in Ollama overlay)
 		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
 
-.PHONY: integration-test-rag
-integration-test-rag: ## Run RAG e2e tests (opt-in Ollama overlay)
+#
+# Not `integration-test-rag`: rag is a feature, and an explicit rule of that
+# name would shadow the integration-test-% pattern rule above, so the
+# feature's own selection -- and CI's rag leg -- would start this Docker stack
+# instead. test/buildgates/feature_target_shadow_test.go holds that apart.
+.PHONY: integration-test-rag-ollama
+integration-test-rag-ollama: ## Run RAG e2e tests (opt-in Ollama overlay)
 	@echo "==> Running RAG integration tests (Ollama overlay)..."
 	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@$(stage-gomodauth) \
@@ -3796,7 +3788,8 @@ help:
 	@echo "  integration-test-api       Alias for integration-test"
 	@echo "  integration-test-gpu       Run GPU-accelerated integration tests"
 	@echo "  integration-test-embedding Run embedding integration tests"
-	@echo "  integration-test-rag       Run RAG integration tests"
+	@echo "  integration-test-rag-ollama Run RAG e2e tests (Ollama overlay)"
+	@echo "  integration-test-<feature> Run one feature's non-Docker tests (test/integration/features.mk)"
 	@echo "  integration-test-auto      Auto-detect GPU, fallback to CPU"
 	@echo "  integration-test-local     Run integration tests locally (requires running qrdbd)"
 	@echo ""

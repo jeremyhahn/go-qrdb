@@ -62,6 +62,9 @@ const (
 	tierPR   = "pr"
 	tierFull = "full"
 
+	// ciGateJob is the one required check.
+	ciGateJob = "ci-gate"
+
 	// refKeyedGroup is devops.md §9b's concurrency group: per workflow and
 	// per ref, so a branch supersedes only itself.
 	refKeyedGroup = "${{ github.workflow }}-${{ github.ref }}"
@@ -73,11 +76,11 @@ const (
 
 // prTierJobs, fullTierJobs and fullTierJob pin the split itself, not just its
 // consistency: moving a job between tiers is a deliberate edit to this file.
-// integration-cluster is one job with three matrix legs; ci-gate reads its
-// aggregate result.
+// integration-features (featureJob) is one job with a matrix leg per feature;
+// ci-gate reads its aggregate result.
 var (
 	prTierJobs   = []string{"lint", "build", "test", "test-sdk", "test-typescript", "security"}
-	fullTierJobs = []string{"integration-standalone", "integration-cluster-tenancy", "integration-cluster", "trivy"}
+	fullTierJobs = []string{"integration-standalone", featureJob, "trivy"}
 )
 
 // fullTierJob reports whether a job must be in the full tier. Every
@@ -126,6 +129,70 @@ func gateChecks(run string) map[string]gateCheck {
 		out[m[1]] = gateCheck{envVar: m[2], tier: m[3]}
 	}
 	return out
+}
+
+// ciWorkflow is the slice of ci.yml the tier rules read.
+type ciWorkflow struct {
+	Jobs map[string]struct {
+		If    string    `yaml:"if"`
+		Needs yaml.Node `yaml:"needs"`
+		Steps []struct {
+			Run string            `yaml:"run"`
+			Env map[string]string `yaml:"env"`
+		} `yaml:"steps"`
+	} `yaml:"jobs"`
+	On yaml.Node `yaml:"on"`
+}
+
+func parseWorkflow(t *testing.T, body string) ciWorkflow {
+	t.Helper()
+	var wf ciWorkflow
+	if err := yaml.Unmarshal([]byte(body), &wf); err != nil {
+		t.Fatalf("parse workflow fixture: %v", err)
+	}
+	return wf
+}
+
+// needsList returns the job names a `needs:` declares, in either the
+// scalar or the sequence spelling.
+func needsList(n yaml.Node) []string {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return []string{n.Value}
+	case yaml.SequenceNode:
+		out := make([]string, 0, len(n.Content))
+		for _, c := range n.Content {
+			out = append(out, c.Value)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// onTriggers returns the event names a workflow's top-level `on:` declares,
+// whichever of the three shapes the workflow spells it in: a mapping
+// (`on: {push: ..., pull_request: ...}`), a sequence (`on: [push,
+// pull_request]`), or a single scalar (`on: push`).
+func onTriggers(n yaml.Node) []string {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return []string{n.Value}
+	case yaml.SequenceNode:
+		out := make([]string, 0, len(n.Content))
+		for _, c := range n.Content {
+			out = append(out, c.Value)
+		}
+		return out
+	case yaml.MappingNode:
+		out := make([]string, 0, len(n.Content)/2)
+		for i := 0; i < len(n.Content); i += 2 {
+			out = append(out, n.Content[i].Value)
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // prTypes returns the activity types ci.yml's pull_request trigger declares.
@@ -418,6 +485,13 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	}
 	sort.Strings(full)
 	sort.Strings(pr)
+	// The per-feature matrix reaches the gate as one result: the runner
+	// aggregates its legs into needs.<job>.result, which is failure when any
+	// leg fails and cancelled when a leg is cancelled. The cases below that
+	// name featureJob are one red leg as the gate sees it.
+	if c, found := checks[featureJob]; !found || c.tier != tierFull {
+		t.Fatalf("%s has no full-tier check line for %s; the per-feature legs would not gate", ciGateJob, featureJob)
+	}
 	allFull := func(result string) map[string]string {
 		m := map[string]string{}
 		for _, j := range full {
@@ -440,6 +514,10 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		{"full job failed on a PR-tier run", map[string]string{full[0]: "failure"}, "false", true},
 		{"full job cancelled on a PR-tier run", map[string]string{full[0]: "cancelled"}, "false", true},
 		{"full job cancelled on a full-tier run", map[string]string{full[0]: "cancelled"}, "true", true},
+		{"one feature leg failed on a full-tier run", map[string]string{featureJob: "failure"}, "true", true},
+		{"one feature leg cancelled", map[string]string{featureJob: "cancelled"}, "true", true},
+		{"feature legs skipped on a full-tier run", map[string]string{featureJob: "skipped"}, "true", true},
+		{"feature legs skipped on a PR-tier run", map[string]string{featureJob: "skipped"}, "false", false},
 		{"PR job skipped on a PR-tier run", map[string]string{pr[0]: "skipped"}, "false", true},
 		{"PR job cancelled", map[string]string{pr[0]: "cancelled"}, "false", true},
 		{"PR job failed", map[string]string{pr[0]: "failure"}, "true", true},

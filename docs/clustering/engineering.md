@@ -930,9 +930,10 @@ and neither opens a listener there — see
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,
   `cluster_enable_encryption_test.go` — live in `make integration-test-cluster`.
-  **That stage runs in CI** as the `integration-cluster` and
-  `integration-cluster-tenancy` jobs (`.github/workflows/ci.yml`), both
-  required by the `ci-gate` job in CI's full tier, so cluster behaviour is
+  **Those tests run in CI** in the `integration-features` job
+  (`.github/workflows/ci.yml`), one leg per feature (`clustering`,
+  `multi-tenancy`, `barrier-seal`), required by the `ci-gate` job in CI's full
+  tier, so cluster behaviour is
   exercised on every push to `main`, every dispatch, and every pull request
   labelled `ci:full`.
 

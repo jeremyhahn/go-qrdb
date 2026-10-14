@@ -897,8 +897,8 @@ not by how often leadership moves.
   CI today.
 - **Integration, cluster stage**: `make integration-test-cluster` — the 3-node
   Raft suites (`isolation_raft_cluster_test.go`, `cluster_test.go`,
-  `drain_test.go`, `backup_restore_test.go` and siblings). It runs in CI as
-  the `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  `drain_test.go`, `backup_restore_test.go` and siblings). CI runs those
+  suites in the `integration-features` job (`.github/workflows/ci.yml`), one leg per feature (`make integration-test-<feature>`), required by
   `ci-gate`.
 - **Feature integration target**: `make integration-test-key-value` runs only
   this feature's self-spawned `qrdbd` suites (no Docker) — the `kv_*`,

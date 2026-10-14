@@ -208,5 +208,5 @@ activated; only the tenant that owns the database may seal or unseal it.
 
 Every verb here has a `CommandDefinition` in the integration parity suite. Note
 that the cluster-scope encryption migration test lives in the cluster stage
-(`make integration-test-cluster`), which runs in CI as the
-`integration-cluster` job (`.github/workflows/ci.yml`), required by `ci-gate`.
+(`make integration-test-cluster`). CI runs it as the `barrier-seal` leg of the
+`integration-features` job (`.github/workflows/ci.yml`), required by `ci-gate`.

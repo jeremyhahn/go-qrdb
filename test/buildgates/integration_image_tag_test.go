@@ -57,7 +57,7 @@ const (
 	intComposeDir  = "test/integration/api"
 	intBuiltFloor  = 5 // qrdbd, qrdbd-shamir, integration-tests + the GPU overlay's two
 	intStageFloor  = 5 // standalone, cluster, gpu, embedding, rag
-	intCIJobFloor  = 3 // standalone, cluster tenancy, cluster
+	intCIJobFloor  = 1 // standalone; the self-spawned suites run per feature, outside compose
 )
 
 var (
@@ -162,8 +162,8 @@ func makeAssignment(makefile, name string) (string, bool) {
 
 // makefileImageProblems checks that each compose image variable is exported
 // from a per-run Makefile variable, that the image build and the teardown use
-// those variables, and returns how many stages bring a stack up.
-func makefileImageProblems(makefile string, vars []string) (stages int, problems []string) {
+// those variables, and returns the stages that bring a stack up, sorted.
+func makefileImageProblems(makefile string, vars []string) (stages []string, problems []string) {
 	recipes := makeRecipes(makefile)
 	makeVars := make(map[string]string) // compose env var -> Makefile variable
 	for _, v := range vars {
@@ -224,7 +224,7 @@ func makefileImageProblems(makefile string, vars []string) (stages int, problems
 		if len(ups) == 0 {
 			continue
 		}
-		stages++
+		stages = append(stages, name)
 		for _, cmd := range ups {
 			if !strings.Contains(cmd, "-p "+intProjectRef) {
 				problems = append(problems, "Makefile target "+name+" brings the integration stack up without -p "+
@@ -241,9 +241,17 @@ func makefileImageProblems(makefile string, vars []string) (stages int, problems
 
 // workflowImageProblems checks one workflow: no step runs `docker compose`
 // itself, and every job that runs a compose stage tears it down through
-// `make integration-down` under always() with the same INT_PROJECT. It returns
-// how many such jobs it found.
-func workflowImageProblems(name string, body []byte) (jobs int, problems []string) {
+// `make integration-down` under always() with the same INT_PROJECT. A compose
+// stage is one of stages, the Makefile targets that bring a stack up: a
+// `make integration-test-<feature>` step runs the self-spawned suites on the
+// runner itself and has no stack to tear down. It returns how many such jobs
+// it found.
+func workflowImageProblems(name string, body []byte, stages []string) (jobs int, problems []string) {
+	quoted := make([]string, 0, len(stages))
+	for _, s := range stages {
+		quoted = append(quoted, regexp.QuoteMeta(s))
+	}
+	runsStage := regexp.MustCompile(`(^|\s)make\s+(` + strings.Join(quoted, "|") + `)(\s|$)`)
 	var wf struct {
 		Jobs map[string]struct {
 			Steps []workflowStep `yaml:"steps"`
@@ -265,7 +273,7 @@ func workflowImageProblems(name string, body []byte) (jobs int, problems []strin
 				problems = append(problems, name+": job "+j+" runs `docker compose` directly; the compose files "+
 					"require the run's image name, so go through make ("+intDownTarget+" for a teardown)")
 			}
-			if strings.Contains(s.Run, "make integration-test-") && !strings.Contains(s.Run, "integration-test-auth") {
+			if len(stages) > 0 && runsStage.MatchString(s.Run) {
 				stage = true
 				if m := intProjectFlag.FindStringSubmatch(s.Run); m != nil {
 					project = m[1]
@@ -345,8 +353,8 @@ func TestIntegrationImage_PerRunTags(t *testing.T) {
 	for _, p := range problems {
 		t.Error(p)
 	}
-	if stages < intStageFloor {
-		t.Fatalf("found %d Makefile stages that bring %s up, below the floor of %d", stages, intComposeDir, intStageFloor)
+	if len(stages) < intStageFloor {
+		t.Fatalf("found %d Makefile stages that bring %s up, below the floor of %d", len(stages), intComposeDir, intStageFloor)
 	}
 
 	var workflows []string
@@ -366,7 +374,7 @@ func TestIntegrationImage_PerRunTags(t *testing.T) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		rel, _ := filepath.Rel(root, path)
-		n, problems := workflowImageProblems(rel, body)
+		n, problems := workflowImageProblems(rel, body, stages)
 		jobs += n
 		for _, p := range problems {
 			t.Error(p)
@@ -424,6 +432,9 @@ integration-down:
           make integration-test-standalone INT_PROJECT="$INT_PROJECT"
       - if: always()
         run: make integration-down INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}" || true
+  features:
+    steps:
+      - run: make integration-test-${{ matrix.feature }}
   lint:
     steps:
       - run: make lint
@@ -432,8 +443,8 @@ integration-down:
 
 func intImageFixtureProblems(compose, makefile, workflow string) []string {
 	vars, _, problems := composeImageProblems("compose", []byte(compose))
-	_, mp := makefileImageProblems(makefile, vars)
-	_, wp := workflowImageProblems("workflow", []byte(workflow))
+	stages, mp := makefileImageProblems(makefile, vars)
+	_, wp := workflowImageProblems("workflow", []byte(workflow), stages)
 	return append(append(problems, mp...), wp...)
 }
 
@@ -443,10 +454,12 @@ func TestIntegrationImageProblems_ValidFixture(t *testing.T) {
 		t.Fatalf("compose fixture: vars %v, built %d, problems %v; want [%s], 2, none", vars, built, problems, intImageEnv)
 	}
 	stages, problems := makefileImageProblems(intImageMakefile, vars)
-	if len(problems) != 0 || stages != 1 {
-		t.Fatalf("Makefile fixture: stages %d, problems %v; want 1, none", stages, problems)
+	if len(problems) != 0 || len(stages) != 1 || stages[0] != "integration-test-standalone" {
+		t.Fatalf("Makefile fixture: stages %v, problems %v; want [integration-test-standalone], none", stages, problems)
 	}
-	jobs, problems := workflowImageProblems("workflow", []byte(intImageWorkflow))
+	// The features job runs a per-feature target, which is not a stage: it
+	// must count neither as a compose job nor as one missing its teardown.
+	jobs, problems := workflowImageProblems("workflow", []byte(intImageWorkflow), stages)
 	if len(problems) != 0 || jobs != 1 {
 		t.Fatalf("workflow fixture: jobs %d, problems %v; want 1, none", jobs, problems)
 	}
@@ -506,6 +519,11 @@ func TestIntegrationImageProblems_CanFail(t *testing.T) {
 		{
 			name:     "workflow teardown not under always()",
 			workflow: strings.Replace(intImageWorkflow, "      - if: always()\n        run: make integration-down", "      - run: make integration-down", 1),
+		},
+		{
+			name: "workflow stage job has no teardown",
+			workflow: strings.Replace(intImageWorkflow,
+				"      - if: always()\n        run: make integration-down INT_PROJECT=\"qrdb-int-${GITHUB_RUN_ID:-local}\" || true\n", "", 1),
 		},
 		{
 			name:     "workflow teardown names another project",

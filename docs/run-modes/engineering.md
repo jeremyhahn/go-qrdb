@@ -459,8 +459,9 @@ in-process and on the wire; `pkg/server/standalone_gate.go` passes
   `Close`; asserting nil afterwards on a node that never populated them would
   be vacuous.
 - **Integration**: the standalone stage runs the standalone composition; the
-  cluster stage runs raft and runs in CI as the `integration-cluster` job
-  (`.github/workflows/ci.yml`), required by `ci-gate`.
+  cluster stage runs raft. CI runs the cluster stage's tests in
+  the `integration-features` job (`.github/workflows/ci.yml`), one leg per feature (`make integration-test-<feature>`), required by
+  `ci-gate`.
 
 ## Observability
 

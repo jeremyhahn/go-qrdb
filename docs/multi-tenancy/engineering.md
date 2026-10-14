@@ -1080,26 +1080,23 @@ did not.
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go` — live in
   the **cluster stage**. CI runs them in its **full tier** — every push to
   `main`, every `workflow_dispatch`, and a pull request labelled `ci:full` —
-  in the `integration-cluster-tenancy` job (`make integration-test-cluster-tenancy`,
-  selected by `CLUSTER_TENANCY_RUN` in the Makefile), and the full cluster
-  stage runs in the same tier, in the `integration-cluster` job. A plain pull
-  request push runs neither, so a change to tenant isolation carries
-  `ci:full`. `test/buildgates/cluster_tenancy_gate_test.go` fails
-  when the selection drops an `isolation_raft_*` suite, selects fewer than its
-  floor of tests, or leaves the job out of the CI result gate. The test
-  function count behind that floor is **build-constraint aware**: it parses
-  each file's `//go:build` line with `go/build/constraint` and evaluates it
-  with only the `integration` tag (plus the default GOOS/GOARCH) set, so a
-  file tagged `!integration` — which never compiles into the binary
-  `make integration-test-cluster-tenancy` runs — cannot inflate the count. The
-  gate also asserts the workflow's top-level `on:` actually names `push` and
-  `pull_request`, that the job's `if:` is exactly the full-tier condition, and
-  that the result gate tags it `full` — any narrower condition would be
-  excused as a tier skip on exactly the pushes to `main` this gate exists to
-  cover. *(Corrected 2026-10-02: this said the stage was not wired
-  into CI; it has run nightly since 2026-09-22. Corrected 2026-10-12:
-  the job moved from every push to the full tier, and the gate asserts the
-  full-tier `if:` where it used to forbid any `if:`.)*
+  as the `multi-tenancy` leg of the `integration-features` job
+  (`make integration-test-multi-tenancy`, the files `features.mk` maps to this
+  feature), one of that job's per-feature legs, each under its own 45-minute
+  limit. A plain pull request push runs none of them, so a change to tenant
+  isolation carries `ci:full`. `test/buildgates/feature_jobs_gate_test.go`
+  fails when the job's matrix drops a feature that maps a file, when the job's
+  `if:` is not exactly the full-tier condition, or when the workflow's
+  top-level `on:` stops naming `push` and `pull_request`, and
+  `ci_tiers_test.go` fails when the result gate stops tagging it `full` — any
+  narrower condition would be excused as a tier skip on exactly the pushes to
+  `main` this gate exists to cover. `feature_integration_coverage_test.go`
+  fails when an `isolation_raft_*` test, or any other non-Docker integration
+  test, is named by no feature, and so by no leg. *(Corrected 2026-10-02: this
+  said the stage was not wired into CI; it has run nightly since 2026-09-22.
+  Corrected 2026-10-12: the job moved from every push to the full tier.
+  Corrected 2026-10-14: the separate tenancy job and its selection gave way to
+  one CI job per feature.)*
 
 ## Observability
 
@@ -1434,7 +1431,7 @@ phase 5 on.
 
 | Phase | Delivers | Red test (fails before, passes after) | Depends on |
 |---|---|---|---|
-| **0. Cluster tenancy suite as a merge gate** | A `make integration-test-cluster-tenancy` target that runs the multi-node tenant suites (`isolation_raft_*`, and every strict suite that follows) as a **per-push** CI job listed in the CI result gate. The suites' CI-load timeouts are fixed, by measurement, before the job turns on. The full cluster stage stays nightly. | `test/buildgates/cluster_tenancy_gate_test.go` parses `ci.yml` and asserts that the job exists, runs that target, and is a `needs:` of the result gate. A discovery floor asserts that the target selects at least N tests. Red today: the cluster stage is nightly only. | — |
+| **0. Cluster tenancy suite as a merge gate** | A `make integration-test-cluster-tenancy` target that runs the multi-node tenant suites (`isolation_raft_*`, and every strict suite that follows) as a **per-push** CI job listed in the CI result gate. The suites' CI-load timeouts are fixed, by measurement, before the job turns on. The full cluster stage stays nightly. | `test/buildgates/cluster_tenancy_gate_test.go` parses `ci.yml` and asserts that the job exists, runs that target, and is a `needs:` of the result gate. A discovery floor asserts that the target selects at least N tests. Red today: the cluster stage is nightly only. *(Superseded 2026-10-14: the tenant suites run as the `multi-tenancy` leg of the per-feature `integration-features` job, held by `test/buildgates/feature_jobs_gate_test.go`.)* | — |
 | **1. Standing-rule defects** | (a) The etcd listener admits owner-tenant callers only (`pkg/server/server_etcd.go:193`). (b) Audit query is confined to the caller's tenant on six transports; `audit:read:cross` reads the platform trail. (c) Shamir share bytes are no longer persisted (`pkg/custodian/share_service.go`). (d) Role bindings name the holder's own tenant, for every holder (`pkg/user/cert_binding.go:46-61`). **All four are already being fixed by changes in flight**, as is cross-tenant certificate minting. This phase is complete once those changes merge, and each carries its own red test. | (a) A system identity holding `kv:range` reads a tenant database over etcd; it must get `PERMISSION_DENIED`. (b) A tenant Admin passes `tenant_id=<other>` on each transport; it must get only its own events. (c) After a share submit, a scan of the system store must find no share bytes. (d) A system user's binding in tenant `acme` must fail with `RoleBindingTenantError`. | 0 |
 | **2. Cluster-wide shard ids** | The shard allocator claims ids through a guarded write on a replicated high-water mark in the system shard (`pkg/shard/allocator.go`), replacing the per-node counter. | Two nodes that allocate concurrently today receive the same shard id; they must receive distinct ids. | 0 |
 | **3. First admin by CSR (S7)** | **Already shipped, 2026-10-03, outside this plan** — `admin_username` plus `admin_csr_pem`/`admin_cert_pem` is required at create, on six transports and the CLI (not the `first_admin {username, csr_pem}` shape this row originally proposed). System-managed and `prefix` tenants get their admin user, SPKI binding and certificate at create; self-managed tenants get the pending first admin, consumed at barrier init. Trust-on-first-init by "a certificate naming the tenant" is removed. Records still land in today's stores; phase 8 moves them. What remains for this phase: the `init`/`begin`/`complete` proof-of-possession protocol bound to the TLS exporter, needed once initialization fans out to a serving set with no tenant client certificate yet. | A certificate the system operator mints with OU=`acme` initializes `acme`'s barrier today; it must get `FirstAdminProofError`. The CSR key holder initializes, and its SPKI is reported in `barrier-status`. | 1 |

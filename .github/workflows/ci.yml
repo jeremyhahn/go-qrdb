@@ -19,8 +19,8 @@ name: CI
 #              security.
 #   Full tier  push to main, workflow_dispatch (the coordinator's nightly
 #              dispatches this workflow), or a pull_request carrying the label
-#              `ci:full`. integration-standalone, integration-cluster-tenancy,
-#              integration-cluster, trivy.
+#              `ci:full`. integration-standalone, integration-features (one
+#              job per feature), trivy.
 #
 # Each full-tier job carries the same `if:`, spelled out per job because
 # Gitea's workflow parser does not expand YAML anchors. ci-gate passes a
@@ -277,17 +277,6 @@ jobs:
 
       - name: Test the compose-target guard
         run: make test-compose-targets
-
-      # The cluster suite runs as matrix legs, each selecting its tests by an
-      # anchored -run expression built from `go test -list`. A test that no
-      # leg selects would never run and never fail; this applies every leg's
-      # expression to the full list and fails on a test selected by none, or
-      # by more than one.
-      - name: The cluster suite's CI legs partition its tests
-        run: make check-cluster-shards
-
-      - name: Test the cluster-shard partition check
-        run: make test-cluster-shards
 
       # #367. Every `uses:` in every workflow must resolve to a 40-hex commit.
       # A tag is a ref its owner can move, and the review workflow's job held a
@@ -785,12 +774,6 @@ jobs:
       # Read from the shell rather than through a ${{ }} expression: that
       # context has resolved empty before and would hand compose a bare
       # "qrdb-int-" shared by every job, which is the collision this avoids.
-      # test/integration/auth, run by no workflow until #228. It is in-memory
-      # and needs no compose stack, so it runs FIRST: about two seconds, and
-      # the cheapest integration failure this job can report.
-      - name: Integration tests (auth, in-memory)
-        run: make integration-test-auth
-
       - name: Integration tests (standalone stack)
         run: |
           export INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}"
@@ -815,92 +798,48 @@ jobs:
         if: always()
         run: make integration-down INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}" || true
 
-  # The multi-node tenant suites, on every push to main (strict tenant
-  # isolation, plan phase 0; owner ruling 2026-10-02) and, since the tier split
-  # (#674), on a pull request only when it carries `ci:full`. The full cluster
-  # stage runs in integration-cluster below; this is the tenancy slice of it,
-  # selected by CLUSTER_TENANCY_RUN in the Makefile, because every
-  # strict-isolation phase proves itself on real 3-node clusters and a proof
-  # that runs only nightly does not gate the merge it proves: label a PR that
-  # touches tenant isolation `ci:full`. test/buildgates/cluster_tenancy_gate_test.go
-  # keeps this job, its target, its tier and its place in ci-gate's needs from
-  # drifting apart.
+  # The self-spawned qrdbdharness suites (./test/integration and
+  # ./test/integration/auth: single-node and real 3-node Raft clusters, no
+  # compose stack), one job per feature (owner ruling 10). Each leg is
+  # `make integration-test-<feature>`, the target a developer or lane runs for
+  # that feature, selected by test/integration/features.mk. A feature mapped
+  # to nothing is not a leg. Every test in these packages is mapped to some
+  # feature (make check-integration-feature-coverage), so the legs together
+  # run the whole suite; a test mapped to two features runs in both.
   #
-  # #418 kept cluster tests off per-push CI because load-sensitive budgets made
-  # a required check fail for reasons unrelated to the diff. This slice was
-  # measured under shared-host load before it was armed; see the Makefile.
-  integration-cluster-tenancy:
-    name: Integration (cluster tenancy)
+  # Each leg is its own job with its own 45-minute limit, and they run in
+  # parallel. The suite used to be one serial job: 36.7 min quiet, 43.1 min
+  # under load, then three 120-minute legs. A leg that does not fit is a
+  # finding about that feature's tests, not a reason to raise the limit.
+  #
+  # The list is literal because Gitea cannot expand a matrix computed at run
+  # time (handbook devops.md §1). It is exactly `make -s
+  # print-integration-features`: test/buildgates/feature_jobs_gate_test.go
+  # fails on any difference, on a limit over 45, on fail-fast, on a tier
+  # other than the full one, and on a step that narrows the target.
+  #
+  # Full tier (#674): every push to main, every dispatch, and a pull request
+  # labelled `ci:full`, which a change touching clustering, tenancy,
+  # bootstrap or seal should carry. fail-fast is off so one red leg does not
+  # cancel the others' results. ci-gate reads the job's aggregate result,
+  # which is failure when any leg fails.
+  #
+  # GOMAXPROCS is the half of the cluster stage's #682 budget that reaches a
+  # job outside compose: the harness hands its environment to every qrdbd and
+  # qrdb it spawns, so each sizes its scheduler and GC to 8 Ps rather than the
+  # runner's 80 threads and stops starving its own Raft tickers under load.
+  integration-features:
+    name: Integration (${{ matrix.feature }})
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      # INT_PROJECT is read from the shell for the same reason as the standalone
-      # job above: a per-run compose project, never a shared default.
-      #
-      # The stage's CPU cap, memory reservation and -parallel bound (#682) are
-      # the Makefile's CLUSTER_CPUS, CLUSTER_MEM_RESERVATION and
-      # CLUSTER_PARALLEL, applied to the integration-tests compose service.
-      # They are not `container: options:` on this job: the job starts that
-      # service through the host's dockerd as a container of its own, so a
-      # limit on the job would not reach the test process or the qrdbd nodes
-      # it spawns.
-      - name: Integration tests (cluster tenancy)
-        run: |
-          export INT_PROJECT="qrdb-int-tenancy-${GITHUB_RUN_ID:-local}"
-          echo "compose project: $INT_PROJECT"
-          make integration-test-cluster-tenancy INT_PROJECT="$INT_PROJECT"
-
-      - name: Tear down the stack
-        if: always()
-        run: make integration-down INT_PROJECT="qrdb-int-tenancy-${GITHUB_RUN_ID:-local}" || true
-
-  # The FULL cluster suite (go-qrdb#228): every self-spawning single-node and
-  # 3-node test under test/integration/, `make integration-test-cluster` with
-  # no -run narrowing. It ran nightly from 2026-09-22 to keep #418's
-  # load-sensitive raft tests off the push path, and in that time nine of its
-  # tests went red on main and stayed red, unnoticed: each was left behind by a
-  # bootstrap change (qrdb init as the only system bootstrap, the SO-PIN seal,
-  # mtls_binding_policy "required") that a push gate would have refused, and
-  # one was hiding a real boot defect -- a restarted node exiting after its
-  # unseal. A suite that only reports after the merge does not gate the merge.
-  #
-  # Full tier since #674, like the tenancy slice: every push to main, every
-  # dispatch, and a pull request labelled `ci:full` -- which a change touching
-  # clustering, bootstrap or seal should carry, so the suite gates its merge
-  # rather than reporting after it. All three legs share the job's `if:`.
-  #
-  # The tenancy slice above stays as its own job: its selection floor is
-  # guarded by test/buildgates/cluster_tenancy_gate_test.go, and it reports the
-  # tenant suites separately when this job is red for an unrelated reason.
-  #
-  # The suite is serial (-p 1, -parallel 1), so its run time is the sum of its
-  # tests: 36.7 min quiet and 43.1 min at 2x CPU oversubscription on a 4-CPU
-  # budget, over the 45 min package timeout it had. Lowering parallelism had
-  # nothing left to give, so it runs as three legs. scripts/cluster-shard.sh
-  # deals the `go test -list` output round-robin into one anchored -run
-  # expression per leg, and `make check-cluster-shards` (Lint) proves the legs
-  # partition the suite. fail-fast is off so one red leg does not cancel the
-  # others' results; ci-gate reads the job's aggregate result, which is
-  # failure when any leg fails. test/buildgates/cluster_shard_gate_test.go
-  # holds this matrix to the Makefile's CLUSTER_SHARDS.
-  integration-cluster:
-    name: Integration (cluster ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [build]
-    timeout-minutes: 120
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "8"
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        feature: [api-server, audit, auth-factors, backup-restore, barrier-seal, capabilities, ceremony, certificate-authority, clustering, collections, coordination, credentials, databases, distributed-locks, embeddings, etcd-compatibility, firstboot, full-text-search, guarded-swap, identity-rbac, key-value, key-wrapping, leases, multi-tenancy, rag, replica-forwarding, row-locking, run-modes, secondary-indexes, shamir-custody, sql, storage-engines, tenant-dek, time-series, transactions, trust-anchors, trust-bootstrap, vectors, volume-pools, watch]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -908,20 +847,17 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # INT_PROJECT is read from the shell for the same reason as the standalone
-      # job above: a per-run compose project, never a shared default. The
-      # stage's resource budget is the tenancy job's, set the same way (#682).
-      # The project carries the leg: the legs can land on one host's dockerd,
-      # and a shared project would tear down a sibling leg's stack.
-      - name: Integration tests (cluster ${{ matrix.shard }}/3)
-        run: |
-          export INT_PROJECT="qrdb-int-cluster-${{ matrix.shard }}-${GITHUB_RUN_ID:-local}"
-          echo "compose project: $INT_PROJECT"
-          make integration-test-cluster INT_PROJECT="$INT_PROJECT" CLUSTER_SHARD=${{ matrix.shard }}/3
+      - name: Integration tests (${{ matrix.feature }})
+        run: make integration-test-${{ matrix.feature }}
 
-      - name: Tear down the stack
+      # Removes this leg's compose project, networks, volumes and image tags,
+      # pass, fail or cancel. The names carry the run, attempt and feature, so
+      # nothing later would ever match a leg's leftovers. The target derives
+      # them the way the test step's does (Makefile, INT_GOAL), rather than
+      # repeating that here; a name nobody created is not an error.
+      - name: Tear down (${{ matrix.feature }})
         if: always()
-        run: make integration-down INT_PROJECT="qrdb-int-cluster-${{ matrix.shard }}-${GITHUB_RUN_ID:-local}" || true
+        run: make integration-down-${{ matrix.feature }}
 
   security:
     name: Security
@@ -1162,7 +1098,11 @@ jobs:
     # fail-open gate; a job that is required and cannot pass freezes the
     # repository without closing a single finding. Neither is acceptable, which
     # is why the two halves must move together.
-    needs: [lint, build, test, test-sdk, test-typescript, integration-standalone, integration-cluster-tenancy, integration-cluster, security, trivy]
+    #
+    # A matrix job is ONE entry here, not one per leg: needs.<job>.result is
+    # the aggregate over its legs, `failure` when any leg fails, so one red
+    # integration-features leg fails this gate.
+    needs: [lint, build, test, test-sdk, test-typescript, integration-standalone, integration-features, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
@@ -1172,8 +1112,7 @@ jobs:
           RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
-          RESULT_INTEGRATION_CLUSTER_TENANCY: ${{ needs.integration-cluster-tenancy.result }}
-          RESULT_INTEGRATION_CLUSTER: ${{ needs.integration-cluster.result }}
+          RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
           FULL_TIER: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
@@ -1214,7 +1153,6 @@ jobs:
           check test-typescript "$RESULT_TEST_TYPESCRIPT" pr
           check security "$RESULT_SECURITY" pr
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
-          check integration-cluster-tenancy "$RESULT_INTEGRATION_CLUSTER_TENANCY" full
-          check integration-cluster "$RESULT_INTEGRATION_CLUSTER" full
+          check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check trivy "$RESULT_TRIVY" full
           exit $status
