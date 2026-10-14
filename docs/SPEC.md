@@ -189,6 +189,7 @@ row.
 | port-reservation-package | in progress | Decide the shared port-reservation package, now that production code is a caller. | #306 |
 | identity-hydrator | planned | `sdk/go/node` exposes `WithIdentityHydrator`, so the login Subject is the immutable user id, not the username. | #670, [identity-rbac/](identity-rbac/) |
 | release-readiness | planned | Release readiness for the public release. | #565, [release/](release/) |
+| arm64-release | planned | linux-arm64 and linux-arm64 FIPS artifacts from the release workflow; the integration suite run once on arm64 before the RC. | #702, [release/](release/) |
 | range-delete | future | An engine range delete, so reclaiming a dropped database is not one proposal per key. | #457, [key-value/](key-value/) |
 | dead-code-triage | future | Triage the unreachable symbols; wiring is an answer as well as deletion. | #350, [release/](release/) |
 | barrier-passphrase-change | future | A supported passphrase change for the system barrier, for embedders. | #631, [barrier-seal/](barrier-seal/) |
