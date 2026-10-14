@@ -24,7 +24,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -583,36 +582,6 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 // and reach its listener -- and a runStart that returned early, with the old
 // registration error or any other, fails the test.
 func TestRunStart_DynamicMembership_StartsOnPebble(t *testing.T) {
-	dir := t.TempDir()
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:           dir,
-		smType:            "pebble", // no MVCC revision history
-		discoveryMethod:   "static",
-		peers:             []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:            fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:       raftAddr,
-		shardID:           1,
-		replicaID:         1,
-		deploymentID:      1,
-		adminPort:         adminPort,
-		grpcPort:          grpcPort,
-		authEnabled:       false,
-		enableREST:        true,
-		enableGRPC:        true,
-		dynamicMembership: true,
-		host:              testBindHost,
-	}
-
 	registered := make(chan struct{}, 1)
 	orig := dynamicMembershipStarted
 	t.Cleanup(func() { dynamicMembershipStarted = orig })
@@ -622,21 +591,13 @@ func TestRunStart_DynamicMembership_StartsOnPebble(t *testing.T) {
 		default:
 		}
 	}
-	reserveNoisePort(t, f)
 
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-	var seen atomic.Bool
-	if runErr := signalAfterReady(t, done, syscall.SIGTERM, func() bool {
-		select {
-		case <-registered:
-			seen.Store(true)
-		default:
-		}
-		return seen.Load()
-	}); runErr != nil {
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		f := fullStartFlags(t.TempDir(), p) // pebble: no MVCC revision history
+		f.dynamicMembership = true
+		return runStartLaunch(t, f, hookFired(registered))
+	})
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		t.Fatalf("runStart with dynamic membership on pebble did not start cleanly: %v", runErr)
 	}
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
@@ -650,61 +611,32 @@ func TestRunStart_DynamicMembership_StartsOnPebble(t *testing.T) {
 // shutdown path (lines 1407-1409) is exercised when a volume pool is
 // configured. The node is started normally and SIGTERM triggers the shutdown.
 func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
-	dir := t.TempDir()
-	poolPath := filepath.Join(dir, "pool0")
-	// The pool's mount must exist and open cleanly: this test exercises the
-	// shutdown path for a VOLUME POOL THAT IS SERVING, not the default
-	// fail-loud boot behavior for one that failed to open (owner ruling
-	// 2026-10-06, see TestRunStart_VolumePoolConfigured_DefaultFailsLoud).
-	if err := os.MkdirAll(poolPath, 0o700); err != nil {
-		t.Fatalf("MkdirAll(poolPath): %v", err)
-	}
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     false,
-		enableREST:      true,
-		enableGRPC:      true,
-		storageConfig: qrdbconfig.StorageConfig{
-			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Path: poolPath},
-			},
-		},
-		host: testBindHost,
-	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
-	// Wait until the admin listener accepts before signalling, then signal
+	// Wait until the server is serving before signalling, then signal
 	// until runStart returns. Both halves matter: signalling at t=0 cancels
 	// startup before first boot and the test passes having covered nothing,
 	// and sleeping a fixed duration is a bet that loses under load. See
 	// signalAfterReady (go-qrdb#83).
-	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
-		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+	serving := servingHook(t)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		dir := t.TempDir()
+		poolPath := filepath.Join(dir, "pool0")
+		// The pool's mount must exist and open cleanly: this test exercises
+		// the shutdown path for a VOLUME POOL THAT IS SERVING, not the
+		// default fail-loud boot behavior for one that failed to open (owner
+		// ruling 2026-10-06, see
+		// TestRunStart_VolumePoolConfigured_DefaultFailsLoud).
+		if err := os.MkdirAll(poolPath, 0o700); err != nil {
+			t.Fatalf("MkdirAll(poolPath): %v", err)
+		}
+		f := fullStartFlags(dir, p)
+		f.storageConfig = qrdbconfig.StorageConfig{
+			VolumePools: []qrdbconfig.VolumePoolConfig{
+				{Name: "default", Path: poolPath},
+			},
+		}
+		return runStartLaunch(t, f, hookFired(serving))
+	})
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		// A daemon that reached its listener and was then signalled shuts
 		// down cleanly and returns nil. Logging an error as "acceptable"
 		// here is what let a startup that never completed pass this test

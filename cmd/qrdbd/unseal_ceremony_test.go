@@ -57,25 +57,6 @@ import (
 // listener and the post-unseal server bind the SAME address, so a TCP dial is
 // satisfied while the barrier is still shut.
 func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
-	dir := t.TempDir()
-
-	// The daemon serves these, and the client below verifies against them.
-	bundle := writeTLSFixtures(t, dir)
-
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	if err != nil {
-		t.Fatalf("admin port: %v", err)
-	}
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	if err != nil {
-		t.Fatalf("raft port: %v", err)
-	}
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	if err != nil {
-		t.Fatalf("grpc port: %v", err)
-	}
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
 	// TWO milestones, because they are different claims. barrierUnsealed says
 	// the ceremony worked; serverServing says the handover completed. Between
 	// them lie initializeNode, first boot, service construction and the server
@@ -91,94 +72,66 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 		default:
 		}
 	}
+	serving := servingHook(t)
 
-	serving := make(chan struct{}, 1)
-	origServing := serverServing
-	t.Cleanup(func() { serverServing = origServing })
-	serverServing = func() {
-		select {
-		case serving <- struct{}{}:
-		default:
-		}
-	}
+	// The sealed-window listener accepting is the cue that the ceremony can be
+	// performed -- it is NOT evidence of full startup, which is the confusion
+	// this test exists to remove. So the attempt is ready only once the
+	// ceremony has been accepted AND the regular server is serving: the
+	// Noise bootstrap listener binds after the unseal, and a port another
+	// process takes there ends the attempt as surely as one taken before
+	// the sealed window, so startDaemon must still be able to start again.
+	//
+	// From here to the end of the test every exit is a t.Fatalf, and a Fatalf
+	// ends this goroutine without reaching the shutdown below. startDaemon
+	// registers the guard that stops the daemon on those paths -- the
+	// initializeCeremony failure, the readiness timeout, and a runStart that
+	// exits early -- so that a regression reports as this test failing rather
+	// than as a daemon holding its ports and the process signal handlers
+	// through everything that runs after it.
+	var (
+		dir         string
+		wasUnsealed func() bool
+	)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		dir = t.TempDir()
+		// The daemon serves these, and the client below verifies against them.
+		bundle := writeTLSFixtures(t, dir)
 
-	f := &startFlags{
-		dataDir: dir,
 		// "pebble", the production default. This test exercises the
 		// unseal-to-serving handover, which does not depend on which --sm
 		// backs it.
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     false,
-		enableREST:      true,
-		sealConfig: qrdbconfig.SealConfig{
+		f := fullStartFlags(dir, p)
+		f.enableGRPC = false
+		f.sealConfig = qrdbconfig.SealConfig{
 			// Enabled is the gate: without it runStart never brings up the
 			// sealed window and the admin port is the ordinary server, which
 			// is how the first draft of this test 404ed on the ceremony.
 			Enabled:     true,
 			Strategy:    "",
 			RootKeyPath: "__sys:seal/root_key",
-		},
-		host: testBindHost,
-	}
-	reserveNoisePort(t, f)
+		}
 
-	done := make(chan error, 1)
-	go func() { done <- runStart(f) }()
+		listening, isServing := adminReady(p), hookFired(serving)
+		wasUnsealed = hookFired(unsealed)
+		initialized := false
+		return runStartLaunch(t, f, func() bool {
+			if !initialized {
+				if !listening() {
+					return false
+				}
+				initializeCeremony(t, bundle, p.admin, "unseal-ceremony-passphrase")
+				initialized = true
+			}
+			return isServing()
+		})
+	})
 
-	// From here to the end of the test every exit is a t.Fatalf, and a Fatalf
-	// ends this goroutine without reaching the shutdown below. The guard is
-	// what stops the daemon on those paths -- the initializeCeremony failure,
-	// both milestone timeouts, and a runStart that exits early -- so that a
-	// regression reports as this test failing rather than as a daemon holding
-	// its ports and the process signal handlers through everything that runs
-	// after it.
-	//
-	// awaitReady registers the same guard, which is why the failure paths were
-	// already covered before this line existed. It is stated here anyway,
-	// because a guard installed as a side effect of a readiness helper is not
-	// visible where the daemon is created, and the invariant belongs next to
-	// the goroutine it constrains. Registration is deduplicated per daemon, so
-	// the two calls install one cleanup.
-	guardDaemonShutdown(t, done)
-
-	// The sealed-window listener accepting is the cue that the ceremony can be
-	// performed -- it is NOT evidence of full startup, which is the confusion
-	// this test exists to remove.
-	awaitReady(t, done, listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort)), readyDeadline(t))
-
-	initializeCeremony(t, bundle, adminPort, "unseal-ceremony-passphrase")
-
-	select {
-	case <-unsealed:
-	case runErr := <-done:
-		t.Fatalf("runStart exited during the ceremony instead of unsealing: %v", runErr)
-	case <-time.After(readinessTimeout):
-		t.Fatalf("the barrier was initialized but startup did not proceed past "+
-			"awaitUnseal within %v: the daemon is serving its sealed window and "+
-			"going no further", readinessTimeout)
-	}
-
-	// The unseal is not the destination. Everything after it has to succeed
-	// for the node to be serving, and that is what this test is named for.
-	select {
-	case <-serving:
-	case runErr := <-done:
-		t.Fatalf("runStart exited after unsealing but before serving: the "+
-			"handover from the sealed window to the regular server failed: %v", runErr)
-	case <-time.After(readinessTimeout):
-		t.Fatalf("the barrier unsealed but the regular server was not serving "+
-			"within %v: startup stalled somewhere between awaitUnseal and "+
-			"srv.Start — initializeNode, first boot, or the server bind",
-			readinessTimeout)
+	// Serving is the second milestone; the first must have come before it,
+	// or the node served without the handover this test is named for.
+	if !wasUnsealed() {
+		t.Fatal("the regular server is serving but the barrier never " +
+			"reported the unseal: startup did not pass through awaitUnseal")
 	}
 
 	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {

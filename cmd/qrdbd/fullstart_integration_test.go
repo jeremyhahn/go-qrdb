@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -548,30 +549,6 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 // MVCC, watch and lease served (go-qrdb#582), and an MVCC range is served
 // rather than refused.
 func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
-	dir := t.TempDir()
-
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-
-	f := &startFlags{
-		mode:        "standalone",
-		dataDir:     dir,
-		adminPort:   adminPort,
-		authEnabled: false,
-		enableREST:  true,
-		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "default", Backend: "memory"},
-		},
-		host: testBindHost,
-	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
-	base := fmt.Sprintf("https://127.0.0.1:%d", adminPort)
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -579,15 +556,30 @@ func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
 		},
 	}
 
-	// Wait for the admin listener.
-	require.Eventually(t, func() bool {
-		resp, herr := client.Get(base + "/health")
-		if herr != nil {
-			return false
+	// Wait for the admin listener to report healthy.
+	var base string
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		f := &startFlags{
+			mode:        "standalone",
+			dataDir:     t.TempDir(),
+			adminPort:   p.admin,
+			authEnabled: false,
+			enableREST:  true,
+			databases: []qrdbconfig.DatabaseConfig{
+				{Name: "default", Backend: "memory"},
+			},
+			host: testBindHost,
 		}
-		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode == 200
-	}, 30*time.Second, 250*time.Millisecond, "standalone daemon never became healthy")
+		base = fmt.Sprintf("https://%s", net.JoinHostPort(testBindHost, strconv.Itoa(p.admin)))
+		return runStartLaunch(t, f, func() bool {
+			resp, herr := client.Get(base + "/health")
+			if herr != nil {
+				return false
+			}
+			defer func() { _ = resp.Body.Close() }()
+			return resp.StatusCode == http.StatusOK
+		})
+	})
 
 	// Standard KV round-trip (raw-body PUT /kv/{key}).
 	putReq, err := http.NewRequest(http.MethodPut, base+"/kv/standalone-smoke", strings.NewReader("v1"))
@@ -629,16 +621,8 @@ func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
 	_ = rangeResp.Body.Close()
 	require.Equal(t, 200, rangeResp.StatusCode, "mvcc range must be served in standalone: %s", rangeBytes)
 
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
-	}
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(25 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
+		t.Logf("runStart returned (acceptable): %v", runErr)
 	}
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }

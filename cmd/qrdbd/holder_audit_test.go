@@ -27,7 +27,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -104,35 +103,15 @@ func TestOpenComplianceAudit_UnopenableTrailFails(t *testing.T) {
 // sealedStartFlags are the flags of a single node with the system barrier
 // enabled, whose first boot holds in the sealed window until an operator
 // initializes it.
-func sealedStartFlags(t *testing.T, dir string) (*startFlags, int) {
-	t.Helper()
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-	return &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		enableREST:      true,
-		sealConfig: qrdbconfig.SealConfig{
-			Enabled:     true,
-			RootKeyPath: "__sys:seal/root_key",
-		},
-		host:             testBindHost,
-		processHardening: secure.ProcessInspectionAllowed,
-	}, adminPort
+func sealedStartFlags(dir string, p daemonPorts) *startFlags {
+	f := fullStartFlags(dir, p)
+	f.enableGRPC = false
+	f.sealConfig = qrdbconfig.SealConfig{
+		Enabled:     true,
+		RootKeyPath: "__sys:seal/root_key",
+	}
+	f.processHardening = secure.ProcessInspectionAllowed
+	return f
 }
 
 // The compliance trail exists, with the inspection opt-out as its first
@@ -141,14 +120,12 @@ func sealedStartFlags(t *testing.T, dir string) (*startFlags, int) {
 // moved ahead of the seal subsystem it was opened only after unseal, and a
 // sealed node had no trail at all.
 func TestRunStart_ComplianceTrailIsOpenInTheSealedWindow(t *testing.T) {
-	dir := t.TempDir()
-	writeTLSFixtures(t, dir)
-	f, adminPort := sealedStartFlags(t, dir)
-
-	done := make(chan error, 1)
-	go func() { done <- runStart(f) }()
-	guardDaemonShutdown(t, done)
-	awaitReady(t, done, listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort)), readyDeadline(t))
+	var dir string
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		dir = t.TempDir()
+		writeTLSFixtures(t, dir)
+		return runStartLaunch(t, sealedStartFlags(dir, p), adminReady(p))
+	})
 
 	evs := readTrail(t, dir)
 	require.NotEmpty(t, evs, "a node in its sealed window records on its trail")
@@ -167,12 +144,13 @@ func TestRunStart_UnopenableTrailFailsBeforeTheSealedWindow(t *testing.T) {
 	dir := t.TempDir()
 	writeTLSFixtures(t, dir)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, complianceAuditFile), 0o700))
-	f, _ := sealedStartFlags(t, dir)
+	p, err := drawDaemonPorts()
+	require.NoError(t, err)
+	f := sealedStartFlags(dir, p)
 
 	done := make(chan error, 1)
 	go func() { done <- runStart(f) }()
 	guardDaemonShutdown(t, done)
-	var err error
 	select {
 	case err = <-done:
 	case <-time.After(readinessTimeout):

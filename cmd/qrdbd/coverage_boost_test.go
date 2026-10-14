@@ -24,9 +24,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -942,49 +944,17 @@ func TestWaitForLeaderElection_CallerDeadlineEndsTheWait(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
-	dir := t.TempDir()
-
-	// Use free ports to avoid conflicts with concurrent tests.
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     false, // skip bootstrapAuth → covers the else branch
-		enableREST:      true,
-		enableGRPC:      true,
-		host:            testBindHost,
-	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
-	// Wait until the admin listener accepts before signalling, then signal
+	// Wait until the server is serving before signalling, then signal
 	// until runStart returns. Both halves matter: signalling at t=0 cancels
 	// startup before first boot and the test passes having covered nothing,
 	// and sleeping a fixed duration is a bet that loses under load. See
 	// signalAfterReady (go-qrdb#83).
-	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
-		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+	serving := servingHook(t)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		// authEnabled false: skip bootstrapAuth → covers the else branch.
+		return runStartLaunch(t, fullStartFlags(t.TempDir(), p), hookFired(serving))
+	})
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		// A daemon that reached its listener and was then signalled shuts
 		// down cleanly and returns nil. Logging an error as "acceptable"
 		// here is what let a startup that never completed pass this test
@@ -1003,35 +973,6 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
-	dir := t.TempDir()
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     false,
-		enableREST:      true,
-		enableGRPC:      true,
-		host:            testBindHost,
-	}
-
 	// Observe the daemon's OWN handling of SIGHUP, not merely its delivery.
 	// Installed before runStart so no signal can be processed unobserved.
 	reloaded := make(chan struct{}, 1)
@@ -1043,12 +984,6 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 		default:
 		}
 	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
 
 	// Wait until the daemon is SERVING before raising SIGHUP.
 	//
@@ -1061,9 +996,12 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 	// this file exists to remove, on the one signal that does not terminate
 	// the daemon (go-qrdb#83).
 	//
-	// The listener accepting means startup is past initializeNode, so the
+	// The server serving means startup is past initializeNode, so the
 	// handler is installed by the time SIGHUP is sent.
-	awaitReady(t, done, listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort)), readyDeadline(t))
+	serving := servingHook(t)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		return runStartLaunch(t, fullStartFlags(t.TempDir(), p), hookFired(serving))
+	})
 
 	// Register our own SIGHUP notify channel BEFORE raising the signal.
 	// Without a channel registered, SIGHUP's default disposition (terminate)
@@ -1136,52 +1074,22 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
-	dir := t.TempDir()
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     false,
-		enableREST:      true,
-		enableGRPC:      true,
-		// Set valid codec config to cover lines 790-806.
-		codecConfig: qrdbconfig.CodecConfig{
-			StorageCodec: "json",
-			WireCodec:    "json",
-		},
-		host: testBindHost,
-	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
-	// Wait until the admin listener accepts before signalling, then signal
+	// Wait until the server is serving before signalling, then signal
 	// until runStart returns. Both halves matter: signalling at t=0 cancels
 	// startup before first boot and the test passes having covered nothing,
 	// and sleeping a fixed duration is a bet that loses under load. See
 	// signalAfterReady (go-qrdb#83).
-	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
-		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+	serving := servingHook(t)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		f := fullStartFlags(t.TempDir(), p)
+		// Set valid codec config to cover lines 790-806.
+		f.codecConfig = qrdbconfig.CodecConfig{
+			StorageCodec: "json",
+			WireCodec:    "json",
+		}
+		return runStartLaunch(t, f, hookFired(serving))
+	})
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		// A daemon that reached its listener and was then signalled shuts
 		// down cleanly and returns nil. Logging an error as "acceptable"
 		// here is what let a startup that never completed pass this test
@@ -1211,52 +1119,22 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunStart_SealConfig_SoftwareStrategy_SealedWindow_ThenSIGTERM(t *testing.T) {
-	dir := t.TempDir()
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     false,
-		enableREST:      true,
-		enableGRPC:      true,
-		// Enable seal with default "software" strategy.
-		sealConfig: qrdbconfig.SealConfig{
-			Enabled:  true,
-			Strategy: "",
-		},
-		host: testBindHost,
-	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
 	// Wait until the admin listener accepts before signalling, then signal
 	// until runStart returns. Both halves matter: signalling at t=0 cancels
 	// startup before first boot and the test passes having covered nothing,
 	// and sleeping a fixed duration is a bet that loses under load. See
 	// signalAfterReady (go-qrdb#83).
-	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
-		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		f := fullStartFlags(t.TempDir(), p)
+		f.smType = "memory"
+		// Enable seal with default "software" strategy.
+		f.sealConfig = qrdbconfig.SealConfig{
+			Enabled:  true,
+			Strategy: "",
+		}
+		return runStartLaunch(t, f, adminReady(p))
+	})
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		// A daemon that reached its listener and was then signalled shuts
 		// down cleanly and returns nil. Logging an error as "acceptable"
 		// here is what let a startup that never completed pass this test
@@ -1370,53 +1248,23 @@ func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
-	dir := t.TempDir()
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       adminPort,
-		grpcPort:        grpcPort,
-		authEnabled:     true, // full auth bootstrap path
-		// This test is about the full-startup lifecycle (listeners, signal
-		// handling), exercised with no admin certificate ever enrolled --
-		// "enrolled" is the correct, explicit choice for that reason, not a
-		// workaround (go-qrdb#548).
-		mtlsBindingPolicy: "enrolled",
-		enableREST:        true,
-		enableGRPC:        true,
-		host:              testBindHost,
-	}
-	reserveNoisePort(t, f)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
-	// Wait until the admin listener accepts before signalling, then signal
+	// Wait until the server is serving before signalling, then signal
 	// until runStart returns. Both halves matter: signalling at t=0 cancels
 	// startup before first boot and the test passes having covered nothing,
 	// and sleeping a fixed duration is a bet that loses under load. See
 	// signalAfterReady (go-qrdb#83).
-	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
-		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+	serving := servingHook(t)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		f := fullStartFlags(t.TempDir(), p)
+		f.authEnabled = true // full auth bootstrap path
+		// This test is about the full-startup lifecycle (listeners, signal
+		// handling), exercised with no admin certificate ever enrolled --
+		// "enrolled" is the correct, explicit choice for that reason, not a
+		// workaround (go-qrdb#548).
+		f.mtlsBindingPolicy = "enrolled"
+		return runStartLaunch(t, f, hookFired(serving))
+	})
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		// A daemon that reached its listener and was then signalled shuts
 		// down cleanly and returns nil. Logging an error as "acceptable"
 		// here is what let a startup that never completed pass this test
@@ -1440,37 +1288,6 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 // sealSub.BarrierRegistry.Attach is called (start.go:979.55,984.4) when both
 // sealConfig.Enabled=true and a volume pool are configured in runStart.
 func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
-	dir := t.TempDir()
-	volDir := t.TempDir()
-
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		// Seal enabled: sealSub will be non-nil after initSealSubsystem.
-		sealConfig: qrdbconfig.SealConfig{
-			Enabled:  true,
-			Strategy: "",
-		},
-		// Volume pool configured: the "default" pool maps volDir on this node.
-		storageConfig: qrdbconfig.StorageConfig{
-			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Path: volDir},
-			},
-		},
-		host: testBindHost,
-	}
-
 	// Observe the wiring this test is NAMED for before shutting down.
 	//
 	// runStart installs its termination handler EARLY — before
@@ -1489,22 +1306,35 @@ func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
 		default:
 		}
 	}
-	reserveNoisePort(t, f)
 
-	done := make(chan error, 1)
-	go func() {
-		done <- runStart(f)
-	}()
-
-	select {
-	case <-attached:
-	case runErr := <-done:
-		t.Fatalf("runStart returned before the volume pool was attached to the "+
-			"barrier registry, so the wiring under test never happened: %v", runErr)
-	case <-time.After(readinessTimeout):
-		t.Fatalf("the volume pool was not attached to the barrier registry within %v",
-			readinessTimeout)
-	}
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		raftAddr := net.JoinHostPort(raftAdvertiseHost, strconv.Itoa(p.raft))
+		f := &startFlags{
+			dataDir:         t.TempDir(),
+			smType:          "memory",
+			discoveryMethod: "static",
+			peers:           []string{"1=" + raftAddr},
+			listen:          net.JoinHostPort(raftListenHost, strconv.Itoa(p.raft)),
+			raftAddress:     raftAddr,
+			shardID:         1,
+			replicaID:       1,
+			deploymentID:    1,
+			// Seal enabled: sealSub will be non-nil after initSealSubsystem.
+			sealConfig: qrdbconfig.SealConfig{
+				Enabled:  true,
+				Strategy: "",
+			},
+			// Volume pool configured: the "default" pool maps a fresh
+			// directory on this node.
+			storageConfig: qrdbconfig.StorageConfig{
+				VolumePools: []qrdbconfig.VolumePoolConfig{
+					{Name: "default", Path: t.TempDir()},
+				},
+			},
+			host: testBindHost,
+		}
+		return runStartLaunch(t, f, hookFired(attached))
+	})
 
 	// The wiring is done; now drive the shutdown.
 	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {

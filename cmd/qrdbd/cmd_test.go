@@ -2552,46 +2552,38 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// "0.0.0.0:63002: bind: address already in use" beside a concurrent
 	// integration run. The bind host moves to testBindHost with the ports,
 	// and is set on the flags before reserveNoisePort so the Noise port is
-	// probed where its listener binds.
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
-	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
-	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
-	require.NoError(t, err)
-	raftAddr := net.JoinHostPort(testBindHost, fmt.Sprint(raftPort))
-
-	dir := t.TempDir()
-	cmd, f := newStartCmdWithFlags()
-	f.host = testBindHost
-	reserveNoisePort(t, f)
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
-	cmd.SetArgs([]string{
-		"--sm", "memory",
-		"--discovery", "static",
-		"--host", testBindHost,
-		"--listen", net.JoinHostPort(raftListenHost, fmt.Sprint(raftPort)),
-		"--raft-address", raftAddr,
-		"--peers", "1=" + raftAddr,
-		"--admin-port", fmt.Sprint(adminPort),
-		"--grpc-port", fmt.Sprint(grpcPort),
-		"--data-dir", dir,
-		"--shard-id", "1",
-		"--replica-id", "1",
-		"--auth-enabled=false",
+	// probed where its listener binds. The ports are drawn per attempt by
+	// startDaemon, which starts again on fresh ones if another process takes
+	// one before Execute binds it.
+	serving := servingHook(t)
+	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
+		raftAddr := net.JoinHostPort(testBindHost, fmt.Sprint(p.raft))
+		cmd, f := newStartCmdWithFlags()
+		f.host = testBindHost
+		reserveNoisePort(t, f)
+		buf := &bytes.Buffer{}
+		cmd.SetOut(buf)
+		cmd.SetErr(buf)
+		cmd.SetArgs([]string{
+			"--sm", "memory",
+			"--discovery", "static",
+			"--host", testBindHost,
+			"--listen", net.JoinHostPort(raftListenHost, fmt.Sprint(p.raft)),
+			"--raft-address", raftAddr,
+			"--peers", "1=" + raftAddr,
+			"--admin-port", fmt.Sprint(p.admin),
+			"--grpc-port", fmt.Sprint(p.grpc),
+			"--data-dir", t.TempDir(),
+			"--shard-id", "1",
+			"--replica-id", "1",
+			"--auth-enabled=false",
+		})
+		return daemonLaunch{run: cmd.Execute, ready: hookFired(serving)}
 	})
 
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Execute()
-	}()
-
-	// Signal once the REST listener accepts, and keep signalling until
+	// Signal once the server is serving, and keep signalling until
 	// Execute returns: see signalAfterReady (go-qrdb#83).
-	if err := signalAfterReady(t, done, syscall.SIGINT,
-		listenerReady(net.JoinHostPort(testBindHost, fmt.Sprint(adminPort)))); err != nil {
+	if err := signalUntilReturn(t, done, syscall.SIGINT); err != nil {
 		t.Fatalf("Execute() error = %v, want nil (clean shutdown)", err)
 	}
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)

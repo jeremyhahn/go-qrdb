@@ -239,8 +239,9 @@ func stopDaemon(done <-chan error, limit time.Time) bool {
 // different door.
 var guardedDaemons = struct {
 	sync.Mutex
-	keys map[daemonGuardKey]struct{}
-}{keys: make(map[daemonGuardKey]struct{})}
+	// keys maps each guarded daemon to whether its result has been received.
+	keys map[daemonGuardKey]bool
+}{keys: make(map[daemonGuardKey]bool)}
 
 // daemonGuardKey identifies one guarded daemon. Both fields are comparable, so
 // the pair is usable as a map key directly.
@@ -260,13 +261,33 @@ func claimDaemonGuard(t *testing.T, done <-chan error) bool {
 	if _, claimed := guardedDaemons.keys[key]; claimed {
 		return false
 	}
-	guardedDaemons.keys[key] = struct{}{}
+	guardedDaemons.keys[key] = false
 	t.Cleanup(func() {
 		guardedDaemons.Lock()
 		defer guardedDaemons.Unlock()
 		delete(guardedDaemons.keys, key)
 	})
 	return true
+}
+
+// daemonReturned records that the guarded daemon's result has been received
+// from done, so its guard does not wait for a return that has already happened.
+func daemonReturned(t *testing.T, done <-chan error) {
+	key := daemonGuardKey{t: t, done: done}
+
+	guardedDaemons.Lock()
+	defer guardedDaemons.Unlock()
+
+	if _, claimed := guardedDaemons.keys[key]; claimed {
+		guardedDaemons.keys[key] = true
+	}
+}
+
+// daemonHasReturned reports whether daemonReturned recorded the daemon's result.
+func daemonHasReturned(t *testing.T, done <-chan error) bool {
+	guardedDaemons.Lock()
+	defer guardedDaemons.Unlock()
+	return guardedDaemons.keys[daemonGuardKey{t: t, done: done}]
 }
 
 // guardDaemonShutdown registers a cleanup that stops runStart if the test did
@@ -293,7 +314,7 @@ func guardDaemonShutdown(t *testing.T, done <-chan error) {
 		// out the bound before reporting a failure that is entirely its own
 		// (measured: this cleanup failed every passing run until it asked
 		// t.Failed first).
-		if !t.Failed() {
+		if !t.Failed() || daemonHasReturned(t, done) {
 			return
 		}
 		if !stopDaemon(done, time.Now().Add(shutdownGuardBound)) {
@@ -361,6 +382,26 @@ const shutdownGuardBound = 30 * time.Second
 // is the exact failure this file exists to remove (go-qrdb#83).
 func awaitReady(t *testing.T, done <-chan error, ready func() bool, limit time.Time) {
 	t.Helper()
+	if exited := waitReady(t, done, ready, limit); exited != nil {
+		// Not a condition to signal into: a runStart that exits during
+		// startup has failed, and reporting its error to a caller that
+		// treats any error as acceptable is how a daemon that never
+		// started passed as a full-startup test for months.
+		t.Fatalf("%v", exited)
+	}
+}
+
+// waitReady is awaitReady for a caller that decides what an early return
+// means: it returns nil once ready reports true, and the daemon's result if
+// runStart returns first. A daemon that is still not ready at limit is stopped
+// and fails the test, as in awaitReady.
+//
+// An early return consumes runStart's single result from done, so waitReady
+// records it as returned: the shutdown guard would otherwise find done empty
+// on a failed test and spend its whole bound signalling a daemon that stopped
+// long ago, then report that it never did (run 51450 did exactly that).
+func waitReady(t *testing.T, done <-chan error, ready func() bool, limit time.Time) *daemonExitedError {
+	t.Helper()
 
 	// However this test ends -- including on the Fatalf below, which ends only
 	// this goroutine -- the daemon is stopped and the handlers restored.
@@ -380,15 +421,12 @@ func awaitReady(t *testing.T, done <-chan error, ready func() bool, limit time.T
 		}
 		select {
 		case runErr := <-done:
-			// Not a condition to signal into: a runStart that exits during
-			// startup has failed, and reporting its error to a caller that
-			// treats any error as acceptable is how a daemon that never
-			// started passed as a full-startup test for months.
-			t.Fatalf("runStart returned after %v, before becoming ready: %v",
-				time.Since(started), runErr)
+			daemonReturned(t, done)
+			return &daemonExitedError{After: time.Since(started), Err: runErr}
 		case <-poll.C:
 		}
 	}
+	return nil
 }
 
 // readyDeadline is the bound awaitReady and signalAfterReady share: the test's
