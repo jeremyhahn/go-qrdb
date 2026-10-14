@@ -1,3 +1,7 @@
+# Release — Engineering
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Release — Engineering
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 ## Where it lives
 

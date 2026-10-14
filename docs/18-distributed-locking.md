@@ -1,3 +1,8 @@
+# Distributed Locking
+
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,11 +18,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Distributed Locking
-
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 ## Overview
 

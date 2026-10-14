@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Deploying Multi-Node IsolationRaft Clusters
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 This guide covers the operational considerations and deployment patterns for
 running tenant databases with `IsolationRaft` isolation across multiple cluster

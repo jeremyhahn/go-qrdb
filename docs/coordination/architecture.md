@@ -1,3 +1,7 @@
+# Coordination — Architecture
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Coordination — Architecture
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 The coordination surface is `sdk/go/coordination.go`: five verbs — `Get`,
 `Put`, `CompareAndSwap`, `AcquireLease`, `Watch` — that a control plane uses to

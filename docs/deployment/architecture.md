@@ -1,3 +1,7 @@
+# Deployment — Architecture
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Deployment — Architecture
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 What a host must grant `qrdbd` to run as configured — locked memory — and
 what `qrdbd` takes away from the host in return: the ability of other

@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Pluggable Authentication
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 go-qrdb defines pluggable `Authenticator` and `Authorizer` interfaces in `pkg/auth/`. The default implementation extracts identity from mTLS client certificates. go-xkms can inject richer authenticators (JWT, adaptive) when using go-qrdb as a library.
 

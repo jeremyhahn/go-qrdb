@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Multi-Tenant Barriers
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 The barrier supports per-tenant encryption isolation through `BarrierRegistry` and `TenantBarrier`. Each tenant gets an independent DEK derived from a unique deployment ID. Isolation is controlled via the `IsolationType` field in `TenantInfo`.
 

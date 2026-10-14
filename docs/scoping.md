@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Tenant & Database Scoping
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 Go-qrdb scopes every request to a tenant and a database. The **tenant is derived
 from the authenticated identity** (the mTLS client certificate / session), and the

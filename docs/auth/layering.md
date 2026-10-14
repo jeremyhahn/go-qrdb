@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Identity / authorization layering
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 go-qrdb's auth subsystem is **identity-layer**. It owns tenants, users,
 roles, role memberships, and the permission registry for identity-domain

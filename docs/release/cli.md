@@ -1,3 +1,7 @@
+# Release — CLI
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Release — CLI
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 The release surface is `make` targets. `qrdb` and `qrdbd` have no release
 commands.

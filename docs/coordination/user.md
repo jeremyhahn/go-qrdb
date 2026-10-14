@@ -1,3 +1,7 @@
+# Coordination — User Guide
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Coordination — User Guide
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Use this surface when several copies of your program must agree on something:
 which one is in charge, what the current configuration is, or who owns a piece

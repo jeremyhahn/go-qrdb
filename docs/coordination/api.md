@@ -1,3 +1,7 @@
+# Coordination — API
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Coordination — API
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 **The coordination surface is an SDK-level composition, not a wire protocol.**
 It adds no endpoint, no RPC, no QUIC method, no MCP tool and no route to any

@@ -1,3 +1,7 @@
+# Deployment — API
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Deployment — API
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 No transport surface: the secure-memory budget is installed by the `qrdbd
 start` process before any listener opens, and is not readable or settable

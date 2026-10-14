@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Run Modes & Feature Model (Requirements)
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Conflicts with this document are defects. Fix them here first.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 Ratified 2026-08-17. This document is the requirements statement for qrdb's
 run modes and feature composition. Terminology: [GLOSSARY.md](GLOSSARY.md).

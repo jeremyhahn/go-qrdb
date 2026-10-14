@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Bootstrap Initialization
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Pointer table to the feature folders that own each startup step.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 This document describes the startup and initialization sequence for a fresh go-qrdb daemon (`qrdbd`).
 

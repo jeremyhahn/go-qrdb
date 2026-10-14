@@ -1,3 +1,7 @@
+# Deployment — CLI
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Deployment — CLI
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 No verbs of its own. The one flag involved is `qrdbd start
 --secure-memory-budget-mib` (int64 MiB, default `0` = derive from the host),

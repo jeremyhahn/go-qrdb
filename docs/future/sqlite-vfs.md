@@ -1,3 +1,7 @@
+# SQLite VFS Backend (Future Enhancement)
+
+> **Status: PROPOSED — not scheduled, not implemented.** · Last verified: 2026-10-13
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# SQLite VFS Backend (Future Enhancement)
-
-> **Status: PROPOSED — not scheduled, not implemented.** · Last verified: 2026-10-13
 
 **Status: PROPOSED — not scheduled, not implemented.**
 

@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # GUI System
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion to `docs/desktop-gui/`, which is the contract.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 The `qrdb` binary serves as both a CLI and a desktop GUI application. When
 launched without arguments on a system with a graphical display, it opens

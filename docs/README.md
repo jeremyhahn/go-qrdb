@@ -1,3 +1,8 @@
+# QRDB Documentation
+
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Index of the documentation tree.
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,11 +18,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# QRDB Documentation
-
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Index of the documentation tree.
 
 ![QuicRaft DB Logo](../assets/logo.svg)
 

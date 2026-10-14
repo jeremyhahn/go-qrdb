@@ -1,3 +1,8 @@
+# Multi-Database Architecture
+
+> **Status: REFERENCE** · Last verified: 2026-10-13
+> Index of the `databases` feature folder. The folder's five documents are the contract; this page holds no requirements of its own.
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,11 +18,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Multi-Database Architecture
-
-> **Status: REFERENCE** · Last verified: 2026-10-13
-> Index of the `databases` feature folder. The folder's five documents are the contract; this page holds no requirements of its own.
 
 A QRDB **database** is a named, isolated data store owned by a tenant. A request
 selects its database with the `X-QRDB-Database` header (REST), the

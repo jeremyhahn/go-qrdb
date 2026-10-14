@@ -1,3 +1,7 @@
+# Coordination — CLI
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,10 +17,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Coordination — CLI
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 **There is no CLI surface for this feature, and there is deliberately no plan
 to add one.** There is no `qrdb coordination` command group; the surface is

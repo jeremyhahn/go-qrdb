@@ -1,12 +1,12 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
-
 # Authentication Factor Framework
 
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
+
+<!--
+Copyright 2026 Jeremy Hahn
+Licensed under the Apache License, Version 2.0
+-->
 
 `pkg/authfactors/` defines the **Factor** interface and the **FactorRegistry** lookup table that hold the qrdb authentication-factor framework together. It is the contract every concrete factor (FIDO2, PIV, PKCS#11, software mTLS) implements; concrete hardware implementations ship in go-xkms and are registered into qrdb at composition time.
 
