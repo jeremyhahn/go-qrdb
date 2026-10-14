@@ -11,7 +11,44 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.48.0-alpha] - 2026-10-14
+
+### Added
+
+- **Public MCP tools.** A `ServiceModule` implementing
+  `apimodule.MCPPublicToolLister` (`PublicMCPTools() []string`) names MCP
+  tools an unauthenticated caller may reach — health, liveness, readiness, a
+  login ceremony. Such a caller can `initialize`, list exactly those tools and
+  call them; every other request is answered 401 as before. The server refuses
+  at startup a declared tool that carries any permission but `admin:health`
+  (`*middleware.PublicMCPToolRefusedError`) or a name no tool answers
+  (`*mcp.UnknownPublicToolError`). An authenticated `tools/list` shows only the
+  tools the caller's grants permit.
+
 ### Changed
+
+- **A node proposes nothing on its own behalf while its barrier is sealed.**
+  The feature-gate advertisement, the member record, the dynamic membership
+  manager and the lease-expiry sweep consult the node barrier: a
+  `cluster.Advertiser` composed with `WithAdvertiseSealProbe` (and a
+  `MembershipManager` with `WithMembershipSealProbe`) skips its keep-alive
+  while sealed and refuses a registration with `*cluster.NodeSealedError`,
+  retried after the unseal; `Lessor.RunExpiry` composed with
+  `lease.WithExpiryHold` revokes nothing while sealed and gives every lease a
+  full TTL when the hold is released.
+- **`qrdbd` waits for the system shard leader for 120 election timeouts**
+  (15 seconds single-node, 4 minutes for a cluster on the default Raft tuning)
+  instead of a fixed number of attempts. The `no raft leader after ...` error
+  names the budget and the time spent, and SIGINT/SIGTERM ends the wait.
+- **Replica forwarding reconnects to a target** that fails its connection,
+  for up to half of `replica_forwarding.timeout`, before counting it
+  unreachable and moving to the next replica.
+- **The tenant barrier-ready hook also runs when a holder share completes an
+  unseal quorum** (`TenantBarrierQuorumSubmit`), never below the threshold,
+  for another quorum op, or on a failed submission.
+- **The MCP SDK transport bounds each call by its configured timeout**,
+  including the `initialize` handshake, as the REST, gRPC and QUIC transports
+  do; a caller's earlier deadline still wins.
 
 - **CI runs in two tiers.** A pull request runs the PR tier (`lint`,
   `build`, `test`, `test-sdk`, `test-typescript`, `security`); a push to
@@ -96,6 +133,23 @@ are not reconstructed here — their history is in the git log.
 - **`server.WithSealStrategy` and `CryptoOptions.SealStrategy`.** Nothing
   consumed them; inject a system-barrier strategy with `sdk/go/node`'s
   `WithSealStrategy` or through `server.WithStrategyRegistry`.
+
+### Fixed
+
+- **`RebalanceService.ExecuteRebalance` refuses a plan whose placement
+  records cannot be read**, with `*service.RebalancePlacementReadError`,
+  instead of moving a dedicated tenant shard by the generic voter add.
+- **First boot on a recycled or unsealed node no longer proposes the issued
+  admin certificate again** once the replica holds its record; a first write
+  that meets a leader election is retried for up to 10 s.
+- **A first-boot admin username collision whose record is not yet readable**
+  is retried within a bounded window and converges on the winner, instead of
+  being refused as a squatter.
+- **Enabling encryption on an embedded `Node` stops the volume-pool reporter**
+  before closing the old data plane's storage, so the rebuild no longer fails
+  with `storage is closed`.
+- **The cluster-seal monitor no longer spends its boot exemption** on a read
+  that began before the feature gate finished loading its activations.
 
 ## [0.47.0-alpha] - 2026-10-08
 
