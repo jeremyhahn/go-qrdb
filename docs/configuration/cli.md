@@ -227,10 +227,13 @@ running server actually resolved.
 | Raft | 63001 | `raft.raft_address` |
 | REST | 63002 | `server.admin_port` |
 | gRPC | 63003 | `server.grpc_port` |
-| QUIC | 63004 | — |
+| QUIC | 63004 | `server.quic_port` |
+| MCP | 63005 | `mcp.port` |
+| Noise bootstrap | 63006 | `bootstrap.noise_port` |
+| CSR join | 63007 | `cluster_join.listen_port` |
 | MySQL | 3306 | `server.mysql_port` |
 | PostgreSQL | 5432 | `server.pgsql_port` |
-| etcd | 2379 | `databases[].etcd.listen_addr` |
+| etcd | none; `qrdb database create --etcd` uses `localhost:2379` | `databases[].etcd.listen_addr` |
 
 ## The full reference
 

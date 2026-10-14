@@ -941,7 +941,7 @@ entry, not nested under anything else.
 | Field                   | Type     | Default  | Required | Description                                      |
 |-------------------------|----------|----------|----------|--------------------------------------------------|
 | `enabled`               | bool     | `false`  | no       | Enable etcd v3 gRPC endpoint for this database   |
-| `listen_addr`           | string   | `:2379`  | no       | Listen address for the etcd gRPC server          |
+| `listen_addr`           | string   | --       | when enabled | Listen address for the etcd gRPC server      |
 | `advertise_client_urls` | []string | --       | no       | URLs advertised to clients for endpoint discovery |
 
 **Validation rules:**
@@ -1553,4 +1553,10 @@ always on; see the [audit](#audit) section above.
 | Raft    | 63001       | QUIC (internal) | `raft.raft_address`  |
 | REST    | 63002       | HTTPS           | `server.admin_port`  |
 | gRPC    | 63003       | gRPC + TLS      | `server.grpc_port`   |
-| etcd    | 2379        | gRPC + mTLS     | `databases[].etcd.listen_addr` |
+| QUIC    | 63004       | QUIC            | `server.quic_port`   |
+| MCP     | 63005       | HTTPS           | `mcp.port`           |
+| Noise bootstrap | 63006 | Noise NK over TCP | `bootstrap.noise_port` |
+| CSR join | 63007      | Noise NK over TCP | `cluster_join.listen_port` |
+| MySQL   | 3306        | MySQL wire      | `server.mysql_port`  |
+| PostgreSQL | 5432     | PostgreSQL wire | `server.pgsql_port`  |
+| etcd    | none; `qrdb database create --etcd` uses `localhost:2379` | gRPC + mTLS | `databases[].etcd.listen_addr` |

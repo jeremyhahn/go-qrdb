@@ -123,7 +123,7 @@ budget, the operation fails.
 ### REST API
 
 ```bash
-curl -X POST https://localhost:9090/v1/databases \
+curl -X POST https://localhost:63002/v1/databases \
   -H "X-QRDB-Database: payments" \
   -H "X-QRDB-Tenant: acme" \
   -H "Content-Type: application/json" \
@@ -267,10 +267,10 @@ deliver the tenant root key to each follower node. The delivery uses:
 Each node's TLS certificate must carry a SPIFFE URI SAN in the form:
 
 ```
-spiffe://qrdb.cluster/node/127.0.0.1:50001
+spiffe://qrdb.cluster/node/127.0.0.1:63001
 ```
 
-Where `qrdb.cluster` is the configured trust domain and `127.0.0.1:50001` is
+Where `qrdb.cluster` is the configured trust domain and `127.0.0.1:63001` is
 the node's Raft address. This is mandatory. The key-delivery sender verifies
 that the recipient certificate has this SAN and that it matches the target node
 before sending the key.
@@ -317,7 +317,7 @@ replicas to reach the target. For dedicated-raft databases:
 
 ```bash
 qrdb rebalance move --tenant acme --database payments \
-  --from 127.0.0.1:50001 --to 127.0.0.2:50002
+  --from 127.0.0.1:63001 --to 127.0.0.2:63001
 ```
 
 Moves a replica from one node to another, reusing the same logic as `rebalance auto`.
@@ -359,12 +359,12 @@ TenantID: acme
 Database: payments
 ShardID: 12345
 RF: 3
-Leader: Replica 1 (127.0.0.1:50001)
+Leader: Replica 1 (127.0.0.1:63001)
 
 Replicas:
-  Replica 1 (127.0.0.1:50001) [leader]
-  Replica 2 (127.0.0.2:50002)
-  Replica 3 (127.0.0.3:50003)
+  Replica 1 (127.0.0.1:63001) [leader]
+  Replica 2 (127.0.0.2:63001)
+  Replica 3 (127.0.0.3:63001)
 ```
 
 ### Rebalance load report
@@ -414,7 +414,7 @@ starts with "barrier not unsealed".
 1. Verify mTLS connectivity between nodes:
    ```bash
    # From leader node
-   curl -X POST https://<follower>:9091/v1/cluster/keydelivery \
+   curl -X POST https://<follower>:63002/v1/cluster/keydelivery \
      --cert node.crt --key node.key --cacert ca.crt
    ```
 2. Check the leader logs for key-delivery errors:

@@ -25,7 +25,7 @@ password path.
 ```bash
 qrdb kv get hello                                          # unix socket, default
 qrdb --server https://db.example.com kv get hello          # scheme implies REST
-qrdb --transport grpc --server grpcs://db.example.com:9090 kv get hello
+qrdb --transport grpc --server grpcs://db.example.com:63003 kv get hello
 ```
 
 A URL scheme on `--server` picks the transport, so you rarely need
@@ -39,10 +39,12 @@ A URL scheme on `--server` picks the transport, so you rarely need
 | REST | 63002 |
 | gRPC | 63003 |
 | QUIC | 63004 |
+| MCP | 63005 |
 | Unix | `/var/run/qrdbd/qrdbd.sock` |
 
 Plus, when enabled: MySQL 3306, PostgreSQL 5432, and a per-database etcd
-listener (2379 by default).
+listener (no server default; `qrdb database create --etcd` uses
+`localhost:2379`).
 
 ## Scoping your requests
 

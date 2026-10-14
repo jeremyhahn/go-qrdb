@@ -18,7 +18,7 @@ Permission: `admin:capabilities`.
 Example:
 
 ```bash
-qrdb --server https://db.example.com:8443 admin capabilities --output json
+qrdb --server https://db.example.com:63002 admin capabilities --output json
 ```
 
 The command is a client command. It does not change build tags, run mode or

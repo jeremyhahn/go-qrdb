@@ -5,8 +5,8 @@
 Use capabilities to answer "what can this node do right now?"
 
 ```bash
-qrdb --server https://db.example.com:8443 admin capabilities
-qrdb --server https://db.example.com:8443 admin capabilities --output json
+qrdb --server https://db.example.com:63002 admin capabilities
+qrdb --server https://db.example.com:63002 admin capabilities --output json
 ```
 
 If a feature is `false`, check build tags, run mode and configuration. For

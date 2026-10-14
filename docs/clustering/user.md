@@ -143,8 +143,8 @@ qrdbd start ... \
 
 # Joining node, SPKI/Direct
 qrdbd start ... \
-  --bootstrap-spki-pin <hex> --bootstrap-addr member1.db.example.com:8443 \
-  --bootstrap-join-url https://member1.db.example.com:8443 \
+  --bootstrap-spki-pin <hex> --bootstrap-addr member1.db.example.com:63002 \
+  --bootstrap-join-url https://member1.db.example.com:63002 \
   --bootstrap-join-token-file /etc/qrdb/join-token.secret
 ```
 
@@ -165,8 +165,8 @@ daemon start every few seconds:
 ```bash
 # Joining node: no token flags at all
 qrdbd start ... \
-  --bootstrap-spki-pin <hex> --bootstrap-addr member1.db.example.com:8443 \
-  --bootstrap-join-url https://member1.db.example.com:8443
+  --bootstrap-spki-pin <hex> --bootstrap-addr member1.db.example.com:63002 \
+  --bootstrap-join-url https://member1.db.example.com:63002
 ```
 
 From an admitted member, review and decide:

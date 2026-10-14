@@ -21,7 +21,7 @@ qrdb database update-etcd --name k8s --disabled
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--etcd` | `false` | Enable etcd protocol on database creation |
-| `--etcd-listen-addr` | `:2379` | etcd gRPC listen address |
+| `--etcd-listen-addr` | `localhost:2379` | etcd gRPC listen address |
 | `--etcd-advertise-client-urls` | (none) | Advertised client URLs for etcd endpoint discovery |
 
 

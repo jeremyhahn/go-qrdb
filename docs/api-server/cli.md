@@ -13,11 +13,11 @@ Representative flags:
 
 ```bash
 qrdbd start \
-  --listen 127.0.0.1:8443 \
-  --grpc-port 9090 \
-  --quic-port 9443 \
+  --admin-port 63002 \
+  --grpc-port 63003 \
+  --enable-quic --quic-port 63004 \
   --unix-socket-path /var/run/qrdbd/qrdbd.sock \
-  --mcp-endpoint /mcp \
+  --enable-mcp --mcp-port 63005 --mcp-endpoint /mcp \
   --enable-mysql --mysql-port 3306 \
   --enable-pgsql --pgsql-port 5432
 ```
@@ -38,7 +38,7 @@ Recognised schemes: `https://`, `grpcs://`, `quics://`, `unix://`, `http://`,
 `grpc://`, `quic://`, `mcp://`.
 
 ```bash
-qrdb --transport grpc --server grpcs://db.example.com:9090 kv get hello
+qrdb --transport grpc --server grpcs://db.example.com:63003 kv get hello
 qrdb --server https://db.example.com kv get hello     # scheme implies REST
 qrdb kv get hello                                     # default: local unix socket
 ```

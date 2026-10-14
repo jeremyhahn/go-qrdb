@@ -282,7 +282,7 @@ import (
 )
 
 t, err := rest.New(
-    transport.WithAddress("https://localhost:8443"),
+    transport.WithAddress("https://localhost:63002"),
     transport.WithTLSCAFile("/etc/qrdb/ca.pem"),
 )
 if err != nil {

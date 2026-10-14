@@ -15,7 +15,7 @@ each feature's own `api.md`.
 | REST | HTTP/JSON (chi) | 63002 | |
 | gRPC | HTTP/2 | 63003 | `qrdb.v1.QRDBService` and the auxiliary services |
 | QUIC | method/frame dispatch | 63004 | seventeen wire statuses, one per gRPC code — see [the status vocabulary](#the-quic-status-vocabulary) |
-| MCP | Model Context Protocol over HTTPS | configured endpoint | tools named `qrdb_*` — seventeen JSON-RPC error codes, one per gRPC code, see [the MCP error vocabulary](#the-mcp-error-vocabulary) |
+| MCP | Model Context Protocol over HTTPS | 63005, `/mcp` | tools named `qrdb_*` — seventeen JSON-RPC error codes, one per gRPC code, see [the MCP error vocabulary](#the-mcp-error-vocabulary) |
 
 **The Unix transport is not a distinct protocol.** It serves the same gRPC wire
 over a domain socket, which is why every feature's `api.md` gives one column for

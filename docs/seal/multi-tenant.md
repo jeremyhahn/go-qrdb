@@ -108,13 +108,13 @@ The mode is selected on the create call and cannot be changed afterward without 
 
   ```bash
   # Self-managed barrier tenant (default; field may be omitted)
-  curl -X POST https://localhost:8443/v1/tenants \
+  curl -X POST https://localhost:63002/v1/tenants \
     --cert system-admin.pem --key system-admin-key.pem \
     -H 'Content-Type: application/json' \
     -d '{"id":"acme","name":"Acme Corp","isolation_type":"barrier"}'
 
   # System-managed auto-unseal (requires the entitlement)
-  curl -X POST https://localhost:8443/v1/tenants \
+  curl -X POST https://localhost:63002/v1/tenants \
     --cert system-admin.pem --key system-admin-key.pem \
     -H 'Content-Type: application/json' \
     -d '{"id":"acme","name":"Acme Corp","isolation_type":"barrier","barrier_auto_unseal":true}'

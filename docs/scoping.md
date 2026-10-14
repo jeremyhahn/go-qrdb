@@ -59,12 +59,12 @@ X-QRDB-Database: user-data
 ```bash
 # Read from the "users" database. The tenant is whatever acme-admin.pem
 # authenticates as — it is NOT specified in the request.
-curl -X GET "https://localhost:8443/v1/kv/users/123" \
+curl -X GET "https://localhost:63002/v1/kv/users/123" \
   --cert acme-admin.pem --key acme-admin-key.pem \
   -H "X-QRDB-Database: users"
 
 # Operating as a different tenant means authenticating with that tenant's cert:
-curl -X GET "https://localhost:8443/v1/kv/setting" \
+curl -X GET "https://localhost:63002/v1/kv/setting" \
   --cert system-admin.pem --key system-admin-key.pem   # → system tenant
 ```
 

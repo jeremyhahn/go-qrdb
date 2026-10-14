@@ -233,7 +233,7 @@ Both factors must be present on every SO-authenticated request. The mTLS certifi
 Example REST request (SO changing User PIN):
 
 ```bash
-curl -X POST https://localhost:8443/v1/barrier/pin/reset \
+curl -X POST https://localhost:63002/v1/barrier/pin/reset \
   --cert so.pem \
   --key so-key.pem \
   -H "X-QRDB-SO-PIN: <PIN>" \

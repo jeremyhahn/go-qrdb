@@ -148,10 +148,13 @@ reference with defaults is [12-configuration.md](../12-configuration.md).
 | Raft | 63001 | QUIC (internal) | `raft.raft_address` |
 | REST | 63002 | HTTPS | `server.admin_port` |
 | gRPC | 63003 | gRPC + TLS | `server.grpc_port` |
-| QUIC | 63004 | QUIC | — |
+| QUIC | 63004 | QUIC | `server.quic_port` |
+| MCP | 63005 | HTTPS | `mcp.port` |
+| Noise bootstrap | 63006 | Noise NK over TCP | `bootstrap.noise_port` |
+| CSR join | 63007 | Noise NK over TCP | `cluster_join.listen_port` |
 | MySQL | 3306 | MySQL wire | `server.mysql_port` |
 | PostgreSQL | 5432 | PostgreSQL wire | `server.pgsql_port` |
-| etcd | 2379 | gRPC + mTLS | `databases[].etcd.listen_addr` |
+| etcd | none; `qrdb database create --etcd` uses `localhost:2379` | gRPC + mTLS | `databases[].etcd.listen_addr` |
 
 ## Trust boundaries
 
