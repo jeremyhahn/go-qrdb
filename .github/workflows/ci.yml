@@ -449,6 +449,13 @@ jobs:
       - name: Generated database-scope adapters are current
         run: make check-generated
 
+      # Every tracked module's go.mod/go.sum matches its sources in both
+      # directions. Builds, vet and `go mod verify` fail only on a missing
+      # line, so a stale go.sum passed every job and was first caught by
+      # `make release-alpha` refusing the tag.
+      - name: Every module is tidy
+        run: make check-mod-tidy
+
       # Same reasoning, for the module sweep's guard. A healthy tree exercises
       # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
       # unmapped module, an empty or rootless discovery, a partial traversal —

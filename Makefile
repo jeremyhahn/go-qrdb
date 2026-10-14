@@ -3160,6 +3160,26 @@ mod-verify:
 	$(GO) mod verify
 	cd sdk/go && $(GO) mod verify
 
+# Every tracked module's go.mod and go.sum match its own sources. A build under
+# -mod=readonly, `go vet` and `mod-verify` fail only on a MISSING requirement or
+# checksum; a stale extra line -- a superseded version's go.sum pair -- passes
+# all three, and nothing caught it until `release-alpha` refused v0.48.0-alpha.
+# `go mod tidy -diff` reports both directions and mutates nothing. The module
+# set is every tracked go.mod, not a list, so a new module is checked the day it
+# is committed; the root module missing from it means discovery failed, and an
+# empty loop must not report success. Every module is asked before failing, so
+# one run names all of them.
+.PHONY: check-mod-tidy
+check-mod-tidy:
+	@mods=$$(git ls-files -- 'go.mod' '*/go.mod'); \
+	case " $$(echo $$mods) " in *" go.mod "*) ;; *) echo "ERROR: module discovery did not find the root go.mod (found: $$mods)"; exit 1 ;; esac; \
+	bad=; for m in $$mods; do \
+	  d=$$(dirname "$$m"); \
+	  ( cd "$$d" && GOWORK=off $(GO) mod tidy -diff ) || bad="$$bad $$d"; \
+	done; \
+	test -z "$$bad" || { echo "ERROR: go.mod/go.sum is not tidy in:$$bad. Run 'GOWORK=off go mod tidy' in each and commit the result"; exit 1; }; \
+	echo "==> every module is tidy: $$(echo $$mods)"
+
 # Directories excluded from the filesystem scan. This is now the ONLY copy:
 # nightly.yml's gate calls `make trivy` on both hosts, so the list cannot
 # disagree with CI rather than being kept in agreement with it (devops.md §4,
@@ -4256,19 +4276,21 @@ release-alpha: check-tag-lockstep
 #
 # `go mod tidy -diff` is the check and it MUTATES NOTHING: it reports whether
 # go.mod/go.sum would change, and exits nonzero if they would or if the module
-# graph cannot be loaded at all. Both mean "not publishable". Measured on this
-# tree: sdk/go passes, sdk/go/gorm/conformance does not.
+# graph cannot be loaded at all. Both mean "not publishable". It asks only the
+# lockstep submodules; every tracked module, the root included, is held tidy
+# on every change by the Lint job's `make check-mod-tidy`, so a refusal here
+# means that gate was bypassed.
 #
 # It is not the whole of #50's "a fresh clone resolves the tag" bullet, and
 # should not be read as it -- that check needs the tag to exist first, which is
 # a chicken and egg a pre-flight cannot resolve. This is the strongest question
 # that CAN be asked before the irrevocable step.
 #
-# CONSEQUENCE, stated rather than discovered: while sdk/go/gorm/conformance is
+# CONSEQUENCE, stated rather than discovered: while any lockstep submodule is
 # untidy, `make release-alpha` REFUSES. That is deliberate and there is no
 # override -- an escape hatch here would be used the first time someone is in a
 # hurry, which is exactly when it matters. A blocked release is recoverable; a
-# published broken tag is not. Unblocking it is go-qrdb#50's conformance work.
+# published broken tag is not.
 #
 # Literal `go`, not $(GO): a settable make variable in the recipe body is an
 # injection surface, and this recipe deliberately takes no toolchain override.

@@ -88,7 +88,7 @@ re-running the command is the whole recovery. The most common refusals:
 | `CHANGELOG.md does not carry` | the release section is missing or not the newest one |
 | `tag ... already exists` | this version was already released; bump `VERSION` |
 | `not in lockstep` | a published tag set is already skewed; repair that first |
-| `does not resolve standalone` | a nested module's `go.mod` does not match its sources |
+| `does not resolve standalone` | a nested module's `go.mod` or `go.sum` does not match its sources; run `GOWORK=off go mod tidy` in it. CI's `make check-mod-tidy` should have caught this first |
 | `carries no SSH signature` | the `VERSION` commit on `main` is unsigned |
 | `VERSION on HEAD names X, not Y` | the VERSION/CHANGELOG bump is not merged; merge it, then release |
 | `is not what ... main holds` | the commit being released is not exactly the remote's `main` |
