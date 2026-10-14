@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -629,6 +630,27 @@ func TestMVCCEngine_Lookup_UnsupportedType(t *testing.T) {
 	var iqe *InvalidQueryError
 	if !errors.As(err, &iqe) {
 		t.Errorf("expected *InvalidQueryError, got %T", err)
+	}
+}
+
+// TestMVCCEngine_Lookup_MissingIndex_NotFoundError pins that a query or scan
+// of an index the engine does not have is the typed *index.NotFoundError the
+// service layer reports NotFound, not a generic invalid query.
+func TestMVCCEngine_Lookup_MissingIndex_NotFoundError(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	lookups := map[string]interface{}{
+		"query": service.IndexQueryRequest{IndexName: "nonexistent", Value: []byte("x")},
+		"scan":  service.IndexScanRequest{IndexName: "nonexistent", Start: []byte("a"), End: []byte("z")},
+	}
+	for name, q := range lookups {
+		_, err := eng.Lookup(context.Background(), q)
+		var inf *index.NotFoundError
+		if !errors.As(err, &inf) || inf.Name != "nonexistent" {
+			t.Errorf("%s: expected *index.NotFoundError{Name: nonexistent}, got %T: %v", name, err, err)
+		}
 	}
 }
 

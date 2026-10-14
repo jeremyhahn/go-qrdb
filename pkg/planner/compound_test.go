@@ -72,6 +72,39 @@ func TestPlan_CompoundIndexScan_PrefixPlusRange(t *testing.T) {
 	assert.Empty(t, plan.PostFilters)
 }
 
+func TestPlan_CompoundIndexScan_ExclusiveRangeStart(t *testing.T) {
+	p := New(catalogWithCompound())
+
+	plan := p.Plan([]Predicate{
+		{Field: "ConversationID", Op: OpEq, Value: "conv-1"},
+		{Field: "Timestamp", Op: OpGt, Value: int64(1000)},
+	})
+
+	require.NotNil(t, plan)
+	require.Equal(t, PlanCompoundIndexScan, plan.Type)
+	assert.True(t, plan.RangeStartExclusive, "OpGt must exclude its bound")
+	assert.False(t, plan.RangeEndExclusive)
+}
+
+// TestPlan_CompoundNumericPrefixIsNotConsumed proves a text prefix over a
+// numeric compound member is not answered from the index: the member's terms
+// are numbers, which hold no text prefix. The predicate stays a post-filter
+// and the compound index is not chosen on one matched field.
+func TestPlan_CompoundNumericPrefixIsNotConsumed(t *testing.T) {
+	p := New(catalogWithCompound())
+
+	plan := p.Plan([]Predicate{
+		{Field: "ConversationID", Op: OpEq, Value: "conv-1"},
+		{Field: "Timestamp", Op: OpPrefix, Value: "10"},
+	})
+
+	require.NotNil(t, plan)
+	assert.NotEqual(t, PlanCompoundIndexScan, plan.Type)
+	require.Len(t, plan.PostFilters, 1)
+	assert.Equal(t, "Timestamp", plan.PostFilters[0].Field)
+	assert.Equal(t, OpPrefix, plan.PostFilters[0].Op)
+}
+
 func TestPlan_CompoundPreferredOverSingleField(t *testing.T) {
 	p := New(catalogWithCompound())
 

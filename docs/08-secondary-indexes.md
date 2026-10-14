@@ -504,8 +504,11 @@ byte comparison matches logical field ordering:
 
 - **Strings**: Byte-stuffed null-terminated encoding (`\x00` escaped as
   `\x00\xFF`, terminated with `\x00\x00`)
-- **Numerics**: 8-byte big-endian with sign-bit flip (same as single-field
-  numeric indexes)
+- **Numerics**: the self-delimiting order-preserving numeric term (same as
+  single-field numeric indexes; see
+  [secondary-indexes/architecture.md](secondary-indexes/architecture.md))
+- **Fixed64**: eight caller-encoded order-preserving bytes passed through
+  unchanged (SQL primary-key components)
 
 This enables efficient prefix scans: all entries with the same leading
 field values sort contiguously in storage.

@@ -45,6 +45,38 @@ Show the full cluster topology as seen from this node. No flags.
 qrdb admin topology --output json
 ```
 
+## `qrdb admin replica-states`
+
+Show, for every replica the connected node holds, the shard, replica ID,
+applied index and state-machine hash. It answers for **this node only** and is
+never forwarded: to compare replicas, run it against every node and group the
+rows by shard. Two replicas of one shard whose applied index is equal must
+report one hash. Witnesses hold no state machine and are not listed. See
+[api.md](api.md#replica-states) for what the hash covers and why the reading is
+taken on a quiet shard.
+
+Needs `admin:replica_state` from a `system`-tenant identity.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--shard-id` | uint | report only this shard; 0 (the default) reports every replica on the node |
+
+Table output columns are `SHARD`, `REPLICA`, `APPLIED INDEX` and `HASH`, with
+the hash in hexadecimal. `--output json` and `--output yaml` print the response
+with the hash as a decimal number.
+
+```bash
+for host in node1.example.com node2.example.com node3.example.com; do
+  qrdb --server "https://$host:8080" admin replica-states --shard-id 1 --output json
+done
+```
+
+| Condition | Message |
+|---|---|
+| standalone node | `requires mode: raft` |
+| `--shard-id` names a shard this node holds no replica of | the shard is not hosted on this node |
+| the shard's state machine cannot hash itself | the state machine does not support hashing |
+
 ## `qrdb admin member add <address>`
 
 Add a replica to a shard.
@@ -104,10 +136,15 @@ Adding and removing replicas are separately permissioned
 (`admin:add_member`, `admin:remove_member`) from reading peers.
 
 Every `member` command may target any node, on every transport. Only the
-shard's leader can commit a membership change, so a follower forwards the
-request, once, to the leader its refusal names, and the leader authorizes the
-original caller ([../replica-forwarding/](../replica-forwarding/)). A command
-that still answers `not leader` reached a node that knew no leader, or one it
+shard's leader can commit a membership change. The node the command reaches
+first waits, up to 10s, until it knows a leader for the shard -- an election
+in progress is waited out, not refused -- and answers
+`no raft leader known after 10s` (Unavailable, HTTP 503) if none is elected in
+that time. Then a follower forwards the request, once, to the leader its
+refusal names, and the leader authorizes the original caller
+([../replica-forwarding/](../replica-forwarding/)). The change itself is never
+proposed twice: one that timed out may still have committed. A command that
+still answers `not leader` reached a leader that had moved again, or one it
 could not reach; it is not retried.
 
 ## `qrdb admin member promote <replica-id>`

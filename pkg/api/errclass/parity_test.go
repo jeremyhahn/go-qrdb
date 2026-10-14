@@ -21,15 +21,19 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic"
+	quicwire "github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // wrapped hides a sample behind one layer of wrapping, as every handler does,
@@ -199,4 +203,27 @@ func assertAgree(t *testing.T, row string, got answers) {
 		}
 	}
 	t.Errorf("%s: REST answers %d, which does not mean gRPC's %s (allowed %v)", row, got.rest, got.grpc, allowed)
+}
+
+// TestRaftTimeoutIsUnavailableOnEveryTransport pins the answer itself, not
+// only the agreement: a request Raft timed out reaches every wire transport as
+// its retryable unavailable status, never as a server fault. REST answered 500
+// for a proposal that timed out while a single-node cluster settled its first
+// term.
+func TestRaftTimeoutIsUnavailableOnEveryTransport(t *testing.T) {
+	want := answers{
+		rest: http.StatusServiceUnavailable,
+		grpc: codes.Unavailable,
+		quic: quicwire.StatusUnavailable,
+		mcp:  int(wire.CodeUnavailable),
+	}
+	for name, err := range map[string]error{
+		"propose": &service.ProposeError{Err: quicraft.ErrTimeout},
+		"read":    &service.ReadError{Err: quicraft.ErrTimeout},
+		"batch":   &service.BatchError{Err: quicraft.ErrTimeout},
+	} {
+		if got := answer(wrapped{err}); got != want {
+			t.Errorf("%s: answered %+v, want %+v", name, got, want)
+		}
+	}
 }

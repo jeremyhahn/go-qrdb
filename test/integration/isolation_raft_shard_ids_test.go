@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +76,7 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 	for i := range 3 {
 		dataDirs[i] = t.TempDir()
 		configPath := writeIsolationRaftConfig(t, t.TempDir(), peerAdminURLs)
-		cmd := exec.Command(bin,
+		cmd := spawnNode(t, bin, []string{
 			"start",
 			"--config", configPath,
 			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
@@ -95,17 +94,9 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 			"--tls-ca-file", ca.CertPath,
 			"--tls-cert-file", nodeCerts[i],
 			"--tls-key-file", nodeKeys[i],
-		)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[shard-ids-node%d] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[shard-ids-node%d] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		}, &logWriter{t: t, prefix: fmt.Sprintf("[shard-ids-node%d] ", i+1)})
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 

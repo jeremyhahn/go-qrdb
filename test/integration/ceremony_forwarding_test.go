@@ -94,6 +94,14 @@ func quicCeremonyInitializeStatus(t *testing.T, ca *testCA, addr string) uint16 
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
+	// The context bounds the dial and the stream open only; without a stream
+	// deadline a node that never answers holds this read open for as long as
+	// the connection's keep-alives keep it alive -- the go test timeout.
+	if dl, ok := ctx.Deadline(); ok {
+		if err := stream.SetDeadline(dl); err != nil {
+			t.Fatalf("set stream deadline: %v", err)
+		}
+	}
 	if err := wire.WriteRequest(stream, "ceremony.Initialize", "", 1, payload); err != nil {
 		t.Fatalf("write request: %v", err)
 	}

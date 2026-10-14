@@ -458,6 +458,7 @@ var requestHandlers = map[string]requestHandler{
 	"StopShard":                   handleStopShard,
 	"GetShardState":               handleGetShardState,
 	"GetTopology":                 handleGetTopology,
+	"ReplicaStates":               handleReplicaStates,
 	"CreateNamespace":             handleCreateNamespace,
 	"DeleteNamespace":             handleDeleteNamespace,
 	"ListNamespaces":              handleListNamespaces,
@@ -1259,6 +1260,37 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 		ShardCount:  resp.ShardCount,
 		Shards:      shards,
 	}, nil
+}
+
+// ReplicaStates implements transport.AdminClient.
+func (t *Transport) ReplicaStates(ctx context.Context, shardID uint64) (*transport.ReplicaStatesResponse, error) {
+	if err := t.gate("ReplicaStates"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ReplicaStates"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	reader, ok := t.adminSvc.(service.ReplicaStateReader)
+	if !ok {
+		return nil, translateError(&service.ReplicaStateReadUnsupportedError{})
+	}
+	resp, err := reader.ReplicaStates(ctx, shardID)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	replicas := make([]transport.ReplicaState, len(resp.Replicas))
+	for i, rs := range resp.Replicas {
+		replicas[i] = transport.ReplicaState{
+			ShardID:      rs.ShardID,
+			ReplicaID:    rs.ReplicaID,
+			AppliedIndex: rs.AppliedIndex,
+			Hash:         rs.Hash,
+		}
+	}
+	return &transport.ReplicaStatesResponse{NodeID: resp.NodeID, Replicas: replicas}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -3687,6 +3719,25 @@ func handleGetTopology(ctx context.Context, t *Transport, _, resp any) error {
 	}
 	if out, ok := resp.(**transport.TopologyResponse); ok {
 		*out = topo
+	}
+	return nil
+}
+
+func handleReplicaStates(ctx context.Context, t *Transport, req, resp any) error {
+	var shardID uint64
+	if req != nil {
+		id, ok := req.(uint64)
+		if !ok {
+			return &InvalidRequestError{Method: "ReplicaStates"}
+		}
+		shardID = id
+	}
+	states, err := t.ReplicaStates(ctx, shardID)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.ReplicaStatesResponse); ok {
+		*out = states
 	}
 	return nil
 }

@@ -16,6 +16,7 @@ package pebbleindex
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -37,6 +38,20 @@ func TestIndex_NumericScan(t *testing.T) {
 	indextest.NumericScan(t, newConfigured)
 }
 
+func TestIndex_NumericExactness(t *testing.T) {
+	indextest.NumericExactness(t, newConfigured)
+}
+
+// TestNewWithConfig_RefusesStaleEncoding: a numeric index recorded at another
+// encoding version is never constructed, so it cannot be served.
+func TestNewWithConfig_RefusesStaleEncoding(t *testing.T) {
+	stale := index.IndexConfig{Name: "n", ValueType: index.IndexValueTypeNumeric}
+	var se *index.StaleEncodingError
+	if _, err := NewWithConfig(openPebble(t), "n", stale); !errors.As(err, &se) {
+		t.Errorf("NewWithConfig = %v, want *index.StaleEncodingError", err)
+	}
+}
+
 func TestIndex_StringScan(t *testing.T) {
 	indextest.StringScan(t, newConfigured)
 }
@@ -54,13 +69,13 @@ func TestNew_IsCaseSensitive(t *testing.T) {
 
 // TestNewWithConfig_NumericIgnoresCaseSensitivity pins the one interaction
 // between the two encodings. A numeric index parses its values as numbers and
-// encodes them to a fixed-width form in which case has no meaning; folding
-// the decimal text first would be a no-op at best and would corrupt the
-// sign-flip encoding at worst.
+// encodes them to binary terms in which case has no meaning; folding a term
+// would rewrite its bytes and break its order.
 func TestNewWithConfig_NumericIgnoresCaseSensitivity(t *testing.T) {
 	idx, err := NewWithConfig(openPebble(t), "by_age", index.IndexConfig{
-		Name:      "by_age",
-		ValueType: index.IndexValueTypeNumeric,
+		Name:            "by_age",
+		ValueType:       index.IndexValueTypeNumeric,
+		EncodingVersion: index.NumericEncodingVersion,
 		// Deliberately the folding polarity.
 		CaseSensitive: false,
 	})
@@ -69,7 +84,7 @@ func TestNewWithConfig_NumericIgnoresCaseSensitivity(t *testing.T) {
 	}
 	if idx.caseInsensitive {
 		t.Error("a numeric index was built case-insensitive; folding has no meaning " +
-			"over the fixed-width encoding and would corrupt the sign flip")
+			"over numeric terms and would corrupt them")
 	}
 
 	if err := idx.Put([]byte("user:1"), []byte("-42")); err != nil {

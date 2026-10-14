@@ -774,7 +774,8 @@ cadence is `DefaultMembershipPollInterval`.
 | Bootstrap orchestration, `MembershipManager` | `pkg/cluster` | go-qrdb |
 | Member-side CSR join (anchor fetch, CSR exchange, admission) | `pkg/clusterenroll` | go-qrdb |
 | Cluster CA (Key A) provider seam | `pkg/cakey`, `pkg/clustertls` — see [../certificate-authority/](../certificate-authority/) | go-qrdb |
-| Node admin (health, status, peers, drain, snapshot, shards, topology) | `pkg/service` admin | go-qrdb |
+| Node admin (health, status, peers, drain, snapshot, shards, topology, replica states) | `pkg/service` admin | go-qrdb |
+| A replica's applied index and state-machine hash (`Host.StateMachineHash`) | — | **go-quicraft** |
 | Shard rebalancing | `pkg/placement`, `pkg/service` | go-qrdb |
 | Raft primitives, leader election, log | — | **go-quicraft** |
 | SDK surface | `sdk/go` (`Client.Admin()`, `Client.Cluster()`, rebalance client) | go-qrdb |
@@ -822,6 +823,14 @@ cadence is `DefaultMembershipPollInterval`.
   follower over them answered `not leader`. The Unix socket
   forwards as gRPC does -- it serves the gRPC services -- and the embedded
   transport forwards as its QUIC client transport does.
+- **Replica states are read where the replica lives, and only there.** The
+  read (`service.ReplicaStateReader`, `qrdb admin replica-states`) answers for
+  the replicas on the node it reaches and is never forwarded: a node cannot
+  vouch for another node's state machine, and forwarding would make every
+  node's answer the leader's. Comparing replicas is the caller's job — ask
+  every node. It is admin-scoped (`admin:replica_state`, `system` tenant only)
+  because the hash covers every tenant's data on the shard and the read holds
+  the state machine's read lock while it runs.
 - **`GET /health` is a public route** so a load balancer can probe an
   unauthenticated node; nothing else in this feature is.
 - **Rebalance `execute` physically moves shards** and is gated apart from the

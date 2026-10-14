@@ -111,10 +111,7 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 
 	// Kill hard, same as the sm-storage-file durability test: the fix must
 	// not depend on a graceful shutdown path.
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first daemon: %v", err)
-	}
-	_ = cmd.Wait()
+	killNode(t, cmd)
 
 	// Restart over the SAME data directory and ports: resolveTLS's path 2
 	// loads the cached ca.pem/node-cert.pem/node-key.pem, with NO
@@ -265,10 +262,7 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 
 	// Kill hard, same as the sm-storage-file durability test: the fix must
 	// not depend on a graceful shutdown path.
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first daemon: %v", err)
-	}
-	_ = cmd.Wait()
+	killNode(t, cmd)
 
 	// Restart over the SAME data directory and ports.
 	startNode(t, bin, args, "[clusterca-perprotocol-r2] ")

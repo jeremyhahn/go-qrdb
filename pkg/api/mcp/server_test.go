@@ -679,6 +679,7 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_stop_shard",
 		"qrdb_shard_state",
 		"qrdb_topology",
+		"qrdb_replica_states",
 		"qrdb_node_compaction",
 		"qrdb_update_node_compaction",
 		"qrdb_mint_join_token",

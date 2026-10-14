@@ -140,6 +140,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_stop_shard":                     permission.AdminStopShard,
 	"qrdb_shard_state":                    permission.AdminShardState,
 	"qrdb_topology":                       permission.AdminTopology,
+	"qrdb_replica_states":                 permission.AdminReplicaState,
 	"qrdb_node_compaction":                permission.AdminNodeCompaction,
 	"qrdb_update_node_compaction":         permission.AdminNodeCompaction,
 	"qrdb_mint_join_token":                permission.ClusterJoinToken,

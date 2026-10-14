@@ -269,7 +269,7 @@ func launchSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, 
 // afterward.
 func stopSealNode(t *testing.T, n *sealNode) {
 	t.Helper()
-	stopNodeProcess(t, n.cmd)
+	stopNode(t, n.cmd, 15*time.Second)
 }
 
 // loadDaemonCA reads the CA certificate and private key the daemon
@@ -281,15 +281,14 @@ func loadDaemonCA(t *testing.T, dataDir string) *testCA {
 	t.Helper()
 	certPath := filepath.Join(dataDir, "ca.pem")
 	keyPath := filepath.Join(dataDir, "ca-key.pem")
+	// clustertls.PersistMaterial writes ca.pem first and ca-key.pem last, each
+	// an fsynced atomic write, and the daemon deletes ca-key.pem only once the
+	// key is confirmed in the replicated store -- after the barrier is
+	// unsealed, which every caller does after this returns. So the key file is
+	// certain to appear: wait for it rather than guessing it is absent after a
+	// fixed delay, which under load handed callers a CA that cannot sign.
 	waitForNonEmptyFile(t, certPath, 30*time.Second)
-
-	if !nonEmptyFileAppears(keyPath, 5*time.Second) {
-		ca, err := qrdbdharness.LoadCACertOnly(certPath)
-		if err != nil {
-			t.Fatalf("loadDaemonCA: %v", err)
-		}
-		return &testCA{CA: ca}
-	}
+	waitForNonEmptyFile(t, keyPath, 30*time.Second)
 
 	ca, err := qrdbdharness.LoadCA(certPath, keyPath)
 	if err != nil {
@@ -1004,16 +1003,6 @@ func quorumBegin(t *testing.T, cli string, ep endpoint, domain, op string, h *of
 		t.Fatalf("quorum begin %s: decode JSON: %v\noutput: %s", h.username, err, stdout)
 	}
 	return &out, stderr, nil
-}
-func nonEmptyFileAppears(path string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
 }
 
 func startSealNodeAllTransports(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort, quicPort, mcpPort int, unixSocket string) *sealNodeAllTransports {

@@ -13,6 +13,15 @@ around when the load goes lopsided.
   `rebalance:*` permissions for what you do. Adding and removing replicas are
   separate grants from reading peers.
 
+## Network ports
+
+Every port `qrdbd start` listens on — Raft, the API transports, the trust
+anchor and CSR join, SQL, etcd, discovery — with its flag, YAML key, default,
+build tag and who must reach it, and what that means for a firewall, is the
+pinned port set in
+[../cluster-verification/user.md](../cluster-verification/user.md#pinned-port-set).
+A test keeps that list exactly true.
+
 ## Forming a cluster
 
 Nodes find each other with one of four discovery methods, configured on the
@@ -300,6 +309,24 @@ qrdb admin topology --output json
 `admin health` is served on the one public route in the system, so a load
 balancer can probe a node without credentials.
 
+**Do the replicas hold the same data?** Ask each node for its replicas'
+applied index and state-machine hash, on a shard that is not taking writes:
+
+```bash
+for host in node1.example.com node2.example.com node3.example.com; do
+  qrdb --server "https://$host:8080" admin replica-states --shard-id 1
+done
+```
+
+Each node answers only for its own replicas, so ask all of them. Rows of one
+shard with the same `APPLIED INDEX` must show the same `HASH`; a replica with a
+lower index is behind, not divergent. A disagreement read while the shard was
+still applying writes can be an artefact of the read itself — read again once
+it is quiet before treating it as divergence. The read holds each state
+machine's read lock while it hashes every key, so it is a diagnostic, not a
+metric to poll. It needs `admin:replica_state` from a `system`-tenant identity,
+which no built-in role but Owner holds.
+
 ## Changing membership
 
 **By hand:**
@@ -451,9 +478,10 @@ seconds by default) before starting the node on an older release**.
 
 ### The Noise bootstrap wire is not version-skewed
 
-The first node of a cluster runs the Noise NK bootstrap **server**
-(`pkg/clusterenroll`'s `Advertiser`, started on the boot that generates or
-loads the cluster CA) that a joining node's enrollment dials as a **client**.
+Every admitted, unsealed member runs the Noise NK bootstrap **server**
+(`pkg/clusterenroll`'s `Advertiser`: on the CA-generating node from the boot
+that generates the cluster CA, on every other member once it has joined or
+restarted from its data directory) that a joining node's enrollment dials as a **client**.
 Both halves are this codebase's own call into `go-truststrap`, so a bump to
 `go-truststrap` that changes the wire format is a qrdb-to-qrdb compatibility
 question, not a question about an external service. A release whose

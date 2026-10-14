@@ -618,7 +618,7 @@ accurate gap list is worth more than a claim of completeness:
 
 | Capability | Status under `fips140=only` | Consequence |
 |---|---|---|
-| **Noise NK peer enrollment** (`--bootstrap-noise-key`, the first node's Noise listener) | **unavailable, permanently** | Noise_NK_25519_ChaChaPoly_SHA256 has no FIPS-approved DH to substitute. Peers enroll over SPKI, DANE or direct HTTPS. This does not go away when the dependency is fixed — there is nothing to fix it to. |
+| **Noise NK peer enrollment** (`--bootstrap-noise-key`, the members' Noise trust-anchor listener) | **unavailable, permanently** | Noise_NK_25519_ChaChaPoly_SHA256 has no FIPS-approved DH to substitute. Peers enroll over SPKI, DANE or direct HTTPS. This does not go away when the dependency is fixed — there is nothing to fix it to. |
 | **Attested (anchor-mode) enrollment over Noise** — `StartAnchorAdvertiser` / `FetchAnchor` | **unavailable over Noise** | Same cause. `FetchAnchor` over SPKI / DANE / direct HTTPS is unaffected. |
 | X25519 and ML-KEM-768 + X25519 share-holder envelope suites | refused | see [X25519](#x25519--share-holder-envelope-suites-refused-in-fips-mode) |
 | PKCS#12 export | refused under `Enforced()` | see the [exemption register](#exemption-register) |

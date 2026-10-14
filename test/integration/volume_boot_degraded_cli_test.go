@@ -187,7 +187,7 @@ func TestQrdbdStart_DegradedBoot_ServesGoodPoolRefusesBadPool(t *testing.T) {
 	if err := cmd1.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal round 1: %v", err)
 	}
-	_, _ = cmd1.Process.Wait()
+	_ = awaitNodeExit(t, cmd1, nodeStopTimeout)
 
 	// --- Round 2: "broken" pool's mount is gone; degraded boot opts in -----
 	cfg2 := writeTwoPoolTenantConfig(t, fastDir, brokenDirRound2, true)

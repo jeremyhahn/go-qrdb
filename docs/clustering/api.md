@@ -29,6 +29,7 @@ and refuses in standalone with `requires mode: raft`.
 | Stop shard | `DELETE /admin/shards/{id}` | `StopShard` | `admin.StopShard` | `qrdb_stop_shard` | `StopShard` | `admin:stop_shard` |
 | Shard state | `GET /admin/shards/{id}/state` | `GetShardState` | `admin.GetShardState` | `qrdb_shard_state` | `GetShardState` | `admin:shard_state` |
 | Topology | `GET /admin/topology` | `GetTopology` | `admin.GetTopology` | `qrdb_topology` | `GetTopology` | `admin:topology` |
+| Replica states (applied index + state-machine hash) | `GET /admin/replica-states` | `GetReplicaStates` | `admin.GetReplicaStates` | `qrdb_replica_states` | `ReplicaStates` | `admin:replica_state` |
 | Node-keyspace compaction policy | `GET /admin/node-compaction` | `GetNodeCompaction` | `admin.GetNodeCompaction` | `qrdb_node_compaction` | `NodeCompaction` | `admin:node_compaction` |
 | Set node-keyspace compaction policy | `PUT /admin/node-compaction` | `SetNodeCompaction` | `admin.SetNodeCompaction` | `qrdb_update_node_compaction` | `SetNodeCompaction` | `admin:node_compaction` |
 
@@ -61,7 +62,7 @@ admission-vs-signing split: `ApproveJoinRequest` only records a decision,
 and never itself calls the cluster CA.
 
 **Drain, snapshot, add/remove member, start/stop shard, shard state,
-topology and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
+topology, replica states and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
 route: they act on, or describe, shards every tenant shares, and name no
 tenant. A tenant's Admin or SO -- whose built-in roles carry several of these
 grants -- is refused with `403` / `PermissionDenied` on every transport.
@@ -126,6 +127,91 @@ transport; see [engineering.md](engineering.md#error-semantics). Start shard
 takes no identities: it resolves every other member's from the committed
 memberships, as a dedicated database's founders do, and answers the same typed
 refusals with the same codes (REST no longer answers them `500`).
+
+## Replica states
+
+A read of what each replica this node hosts has applied, and the hash of
+the state machine it holds at that point. Two replicas of one shard that
+report the **same applied index** must report the **same hash**; a
+different hash at an equal index means their state machines diverged. It is
+the read that lets an operator, or a verification harness, prove that the
+replicas of a shard agree, rather than infer it from the absence of errors.
+
+**Every node answers for its own replicas, and only those.** The read is
+never forwarded to a leader: the leader cannot report another node's state
+machine, so asking it would answer a different question. To compare the
+replicas of a shard, ask every node that hosts one and group the answers by
+shard. A leader, a follower and an observer all answer the same way.
+
+| Request | Response |
+|---|---|
+| `GET /admin/replica-states` | `200` → every replica on this node |
+| `GET /admin/replica-states?shard_id=7` | `200` → this node's replica of shard 7 only |
+| `shard_id` not a positive integer | `400` — `*rest.InvalidParameterError` |
+| `shard_id` names a shard this node holds no state-machine replica of | `404` — `*service.ReplicaNotHostedError` |
+| standalone mode | `501` — `*service.ReplicaStateUnsupportedError` (`requires mode: raft`) |
+| a hosted state machine that computes no hash | `501` — `*service.StateMachineHashUnsupportedError`, naming the shard |
+| barrier sealed | `503` — the sealed-window refusal every non-allowlisted route answers |
+
+```json
+{ "node_id": "node-2",
+  "replicas": [ { "shard_id": 1, "replica_id": 2,
+                  "applied_index": 48211, "hash": 1305972914470152846 } ] }
+```
+
+`shard_id` is optional; absent or `0` means every replica on the node.
+`replicas` is ordered by `shard_id` and is empty — never absent — on a
+node that hosts none. A **witness** holds no state machine and is never
+listed; a filter that names a shard this node hosts only as a witness is
+`404`, the same as a shard it does not host. A shard that stops on this
+node while the read runs is left out of an unfiltered answer rather than
+failing it.
+
+**The hash.** `hash` is the unsigned 64-bit value the shard's state
+machine computes over its replicated state (xxHash64, in key order, over
+every key and value the state machine holds except node-local
+bookkeeping). It is comparable between replicas **of the same shard** at
+an equal `applied_index`, and nothing else: not across shards, not across
+indexes, and not across releases that change what a state machine holds.
+Every state machine go-qrdb ships computes one; an embedder's own state
+machine that does not is reported as above rather than listed with a
+made-up value. JSON carries it as a number, as it carries every other
+64-bit field on this API; a client whose numbers are IEEE doubles must
+decode it as a 64-bit integer, or it cannot compare two hashes exactly.
+
+**The cost.** Computing a hash reads the whole state machine, so the read
+costs time in proportion to the data a shard holds and holds the state
+machine's read lock while it runs. It is a diagnostic, not something to
+poll on a hot path.
+
+**Read it on a quiet shard.** `applied_index` and `hash` are taken one
+after the other, not as one atomic pair, so a reading taken while the
+shard is applying entries can pair an index with the hash of a slightly
+later state. Such a reading makes two replicas *disagree* at an equal
+index; it can never make diverged replicas agree. A comparison is
+therefore sound when it is taken after writes stop; a disagreement read
+from a shard that was still applying entries proves nothing until it is
+read again on a quiet shard.
+
+The same read on every transport:
+
+| Transport | Binding |
+|---|---|
+| REST | `GET /admin/replica-states`, above |
+| gRPC | `QRDBService.GetReplicaStates(GetReplicaStatesRequest{shard_id})` → `ReplicaStatesResponse{node_id, replicas}`, permission carried as a `(qrdb.v1.permission)` method option |
+| QUIC | `admin.GetReplicaStates`, the same protobuf messages as gRPC |
+| Unix | served by the same `qrdbServiceServer` gRPC implementation the TCP gRPC listener uses |
+| MCP | the `qrdb_replica_states` tool, optional numeric `shard_id` argument; the result text is the JSON above |
+| Embedded | `Client.Admin().ReplicaStates(ctx, shardID)`, a direct in-process call |
+
+Server-side it is `service.ReplicaStateReader`, a capability interface
+separate from `AdminServicer` for the reason `MemberPromoter` is one; the
+real `AdminService` implements it, and every transport type-asserts for
+it. Client-side, because all six SDK transports implement it,
+`ReplicaStates` is a plain method on `transport.AdminClient`. It requires
+`admin:replica_state` (`ScopeCross`, system tenant only); no built-in role
+other than `Owner` carries it, the same as `admin:shard_state` and
+`admin:topology`.
 
 ## Schemas
 

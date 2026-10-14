@@ -92,6 +92,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"admin.GetNodeCompaction":       "NodeCompaction",
 	"admin.GetShardState":           "GetShardState",
 	"admin.GetTopology":             "GetTopology",
+	"admin.GetReplicaStates":        "ReplicaStates",
 	"admin.MintJoinToken":           "MintJoinToken",
 	"admin.Peers":                   "Peers",
 	"admin.RemoveMember":            "RemoveMember",

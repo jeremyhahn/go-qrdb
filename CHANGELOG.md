@@ -13,6 +13,24 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **Numeric secondary indexes with a documented total order** (go-qrdb#35).
+  A numeric index stores exact, order-preserving decimal terms
+  (`index.EncodeNumericValue`): `-Inf` < negatives < `0` < positives < `+Inf`,
+  integers and floats in one order, `-0` equal to `0`, no rounding of integers
+  beyond 2^53, and `NaN` never indexed and refused as a scan bound
+  (`index.InvalidNumericBoundError`, `InvalidArgument` on every transport). The
+  encoding is versioned (`index.NumericEncodingVersion`,
+  `IndexConfig.EncodingVersion`): a stale definition is refused with
+  `index.StaleEncodingError`, every create clears and backfills, and a
+  same-owner re-create asking for a different value type rebuilds the index.
+  `qrdb index create --numeric` and `kvstore.EntityIndex.Numeric` request it;
+  the DAO sets it for an indexed integer or float field without a custom
+  marshaler, and numeric single-field indexes return to the query planner, so
+  `Age >= 2` is an index scan that returns the records holding 2 and 10.
+  `planner.Plan` gains `RangeStartExclusive`/`RangeEndExclusive`, which the DAO
+  honours exactly. Tests: a property test against a brute-force filter, and
+  `--numeric` range scans on every transport in `TestIndex_CLI_PerProtocol`.
+
 - **Tenant barrier init proves possession of the first admin's key.** Init is
   now two calls on one TLS 1.3 connection: `init/begin` returns a single-use
   nonce bound to the connection's exporter (five minutes), and `init/complete`
@@ -44,6 +62,29 @@ are not reconstructed here — their history is in the git log.
   "The barrier key seam".
 
 ### Fixed
+
+- **A membership change no longer fails because it arrived mid-election.**
+  `admin member add`, `add-observer`, `promote` and `remove` were refused
+  with `not leader for shard N, leader unknown` -- a refusal no transport can
+  forward -- whenever the shard was electing. They now wait, up to 10s, until
+  the node knows a leader, then propose or forward as before; no leader in
+  that time is `*service.ShardLeaderTimeoutError` (Unavailable, HTTP 503) with
+  nothing proposed. The change is never proposed twice: one that timed out
+  may still have committed.
+- **A range query over a numeric field could silently return part of the
+  answer** (go-qrdb#35): text-ordered terms put `"10"` before `"2"`. Numeric
+  fields are now indexed numerically (see Added). Alongside it:
+  - A range planned on an index took its bounds straight to the half-open
+    `[start, end)` scan, and the consumed predicate was not re-checked:
+    `Field > v` returned the records equal to `v`, and `Field <= v` and
+    `BETWEEN a AND v` left them out. The DAO now scans the exact interval.
+  - `Field PREFIX p` planned on an index returned every value sorting after
+    `p` (`"bz"` and `"charlie"` for `PREFIX "br"`): the scan has no upper
+    bound and the predicate was dropped. It is now kept as a post-filter, and
+    PREFIX on a numeric field is answered by a full scan.
+  - The Unix-socket transport's `IndexCreate` dropped the `numeric` and
+    `case_insensitive` flags, so an index created over it was a
+    case-sensitive text index whatever the caller asked for.
 
 - **The `objstore` backend's commit journal is out of the tree a listing
   walks.** The local provider lists by walking its directory, and the walk

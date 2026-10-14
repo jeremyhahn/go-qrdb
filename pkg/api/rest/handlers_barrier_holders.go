@@ -290,10 +290,10 @@ func (s *Server) handleBarrierOfficerRevoke(w http.ResponseWriter, r *http.Reque
 // tenantHolderCall runs one tenant holder operation: the tenant-scoped
 // authorization gate, then — only for an authorized caller — decoding the
 // request body into body (nil for a bodyless route), then call, under the
-// request timeout and the error rendering every tenant holder route shares.
+// caller's deadline and the error rendering every tenant holder route shares.
+// Like the system holder routes it adds no timeout of its own.
 func (s *Server) tenantHolderCall(w http.ResponseWriter, r *http.Request, tenantID string, perm permission.Permission, body any, call func(ctx context.Context) (any, error)) {
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if err := s.authorizeTenantBarrierOp(ctx, tenantID, perm); err != nil {
 		writeAuthzErrorJSON(w, err)
 		return

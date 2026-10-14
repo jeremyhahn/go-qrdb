@@ -208,6 +208,92 @@ func TestPlanPrefixWithIndex(t *testing.T) {
 	if plan.RangeStart != "alice" {
 		t.Errorf("unexpected RangeStart: %v", plan.RangeStart)
 	}
+	if plan.RangeEnd != nil {
+		t.Errorf("a prefix scan has no upper bound, got RangeEnd %v", plan.RangeEnd)
+	}
+	// The scan reads past the prefix, so the predicate is re-checked.
+	if len(plan.PostFilters) != 1 || !samePredicate(plan.PostFilters[0], pred) {
+		t.Errorf("prefix must stay a post-filter, got %v", plan.PostFilters)
+	}
+}
+
+func TestPlanPrefixStaysResidualBesideOtherPredicates(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	prefix := planner.Predicate{Field: "Email", Op: planner.OpPrefix, Value: "alice"}
+	other := planner.Predicate{Field: "Name", Op: planner.OpEq, Value: "Alice"}
+
+	plan := p.Plan([]planner.Predicate{other, prefix})
+
+	if plan.Type != planner.PlanIndexScan || plan.IndexField != "Email" {
+		t.Fatalf("expected an IndexScan on Email, got %s on %q", plan.Type, plan.IndexField)
+	}
+	if len(plan.PostFilters) != 2 ||
+		!samePredicate(plan.PostFilters[0], other) || !samePredicate(plan.PostFilters[1], prefix) {
+		t.Errorf("expected both predicates as post-filters in order, got %v", plan.PostFilters)
+	}
+}
+
+// samePredicate compares the scalar parts of two predicates; the tests here
+// never set Values.
+func samePredicate(a, b planner.Predicate) bool {
+	return a.Field == b.Field && a.Op == b.Op && a.Value == b.Value && a.ValueEnd == b.ValueEnd
+}
+
+// TestPlanRangeBoundInclusivity covers the flags an executor needs to answer
+// the consumed predicate exactly, since it is not re-checked: only OpGt
+// excludes its lower bound and only OpLt excludes its upper bound.
+func TestPlanRangeBoundInclusivity(t *testing.T) {
+	for _, tc := range []struct {
+		op            planner.Op
+		wantStartExcl bool
+		wantEndExcl   bool
+	}{
+		{planner.OpGt, true, false},
+		{planner.OpGte, false, false},
+		{planner.OpLt, false, true},
+		{planner.OpLte, false, false},
+		{planner.OpBetween, false, false},
+	} {
+		t.Run(tc.op.String(), func(t *testing.T) {
+			pred := planner.Predicate{Field: "Age", Op: tc.op, Value: uint64(18), ValueEnd: uint64(65)}
+			plan := newPlanner(ageIndex()).Plan([]planner.Predicate{pred})
+
+			if plan.Type != planner.PlanIndexScan {
+				t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+			}
+			if plan.RangeStartExclusive != tc.wantStartExcl {
+				t.Errorf("RangeStartExclusive = %v; want %v", plan.RangeStartExclusive, tc.wantStartExcl)
+			}
+			if plan.RangeEndExclusive != tc.wantEndExcl {
+				t.Errorf("RangeEndExclusive = %v; want %v", plan.RangeEndExclusive, tc.wantEndExcl)
+			}
+			if len(plan.PostFilters) != 0 {
+				t.Errorf("the range predicate must be consumed, got post-filters %v", plan.PostFilters)
+			}
+		})
+	}
+}
+
+// TestPlanPrefixOnNumericFieldIsNotIndexed proves a text prefix is never
+// answered from a numeric index, whose terms are numbers rather than text:
+// the plan is a full scan with the predicate as its post-filter.
+func TestPlanPrefixOnNumericFieldIsNotIndexed(t *testing.T) {
+	for _, fieldType := range []string{"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64"} {
+		t.Run(fieldType, func(t *testing.T) {
+			idx := planner.IndexInfo{Name: "mydb.users.N", FieldName: "N", FieldType: fieldType}
+			pred := planner.Predicate{Field: "N", Op: planner.OpPrefix, Value: "1"}
+
+			plan := newPlanner(idx).Plan([]planner.Predicate{pred})
+
+			if plan.Type != planner.PlanFullScan {
+				t.Fatalf("expected PlanFullScan for a prefix on %s, got %s", fieldType, plan.Type)
+			}
+			if len(plan.PostFilters) != 1 || plan.PostFilters[0].Op != planner.OpPrefix {
+				t.Errorf("expected the prefix as the post-filter, got %v", plan.PostFilters)
+			}
+		})
+	}
 }
 
 func TestPlanInWithIndex(t *testing.T) {

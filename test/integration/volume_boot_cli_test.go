@@ -26,6 +26,8 @@
 package integration_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +60,21 @@ func writeVolumeBootConfig(t *testing.T, poolPath string, allowDegraded bool) st
 		t.Fatalf("writeVolumeBootConfig: write: %v", err)
 	}
 	return cfgPath
+}
+
+// waitForOutput waits until the daemon's output contains want. The log line
+// is written before the event the caller already waited on, but it reaches
+// the buffer through the pipe copier, so it can arrive after that event is
+// observable; reading the buffer once would race the copier.
+func waitForOutput(out *nodeLog, want string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for !strings.Contains(out.String(), want) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
 }
 
 // singleNodeVolumeBootArgs returns the minimal `qrdbd start` argument list
@@ -103,17 +120,16 @@ func TestQrdbdStart_UnopenableVolumePool_DefaultFailsLoud(t *testing.T) {
 		t.Fatalf("qrdbdharness.Start: %v", err)
 	}
 
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- daemon.Cmd().Wait() }()
-
-	select {
-	case waitErr := <-waitCh:
-		if waitErr == nil {
-			t.Fatalf("qrdbd start exited 0, want non-zero; output:\n%s", out.String())
-		}
-	case <-time.After(30 * time.Second):
-		_ = daemon.Cmd().Process.Kill()
-		t.Fatalf("qrdbd start did not exit within 30s; it must fail immediately. output:\n%s", out.String())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	waitErr := daemon.WaitContext(ctx)
+	var hung *qrdbdharness.DaemonWaitError
+	if errors.As(waitErr, &hung) {
+		_ = daemon.Kill()
+		t.Fatalf("qrdbd start did not exit within 30s; it must fail immediately: %v", hung)
+	}
+	if waitErr == nil {
+		t.Fatalf("qrdbd start exited 0, want non-zero; output:\n%s", out.String())
 	}
 
 	combined := out.String()
@@ -147,9 +163,8 @@ func TestQrdbdStart_UnopenableVolumePool_DegradedBootOverrideStarts(t *testing.T
 		t.Fatalf("qrdbdharness.Start: %v", err)
 	}
 	t.Cleanup(func() {
-		if cmd := daemon.Cmd(); cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+		if err := daemon.Kill(); err != nil {
+			t.Errorf("kill qrdbd: %v", err)
 		}
 	})
 
@@ -157,9 +172,8 @@ func TestQrdbdStart_UnopenableVolumePool_DegradedBootOverrideStarts(t *testing.T
 		t.Fatalf("node never reached host construction under --allow-degraded-volume-boot: %v\noutput:\n%s", err, out.String())
 	}
 
-	combined := out.String()
-	if !strings.Contains(combined, "broken") {
-		t.Fatalf("degraded boot must still name the skipped pool in its log output:\n%s", combined)
+	if !waitForOutput(out, "broken", 30*time.Second) {
+		t.Fatalf("degraded boot must still name the skipped pool in its log output:\n%s", out.String())
 	}
 }
 
@@ -178,9 +192,8 @@ func TestQrdbdStart_UnopenableVolumePool_ConfigFileOverrideStarts(t *testing.T) 
 		t.Fatalf("qrdbdharness.Start: %v", err)
 	}
 	t.Cleanup(func() {
-		if cmd := daemon.Cmd(); cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+		if err := daemon.Kill(); err != nil {
+			t.Errorf("kill qrdbd: %v", err)
 		}
 	})
 

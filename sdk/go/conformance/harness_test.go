@@ -81,6 +81,22 @@ func boundedCtx(t *testing.T) context.Context {
 	return ctx
 }
 
+// subtestCtx bounds one subtest by callTimeout of its own. It keeps the
+// values of cell, the context a cell was booted with -- for the embedded cell
+// the identity and tenant every call is authorized by -- but not its
+// deadline. A cell's subtests sharing that deadline gave each one only what
+// the subtests before it had left, so a slow backend failed whichever subtest
+// ran out of it, with a symptom of that subtest's own: on run 51275 the
+// objstore cell's watch-resume opened its watch a second after the cell's 30s
+// were spent, and the embedded transport, seeing the context done, closed the
+// stream before the replay sent anything.
+func subtestCtx(t *testing.T, cell context.Context) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(cell), callTimeout)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // ---------------------------------------------------------------------------
 // Cell definition
 // ---------------------------------------------------------------------------

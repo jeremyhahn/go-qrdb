@@ -464,8 +464,10 @@ services and to the server, which wraps the node's sealed-window probe with
   tell an inactive feature from one it has not learned of. Both composers
   read them before they serve: `cmd/qrdbd` before its listeners start,
   `sdk/go/node` in `startClusterSeal` before it installs the monitor (both
-  through `server.WhileSystemShardSettling`); a cluster that has activated a
-  feature the binary lacks fails the boot.
+  through `server.WhileSystemShardSettling`, a startup read whose attempts
+  are each bounded by `server.StartupReadAttemptTimeout`, so a read stranded
+  on a gone leader is retried rather than held); a cluster that has activated a feature the
+  binary lacks fails the boot.
 - **Activation opens no window.** `Monitor.poll` reads and publishes the
   records, and renews the lease, before `cluster-seal` is activated too; it
   enforces nothing and cuts nothing off until it is. No record can exist
@@ -500,7 +502,8 @@ services and to the server, which wraps the node's sealed-window probe with
   A sealed node barrier means the node's encrypted log cannot take an entry,
   and an entry proposed into it halts the shard. The node's own background
   writers -- the feature-gate advertisement, the member record, the dynamic
-  membership manager, and the lease-expiry sweep -- run through ungated
+  membership manager, the volume-pool node report, and the lease-expiry
+  sweep -- run through ungated
   in-process clients, so each consults the node barrier itself (both
   composers pass it in: `cmd/qrdbd` the `StorageBarrier`, `sdk/go/node` the
   `Node`). A `cluster.Advertiser` composed with `WithAdvertiseSealProbe`
@@ -508,6 +511,10 @@ services and to the server, which wraps the node's sealed-window probe with
   `*cluster.NodeSealedError` (the publishers retry it after the unseal), and
   leaves its record to its lease rather than withdrawing it; a
   `MembershipManager` composed with `WithMembershipSealProbe` does the same.
+  A `volume.Reporter` composed with `WithReporterSealProbe` skips its
+  five-second refresh while sealed and refuses `Report` with
+  `*volume.NodeSealedError`; its report rides the held lease and is renewed by
+  the first refresh after the unseal.
   `Lessor.RunExpiry` composed with `WithExpiryHold` proposes no revoke while
   sealed, and on the unseal gives every lease a full TTL before it sweeps
   again, so no record is revoked for keep-alives the sealed node could not

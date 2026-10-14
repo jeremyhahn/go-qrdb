@@ -625,8 +625,8 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.tlsKeyFile, "tls-key-file", "", "Path to TLS private key PEM file")
 	cmd.Flags().StringVar(&f.bootstrapNoiseKey, "bootstrap-noise-key", "", "Hex Curve25519 public key for Noise bootstrap")
 	cmd.Flags().StringVar(&f.bootstrapNoiseAddr, "bootstrap-noise-addr", "", "host:port of Noise bootstrap server")
-	cmd.Flags().IntVar(&f.bootstrapNoisePort, "bootstrap-noise-port", 63006, "TCP port for Noise bootstrap server (first node)")
-	cmd.Flags().StringVar(&f.bootstrapNoiseHost, "bootstrap-noise-host", "", "Bind host for the Noise bootstrap server (first node); maps to bootstrap.noise_host, defaults to --host")
+	cmd.Flags().IntVar(&f.bootstrapNoisePort, "bootstrap-noise-port", 63006, "TCP port for the Noise bootstrap (trust-anchor) server every admitted, unsealed member runs")
+	cmd.Flags().StringVar(&f.bootstrapNoiseHost, "bootstrap-noise-host", "", "Bind host for the Noise bootstrap server; maps to bootstrap.noise_host, defaults to --host")
 	cmd.Flags().StringVar(&f.bootstrapSPKIPin, "bootstrap-spki-pin", "", "Hex SHA-256 SPKI pin for bootstrap server")
 	cmd.Flags().StringVar(&f.bootstrapDANEDNS, "bootstrap-dane-dns", "", "DNS server for DANE TLSA lookup (e.g. 8.8.8.8:53)")
 	cmd.Flags().BoolVar(&f.bootstrapDANEDoT, "bootstrap-dane-dot", false, "Use DNS-over-TLS for DANE")
@@ -2329,7 +2329,7 @@ func runStart(f *startFlags) (err error) {
 			// objstore) has nothing to publish the report on.
 			if barrierRegistry != nil && (!standalone || lifecycle.LocalEngineKeepsLeases(localBackend)) {
 				if mvccSvc != nil && leaseSvc != nil {
-					reporter, repErr := volume.NewReporter(mvccSvc, leaseSvc, nodeID)
+					reporter, repErr := volume.NewReporter(mvccSvc, leaseSvc, nodeID, volume.WithReporterSealProbe(nodeSeal))
 					if repErr != nil {
 						slog.Default().Warn("start: failed to construct volume-pool Reporter",
 							slog.Any("error", repErr))

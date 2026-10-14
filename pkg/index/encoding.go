@@ -26,8 +26,11 @@ package index
 //     field data. Each \x00 byte in the source is replaced with \x00\xFF,
 //     and the field is terminated with \x00\x00. This preserves
 //     lexicographic order and allows unambiguous field boundary detection.
-//   - Numeric: 8-byte big-endian with sign-bit flip (existing
-//     EncodeNumericValue). Fixed width, no terminator needed.
+//   - Numeric: the order-preserving numeric term (EncodeNumericValue). Terms
+//     are prefix-free and self-delimiting, so no escaping or extra
+//     terminator is needed.
+//   - Fixed64: eight bytes the caller has already encoded in order-preserving
+//     form, passed through and split back at a fixed width.
 //   - Boolean: single byte \x01 (true) or \x00\x00 (false, using the
 //     string terminator convention for consistency).
 
@@ -37,11 +40,11 @@ package index
 // The types slice must have the same length as values.
 func EncodeCompoundValue(values [][]byte, types []IndexValueType) []byte {
 	// Pre-estimate capacity: each string field adds at most 2x+2 bytes,
-	// each numeric field adds exactly 8 bytes.
+	// each numeric or fixed-width field adds its own bytes.
 	capacity := 0
 	for i, v := range values {
-		if i < len(types) && types[i] == IndexValueTypeNumeric {
-			capacity += 8
+		if i < len(types) && (types[i] == IndexValueTypeNumeric || types[i] == IndexValueTypeFixed64) {
+			capacity += len(v)
 		} else {
 			capacity += len(v)*2 + 2 // worst case: every byte is \x00
 		}
@@ -56,9 +59,10 @@ func EncodeCompoundValue(values [][]byte, types []IndexValueType) []byte {
 		}
 
 		switch vtype {
-		case IndexValueTypeNumeric:
-			// Numeric values are already encoded as fixed 8-byte
-			// big-endian by EncodeNumericValue. Pass through directly.
+		case IndexValueTypeNumeric, IndexValueTypeFixed64:
+			// Numeric values are already terms (EncodeNumericValue),
+			// which delimit themselves, and fixed-width values are already
+			// ordered bytes. Pass through directly.
 			buf = append(buf, v...)
 		default:
 			// String encoding: escape \x00 as \x00\xFF, terminate with \x00\x00.
@@ -79,14 +83,24 @@ func DecodeCompoundValue(data []byte, types []IndexValueType) [][]byte {
 	for i := 0; offset < len(data) && i < len(types); i++ {
 		switch types[i] {
 		case IndexValueTypeNumeric:
-			// Fixed 8-byte field.
-			if offset+8 > len(data) {
+			// A self-delimiting term; a malformed one ends decoding,
+			// like truncated data.
+			n, err := numericTermLen(data, offset)
+			if err != nil {
 				return result
 			}
-			field := make([]byte, 8)
-			copy(field, data[offset:offset+8])
+			field := make([]byte, n)
+			copy(field, data[offset:offset+n])
 			result = append(result, field)
-			offset += 8
+			offset += n
+		case IndexValueTypeFixed64:
+			if offset+fixed64Len > len(data) {
+				return result
+			}
+			field := make([]byte, fixed64Len)
+			copy(field, data[offset:offset+fixed64Len])
+			result = append(result, field)
+			offset += fixed64Len
 		default:
 			// String field: scan for \x00\x00 terminator.
 			field, newOffset := decodeStringField(data, offset)

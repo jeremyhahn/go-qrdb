@@ -115,6 +115,7 @@ const (
 	QRDBService_StopShard_FullMethodName                         = "/qrdb.v1.QRDBService/StopShard"
 	QRDBService_GetShardState_FullMethodName                     = "/qrdb.v1.QRDBService/GetShardState"
 	QRDBService_GetTopology_FullMethodName                       = "/qrdb.v1.QRDBService/GetTopology"
+	QRDBService_GetReplicaStates_FullMethodName                  = "/qrdb.v1.QRDBService/GetReplicaStates"
 	QRDBService_GetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/GetNodeCompaction"
 	QRDBService_SetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/SetNodeCompaction"
 	QRDBService_MintJoinToken_FullMethodName                     = "/qrdb.v1.QRDBService/MintJoinToken"
@@ -463,6 +464,12 @@ type QRDBServiceClient interface {
 	GetShardState(ctx context.Context, in *GetShardStateRequest, opts ...grpc.CallOption) (*ShardStateResponse, error)
 	// GetTopology returns the full cluster topology.
 	GetTopology(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TopologyResponse, error)
+	// GetReplicaStates reports, for every replica the answering node holds,
+	// its applied index and state-machine hash, so replicas of one shard can
+	// be compared at an equal applied index. It answers for this node only
+	// and is never forwarded. admin:replica_state is ScopeCross: system
+	// tenant only.
+	GetReplicaStates(ctx context.Context, in *GetReplicaStatesRequest, opts ...grpc.CallOption) (*ReplicaStatesResponse, error)
 	// GetNodeCompaction returns the platform's node-keyspace compaction
 	// policy. admin:node_compaction is ScopeCross: system tenant only.
 	GetNodeCompaction(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NodeCompactionResponse, error)
@@ -1681,6 +1688,16 @@ func (c *qRDBServiceClient) GetTopology(ctx context.Context, in *emptypb.Empty, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TopologyResponse)
 	err := c.cc.Invoke(ctx, QRDBService_GetTopology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetReplicaStates(ctx context.Context, in *GetReplicaStatesRequest, opts ...grpc.CallOption) (*ReplicaStatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplicaStatesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetReplicaStates_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3356,6 +3373,12 @@ type QRDBServiceServer interface {
 	GetShardState(context.Context, *GetShardStateRequest) (*ShardStateResponse, error)
 	// GetTopology returns the full cluster topology.
 	GetTopology(context.Context, *emptypb.Empty) (*TopologyResponse, error)
+	// GetReplicaStates reports, for every replica the answering node holds,
+	// its applied index and state-machine hash, so replicas of one shard can
+	// be compared at an equal applied index. It answers for this node only
+	// and is never forwarded. admin:replica_state is ScopeCross: system
+	// tenant only.
+	GetReplicaStates(context.Context, *GetReplicaStatesRequest) (*ReplicaStatesResponse, error)
 	// GetNodeCompaction returns the platform's node-keyspace compaction
 	// policy. admin:node_compaction is ScopeCross: system tenant only.
 	GetNodeCompaction(context.Context, *emptypb.Empty) (*NodeCompactionResponse, error)
@@ -4003,6 +4026,9 @@ func (UnimplementedQRDBServiceServer) GetShardState(context.Context, *GetShardSt
 }
 func (UnimplementedQRDBServiceServer) GetTopology(context.Context, *emptypb.Empty) (*TopologyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTopology not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetReplicaStates(context.Context, *GetReplicaStatesRequest) (*ReplicaStatesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetReplicaStates not implemented")
 }
 func (UnimplementedQRDBServiceServer) GetNodeCompaction(context.Context, *emptypb.Empty) (*NodeCompactionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNodeCompaction not implemented")
@@ -5913,6 +5939,24 @@ func _QRDBService_GetTopology_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).GetTopology(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetReplicaStates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetReplicaStatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetReplicaStates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetReplicaStates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetReplicaStates(ctx, req.(*GetReplicaStatesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8889,6 +8933,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTopology",
 			Handler:    _QRDBService_GetTopology_Handler,
+		},
+		{
+			MethodName: "GetReplicaStates",
+			Handler:    _QRDBService_GetReplicaStates_Handler,
 		},
 		{
 			MethodName: "GetNodeCompaction",

@@ -74,14 +74,7 @@ func (c *daoCluster) kill(t *testing.T, i int) {
 	if err := n.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal node %d: %v", i+1, err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- n.cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		_ = n.cmd.Process.Kill()
-		t.Fatalf("node %d: timed out waiting for shutdown", i+1)
-	}
+	_ = awaitNodeExit(t, n.cmd, nodeStopTimeout)
 }
 
 // restart relaunches node i with its original args and data directory --
@@ -90,19 +83,10 @@ func (c *daoCluster) kill(t *testing.T, i int) {
 func (c *daoCluster) restart(t *testing.T, i int) {
 	t.Helper()
 	n := c.nodes[i]
-	cmd := exec.Command(c.bin, n.args...)
-	prefix := fmt.Sprintf("[daocluster node%d-restart] ", i+1)
-	cmd.Stdout = &logWriter{t: t, prefix: prefix}
-	cmd.Stderr = &logWriter{t: t, prefix: prefix}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("restart node %d: %v", i+1, err)
-	}
+	cmd := spawnNode(t, c.bin, n.args, &logWriter{t: t, prefix: fmt.Sprintf("[daocluster node%d-restart] ", i+1)})
 	n.cmd = cmd
 	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
+		killNode(t, cmd)
 	})
 
 	waitForBarrierStatusReachable(t, c.ca, n.adminPort, 90*time.Second)

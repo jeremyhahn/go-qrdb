@@ -76,6 +76,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [volume-pools](volume-pools/) | *(proposed, awaiting sign-off)* named volume pools: per-node mounts, tenant placement, entitlements and capacity, management, the `VolumeProvider` seam |
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
+| [cluster-verification](cluster-verification/) | *(draft, build in progress)* what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [capabilities](capabilities/) | the effective runtime feature profile: build tags, run mode and configuration |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |

@@ -347,12 +347,7 @@ func (c *sqlCluster) kill(t *testing.T, idx int) {
 	if n.dead {
 		return
 	}
-	if n.cmd.Process != nil {
-		if err := n.cmd.Process.Kill(); err != nil {
-			t.Fatalf("kill replica %d: %v", n.replicaID, err)
-		}
-		n.cmd.Wait()
-	}
+	killNode(t, n.cmd)
 	n.dead = true
 }
 

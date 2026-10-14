@@ -776,6 +776,11 @@ type DatabaseService struct {
 	scaleLeaderWaitTimeout  time.Duration
 	scaleLeaderWaitInterval time.Duration
 
+	// infoReadBound bounds each best-effort read that decorates a database's
+	// info (see boundedInfoRead). Defaulted in NewDatabaseService to
+	// defaultInfoReadBound; a test sets it to exercise the bound quickly.
+	infoReadBound time.Duration
+
 	// compactionPolicies reaches a database's scheduled-compaction policy in
 	// the database's own store; nil until the server wires it
 	// (SetCompactionPolicies), and then UpdateCompactionForTenant refuses.
@@ -800,6 +805,7 @@ func NewDatabaseService(manager *database.Manager, opts ...DatabaseServiceOption
 		logger:                  slog.Default(),
 		scaleLeaderWaitTimeout:  defaultScaleLeaderWaitTimeout,
 		scaleLeaderWaitInterval: defaultScaleLeaderWaitInterval,
+		infoReadBound:           defaultInfoReadBound,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -1832,12 +1838,35 @@ func (s *DatabaseService) refreshReplicasFromPlacement(ctx context.Context, info
 	if s.placementStore == nil || info.Backend != database.BackendRaft {
 		return
 	}
-	p, err := s.placementStore.Get(ctx, info.TenantID, info.Name)
+	readCtx, cancel := s.boundedInfoRead(ctx)
+	defer cancel()
+	p, err := s.placementStore.Get(readCtx, info.TenantID, info.Name)
 	if err != nil {
 		return
 	}
 	info.Replicas = p.RF
 	info.ShardID = p.ShardID
+}
+
+// defaultInfoReadBound bounds each best-effort read that decorates a
+// database's info: the placement refresh and the compaction-policy read.
+const defaultInfoReadBound = 5 * time.Second
+
+// boundedInfoRead returns ctx bounded for one best-effort read that decorates
+// a database's info. Both are linearizable reads: the placement one on the
+// system shard and the compaction-policy one on the database's own shard,
+// which on a raft database just created may still be electing its leader. A
+// ReadIndex waits for that leader for as long as ctx lives, and a transport
+// hands in a request's ctx, which often has no deadline. Unbounded, the read
+// would hold the whole call past its caller's patience, when the contract of
+// both reads is to degrade -- keep the local view, report the policy
+// unavailable -- rather than make the database uninspectable.
+func (s *DatabaseService) boundedInfoRead(ctx context.Context) (context.Context, context.CancelFunc) {
+	bound := s.infoReadBound
+	if bound <= 0 {
+		bound = defaultInfoReadBound
+	}
+	return context.WithTimeout(ctx, bound)
 }
 
 // DropForTenant drops a database after verifying tenant ownership via the
@@ -2071,7 +2100,8 @@ func (s *DatabaseService) SetCompactionPolicies(p CompactionPolicies) {
 // withCompactionPolicy reports info's scheduled-compaction policy from the
 // database's own store. A sealed database's views are refused by design, so
 // its policy is not reported while it is sealed; nothing else is skipped --
-// a store that cannot be read fails the call.
+// a store that cannot be read, or whose read outlives boundedInfoRead's
+// bound, has the policy reported unavailable.
 func (s *DatabaseService) withCompactionPolicy(ctx context.Context, info *database.DatabaseInfo) (*database.DatabaseInfo, error) {
 	if s.compactionPolicies == nil || info.Status == database.StatusSealed {
 		return info, nil
@@ -2080,12 +2110,15 @@ func (s *DatabaseService) withCompactionPolicy(ctx context.Context, info *databa
 	if owner == "" {
 		owner = tenantid.System
 	}
-	policy, err := s.compactionPolicies.CompactionPolicy(ctx, owner, info.Name)
+	readCtx, cancel := s.boundedInfoRead(ctx)
+	defer cancel()
+	policy, err := s.compactionPolicies.CompactionPolicy(readCtx, owner, info.Name)
 	if err != nil {
-		// A store that cannot be read -- a degraded raft database, say --
-		// must not make the database uninspectable, nor turn an update that
-		// committed into a reported failure. The policy is reported unknown,
-		// never as off, and the cause is logged.
+		// A store that cannot be read -- a degraded raft database, say, or
+		// one whose shard is still electing its leader -- must not make the
+		// database uninspectable, nor turn an update that committed into a
+		// reported failure. The policy is reported unknown, never as off,
+		// and the cause is logged.
 		readErr := &CompactionPolicyReadError{Tenant: owner, Database: info.Name, Err: err}
 		s.logger.Warn("database info: compaction policy unavailable",
 			slog.String("tenant", owner), slog.String("database", info.Name), slog.Any("error", readErr))
@@ -2157,7 +2190,9 @@ const (
 	// ScaleForTenant executes, and go-quicraft hard-rejects a membership
 	// change with "not leader for shard N, leader unknown" until that
 	// election completes. waitForShardLeaderKnown polls for it instead of
-	// racing it. Overridable via WithScaleLeaderWaitTimeout.
+	// racing it. Overridable via WithScaleLeaderWaitTimeout. AdminService's
+	// membership changes and the rebalancer wait out the same election
+	// with the same bound.
 	defaultScaleLeaderWaitTimeout = 10 * time.Second
 
 	// defaultScaleLeaderWaitInterval is the default poll interval used by
@@ -2165,16 +2200,24 @@ const (
 	defaultScaleLeaderWaitInterval = 250 * time.Millisecond
 )
 
-// waitForShardLeaderKnown polls host.LeaderReplicaID for shardID until a
+// shardLeaderResolver is the one question waitForShardLeaderKnown asks of a
+// Raft host: which replica, if any, this node currently believes leads
+// shardID. RaftHost satisfies it; AdminService adapts its Host to it
+// (hostLeaderResolver).
+type shardLeaderResolver interface {
+	LeaderReplicaID(ctx context.Context, shardID uint64) (id uint64, ok bool, err error)
+}
+
+// waitForShardLeaderKnown polls resolver.LeaderReplicaID for shardID until a
 // leader is known, ctx is cancelled, or timeout elapses. Returns
 // *ShardLeaderTimeoutError on timeout (not a silent success) so
-// scaleUp/scaleDown fail closed instead of proceeding to an
-// AddObserver/RemoveFollowerNode call that go-quicraft is certain to
-// reject while the shard's leader is unknown.
-func waitForShardLeaderKnown(ctx context.Context, host RaftHost, shardID uint64, timeout, interval time.Duration) error {
+// scaleUp/scaleDown and AdminService's membership changes fail closed
+// instead of proceeding to a membership-change call that go-quicraft is
+// certain to reject while the shard's leader is unknown.
+func waitForShardLeaderKnown(ctx context.Context, resolver shardLeaderResolver, shardID uint64, timeout, interval time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		if _, ok, err := host.LeaderReplicaID(ctx, shardID); err == nil && ok {
+		if _, ok, err := resolver.LeaderReplicaID(ctx, shardID); err == nil && ok {
 			return nil
 		}
 		if time.Now().After(deadline) {

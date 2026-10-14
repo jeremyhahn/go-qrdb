@@ -68,8 +68,8 @@ die() { printf '%s\n' "$@" >&2; exit 1; }
 # build_tool compiles the singlechecker to an ABSOLUTE path.
 #
 # Absolute because vet-modules.sh cd's into each module before invoking GOVET,
-# so a relative -vettool path resolves against the wrong directory for six of
-# the seven modules -- and `go vet` reports that as a tool it could not start,
+# so a relative -vettool path resolves against the wrong directory for seven of
+# the eight modules -- and `go vet` reports that as a tool it could not start,
 # not as a clean sweep, which is at least loud. It is still worth not relying
 # on the difference.
 build_tool() {

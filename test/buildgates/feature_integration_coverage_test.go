@@ -216,6 +216,29 @@ func TestIntegrationFeatureCoverage_FilesExist(t *testing.T) {
 	}
 }
 
+// dispatchTarget is the unambiguous recipe behind every per-feature target
+// (`make integration-test-feature FEATURE=<f>`). `make integration-test-<f>`
+// is NOT unambiguous: make prefers an explicit target of that name over the
+// `integration-test-%` pattern rule, and `integration-test-rag` is one (the
+// Docker/Ollama stack), so a feature's own selection is reached unambiguously
+// only through the dispatch target.
+const dispatchTarget = "integration-test-feature"
+
+// TestIntegrationFeatureCoverage_DispatchCannotCollide proves the dispatch
+// target runs exactly each feature's mapped files: no feature is named like
+// the dispatch target itself, which would make `make integration-test-<f>`
+// for that feature recurse into the dispatcher with no FEATURE.
+func TestIntegrationFeatureCoverage_DispatchCannotCollide(t *testing.T) {
+	root := repoRoot(t)
+	_, declared := featureMapping(t, root)
+	for v := range declared {
+		name := strings.ReplaceAll(strings.TrimPrefix(v, intTestVarPrefix), "_", "-")
+		if "integration-test-"+name == dispatchTarget {
+			t.Errorf("feature %q would be shadowed by the dispatch target %s", name, dispatchTarget)
+		}
+	}
+}
+
 // TestIntegrationFeatureCoverage_CanFail proves the two comparison functions
 // above are not vacuous (go-qrdb#500's lesson: a gate that cannot go red is
 // not a gate) against plain in-memory fixtures -- no synthetic filesystem

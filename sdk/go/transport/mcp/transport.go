@@ -814,6 +814,32 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 	}, nil
 }
 
+// ReplicaStates implements transport.AdminClient. The tool's text is the
+// service response, whose JSON names match transport.ReplicaStatesResponse.
+func (t *Transport) ReplicaStates(ctx context.Context, shardID uint64) (*transport.ReplicaStatesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var args map[string]any
+	if shardID != 0 {
+		args = map[string]any{"shard_id": shardID}
+	}
+	text, err := t.callTool(ctx, "qrdb_replica_states", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var states transport.ReplicaStatesResponse
+	if jsonErr := json.Unmarshal([]byte(text), &states); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ReplicaStates", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	if states.Replicas == nil {
+		states.Replicas = []transport.ReplicaState{}
+	}
+	return &states, nil
+}
+
 // MintJoinToken mints a single-use, identity-bound member-side CSR join
 // token. Calls the qrdb_mint_join_token MCP tool. Implements
 // transport.ClusterJoinTokenMinter.

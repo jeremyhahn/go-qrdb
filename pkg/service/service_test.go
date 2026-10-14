@@ -213,7 +213,10 @@ func (m *mockHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
 	if m.getLeaderIDFn != nil {
 		return m.getLeaderIDFn(shardID)
 	}
-	return 0, false, nil
+	// A settled shard knows its leader, as a real host's does between
+	// elections; a test of an election in progress says so with
+	// getLeaderIDFn.
+	return 1, true, nil
 }
 
 func (m *mockHost) GetShardRaftState(shardID uint64) (uint64, uint64, error) {

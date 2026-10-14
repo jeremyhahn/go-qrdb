@@ -620,7 +620,9 @@ func TestAll_TotalCount(t *testing.T) {
 	//   audit:verify's cross-scope node-local file-chain check, because each
 	//   tenant's replicated chain is its own independent table
 	//   (docs/audit/architecture.md#cluster-wide-replicated-trail) = 387 total.
-	const expectedTotal = 387
+	// + 1 admin:replica_state, the cross-scope read of each replica's applied
+	//   index and state-machine hash on the answering node = 388 total.
+	const expectedTotal = 388
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

@@ -66,8 +66,12 @@ type KVEngine struct {
 	// OpIndexCreate (index.IndexConfig.Owner, go-qrdb#426). An absent entry
 	// is the empty owner: the explicit index API, and every index registered
 	// locally rather than through a command.
-	indexOwners   map[string]string
-	entityIndexes map[string][]EntityIndex
+	indexOwners map[string]string
+	// indexValueTypes holds the term encoding each index created through
+	// OpIndexCreate was built with (see IndexCreateValueType). An absent entry
+	// is a string index.
+	indexValueTypes map[string]index.IndexValueType
+	entityIndexes   map[string][]EntityIndex
 	// compoundIndexes stores compound (multi-field) indexes keyed by
 	// their fully-qualified name (e.g., "mydb.messages.ConversationID_Timestamp").
 	compoundIndexes map[string]*index.CompoundIndex
@@ -135,6 +139,7 @@ func NewKVEngine(stg storage.Storage, opts ...KVOption) *KVEngine {
 		indexFields:         make(map[string]string),
 		indexScopes:         make(map[string][]byte),
 		indexOwners:         make(map[string]string),
+		indexValueTypes:     make(map[string]index.IndexValueType),
 		entityIndexes:       make(map[string][]EntityIndex),
 		compoundIndexes:     make(map[string]*index.CompoundIndex),
 		compoundIndexFields: make(map[string][]string),
@@ -982,13 +987,21 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 
 	// Do not recreate an existing index, and do not let a different owner
 	// adopt it either: a create naming an index another owner holds is
-	// refused as an application error (go-qrdb#426).
-	if _, exists := e.indexes[name]; exists {
+	// refused as an application error (go-qrdb#426). A same-owner create
+	// asking for a different value type rebuilds the index at that type
+	// instead (see IndexCreateValueType).
+	valueType := IndexCreateValueType(opts)
+	if existing, exists := e.indexes[name]; exists {
 		owner := e.indexOwners[name]
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
 		}
-		return sm.Result{}, nil
+		if e.indexValueTypes[name] == valueType {
+			return sm.Result{}, nil
+		}
+		if err := existing.Close(); err != nil {
+			return sm.Result{Value: 1}, err
+		}
 	}
 
 	cfg := index.IndexConfig{
@@ -1009,14 +1022,15 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		// name carries (go-qrdb#410).
 		KeyPrefix: opts.KeyPrefix,
 		Owner:     opts.Owner,
+		ValueType: valueType,
 	}
 	if opts.Unique {
 		cfg.Type = index.IndexTypeUnique
 		cfg.Unique = true
 	}
-	if opts.Numeric {
-		cfg.ValueType = index.IndexValueTypeNumeric
-	}
+	// A create builds the index now, so its terms are written at the current
+	// encoding; the clear below removes any written earlier.
+	cfg.EncodingVersion = index.NumericEncodingVersion
 
 	log := e.logger
 	if log == nil {
@@ -1028,11 +1042,19 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, idxErr
 	}
 
+	// Entries already stored under the name -- left by a create applied
+	// again over storage that outlived the in-memory index, possibly in an
+	// older term encoding -- are cleared before the backfill rebuilds them.
+	if err := idx.Clear(); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
 	scope := ComposeIndexScope(name, opts.KeyPrefix)
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
 	e.indexOwners[name] = opts.Owner
+	e.indexValueTypes[name] = valueType
 
 	// Backfill the index with the existing data INSIDE its scope. An unscoped
 	// backfill would seed the new index with every matching key in the state
@@ -1063,6 +1085,7 @@ func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
 	delete(e.indexFields, name)
 	delete(e.indexScopes, name)
 	delete(e.indexOwners, name)
+	delete(e.indexValueTypes, name)
 
 	return sm.Result{}, nil
 }
@@ -1493,7 +1516,7 @@ func (e *KVEngine) scanPrefix(pq *statemachine.PrefixQuery) (interface{}, error)
 func (e *KVEngine) lookupIndexQuery(q index.IndexQueryRequest) (interface{}, error) {
 	idx, exists := e.indexes[q.IndexName]
 	if !exists {
-		return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
 	return idx.Get(q.Value)
 }
@@ -1502,7 +1525,7 @@ func (e *KVEngine) lookupIndexQuery(q index.IndexQueryRequest) (interface{}, err
 func (e *KVEngine) lookupIndexScan(q index.IndexScanRequest) (interface{}, error) {
 	idx, exists := e.indexes[q.IndexName]
 	if !exists {
-		return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
 	return idx.Scan(q.Start, q.End)
 }
@@ -1524,7 +1547,7 @@ func (e *KVEngine) lookupIndexList() (interface{}, error) {
 func (e *KVEngine) lookupCompoundIndexQuery(q index.CompoundIndexQueryRequest) (interface{}, error) {
 	idx, exists := e.compoundIndexes[q.IndexName]
 	if !exists {
-		return nil, &InvalidQueryError{Reason: "compound index not found: " + q.IndexName}
+		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
 	return idx.GetCompound(q.Values)
 }
@@ -1533,7 +1556,7 @@ func (e *KVEngine) lookupCompoundIndexQuery(q index.CompoundIndexQueryRequest) (
 func (e *KVEngine) lookupCompoundIndexScan(q index.CompoundIndexScanRequest) (interface{}, error) {
 	idx, exists := e.compoundIndexes[q.IndexName]
 	if !exists {
-		return nil, &InvalidQueryError{Reason: "compound index not found: " + q.IndexName}
+		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
 	if q.RangeStart == nil && q.RangeEnd == nil {
 		// Pure prefix scan -- use GetPrefix.

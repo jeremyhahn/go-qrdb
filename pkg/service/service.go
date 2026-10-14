@@ -1142,13 +1142,23 @@ type AdminService struct {
 	// replicated KV store exists) and must be safe to read concurrently
 	// with that bind.
 	joinToken clusterJoinTokenState
+
+	// leaderWaitTimeout and leaderWaitInterval bound awaitShardLeader, the
+	// wait every membership change makes for a known leader before it
+	// proposes.
+	leaderWaitTimeout  time.Duration
+	leaderWaitInterval time.Duration
 }
 
 // NewAdminService creates a new AdminServicer backed by the given host.
 // Optional AdminServiceOption values configure state machine factories
 // and other behavior.
 func NewAdminService(host Host, opts ...AdminServiceOption) AdminServicer {
-	svc := &AdminService{host: host}
+	svc := &AdminService{
+		host:               host,
+		leaderWaitTimeout:  defaultScaleLeaderWaitTimeout,
+		leaderWaitInterval: defaultScaleLeaderWaitInterval,
+	}
 	for _, opt := range opts {
 		opt(svc)
 	}
@@ -1243,6 +1253,9 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
 		return err
 	}
+	if err := s.awaitShardLeader(ctx, "add", shardID); err != nil {
+		return err
+	}
 	resolved, err := ResolveMemberIdentity(ctx, s.host, shardID, replicaID, raftAddr, identity)
 	if err != nil {
 		return err
@@ -1271,6 +1284,9 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
 		return err
 	}
+	if err := s.awaitShardLeader(ctx, "add-observer", shardID); err != nil {
+		return err
+	}
 	resolved, err := ResolveMemberIdentity(ctx, s.host, shardID, replicaID, raftAddr, identity)
 	if err != nil {
 		return err
@@ -1291,6 +1307,9 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 // proposed through Raft and completes when the membership change is
 // committed.
 func (s *AdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
+	if err := s.awaitShardLeader(ctx, "remove", shardID); err != nil {
+		return err
+	}
 	rs, err := s.host.RequestRemoveNode(ctx, shardID, replicaID, 0)
 	if err != nil {
 		return s.translateMembershipError("remove", err)
@@ -1310,6 +1329,9 @@ func (s *AdminService) RemoveMember(ctx context.Context, shardID, replicaID uint
 // identity -- go-quicraft applies that as a role change in place, without
 // restarting the replica.
 func (s *AdminService) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if err := s.awaitShardLeader(ctx, "promote", shardID); err != nil {
+		return err
+	}
 	m, err := s.host.SyncGetShardMembership(ctx, shardID)
 	if err != nil {
 		return s.translateMembershipError("promote", err)
@@ -1350,6 +1372,42 @@ func (s *AdminService) translateMembershipError(op string, err error) error {
 		}
 	}
 	return &MembershipError{Op: op, Err: err}
+}
+
+// awaitShardLeader holds a membership change until this node knows a leader
+// for shardID, bounded by leaderWaitTimeout (*ShardLeaderTimeoutError, a 503,
+// when it does not). go-quicraft refuses a membership change with "not
+// leader for shard N, leader unknown" while an election is in progress, and
+// a refusal that names no leader is one no transport can forward. Once a
+// leader is known the change proposes as before: here when this node leads,
+// otherwise refused with a *NotLeaderError naming the leader, which the
+// transports forward.
+//
+// It waits; it never retries the proposal. A membership change that timed
+// out may still have committed, so proposing it again could report a
+// promote as "not a committed observer" or an add as a duplicate.
+//
+// A lookup error -- the shard is not hosted here, or the host is closed --
+// does not clear by waiting, so it ends the change at once, as it did
+// before the wait existed.
+func (s *AdminService) awaitShardLeader(ctx context.Context, op string, shardID uint64) error {
+	resolver := hostLeaderResolver{host: s.host}
+	if _, _, err := resolver.LeaderReplicaID(ctx, shardID); err != nil {
+		return s.translateMembershipError(op, err)
+	}
+	return waitForShardLeaderKnown(ctx, resolver, shardID, s.leaderWaitTimeout, s.leaderWaitInterval)
+}
+
+// hostLeaderResolver adapts a Host to shardLeaderResolver, so AdminService
+// waits out an election through the same waitForShardLeaderKnown the
+// scale and rebalance paths use.
+type hostLeaderResolver struct {
+	host Host
+}
+
+// LeaderReplicaID reports the replica this node believes leads shardID.
+func (r hostLeaderResolver) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
+	return r.host.GetLeaderID(shardID)
 }
 
 // RequestSnapshot triggers an asynchronous snapshot for the specified shard.

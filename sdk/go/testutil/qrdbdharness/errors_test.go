@@ -106,6 +106,11 @@ func TestErrorMessages(t *testing.T) {
 			contains: []string{"interrupt", cause.Error()},
 		},
 		{
+			name:     "DaemonWaitError",
+			err:      &DaemonWaitError{PID: 4242, Err: cause, Tail: "last line\n"},
+			contains: []string{"4242", cause.Error(), "last line"},
+		},
+		{
 			name:     "TimeoutError with cause",
 			err:      &TimeoutError{Op: "WaitForLeader", Target: "https://host/status", Timeout: 90 * time.Second, LastErr: cause},
 			contains: []string{"WaitForLeader", "https://host/status", "1m30s", cause.Error()},
@@ -124,6 +129,11 @@ func TestErrorMessages(t *testing.T) {
 			name:     "ProbeError bare",
 			err:      &ProbeError{Reason: "no shard reports is_leader"},
 			contains: []string{"no shard reports is_leader"},
+		},
+		{
+			name:     "RelayError",
+			err:      &RelayError{Op: "listen", Addr: "127.0.0.1:9", Err: cause},
+			contains: []string{"udp relay", "listen", "127.0.0.1:9", cause.Error()},
 		},
 	}
 
@@ -152,7 +162,9 @@ func TestErrorUnwrapping(t *testing.T) {
 		&BuildError{Package: "./cmd/qrdbd", Err: cause},
 		&DaemonStartError{Binary: "/tmp/qrdbd", Err: cause},
 		&DaemonSignalError{Signal: "kill", Err: cause},
+		&DaemonWaitError{PID: 1, Err: cause},
 		&TimeoutError{Op: "WaitForHTTPOK", Target: "https://host/health", LastErr: cause},
+		&RelayError{Op: "dial", Addr: "127.0.0.1:9", Err: cause},
 	}
 	for _, err := range wrapping {
 		if !errors.Is(err, cause) {

@@ -76,10 +76,12 @@ func (s *Server) dispatchDatabaseHolder(w http.ResponseWriter, r *http.Request, 
 	return false
 }
 
-// databaseHolderCall runs call under the request timeout against the
+// databaseHolderCall runs call under the caller's deadline against the
 // database service's holder custody, decoding the request body into body
 // first (nil for a bodyless route), and renders the result or error. A call
-// with no result answers 204 No Content.
+// with no result answers 204 No Content. Like the system holder routes it
+// adds no timeout of its own: a ceremony step can outlast a short cap, and
+// DeadlineExceeded must mean the caller's deadline.
 func (s *Server) databaseHolderCall(w http.ResponseWriter, r *http.Request, body any, call func(ctx context.Context, hs service.DatabaseHolderServicer) (any, error)) {
 	hs, ok := s.databaseSvc.(service.DatabaseHolderServicer)
 	if !ok {
@@ -89,9 +91,7 @@ func (s *Server) databaseHolderCall(w http.ResponseWriter, r *http.Request, body
 	if body != nil && !decodeHolderJSON(w, r, body) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
-	defer cancel()
-	out, err := call(ctx, hs)
+	out, err := call(r.Context(), hs)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

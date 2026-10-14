@@ -22,12 +22,22 @@ const (
 	// This is the default and preserves existing behavior.
 	IndexValueTypeString IndexValueType = 0
 
-	// IndexValueTypeNumeric encodes values as 8-byte big-endian fixed-width
-	// integers with a sign-bit flip so that byte order matches numeric order.
-	// Use this for integer or floating-point fields to ensure range scans
-	// like [1, 222) do not incorrectly include 1234.
+	// IndexValueTypeNumeric encodes decimal number values as exact,
+	// order-preserving terms (EncodeNumericValue) so that byte order matches
+	// numeric order. Use this for integer or floating-point fields to ensure
+	// range scans like [1, 222) do not incorrectly include 1234.
 	IndexValueTypeNumeric IndexValueType = 1
+
+	// IndexValueTypeFixed64 marks a compound member that the caller has
+	// already encoded as exactly eight order-preserving bytes, such as a SQL
+	// primary-key column. EncodeCompoundValue passes it through and
+	// DecodeCompoundValue splits it at eight bytes. It is a compound-encoding
+	// type only: an index is never configured with it.
+	IndexValueTypeFixed64 IndexValueType = 2
 )
+
+// fixed64Len is the width of an IndexValueTypeFixed64 compound member.
+const fixed64Len = 8
 
 // IndexConfig configures index behavior. For single-field indexes,
 // Name and ValueType are used. For compound indexes, FieldNames and
@@ -45,6 +55,15 @@ type IndexConfig struct {
 	// For compound indexes, this applies to all fields unless
 	// ValueTypes is set.
 	ValueType IndexValueType
+
+	// EncodingVersion is the numeric term encoding the index's stored
+	// entries were written with. A numeric index is constructed only at
+	// NumericEncodingVersion: whoever builds one -- an index create, or a
+	// restore from a persisted definition -- states the version, and a
+	// definition recorded at any other version (0 is the unversioned float64
+	// encoding) is rebuilt rather than served; see CheckEncoding. String
+	// indexes ignore it.
+	EncodingVersion int
 
 	// FieldNames is an ordered list of field names for compound indexes.
 	// When non-empty, this is a compound index.
@@ -110,6 +129,32 @@ type IndexConfig struct {
 	// naming an index another owner holds (see CheckCreateOwner) and removes
 	// an index on an owner-checked drop only for its owner (CheckDropOwner).
 	Owner string
+}
+
+// CheckEncoding returns a StaleEncodingError when c is a numeric index whose
+// stored terms were written with an encoding other than
+// NumericEncodingVersion, and nil otherwise. Constructors of persistent
+// indexes call it so a stale definition is refused instead of being served
+// with terms that do not sort numerically.
+func (c IndexConfig) CheckEncoding() error {
+	if c.EncodingVersion == NumericEncodingVersion || !c.hasNumericTerms() {
+		return nil
+	}
+	return &StaleEncodingError{IndexName: c.Name, Version: c.EncodingVersion}
+}
+
+// hasNumericTerms reports whether any of c's fields is stored as a numeric
+// term: the single field, or a member of a compound index.
+func (c IndexConfig) hasNumericTerms() bool {
+	if c.ValueType == IndexValueTypeNumeric {
+		return true
+	}
+	for _, vt := range c.ValueTypes {
+		if vt == IndexValueTypeNumeric {
+			return true
+		}
+	}
+	return false
 }
 
 // IsCompound reports whether this is a compound (multi-field) index.

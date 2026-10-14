@@ -130,6 +130,27 @@ out=$(VET_MODULES_ROOT="$TMP/e" TAG_SETS="$DECLARED" GORM_TAGS=gt "$UNDER_TEST" 
 [ "$out" = "benchmark" ] && ok "a benchmark module maps to 'benchmark'" \
                          || bad "a benchmark module maps to 'benchmark'" "got: $out"
 
+# The cluster proof module compiles only under the clusterproof tag, so it maps
+# to the declared rungs naming that tag -- verbatim, in order -- and to no other.
+# The fixture holds two such rungs and a decoy whose tag merely CONTAINS the
+# word, so a substring match and a first-match-only mapping both fail.
+CP_DECLARED='min min,clusterproof def min,notclusterproof min,clusterproof,clusterproof_container'
+out=$(VET_MODULES_ROOT="$TMP/e" TAG_SETS="$CP_DECLARED" GORM_TAGS=gt "$UNDER_TEST" --tags-for "$TMP/e/test/clusterproof" 2>&1)
+case "$out" in
+"min,clusterproof
+min,clusterproof,clusterproof_container") ok "the cluster proof module maps to every declared clusterproof rung, in order" ;;
+*) bad "the cluster proof module maps to every declared clusterproof rung, in order" "got: $out" ;;
+esac
+
+# A declaration with no clusterproof rung would sweep the module under nothing
+# and report clean; it is refused instead.
+out=$(VET_MODULES_ROOT="$TMP/e" TAG_SETS="$DECLARED" GORM_TAGS=gt "$UNDER_TEST" --tags-for "$TMP/e/test/clusterproof" 2>&1); rc=$?
+case "$rc:$out" in
+0:*) bad "no declared clusterproof rung is refused" "accepted it: $out" ;;
+*"no declared tag set names clusterproof"*) ok "no declared clusterproof rung is refused" ;;
+*) bad "no declared clusterproof rung is refused" "rc=$rc out=$out" ;;
+esac
+
 # THE ONE THAT MATTERS: an unrecognised module is refused, not guessed at. A
 # wrong tag set prints "matched no packages", which is indistinguishable from
 # clean, so guessing is worse than refusing.
@@ -348,6 +369,10 @@ mutate "sdk/go silently skipped" 's#^	for m in \$mods; do#	for m in $mods; do\n\
 # sweeps clean. Deleting it must turn the cases above red.
 mutate "matched-no-packages guard deleted" 's#^			if \[ "\$pkgs" = 0 \]; then#\t\t\tif false; then#'
 mutate "declared set truncated to its first rung" 's#^		printf .%s\\n. \$TAG_SETS ;;#		printf "%s\\n" "${TAG_SETS%% *}" ;;#'
+# The cluster proof module swept under nothing when no rung names its tag.
+mutate "clusterproof empty-set guard deleted" 's#\[ -n "\$_cp" \] || die#true || die#'
+# A rung whose tag merely contains the word taken as a clusterproof rung.
+mutate "clusterproof rung matched as a substring" 's#\*,clusterproof,\*)#*clusterproof*)#'
 
 [ $mrc -eq 0 ] && printf '\nall mutants killed\n' || printf '\nSOME MUTANTS SURVIVED\n'
 exit $mrc

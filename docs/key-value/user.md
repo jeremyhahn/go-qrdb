@@ -161,6 +161,12 @@ if err := kv.Put(ctx, key, value); err != nil && sdk.IsStorageClosed(err) {
 Over gRPC you see `Unavailable` and over REST a `503`, both meaning the same:
 this node is going away, retry elsewhere or later.
 
+**A write or read answered `503` / `Unavailable` with "timeout"** — Raft found
+no leader to answer it in time: an election was under way, or a new leader had
+not yet committed the first entry of its term. Retry after a short wait. A
+write that timed out may still have committed, so retry it only when writing
+the same value again is harmless, or use one of the guarded write verbs above.
+
 **"requires raft.sm_type: mvcc"** — the server keeps no revision history.
 As-of reads, `kv restore` and watch replay all need it. This is a server
 configuration change, not something you can pass as a flag.

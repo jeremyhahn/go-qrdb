@@ -303,6 +303,7 @@ var operationPermissions = map[string]permission.Permission{
 	"StopShard":               permission.AdminStopShard,
 	"GetShardState":           permission.AdminShardState,
 	"GetTopology":             permission.AdminTopology,
+	"ReplicaStates":           permission.AdminReplicaState,
 	"NodeCompaction":          permission.AdminNodeCompaction,
 	"SetNodeCompaction":       permission.AdminNodeCompaction,
 	"MintJoinToken":           permission.ClusterJoinToken,

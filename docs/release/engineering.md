@@ -217,7 +217,7 @@ The Makefile sets its budget:
 
 | Makefile variable | Default | Applied as |
 |---|---|---|
-| `CLUSTER_CPUS` | `8` | `cpus:` on the `integration-tests` compose service (docker `--cpus`) |
+| `CLUSTER_CPUS` | `8` | `cpus:` on the `integration-tests` compose service (docker `--cpus`), lowered to the docker host's CPU count when the host has fewer. A whole number; `0` is no cap |
 | `CLUSTER_MEM_RESERVATION` | `8g` | `mem_reservation:` on the same service (docker `--memory-reservation`): a soft floor under host memory pressure, never a limit that kills a test |
 | `CLUSTER_PARALLEL` | `1` | `go test -parallel`. The stage already runs `-p 1` over one package, so this bounds the one `t.Parallel` suite, which otherwise boots five 3-node clusters at once |
 | `INTEGRATION_RUN` | empty | a `-run` expression narrowing the stage; empty runs every test |
@@ -227,6 +227,22 @@ The budget is on the compose service: that container holds the `go test`
 process and every qrdbd and qrdb process the tests spawn, and under the CPU cap
 each of those Go processes sizes `GOMAXPROCS` to 8. The other compose stages
 leave the budget variables unset, which docker reads as no limit.
+
+`CLUSTER_CPUS` is an upper bound, not a requirement. dockerd refuses a
+`--cpus` above the CPUs it has ("range of CPUs is from 0.01 to 4.00"), so a
+fixed 8 never started the container on a 4-CPU host and the stage ran no test.
+`scripts/cluster-cpus.sh` reads the daemon's own count (`docker info` NCPU,
+the figure dockerd checks against, not the calling container's `nproc`),
+applies the smaller of the two and logs both:
+
+```
+cluster-cpus: capping the cluster stage at 4 CPUs (CLUSTER_CPUS=8, docker host has 4)
+```
+
+A daemon whose count cannot be read fails the stage rather than running
+uncapped. Nothing else assumes 8 CPUs: `CLUSTER_PARALLEL` is 1 regardless.
+`make test-cluster-cpus` (Lint) runs the script against a stub docker for the
+lowering, the pass-through and every refusal.
 
 ### Batch workflow
 

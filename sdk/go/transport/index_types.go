@@ -24,8 +24,10 @@ type IndexConfig struct {
 	// Sparse skips keys where the indexed field is absent.
 	Sparse bool `json:"sparse"`
 
-	// Numeric encodes field values as fixed-width 8-byte big-endian integers
-	// so byte ordering matches numeric ordering.
+	// Numeric encodes field values as order-preserving numeric terms --
+	// integers and floats of any sign and magnitude -- so byte ordering
+	// matches numeric ordering. A value that does not parse as a number, and
+	// NaN, is not indexed.
 	Numeric bool `json:"numeric"`
 
 	// CaseInsensitive folds string field values on write, backfill and lookup,

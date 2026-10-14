@@ -815,6 +815,11 @@ const (
 	AdminStopShard  Permission = "admin:stop_shard"
 	AdminShardState Permission = "admin:shard_state"
 	AdminTopology   Permission = "admin:topology"
+	// AdminReplicaState reads the applied index and state-machine hash of
+	// every replica on the answering node. It is a diagnostic: the hash
+	// covers every tenant's data on a shard and holds the state machine's
+	// read lock while it is computed.
+	AdminReplicaState Permission = "admin:replica_state"
 	// AdminNodeCompaction reads and sets the platform's node-keyspace
 	// compaction policy: the scheduled compaction of the shared store's
 	// keys outside every database namespace.
@@ -1199,7 +1204,7 @@ var categories = []Category{
 		Group: "Admin Services",
 		Permissions: []Permission{
 			AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
-			AdminNodeCompaction,
+			AdminReplicaState, AdminNodeCompaction,
 		},
 	},
 	{

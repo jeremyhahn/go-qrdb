@@ -37,6 +37,7 @@ type Reporter struct {
 	nodeID string
 	ttl    time.Duration
 	logger *slog.Logger
+	seal   SealProbe
 
 	mu      sync.Mutex
 	leaseID int64
@@ -66,6 +67,25 @@ func WithReporterLeaseTTL(d time.Duration) ReporterOption {
 		if d > 0 {
 			r.ttl = d
 		}
+	}
+}
+
+// SealProbe reports whether the node barrier is sealed. While it is, the
+// node's replicated log cannot take an entry, and an entry proposed into it
+// halts the shard, so a write that is not a client's request must not be
+// proposed at all.
+type SealProbe interface {
+	IsSealed() bool
+}
+
+// WithReporterSealProbe makes the Reporter consult p before every write it
+// would propose: while the node barrier is sealed a refresh is skipped and
+// Report is refused with *NodeSealedError. The lease expiry sweep holds while
+// sealed, so the report survives until the first refresh after the unseal
+// renews it. A nil p writes unconditionally.
+func WithReporterSealProbe(p SealProbe) ReporterOption {
+	return func(r *Reporter) {
+		r.seal = p
 	}
 }
 
@@ -134,11 +154,22 @@ func (r *Reporter) refreshLoop(runCtx context.Context, build func() NodeReport) 
 		case <-runCtx.Done():
 			return
 		case <-ticker.C:
+			// A sealed node barrier halts the shard on the next proposal,
+			// so the refresh is skipped; the lease expiry sweep holds while
+			// sealed too, so the report outlives the seal.
+			if r.sealed() {
+				continue
+			}
 			if err := r.Report(runCtx, build()); err != nil {
 				r.logger.Warn("volume: node report refresh failed", slog.String("node", r.nodeID), slog.String("error", err.Error()))
 			}
 		}
 	}
+}
+
+// sealed reports whether the node barrier is sealed, per the configured probe.
+func (r *Reporter) sealed() bool {
+	return r.seal != nil && r.seal.IsSealed()
 }
 
 // Report publishes report once: it grants a lease on the first call (or
@@ -153,6 +184,9 @@ func (r *Reporter) Report(ctx context.Context, report NodeReport) error {
 	}
 	if report.NodeID != r.nodeID {
 		return &InvalidCatalogDependencyError{Reason: "report names a different node id than this Reporter"}
+	}
+	if r.sealed() {
+		return &NodeSealedError{Op: "node report"}
 	}
 	report.ReportedAt = time.Now()
 	data, err := json.Marshal(report)

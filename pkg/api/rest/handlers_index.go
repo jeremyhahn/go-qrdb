@@ -31,7 +31,7 @@ type indexCreateRequest struct {
 	FieldName string `json:"field_name"`
 	Unique    bool   `json:"unique"`
 	Sparse    bool   `json:"sparse"`
-	// Numeric encodes field values as fixed-width big-endian integers so byte
+	// Numeric encodes field values as order-preserving numeric terms so byte
 	// ordering matches numeric ordering. The field was absent entirely, so a
 	// numeric index was unreachable over REST (go-qrdb#34).
 	Numeric bool `json:"numeric"`

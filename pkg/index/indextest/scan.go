@@ -36,7 +36,12 @@ import (
 // result rather than a passing-by-coincidence assertion.
 func NumericScan(t *testing.T, newIndex Factory) {
 	t.Helper()
-	cfg := index.IndexConfig{Name: "n", Type: index.IndexTypeNormal, ValueType: index.IndexValueTypeNumeric}
+	cfg := index.IndexConfig{
+		Name:            "n",
+		Type:            index.IndexTypeNormal,
+		ValueType:       index.IndexValueTypeNumeric,
+		EncodingVersion: index.NumericEncodingVersion,
+	}
 	for _, tc := range []struct {
 		name string
 		run  func(t *testing.T, idx index.Index)
@@ -177,6 +182,51 @@ func NumericScan(t *testing.T, newIndex Factory) {
 			idx := newIndex(t, cfg)
 			populateNumericFixture(t, idx)
 			tc.run(t, idx)
+		})
+	}
+}
+
+// NumericExactness runs the exactness contract of numeric index terms against
+// an empty numeric index built by newIndex: values a float64 term ordered or
+// collapsed wrongly come back exactly.
+func NumericExactness(t *testing.T, newIndex Factory) {
+	t.Helper()
+	cfg := index.IndexConfig{
+		Name:            "n",
+		Type:            index.IndexTypeNormal,
+		ValueType:       index.IndexValueTypeNumeric,
+		EncodingVersion: index.NumericEncodingVersion,
+	}
+	for _, tc := range []struct {
+		name       string
+		values     []string
+		start, end []byte
+		want       []string
+	}{
+		// The reported failure: an indexed field holding 2 and 10, scanned
+		// >= 2, returns both records.
+		{"TwoAndTen", []string{"2", "10"}, []byte("2"), nil, []string{"2", "10"}},
+		// Integers past 2^53 that a float64 term rounds together.
+		{
+			"BeyondFloatPrecision",
+			[]string{"1700000000000000001", "1700000000000000002", "1700000000000000003"},
+			AppendExclusiveSuffix([]byte("1700000000000000001")),
+			[]byte("1700000000000000003"),
+			[]string{"1700000000000000002"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := newIndex(t, cfg)
+			for _, v := range tc.values {
+				if err := idx.Put([]byte("key:"+v), []byte(v)); err != nil {
+					t.Fatalf("Put(%s): %v", v, err)
+				}
+			}
+			result, err := idx.Scan(tc.start, tc.end)
+			if err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			assertValues(t, scanValues(t, result), tc.want)
 		})
 	}
 }

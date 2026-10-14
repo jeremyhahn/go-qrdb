@@ -237,6 +237,54 @@ func TestPebbleStateMachine_IndexCreate_BackfillsExistingData(t *testing.T) {
 	}
 }
 
+// TestPebbleStateMachine_IndexCreate_ValueTypeChangeRebuilds holds the third
+// index-applying state machine to the rule the engines keep: a same-owner
+// re-create asking for a different value type rebuilds the index at that
+// type, and the same definition again stays an idempotent no-op. A field
+// indexed as a string and later declared numeric would otherwise keep string
+// terms, under which `n >= 2` drops the record holding 10.
+func TestPebbleStateMachine_IndexCreate_ValueTypeChangeRebuilds(t *testing.T) {
+	s := openExtendedStore(t)
+
+	create := func(entry uint64, numeric bool) {
+		cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_n", "n", protocol.IndexCreateOptions{Numeric: numeric}))
+		results := applyExtEntries(t, s, []sm.Entry{{Index: entry, Cmd: cmd}})
+		if _, _, refused := protocol.DecodeIndexOwnershipError(results[0].Data); refused {
+			t.Fatalf("create at entry %d was refused", entry)
+		}
+	}
+	fromTwo := func() map[string][][]byte {
+		t.Helper()
+		got, err := s.Lookup(context.Background(), index.IndexScanRequest{IndexName: "by_n", Start: []byte("2")})
+		if err != nil {
+			t.Fatalf("index scan: %v", err)
+		}
+		return got.(map[string][][]byte)
+	}
+
+	create(1, false)
+	applyExtEntries(t, s, []sm.Entry{
+		{Index: 2, Cmd: mustEncode(kv.EncodePut([]byte("doc/2"), []byte(`{"n":2}`)))},
+		{Index: 3, Cmd: mustEncode(kv.EncodePut([]byte("doc/10"), []byte(`{"n":10}`)))},
+	})
+	if got := fromTwo(); len(got) != 1 {
+		t.Fatalf("string index: n >= 2 matched %v, want only 2 (byte order)", got)
+	}
+
+	for entry := uint64(4); entry <= 5; entry++ {
+		create(entry, true)
+		got := fromTwo()
+		if len(got) != 2 || len(got["2"]) != 1 || len(got["10"]) != 1 {
+			t.Fatalf("numeric create at entry %d: n >= 2 matched %v, want 2 and 10", entry, got)
+		}
+	}
+
+	create(6, false)
+	if got := fromTwo(); len(got) != 1 {
+		t.Fatalf("string re-create: n >= 2 matched %v, want only 2", got)
+	}
+}
+
 // requireIndexConflict fails the test unless the single result is the
 // non-fatal unique-constraint refusal naming indexName.
 func requireIndexConflict(t *testing.T, res sm.Result, indexName string) {

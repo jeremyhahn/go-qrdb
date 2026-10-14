@@ -63,6 +63,20 @@ type shardInfoResponse struct {
 	Nodes     map[uint64]string `json:"nodes"`
 }
 
+// replicaStatesResponse is the JSON body of GET /admin/replica-states.
+type replicaStatesResponse struct {
+	NodeID   string                 `json:"node_id"`
+	Replicas []replicaStateResponse `json:"replicas"`
+}
+
+// replicaStateResponse is one replica in a replicaStatesResponse.
+type replicaStateResponse struct {
+	ShardID      uint64 `json:"shard_id"`
+	ReplicaID    uint64 `json:"replica_id"`
+	AppliedIndex uint64 `json:"applied_index"`
+	Hash         uint64 `json:"hash"`
+}
+
 // ---------------------------------------------------------------------------
 // Admin shard / topology handlers
 // ---------------------------------------------------------------------------
@@ -121,6 +135,49 @@ func (s *Server) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 		ShardCount:  topo.ShardCount,
 		Shards:      shards,
 	})
+}
+
+// handleGetReplicaStates handles GET /admin/replica-states, reporting the
+// applied index and state-machine hash of this node's replicas. The read is
+// answered locally and never forwarded: each node speaks for its own
+// replicas. The optional shard_id query parameter narrows it to one shard.
+func (s *Server) handleGetReplicaStates(w http.ResponseWriter, r *http.Request) {
+	reader, ok := s.adminSvc.(service.ReplicaStateReader)
+	if !ok {
+		writeErrorJSON(w, http.StatusNotImplemented, &service.ReplicaStateReadUnsupportedError{})
+		return
+	}
+
+	var shardID uint64
+	if raw := r.URL.Query().Get("shard_id"); raw != "" {
+		id, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: err})
+			return
+		}
+		shardID = id
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	states, err := reader.ReplicaStates(ctx, shardID)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	replicas := make([]replicaStateResponse, 0, len(states.Replicas))
+	for _, rs := range states.Replicas {
+		replicas = append(replicas, replicaStateResponse{
+			ShardID:      rs.ShardID,
+			ReplicaID:    rs.ReplicaID,
+			AppliedIndex: rs.AppliedIndex,
+			Hash:         rs.Hash,
+		})
+	}
+
+	writeJSON(w, replicaStatesResponse{NodeID: states.NodeID, Replicas: replicas})
 }
 
 // handleAdminShardByID dispatches the per-shard routes carried under the

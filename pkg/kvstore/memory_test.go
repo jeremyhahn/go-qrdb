@@ -436,6 +436,95 @@ func TestMemoryKVStore_NumericFieldsIndexInLiteralForm(t *testing.T) {
 	require.Equal(t, []string{"score/1"}, keyStrings(keys))
 }
 
+// registerNumericScores registers a numeric index on score.points and stores
+// one record per value, keyed score/<position>.
+func registerNumericScores(t *testing.T, s *MemoryKVStore, values ...string) {
+	t.Helper()
+	require.NoError(t, s.RegisterEntityIndexes("score",
+		[]EntityIndex{{FieldName: "Points", JSONFieldName: "points", Numeric: true}}))
+	for i, v := range values {
+		key := "score/" + string(rune('a'+i))
+		require.NoError(t, s.Put(context.Background(), key, []byte(`{"points":`+v+`}`)))
+	}
+}
+
+func TestMemoryKVStore_NumericIndexScansInNumericOrder(t *testing.T) {
+	s := NewMemoryKVStore()
+	registerNumericScores(t, s, "-5", "2", "10", "2.5", "1e21")
+
+	entries, err := s.ScanIndex(context.Background(), "score.Points", []byte("2"), []byte("100"))
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"2", "2.5", "10"}, mapKeys(entries),
+		"a numeric scan from 2 includes 10, which text order puts before 2")
+
+	open, err := s.ScanIndex(context.Background(), "score.Points", nil, []byte("0"))
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"-5"}, mapKeys(open))
+}
+
+func TestMemoryKVStore_NumericBoundMarkerNamesTheNextValue(t *testing.T) {
+	s := NewMemoryKVStore()
+	registerNumericScores(t, s, "2", "10", "20")
+	ctx := context.Background()
+
+	// A trailing 0x00 moves a lower bound past the number: an exclusive start.
+	after, err := s.ScanIndex(ctx, "score.Points", []byte("2\x00"), nil)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"10", "20"}, mapKeys(after))
+
+	// On an upper bound it takes the number in: an inclusive end.
+	through, err := s.ScanIndex(ctx, "score.Points", nil, []byte("10\x00"))
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"2", "10"}, mapKeys(through))
+}
+
+func TestMemoryKVStore_NumericIndexKeysAreCanonicalDecimals(t *testing.T) {
+	s := NewMemoryKVStore()
+	registerNumericScores(t, s, "-0", "1.50", "3e2")
+
+	entries, err := s.ScanIndex(context.Background(), "score.Points", nil, nil)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"0", "1.5", "300"}, mapKeys(entries),
+		"ScanIndex is keyed by field value; negative zero is zero")
+
+	keys, err := s.QueryIndex(context.Background(), "score.Points", []byte("0"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"score/a"}, keyStrings(keys))
+}
+
+func TestMemoryKVStore_NumericIndexRefusesAnUnparseableBound(t *testing.T) {
+	s := NewMemoryKVStore()
+	registerNumericScores(t, s, "2")
+
+	for _, bound := range []string{"NaN", "abc", ""} {
+		_, err := s.ScanIndex(context.Background(), "score.Points", []byte(bound), nil)
+		var invalid *index.InvalidNumericBoundError
+		require.ErrorAs(t, err, &invalid, "bound %q", bound)
+	}
+}
+
+func TestMemoryKVStore_NumericIndexSkipsNonNumbers(t *testing.T) {
+	s := NewMemoryKVStore()
+	registerNumericScores(t, s, "2", `"ten"`, "true")
+
+	entries, err := s.ScanIndex(context.Background(), "score.Points", nil, nil)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"2"}, mapKeys(entries),
+		"a value that is not a number has no place in the numeric order")
+}
+
+func TestMemoryKVStore_NumericAndTextDefinitionsConflict(t *testing.T) {
+	s := NewMemoryKVStore()
+	require.NoError(t, s.RegisterEntityIndexes("score",
+		[]EntityIndex{{FieldName: "Points", JSONFieldName: "points"}}))
+
+	err := s.RegisterEntityIndexes("score",
+		[]EntityIndex{{FieldName: "Points", JSONFieldName: "points", Numeric: true}})
+	var conflict *IndexRegistrationError
+	require.ErrorAs(t, err, &conflict,
+		"one index name cannot hold both text and numeric terms")
+}
+
 func TestMemoryKVStore_ConcurrentWritesAndIndexReadsAreSafe(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryKVStore()

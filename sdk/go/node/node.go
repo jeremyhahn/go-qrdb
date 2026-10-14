@@ -2435,7 +2435,7 @@ func (n *Node) startVolumeReporter(ctx context.Context, svcNode *lifecycle.Node,
 	if n.volumeRegistry == nil || svcNode == nil || svcNode.MVCC == nil || svcNode.Lease == nil {
 		return
 	}
-	reporter, err := volume.NewReporter(svcNode.MVCC, svcNode.Lease, nodeID)
+	reporter, err := volume.NewReporter(svcNode.MVCC, svcNode.Lease, nodeID, volume.WithReporterSealProbe(n))
 	if err != nil {
 		n.logger.Warn("node: failed to construct volume-pool Reporter", slog.Any("error", err))
 		return

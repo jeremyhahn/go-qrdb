@@ -39,7 +39,7 @@ the payload. An assertion bound to one request verifies for no other.
 | Server-streaming or bidirectional call (gRPC and Unix `Watch`, REST `GET /watch`, QUIC `watch.Watch` and `watch.WatchPrefix`) | **no**: refused with `NotAReplicaError` and the replica set |
 | MCP `qrdb_watch` (a bounded request, not a stream) | yes |
 | Call on the shared system shard | no: unchanged (each transport's own existing write forwarding to the system leader still applies) |
-| A leader-only call on a follower -- a membership change (`admin member add`, `add-observer`, `promote`, `remove`), a system-shard write, or ceremony-initialize's admin-credential step -- on every transport: REST, gRPC, Unix, QUIC, MCP, embedded | yes, single hop, to the leader the refusal names, not through this feature's per-database path: REST's `tryForwardWrite`, gRPC's `forwardAdminWrite`, QUIC's `ForwardToLeader`, MCP's `forwardToLeader` each recognize `*service.NotLeaderError` and `*service.AdminCredentialNotLeaderError` (node parity, owner ruling 2026-10-06). The leader's answer is relayed; a refusal naming no resolvable leader is the answer |
+| A leader-only call on a follower -- a membership change (`admin member add`, `add-observer`, `promote`, `remove`), a system-shard write, or ceremony-initialize's admin-credential step -- on every transport: REST, gRPC, Unix, QUIC, MCP, embedded | yes, single hop, to the leader the refusal names, not through this feature's per-database path: REST's `tryForwardWrite`, gRPC's `forwardAdminWrite`, QUIC's `ForwardToLeader`, MCP's `forwardToLeader` each recognize `*service.NotLeaderError` and `*service.AdminCredentialNotLeaderError` (node parity, owner ruling 2026-10-06). A membership change first waits, up to 10s, until the node knows a leader, so an election in progress ends in a refusal naming the leader rather than one naming none. The leader's answer is relayed; a refusal naming no resolvable leader is the answer |
 | Call that arrived forwarded (carries an assertion) | no: hop limit 1 |
 
 ## Status mapping
@@ -48,6 +48,7 @@ the payload. An assertion bound to one request verifies for no other.
 |---|---|---|---|---|
 | Forwarded and answered | the target's status | the target's code | the target's status | the target's result |
 | No target served (none reachable, every one refused, forwarding off, or a stream) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `UNAVAILABLE` |
+| A membership change found no leader within its 10s wait (`*service.ShardLeaderTimeoutError`, nothing proposed) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `UNAVAILABLE` |
 | The forward failed after it may have reached a target | 503, or 504 when the deadline passed | the transport's own code | `StatusUnavailable`, or `StatusDeadlineExceeded` | `UNAVAILABLE`, or `DEADLINE_EXCEEDED` |
 
 The refusal carries the replica set as structured data, so a client that must

@@ -85,12 +85,23 @@ func (s *namespacedIndexService) unscopeOwnership(err error, name string) error 
 	return &index.OwnershipError{Name: name, Owner: own.Owner, Requested: own.Requested}
 }
 
+// unscopeNotFound rewrites a missing-index error's name from the internal
+// prefixed form back to the name the caller asked for, so the namespace prefix
+// does not leak into a client-visible message.
+func (s *namespacedIndexService) unscopeNotFound(err error, name string) error {
+	var inf *service.IndexNotFoundError
+	if !errors.As(err, &inf) {
+		return err
+	}
+	return &service.IndexNotFoundError{Name: name}
+}
+
 // Query returns the entry keys matching value in the prefixed index, with the
 // namespace prefix stripped from the returned keys.
 func (s *namespacedIndexService) Query(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
 	keys, err := s.inner.Query(ctx, s.prefix+indexName, value)
 	if err != nil {
-		return nil, err
+		return nil, s.unscopeNotFound(err, indexName)
 	}
 	return s.stripByteSlices(keys), nil
 }
@@ -100,7 +111,7 @@ func (s *namespacedIndexService) Query(ctx context.Context, indexName string, va
 func (s *namespacedIndexService) Scan(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
 	result, err := s.inner.Scan(ctx, s.prefix+indexName, start, end)
 	if err != nil {
-		return nil, err
+		return nil, s.unscopeNotFound(err, indexName)
 	}
 	out := make(map[string][][]byte, len(result))
 	for value, keys := range result {

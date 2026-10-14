@@ -562,6 +562,10 @@ type AdminClient interface {
 	StopShard(ctx context.Context, shardID uint64) error
 	GetShardState(ctx context.Context, shardID uint64) (*ShardStateResponse, error)
 	GetTopology(ctx context.Context) (*TopologyResponse, error)
+	// ReplicaStates reports, for every state-machine replica on the
+	// answering node (or shardID's alone when non-zero), its applied index
+	// and state-machine hash. It is never forwarded to a leader.
+	ReplicaStates(ctx context.Context, shardID uint64) (*ReplicaStatesResponse, error)
 	// RetireJoinIdentity permanently refuses any future admission for a
 	// node identity -- a fresh join-token mint, or a renewal of one whose
 	// admission has lapsed -- after it is removed from the cluster or its
@@ -607,6 +611,40 @@ the record — it never touches a `cakey.Provider`. The actual
 `IssueLeafForKey` call happens later, inside `HandleJoinRequest`, when the
 joiner's own poll (`Join`'s retry loop, `JoinApprovalPollInterval`) next
 presents the identical CSR and finds it approved.
+
+`ReplicaStates` is `service.ReplicaStateReader`, the same
+distinct-interface pattern. `AdminService` implements it over go-quicraft's
+`Host.StateMachineHash(shardID)`, which returns the state machine's
+`sm.Hasher` value together with its applied index, and lists the local
+replicas from `GetNodeHostInfo(SkipLogInfo)`. The host reaches the service
+through a capability interface, `service.StateMachineHasher`, that
+`*raft.HostAdapter` satisfies by embedding `*quicraft.Host` and asserts at
+compile time — the standalone `backend.LocalBackend` does not, which is
+what makes the read `ReplicaStateUnsupportedError` in standalone mode. The
+service maps go-quicraft's answers one to one:
+
+| `StateMachineHash` answer | Unfiltered read | `shardID` filter |
+|---|---|---|
+| hash, index, `ok` | listed | returned |
+| `ok == false` (no `sm.Hasher`) | `*StateMachineHashUnsupportedError` | the same |
+| `quicraft.ErrShardNotFound` (stopped mid-read, or a witness) | left out | `*ReplicaNotHostedError` |
+| any other error | `*ReplicaStateError{ShardID, Err}` | the same |
+
+Witnesses are recognised from `ShardInfo.IsWitness` and never asked: they
+hold no state machine. The read takes no lock of qrdb's own and adds no
+state: it is a pure function of what go-quicraft reports at the moment it
+is asked.
+
+**Known limitation, upstream.** `StateMachineHash` loads the applied index
+before it takes the state machine's read lock to compute the hash, so an
+entry applied between the two pairs an older index with a newer hash. The
+pair therefore is not atomic on a shard taking writes. The effect is
+one-sided — two replicas can only be made to disagree, never to agree when
+their state differs — so the read is documented as a quiet-shard read in
+[api.md](api.md#replica-states), and the verification harness reads it only
+after its workload has stopped. qrdb does not work around it:
+the pair belongs to go-quicraft, which is the one place it can be read
+atomically.
 
 ### SDK `Cluster()` facade
 
@@ -700,10 +738,15 @@ type ImbalanceReport struct {
   committed-membership read), and the desktop embedded server. The admin
   `StartShard` operation is deliberately outside the rule: it starts a shard
   whose other members may not exist yet, and its caller decides when to read.
-  So is the scale path's `waitForShardLeaderKnown` (`pkg/service`): it gates a
+  So is `waitForShardLeaderKnown` (`pkg/service`), the wait the scale path,
+  the rebalancer and every admin membership change make: it gates a
   membership change, which is proposed through the log and ordered after the
   new leader's first entry in its term, not a linearizable read -- a known
-  leader is the whole of what that proposal needs. Every wait honours the
+  leader is the whole of what that proposal needs. It does not cover a read
+  made around the change: the committed-membership read that add,
+  add-observer (resolving the member's identity) and promote make, and a KV
+  read after a leadership move, can still meet the new leader's ReadIndex
+  warm-up. Every wait honours the
   caller's ctx and returns its error, unless the wait has already finished: a
   cancellation that lands with the probe that found the shard serving still
   reports success. A clustered SDK boot that fails -- cancelled, or timed out --
@@ -829,6 +872,7 @@ type ImbalanceReport struct {
 | `admin:add_member` / `admin:remove_member` | Raft reconfiguration — gated apart from reading peers | cross |
 | `admin:start_shard` / `admin:stop_shard` / `admin:shard_state` | shard lifecycle and state | cross |
 | `admin:topology` | every shard's replicas and addresses | cross |
+| `admin:replica_state` | this node's replicas' applied index and state-machine hash — a diagnostic that holds each state machine's read lock while it hashes; held by no built-in role but Owner | cross |
 | `admin:node_compaction` | the node keyspace's scheduled-compaction policy (see [../key-value/engineering.md](../key-value/engineering.md) "Node-keyspace compaction") | cross |
 | `rebalance:stats` / `rebalance:plan` / `rebalance:report` | read-only | cross |
 | `rebalance:execute` | **physically moves shards** — separate grant | cross |
@@ -878,6 +922,10 @@ database's owning tenant.
 | `RemoveMember` for an absent replica | skipped (idempotent) | n/a |
 | Reconfiguration transient failure | retried with capped exponential backoff | — |
 | Unknown shard on state/snapshot | not-found | yes |
+| Replica states on a standalone node | `*service.ReplicaStateUnsupportedError` (`requires mode: raft`); REST 501, gRPC/MCP `UNIMPLEMENTED` | **yes** |
+| Replica states naming a shard this node holds no replica of, or holds only as a witness | `*service.ReplicaNotHostedError`; REST 404, gRPC/MCP `NOT_FOUND` | **yes** |
+| Replica states for a shard whose state machine cannot hash itself | `*service.StateMachineHashUnsupportedError`; REST 501, gRPC/MCP `UNIMPLEMENTED` — never a zero hash that could agree with another | **yes** |
+| Replica states when the host refuses for any other reason | `*service.ReplicaStateError`, naming the shard and wrapping the host's error | **yes** |
 | Missing permission | permission denied | **yes** |
 | The cluster activated a feature this binary lacks | `featuregate.UnsupportedFeatureError`; `qrdbd` refuses to start, an embedded clustered node never advertises and reports health `degraded` | **yes** |
 | A group holds a replica that does not advertise a feature | the feature is not used in that group (guarded writes are proposed unguarded) | **yes** |
@@ -895,7 +943,7 @@ Discovery lives under the `discovery` block — see
 | `raft.peers` | — | `id=address` specs for the `static` method |
 | `raft.member_identities` | `--member-identities` | `id=spki:<hex>` identities of the other replicas; required for a multi-node cluster |
 | DNS SRV target | — | `{service}.{proto}.{domain}`, default `_raft._udp` |
-| `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the first node's enrollment listener; **zero means the fixed default 63006, not an ephemeral port** |
+| `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the Noise trust-anchor listener, which every admitted, unsealed member runs when qrdbd manages the cluster CA — never on operator-supplied `--tls-*-file` certificates (the CA-generating node from first boot, every other member once it has joined or restarted from a cached data directory); **zero means the fixed default 63006, not an ephemeral port** |
 | `bootstrap.noise_host` | `--bootstrap-noise-host` | bind host for that listener; falls back to `server.host` so a node confined to one interface does not expose enrollment on all of them |
 
 Both `bootstrap.noise_*` settings are accepted and validated in FIPS 140-3 mode
@@ -957,6 +1005,14 @@ and neither opens a listener there — see
   that started reading the key file in FIPS mode fails it. `assertAdvertises`
   and `assertNoiseFaultUnreachable` in `pkg/clusterenroll`, and
   `assertAdvertisesWithoutNoise` in `cmd/qrdbd`, express this once each.
+- **Replica states are tested on every transport against one service
+  double.** Each binding — REST, gRPC, Unix, QUIC, MCP, the embedded client and
+  the CLI — has a test for the answer and one for each typed refusal, and the
+  service has a test per row of the mapping table above against a fake
+  `StateMachineHasher`. The integration test (`admin_cluster_cli_test.go`,
+  per protocol) runs the real `qrdb admin replica-states` against each of three
+  nodes and asserts all three replicas of a shard report one hash at one
+  applied index.
 - **Integration**: the 3-node Raft suites — `isolation_raft_cluster_test.go`,
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,
@@ -971,7 +1027,9 @@ and neither opens a listener there — see
 ## Observability
 
 - `GET /health` is public; `admin status`, `admin peers` and `admin topology`
-  are the operational views.
+  are the operational views. `admin replica-states` is the diagnostic one:
+  whether this node's replicas agree with their peers' at an equal applied
+  index.
 - `rebalance report` gives per-node load and names hotspots;
   `ImbalanceScore` is the single number to alert on.
 - Membership changes are audited through [../audit/](../audit/).

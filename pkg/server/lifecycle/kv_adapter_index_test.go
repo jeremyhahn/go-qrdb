@@ -452,6 +452,42 @@ func TestKVStoreAdapter_CaseSensitiveDefinitionStaysSensitive(t *testing.T) {
 	}
 }
 
+// TestKVStoreAdapter_NumericDefinitionReachesTheEngine proves a numeric
+// definition is built with numeric terms, which is what puts the engine's
+// range scans over it in numeric order.
+func TestKVStoreAdapter_NumericDefinitionReachesTheEngine(t *testing.T) {
+	idx := &mockIndexServicer{}
+	store := newKVStoreAdapter(&mockKVServicer{}, idx)
+
+	defs := []kvstore.EntityIndex{{FieldName: "Age", JSONFieldName: "age", Numeric: true}}
+	if err := store.RegisterEntityIndexes("member", defs); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+	if len(idx.created) != 1 {
+		t.Fatalf("created %d indexes; want 1", len(idx.created))
+	}
+	if got := idx.created[0].config.ValueType; got != index.IndexValueTypeNumeric {
+		t.Errorf("numeric definition forwarded with ValueType %v; want IndexValueTypeNumeric", got)
+	}
+}
+
+// TestKVStoreAdapter_OrdinaryDefinitionStaysText is the control: a definition
+// that does not ask for numeric terms keeps the text encoding.
+func TestKVStoreAdapter_OrdinaryDefinitionStaysText(t *testing.T) {
+	idx := &mockIndexServicer{}
+	store := newKVStoreAdapter(&mockKVServicer{}, idx)
+
+	if err := store.RegisterEntityIndexes("member", memberIndexDefs()); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+	if len(idx.created) != 1 {
+		t.Fatalf("created %d indexes; want 1", len(idx.created))
+	}
+	if got := idx.created[0].config.ValueType; got != index.IndexValueTypeString {
+		t.Errorf("ordinary definition forwarded with ValueType %v; want IndexValueTypeString", got)
+	}
+}
+
 // TestKVStoreAdapter_EngineScopeIsTheDeclaredKeyPrefix is go-qrdb#40's
 // adapter half. The engine maintains an index for exactly the keys under
 // engine.ComposeIndexScope(name, declared prefix), so the adapter hands it the

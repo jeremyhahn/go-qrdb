@@ -86,6 +86,7 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -524,7 +525,13 @@ func raceOverwriteUntilStopped(t *testing.T, client *http.Client, url string, st
 func startAsyncKVRestore(t *testing.T, node *multiProtoNode, proto multiProtocol, restoreArgs ...string) (*exec.Cmd, *watchOutputBuf, *watchOutputBuf) {
 	t.Helper()
 	full := append(append([]string{}, node.cliArgsFor(proto)...), append([]string{"--output", "json", "kv", "restore"}, restoreArgs...)...)
-	cmd := exec.Command(node.cli, full...)
+	// The same bound runCLI puts on every other CLI call: a restore that
+	// hangs is killed, and the caller's Wait reports the kill with the
+	// captured stderr instead of blocking until the go test timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, node.cli, full...)
+	cmd.WaitDelay = 5 * time.Second
 	stdout := &watchOutputBuf{}
 	stderr := &watchOutputBuf{}
 	cmd.Stdout = stdout

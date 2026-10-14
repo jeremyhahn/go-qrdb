@@ -201,6 +201,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"admin.StopShard":                  permission.AdminStopShard,
 	"admin.GetShardState":              permission.AdminShardState,
 	"admin.GetTopology":                permission.AdminTopology,
+	"admin.GetReplicaStates":           permission.AdminReplicaState,
 	"admin.GetNodeCompaction":          permission.AdminNodeCompaction,
 	"admin.SetNodeCompaction":          permission.AdminNodeCompaction,
 	"admin.MintJoinToken":              permission.ClusterJoinToken,

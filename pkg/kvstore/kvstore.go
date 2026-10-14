@@ -89,6 +89,15 @@ type EntityIndex struct {
 
 	// CaseSensitive indicates whether string comparisons are case-sensitive.
 	CaseSensitive bool
+
+	// Numeric indexes the field's values as numbers: terms in exact numeric
+	// order, so a range scan over them is sound ("10" sorts after "2"). A
+	// value that is not a decimal number, or is NaN, is not indexed. A scan
+	// bound on a numeric index must be a decimal number; a bound ending in a
+	// 0x00 byte names the value immediately after the number before it, which
+	// is how a caller asks for an exclusive lower or an inclusive upper bound
+	// over the half-open interval ScanIndex answers. Single-field only.
+	Numeric bool
 }
 
 // IsCompound reports whether the index covers multiple fields.

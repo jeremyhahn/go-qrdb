@@ -55,9 +55,19 @@ const (
 // the same window from the same base; before the cross-process lock, a second
 // process bind-verified the ports this one had already handed out (their
 // probes long closed) and handed them out again.
+//
+// The comparison is against the ports this process handed out, not against
+// defaultAllocator.reserved: that table also records every candidate drawn
+// and skipped because a concurrent `go test` package process held its lock,
+// and once that process exits the helper may take such a port legitimately.
 func TestReservePortsAreDisjointAcrossProcesses(t *testing.T) {
-	if _, err := ReserveUDPPorts(reservePortsHelperCount); err != nil {
+	handedOut, err := ReserveUDPPorts(reservePortsHelperCount)
+	if err != nil {
 		t.Fatalf("ReserveUDPPorts: %v", err)
+	}
+	ours := make(map[int]struct{}, len(handedOut))
+	for _, p := range handedOut {
+		ours[p] = struct{}{}
 	}
 
 	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, with no arguments; the helper mode travels in a compile-time-literal environment entry. No shell is involved.
@@ -74,14 +84,12 @@ func TestReservePortsAreDisjointAcrossProcesses(t *testing.T) {
 		t.Fatalf("second process reserved %v, want %d ports", child, reservePortsHelperCount)
 	}
 
-	defaultAllocator.mu.Lock()
-	defer defaultAllocator.mu.Unlock()
 	for _, s := range child {
 		port, err := strconv.Atoi(s)
 		if err != nil {
 			t.Fatalf("second process printed %q: %v", s, err)
 		}
-		if _, ours := defaultAllocator.reserved[port]; ours {
+		if _, taken := ours[port]; taken {
 			t.Errorf("port %d was handed out by this process AND by a concurrent one", port)
 		}
 	}

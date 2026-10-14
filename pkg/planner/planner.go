@@ -55,7 +55,7 @@ type candidate struct {
 //     - OpEq  → PlanIndexLookup (costUniqueLookup if unique, costIndexLookup otherwise)
 //     - OpIn  → PlanIndexLookup (treated as a set of point lookups; non-unique cost)
 //     - OpGt, OpGte, OpLt, OpLte, OpBetween, OpPrefix → PlanIndexScan
-//     - OpNeq → no index usable; skip
+//     - OpNeq, and OpPrefix over a numeric index → no index usable; skip
 //  3. Select the candidate with the lowest estimated cost whose cost is
 //     below costFullScan.
 //  4. All predicates except the winning one become PostFilters.
@@ -120,21 +120,22 @@ func (p *Planner) Plan(predicates []Predicate) *Plan {
 		}
 	}
 
-	// Collect post-filters: all predicates not consumed by the chosen plan.
+	// Collect post-filters: all predicates not consumed by the chosen plan,
+	// plus any prefix it scanned (prefixIsResidual).
 	if best.consumedPredicates != nil {
 		// Compound plan -- consumed multiple predicates.
 		postFilters := make([]Predicate, 0, len(predicates))
 		for i, pred := range predicates {
-			if !best.consumedPredicates[i] {
+			if !best.consumedPredicates[i] || prefixIsResidual(pred) {
 				postFilters = append(postFilters, pred)
 			}
 		}
 		best.plan.PostFilters = postFilters
 	} else {
 		// Single-field plan -- consumed one predicate.
-		postFilters := make([]Predicate, 0, len(predicates)-1)
+		postFilters := make([]Predicate, 0, len(predicates))
 		for i, pred := range predicates {
-			if i != best.predicateIdx {
+			if i != best.predicateIdx || prefixIsResidual(pred) {
 				postFilters = append(postFilters, pred)
 			}
 		}
@@ -240,7 +241,7 @@ func (p *Planner) planCompoundIndex(predicates []Predicate, indexes []IndexInfo)
 		var rangePredIdx int
 
 	fieldLoop:
-		for _, field := range idx.FieldNames {
+		for i, field := range idx.FieldNames {
 			predIdx, ok := predByField[field]
 			if !ok {
 				break // No predicate for this field; stop prefix matching.
@@ -258,6 +259,11 @@ func (p *Planner) planCompoundIndex(predicates []Predicate, indexes []IndexInfo)
 			default:
 				// Range operator (Gt, Gte, Lt, Lte, Between, Prefix) on
 				// this field. This is valid only as the LAST matched field.
+				// A text prefix over a numeric member has no interval in the
+				// index (isNumericFieldType), so it stays a post-filter.
+				if pred.Op == OpPrefix && i < len(idx.FieldTypes) && isNumericFieldType(idx.FieldTypes[i]) {
+					break fieldLoop
+				}
 				hasRange = true
 				rangePred = &predicates[predIdx]
 				rangePredIdx = predIdx
@@ -309,7 +315,8 @@ func (p *Planner) planCompoundIndex(predicates []Predicate, indexes []IndexInfo)
 }
 
 // buildCandidate derives a candidate plan from a predicate and a matching
-// index. Returns nil when the operator cannot benefit from an index (OpNeq).
+// index. Returns nil when the operator cannot benefit from an index (OpNeq),
+// or is OpPrefix over a numeric index (see isNumericFieldType).
 func buildCandidate(pred Predicate, idx IndexInfo, predicateIdx int) *candidate {
 	// opPlanType maps each Op to its associated PlanType. OpNeq is absent
 	// because inequality predicates cannot use an index efficiently.
@@ -326,6 +333,9 @@ func buildCandidate(pred Predicate, idx IndexInfo, predicateIdx int) *candidate 
 
 	pt, ok := opPlanType[pred.Op]
 	if !ok {
+		return nil
+	}
+	if pred.Op == OpPrefix && isNumericFieldType(idx.FieldType) {
 		return nil
 	}
 
@@ -349,6 +359,16 @@ func buildCandidate(pred Predicate, idx IndexInfo, predicateIdx int) *candidate 
 	}
 
 	return &candidate{plan: plan, predicateIdx: predicateIdx}
+}
+
+// prefixIsResidual reports whether pred stays a post-filter even when an
+// index scan was chosen for it. A prefix scan has a lower bound and no upper
+// one: the index holds no exact successor of a prefix, because a
+// case-insensitive index folds the bound, and folding an incremented byte can
+// move it below the prefix. The scan therefore over-reads from the prefix to
+// the end of the index, and re-checking the predicate trims it exactly.
+func prefixIsResidual(pred Predicate) bool {
+	return pred.Op == OpPrefix
 }
 
 // betterCandidate reports whether challenger is a better plan than current.
@@ -387,14 +407,16 @@ func candidateCoverage(c *candidate) int {
 	return 1
 }
 
-// applyRangeBounds sets the RangeStart/RangeEnd fields of plan based on the
-// predicate operator and its values.
+// applyRangeBounds sets the RangeStart/RangeEnd fields of plan, and whether
+// each is exclusive, based on the predicate operator and its values.
 func applyRangeBounds(plan *Plan, pred Predicate) {
 	switch pred.Op {
 	case OpGt, OpGte:
 		plan.RangeStart = pred.Value
+		plan.RangeStartExclusive = pred.Op == OpGt
 	case OpLt, OpLte:
 		plan.RangeEnd = pred.Value
+		plan.RangeEndExclusive = pred.Op == OpLt
 	case OpBetween:
 		plan.RangeStart = pred.Value
 		plan.RangeEnd = pred.ValueEnd

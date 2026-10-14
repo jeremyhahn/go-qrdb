@@ -76,7 +76,7 @@ func toolIndexCreate() mcp.Tool {
 			mcp.Description("Skip indexing keys where the indexed field is absent or empty. Defaults to false."),
 		),
 		mcp.WithBoolean("numeric",
-			mcp.Description("Encode field values as fixed-width big-endian integers so that ordering is numeric rather than lexicographic. Defaults to false."),
+			mcp.Description("Encode field values as order-preserving numeric terms (integers and floats of any sign) so that ordering is numeric rather than lexicographic. Values that are not numbers, and NaN, are not indexed. Defaults to false."),
 		),
 		mcp.WithBoolean("case_insensitive",
 			mcp.Description("Fold string field values on write, backfill and lookup, so \"Alpha\" and \"alpha\" are the same term. Defaults to false, i.e. case-sensitive."),

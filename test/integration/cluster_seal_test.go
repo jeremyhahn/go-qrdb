@@ -160,9 +160,8 @@ func (h *sealClusterHarness) start(i int) {
 }
 
 func (h *sealClusterHarness) stop(i int) {
-	if cmd := h.nodes[i].cmd; cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+	if cmd := h.nodes[i].cmd; cmd != nil {
+		killNode(h.t, cmd)
 	}
 }
 

@@ -814,12 +814,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--tls-key-file", nodeKeyPaths[i],
 		}
 
-		cmd := exec.Command(bin, args...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
 		cmds[i] = cmd
 	}
 
@@ -861,15 +856,8 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 		}
 	}
 	for i, cmd := range cmds {
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-			t.Logf("node %d stopped", i+1)
-		case <-time.After(30 * time.Second):
-			cmd.Process.Kill()
-			t.Fatalf("node %d: timed out waiting for shutdown", i+1)
-		}
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
+		t.Logf("node %d stopped", i+1)
 	}
 
 	// Phase 4: Restart all nodes with same data directories and ports.
@@ -894,20 +882,12 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--tls-key-file", nodeKeyPaths[i],
 		}
 
-		cmd := exec.Command(bin, args...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("restart node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
 		cmds2[i] = cmd
 
 		// Register cleanup for the restarted process.
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 
@@ -1023,12 +1003,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--tls-key-file", nodeKeyPaths[i],
 		}
 
-		cmd := exec.Command(bin, args...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
 		cmds[i] = cmd
 	}
 
@@ -1049,15 +1024,8 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			t.Fatalf("signal node %d: %v", i+1, err)
 		}
 	}
-	for i, cmd := range cmds {
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			cmd.Process.Kill()
-			t.Fatalf("node %d: timed out waiting for shutdown", i+1)
-		}
+	for _, cmd := range cmds {
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
 	}
 
 	// Restart.
@@ -1079,17 +1047,9 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
-		cmd := exec.Command(bin, args...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("restart node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 
@@ -1206,12 +1166,7 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 	// First boot: fresh bootstrap, self-issued cluster CA.
 	for i := range 3 {
 		dataDirs[i] = t.TempDir()
-		cmd := exec.Command(bin, nodeArgs(i)...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, nodeArgs(i), &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
 		cmds[i] = cmd
 	}
 	bootstrapNodes(t, ca, adminPorts...)
@@ -1232,32 +1187,17 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 			t.Fatalf("signal node %d: %v", i+1, err)
 		}
 	}
-	for i, cmd := range cmds {
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			cmd.Process.Kill()
-			t.Fatalf("node %d: timed out waiting for shutdown", i+1)
-		}
+	for _, cmd := range cmds {
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
 	}
 
 	// Restart all three nodes. ceremonyCAFromBundle resolves to nil on
 	// every one of them now (no CAKeyPEM on disk): this is the exact B4
 	// boundary.
 	for i := range 3 {
-		cmd := exec.Command(bin, nodeArgs(i)...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("restart node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, nodeArgs(i), &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 	unsealNodes(t, ca, adminPorts...)

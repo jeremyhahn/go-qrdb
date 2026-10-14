@@ -170,16 +170,31 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("certtest.NewCSR: %v", err)
 	}
-	tenantBody, tenantStatus := iraftAPIPost(t, sysClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id":             tenantID,
-			"name":           "Audit Acme",
-			"isolation_type": "prefix",
-			"admin_username": tenantID + "-admin",
-			"admin_csr_pem":  string(adminCSRPEM),
-		})
-	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
-		t.Fatalf("create tenant %s: status %d, body: %s", tenantID, tenantStatus, tenantBody)
+	// A create whose writes outlive the endpoint's bound -- a cluster this
+	// fresh, on a loaded runner, can take that long to commit the admin's
+	// certificate -- answers 503 after the exclusive provisioning has undone
+	// what it wrote, so it is retried, bounded by a deadline; any other
+	// status, or a 503 past the deadline, fails with the last one returned.
+	var tenantBody []byte
+	tenantDeadline := time.Now().Add(60 * time.Second)
+	for {
+		var tenantStatus int
+		tenantBody, tenantStatus = iraftAPIPost(t, sysClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+			map[string]interface{}{
+				"id":             tenantID,
+				"name":           "Audit Acme",
+				"isolation_type": "prefix",
+				"admin_username": tenantID + "-admin",
+				"admin_csr_pem":  string(adminCSRPEM),
+			})
+		if tenantStatus == http.StatusCreated || tenantStatus == http.StatusOK {
+			break
+		}
+		if tenantStatus != http.StatusServiceUnavailable || time.Now().After(tenantDeadline) {
+			t.Fatalf("create tenant %s: status %d, body: %s", tenantID, tenantStatus, tenantBody)
+		}
+		t.Logf("create tenant %s: status 503, retrying: %s", tenantID, tenantBody)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	// The system tenant cannot provision records inside another tenant's IAM
@@ -315,28 +330,13 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 		}
 	}
 	for i, cmd := range cmds {
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-			t.Logf("node %d stopped", i+1)
-		case <-time.After(30 * time.Second):
-			_ = cmd.Process.Kill()
-			t.Fatalf("node %d: timed out waiting for shutdown", i+1)
-		}
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
+		t.Logf("node %d stopped", i+1)
 	}
 
 	t.Log("restarting all nodes...")
-	cmds2 := make([]*exec.Cmd, nodeCount)
 	for i := range nodeCount {
-		cmd := startNode(t, bin, buildArgs(i), fmt.Sprintf("[node%d-R2] ", i+1))
-		cmds2[i] = cmd
-		t.Cleanup(func() {
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-				_, _ = cmd.Process.Wait()
-			}
-		})
+		startNode(t, bin, buildArgs(i), fmt.Sprintf("[node%d-R2] ", i+1))
 	}
 
 	unsealNodes(t, ca, adminPorts...)

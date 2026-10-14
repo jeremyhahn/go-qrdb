@@ -764,6 +764,32 @@ func (s *qrdbServiceServer) GetTopology(ctx context.Context, _ *emptypb.Empty) (
 	}, nil
 }
 
+// GetReplicaStates reports this node's replicas with their applied index and
+// state-machine hash. It is never forwarded: each node answers for itself.
+func (s *qrdbServiceServer) GetReplicaStates(ctx context.Context, req *pb.GetReplicaStatesRequest) (*pb.ReplicaStatesResponse, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	reader, ok := s.adminSvc.(service.ReplicaStateReader)
+	if !ok {
+		return nil, mapServiceError(&service.ReplicaStateReadUnsupportedError{})
+	}
+	resp, err := reader.ReplicaStates(ctx, req.GetShardId())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	replicas := make([]*pb.ReplicaStateProto, 0, len(resp.Replicas))
+	for _, rs := range resp.Replicas {
+		replicas = append(replicas, &pb.ReplicaStateProto{
+			ShardId:      rs.ShardID,
+			ReplicaId:    rs.ReplicaID,
+			AppliedIndex: rs.AppliedIndex,
+			Hash:         rs.Hash,
+		})
+	}
+	return &pb.ReplicaStatesResponse{NodeId: resp.NodeID, Replicas: replicas}, nil
+}
+
 // MintJoinToken mints a single-use, identity-bound member-side CSR join
 // token. s.adminSvc not implementing service.ClusterJoinTokenMinter (member-
 // side CSR join never configured on this node) reports the same typed error

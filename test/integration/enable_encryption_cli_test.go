@@ -186,7 +186,7 @@ func startCLIEncNode(t *testing.T, bin string, prefix string) *cliBarrierEncNode
 func (n *cliBarrierEncNode) restart(t *testing.T, bin, prefix string) {
 	t.Helper()
 
-	stopNodeProcess(t, n.proc)
+	stopNode(t, n.proc, nodeStopTimeout)
 	n.proc = startNode(t, bin, n.startArgs, prefix)
 }
 

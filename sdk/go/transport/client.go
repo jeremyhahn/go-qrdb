@@ -175,6 +175,13 @@ type AdminClient interface {
 	// this node, including all loaded shards and their membership.
 	GetTopology(ctx context.Context) (*TopologyResponse, error)
 
+	// ReplicaStates returns, for each replica this node holds, its applied
+	// index and state-machine hash: of shardID, or of every shard when
+	// shardID is 0. The node answers for itself and never forwards, so
+	// comparing replicas means asking every node. Requires
+	// admin:replica_state.
+	ReplicaStates(ctx context.Context, shardID uint64) (*ReplicaStatesResponse, error)
+
 	// NodeCompaction returns the platform's node-keyspace compaction
 	// policy -- the scheduled compaction of the keys outside every database
 	// namespace -- or nil when none is set. It requires

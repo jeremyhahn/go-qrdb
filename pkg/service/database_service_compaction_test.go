@@ -20,6 +20,9 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -34,11 +37,21 @@ type policyView struct {
 	policy    *compaction.Policy
 	noHistory bool
 	readErr   error
+	// stranded makes the read wait as a ReadIndex on a shard still electing
+	// its leader does: until ctx ends, then quicraft's own error for it.
+	stranded bool
 }
 
 func (v *policyView) KeepsRevisionHistory() bool { return !v.noHistory }
 
-func (v *policyView) CompactionPolicy(context.Context) (*compaction.Policy, error) {
+func (v *policyView) CompactionPolicy(ctx context.Context) (*compaction.Policy, error) {
+	if v.stranded {
+		<-ctx.Done()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, quicraft.ErrTimeout
+		}
+		return nil, quicraft.ErrCanceled
+	}
 	return v.policy, v.readErr
 }
 
@@ -187,5 +200,76 @@ func TestDatabaseService_GetForTenant_ReportsThePolicy(t *testing.T) {
 	db.SetStatus(database.StatusSealed)
 	if info, err := svc.GetForTenant(acme, "acme-db"); err != nil || info.Compaction != nil {
 		t.Fatalf("a sealed database = %+v, %v", info, err)
+	}
+}
+
+// TestDatabaseService_GetForTenant_BoundsAStrandedPolicyRead covers a raft
+// database just created, whose own shard is still electing its leader: the
+// compaction-policy read waits as a ReadIndex does, and the request's ctx has
+// no deadline. The call must answer with the policy reported unavailable at
+// the bound, not wait for as long as its caller's ctx lives.
+func TestDatabaseService_GetForTenant_BoundsAStrandedPolicyRead(t *testing.T) {
+	svc, reg, _ := newCompactionDatabaseService(t)
+	svc.infoReadBound = 20 * time.Millisecond
+	reg.views["acme/acme-db"].stranded = true
+	ctx, cancel := context.WithCancel(tenant.WithTenantID(context.Background(), "acme"))
+	defer cancel()
+
+	type result struct {
+		info *database.DatabaseInfo
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		info, err := svc.GetForTenant(ctx, "acme-db")
+		done <- result{info, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("GetForTenant: %v; want the database with its policy unavailable", r.err)
+		}
+		if r.info.Name != "acme-db" || r.info.Compaction != nil || !r.info.CompactionUnavailable {
+			t.Fatalf("info = %+v; want the database reported with its policy unavailable", r.info)
+		}
+	case <-time.After(5 * time.Second):
+		// Cancelling ends the stranded read, so the goroutine does not leak.
+		cancel()
+		<-done
+		t.Fatal("GetForTenant waited on the stranded policy read past its bound")
+	}
+}
+
+// TestDatabaseService_BoundedInfoRead covers the bound itself: the field when
+// set, the default when it is not, and a caller's shorter deadline kept.
+func TestDatabaseService_BoundedInfoRead(t *testing.T) {
+	for name, tc := range map[string]struct {
+		field  time.Duration
+		parent time.Duration
+		want   time.Duration
+	}{
+		"field":          {field: time.Minute, want: time.Minute},
+		"unset":          {want: defaultInfoReadBound},
+		"shorter caller": {field: time.Hour, parent: time.Second, want: time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			parent := context.Background()
+			if tc.parent > 0 {
+				var cancel context.CancelFunc
+				parent, cancel = context.WithTimeout(parent, tc.parent)
+				defer cancel()
+			}
+			s := &DatabaseService{infoReadBound: tc.field}
+			start := time.Now()
+			ctx, cancel := s.boundedInfoRead(parent)
+			defer cancel()
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("no deadline")
+			}
+			if got := deadline.Sub(start); got > tc.want+time.Second || got < tc.want-time.Second {
+				t.Fatalf("deadline in %v; want about %v", got, tc.want)
+			}
+		})
 	}
 }

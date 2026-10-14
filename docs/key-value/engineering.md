@@ -813,7 +813,16 @@ consumes no revision, fires no watch and is never itself compacted.
   (`service.CompactionPolicyReadError`). An update that committed is
   reported as done the same way. *(Corrected: a failed read failed the
   whole `GetDatabase`, and every `Update*` reported a failure after its
-  change had committed.)*
+  change had committed.)* The read is bounded
+  (`DatabaseService.boundedInfoRead`, 5 s, or the caller's own deadline if
+  shorter), as is the placement refresh that fills in `replicas` and
+  `shardId`: both are linearizable, and on a raft database just created the
+  policy read reaches a shard still electing its leader, where a ReadIndex
+  waits for as long as its ctx lives. A read that outlives the bound is
+  reported the way an unreadable store is. *(Corrected: the read took the
+  request's ctx, which on REST has no deadline, so a `GET
+  /v1/databases/{name}` made right after the create waited on the election
+  past its client's timeout.)*
 
 The compaction scheduler (`pkg/server`, every
 `server.DefaultCompactionInterval`, one minute) runs on every node and holds

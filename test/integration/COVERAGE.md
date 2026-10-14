@@ -32,6 +32,20 @@ socket, **E**=embedded. A letter means a CLI-level integration test (the
 non-Docker `test/integration` suite unless noted) drives that transport for
 this feature; `—` means it does not.
 
+## How CI runs these suites
+
+The push-path cluster stage is `make integration-test-cluster`: every test in
+the package, self-spawned, run by the `integration-cluster` job in
+`.github/workflows/ci.yml` as three legs (`CLUSTER_SHARD=1/3`..`3/3`), each
+selecting its share of `go test -list` by an anchored `-run` expression.
+`make check-cluster-shards` proves the legs partition the package, so no test
+drops out of the gate and none runs twice; `ci-gate` requires the job, so
+every leg. A feature's own selection runs locally with
+`make integration-test-<feature>`, and a test that `features.mk` maps to no
+feature fails `make check-integration-feature-coverage`. The legs are
+described in `docs/release/engineering.md` ("Cluster suite legs"). The
+Docker-based `test/integration/api` suite runs as `integration-standalone`.
+
 ## The cross-cutting gap: embedded
 
 **Every multi-transport CLI suite in `test/integration` runs over the same
@@ -84,7 +98,7 @@ itself (it is, deliberately, the CLI-selectable set).
 | [storage-engines](../../docs/storage-engines/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `admin_node_compaction_cli_test.go` is `_PerProtocol`. `sm_storage_file_test.go`'s file-backend correctness suite is REST only. |
 | [volume-pools](../../docs/volume-pools/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
 | [backup-restore](../../docs/backup-restore/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `backup_cli_test.go`'s command-tree suite is `_PerProtocol`; the disaster-recovery scenarios in `backup_restore_test.go` are REST only. |
-| [clustering](../../docs/clustering/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `admin_cluster_cli_test.go`, `join_request_cli_test.go`, `join_token_cli_test.go`, `rebalance_cli_test.go`, `drain_test.go` are `_PerProtocol`. `admin_test.go` (start/discovery/cluster-formation flag matrix) and `cluster_test.go` (health/status/leader-election/snapshot/restart) drive REST only. |
+| [clustering](../../docs/clustering/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `admin_cluster_cli_test.go`, `join_request_cli_test.go`, `join_token_cli_test.go`, `rebalance_cli_test.go`, `drain_test.go` are `_PerProtocol`. `admin_test.go` (start/discovery/cluster-formation flag matrix) and `cluster_test.go` (health/status/leader-election/snapshot/restart) drive REST only. `cluster_crash_test.go` (SIGKILL of the leader and then a follower under concurrent writers) and `cluster_partition_test.go` (leader isolated and healed at a UDP relay in front of every Raft listener, `qrdbdharness.UDPRelay`) and `cluster_lease_test.go` (linearizable reads through a leader that is isolated, paused and isolated, or paused, while a successor overwrites the key, with `lease_read` on) drive REST only: their axis is fault recovery, not the transport. |
 | [run-modes](../../docs/run-modes/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `run_modes_standalone_cli_test.go` is `_PerProtocol`. `qrdbd_cli_test.go` (completion, node identity) and `completion_cli_test.go` are local-CLI-only — no server, so the transport axis does not apply to them. |
 | [capabilities](../../docs/capabilities/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `cli_multiprotocol_test.go` drives `qrdb admin capabilities` through the shared admin command tree over every remote CLI transport; embedded coverage remains in the admin/API-server suite rather than the CLI matrix. |
 | [configuration](../../docs/configuration/) | — | — | — | — | — | — | **Gap.** No dedicated integration test; exercised only incidentally through other features' config fixtures. |

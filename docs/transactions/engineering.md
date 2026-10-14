@@ -348,8 +348,9 @@ never replays it over its own result.
   happy path and an error path.
 - **Integration**: `make integration-test-standalone` covers transaction and
   batch parity across transports; the multi-node atomicity cases live in the
-  cluster stage (`make integration-test-cluster`), which is **not currently
-  wired into CI**.
+  cluster stage (`make integration-test-cluster`), which runs in CI as the
+  three legs of the `integration-cluster` job (`.github/workflows/ci.yml`),
+  required by `ci-gate`.
 - **Fault injection**: the import path takes an `io.Reader`, so a truncated or
   malformed stream is injected directly rather than staged on disk. A
   multi-chunk `ImportCommit` is covered separately: a fake host's

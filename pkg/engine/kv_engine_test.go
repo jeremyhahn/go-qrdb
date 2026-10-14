@@ -2862,9 +2862,9 @@ func TestKVEngine_Lookup_CompoundIndexQuery_NotFound(t *testing.T) {
 		IndexName: "nonexistent.A_B",
 		Values:    [][]byte{[]byte("x"), []byte("y")},
 	})
-	var iqe *InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Errorf("expected *InvalidQueryError for missing compound index, got %T: %v", err, err)
+	var inf *index.NotFoundError
+	if !errors.As(err, &inf) {
+		t.Errorf("expected *index.NotFoundError for missing compound index$!1, got %T: %v", err, err)
 	}
 }
 
@@ -2877,9 +2877,30 @@ func TestKVEngine_Lookup_CompoundIndexScan_NotFound(t *testing.T) {
 		IndexName:    "nonexistent.A_B",
 		PrefixValues: [][]byte{[]byte("x")},
 	})
-	var iqe *InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Errorf("expected *InvalidQueryError for missing compound index scan, got %T: %v", err, err)
+	var inf *index.NotFoundError
+	if !errors.As(err, &inf) {
+		t.Errorf("expected *index.NotFoundError for missing compound index scan, got %T: %v", err, err)
+	}
+}
+
+// TestKVEngine_Lookup_MissingIndex_NotFoundError pins that a query or scan of
+// an index the engine does not have is the typed *index.NotFoundError the
+// service layer reports NotFound, not a generic invalid query.
+func TestKVEngine_Lookup_MissingIndex_NotFoundError(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	lookups := map[string]interface{}{
+		"query": index.IndexQueryRequest{IndexName: "nonexistent", Value: []byte("x")},
+		"scan":  index.IndexScanRequest{IndexName: "nonexistent", Start: []byte("a"), End: []byte("z")},
+	}
+	for name, q := range lookups {
+		_, err := eng.Lookup(context.Background(), q)
+		var inf *index.NotFoundError
+		if !errors.As(err, &inf) || inf.Name != "nonexistent" {
+			t.Errorf("%s: expected *index.NotFoundError{Name: nonexistent}, got %T: %v", name, err, err)
+		}
 	}
 }
 

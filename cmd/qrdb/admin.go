@@ -43,6 +43,7 @@ func newAdminCmd() *cobra.Command {
 		newAdminSnapshotCmd(),
 		newAdminDrainCmd(),
 		newAdminTopologyCmd(),
+		newAdminReplicaStatesCmd(),
 		newAdminCapabilitiesCmd(),
 		newAdminNodeCompactionCmd(),
 		newAdminUpdateNodeCompactionCmd(),
@@ -378,6 +379,43 @@ func newAdminTopologyCmd() *cobra.Command {
 			}
 		},
 	}
+}
+
+func newAdminReplicaStatesCmd() *cobra.Command {
+	var shardID uint64
+	cmd := &cobra.Command{
+		Use:   "replica-states",
+		Short: "Show the applied index and state-machine hash of every replica on this node",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client.Admin().ReplicaStates(cmd.Context(), shardID)
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				headers := []string{"SHARD", "REPLICA", "APPLIED INDEX", "HASH"}
+				rows := make([][]string, len(resp.Replicas))
+				for i, rs := range resp.Replicas {
+					rows[i] = []string{
+						strconv.FormatUint(rs.ShardID, 10),
+						strconv.FormatUint(rs.ReplicaID, 10),
+						strconv.FormatUint(rs.AppliedIndex, 10),
+						fmt.Sprintf("%016x", rs.Hash),
+					}
+				}
+				printTable(headers, rows)
+				return nil
+			}
+		},
+	}
+	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "report only this shard (0 reports every replica on the node)")
+	return cmd
 }
 
 // newAdminCapabilitiesCmd returns the admin capabilities subcommand.

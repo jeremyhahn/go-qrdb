@@ -145,6 +145,7 @@ func New[E Entity](
 		singleIndexes := make([]kvstore.EntityIndex, 0, len(indexMeta))
 		for fieldName, meta := range indexMeta {
 			jsonName := jsonFieldName(eType, fieldName)
+			sf, _ := eType.FieldByName(fieldName)
 			singleIndexes = append(singleIndexes, kvstore.EntityIndex{
 				IndexName:     dao.indexName(fieldName),
 				FieldName:     fieldName,
@@ -152,6 +153,7 @@ func New[E Entity](
 				Unique:        meta.Config.Unique || meta.Config.Type == index.IndexTypeUnique,
 				Sparse:        meta.Config.Sparse,
 				CaseSensitive: meta.Config.CaseSensitive,
+				Numeric:       hasNumericTerms(sf.Type),
 			})
 		}
 		// Compound indexes from the CompoundIndexRegisterer interface.

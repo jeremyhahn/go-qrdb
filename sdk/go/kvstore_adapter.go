@@ -341,6 +341,7 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 			Unique:          ei.Unique,
 			Sparse:          ei.Sparse,
 			CaseInsensitive: !ei.CaseSensitive,
+			Numeric:         ei.Numeric,
 		}
 		if err := a.index.IndexCreate(ctx, ei.ResolvedName(entityType), ei.JSONFieldName, cfg); err != nil {
 			return translateIndexCapabilityError(err)

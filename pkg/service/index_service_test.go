@@ -21,6 +21,8 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 )
 
 // ---------------------------------------------------------------------------
@@ -442,6 +444,46 @@ func TestIndexService_Scan_ReadError(t *testing.T) {
 	}
 	if !errors.Is(re.Unwrap(), sentinel) {
 		t.Fatalf("expected underlying sentinel, got %v", re.Unwrap())
+	}
+}
+
+// TestIndexService_MissingIndex_IsIndexNotFound pins that a query or scan
+// naming an index the state machine does not have surfaces as
+// *IndexNotFoundError -- which every transport classifies NotFound -- and not
+// as *ReadError, which every transport reports as an internal fault.
+func TestIndexService_MissingIndex_IsIndexNotFound(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, &index.NotFoundError{Name: "idx_gone"}
+		},
+	}
+	svc := NewIndexService(host, 1)
+
+	calls := map[string]func() error{
+		"query": func() error {
+			_, err := svc.Query(context.Background(), "idx_gone", []byte("v"))
+			return err
+		},
+		"scan": func() error {
+			_, err := svc.Scan(context.Background(), "idx_gone", []byte("a"), []byte("z"))
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			var inf *IndexNotFoundError
+			if !errors.As(err, &inf) {
+				t.Fatalf("expected *IndexNotFoundError, got %T: %v", err, err)
+			}
+			if inf.Name != "idx_gone" {
+				t.Fatalf("Name = %q, want %q", inf.Name, "idx_gone")
+			}
+			var re *ReadError
+			if errors.As(err, &re) {
+				t.Fatalf("a missing index must not be a *ReadError: %v", err)
+			}
+		})
 	}
 }
 

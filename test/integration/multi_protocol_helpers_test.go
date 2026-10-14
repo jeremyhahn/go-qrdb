@@ -90,7 +90,7 @@ func (n *multiProtoNode) restart(t *testing.T, prefix string) {
 	if n.proc == nil {
 		t.Fatal("restart: this node's fixture did not retain its process")
 	}
-	stopNodeProcess(t, n.proc)
+	stopNode(t, n.proc, 15*time.Second)
 	n.proc = startNode(t, n.bin, n.startArgs, prefix)
 
 	waitForBarrierStatusReachable(t, n.ca, n.restPort, 90*time.Second)
@@ -472,13 +472,11 @@ func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
 	waitForFile(t, caPath, 30*time.Second)
 	waitForFile(t, leafCertPath, 30*time.Second)
 
-	// loadDaemonCA (barrier_cli_test.go) adopts the self-issued CA
-	// confirmClusterCAPersisted (cmd/qrdbd/start.go) wrote into dataDir. It
-	// races ca-key.pem's own deletion -- removed from disk the moment Key A
-	// is confirmed durably replicated into the system store -- itself, by
-	// falling back to qrdbdharness.LoadCACertOnly (cert only, the only thing
-	// actually needed afterward: trust, not signing) when the key is
-	// already gone.
+	// loadDaemonCA (barrier_cli_test.go) adopts the self-issued CA the daemon
+	// wrote into dataDir. ca-key.pem is still on disk here: the daemon removes
+	// it only once confirmClusterCAPersisted (cmd/qrdbd/clusterca.go) has the
+	// key durably in the system store, which needs the barrier the `qrdb init`
+	// below brings up.
 	ca := loadDaemonCA(t, dataDir)
 
 	adminURL := fmt.Sprintf("https://127.0.0.1:%d", restPort)

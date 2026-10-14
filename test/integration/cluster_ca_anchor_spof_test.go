@@ -1032,10 +1032,7 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	if node1.cmd.Process == nil {
 		t.Fatal("node 1 has no process to kill")
 	}
-	if err := node1.cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill node 1: %v", err)
-	}
-	_ = node1.cmd.Wait()
+	killNode(t, node1.cmd)
 
 	removeDeadline := time.Now().Add(90 * time.Second)
 	var removeCode int

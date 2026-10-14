@@ -342,11 +342,11 @@ func TestMVCCEngine_QueryingADroppedIndexFailsRatherThanAnsweringEmpty(t *testin
 			if err == nil {
 				t.Fatalf("expected an error for an absent index, got result %#v with nil error", res)
 			}
-			var invalid *InvalidQueryError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+			var missing *index.NotFoundError
+			if !errors.As(err, &missing) {
+				t.Fatalf("expected *index.NotFoundError, got %T: %v", err, err)
 			}
-			if !strings.Contains(err.Error(), "index not found") {
+			if !strings.Contains(err.Error(), "not found") {
 				t.Fatalf("error should name the missing index, got %q", err)
 			}
 		})

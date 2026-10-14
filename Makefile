@@ -651,8 +651,57 @@ proto:
 # repository defect at the same moment CI would tell them -- the same reasoning
 # that put check-publication-bound into `_ci`.
 .PHONY: test
-test:
+test: test-clusterproof
 	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/... ./test/buildgates/...
+
+# The cluster proof harness's own unit tests (#669): the history format, the
+# acknowledged-write ledger, the porcupine linearizability check and the
+# workload, against hand-built histories and an in-process node.
+# test/clusterproof is a module of its own, so porcupine, a test-only
+# dependency, never enters the database's module graph and no root `./...`
+# pattern reaches it; every file there is also behind the clusterproof tag.
+# This runs them under the minimal+clusterproof rung vet-tags declares. It
+# never touches a remote cluster -- that is `make cluster-proof`.
+.PHONY: test-clusterproof
+test-clusterproof:
+	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof" ./...
+
+# The cluster proof itself (#669): `make cluster-proof` soaks a running cluster
+# under a seeded schedule of faults and writes an evidence bundle;
+# `make cluster-proof-check` verifies a bundle's checksums and re-derives its
+# verdict with no cluster. Both are configured by the PROOF_* variables, from
+# the command line or the environment (docs/cluster-verification/cli.md), and
+# exit 0 proven, 1 violated, 2 invalid. An unset variable exports as empty,
+# which the runner reads as unset. PROOF_SEAL is required: the runner refuses
+# a run that does not name one of the seal types the release ships.
+#
+# The runner is built, not `go run`: go run reports every failure as 1, which
+# would turn an invalid run into a violation. Make itself exits 2 on any
+# failure, so its "Error N" line carries the runner's code.
+CLUSTERPROOF_BIN := bin/clusterproof
+export PROOF_NODES PROOF_DURATION PROOF_NEMESIS PROOF_BUNDLE PROOF_WORKLOAD PROOF_TARGETS PROOF_SEED PROOF_SEAL
+
+.PHONY: cluster-proof-bin
+cluster-proof-bin:
+	cd test/clusterproof && $(GO) build -tags "$(MIN_TAGS),clusterproof" -ldflags "-X main.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT)" -o $(CURDIR)/$(CLUSTERPROOF_BIN) ./soak/cmd/clusterproof
+
+.PHONY: cluster-proof
+cluster-proof: cluster-proof-bin
+	$(CLUSTERPROOF_BIN) run
+
+.PHONY: cluster-proof-check
+cluster-proof-check: cluster-proof-bin
+	$(CLUSTERPROOF_BIN) check
+
+# BOOT-01 in container mode: start the inventory's nodes from the release
+# image, take them through first boot and check the admin surface on every
+# transport (docs/cluster-verification/user.md). PROOF_INVENTORY names the
+# inventory; the test fails without one rather than skipping.
+export PROOF_INVENTORY
+
+.PHONY: cluster-proof-boot
+cluster-proof-boot:
+	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof,clusterproof_container" -run '^TestBOOT01$$' ./container/
 
 # Run one package's unit tests under the same build tags `make test` uses --
 # the uniform escape hatch for a package that has no named test-<pkg> target
@@ -1200,6 +1249,11 @@ INTEGRATION_RUN ?=
 # suite spawns stop each running 80 Ps, and a GC sized to them, so they stop
 # starving their own Raft tickers under host load. 8 is what the shared runners can
 # honour: eight cluster jobs at once still leave 16 of a runner's 80 threads.
+# It is an upper bound: scripts/cluster-cpus.sh lowers it to the docker host's
+# CPU count (`docker info` NCPU) and logs both figures, because dockerd refuses
+# a --cpus above the CPUs it has and a 4-CPU runner then started no test at
+# all (#673). A whole number; 0 is no cap. The suite's timings below were
+# measured on a 4-CPU budget, so the smaller cap needs no other setting moved.
 #
 # CLUSTER_MEM_RESERVATION is a soft floor (mem_reservation, docker
 # --memory-reservation), not a limit: it keeps the container's pages under host
@@ -1224,12 +1278,13 @@ INTEGRATION_GO_TIMEOUT ?= 100m
 integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
-	@cd test/integration/api && \
+	@cpus=$$(./scripts/cluster-cpus.sh '$(CLUSTER_CPUS)') || exit 1; \
+		cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
 		INTEGRATION_TAGS='$(INT_FEATURE_TAGS)' \
 		INTEGRATION_RUN='$(INTEGRATION_RUN)' \
 		INTEGRATION_GO_TIMEOUT='$(INTEGRATION_GO_TIMEOUT)' \
-		INTEGRATION_CPUS='$(CLUSTER_CPUS)' \
+		INTEGRATION_CPUS="$$cpus" \
 		INTEGRATION_MEM_RESERVATION='$(CLUSTER_MEM_RESERVATION)' \
 		INTEGRATION_PARALLEL='$(CLUSTER_PARALLEL)' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
@@ -1343,11 +1398,20 @@ INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter IN
 print-integration-features:
 	@printf '%s\n' $(INT_FEATURES)
 
-.PHONY: integration-test-%
-integration-test-%:
-	@files="$(strip $(INTTEST_$(subst -,_,$*)))"; \
+# integration-test-feature is the one recipe behind every per-feature target:
+# `make integration-test-feature FEATURE=<docs folder name>`. The
+# `integration-test-%` pattern rule below dispatches to it, and so does CI's
+# integration-features job through that rule. An explicit
+# integration-test-<feature> rule would shadow the pattern rule (make prefers
+# the explicit recipe); test/buildgates/feature_target_shadow_test.go refuses
+# one, and test/buildgates/feature_integration_coverage_test.go fails if a
+# feature name would collide with this target itself.
+.PHONY: integration-test-feature
+integration-test-feature:
+	@test -n "$(FEATURE)" || { echo "integration-test-feature: FEATURE=<feature> is required"; exit 2; }
+	@files="$(strip $(INTTEST_$(subst -,_,$(FEATURE))))"; \
 	if [ -z "$$files" ]; then \
-		echo "==> integration-test-$*: no non-Docker integration test is mapped to this feature yet (see test/integration/features.mk)"; \
+		echo "==> integration-test-$(FEATURE): no non-Docker integration test is mapped to this feature yet (see test/integration/features.mk)"; \
 		exit 0; \
 	fi; \
 	paths=""; dirs=""; \
@@ -1359,14 +1423,18 @@ integration-test-%:
 	done; \
 	names=$$(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' $$paths | paste -sd '|' -); \
 	if [ -z "$$names" ]; then \
-		echo "==> integration-test-$*: mapped files contain no Test function"; \
+		echo "==> integration-test-$(FEATURE): mapped files contain no Test function"; \
 		exit 0; \
 	fi; \
 	tags="$(INT_FEATURE_TAGS)"; \
-	extra_tags="$(strip $(INTTAGS_$(subst -,_,$*)))"; \
+	extra_tags="$(strip $(INTTAGS_$(subst -,_,$(FEATURE))))"; \
 	if [ -n "$$extra_tags" ]; then tags="$$tags,$$extra_tags"; fi; \
-	echo "==> integration-test-$*: running $$(echo $$names | tr '|' ' ')"; \
+	echo "==> integration-test-$(FEATURE): running $$(echo $$names | tr '|' ' ')"; \
 	$(GOTEST) -tags "$$tags" -run "^($$names)$$"$$dirs
+
+.PHONY: integration-test-%
+integration-test-%:
+	@$(MAKE) -s -C $(CURDIR) integration-test-feature FEATURE=$*
 
 # ============================================================================
 # Benchmarks (always run in devcontainer)
@@ -1912,7 +1980,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2284,6 +2352,13 @@ check-compose-targets: ## Every compose `target:` names a real Dockerfile stage
 test-compose-targets: ## Test the compose-target guard
 	@./scripts/check-compose-targets_test.sh
 
+# The cluster stage's CPU cap is CLUSTER_CPUS bounded by the docker host's CPUs
+# (scripts/cluster-cpus.sh, #673). A real run only ever lands on one host, so
+# this proves the lowering, the pass-through and the refusals on a stub docker.
+.PHONY: test-cluster-cpus
+test-cluster-cpus: ## Test the cluster stage's host-bounded CPU cap
+	@./scripts/cluster-cpus_test.sh
+
 .PHONY: check-tool-versions
 check-tool-versions:
 	@./scripts/check-tool-versions.sh
@@ -2605,7 +2680,23 @@ vet:
 # into every build before it was fixed. `test/buildgates` asserts the
 # dependency-graph half of the same claim with `go list -deps`; these rungs
 # are what makes the claim typecheck as well.
-SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts $(NOMYSQL_TAGS) $(NOMYSQL_TAGS),integration $(NOPGSQL_TAGS) $(NOPGSQL_TAGS),integration $(NOSQLFAMILY_TAGS) $(NOSQLFAMILY_TAGS),integration $(NOETCD_TAGS) $(NOETCD_TAGS),integration
+#
+# minimal+clusterproof compiles test/clusterproof, the multi-node cluster
+# proof harness (#669), which every file there keeps behind the clusterproof
+# tag so no default build carries it. It is a rung on the FLOOR, not on
+# default, because the harness drives a cluster through the SDK's network
+# transports and needs no optional feature, so the floor is the narrowest
+# claim its files make. `make test-clusterproof` runs its unit tests under
+# the same set. test/clusterproof is a module of its own, so the root's
+# `./...` never reaches it and this rung matches nothing there; the module is
+# swept under every declared rung naming clusterproof by scripts/vet-modules.sh,
+# which refuses a declaration that names none.
+#
+# minimal+clusterproof+clusterproof_container adds container mode's BOOT-01
+# test, which runs the release image on the inventory's nodes and so needs a
+# container runtime and a cluster no unit run has. Its own tag keeps it out
+# of `make test-clusterproof`; this rung keeps it typechecked everywhere.
+SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(MIN_TAGS),clusterproof $(MIN_TAGS),clusterproof,clusterproof_container $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts $(NOMYSQL_TAGS) $(NOMYSQL_TAGS),integration $(NOPGSQL_TAGS) $(NOPGSQL_TAGS),integration $(NOSQLFAMILY_TAGS) $(NOSQLFAMILY_TAGS),integration $(NOETCD_TAGS) $(NOETCD_TAGS),integration
 
 # TEST_TAGS_SETS is the subset of SUPPORTED_TAG_SETS that `make test-tags`
 # actually RUNS (not merely typechecks): the default set and the four
@@ -2646,7 +2737,7 @@ TEST_TAGS_PKGS := ./cmd/qrdbd/... ./cmd/qrdb/... ./pkg/service
 # STILL NOT WIRED INTO CI, and #263 does not change that. The blocker has moved
 # twice and is now a MODULE, not a tag set. #178 could not arm it because the
 # `+integration` leg was red repo-wide; #203 cleared that. What blocks it now is
-# `sdk/go/gorm/conformance`, one of the seven Go modules this target sweeps:
+# `sdk/go/gorm/conformance`, one of the eight Go modules this target sweeps:
 #
 #     cd sdk/go/gorm/conformance && go vet -tags gormconformance ./...
 #     go: updates to go.mod needed; to update it:

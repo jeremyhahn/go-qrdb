@@ -22,7 +22,9 @@ What a host must grant `qrdbd` to run as configured — locked memory — and
 what `qrdbd` takes away from the host in return: the ability of other
 processes to read its memory — and the clock and Raft timing every replica
 must share for lease reads to stay linearizable. Ports, TLS and cluster formation are covered by
-[../configuration/](../configuration/) and [../clustering/](../clustering/).
+[../configuration/](../configuration/) and [../clustering/](../clustering/);
+the ports a host's firewall must open are the pinned port set in
+[../cluster-verification/user.md](../cluster-verification/user.md#pinned-port-set).
 
 ## Problem
 

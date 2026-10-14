@@ -97,6 +97,11 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Handler: handleGetTopology(adminSvc),
 		},
 		{
+			Tool:    toolGetReplicaStates(),
+			Perm:    permission.AdminReplicaState,
+			Handler: handleGetReplicaStates(adminSvc),
+		},
+		{
 			Tool:    toolNodeCompaction(),
 			Perm:    permission.AdminNodeCompaction,
 			Handler: handleNodeCompaction(adminSvc),
@@ -576,6 +581,38 @@ func handleGetTopology(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc
 		data, jsonErr := json.Marshal(topo)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_topology", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolGetReplicaStates defines the qrdb_replica_states tool schema.
+func toolGetReplicaStates() mcp.Tool {
+	return mcp.NewTool("qrdb_replica_states",
+		mcp.WithDescription("Return each replica this node holds with its applied index and state-machine hash. Replicas of a shard at the same applied index hold the same state exactly when their hashes match. Answers for this node only."),
+		mcp.WithNumber("shard_id",
+			mcp.Description("The shard to report; omit or 0 for every shard."),
+		),
+	)
+}
+
+// handleGetReplicaStates returns a tool handler that delegates to the admin
+// service's ReplicaStateReader.
+func handleGetReplicaStates(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		reader, ok := adminSvc.(service.ReplicaStateReader)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_replica_states", Err: &service.ReplicaStateReadUnsupportedError{}}
+		}
+		states, err := reader.ReplicaStates(ctx, mcp.ParseUInt64(req, "shard_id", 0))
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_replica_states", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(states)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_replica_states", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv"
 )
 
 // Compile-time interface assertions.
@@ -791,6 +792,28 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 		ShardCount:  int(resp.GetShardCount()),
 		Shards:      shards,
 	}, nil
+}
+
+// ReplicaStates implements transport.AdminClient.
+func (t *Transport) ReplicaStates(ctx context.Context, shardID uint64) (*transport.ReplicaStatesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.GetReplicaStatesRequest{ShardId: shardID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReplicaStates", Err: err}
+	}
+	respPayload, err := t.call(ctx, "admin.GetReplicaStates", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp pb.ReplicaStatesResponse
+	if err := proto.Unmarshal(respPayload, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "ReplicaStates", Err: err}
+	}
+	return replicaconv.FromProto(&resp), nil
 }
 
 // MintJoinToken mints a single-use, identity-bound member-side CSR join

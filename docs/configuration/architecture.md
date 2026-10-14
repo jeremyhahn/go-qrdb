@@ -143,18 +143,14 @@ reference with defaults is [12-configuration.md](../12-configuration.md).
 
 ## Default ports
 
-| Service | Port | Protocol | Field |
-|---|---|---|---|
-| Raft | 63001 | QUIC (internal) | `raft.raft_address` |
-| REST | 63002 | HTTPS | `server.admin_port` |
-| gRPC | 63003 | gRPC + TLS | `server.grpc_port` |
-| QUIC | 63004 | QUIC | `server.quic_port` |
-| MCP | 63005 | HTTPS | `mcp.port` |
-| Noise bootstrap | 63006 | Noise NK over TCP | `bootstrap.noise_port` |
-| CSR join | 63007 | Noise NK over TCP | `cluster_join.listen_port` |
-| MySQL | 3306 | MySQL wire | `server.mysql_port` |
-| PostgreSQL | 5432 | PostgreSQL wire | `server.pgsql_port` |
-| etcd | none; `qrdb database create --etcd` uses `localhost:2379` | gRPC + mTLS | `databases[].etcd.listen_addr` |
+The authoritative listener table — port, transport protocol, on by default, and
+who must reach it — is [Network ports](../clustering/user.md#network-ports).
+Configuration owns only the fields that move each listener: `raft.listen_address`
+(63001), `server.admin_port` (63002), `server.grpc_port` (63003),
+`server.quic_port` (63004), `mcp.port` (63005), `bootstrap.noise_port` (63006),
+`cluster_join.listen_port` (63007), `server.mysql_port` (3306),
+`server.pgsql_port` (5432) and the per-database `databases[].etcd.listen_addr` (no default; `qrdb database
+create --etcd` uses `localhost:2379`).
 
 ## Trust boundaries
 

@@ -52,6 +52,12 @@ func TestStoragePebbleIndex_NumericScan(t *testing.T) {
 	indextest.NumericScan(t, newStoragePebbleIndex)
 }
 
+// TestStoragePebbleIndex_NumericExactness runs the numeric term exactness
+// contract against StoragePebbleIndex.
+func TestStoragePebbleIndex_NumericExactness(t *testing.T) {
+	indextest.NumericExactness(t, newStoragePebbleIndex)
+}
+
 // TestCaseInsensitiveStringIndex_Scan_UnboundedUpper_Unaffected: a
 // case-insensitive index normalizes to lowercase on Put; scan bounds are
 // normalized the same way. Mixed-case input plus a nil upper bound

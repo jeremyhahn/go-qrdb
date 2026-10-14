@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -29,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -148,6 +151,32 @@ func TestClassify_DominantRulesWinThroughWrappers(t *testing.T) {
 	}
 }
 
+// TestClassify_RaftTimeoutIsUnavailable: a request Raft timed out -- most
+// often a proposal or read that met an election, or a leader still settling
+// its term -- is retryable, whatever wrapper carried it. Before, the wrapper's
+// own Internal row claimed it, and a 500 told the caller the node was broken.
+// The collection write whose outcome is unknown stays a server fault: that
+// row is about what the caller must not assume, not about why it failed.
+func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"bare", quicraft.ErrTimeout, Unavailable},
+		{"inside a propose failure", &service.ProposeError{Err: quicraft.ErrTimeout}, Unavailable},
+		{"inside a read failure", &service.ReadError{Err: quicraft.ErrTimeout}, Unavailable},
+		{"inside a batch failure", &service.BatchError{Err: quicraft.ErrTimeout}, Unavailable},
+		{"inside a tenant store read", &tenant.StoreError{Op: "get", Err: &service.ReadError{Err: quicraft.ErrTimeout}}, Unavailable},
+		{"a caller's own deadline is still its own", &service.ProposeError{Err: context.DeadlineExceeded}, DeadlineExceeded},
+		{"another Raft failure is still a fault", &service.ProposeError{Err: quicraft.ErrRejected}, Internal},
+	} {
+		if got := Classify(tc.err); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestClassify_ServiceConditionsTheTableOnceMissed pins service conditions
 // that reached every transport as an internal fault because no row named
 // them: a duplicate registration, an unwired manager, a retryable timeout and
@@ -172,6 +201,29 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 				t.Errorf("got %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// A NaN or non-number scan bound on a numeric index is the caller's mistake.
+// The index service returns it inside ReadError, whose own row is a server
+// fault, so the bound's row must win through that wrapper.
+func TestClassify_NumericScanBoundIsInvalidArgument(t *testing.T) {
+	bound := &index.InvalidNumericBoundError{IndexName: "db.Member.Age", Op: "start", Value: []byte("NaN")}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"bare", bound},
+		{"inside ReadError", &service.ReadError{Err: bound}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != InvalidArgument {
+				t.Errorf("got %s, want %s", got, InvalidArgument)
+			}
+		})
+	}
+	if got := Classify(&service.ReadError{Err: errors.New("disk")}); got != Internal {
+		t.Errorf("a read fault is still a fault: got %s, want %s", got, Internal)
 	}
 }
 

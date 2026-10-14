@@ -357,6 +357,39 @@ func (s *Server) handleGetTopology(ctx context.Context, _ []byte) ([]byte, error
 	return resp, nil
 }
 
+// handleGetReplicaStates decodes a GetReplicaStatesRequest and returns a
+// serialized ReplicaStatesResponse for this node's replicas. It is never
+// forwarded: each node answers for itself.
+func (s *Server) handleGetReplicaStates(ctx context.Context, payload []byte) ([]byte, error) {
+	reader, ok := s.adminSvc.(service.ReplicaStateReader)
+	if !ok {
+		return nil, &service.ReplicaStateReadUnsupportedError{}
+	}
+	var req pb.GetReplicaStatesRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	states, err := reader.ReplicaStates(ctx, req.GetShardId())
+	if err != nil {
+		return nil, err
+	}
+
+	replicas := make([]*pb.ReplicaStateProto, 0, len(states.Replicas))
+	for _, rs := range states.Replicas {
+		replicas = append(replicas, &pb.ReplicaStateProto{
+			ShardId:      rs.ShardID,
+			ReplicaId:    rs.ReplicaID,
+			AppliedIndex: rs.AppliedIndex,
+			Hash:         rs.Hash,
+		})
+	}
+	resp, err := proto.Marshal(&pb.ReplicaStatesResponse{NodeId: states.NodeID, Replicas: replicas})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
 // handleMintJoinToken unmarshals a MintJoinTokenRequest, mints a single-use
 // join token via the admin service, and returns a serialized
 // MintJoinTokenResponse. s.adminSvc not implementing

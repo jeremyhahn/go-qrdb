@@ -100,10 +100,7 @@ func TestRaftSMOverFileStorage_ServesAndSurvivesRestart(t *testing.T) {
 
 	// Kill hard (no graceful shutdown): the durability contract must not
 	// depend on a clean exit.
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first daemon: %v", err)
-	}
-	_ = cmd.Wait()
+	killNode(t, cmd)
 
 	// Second life: same data dir, same ports.
 	startSMFileNode(t, bin, dataDir, raftPort, restPort, grpcPort, ca)

@@ -237,9 +237,10 @@ const (
 	// IndexFlagSparse skips indexing absent fields.
 	IndexFlagSparse byte = 1 << 1
 
-	// IndexFlagNumeric encodes field values as fixed-width 8-byte big-endian
-	// integers so that byte ordering matches numeric ordering. Range scans
-	// like [1, 222) will not incorrectly include 1234.
+	// IndexFlagNumeric encodes field values as order-preserving numeric terms
+	// (index.EncodeNumericValue): integers and floats of any magnitude and
+	// sign, so that byte ordering matches numeric ordering. Range scans like
+	// [1, 222) will not incorrectly include 1234.
 	IndexFlagNumeric byte = 1 << 2
 
 	// IndexFlagCaseInsensitive folds string field values before they are
@@ -612,8 +613,8 @@ type IndexCreateOptions struct {
 	// Sparse skips indexing absent fields.
 	Sparse bool
 
-	// Numeric encodes field values as fixed-width 8-byte big-endian integers
-	// so byte ordering matches numeric ordering.
+	// Numeric encodes field values as order-preserving numeric terms
+	// (index.EncodeNumericValue) so byte ordering matches numeric ordering.
 	Numeric bool
 
 	// CaseInsensitive folds string field values on write, backfill and lookup.

@@ -16,8 +16,10 @@ package qrdbdharness
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,6 +33,15 @@ import (
 // keeps the tests hermetic: they need a real, signalable child process without
 // depending on any particular tool being installed on the host.
 const helperEnv = "QRDBDHARNESS_HELPER_MODE"
+
+const (
+	// orphanHelperMode exits while a grandchild keeps its stdout open.
+	orphanHelperMode = "orphan"
+
+	// grandchildPrefix starts the line on which orphanHelperMode reports its
+	// grandchild's PID, so the test can kill it.
+	grandchildPrefix = "grandchild "
+)
 
 // TestMain either plays the stand-in subprocess or runs the test suite.
 func TestMain(m *testing.M) {
@@ -48,12 +59,29 @@ func runHelper(mode string) int {
 	case "print":
 		os.Stdout.WriteString("first\nsecond\n")
 		os.Stderr.WriteString("problem\n")
+	case "booting":
+		os.Stdout.WriteString("booting\n")
+		time.Sleep(5 * time.Minute)
+	case orphanHelperMode:
+		// Leave a grandchild holding this process's stdout, then exit: the
+		// shape of a daemon whose descendant outlives it.
+		// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, with no arguments; the helper mode travels in a compile-time-literal environment entry. No shell is involved.
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), helperEnv+"=sleep")
+		child.Stdout = os.Stdout
+		if err := child.Start(); err != nil {
+			return 1
+		}
+		os.Stdout.WriteString(grandchildPrefix + strconv.Itoa(child.Process.Pid) + "\n")
 	case "pwd":
 		dir, err := os.Getwd()
 		if err != nil {
 			return 1
 		}
 		os.Stdout.WriteString(dir + "\n")
+	case argvHelperMode:
+		// The argv the harness actually launched the daemon with.
+		os.Stdout.WriteString(strings.Join(os.Args[1:], "\n") + "\n")
 	case reservePortsHelperMode:
 		// A second harness process, as `go test` runs one per package.
 		ports, err := ReserveUDPPorts(reservePortsHelperCount)
@@ -327,6 +355,181 @@ func TestDaemonWorkingDir(t *testing.T) {
 	}
 	if got := strings.TrimSpace(buf.String()); got != want && got != dir {
 		t.Errorf("working directory = %q, want %q", got, want)
+	}
+}
+
+// withWaitDelay overrides the exec.Cmd.WaitDelay Start sets, so a test can
+// observe it without spending the production delay.
+func withWaitDelay(d time.Duration) DaemonOption {
+	return func(c *daemonConfig) { c.waitDelay = d }
+}
+
+// waitForTail polls d's output tail until it contains want or a deadline
+// passes, and returns the tail.
+func waitForTail(t *testing.T, d *Daemon, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		tail := d.Tail()
+		if strings.Contains(tail, want) {
+			return tail
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon output %q never contained %q", tail, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// startOrphan starts the orphan helper and registers a cleanup that kills the
+// grandchild it leaves behind.
+func startOrphan(t *testing.T, opts ...DaemonOption) *Daemon {
+	t.Helper()
+	daemon := startHelper(t, orphanHelperMode, opts...)
+	tail := waitForTail(t, daemon, "\n")
+	line := strings.TrimSpace(strings.TrimPrefix(tail, grandchildPrefix))
+	pid, err := strconv.Atoi(line)
+	if err != nil {
+		t.Fatalf("orphan helper output %q carries no grandchild PID: %v", tail, err)
+	}
+	t.Cleanup(func() {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+	})
+	return daemon
+}
+
+func TestDaemonTailWithoutOutputOption(t *testing.T) {
+	daemon := startHelper(t, "print")
+	if err := daemon.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	got := daemon.Tail()
+	for _, want := range []string{"first\n", "second\n", "problem\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Tail() = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+func TestDaemonTailAlongsideOutputOption(t *testing.T) {
+	var buf bytes.Buffer
+	daemon := startHelper(t, "print", WithOutput(&buf))
+	if err := daemon.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if !strings.Contains(buf.String(), "second\n") {
+		t.Errorf("WithOutput writer got %q, want the daemon's output", buf.String())
+	}
+	if !strings.Contains(daemon.Tail(), "second\n") {
+		t.Errorf("Tail() = %q, want the daemon's output as well", daemon.Tail())
+	}
+}
+
+func TestDaemonWaitContextReturnsExitStatus(t *testing.T) {
+	daemon := startHelper(t, "print")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := daemon.WaitContext(ctx); err != nil {
+		t.Fatalf("WaitContext: %v", err)
+	}
+	if err := daemon.WaitContext(ctx); err != nil {
+		t.Errorf("second WaitContext: %v", err)
+	}
+}
+
+func TestDaemonWaitContextExpiresWithTail(t *testing.T) {
+	daemon := startHelper(t, "booting")
+	waitForTail(t, daemon, "booting\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := daemon.WaitContext(ctx)
+	var waitErr *DaemonWaitError
+	if !errors.As(err, &waitErr) {
+		t.Fatalf("err = %v, want *DaemonWaitError", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+	if waitErr.PID != daemon.Cmd().Process.Pid {
+		t.Errorf("PID = %d, want %d", waitErr.PID, daemon.Cmd().Process.Pid)
+	}
+	if !strings.Contains(err.Error(), "booting") {
+		t.Errorf("error %q does not carry the daemon's output tail", err)
+	}
+	// The daemon is still running: a timed-out wait does not kill it.
+	if err := daemon.Kill(); err != nil {
+		t.Fatalf("Kill after an expired wait: %v", err)
+	}
+}
+
+func TestDaemonWaitDelayBoundsLingeringOutput(t *testing.T) {
+	daemon := startOrphan(t, withWaitDelay(100*time.Millisecond))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The helper exited at once, but its grandchild still holds the output
+	// pipe; without WaitDelay this wait would last as long as the grandchild.
+	err := daemon.WaitContext(ctx)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("WaitContext = %v, want exec.ErrWaitDelay", err)
+	}
+}
+
+func TestDaemonKillReportsUnreapedDaemon(t *testing.T) {
+	daemon := startOrphan(t, withWaitDelay(time.Minute))
+	err := daemon.kill(50 * time.Millisecond)
+	var waitErr *DaemonWaitError
+	if !errors.As(err, &waitErr) {
+		t.Fatalf("kill = %v, want *DaemonWaitError", err)
+	}
+	if !strings.Contains(waitErr.Tail, grandchildPrefix) {
+		t.Errorf("Tail = %q, want the daemon's output", waitErr.Tail)
+	}
+}
+
+func TestTailWriterKeepsTheLastBytes(t *testing.T) {
+	w := newTailWriter(8)
+	for _, s := range []string{"abc", "defg", "hijk"} {
+		if n, err := w.Write([]byte(s)); n != len(s) || err != nil {
+			t.Fatalf("Write(%q) = (%d, %v), want (%d, nil)", s, n, err, len(s))
+		}
+	}
+	if got, want := w.String(), "defghijk"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestTailWriterOversizedWrite(t *testing.T) {
+	w := newTailWriter(4)
+	if _, err := w.Write([]byte("xy")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n, err := w.Write([]byte("0123456789")); n != 10 || err != nil {
+		t.Fatalf("Write = (%d, %v), want (10, nil)", n, err)
+	}
+	if got, want := w.String(), "6789"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestTailWriterIsConcurrencySafe(t *testing.T) {
+	w := newTailWriter(64)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_, _ = w.Write([]byte("line\n"))
+				_ = w.String()
+			}
+		}()
+	}
+	wg.Wait()
+	if got := len(w.String()); got != 64 {
+		t.Errorf("len(String()) = %d, want the 64-byte limit", got)
 	}
 }
 

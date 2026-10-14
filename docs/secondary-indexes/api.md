@@ -1,6 +1,6 @@
 # Secondary Indexes — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -31,6 +31,13 @@ here so the absence is not read as a missing endpoint.
 
 Index names are `{database}.{entityType}.{FieldName}`.
 
+`numeric: true` builds the index with order-preserving numeric terms: values
+compare as numbers, and a value that is not a decimal number, or is `NaN`, is
+not indexed. Every transport carries the flag (the REST and MCP `numeric`
+field, the gRPC / Unix `IndexConfig.numeric`, the QUIC and embedded
+`transport.IndexConfig.Numeric`). The order is specified in
+[architecture.md](architecture.md#numeric-order).
+
 `IndexQuery` request: `index_name`, `value`. Response:
 
 ```json
@@ -38,11 +45,17 @@ Index names are `{database}.{entityType}.{FieldName}`.
 ```
 
 `IndexScan` request: `index_name`, `start`, `end` (half-open `[start, end)`).
-Response:
+Either bound may be omitted for an unbounded side. Response:
 
 ```json
 { "entries": [ { "value": "shipped", "keys": ["orders/3", "orders/9"] } ] }
 ```
+
+On a numeric index each bound must be a decimal number (`2`, `-1.5`, `6.02e23`,
+`Inf`); `NaN` or any other text is a malformed request. A bound ending in one
+`0x00` byte names the value immediately after the number before it, which is
+how a caller asks for an exclusive lower or an inclusive upper bound. Each
+entry's `value` is the number's canonical decimal text (`1.50` → `1.5`).
 
 `IndexList` response: `{ "names": ["qrdb.User.Email", "qrdb.Order.Status"] }`.
 
@@ -54,9 +67,10 @@ empty body on REST.
 | Condition | REST | gRPC / Unix |
 |---|---|---|
 | Success | 200 | `OK` |
-| Index already exists on create | 409 | `ALREADY_EXISTS` — `service.IndexExistsError` |
+| Index already exists on create, same owner | 200 | `OK` — idempotent; a create asking for a different value type (`numeric`) rebuilds the index from the stored records |
 | Name held by another owner (a collection's index) on create or drop | 409 | `FAILED_PRECONDITION` — `index.OwnershipError`; drop a collection's index by dropping the collection |
-| Unknown index on query, scan or drop | 404 | `NOT_FOUND` — never a silent full scan |
+| Unknown or dropped index on query or scan | 404 | `NOT_FOUND` — never a silent full scan; every SDK transport (REST, gRPC, Unix, QUIC, MCP, embedded) returns `transport.IndexNotFoundError` naming the index |
+| Unknown or already-dropped index on drop | 200 | `OK` — idempotent |
 | Unique constraint violated (on the entity write) | 409 | `ALREADY_EXISTS` |
 | Malformed request | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |

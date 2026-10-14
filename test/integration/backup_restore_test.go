@@ -48,14 +48,19 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -172,14 +177,7 @@ func (n *restoreDRNode) restartWithOfflineRestore(t *testing.T, bin, prefix, bac
 		if err := n.proc.Process.Signal(syscall.SIGTERM); err != nil {
 			t.Fatalf("restartWithOfflineRestore: signal previous process: %v", err)
 		}
-		done := make(chan error, 1)
-		go func() { done <- n.proc.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			_ = n.proc.Process.Kill()
-			t.Fatalf("restartWithOfflineRestore: timed out waiting for previous process to exit")
-		}
+		_ = awaitNodeExit(t, n.proc, nodeStopTimeout)
 	}
 
 	if wipeDataDir {
@@ -211,7 +209,7 @@ func (n *restoreDRNode) restartWithOfflineRestore(t *testing.T, bin, prefix, bac
 // unlike initAndUnsealBarrier, which is only valid on a barrier's first
 // boot. Used after a restart that did not wipe the data directory, where
 // the barrier's persisted state (and therefore its initialized status)
-// survived.
+// survived. It returns once the node reports the barrier unsealed.
 func unsealOnlyBarrier(t *testing.T, ca *testCA, port int) {
 	t.Helper()
 	unsealOnlyBarrierWithSecret(t, ca, port, nil)
@@ -222,28 +220,58 @@ func unsealOnlyBarrier(t *testing.T, ca *testCA, port int) {
 func unsealOnlyBarrierWithSecret(t *testing.T, ca *testCA, port int, secret []byte) {
 	t.Helper()
 
-	client := mtlsHTTPClient(t, ca, 10*time.Second)
+	// The budget and the unseal client's timeout are barrierBootTimeout, as
+	// in initAndUnsealBarrier: the unseal spans the sealed window and the
+	// full boot, and a client that gives up early on a slow reply cannot
+	// tell an unseal that failed from one whose reply was late.
+	ctx, cancel := context.WithTimeout(context.Background(), barrierBootTimeout)
+	defer cancel()
+	client := mtlsHTTPClient(t, ca, barrierBootTimeout)
+	statusClient := mtlsHTTPClient(t, ca, 5*time.Second)
+	if err := unsealInitializedBarrier(ctx, client, statusClient, port, secret); err != nil {
+		t.Fatalf("unsealOnlyBarrier: %v", err)
+	}
+}
+
+// unsealInitializedBarrier is unsealOnlyBarrier's loop, returning its outcome
+// rather than failing a test so the helper's own behaviour is testable.
+func unsealInitializedBarrier(ctx context.Context, client, statusClient *http.Client, port int, secret []byte) error {
 	body, err := json.Marshal(map[string]interface{}{"secret": secret})
 	if err != nil {
-		t.Fatalf("unsealOnlyBarrier: marshal unseal body: %v", err)
+		return fmt.Errorf("marshal unseal body: %w", err)
 	}
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", port)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		resp, postErr := client.Post(url, "application/json", bytes.NewReader(body))
+	var lastErr error
+	for ctx.Err() == nil {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if reqErr != nil {
+			return fmt.Errorf("build unseal request: %w", reqErr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, postErr := client.Do(req)
 		if postErr == nil {
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusConflict {
-				return
+				return nil
 			}
-			t.Fatalf("unsealOnlyBarrier: unseal on port %d: status %d, body: %s", port, resp.StatusCode, respBody)
+			lastErr = fmt.Errorf("status %d, body: %s", resp.StatusCode, respBody)
+		} else {
+			lastErr = postErr
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("unsealOnlyBarrier: could not reach unseal endpoint on port %d: %v", port, postErr)
+		// As in initAndUnsealBarrier, the condition is the barrier's state,
+		// not the POST's reply: the sealed-window listener tears down as soon
+		// as the barrier unseals, which can cost the reply, and the full
+		// server that replaces it may refuse the retry while it settles.
+		if barrierUnsealedOn(ctx, statusClient, port) {
+			return nil
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
+	return fmt.Errorf("unseal on port %d never unsealed the barrier: %v", port, lastErr)
 }
 
 // TestBackupRestore_CLI_DisasterRecovery drives the full offline restore
@@ -514,4 +542,117 @@ func decodeBackupVerifyDisplay(t *testing.T, out string) backupVerifyDisplay {
 		t.Fatalf("decode backup verify JSON: %v\noutput: %s", err, out)
 	}
 	return v
+}
+
+// startFakeBarrierNode serves h over mTLS-capable HTTPS on a reserved
+// loopback port, presenting a node certificate from ca, so the barrier
+// helpers can be driven against scripted node behaviour.
+func startFakeBarrierNode(t *testing.T, ca *testCA, h http.Handler) int {
+	t.Helper()
+
+	certPath, keyPath := ca.generateNodeCert(t)
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("startFakeBarrierNode: load node cert: %v", err)
+	}
+	port := allocateTCPPorts(t, 1)[0]
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("startFakeBarrierNode: listen on %d: %v", port, err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.EnableHTTP2 = true
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return port
+}
+
+// fakeBarrierStatus answers GET /v1/barrier/status with the given state.
+func fakeBarrierStatus(w http.ResponseWriter, sealed bool) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"sealed": sealed})
+}
+
+// TestUnsealInitializedBarrier_ReplyLostToTeardown drives the restart the
+// disaster-recovery test performs: the sealed-window listener unseals the
+// barrier and tears itself down before the reply reaches the client, and the
+// full server that replaces it refuses the retried unseal while it settles.
+// The barrier IS unsealed, which is the only fact the helper is for.
+func TestUnsealInitializedBarrier_ReplyLostToTeardown(t *testing.T) {
+	ca := generateTestCA(t)
+	var unsealed, posts atomic.Int32
+	port := startFakeBarrierNode(t, ca, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/barrier/status":
+			fakeBarrierStatus(w, unsealed.Load() == 0)
+		case "/v1/barrier/unseal":
+			if posts.Add(1) == 1 {
+				unsealed.Store(1)
+				panic(http.ErrAbortHandler)
+			}
+			http.Error(w, `{"error":"auth lookup unavailable"}`, http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
+	if err := unsealInitializedBarrier(ctx, client, client, port, nil); err != nil {
+		t.Fatalf("unsealInitializedBarrier on an unsealed barrier: %v", err)
+	}
+}
+
+// TestUnsealInitializedBarrier_AlreadyUnsealed accepts the 409 a full server
+// answers for a barrier that is already unsealed.
+func TestUnsealInitializedBarrier_AlreadyUnsealed(t *testing.T) {
+	ca := generateTestCA(t)
+	port := startFakeBarrierNode(t, ca, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/barrier/status":
+			fakeBarrierStatus(w, false)
+		case "/v1/barrier/unseal":
+			http.Error(w, `{"error":"already unsealed"}`, http.StatusConflict)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
+	if err := unsealInitializedBarrier(ctx, client, client, port, nil); err != nil {
+		t.Fatalf("unsealInitializedBarrier on 409: %v", err)
+	}
+}
+
+// TestUnsealInitializedBarrier_NeverUnseals fails, naming the last refusal,
+// when the barrier stays sealed for the whole budget.
+func TestUnsealInitializedBarrier_NeverUnseals(t *testing.T) {
+	ca := generateTestCA(t)
+	port := startFakeBarrierNode(t, ca, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/barrier/status":
+			fakeBarrierStatus(w, true)
+		case "/v1/barrier/unseal":
+			http.Error(w, `{"error":"invalid secret"}`, http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
+	err := unsealInitializedBarrier(ctx, client, client, port, nil)
+	if err == nil {
+		t.Fatal("unsealInitializedBarrier on a barrier that stays sealed: got nil error")
+	}
+	if !strings.Contains(err.Error(), "status 400") {
+		t.Fatalf("unsealInitializedBarrier error = %v, want it to name the last refusal (status 400)", err)
+	}
 }

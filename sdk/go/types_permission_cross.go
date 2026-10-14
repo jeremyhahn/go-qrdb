@@ -251,6 +251,10 @@ const (
 	// PermissionAdminTopology ("admin:topology") reads the node's topology.
 	PermissionAdminTopology = permission.AdminTopology
 
+	// PermissionAdminReplicaState ("admin:replica_state") reads the applied
+	// index and state-machine hash of every replica on the answering node.
+	PermissionAdminReplicaState = permission.AdminReplicaState
+
 	// PermissionAdminNodeCompaction ("admin:node_compaction") reads and sets
 	// the platform's node-keyspace compaction policy.
 	PermissionAdminNodeCompaction = permission.AdminNodeCompaction

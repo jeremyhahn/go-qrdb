@@ -226,6 +226,14 @@ var dataPlaneRules = []rule{
 	as(&service.LeaseExpiredError{}, NotFound),
 	as(&service.LeaseExistsError{}, AlreadyExists),
 	as(&service.NotLeaderError{}, Unavailable),
+	// A request Raft timed out: a proposal or read that met an election, or a
+	// leader still committing the first entry of its term, and found no leader
+	// to answer it in time. Retryable once a leader serves, on every
+	// transport. Ahead of the ProposeError, ReadError and store wrappers'
+	// Internal rows (genericRules), each of which would otherwise report the
+	// election as a server fault. A timed-out write may still have committed,
+	// so a client retries only a write it has made idempotent.
+	is(quicraft.ErrTimeout, Unavailable),
 	// go-quicraft v0.17.0's membership rejections, ahead of MembershipError's
 	// own blanket Internal row below (genericRules): an add that would bind a
 	// Raft address or node identity another ACTIVE member already holds is a
@@ -278,6 +286,10 @@ var dataPlaneRules = []rule{
 	as(&service.WatchCanceledError{}, Canceled),
 	as(&service.IndexNotFoundError{}, NotFound),
 	as(&service.IndexExistsError{}, AlreadyExists),
+	// A scan bound on a numeric index that is not a number, or is NaN: the
+	// caller's request, refused before anything is read. It reaches a
+	// transport inside ReadError, which would otherwise claim it as a fault.
+	as(&index.InvalidNumericBoundError{}, InvalidArgument),
 	as(&service.ConsistencyError{}, PreconditionFailed),
 	is(watch.ErrCompacted, OutOfRange),
 	// A replay requested of a store that keeps no change history.
@@ -731,6 +743,10 @@ var clusterJoinTokenRules = []rule{
 	// domain bound): the node was never built or set up for this.
 	as(&service.ClusterJoinTokenNotConfiguredError{}, Unimplemented),
 	as(&service.MemberPromotionUnsupportedError{}, Unimplemented),
+	as(&service.ReplicaStateUnsupportedError{}, Unimplemented),
+	as(&service.ReplicaStateReadUnsupportedError{}, Unimplemented),
+	as(&service.StateMachineHashUnsupportedError{}, Unimplemented),
+	as(&service.ReplicaNotHostedError{}, NotFound),
 	as(&service.JoinTokenTTLOverflowError{}, InvalidArgument),
 	as(&clusterenroll.InvalidJoinIdentityError{}, InvalidArgument),
 	as(&clusterenroll.JoinTokenTTLError{}, InvalidArgument),

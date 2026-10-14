@@ -916,6 +916,41 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 	return &topoResp, nil
 }
 
+// ReplicaStates implements transport.AdminClient.
+func (t *Transport) ReplicaStates(ctx context.Context, shardID uint64) (*transport.ReplicaStatesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/admin/replica-states"
+	if shardID != 0 {
+		reqURL += "?shard_id=" + strconv.FormatUint(shardID, 10)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReplicaStates", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReplicaStates", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ReplicaStates", resp)
+	}
+
+	var states transport.ReplicaStatesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&states); err != nil {
+		return nil, &transport.RequestError{Method: "ReplicaStates", Err: &jsonDecodeError{Err: err}}
+	}
+	if states.Replicas == nil {
+		states.Replicas = []transport.ReplicaState{}
+	}
+	return &states, nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

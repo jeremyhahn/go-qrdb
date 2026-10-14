@@ -150,6 +150,15 @@ func translateError(err error) error {
 	if errors.As(err, &mbr) {
 		return &transport.CapabilityUnsupportedError{Message: mbr.Error()}
 	}
+
+	// A node that cannot report its replica states is the same refusal: the
+	// network transports carry all three as unimplemented.
+	var rsu *service.ReplicaStateUnsupportedError
+	var rru *service.ReplicaStateReadUnsupportedError
+	var shu *service.StateMachineHashUnsupportedError
+	if errors.As(err, &rsu) || errors.As(err, &rru) || errors.As(err, &shu) {
+		return &transport.CapabilityUnsupportedError{Message: err.Error()}
+	}
 	// audit.VerificationUnsupportedError is the same kind of capability
 	// refusal, for the AuditLogger backend rather than the KV backend
 	// (go-qrdb#453): the configured logger holds no hash chain to verify.

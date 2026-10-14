@@ -193,7 +193,7 @@ func TestCluster_GracefulShutdownWithdrawsTheAdvertisement(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if err := logs[2].cmd.Wait(); err != nil {
+	if err := awaitNodeExit(t, logs[2].cmd, nodeStopTimeout); err != nil {
 		t.Fatalf("node 3 did not stop cleanly: %v", err)
 	}
 }

@@ -1,6 +1,6 @@
 # Secondary Indexes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 An index turns "find every user whose email is X" from a full scan into a
 lookup. Most of the time you do not create one by hand: you tag the field on
@@ -30,6 +30,23 @@ migration step. Then query by intent and let the planner pick the access path:
 users, err := dao.Find(ctx).Where("Email = ?", "alice@example.com").Execute()
 ```
 
+A tagged field whose Go type is an integer or a float gets a **numeric** index,
+so range queries over it compare numbers, not text:
+
+```go
+type Member struct {
+	ID  uint64 `json:"id"`
+	Age int    `json:"age" index:"true"`
+}
+
+// Members aged 2 and 10 both match: 10 is not "less than" 2 here.
+adults, err := dao.Find(ctx).Where("Age >= ?", 2).Execute()
+```
+
+`>`, `>=`, `<`, `<=`, `BETWEEN` and `=` all use the index. `PREFIX` on a number
+does not — it asks about the digits, so it scans and filters instead. A numeric
+type with its own `MarshalJSON` or `MarshalText` is indexed as text.
+
 ## Creating an index by hand
 
 Use the CLI when the data has no Go entity type behind it.
@@ -54,6 +71,15 @@ excluded.
 
 ```bash
 qrdb index scan qrdb.Order.Total --start 100 --end 500
+```
+
+For a field holding numbers, create the index with `--numeric`. A text index
+orders `"10"` before `"2"`, so on a text index the scan above also returns
+totals of `2` and `1000`, which sort between `"100"` and `"500"` as text. On a
+numeric index each bound must be a number.
+
+```bash
+qrdb index create qrdb.Order.Total --field Total --numeric
 ```
 
 **See what indexes exist.**
@@ -116,6 +142,16 @@ mysterious slowdown in production.
 **Writes got slower after adding indexes.** Expected: every index adds one
 storage write per entity `Put` or `Delete`. Faster reads are bought with slower
 writes. Drop the indexes you are not querying.
+
+**A range scan over numbers returns the wrong records.** The index was created
+without `--numeric`, so it compares text. Run `index create` for it again with
+`--numeric`: asked for a different value type, the existing index is rebuilt
+from the stored records. An index the DAO
+registers from a tag switches to numeric terms by itself.
+
+**A numeric scan fails with an invalid bound.** A bound on a numeric index must
+be a number. `NaN` has no place in the order, so it is refused rather than
+treated as empty, and records holding `NaN` are never in the index.
 
 **You want `WHERE LOWER(name) = ?` or an index over only active rows.**
 Expression indexes and partial indexes do not exist. Use a

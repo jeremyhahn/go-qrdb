@@ -1142,6 +1142,11 @@ func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 	}, holderFlags...)...)
 	node.waitForFullBoot(t)
 	flags := node.flagsFor(proto)
+	// waitForFullBoot asks REST only; the full server starts its QUIC,
+	// gRPC and unix listeners after REST, so wait until the transport
+	// under test answers an authenticated call before the one-shot
+	// sign-csr below.
+	waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
 	soPin := sealNodeSOPIN
 	csrPEM, _ := generateCeremonyCSR(t, "svc-"+proto.name)
 	csrPath := writeTempFile(t, "svc-"+proto.name+".csr", csrPEM)

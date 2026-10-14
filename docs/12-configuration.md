@@ -203,7 +203,7 @@ Configures the QRDB server's network listeners.
 
 | Field        | Type   | Default   | Required | CLI Flag       | Description                             |
 |--------------|--------|-----------|----------|----------------|-----------------------------------------|
-| `admin_port` | int    | `63002`   | yes      | `--admin-port` | TCP port for the REST/admin HTTP server |
+| `admin_port` | int    | `63002`   | yes      | `--admin-port` | Port for the REST/admin server: HTTPS on TCP and HTTP/3 on UDP, both on this number |
 | `grpc_port`  | int    | `63003`   | no       | `--grpc-port`  | TCP port for the gRPC data-plane service |
 | `host`       | string | `0.0.0.0` | yes      | `--host`       | Bind host for every API listener        |
 | `advertise_host` | string | host of `raft.raft_address` | no | `--advertise-host` | Host peers and clients dial to reach this node |
@@ -236,7 +236,8 @@ Configures the QRDB server's network listeners.
 ### bootstrap
 
 Configures TLS bootstrap for cluster enrollment: how a joining node obtains the
-cluster CA, and where the first node serves it from. Joining has two
+cluster CA, and where a member serves it from (every admitted, unsealed member
+does, not only the node that generated the CA). Joining has two
 independent halves — fetching the trust anchor (`noise_key`..`addr` below) and
 submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env`)
 — both required for a join through enrollment to succeed; see
@@ -244,10 +245,10 @@ submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env
 
 | Field | Type | Default | CLI Flag | Description |
 |---|---|---|---|---|
-| `noise_key`   | string | `""` | `--bootstrap-noise-key`  | Hex Curve25519 public key of the first node's Noise server |
+| `noise_key`   | string | `""` | `--bootstrap-noise-key`  | Hex Curve25519 public key of the Noise server named by `noise_addr` |
 | `noise_addr`  | string | `""` | `--bootstrap-noise-addr` | `host:port` of the Noise server to fetch from |
-| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port the first node's Noise server listens on |
-| `noise_host`  | string | `server.host` | `--bootstrap-noise-host` | Bind host for the first node's Noise server |
+| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port of the Noise trust-anchor listener every admitted, unsealed member runs (see [Network ports](clustering/user.md#network-ports)) |
+| `noise_host`  | string | `server.host` | `--bootstrap-noise-host` | Bind host for this node's Noise trust-anchor listener |
 | `spki_pin`    | string | `""` | `--bootstrap-spki-pin`   | Hex SHA-256 SPKI pin of the bootstrap server's TLS certificate |
 | `dane_dns`    | string | `""` | `--bootstrap-dane-dns`   | DNS server for DANE TLSA lookup |
 | `dane_dot`    | bool   | `false` | `--bootstrap-dane-dot`  | Use DNS-over-TLS for DANE lookups |
@@ -1548,15 +1549,20 @@ always on; see the [audit](#audit) section above.
 
 ## Port Summary
 
-| Service | Default Port | Protocol        | Configuration Field  |
-|---------|-------------|-----------------|----------------------|
-| Raft    | 63001       | QUIC (internal) | `raft.raft_address`  |
-| REST    | 63002       | HTTPS           | `server.admin_port`  |
-| gRPC    | 63003       | gRPC + TLS      | `server.grpc_port`   |
-| QUIC    | 63004       | QUIC            | `server.quic_port`   |
-| MCP     | 63005       | HTTPS           | `mcp.port`           |
-| Noise bootstrap | 63006 | Noise NK over TCP | `bootstrap.noise_port` |
-| CSR join | 63007      | Noise NK over TCP | `cluster_join.listen_port` |
-| MySQL   | 3306        | MySQL wire      | `server.mysql_port`  |
-| PostgreSQL | 5432     | PostgreSQL wire | `server.pgsql_port`  |
-| etcd    | none; `qrdb database create --etcd` uses `localhost:2379` | gRPC + mTLS | `databases[].etcd.listen_addr` |
+The authoritative table — every listener, its protocol, whether it is on by
+default, and who must reach it — is
+[Network ports](clustering/user.md#network-ports) in the clustering feature
+folder. The configuration fields that move each one:
+
+| Service | Default Port | Configuration Field |
+|---------|-------------|---------------------|
+| Raft | 63001 | `raft.listen_address` / `raft.raft_address` |
+| REST/admin (HTTPS + HTTP/3) | 63002 | `server.admin_port` |
+| gRPC | 63003 | `server.grpc_port` |
+| Native QUIC | 63004 | `server.quic_port` |
+| MCP | 63005 | `mcp.port` |
+| Noise trust anchor | 63006 | `bootstrap.noise_port` |
+| CSR join (Noise_NK) | 63007 | `cluster_join.listen_port` |
+| MySQL | 3306 | `server.mysql_port` |
+| PostgreSQL | 5432 | `server.pgsql_port` |
+| etcd | none; `qrdb database create --etcd` uses `localhost:2379` | `databases[].etcd.listen_addr` |

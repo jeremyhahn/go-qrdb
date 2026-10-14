@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -131,12 +130,7 @@ func TestCLI_Start_GracefulShutdown(t *testing.T) {
 	}
 	args = append(args, ca.tlsFlags(t)...)
 
-	cmd := exec.Command(binary, args...)
-	cmd.Stdout = &logWriter{t: t, prefix: "[node1] "}
-	cmd.Stderr = &logWriter{t: t, prefix: "[node1] "}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
+	cmd := spawnNode(t, binary, args, &logWriter{t: t, prefix: "[node1] "})
 
 	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
@@ -147,19 +141,10 @@ func TestCLI_Start_GracefulShutdown(t *testing.T) {
 		t.Fatalf("Signal failed: %v", err)
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("process exited with error: %v", err)
-		}
-		t.Log("node shut down gracefully with exit code 0")
-	case <-time.After(10 * time.Second):
-		cmd.Process.Kill()
-		t.Fatal("timed out waiting for graceful shutdown")
+	if err := awaitNodeExit(t, cmd, 10*time.Second); err != nil {
+		t.Fatalf("process exited with error: %v", err)
 	}
+	t.Log("node shut down gracefully with exit code 0")
 }
 
 // ---------------------------------------------------------------------------

@@ -1799,6 +1799,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(adminOn, http.MethodPost, "/snapshot", permission.AdminSnapshot, s.handleSnapshot)
 	s.routeIf(adminOn, http.MethodPost, "/admin/shards", permission.AdminStartShard, s.handleStartShard)
 	s.routeIf(adminOn, http.MethodGet, "/admin/topology", permission.AdminTopology, s.handleGetTopology)
+	s.routeIf(adminOn, http.MethodGet, "/admin/replica-states", permission.AdminReplicaState, s.handleGetReplicaStates)
 	s.routeIf(adminOn, http.MethodGet, "/admin/node-compaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
 	s.routeIf(adminOn, http.MethodPut, "/admin/node-compaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
 

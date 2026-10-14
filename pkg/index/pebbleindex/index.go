@@ -44,7 +44,7 @@ const entityKeyLenSize = 4
 // instance and will not close it.
 //
 // When valueType is index.IndexValueTypeNumeric, field values are encoded as
-// 8-byte big-endian fixed-width integers (with sign-bit flip) so that byte
+// order-preserving numeric terms (index.EncodeNumericValue) so that byte
 // ordering matches numeric ordering. This makes range scans like [1, 222)
 // correct — lexicographic comparison of raw strings would incorrectly include
 // 1234.
@@ -66,14 +66,16 @@ type Index struct {
 // retains ownership of the PebbleDB instance. Returns an index.NilDBError if
 // db is nil or an index.EmptyNameError if name is empty.
 //
-// When valueType is index.IndexValueTypeNumeric, field values are encoded as
-// fixed-width 8-byte big-endian integers with a sign-bit flip so that byte
-// ordering matches numeric ordering.
+// When valueType is index.IndexValueTypeNumeric, field values are stored as
+// order-preserving numeric terms (index.EncodeNumericValue) at
+// index.NumericEncodingVersion: the caller is creating the index now, not
+// restoring a recorded definition.
 func New(db *pebble.DB, name string, unique bool, valueType index.IndexValueType) (*Index, error) {
 	return NewWithConfig(db, name, index.IndexConfig{
-		Unique:        unique,
-		ValueType:     valueType,
-		CaseSensitive: true,
+		Unique:          unique,
+		ValueType:       valueType,
+		EncodingVersion: index.NumericEncodingVersion,
+		CaseSensitive:   true,
 	})
 }
 
@@ -85,13 +87,17 @@ func New(db *pebble.DB, name string, unique bool, valueType index.IndexValueType
 // what New does.
 //
 // CaseSensitive is ignored for a numeric index: its values are parsed as
-// numbers and encoded to a fixed-width form in which case has no meaning.
+// numbers and encoded to numeric terms in which case has no meaning. A numeric
+// config must state EncodingVersion; a stale one is an index.StaleEncodingError.
 func NewWithConfig(db *pebble.DB, name string, config index.IndexConfig) (*Index, error) {
 	if db == nil {
 		return nil, &index.NilDBError{}
 	}
 	if name == "" {
 		return nil, &index.EmptyNameError{}
+	}
+	if err := config.CheckEncoding(); err != nil {
+		return nil, err
 	}
 	return &Index{
 		db:              db,
@@ -131,15 +137,8 @@ func (p *Index) encodeValue(raw []byte) ([]byte, bool) {
 // exact value it was derived from — lexicographic byte comparison already
 // makes this correct for raw string keys.
 //
-// For numeric indexes that same trailing-0x00 marker cannot be applied to
-// the decimal text before encoding, because encoding re-parses the text as
-// a float and a trailing NUL byte is not valid float syntax. Instead the
-// marker is resolved AFTER encoding: the decimal text (with the marker
-// stripped, if present) is parsed and encoded to its fixed-width 8-byte
-// form, and if the marker was present, the exact successor of the encoded
-// bytes is returned so exclusivity is expressed correctly in the encoded
-// numeric byte domain — including across the sign-flip boundary used for
-// negative numbers — rather than being corrupted by re-parsing mangled text.
+// For numeric indexes the marker is resolved after encoding, in the term
+// domain; see ResolveNumericScanBound.
 //
 // Returns an index.InvalidNumericBoundError when a numeric bound cannot be parsed.
 // This must be treated as a hard failure by callers, never silently mapped
@@ -155,7 +154,7 @@ func (p *Index) resolveScanBound(raw []byte, op string) ([]byte, error) {
 }
 
 // decodeValue reverses the encoding applied by encodeValue. For numeric
-// indexes it converts the 8-byte representation back to a decimal string.
+// indexes it converts the term back to its canonical decimal text.
 func (p *Index) decodeValue(encoded []byte) string {
 	if p.valueType != index.IndexValueTypeNumeric {
 		return string(encoded)
@@ -181,8 +180,9 @@ func (p *Index) IsUnique() bool {
 // enforces uniqueness and a different entity already maps to the same
 // field value, an index.UniqueViolationError is returned. The entry is stored
 // with an empty value; the composite key encodes all information.
-// For numeric indexes, fieldValue is encoded as a fixed-width 8-byte
-// big-endian integer. Non-numeric values are silently skipped.
+// For numeric indexes, fieldValue is encoded as an order-preserving numeric
+// term (index.EncodeNumericValue). Non-numeric values and NaN are silently
+// skipped.
 func (p *Index) Put(entityKey []byte, fieldValue []byte) error {
 	if p.closed.Load() {
 		return &index.ClosedError{Name: p.name}

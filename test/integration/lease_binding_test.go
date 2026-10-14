@@ -164,14 +164,8 @@ func (c *restartableCluster) stop(t *testing.T) {
 			t.Fatalf("signal node %d: %v", i+1, err)
 		}
 	}
-	for i, cmd := range c.cmds {
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("node %d did not stop within 30s", i+1)
-		}
+	for _, cmd := range c.cmds {
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
 	}
 }
 

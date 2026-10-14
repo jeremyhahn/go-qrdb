@@ -550,20 +550,23 @@ func TestStart_AllSevenProtocols(t *testing.T) {
 		t.Fatalf("expected PgSQLAddr %q, got %q", "127.0.0.1:5432", srv.PgSQLAddr())
 	}
 
-	// All TCP/UDP addresses should be on different ports (excluding mocked SQL).
-	addrs := map[string]string{
-		"REST": srv.RESTAddr(),
-		"gRPC": srv.GRPCAddr(),
-		"QUIC": srv.QUICAddr(),
-		"MCP":  srv.MCPAddr(),
+	// Listeners on one network must be on different ports (excluding mocked
+	// SQL). QUIC listens on UDP, whose port space is separate from TCP's, so
+	// the kernel may give it the number a TCP listener holds.
+	addrs := map[string]struct{ network, addr string }{
+		"REST": {"tcp", srv.RESTAddr()},
+		"gRPC": {"tcp", srv.GRPCAddr()},
+		"QUIC": {"udp", srv.QUICAddr()},
+		"MCP":  {"tcp", srv.MCPAddr()},
 	}
 	ports := make(map[string]string)
-	for name, addr := range addrs {
-		_, port, _ := net.SplitHostPort(addr)
-		if existing, ok := ports[port]; ok {
-			t.Fatalf("%s and %s share port %s", existing, name, port)
+	for name, a := range addrs {
+		_, port, _ := net.SplitHostPort(a.addr)
+		key := a.network + "/" + port
+		if existing, ok := ports[key]; ok {
+			t.Fatalf("%s and %s share %s port %s", existing, name, a.network, port)
 		}
-		ports[port] = name
+		ports[key] = name
 	}
 }
 

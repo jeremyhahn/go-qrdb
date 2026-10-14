@@ -254,13 +254,7 @@ func TestDEK_VersionsSurviveARestart(t *testing.T) {
 	if err := first.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}
-	stopped := make(chan error, 1)
-	go func() { stopped <- first.Wait() }()
-	select {
-	case <-stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("node did not stop")
-	}
+	_ = awaitNodeExit(t, first, nodeStopTimeout)
 
 	start("[dek-R2] ", unsealNodes)
 	if got := decryptsOn(t, ca, adminPorts[0], v1.Ciphertext, aad); !bytes.Equal(got, []byte("one")) {

@@ -150,6 +150,46 @@ func TestIndexCreateCmd_WithOptions(t *testing.T) {
 	}
 }
 
+// configRecordingIndexService records the configuration each CreateIndex
+// call reaches the service with.
+type configRecordingIndexService struct {
+	mockIndexService
+	configs []index.IndexConfig
+}
+
+func (s *configRecordingIndexService) CreateIndex(_ context.Context, _, _ string, cfg index.IndexConfig) error {
+	s.configs = append(s.configs, cfg)
+	return nil
+}
+
+var _ service.IndexServicer = (*configRecordingIndexService)(nil)
+
+// TestIndexCreateCmd_NumericFlag proves --numeric reaches the service as a
+// numeric index, and its absence as a text one.
+func TestIndexCreateCmd_NumericFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want index.IndexValueType
+	}{
+		{"numeric", []string{"create", "age-idx", "--field", "age", "--numeric"}, index.IndexValueTypeNumeric},
+		{"text", []string{"create", "age-idx", "--field", "age"}, index.IndexValueTypeString},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			idxSvc := &configRecordingIndexService{}
+			if _, err := executeIndexCmd(t, idxSvc, tc.args...); err != nil {
+				t.Fatalf("index %v: %v", tc.args, err)
+			}
+			if len(idxSvc.configs) != 1 {
+				t.Fatalf("CreateIndex called %d times; want 1", len(idxSvc.configs))
+			}
+			if got := idxSvc.configs[0].ValueType; got != tc.want {
+				t.Errorf("ValueType = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Index drop
 // ---------------------------------------------------------------------------

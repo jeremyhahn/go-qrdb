@@ -163,6 +163,10 @@ func (f *fakeClusterTransport) GetTopology(context.Context) (*transport.Topology
 	return &transport.TopologyResponse{}, nil
 }
 
+func (f *fakeClusterTransport) ReplicaStates(context.Context, uint64) (*transport.ReplicaStatesResponse, error) {
+	return &transport.ReplicaStatesResponse{}, nil
+}
+
 func (f *fakeClusterTransport) NodeCompaction(context.Context) (*transport.DatabaseCompactionConfig, error) {
 	return nil, nil
 }

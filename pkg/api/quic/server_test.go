@@ -196,6 +196,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"admin.Capabilities": true,
 		"admin.StartShard":   true, "admin.StopShard": true,
 		"admin.GetShardState": true, "admin.GetTopology": true,
+		"admin.GetReplicaStates":  true,
 		"admin.GetNodeCompaction": true, "admin.SetNodeCompaction": true,
 		"admin.MintJoinToken":     true,
 		"admin.AddObserverMember": true, "admin.ListPendingJoinRequests": true,

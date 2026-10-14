@@ -417,6 +417,12 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 		if ei.Unique {
 			cfg.Type = index.IndexTypeUnique
 		}
+		// A numeric definition is built with numeric terms, so the engine's
+		// range scans over it run in numeric order. Re-registering a field
+		// once indexed as text rebuilds its index (engine.IndexCreateValueType).
+		if ei.Numeric {
+			cfg.ValueType = index.IndexValueTypeNumeric
+		}
 		if err := a.idx.CreateIndex(ctx, name, ei.JSONFieldName, cfg); err != nil {
 			return &kvstore.IndexRegistrationError{EntityType: entityType, Err: err}
 		}

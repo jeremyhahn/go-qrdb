@@ -74,6 +74,9 @@ func NewCompoundIndex(store storage.Storage, config IndexConfig, log *logger.Log
 			len(config.FieldNames),
 		)
 	}
+	if err := config.CheckEncoding(); err != nil {
+		return nil, err
+	}
 
 	idx := &CompoundIndex{
 		storage: store,

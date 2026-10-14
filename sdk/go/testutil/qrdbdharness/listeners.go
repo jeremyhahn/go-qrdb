@@ -60,7 +60,8 @@ var defaultPortListeners = []listenerFlag{
 // reserved port (ReserveTCPPort, ReserveUDPPort) appended for every listener
 // the args would otherwise leave at its fixed default port. A port flag the
 // args already carry is left alone, as is a listener whose enabling flag is
-// absent. Args for any other subcommand are returned unchanged.
+// absent. Args for any other subcommand are returned unchanged. Start applies it to
+// every daemon it launches.
 func ReserveListenerPorts(args []string) ([]string, error) {
 	if len(args) == 0 || args[0] != startCommand {
 		return args, nil

@@ -119,6 +119,9 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.IndexNotFoundError{Name: indexName}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, t.decodeErrorResponse("IndexQuery", resp)
 	}
@@ -161,6 +164,9 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.IndexNotFoundError{Name: indexName}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, t.decodeErrorResponse("IndexScan", resp)
 	}

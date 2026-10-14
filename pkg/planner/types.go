@@ -132,11 +132,27 @@ type Plan struct {
 	// ExactValue is the lookup key for PlanIndexLookup.
 	ExactValue interface{}
 
-	// RangeStart is the lower bound (inclusive) for PlanIndexScan.
+	// RangeStart is the lower bound for PlanIndexScan and
+	// PlanCompoundIndexScan; nil means unbounded below. It is inclusive
+	// unless RangeStartExclusive is set.
 	RangeStart interface{}
 
-	// RangeEnd is the upper bound (inclusive) for PlanIndexScan.
+	// RangeStartExclusive marks RangeStart as exclusive: the predicate was
+	// OpGt, so entries equal to RangeStart are not part of the answer.
+	RangeStartExclusive bool
+
+	// RangeEnd is the upper bound for PlanIndexScan and
+	// PlanCompoundIndexScan; nil means unbounded above. It is inclusive
+	// unless RangeEndExclusive is set.
 	RangeEnd interface{}
+
+	// RangeEndExclusive marks RangeEnd as exclusive: the predicate was OpLt,
+	// so entries equal to RangeEnd are not part of the answer.
+	//
+	// The predicate a scan plan consumes is not post-filtered, so the
+	// executor must honour both flags exactly; reading every bound as
+	// inclusive answers `> v` with the entries equal to v as well.
+	RangeEndExclusive bool
 
 	// IndexFields is the ordered list of struct field names for compound
 	// index plans. Empty for single-field plans.
@@ -150,7 +166,9 @@ type Plan struct {
 	SubPlans []*Plan
 
 	// PostFilters contains predicates that must be evaluated in memory
-	// after the index access returns candidate entity keys.
+	// after the index access returns candidate entity keys. A PREFIX
+	// predicate stays here even when the index scan starts at it, because
+	// the scan has no upper bound and reads past the prefix.
 	PostFilters []Predicate
 
 	// EstimatedCost is the heuristic cost assigned to this plan.

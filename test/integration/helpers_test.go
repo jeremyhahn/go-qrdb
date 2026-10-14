@@ -427,15 +427,22 @@ func (s testLogSink) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// nodeStopTimeout bounds how long a test waits for a daemon it signalled to
+// stop gracefully. qrdbd drains its listeners and closes its Raft host in a
+// few seconds; one still running after this is hung, and the test fails with
+// what it last logged rather than waiting for the go test timeout.
+const nodeStopTimeout = 30 * time.Second
+
 // startNode starts the qrdbd binary with the given arguments and returns
 // the exec.Cmd. Stdout and stderr are piped through t.Log with the given
 // prefix, and copied to every tee writer. The process is killed on test
-// cleanup.
+// cleanup, and a daemon that is not reaped in time fails the test with its
+// output tail.
 //
 // The raw exec.Cmd is returned rather than the harness Daemon because these
-// tests drive process lifecycle themselves — SIGTERM restarts, crash
-// simulations, and their own Wait calls — and must not share reaping with the
-// harness.
+// tests drive process lifecycle themselves — SIGTERM restarts and crash
+// simulations. A test that waits for the process to exit does so through
+// awaitNodeExit, which is bounded and reaps through the same Daemon.
 func startNode(t *testing.T, binary string, args []string, prefix string, tee ...io.Writer) *exec.Cmd {
 	t.Helper()
 	// A listener the test left at its fixed default port would collide with
@@ -445,42 +452,94 @@ func startNode(t *testing.T, binary string, args []string, prefix string, tee ..
 		t.Fatalf("startNode: %v", err)
 	}
 	out := io.MultiWriter(append([]io.Writer{&logWriter{t: t, prefix: prefix}}, tee...)...)
-	daemon, err := qrdbdharness.Start(binary, args, qrdbdharness.WithOutput(out))
-	if err != nil {
-		t.Fatalf("startNode: %v", err)
-	}
-	cmd := daemon.Cmd()
-	// A killed daemon whose output pipe stays open must not hold cleanup:
-	// Wait gives up on the pipe after WaitDelay.
-	cmd.WaitDelay = nodeWaitDelay
+	cmd := spawnNode(t, binary, args, out)
 	t.Cleanup(func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
+		if err := spawnedDaemon(t, cmd).Kill(); err != nil {
+			t.Errorf("%skill: %v", prefix, err)
 		}
 	})
 	return cmd
 }
 
-// nodeWaitDelay bounds how long a killed qrdbd's output pipe may keep
-// startNode's cleanup waiting.
-const nodeWaitDelay = 10 * time.Second
+// spawnedDaemons maps every *exec.Cmd spawnNode returned to the harness Daemon
+// that owns it, so awaitNodeExit can wait through the Daemon's single reaper
+// and report its output tail.
+var spawnedDaemons sync.Map
 
-// stopNodeProcess sends cmd SIGTERM and waits for it to exit, killing it if
-// it has not within 15 seconds, so a restart can bind the same ports at once.
-func stopNodeProcess(t *testing.T, cmd *exec.Cmd) {
+// spawnNode launches a qrdbd daemon through qrdbdharness.Start, which gives it
+// a reserved port for every fixed-default port flag args leaves unset, and
+// sends its output to out. Unlike startNode it registers no cleanup: it is for
+// callers that stop, kill or restart the process themselves. Every daemon an
+// integration test starts goes through here, never through exec.Command, so
+// no two concurrent runs on one host bind the same production default port.
+func spawnNode(t *testing.T, binary string, args []string, out io.Writer) *exec.Cmd {
+	t.Helper()
+	daemon, err := qrdbdharness.Start(binary, args, qrdbdharness.WithOutput(out))
+	if err != nil {
+		t.Fatalf("spawnNode: %v", err)
+	}
+	spawnedDaemons.Store(daemon.Cmd(), daemon)
+	return daemon.Cmd()
+}
+
+// spawnedDaemon returns the harness Daemon behind a cmd spawnNode returned.
+func spawnedDaemon(t *testing.T, cmd *exec.Cmd) *qrdbdharness.Daemon {
+	t.Helper()
+	v, ok := spawnedDaemons.Load(cmd)
+	if !ok {
+		t.Fatalf("spawnedDaemon: %v was not started by spawnNode", cmd.Args)
+	}
+	daemon, ok := v.(*qrdbdharness.Daemon)
+	if !ok {
+		t.Fatalf("spawnedDaemon: registry holds %T, want *qrdbdharness.Daemon", v)
+	}
+	return daemon
+}
+
+// awaitNodeExit waits up to timeout for a daemon the test has already told to
+// stop, and returns its exit status. A daemon still running at the deadline is
+// killed and fails the test with its output tail.
+func awaitNodeExit(t *testing.T, cmd *exec.Cmd, timeout time.Duration) error {
+	t.Helper()
+	daemon := spawnedDaemon(t, cmd)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := daemon.WaitContext(ctx)
+	var waitErr *qrdbdharness.DaemonWaitError
+	if errors.As(err, &waitErr) {
+		_ = daemon.Kill()
+		t.Fatalf("awaitNodeExit: %v", waitErr)
+	}
+	return err
+}
+
+// killNode kills a daemon spawnNode started and reaps it through its harness
+// Daemon. A daemon the kernel has not reaped within the harness's kill grace
+// fails the test with its output tail.
+func killNode(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if err := spawnedDaemon(t, cmd).Kill(); err != nil {
+		t.Fatalf("killNode: %v", err)
+	}
+}
+
+// stopNode sends SIGTERM to a daemon spawnNode started and waits up to grace
+// for it to exit, then kills it, so a restart can bind the same ports at once.
+// A slow graceful shutdown is not a failure here; a daemon that survives the
+// kill is, and fails the test with its output tail. A daemon that was never
+// started is a no-op.
+func stopNode(t *testing.T, cmd *exec.Cmd, grace time.Duration) {
 	t.Helper()
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
+	daemon := spawnedDaemon(t, cmd)
 	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	var waitErr *qrdbdharness.DaemonWaitError
+	if err := daemon.WaitContext(ctx); errors.As(err, &waitErr) {
+		killNode(t, cmd)
 	}
 }
 

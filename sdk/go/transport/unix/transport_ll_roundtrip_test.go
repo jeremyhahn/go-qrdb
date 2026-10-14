@@ -374,6 +374,50 @@ func TestUnixRT_IndexCreate(t *testing.T) {
 	}
 }
 
+// TestUnixRT_IndexCreate_FlagsSurviveTheRoundTrip proves every IndexConfig
+// claim reaches the service over the Unix socket. A dropped Numeric builds a
+// text index, whose range scans put "10" before "2"; a dropped
+// CaseInsensitive builds a case-sensitive one that answers a folded lookup
+// empty. Both report success, so only the service's view can tell.
+func TestUnixRT_IndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		cfg               transport.IndexConfig
+		wantValueType     index.IndexValueType
+		wantCaseSensitive bool
+	}{
+		{"every flag", transport.IndexConfig{Unique: true, Sparse: true, Numeric: true, CaseInsensitive: true},
+			index.IndexValueTypeNumeric, false},
+		{"zero config", transport.IndexConfig{}, index.IndexValueTypeString, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []index.IndexConfig
+			svc := &mockIndexSvc{createFn: func(_ context.Context, _, _ string, cfg index.IndexConfig) error {
+				got = append(got, cfg)
+				return nil
+			}}
+			tr, cleanup := startAuthServer(t, unixserver.WithIndex(svc))
+			defer cleanup()
+
+			if err := tr.IndexCreate(context.Background(), "idx1", "field1", tc.cfg); err != nil {
+				t.Fatalf("IndexCreate: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("CreateIndex reached the service %d times; want 1", len(got))
+			}
+			if got[0].Unique != tc.cfg.Unique || got[0].Sparse != tc.cfg.Sparse {
+				t.Errorf("Unique/Sparse = %v/%v; want %v/%v", got[0].Unique, got[0].Sparse, tc.cfg.Unique, tc.cfg.Sparse)
+			}
+			if got[0].ValueType != tc.wantValueType {
+				t.Errorf("ValueType = %v; want %v", got[0].ValueType, tc.wantValueType)
+			}
+			if got[0].CaseSensitive != tc.wantCaseSensitive {
+				t.Errorf("CaseSensitive = %v; want %v", got[0].CaseSensitive, tc.wantCaseSensitive)
+			}
+		})
+	}
+}
+
 func TestUnixRT_IndexDrop(t *testing.T) {
 	svc := &mockIndexSvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithIndex(svc))

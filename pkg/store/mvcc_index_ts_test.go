@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -390,18 +391,21 @@ func TestMVCCStateMachine_IndexQuery_NotFound(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
 
-	// Query a nonexistent index.
-	_, err := s.Lookup(ctx, service.IndexQueryRequest{
-		IndexName: "nonexistent",
-		Value:     []byte("val"),
-	})
-	if err == nil {
-		t.Fatal("expected error querying nonexistent index, got nil")
+	// Query and scan a nonexistent index: a lookup that missed, typed so the
+	// service layer can report it NotFound rather than as a failed read.
+	lookups := map[string]interface{}{
+		"query": service.IndexQueryRequest{IndexName: "nonexistent", Value: []byte("val")},
+		"scan":  service.IndexScanRequest{IndexName: "nonexistent", Start: []byte("a"), End: []byte("z")},
 	}
-
-	var iqe *engine.InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	for name, q := range lookups {
+		_, err := s.Lookup(ctx, q)
+		var inf *index.NotFoundError
+		if !errors.As(err, &inf) {
+			t.Fatalf("%s: expected *index.NotFoundError, got %T: %v", name, err, err)
+		}
+		if inf.Name != "nonexistent" {
+			t.Fatalf("%s: Name = %q, want %q", name, inf.Name, "nonexistent")
+		}
 	}
 }
 
@@ -463,9 +467,9 @@ func TestMVCCStateMachine_IndexScan_NotFoundIndex(t *testing.T) {
 		t.Fatal("expected error scanning nonexistent index, got nil")
 	}
 
-	var iqe *engine.InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	var inf *index.NotFoundError
+	if !errors.As(err, &inf) {
+		t.Fatalf("expected *index.NotFoundError, got %T: %v", err, err)
 	}
 }
 

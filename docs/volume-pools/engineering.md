@@ -82,6 +82,11 @@ func (r *Reporter) Start(ctx context.Context, build func() NodeReport) error
 func (r *Reporter) Report(ctx context.Context, report NodeReport) error
 func (r *Reporter) Close() error
 
+// WithReporterSealProbe makes the Reporter propose nothing while the node
+// barrier is sealed: a refresh is skipped and Report returns
+// *NodeSealedError. Both composers pass the node barrier.
+func WithReporterSealProbe(p SealProbe) ReporterOption
+
 type Usage struct{ SizeBytes, FreeBytes int64 }
 
 type Health struct {

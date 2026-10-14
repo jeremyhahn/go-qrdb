@@ -134,6 +134,11 @@ func (m *memIndex) bound(name, op string, value []byte) ([]byte, error) {
 	if value == nil {
 		return nil, nil
 	}
+	// A numeric bound may carry the trailing 0x00 that names the term after
+	// the number (EntityIndex.Numeric), which only the bound resolver reads.
+	if m.cfg.ValueType == index.IndexValueTypeNumeric {
+		return index.ResolveNumericScanBound(value, name, op)
+	}
 	normalized, ok := index.NormalizeFieldValue(value, m.cfg)
 	if !ok {
 		return nil, &index.InvalidNumericBoundError{
@@ -525,6 +530,7 @@ func (s *MemoryKVStore) RegisterEntityIndexes(entityType string, indexes []Entit
 				existing.unique != ei.Unique ||
 				existing.sparse != ei.Sparse ||
 				existing.cfg.CaseSensitive != ei.CaseSensitive ||
+				existing.cfg.ValueType != entityIndexValueType(ei) ||
 				existing.prefix != ei.ResolvedPrefix(entityType) {
 				return &IndexRegistrationError{
 					EntityType: entityType,
@@ -536,6 +542,9 @@ func (s *MemoryKVStore) RegisterEntityIndexes(entityType string, indexes []Entit
 		cfg := index.IndexConfig{
 			Name:          name,
 			CaseSensitive: ei.CaseSensitive,
+			ValueType:     entityIndexValueType(ei),
+			// The index is built now, so its terms are the current encoding.
+			EncodingVersion: index.NumericEncodingVersion,
 		}
 		if ei.Unique {
 			cfg.Type = index.IndexTypeUnique
@@ -687,7 +696,29 @@ func (s *MemoryKVStore) ScanIndex(ctx context.Context, indexName string, start, 
 	if err != nil {
 		return nil, err
 	}
-	return mi.idx.Scan(lo, hi)
+	entries, err := mi.idx.Scan(lo, hi)
+	if err != nil || mi.cfg.ValueType != index.IndexValueTypeNumeric {
+		return entries, err
+	}
+	// The map is keyed by field VALUE. A numeric index stores binary terms,
+	// so each is decoded back to the canonical decimal text it stands for.
+	values := make(map[string][][]byte, len(entries))
+	for term, keys := range entries {
+		value, err := index.DecodeNumericValue([]byte(term))
+		if err != nil {
+			return nil, err
+		}
+		values[value] = keys
+	}
+	return values, nil
+}
+
+// entityIndexValueType returns the term encoding a definition asks for.
+func entityIndexValueType(ei EntityIndex) index.IndexValueType {
+	if ei.Numeric {
+		return index.IndexValueTypeNumeric
+	}
+	return index.IndexValueTypeString
 }
 
 // QueryCompoundIndex refuses: this store maintains single-field indexes

@@ -274,6 +274,34 @@ type ShardInfo struct {
 	Nodes map[uint64]string `json:"nodes"`
 }
 
+// ReplicaStatesResponse lists one node's replicas, ordered by shard ID.
+// Witnesses hold no state machine and are never listed.
+type ReplicaStatesResponse struct {
+	// NodeID is the answering node's host identifier.
+	NodeID string `json:"node_id"`
+
+	// Replicas holds one entry per replica on the node.
+	Replicas []ReplicaState `json:"replicas"`
+}
+
+// ReplicaState is one replica's applied index and the hash of its state
+// machine taken at that index. Two replicas of a shard at the same applied
+// index hold the same state exactly when their hashes are equal; at
+// different indexes the hashes say nothing.
+type ReplicaState struct {
+	// ShardID is the shard the replica belongs to.
+	ShardID uint64 `json:"shard_id"`
+
+	// ReplicaID is the replica's identifier within the shard.
+	ReplicaID uint64 `json:"replica_id"`
+
+	// AppliedIndex is the last log index the replica's state machine applied.
+	AppliedIndex uint64 `json:"applied_index"`
+
+	// Hash is the state-machine hash taken at AppliedIndex.
+	Hash uint64 `json:"hash"`
+}
+
 // OKResponse is a simple success response.
 type OKResponse struct {
 	Status string `json:"status"`

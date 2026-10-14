@@ -221,6 +221,18 @@ func (e *InvalidCatalogDependencyError) Error() string {
 	return "volume: invalid catalog dependency: " + e.Reason
 }
 
+// NodeSealedError is returned when the node barrier is sealed and a write the
+// node would propose on its own behalf is refused rather than proposed: an
+// entry proposed into a sealed log halts the shard.
+type NodeSealedError struct {
+	Op string
+}
+
+// Error implements the error interface.
+func (e *NodeSealedError) Error() string {
+	return "volume: node barrier is sealed: " + e.Op + " not proposed"
+}
+
 // EncodeError is returned when a record cannot be marshaled to JSON.
 type EncodeError struct {
 	Err error

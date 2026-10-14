@@ -41,6 +41,9 @@
 //     quicraft.Host.RequestSnapshot) triggers a local log-compaction
 //     snapshot and is NOT leader-gated at the quicraft layer, so it too is
 //     exercised against every node.
+//   - `admin replica-states` reports only the answering node's replicas and
+//     is never forwarded, so it is asked of all 3 control nodes, which must
+//     report one hash for shard 1 once they report one applied index.
 //   - `admin member add`/`add-observer`/`remove`/`promote` propose Raft
 //     configuration changes, which only the shard's current LEADER can
 //     commit. Every node serves them on every transport: a follower that
@@ -402,6 +405,8 @@ func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 				testAdminSnapshotOverProtocol(t, node, proto, role)
 			}
 
+			testAdminReplicaStatesOverProtocol(t, nodes, proto)
+
 			// Two throwaway replica IDs this protocol's turn needs: one for
 			// the observer-add/promote-success cycle, one for the
 			// voter-add/promote-refusal cycle below.
@@ -457,6 +462,91 @@ func testAdminTopologyOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 	if !strings.Contains(tableOut, topo.NodeID) {
 		t.Fatalf("[%s/%s] admin topology (table): missing NodeID %s in output: %s", proto.name, role, topo.NodeID, tableOut)
+	}
+}
+
+// adminReplicaStatesDisplay mirrors the `qrdb --output json admin
+// replica-states` shape.
+type adminReplicaStatesDisplay struct {
+	NodeID   string `json:"node_id"`
+	Replicas []struct {
+		ShardID      uint64 `json:"shard_id"`
+		ReplicaID    uint64 `json:"replica_id"`
+		AppliedIndex uint64 `json:"applied_index"`
+		Hash         uint64 `json:"hash"`
+	} `json:"replicas"`
+}
+
+// testAdminReplicaStatesOverProtocol writes through a node that follows a
+// known shard-1 leader, which forwards the write there, then asks each of
+// the 3 control nodes for its shard-1 replica state until all three
+// report one applied index, and requires them to report one hash there. The
+// read is per node and never forwarded, so each node is asked directly; the
+// three reads are not one snapshot, which is why an unequal index is retried
+// rather than failed.
+func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	key := "admincluster/replica-states/" + proto.name
+	writer := adminClusterFollower(t, nodes, 30*time.Second)
+	if out, err := runCLIProto(t, writer, proto, "kv", "put", key, "replica-state-value"); err != nil {
+		t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, key, err, out)
+	}
+
+	var readings [3]adminReplicaStatesDisplay
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		for i, node := range nodes {
+			out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "replica-states", "--shard-id", "1")
+			if err != nil {
+				t.Fatalf("[%s] node %d admin replica-states: %v\noutput: %s", proto.name, i, err, out)
+			}
+			var r adminReplicaStatesDisplay
+			if jerr := json.Unmarshal([]byte(out), &r); jerr != nil {
+				t.Fatalf("[%s] node %d decode `admin replica-states` JSON: %v\noutput: %s", proto.name, i, jerr, out)
+			}
+			if len(r.Replicas) != 1 || r.Replicas[0].ShardID != 1 {
+				t.Fatalf("[%s] node %d admin replica-states --shard-id 1: want exactly one shard-1 replica, got %+v", proto.name, i, r)
+			}
+			readings[i] = r
+		}
+		index := readings[0].Replicas[0].AppliedIndex
+		if readings[1].Replicas[0].AppliedIndex == index && readings[2].Replicas[0].AppliedIndex == index {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("[%s] the 3 replicas of shard 1 never reported one applied index: %+v", proto.name, readings)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// A shard holding the key just written has applied entries and a
+	// non-empty state; zeroes would agree without proving anything.
+	if r := readings[0].Replicas[0]; r.AppliedIndex == 0 || r.Hash == 0 {
+		t.Fatalf("[%s] shard 1 reported applied index %d hash %d; want both non-zero", proto.name, r.AppliedIndex, r.Hash)
+	}
+	nodeIDs := map[string]bool{}
+	replicaIDs := map[uint64]bool{}
+	for i, r := range readings {
+		nodeIDs[r.NodeID] = true
+		replicaIDs[r.Replicas[0].ReplicaID] = true
+		if r.Replicas[0].Hash != readings[0].Replicas[0].Hash {
+			t.Fatalf("[%s] shard 1 at applied index %d: node %d hash %016x, node 0 hash %016x; replicas at one index must agree",
+				proto.name, r.Replicas[0].AppliedIndex, i, r.Replicas[0].Hash, readings[0].Replicas[0].Hash)
+		}
+	}
+	if len(nodeIDs) != 3 || len(replicaIDs) != 3 {
+		t.Fatalf("[%s] want 3 distinct nodes and replicas answering, got %+v", proto.name, readings)
+	}
+
+	tableOut, err := runCLIProto(t, nodes[0], proto, "admin", "replica-states", "--shard-id", "1")
+	if err != nil {
+		t.Fatalf("[%s] admin replica-states (table): %v\noutput: %s", proto.name, err, tableOut)
+	}
+	for _, want := range []string{"SHARD", "REPLICA", "APPLIED INDEX", "HASH"} {
+		if !strings.Contains(tableOut, want) {
+			t.Fatalf("[%s] admin replica-states (table): missing %q in output: %s", proto.name, want, tableOut)
+		}
 	}
 }
 

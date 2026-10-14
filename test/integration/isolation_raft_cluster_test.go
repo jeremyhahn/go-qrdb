@@ -133,18 +133,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
-		cmd := exec.Command(bin, args...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
 		cmds[i] = cmd
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 
@@ -454,15 +446,8 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 		}
 	}
 	for i, cmd := range cmds {
-		done := make(chan error, 1)
-		go func(c *exec.Cmd) { done <- c.Wait() }(cmd)
-		select {
-		case <-done:
-			t.Logf("node %d stopped", i+1)
-		case <-time.After(30 * time.Second):
-			cmd.Process.Kill()
-			t.Fatalf("node %d: timed out waiting for graceful shutdown", i+1)
-		}
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
+		t.Logf("node %d stopped", i+1)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -490,18 +475,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
-		cmd := exec.Command(bin, args...)
-		cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("restart node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
 		cmds2[i] = cmd
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 

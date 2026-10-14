@@ -222,18 +222,22 @@ running server actually resolved.
 
 ## Default ports
 
-| Service | Port | Field |
-|---|---|---|
-| Raft | 63001 | `raft.raft_address` |
-| REST | 63002 | `server.admin_port` |
-| gRPC | 63003 | `server.grpc_port` |
-| QUIC | 63004 | `server.quic_port` |
-| MCP | 63005 | `mcp.port` |
-| Noise bootstrap | 63006 | `bootstrap.noise_port` |
-| CSR join | 63007 | `cluster_join.listen_port` |
-| MySQL | 3306 | `server.mysql_port` |
-| PostgreSQL | 5432 | `server.pgsql_port` |
-| etcd | none; `qrdb database create --etcd` uses `localhost:2379` | `databases[].etcd.listen_addr` |
+Protocols, defaults and who must reach each listener:
+[Network ports](../clustering/user.md#network-ports). The fields and flags that
+move them:
+
+| Service | Port | Field | Flag |
+|---|---|---|---|
+| Raft | 63001 | `raft.listen_address` / `raft.raft_address` | `--listen` / `--raft-address` |
+| REST/admin | 63002 | `server.admin_port` | `--admin-port` |
+| gRPC | 63003 | `server.grpc_port` | `--grpc-port` |
+| Native QUIC | 63004 | `server.quic_port` | `--quic-port` |
+| MCP | 63005 | `mcp.port` | `--mcp-port` |
+| Noise trust anchor | 63006 | `bootstrap.noise_port` | `--bootstrap-noise-port` |
+| CSR join | 63007 | `cluster_join.listen_port` | `--cluster-join-listen-port` |
+| MySQL | 3306 | `server.mysql_port` | `--mysql-port` |
+| PostgreSQL | 5432 | `server.pgsql_port` | `--pgsql-port` |
+| etcd | none; `qrdb database create --etcd` uses `localhost:2379` | `databases[].etcd.listen_addr` | — |
 
 ## The full reference
 

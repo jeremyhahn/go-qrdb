@@ -52,9 +52,10 @@ compaction?)` (`DatabaseCompactionConfig`: `mode` `'off' | 'revision' |
 'period'`, `retainRevisions`, `retainPeriod`) -- `PATCH
 /v1/databases/{name}/compaction` over REST, `DatabaseBinding.UpdateCompaction`
 in the desktop client -- and reads it back as `DatabaseInfo.compaction`. When
-the server cannot read the policy from the database's store, `compaction` is
-absent and `compactionUnavailable` is true: the policy is unknown, not off, and
-the rest of the information stands.
+the server cannot read the policy from the database's store -- within 5 s, or
+the caller's own deadline if shorter: a raft database just created may still be
+electing its leader -- `compaction` is absent and `compactionUnavailable` is
+true: the policy is unknown, not off, and the rest of the information stands.
 Omitting `compaction` turns the policy off.
 
 **Note the additive permissions.** Creating a raft-backed database checks

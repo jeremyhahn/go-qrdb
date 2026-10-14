@@ -31,7 +31,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -184,7 +183,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 			})
 			continue
 		}
-		node.cmd = exec.Command(bin,
+		node.cmd = spawnNode(t, bin, []string{
 			"start",
 			"--config", writeIsolationRaftConfig(t, t.TempDir(), peerAdminURLs),
 			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
@@ -208,16 +207,10 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 			"--tls-ca-file", ca.CertPath,
 			"--tls-cert-file", nodeCerts[i],
 			"--tls-key-file", nodeKeys[i],
-		)
-		node.cmd.Stdout = &logWriter{t: t, prefix: fmt.Sprintf("[fwd-node%d] ", i+1)}
-		node.cmd.Stderr = &logWriter{t: t, prefix: fmt.Sprintf("[fwd-node%d] ", i+1)}
-		if err := node.cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		}, &logWriter{t: t, prefix: fmt.Sprintf("[fwd-node%d] ", i+1)})
 		t.Cleanup(func() {
-			if node.cmd.Process != nil && !node.stopped {
-				_ = node.cmd.Process.Kill()
-				_ = node.cmd.Wait()
+			if !node.stopped {
+				killNode(t, node.cmd)
 			}
 		})
 		c.nodes = append(c.nodes, node)
@@ -487,10 +480,7 @@ func (c *fwdCluster) stop(t *testing.T, i int) {
 		n.stopped = true
 		return
 	}
-	if err := n.cmd.Process.Signal(syscall.SIGKILL); err != nil {
-		t.Fatalf("kill node %d: %v", i+1, err)
-	}
-	_ = n.cmd.Wait()
+	killNode(t, n.cmd)
 	n.stopped = true
 }
 

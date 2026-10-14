@@ -157,6 +157,10 @@ func NewStoragePebbleIndex(storage storage.Storage, config IndexConfig, log *log
 		)
 	}
 
+	if err := config.CheckEncoding(); err != nil {
+		return nil, err
+	}
+
 	idx := &StoragePebbleIndex{
 		storage: storage,
 		config:  config,
@@ -170,8 +174,8 @@ func NewStoragePebbleIndex(storage storage.Storage, config IndexConfig, log *log
 }
 
 // Put adds or updates an index entry. For numeric indexes, fieldValue is
-// encoded as a fixed-width 8-byte big-endian integer. Non-numeric values
-// are silently skipped.
+// encoded as an order-preserving numeric term (EncodeNumericValue).
+// Non-numeric values and NaN are silently skipped.
 func (idx *StoragePebbleIndex) Put(entityKey []byte, fieldValue []byte) error {
 	start := time.Now()
 	defer func() {

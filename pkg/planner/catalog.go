@@ -45,6 +45,24 @@ type IndexInfo struct {
 	FieldTypes []string
 }
 
+// numericFieldTypes is the set of Go type names whose index terms are
+// numbers rather than text (index.IndexValueTypeNumeric).
+var numericFieldTypes = map[string]struct{}{
+	"int": {}, "int8": {}, "int16": {}, "int32": {}, "int64": {},
+	"uint": {}, "uint8": {}, "uint16": {}, "uint32": {}, "uint64": {},
+	"float32": {}, "float64": {},
+}
+
+// isNumericFieldType reports whether an index over a field of the named Go
+// type holds numeric terms. A numeric index answers ranges in numeric order
+// and cannot answer OpPrefix, which is a statement about the value's
+// decimal TEXT: the prefix "1" names 1, 10 and 123 but not 2, while the
+// numeric interval starting at 1 includes 2.
+func isNumericFieldType(fieldType string) bool {
+	_, ok := numericFieldTypes[fieldType]
+	return ok
+}
+
 // IsCompound reports whether this describes a compound (multi-field) index.
 func (ii IndexInfo) IsCompound() bool {
 	return len(ii.FieldNames) > 1

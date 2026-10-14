@@ -55,6 +55,9 @@ go.work.sum
 
 # compiled binaries never enter the module tree
 /bin/
+# `make cluster-proof` writes evidence bundles here by default: run output,
+# carrying cluster addresses, never source.
+/clusterproof-out/
 # `go build ./test/tools/deadcode` drops its binary at the module root, named
 # for the package. It was committed once (#337) before this line existed.
 /deadcode

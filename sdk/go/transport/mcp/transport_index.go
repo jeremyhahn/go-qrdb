@@ -79,7 +79,7 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 		"value":      value,
 	})
 	if err != nil {
-		return nil, err
+		return nil, mapIndexAbsent(indexName, err)
 	}
 
 	var keys []string
@@ -109,7 +109,7 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 	}
 	text, err := t.callTool(ctx, "qrdb_index_scan", args)
 	if err != nil {
-		return nil, err
+		return nil, mapIndexAbsent(indexName, err)
 	}
 
 	var raw map[string][]string
@@ -150,4 +150,14 @@ func (t *Transport) IndexList(ctx context.Context) (*transport.IndexListResponse
 	}
 
 	return &transport.IndexListResponse{Names: names}, nil
+}
+
+// mapIndexAbsent turns the server's not-found tool error on an index query or
+// scan into the typed IndexNotFoundError every transport returns for an index
+// that does not exist; any other error passes through.
+func mapIndexAbsent(indexName string, err error) error {
+	if isToolNotFound(err) {
+		return &transport.IndexNotFoundError{Name: indexName}
+	}
+	return err
 }

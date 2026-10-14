@@ -16,6 +16,8 @@ package dao
 
 import (
 	"context"
+	"encoding"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -326,7 +328,8 @@ func (q *QueryBuilder[E]) executeIndexLookup(plan *planner.Plan) ([]E, error) {
 // executeIndexScan executes a range scan on an index and applies
 // post-filters to the results.
 func (q *QueryBuilder[E]) executeIndexScan(plan *planner.Plan) ([]E, error) {
-	entities, err := q.dao.ScanByIndex(q.ctx, plan.IndexField, plan.RangeStart, plan.RangeEnd)
+	start, end := scanInterval(plan)
+	entities, err := q.dao.ScanByIndex(q.ctx, plan.IndexField, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +359,8 @@ func (q *QueryBuilder[E]) executeCompoundIndexLookup(plan *planner.Plan) ([]E, e
 // executeCompoundIndexScan executes a compound index prefix + range scan
 // and applies post-filters to the results.
 func (q *QueryBuilder[E]) executeCompoundIndexScan(plan *planner.Plan) ([]E, error) {
-	entities, err := q.dao.ScanByCompoundIndex(q.ctx, plan.IndexName, plan.ExactValues, plan.RangeStart, plan.RangeEnd)
+	start, end := scanInterval(plan)
+	entities, err := q.dao.ScanByCompoundIndex(q.ctx, plan.IndexName, plan.ExactValues, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +370,34 @@ func (q *QueryBuilder[E]) executeCompoundIndexScan(plan *planner.Plan) ([]E, err
 	}
 
 	return entities, nil
+}
+
+// scanInterval translates a scan plan's bounds into the half-open interval
+// [start, end) a KVStore scan answers. A plan bound is inclusive unless the
+// plan flags it exclusive, and the predicate the plan consumed is not
+// post-filtered, so the translation must be exact: an exclusive start and an
+// inclusive end each become the first term AFTER the value.
+//
+// That term is named by the value's text with a 0x00 byte appended. For a
+// string index it is the byte-order successor of the term itself, and case
+// folding leaves it one. For a numeric index the store reads the trailing
+// 0x00 as "the term after this number" (kvstore.EntityIndex.Numeric), so it
+// is the numeric successor whatever the number's spelling.
+func scanInterval(plan *planner.Plan) (start, end interface{}) {
+	start, end = plan.RangeStart, plan.RangeEnd
+	if plan.RangeStartExclusive && !isNilValue(start) {
+		start = successorBound(start)
+	}
+	if !plan.RangeEndExclusive && !isNilValue(end) {
+		end = successorBound(end)
+	}
+	return start, end
+}
+
+// successorBound returns the scan bound naming the first term after v; see
+// scanInterval.
+func successorBound(v interface{}) string {
+	return fmt.Sprint(v) + "\x00"
 }
 
 // executeIndexIntersection executes multiple sub-plans independently and
@@ -542,9 +574,9 @@ func (d *genericDAO[E]) validFieldMap() map[string]struct{} {
 }
 
 // isNumericKind reports whether a struct field's kind is ordered numerically
-// rather than lexicographically, which is what makes a range plan over its
-// decimal-text index terms unsound. Signed, unsigned and floating-point kinds
-// all qualify; bool and string do not.
+// rather than lexicographically, which is what makes New register its index
+// with numeric terms. Signed, unsigned and floating-point kinds all qualify;
+// bool and string do not.
 func isNumericKind(k reflect.Kind) bool {
 	switch k {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -554,6 +586,28 @@ func isNumericKind(k reflect.Kind) bool {
 	default:
 		return false
 	}
+}
+
+var (
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
+)
+
+// hasNumericTerms reports whether New registers the index over a field of
+// type t with numeric terms (kvstore.EntityIndex.Numeric): a numeric kind
+// whose stored form is the number itself.
+//
+// A numeric kind that marshals itself -- json.Marshaler or
+// encoding.TextMarshaler, on the value or its pointer -- is excluded. What
+// reaches the index is whatever that method writes, often a name, and a
+// numeric index skips every value that is not a number, so the field would
+// silently drop out of its own index.
+func hasNumericTerms(t reflect.Type) bool {
+	if t == nil || !isNumericKind(t.Kind()) {
+		return false
+	}
+	pt := reflect.PointerTo(t)
+	return !pt.Implements(jsonMarshalerType) && !pt.Implements(textMarshalerType)
 }
 
 // buildCatalog constructs a planner.IndexCatalog from the DAO's
@@ -595,25 +649,17 @@ func (d *genericDAO[E]) buildCatalog() planner.IndexCatalog {
 				continue
 			}
 
-			// A NUMERICALLY ordered field is not advertised. Index terms are
-			// stored as decimal text and compared lexicographically, so
-			// "10" sorts before "2": a range plan on Age >= 2 scans from
-			// "2" and MISSES the record stored as 10, returning an
-			// incomplete result with a nil error.
+			// A numeric field is advertised like any other: New registered
+			// its index with numeric terms (hasNumericTerms), so a range
+			// plan over it scans in numeric order and "10" sorts after "2".
+			// FieldType carries the kind, which is how the planner knows not
+			// to answer a text prefix from it.
 			//
-			// The surgical fix is for the planner to refuse a RANGE plan on
-			// such a field while still using the index for equality — it
-			// already carries FieldType for decisions like this. That
-			// changes pkg/planner's documented contract, which is an
-			// architecture decision reserved to the owner, so it is filed as
-			// #35 with the analysis rather than taken here.
-			//
-			// Omitting the field entirely is the conservative move this
-			// package CAN make on its own: it costs the sound equality
-			// lookup a full scan, which is slower and correct, and the
-			// direct QueryByIndex path still uses the index. Correctness
-			// first; #35 restores the performance.
-			if isNumericKind(f.Type.Kind()) {
+			// A numeric kind that marshals itself is the exception. Its
+			// index holds text terms, whose order is not the kind's, while
+			// FieldType tells the planner the field is a number; it stays
+			// unadvertised and its queries run as full scans.
+			if isNumericKind(f.Type.Kind()) && !hasNumericTerms(f.Type) {
 				continue
 			}
 
@@ -635,9 +681,10 @@ func (d *genericDAO[E]) buildCatalog() planner.IndexCatalog {
 			idxName := d.compoundIndexName(def.Fields)
 
 			// Resolve field types from the struct. A compound index with ANY
-			// numeric member is not advertised either: its key encoding is
-			// built from the same decimal-text terms, so both its range
-			// scans and its prefix ordering inherit the problem above.
+			// numeric member is not advertised: kvstore.EntityIndex carries
+			// no per-member value type, so a store builds every member as
+			// text, and text order is not numeric order -- a range plan on
+			// the numeric member would miss "10" from `>= 2`.
 			fieldTypes := make([]string, len(def.Fields))
 			numeric := false
 			for i, fieldName := range def.Fields {

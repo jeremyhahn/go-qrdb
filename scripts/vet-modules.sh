@@ -56,7 +56,7 @@
 # test. So the logic lives here, where vet-modules_test.sh can drive every
 # rejecting branch, exactly as require-tool.sh does for its version comparison.
 #
-# The mapping is deliberately EXHAUSTIVE-OR-FAIL. Four of the seven modules
+# The mapping is deliberately EXHAUSTIVE-OR-FAIL. Five of the eight modules
 # match no packages without their own tags, so a wrong tag set prints
 # "matched no packages" and looks identical to clean. Guessing is therefore
 # worse than refusing, and adding a module forces a decision here rather than
@@ -137,6 +137,21 @@ tags_for() {
 		printf 'benchmark\n' ;;
 	"$ROOT"/test/performance/cmd/kvcompare)
 		printf -- '-\n' ;;
+	"$ROOT"/test/clusterproof)
+		# The cluster proof harness (#669) is a module of its own so that its
+		# test-only linearizability checker never enters the database's module
+		# graph. Every file in it is behind the clusterproof tag, so it is
+		# vetted under each DECLARED rung naming that tag, verbatim and in
+		# order, and under no other: the rest match no packages. A declaration
+		# with no such rung is refused rather than swept as zero rungs, which
+		# would report clean having vetted nothing.
+		_cp=
+		for _s in $TAG_SETS; do
+			case ",$_s," in *,clusterproof,*) _cp="$_cp $_s" ;; esac
+		done
+		[ -n "$_cp" ] || die "vet-modules: no declared tag set names clusterproof" \
+		    "  $1 compiles only under that tag; SUPPORTED_TAG_SETS must declare a rung for it."
+		printf '%s\n' $_cp ;;
 	*)
 		die "vet-modules: UNMAPPED MODULE $1" \
 		    "  A Go module was added and nothing says which build tags vet it." \

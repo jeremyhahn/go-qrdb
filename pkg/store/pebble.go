@@ -110,6 +110,10 @@ type PebbleStateMachine struct {
 	// unscoped index: every key in this state machine is in scope.
 	indexScopes map[string][]byte
 
+	// indexValueTypes holds the term encoding each index was built with, by
+	// index name (engine.IndexCreateValueType).
+	indexValueTypes map[string]index.IndexValueType
+
 	// ts is the time-series storage engine. Nil if not configured.
 	ts *timeseries.Storage
 
@@ -134,6 +138,8 @@ func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 		indexOwners: make(map[string]string),
 		indexFields: make(map[string]string),
 		indexScopes: make(map[string][]byte),
+
+		indexValueTypes: make(map[string]index.IndexValueType),
 	}
 	s.updateHandlers = s.buildUpdateHandlers()
 	return s
@@ -590,14 +596,14 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 	case index.IndexQueryRequest:
 		idx, ok := s.indexes[q.IndexName]
 		if !ok {
-			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+			return nil, &index.NotFoundError{Name: q.IndexName}
 		}
 		return idx.Get(q.Value)
 
 	case index.IndexScanRequest:
 		idx, ok := s.indexes[q.IndexName]
 		if !ok {
-			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+			return nil, &index.NotFoundError{Name: q.IndexName}
 		}
 		return idx.Scan(q.Start, q.End)
 
@@ -2083,24 +2089,26 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		return sm.Result{}, nil, err
 	}
 
-	if _, exists := s.indexes[name]; exists {
+	valueType := engine.IndexCreateValueType(opts)
+	if existing, exists := s.indexes[name]; exists {
 		// A create naming an index ANOTHER owner holds is refused rather than
 		// adopted (go-qrdb#426), as an application error so consensus advances.
 		owner := s.indexOwners[name]
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 		}
-		// Index already present under the same owner — idempotent success so
-		// Raft Apply does not stall on duplicate create proposals. Existence
-		// is keyed by name only; a same-owner re-create with a divergent
-		// definition is a no-op (original wins) and must be rejected at the
-		// service layer before the proposal if desired.
-		return sm.Result{Value: 1}, nil, nil
-	}
-
-	valueType := index.IndexValueTypeString
-	if opts.Numeric {
-		valueType = index.IndexValueTypeNumeric
+		// Index already present under the same owner and value type —
+		// idempotent success so Raft Apply does not stall on duplicate create
+		// proposals. Existence is otherwise keyed by name only: a same-owner
+		// re-create diverging in field or uniqueness is a no-op (original
+		// wins). A different value type falls through and rebuilds the index
+		// at the requested one (engine.IndexCreateValueType).
+		if s.indexValueTypes[name] == valueType {
+			return sm.Result{Value: 1}, nil, nil
+		}
+		if err := existing.Close(); err != nil {
+			return sm.Result{}, nil, err
+		}
 	}
 
 	// Sparse is carried on the config for fidelity with the command; no Index
@@ -2112,15 +2120,24 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	// lookup for "Alpha" over a stored "alpha" answered empty with a nil error
 	// (go-qrdb#34).
 	idx, idxErr := pebbleindex.NewWithConfig(s.db, name, index.IndexConfig{
-		Name:          name,
-		Unique:        opts.Unique,
-		Sparse:        opts.Sparse,
-		ValueType:     valueType,
-		CaseSensitive: !opts.CaseInsensitive,
-		Owner:         opts.Owner,
+		Name:      name,
+		Unique:    opts.Unique,
+		Sparse:    opts.Sparse,
+		ValueType: valueType,
+		// A create builds the index now, at the current term encoding.
+		EncodingVersion: index.NumericEncodingVersion,
+		CaseSensitive:   !opts.CaseInsensitive,
+		Owner:           opts.Owner,
 	})
 	if idxErr != nil {
 		return sm.Result{}, nil, idxErr
+	}
+
+	// Entries already stored under the name -- left by a create applied
+	// again over storage that outlived the in-memory index, possibly in an
+	// older term encoding -- are cleared before the backfill rebuilds them.
+	if err := idx.Clear(); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	// The key scope composes the namespace half read back off name (every
@@ -2135,6 +2152,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	s.indexOwners[name] = opts.Owner
 	s.indexFields[name] = fieldName
 	s.indexScopes[name] = scope
+	s.indexValueTypes[name] = valueType
 
 	s.backfillIndex(idx, fieldName, scope)
 
@@ -2171,6 +2189,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 	delete(s.indexOwners, name)
 	delete(s.indexFields, name)
 	delete(s.indexScopes, name)
+	delete(s.indexValueTypes, name)
 
 	return sm.Result{Value: 1}, nil, nil
 }

@@ -17,11 +17,9 @@ package index
 import (
 	"math"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/index/internal/indexkey"
 )
 
 const (
@@ -326,11 +324,11 @@ func GetIndexableFields(structType reflect.Type) ([]string, error) {
 }
 
 // NormalizeFieldValue normalizes a field value based on index configuration.
-// For numeric indexes it encodes the value as a fixed-width big-endian int64
-// with sign-bit flip so that byte ordering matches numeric ordering.
-// For case-insensitive string indexes it converts the value to lowercase.
-// Returns nil and false when a numeric value cannot be parsed; callers should
-// skip the index entry in that case.
+// For numeric indexes it encodes the value as its order-preserving numeric
+// term (EncodeNumericValue). For case-insensitive string indexes it converts
+// the value to lowercase. Returns nil and false when a numeric value is not a
+// number the index can order -- including NaN; callers skip the index entry
+// in that case.
 func NormalizeFieldValue(value []byte, config IndexConfig) ([]byte, bool) {
 	if config.ValueType == IndexValueTypeNumeric {
 		encoded, err := EncodeNumericValue(string(value))
@@ -346,8 +344,9 @@ func NormalizeFieldValue(value []byte, config IndexConfig) ([]byte, bool) {
 }
 
 // DecodeFieldValue reverses the encoding applied by NormalizeFieldValue.
-// For numeric indexes it decodes the 8-byte big-endian representation back
-// to a decimal string. For string indexes it returns the raw bytes as a string.
+// For numeric indexes it decodes the term back to its canonical decimal text
+// (DecodeNumericValue). For string indexes it returns the raw bytes as a
+// string.
 func DecodeFieldValue(encoded []byte, config IndexConfig) string {
 	if config.ValueType == IndexValueTypeNumeric {
 		s, err := DecodeNumericValue(encoded)
@@ -357,97 +356,4 @@ func DecodeFieldValue(encoded []byte, config IndexConfig) string {
 		return s
 	}
 	return string(encoded)
-}
-
-// ResolveNumericScanBound resolves a Scan boundary value for a numeric
-// index. Every numeric-capable Index implementation resolves its bounds
-// through it, so they agree on the encoded byte domain. Callers that translate SQL range predicates into index scans (see
-// pkg/sql/provider/range_translator.go) express an exclusive bound by
-// appending a trailing 0x00 byte to the bound's decimal text, which is the
-// correct way to advance a byte-comparable string key past its exact value.
-// That trick cannot be applied before parsing a numeric bound, because a
-// trailing NUL byte is not valid float syntax and strconv.ParseFloat would
-// simply fail — silently turning a valid exclusive-bound scan into an
-// invalid one.
-//
-// Instead the marker is resolved AFTER encoding: the decimal text (with the
-// marker stripped, if present) is parsed and encoded to its fixed-width
-// 8-byte big-endian form, and if the marker was present, the exact
-// successor of the encoded bytes is returned. Computing the successor in
-// the encoded byte domain (rather than the decimal-text domain) keeps
-// exclusivity correct across the sign-flip boundary used for negative
-// numbers and across fractional values.
-//
-// Returns an InvalidNumericBoundError when the bound cannot be parsed as a
-// number. This must be treated as a hard failure, never silently mapped to
-// an empty result: a malformed bound is a caller error, not "no matches".
-func ResolveNumericScanBound(raw []byte, indexName, op string) ([]byte, error) {
-	base := raw
-	exclusive := false
-	if n := len(raw); n > 0 && raw[n-1] == 0x00 {
-		base = raw[:n-1]
-		exclusive = true
-	}
-
-	encoded, err := EncodeNumericValue(string(base))
-	if err != nil {
-		return nil, &InvalidNumericBoundError{IndexName: indexName, Op: op, Value: raw, Err: err}
-	}
-	if exclusive {
-		encoded = indexkey.Successor(encoded)
-	}
-	return encoded, nil
-}
-
-// EncodeNumericValue parses s as a float64 (to handle both integer and
-// floating-point JSON numbers) and encodes the result as an 8-byte
-// big-endian value with a sign-bit flip so that byte order matches
-// numeric order.
-func EncodeNumericValue(s string) ([]byte, error) {
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return nil, errors.Newf(
-			errors.ErrInvalidInput,
-			"index.EncodeNumericValue",
-			"cannot parse %q as a number: %v",
-			s,
-			err,
-		)
-	}
-	return encodeFloat64(f), nil
-}
-
-// DecodeNumericValue reverses EncodeNumericValue. It decodes an 8-byte
-// big-endian representation back to a decimal string. Integer values
-// are returned without a decimal point (e.g. "123"); fractional values
-// use the shortest representation that round-trips (e.g. "1.5").
-func DecodeNumericValue(b []byte) (string, error) {
-	if len(b) != 8 {
-		return "", errors.Newf(
-			errors.ErrInvalidInput,
-			"index.DecodeNumericValue",
-			"expected 8 bytes, got %d",
-			len(b),
-		)
-	}
-	bits := decodeUint64(b)
-
-	// Reverse the encoding applied by encodeFloat64:
-	// positive numbers had their sign bit flipped; negative numbers had
-	// all bits flipped.
-	var f float64
-	if bits&(1<<63) != 0 {
-		// Was positive — reverse the sign-bit flip.
-		bits ^= (1 << 63)
-	} else {
-		// Was negative — reverse the all-bits flip.
-		bits = ^bits
-	}
-	f = math.Float64frombits(bits)
-
-	// Format as integer when the value is whole and fits in int64.
-	if f == math.Trunc(f) && f >= math.MinInt64 && f <= math.MaxInt64 {
-		return strconv.FormatInt(int64(f), 10), nil
-	}
-	return strconv.FormatFloat(f, 'f', -1, 64), nil
 }

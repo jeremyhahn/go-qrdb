@@ -739,6 +739,44 @@ func TestKVStoreAdapter_RegisterEntityIndexes_ForwardsCaseInsensitivity(t *testi
 	}
 }
 
+// TestKVStoreAdapter_RegisterEntityIndexes_ForwardsNumeric proves a numeric
+// definition reaches the server as numeric, and an ordinary one as text.
+// Dropping the flag would build text terms, whose range scans put "10" before
+// "2" and answer `>= 2` without the record holding 10.
+func TestKVStoreAdapter_RegisterEntityIndexes_ForwardsNumeric(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		numeric bool
+	}{
+		{"numeric definition", true},
+		{"ordinary definition", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []transport.IndexConfig
+			idx := &mockTransportIndex{
+				createFn: func(_ context.Context, _, _ string, cfg transport.IndexConfig) error {
+					got = append(got, cfg)
+					return nil
+				},
+			}
+			adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+			err := adapter.RegisterEntityIndexes("entity", []kvstore.EntityIndex{
+				{FieldName: "Age", JSONFieldName: "age", CaseSensitive: true, Numeric: tc.numeric},
+			})
+			if err != nil {
+				t.Fatalf("RegisterEntityIndexes = %v; want nil", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("created %d indexes; want 1", len(got))
+			}
+			if got[0].Numeric != tc.numeric {
+				t.Errorf("forwarded Numeric=%v; want %v", got[0].Numeric, tc.numeric)
+			}
+		})
+	}
+}
+
 // TestKVStoreAdapter_ScanIndexThreadsOpenBounds is the go-qrdb#36 replacement
 // for the earlier open-bound refusal. A nil []byte bound now reaches the
 // transport as a nil *string — an OPEN bound — instead of being refused or

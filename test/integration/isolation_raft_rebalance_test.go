@@ -307,19 +307,11 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
-		cmd := exec.Command(bin, args...)
 		watchers[i] = newStormWatcher(t, fmt.Sprintf("[rebal-node%d] ", i+1))
-		cmd.Stdout = watchers[i]
-		cmd.Stderr = watchers[i]
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
-		}
+		cmd := spawnNode(t, bin, args, watchers[i])
 		cmds[i] = cmd
 		t.Cleanup(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
+			killNode(t, cmd)
 		})
 	}
 
@@ -706,15 +698,8 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 		}
 	}
 	for i, cmd := range cmds {
-		done := make(chan error, 1)
-		go func(c *exec.Cmd) { done <- c.Wait() }(cmd)
-		select {
-		case <-done:
-			t.Logf("node %d stopped", i+1)
-		case <-time.After(30 * time.Second):
-			cmd.Process.Kill()
-			t.Fatalf("node %d: timed out waiting for graceful shutdown", i+1)
-		}
+		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
+		t.Logf("node %d stopped", i+1)
 	}
 
 	t.Logf("isolation-raft rebalance MOVE PASS (submitFromNonMember=%v)", submitFromNonMember)

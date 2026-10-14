@@ -88,7 +88,7 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 
 	resp, err := t.call(ctx, "index.Query", payload)
 	if err != nil {
-		return nil, err
+		return nil, mapIndexAbsent(indexName, err)
 	}
 
 	var pbResp pb.IndexQueryResponse
@@ -124,7 +124,7 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 
 	resp, err := t.call(ctx, "index.Scan", payload)
 	if err != nil {
-		return nil, err
+		return nil, mapIndexAbsent(indexName, err)
 	}
 
 	var pbResp pb.IndexScanResponse
@@ -174,4 +174,14 @@ func (t *Transport) IndexList(ctx context.Context) (*transport.IndexListResponse
 	return &transport.IndexListResponse{
 		Names: pbResp.GetNames(),
 	}, nil
+}
+
+// mapIndexAbsent turns the server's wire not-found on an index query or scan
+// into the typed IndexNotFoundError every transport returns for an index that
+// does not exist; any other error passes through.
+func mapIndexAbsent(indexName string, err error) error {
+	if isWireNotFound(err) {
+		return &transport.IndexNotFoundError{Name: indexName}
+	}
+	return err
 }

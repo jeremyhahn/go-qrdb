@@ -100,6 +100,10 @@ INTTEST_ceremony            := officer_ceremony_cli_test.go ceremony_forwarding_
 INTTEST_certificate_authority := ca_cli_test.go clusterca_test.go cluster_ca_anchor_spof_test.go
 INTTEST_capabilities        := cli_multiprotocol_test.go
 INTTEST_clustering          := admin_test.go admin_cluster_cli_test.go cluster_test.go drain_test.go rebalance_cli_test.go join_request_cli_test.go join_token_cli_test.go member_record_test.go dynamic_membership_pebble_test.go
+# cluster-verification: the in-CI leader SIGKILL-under-load, leader
+# partition and lease-read-after-leader-change tests. The soak itself
+# (`make cluster-proof`) is not this harness and is never selected here.
+INTTEST_cluster_verification := cluster_crash_test.go cluster_lease_test.go cluster_partition_test.go cluster_ports_test.go
 INTTEST_collections         := collection_cli_test.go
 INTTEST_configuration       :=
 # coordination: SDK-only by design (see the note above); the per-transport

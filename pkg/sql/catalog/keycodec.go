@@ -216,7 +216,7 @@ func (c *KeyCodec) EncodeValues(vals []any) (string, error) {
 		}
 		byteVals[i] = raw
 		if numeric {
-			valueTypes[i] = index.IndexValueTypeNumeric
+			valueTypes[i] = index.IndexValueTypeFixed64
 		} else {
 			valueTypes[i] = index.IndexValueTypeString
 		}
@@ -232,7 +232,7 @@ func (c *KeyCodec) Decode(key string) ([]any, error) {
 	valueTypes := make([]index.IndexValueType, len(c.components))
 	for i, comp := range c.components {
 		if comp.numeric {
-			valueTypes[i] = index.IndexValueTypeNumeric
+			valueTypes[i] = index.IndexValueTypeFixed64
 		} else {
 			valueTypes[i] = index.IndexValueTypeString
 		}

@@ -162,14 +162,17 @@ headroom under the host limit.
 
 ## Ports
 
+Which ports to open, on which protocol, and who must reach each one is in
+[Network ports](../clustering/user.md#network-ports). The fields that move them:
+
 | Service | Default | Where to change it |
 |---|---|---|
-| Raft | 63001 | `raft.raft_address` |
-| REST | 63002 | `server.admin_port` |
+| Raft | 63001 | `raft.listen_address` (bind), `raft.raft_address` (advertised) |
+| REST/admin | 63002 | `server.admin_port` |
 | gRPC | 63003 | `server.grpc_port` |
-| QUIC | 63004 | `server.quic_port` |
+| Native QUIC | 63004 | `server.quic_port` |
 | MCP | 63005 | `mcp.port` |
-| Noise bootstrap | 63006 | `bootstrap.noise_port` |
+| Noise trust anchor | 63006 | `bootstrap.noise_port` |
 | CSR join | 63007 | `cluster_join.listen_port` |
 | MySQL | 3306 | `server.mysql_port` |
 | PostgreSQL | 5432 | `server.pgsql_port` |

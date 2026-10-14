@@ -50,6 +50,7 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 		permission.AdminDrain, permission.AdminSnapshot,
 		permission.AdminStartShard, permission.AdminStopShard,
 		permission.AdminShardState, permission.AdminTopology,
+		permission.AdminReplicaState,
 		// The node keyspace, which holds every tenant's raw history.
 		permission.AdminNodeCompaction,
 	}
@@ -107,6 +108,7 @@ func TestClusterAdmin_TenantGrantedPermissionsAreDenied(t *testing.T) {
 	perms := []permission.Permission{
 		permission.AdminStartShard, permission.AdminStopShard,
 		permission.AdminShardState, permission.AdminTopology,
+		permission.AdminReplicaState,
 		permission.RebalanceExecute, permission.RebalancePlan,
 		permission.RebalanceReport, permission.RebalanceStats,
 		// Shard backups hold every tenant's data on the shard.

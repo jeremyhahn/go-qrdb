@@ -53,6 +53,7 @@ func clusterAdminPermissions() []Permission {
 		AdminDrain,
 		AdminNodeCompaction,
 		AdminRemoveMember,
+		AdminReplicaState,
 		AdminShardState,
 		AdminSnapshot,
 		AdminStartShard,

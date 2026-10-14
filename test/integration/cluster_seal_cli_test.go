@@ -35,7 +35,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -201,15 +200,7 @@ func (h *multiProtocolSealHarness) stop(i int) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
-	}
+	stopNode(h.t, cmd, 15*time.Second)
 }
 
 // cliBarrierStatusFull is the full `barrier status --output json` response this

@@ -187,5 +187,12 @@ func (s *IndexService) translateReadError(err error) error {
 	if errors.As(err, &snc) {
 		return &SubsystemNotConfiguredError{Subsystem: snc.Service}
 	}
+	// A query naming an index that was never created, or was dropped, is a
+	// lookup that missed: every transport reports it NotFound, not as a
+	// failed read.
+	var inf *index.NotFoundError
+	if errors.As(err, &inf) {
+		return &IndexNotFoundError{Name: inf.Name}
+	}
 	return &ReadError{Err: err}
 }

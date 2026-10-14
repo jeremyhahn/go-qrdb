@@ -17,6 +17,8 @@ package unix
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -37,10 +39,12 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	}
 
 	_, err := t.client.IndexCreate(ctx, &pb.IndexCreateRequest{
-		Name:      name,
-		FieldName: fieldName,
-		Unique:    config.Unique,
-		Sparse:    config.Sparse,
+		Name:            name,
+		FieldName:       fieldName,
+		Unique:          config.Unique,
+		Sparse:          config.Sparse,
+		Numeric:         config.Numeric,
+		CaseInsensitive: config.CaseInsensitive,
 	})
 	if err != nil {
 		return mapGRPCError("IndexCreate", err)
@@ -74,7 +78,7 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 		Value:     []byte(value),
 	})
 	if err != nil {
-		return nil, mapGRPCError("IndexQuery", err)
+		return nil, mapIndexAbsent("IndexQuery", indexName, err)
 	}
 
 	keys := make([]string, len(resp.GetKeys()))
@@ -99,7 +103,7 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 		End:       transport.OptionalBytes(end),
 	})
 	if err != nil {
-		return nil, mapGRPCError("IndexScan", err)
+		return nil, mapIndexAbsent("IndexScan", indexName, err)
 	}
 
 	entries := make([]transport.IndexScanEntry, len(resp.GetEntries()))
@@ -133,4 +137,14 @@ func (t *Transport) IndexList(ctx context.Context) (*transport.IndexListResponse
 	return &transport.IndexListResponse{
 		Names: resp.GetNames(),
 	}, nil
+}
+
+// mapIndexAbsent turns the server's codes.NotFound on an index query or scan
+// into the typed IndexNotFoundError every transport returns for an index that
+// does not exist; any other error takes the generic mapping.
+func mapIndexAbsent(method, indexName string, err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+		return &transport.IndexNotFoundError{Name: indexName}
+	}
+	return mapGRPCError(method, err)
 }

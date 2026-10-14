@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 ## Exported surface
 
@@ -148,14 +148,15 @@ type IndexClient interface {
 	IndexCreate(ctx context.Context, name, fieldName string, config IndexConfig) error
 	IndexDrop(ctx context.Context, name string) error
 	IndexQuery(ctx context.Context, indexName, value string) (*IndexQueryResponse, error)
-	IndexScan(ctx context.Context, indexName, start, end string) (*IndexScanResponse, error)
+	IndexScan(ctx context.Context, indexName string, start, end *string) (*IndexScanResponse, error) // nil = open bound
 	IndexList(ctx context.Context) (*IndexListResponse, error)
 }
 
 type IndexConfig struct {
-	Unique  bool `json:"unique"`
-	Sparse  bool `json:"sparse"`
-	Numeric bool `json:"numeric"`
+	Unique          bool `json:"unique"`
+	Sparse          bool `json:"sparse"`
+	Numeric         bool `json:"numeric"`          // order-preserving numeric terms
+	CaseInsensitive bool `json:"case_insensitive"`
 }
 
 type IndexQueryResponse struct{ Keys []string }
@@ -245,8 +246,57 @@ significant** — the first field is the leading prefix field.
   `A` prefix and post-filters `C`.
 - **Compound key encoding is order-preserving.** Strings: byte-stuffed,
   null-terminated, `\x00` escaped as `\x00\xFF`, terminated `\x00\x00`.
-  Numerics: 8-byte big-endian with sign-bit flip. Changing either encoding
-  invalidates every existing compound index on disk.
+  Numerics: the self-delimiting numeric term (`index.EncodeNumericValue`).
+  Changing either encoding invalidates every existing compound index on disk,
+  which is why the numeric one is versioned (`index.NumericEncodingVersion`).
+- **Numeric terms are exact and versioned.** `index.EncodeNumericValue` parses
+  decimal text into a prefix-free term whose byte order is numeric order
+  (`-Inf` < negatives < `0` < positives < `+Inf`; `-0` is `0`; `NaN` is never
+  indexed and is refused as a bound). `index.IndexConfig.EncodingVersion`
+  records the version entries were written under; `IndexConfig.CheckEncoding`
+  — called by every index constructor — refuses a numeric definition whose
+  version is not current with `*index.StaleEncodingError`. Every create
+  handler (`KVEngine`, `MVCCEngine`, the Pebble state machine) sets the
+  current version and calls `Index.Clear` before its backfill, so a create is
+  also a rebuild. A persisted catalog must store the version per definition
+  and rebuild stale ones; it must never open them.
+- **A numeric definition reaches the engine from every entry point.**
+  `kvstore.EntityIndex.Numeric` is the DAO's request; the system-tenant
+  adapter (`lifecycle.kvStoreAdapter`) turns it into
+  `IndexConfig.ValueType = IndexValueTypeNumeric`, the SDK adapter into
+  `transport.IndexConfig.Numeric`, and every transport — REST, gRPC, Unix,
+  QUIC, MCP, embedded — carries that flag (and `CaseInsensitive`) to
+  `protocol.IndexCreateOptions`. `MemoryKVStore` builds the same terms, and a
+  re-registration with a different value type is an `IndexRegistrationError`
+  there, as any divergent definition is.
+- **The DAO asks for numeric terms only where the JSON is a number.**
+  `pkg/dao.hasNumericTerms` is true for an integer or float kind whose type
+  implements neither `json.Marshaler` nor `encoding.TextMarshaler`. Only such
+  single-field indexes are advertised to the planner with their `FieldType`;
+  a compound index with a numeric member is not advertised, because
+  `EntityIndex` has no per-member value type.
+- **A consumed range predicate is answered exactly by the scan.** The planner
+  does not post-filter the predicate a scan plan consumes, so
+  `planner.Plan.RangeStartExclusive` (`>`) and `RangeEndExclusive` (`<`) are
+  binding. `pkg/dao.scanInterval` turns a plan into the half-open
+  `[start, end)` `kvstore.KVStore.ScanIndex` answers; "the value after v" is
+  `v` followed by one `0x00` byte (`successorBound`), which on a numeric index
+  `index.ResolveNumericScanBound` reads as the next term after the number.
+  `TestDAO_NumericRangeMatchesBruteForce` checks every operator against a
+  brute-force filter over random integers and floats.
+- **PREFIX is a post-filter even when it picks the index.** A prefix scan has
+  a lower bound only, so `Plan.PostFilters` keeps the `OpPrefix` predicate
+  (`prefixIsResidual`) and trims what the scan read past the prefix. On a
+  numeric field PREFIX is never planned on the index at all
+  (`isNumericFieldType`): it asks about the decimal spelling.
+- **An invalid numeric bound is the caller's error.**
+  `index.InvalidNumericBoundError` classifies as `InvalidArgument` (400 /
+  `INVALID_ARGUMENT`) through the `ReadError` that carries it, never as a
+  server fault.
+- **`index.IndexValueTypeFixed64` is not a numeric index.** It is the compound
+  member type for values the caller already encoded as eight ordered bytes —
+  SQL primary-key columns (`catalog.KeyCodec`) — and splits back at a fixed
+  width. Their stored key format is independent of the numeric index term.
 - **Every index adds one storage write per entity `Put`/`Delete`.** Read speed
   is bought with write amplification, and that is the whole trade.
 - **Index entries live under the reserved `__idx:` namespace** and are invisible
@@ -272,12 +322,16 @@ significant** — the first field is the leading prefix field.
   created before owners existed. It travels as a trailing extension of the
   index-create command, and every state machine that applies index commands
   keeps it beside the index. Re-creating a name under the SAME owner succeeds
-  without reconciling the definition — the existing definition wins. Creating
+  without reconciling the definition — the existing definition wins — with one
+  exception: a re-create asking for a different value type rebuilds the index
+  at that type (`engine.IndexCreateValueType`; see
+  [architecture.md](architecture.md#numeric-order)), so a field declared
+  numeric after it was indexed as text gets numeric terms. Creating
   a name another owner holds is **refused** (`index.OwnershipError`, reported
   as an application error so the apply advances; 409 / `ALREADY_EXISTS` on the
-  wire) instead of silently adopting an index somebody else made. A divergent
-  same-owner re-create must still be refused, or the previous index dropped,
-  *before* the proposal. This is why an index left behind by a teardown is a
+  wire) instead of silently adopting an index somebody else made. Any other
+  divergent same-owner re-create must still be refused, or the previous index
+  dropped, *before* the proposal. This is why an index left behind by a teardown is a
   correctness problem and not a space leak: the survivor silently overrides
   the definition the next creator asked for, and a `unique` constraint that
   creator requested is never enforced.

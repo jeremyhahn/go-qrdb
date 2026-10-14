@@ -30,6 +30,7 @@ package integration_test
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -134,6 +135,10 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if err == nil {
 		t.Fatalf("[%s] index query against nonexistent index succeeded, want error (output: %s)", proto.name, out)
 	}
+	// The failure is the typed not-found, not a generic server fault.
+	if !strings.Contains(out, "transport: index not found: ") {
+		t.Fatalf("[%s] index query against nonexistent index: want index-not-found, got: %s", proto.name, out)
+	}
 
 	// --- create (priority index) + scan ---------------------------------
 	out, err = runCLIProto(t, node, proto, "index", "create", idxPriority, "--field", fieldPriority)
@@ -196,6 +201,8 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 			}
 		}
 	}
+
+	testNumericIndexScanOverProtocol(t, node, proto, kprefix)
 
 	// --- create (unique index) enforces the uniqueness constraint. -----
 	out, err = runCLIProto(t, node, proto, "index", "create", idxUnique, "--field", fieldCode, "--unique")
@@ -260,6 +267,9 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if err == nil {
 		t.Fatalf("[%s] index query %s (dropped) succeeded, want error (output: %s)", proto.name, idxSparse, out)
 	}
+	if want := "transport: index not found: " + idxSparse; !strings.Contains(out, want) {
+		t.Fatalf("[%s] index query %s (dropped): want %q, got: %s", proto.name, idxSparse, want, out)
+	}
 
 	out, err = runCLIProto(t, node, proto, "--output", "json", "index", "list")
 	if err != nil {
@@ -290,4 +300,100 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if !strings.Contains(out, "OK") {
 		t.Fatalf("[%s] index drop %s (already dropped): expected idempotent OK, got: %s", proto.name, idxSparse, out)
 	}
+}
+
+// testNumericIndexScanOverProtocol covers `index create --numeric` and RANGE
+// scans over it. Text order puts "10" before "2", so a text index scanned
+// from 2 drops the record holding 10; a numeric index must return it. The
+// values span signs, fractions and an exponent, and every scan's membership
+// is asserted exactly, so a partial answer fails rather than passing as one.
+func testNumericIndexScanOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, kprefix string) {
+	t.Helper()
+
+	idxAge := "idx-age-" + proto.name
+	fieldAge := "age-" + proto.name
+
+	out, err := runCLIProto(t, node, proto, "index", "create", idxAge, "--field", fieldAge, "--numeric")
+	if err != nil {
+		t.Fatalf("[%s] index create %s --field %s --numeric: %v\noutput: %s", proto.name, idxAge, fieldAge, err, out)
+	}
+	ages := map[string]string{
+		kprefix + "age-neg":   "-5",
+		kprefix + "age-two":   "2",
+		kprefix + "age-frac":  "2.5",
+		kprefix + "age-ten":   "10",
+		kprefix + "age-huge":  "1e21",
+		kprefix + "age-text":  `"ten"`,
+		kprefix + "age-zero":  "-0",
+		kprefix + "age-whole": "100",
+	}
+	for k, v := range ages {
+		out, err = runCLIProto(t, node, proto, "kv", "put", k, `{"`+fieldAge+`":`+v+`}`)
+		if err != nil {
+			t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, k, err, out)
+		}
+	}
+
+	key := func(name string) string { return kprefix + "age-" + name }
+	for _, sc := range []struct {
+		bounds []string
+		want   []string
+	}{
+		// The acceptance case: >= 2 holds both 2 and 10.
+		{[]string{"--start", "2"}, []string{key("two"), key("frac"), key("ten"), key("whole"), key("huge")}},
+		{[]string{"--start", "2", "--end", "10"}, []string{key("two"), key("frac")}},
+		{[]string{"--end", "0"}, []string{key("neg")}},
+		{[]string{"--start", "-0", "--end", "2.5"}, []string{key("zero"), key("two")}},
+		{[]string{"--start", "1e20"}, []string{key("huge")}},
+		// A non-number holds no place in the order and is in no range.
+		{nil, []string{key("neg"), key("zero"), key("two"), key("frac"), key("ten"), key("whole"), key("huge")}},
+	} {
+		args := append([]string{"--output", "json", "index", "scan", idxAge}, sc.bounds...)
+		out, err = runCLIProto(t, node, proto, args...)
+		if err != nil {
+			t.Fatalf("[%s] index scan %s %v: %v\noutput: %s", proto.name, idxAge, sc.bounds, err, out)
+		}
+		var scanResp transport.IndexScanResponse
+		if jerr := json.Unmarshal([]byte(out), &scanResp); jerr != nil {
+			t.Fatalf("[%s] decode `index scan %v` JSON: %v\noutput: %s", proto.name, sc.bounds, jerr, out)
+		}
+		var got []string
+		for _, entry := range scanResp.Entries {
+			got = append(got, entry.Keys...)
+		}
+		if len(got) == 0 {
+			t.Fatalf("[%s] index scan %s %v returned no keys; want %v", proto.name, idxAge, sc.bounds, sc.want)
+		}
+		if !sameStrings(got, sc.want) {
+			t.Fatalf("[%s] index scan %s %v keys = %v; want exactly %v", proto.name, idxAge, sc.bounds, got, sc.want)
+		}
+	}
+
+	// Equality finds a number by value, whatever text it was written as.
+	out, err = runCLIProto(t, node, proto, "--output", "json", "index", "query", idxAge, "--value", "0")
+	if err != nil {
+		t.Fatalf("[%s] index query %s --value 0: %v\noutput: %s", proto.name, idxAge, err, out)
+	}
+	var queryResp transport.IndexQueryResponse
+	if jerr := json.Unmarshal([]byte(out), &queryResp); jerr != nil {
+		t.Fatalf("[%s] decode `index query` JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if !sameStrings(queryResp.Keys, []string{key("zero")}) {
+		t.Fatalf("[%s] index query %s --value 0 = %v; want [%s] (-0 is 0)", proto.name, idxAge, queryResp.Keys, key("zero"))
+	}
+
+	// NaN has no place in the order, so it is refused as a bound rather
+	// than answered as an empty range.
+	out, err = runCLIProto(t, node, proto, "index", "scan", idxAge, "--start", "NaN")
+	if err == nil {
+		t.Fatalf("[%s] index scan %s --start NaN succeeded, want an invalid-bound error (output: %s)", proto.name, idxAge, out)
+	}
+}
+
+// sameStrings reports whether a and b hold the same strings, ignoring order.
+func sameStrings(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }

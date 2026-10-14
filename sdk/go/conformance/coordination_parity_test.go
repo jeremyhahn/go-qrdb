@@ -118,8 +118,9 @@ func createMatrixUser(t *testing.T, n *node.Node, roleID string) {
 }
 
 // bootClient brings the cell up and returns an SDK client that reaches it
-// over the cell's transport, and the context every call in the suite must
-// use: for the embedded cell, which authenticates nothing on its own, an
+// over the cell's transport, and the context whose values every call in the
+// suite must carry, each subtest bounding its own calls by subtestCtx: for
+// the embedded cell, which authenticates nothing on its own, an
 // identity holding coordinationPermissions, paired with tenant.WithTenantID
 // (the convention every embedded authorization gate reads); for a remote
 // cell, the client certificate it dials with already carries it, so the
@@ -192,12 +193,12 @@ func TestCoordinationFamilies_SameOnStandaloneAndRaft(t *testing.T) {
 	for _, c := range coordinationCells() {
 		t.Run(c.name(), func(t *testing.T) {
 			client, ctx := c.bootClient(t)
-			t.Run("lease", func(t *testing.T) { assertLeaseLifecycle(t, ctx, client) })
-			t.Run("lease-expiry", func(t *testing.T) { assertLeaseExpiryDeletesKeys(t, ctx, client) })
-			t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, ctx, client) })
-			t.Run("watch-resume", func(t *testing.T) { assertWatchResumesFromRevision(t, ctx, client) })
-			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, ctx, client) })
-			t.Run("lock", func(t *testing.T) { assertLockLifecycle(t, ctx, client) })
+			t.Run("lease", func(t *testing.T) { assertLeaseLifecycle(t, subtestCtx(t, ctx), client) })
+			t.Run("lease-expiry", func(t *testing.T) { assertLeaseExpiryDeletesKeys(t, subtestCtx(t, ctx), client) })
+			t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, subtestCtx(t, ctx), client) })
+			t.Run("watch-resume", func(t *testing.T) { assertWatchResumesFromRevision(t, subtestCtx(t, ctx), client) })
+			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, subtestCtx(t, ctx), client) })
+			t.Run("lock", func(t *testing.T) { assertLockLifecycle(t, subtestCtx(t, ctx), client) })
 		})
 	}
 }
@@ -339,6 +340,12 @@ func (s *eventStream) next(t *testing.T, ctx context.Context, write func()) *tra
 		select {
 		case resp, ok := <-s.ch:
 			if !ok {
+				// A transport closes the stream when the caller's context
+				// ends, so a close can be the deadline arriving first: name
+				// that, not a stream that ended on its own.
+				if err := ctx.Err(); err != nil {
+					t.Fatalf("no watch event before the deadline: %v", err)
+				}
 				t.Fatal("watch stream closed before an event arrived")
 			}
 			if err := resp.Err(); err != nil {
@@ -488,9 +495,9 @@ func TestCoordinator_SameOnEveryTransport(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Coordination: %v", err)
 			}
-			t.Run("get-put-cas", func(t *testing.T) { assertCoordinatorGetPutCAS(t, ctx, coord) })
-			t.Run("lease", func(t *testing.T) { assertCoordinatorLease(t, ctx, coord) })
-			t.Run("watch", func(t *testing.T) { assertCoordinatorWatch(t, ctx, coord) })
+			t.Run("get-put-cas", func(t *testing.T) { assertCoordinatorGetPutCAS(t, subtestCtx(t, ctx), coord) })
+			t.Run("lease", func(t *testing.T) { assertCoordinatorLease(t, subtestCtx(t, ctx), coord) })
+			t.Run("watch", func(t *testing.T) { assertCoordinatorWatch(t, subtestCtx(t, ctx), coord) })
 		})
 	}
 }

@@ -66,21 +66,14 @@ func TestCompoundDAO_EntityImplementsCompoundIndexRegisterer(t *testing.T) {
 	assert.Equal(t, []string{"ConversationID", "IsRead"}, defs[1].Fields)
 }
 
-// TestCompoundDAO_BuildCatalog_OmitsNumericallyOrderedIndexes replaces a test
-// that required every declared index to be advertised to the planner,
-// including ones over numeric fields.
-//
-// compoundTestMessage's Timestamp is an int64 and IsRead a bool, and index
-// terms are stored as decimal text compared lexicographically — so "10" sorts
-// before "2" and a range plan over Timestamp returns an INCOMPLETE result
-// with a nil error. Advertising such an index is what lets the planner choose
-// it. Both compound definitions lead with ConversationID but carry a numeric
-// or bool member, so neither survives either.
-//
-// Omitting them makes the planner choose a full scan, which is correct. The
-// direct QueryByCompoundIndex / QueryByIndex paths are unaffected. Restoring
-// order-preserving numeric index encoding is tracked as #35.
-func TestCompoundDAO_BuildCatalog_OmitsNumericallyOrderedIndexes(t *testing.T) {
+// TestCompoundDAO_BuildCatalog_NumericIndexes pins which numeric indexes the
+// planner may choose. compoundTestMessage's Timestamp is an int64: New
+// registers its single-field index with numeric terms, whose order is numeric
+// order, so a range plan over it is sound and it is advertised, carrying its
+// kind. A compound index with a numeric member is not: kvstore.EntityIndex
+// has no per-member value type, so its members are text terms, and "10" sorts
+// before "2".
+func TestCompoundDAO_BuildCatalog_NumericIndexes(t *testing.T) {
 	store := newCompoundTestStore()
 
 	dao, err := New[*compoundTestMessage](
@@ -91,21 +84,46 @@ func TestCompoundDAO_BuildCatalog_OmitsNumericallyOrderedIndexes(t *testing.T) {
 	require.NoError(t, err)
 
 	gDAO := dao.(*genericDAO[*compoundTestMessage])
-	indexes := gDAO.buildCatalog().AvailableIndexes()
-
-	var names []string
-	for _, idx := range indexes {
-		names = append(names, idx.Name)
+	byName := make(map[string]string)
+	for _, idx := range gDAO.buildCatalog().AvailableIndexes() {
+		byName[idx.Name] = idx.FieldType
 	}
 
-	// The string field keeps its index.
-	assert.Contains(t, names, "messages.ConversationID")
+	assert.Contains(t, byName, "messages.ConversationID")
+	require.Contains(t, byName, "messages.Timestamp",
+		"a numeric field indexed with numeric terms must be advertised for planning")
+	assert.Equal(t, "int64", byName["messages.Timestamp"],
+		"the planner reads the kind to refuse a text prefix over numeric terms")
+	assert.NotContains(t, byName, "messages.ConversationID_Timestamp",
+		"a compound index with a numeric member holds text terms")
+}
 
-	// The numeric one does not, nor does any compound index containing it.
-	assert.NotContains(t, names, "messages.Timestamp",
-		"a numerically ordered field must not be advertised for planning")
-	assert.NotContains(t, names, "messages.ConversationID_Timestamp",
-		"a compound index with a numeric member inherits the ordering problem")
+// TestCompoundDAO_Registration_MarksNumericIndexes checks New asks the store
+// for numeric terms on exactly the numeric single-field index.
+func TestCompoundDAO_Registration_MarksNumericIndexes(t *testing.T) {
+	store := newCompoundTestStore()
+
+	_, err := New[*compoundTestMessage](
+		store,
+		"messages",
+		func() *compoundTestMessage { return &compoundTestMessage{} },
+	)
+	require.NoError(t, err)
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	numeric := make(map[string]bool)
+	for _, ei := range store.registrations["messages"] {
+		if !ei.IsCompound() {
+			numeric[ei.FieldName] = ei.Numeric
+		}
+	}
+	assert.Equal(t, map[string]bool{
+		"ConversationID": false,
+		"Timestamp":      true,
+		"IsRead":         false,
+	}, numeric)
 }
 
 func TestCompoundDAO_Registration_PassesCompoundIndexesToStore(t *testing.T) {

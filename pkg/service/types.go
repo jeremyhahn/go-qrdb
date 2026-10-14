@@ -459,3 +459,31 @@ type TopologyShardInfo struct {
 	// cluster members.
 	Nodes map[uint64]string
 }
+
+// ReplicaStatesResponse is the answering node's report of its replicas'
+// applied index and state-machine hash (ReplicaStateReader).
+type ReplicaStatesResponse struct {
+	// NodeID is the answering host's identifier.
+	NodeID string `json:"node_id"`
+
+	// Replicas holds one entry per replica on the node, ordered by shard
+	// ID. It is empty, never nil, on a node with no replicas to report.
+	Replicas []ReplicaState `json:"replicas"`
+}
+
+// ReplicaState is one replica's applied index and state-machine hash. Two
+// replicas of one shard at an equal AppliedIndex must report an equal Hash;
+// hashes of different shards, or at different indexes, are not comparable.
+type ReplicaState struct {
+	// ShardID is the shard the replica belongs to.
+	ShardID uint64 `json:"shard_id"`
+
+	// ReplicaID is this node's replica identifier within the shard.
+	ReplicaID uint64 `json:"replica_id"`
+
+	// AppliedIndex is the log index the hash was taken at.
+	AppliedIndex uint64 `json:"applied_index"`
+
+	// Hash is the state machine's xxHash64 digest over its keys and values.
+	Hash uint64 `json:"hash"`
+}

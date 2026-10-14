@@ -204,26 +204,11 @@ full scans over a store that was only briefly unavailable.
 | `lifecycle.NewKVStoreAdapter` (volume-pool cursor) | no — refuses | Built without an `IndexServicer`; its record is a single cluster-wide scalar with nothing to index |
 | `embedded.serverKVAdapter` | no — refuses | Wraps a bare `KVServicer` with no index subsystem behind it |
 
-**Refused: an OPEN range bound on the SDK transport path** (tracked as #36).
-`transport.IndexClient.IndexScan` takes plain strings and cannot express
-"unbounded", and the planner leaves one side nil for every one-sided range —
-so `Team >= "beta"` would become `["beta", "")` and return nothing. The
-adapter refuses a nil bound instead.
-
-**Numerically ordered fields are not advertised to the planner** (#35). Index
-terms are decimal text compared lexicographically, so `"10"` sorts before
-`"2"` and `Age >= 2` would return an incomplete result — worse than empty,
-because a partial answer looks like a real one. `buildCatalog` omits numeric
-single-field indexes, and compound indexes with any numeric member, so the
-planner chooses a correct full scan.
-
-Equality is sound on decimal text, so the cost is a performance one: a numeric
-equality query full-scans instead of using its index. The direct
-`QueryByIndex` path is unaffected and still uses it. The surgical fix — the
-planner refusing only RANGE plans on such fields, using the `FieldType` it
-already carries — changes the planner's documented contract and needs a
-ruling; so does threading order-preserving numeric encoding through
-`EntityIndex` and the Raft command format.
+**Open range bounds cross every transport.** `transport.IndexClient.IndexScan`
+takes each bound as an optional string (`transport.OptionalString`), so the
+one-sided ranges the planner produces — `Team >= "beta"` has no upper bound —
+reach the server as unbounded rather than as an empty string that would match
+nothing.
 
 **`index:"case_insensitive"` is honoured on every backend** (#34). The
 case-sensitivity flag is threaded end to end: `protocol.IndexFlagCaseInsensitive`
@@ -246,6 +231,50 @@ need. Choosing between those is a cryptographic design decision, and it is
 deliberately not made in the implementation. Until it is ruled on, these stores
 refuse, and a DAO over them answers correctly by full scan.
 
+## Numeric indexes and range plans
+
+A numeric index stores **order-preserving numeric terms** instead of decimal
+text, so a range over it is sound: `Age >= 2` returns the records holding 2
+*and* 10, where text order would put `"10"` before `"2"`. An index is numeric
+when its definition says so — `EntityIndex.Numeric`,
+`index.IndexConfig.ValueType = IndexValueTypeNumeric`, the `numeric` flag of
+`IndexCreate` on every transport, or `qrdb index create --numeric`. The DAO
+sets it for an indexed field whose Go kind is an integer or a float and whose
+type has no custom JSON or text marshaler (`hasNumericTerms`); a type that
+marshals itself keeps text terms, because its JSON is not known to be a number.
+
+The term encoding, its total order and its versioning are in
+[Numeric order](#numeric-order). A scan bound on a numeric index must itself be
+a number; `NaN` or a non-number is refused with
+`index.InvalidNumericBoundError` rather than answered with an empty result. A
+scan result is keyed by the value's canonical decimal text (`1.50` → `1.5`,
+`3e2` → `300`, `-0` → `0`).
+
+The planner gets the precision it needs from two flags on the plan:
+`RangeStartExclusive` (from `>`) and `RangeEndExclusive` (from `<`). A scan
+plan's consumed range predicate is **not** re-checked afterwards, so the
+executor honours them exactly: the DAO turns the plan into the half-open
+interval `ScanIndex` answers, naming "the value immediately after v" with a
+trailing `0x00` byte on the bound (an exclusive lower bound or an inclusive
+upper one). On a text index that byte is the literal successor string; on a
+numeric index the bound resolver reads it as the next term after the number.
+
+Two shapes stay off the numeric index:
+
+- **PREFIX on a numeric field** is never planned on the index. It is a
+  question about the decimal spelling, which numeric terms do not preserve, so
+  it is answered by a full scan with the prefix as a post-filter.
+- **Compound indexes with a numeric member** are not advertised to the planner.
+  `EntityIndex.Numeric` is one flag for the whole definition, with no value
+  type per member, so the DAO cannot ask for numeric terms on a numeric member
+  alone; `buildCatalog` leaves such an index out and the planner chooses a
+  correct full scan or another index.
+
+A **PREFIX plan on a text index** scans from the prefix to the end of the
+index — there is no exact upper bound, because a case-insensitive index folds
+its bounds and an incremented byte can fold below the prefix — so the prefix
+predicate stays in the plan's post-filters and trims the over-read.
+
 ## Index kinds
 
 | Kind | Declared as | Behaviour |
@@ -253,7 +282,7 @@ refuse, and a DAO over them answers correctly by full scan.
 | Non-unique | `index:"true"` | many entities per value |
 | Unique | `index:"unique"` | uniqueness enforced on write |
 | Sparse | sparse flag | entities missing the field are simply not indexed |
-| Numeric | numeric flag | order-preserving numeric encoding |
+| Numeric | numeric flag | exact order-preserving numeric terms — see [Numeric order](#numeric-order) |
 | Case-insensitive | `index:"case_insensitive"` | string normalisation before indexing |
 | Compound | `CompoundIndexRegisterer` | multiple fields, order significant |
 
@@ -274,9 +303,69 @@ used for prefix scans.
 
 Compound keys use **order-preserving encoding** so lexicographic byte comparison
 matches logical field ordering: strings are byte-stuffed and null-terminated
-(`\x00` escaped as `\x00\xFF`, terminated `\x00\x00`); numerics are 8-byte
-big-endian with the sign bit flipped. That is what makes a prefix scan a
-contiguous seek.
+(`\x00` escaped as `\x00\xFF`, terminated `\x00\x00`); numerics are the
+self-delimiting numeric terms described below. That is what makes a prefix
+scan a contiguous seek.
+
+## Numeric order
+
+A numeric index stores each value as an **exact, order-preserving decimal
+term**, so byte order over the terms is numeric order and a range scan over a
+numeric index is sound: `>= 2` over stored `2` and `10` returns both.
+
+**The total order** over indexable values is
+
+```
+-Inf  <  negative numbers  <  0  <  positive numbers  <  +Inf
+```
+
+with numbers in between compared by exact decimal value, not by a binary
+approximation. The rules at the edges are part of the contract:
+
+| Input | Policy |
+|---|---|
+| `-0`, `0.0`, `0e5` | the same term as `0`: zero has one position |
+| `1`, `1.0`, `1e0`, `10e-1` | one term: equal values share a term, so an equality lookup finds every spelling |
+| `Inf`, `+Infinity`, `-inf` | the two ends of the order (case-insensitive) |
+| `NaN` | **unordered, so never indexed**: a document holding `NaN` has no entry, as a sparse index treats a missing field; a `NaN` scan bound is refused with a typed error |
+| integers beyond 2^53, long fractions | exact: `9007199254740993` and `9007199254740992` are distinct terms |
+| text that is not a decimal number | not indexed; as a scan bound, refused |
+
+Accepted syntax is `[+-]digits[.digits][e[+-]digits]` (a leading `.5` is
+allowed), plus `Inf`/`Infinity`. Hexadecimal, digit separators and an exponent
+outside the 32-bit range are rejected. A term decodes back to a canonical
+spelling: plain digits up to 21 integer digits and down to six fractional
+zeros, exponent form beyond (`1e+21`, `1e-7`).
+
+**Term layout.** One tag byte orders the classes (`-Inf`, negative, zero,
+positive, `+Inf`). A finite non-zero value is normalised to `0.D × 10^E`; the
+tag is followed by `E` as a sign-flipped 32-bit big-endian integer, then the
+significant digits packed two per byte, then a `0x00` terminator. A negative
+value inverts every byte after its tag, which reverses its order. Terms are
+prefix-free, so one numeric term never begins another, compound members need
+no escaping, and the term immediately after a value — an exclusive lower or an
+inclusive upper bound — is computed exactly.
+
+**The encoding is versioned.** An index definition records the numeric
+encoding version its entries were written under. A numeric index, or a
+compound index with a numeric member, whose recorded version is not the
+current one is refused when it is opened (`index.StaleEncodingError`) rather
+than scanned, because mixing two encodings returns wrong answers without an
+error. Creating an index always writes the current version and clears any
+entries already under its name before the backfill, so recreating an index
+rebuilds it from the documents. A persisted index catalog carries the version
+with each definition and rebuilds — clear, then backfill — every definition
+whose version is stale.
+
+**A changed value type rebuilds too.** A create naming an index that already
+exists under the same owner is an idempotent no-op — the original field and
+uniqueness win — unless it asks for a different value type. Then the apply
+path rebuilds the index at the requested type: clear, then backfill. A field
+indexed as text before it was declared numeric would otherwise keep
+byte-ordered terms under a planner using it for numeric ranges. The rebuild is
+a deterministic step of applying the command, so every replica reaches the
+same index whether it replays the original create or restored past it. A
+create by a different owner is refused before the value type is compared.
 
 ## Cost model
 

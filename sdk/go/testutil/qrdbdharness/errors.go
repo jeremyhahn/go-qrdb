@@ -208,6 +208,24 @@ func (e *DaemonSignalError) Error() string {
 // Unwrap returns the underlying error.
 func (e *DaemonSignalError) Unwrap() error { return e.Err }
 
+// DaemonWaitError is returned when a daemon has not exited by the time a
+// bounded wait for it ends. Tail is the last of the daemon's own output,
+// which is usually what says why it is still running.
+type DaemonWaitError struct {
+	PID  int
+	Err  error
+	Tail string
+}
+
+// Error returns a human-readable description that ends with the output tail.
+func (e *DaemonWaitError) Error() string {
+	return errPrefix + "daemon pid " + strconv.Itoa(e.PID) + " has not exited: " + e.Err.Error() +
+		"\n--- daemon output tail ---\n" + e.Tail
+}
+
+// Unwrap returns the underlying error.
+func (e *DaemonWaitError) Unwrap() error { return e.Err }
+
 // TimeoutError is returned by the readiness waiters when the daemon does not
 // reach the expected state before the deadline. LastErr, when non-nil, carries
 // the most recent probe failure and is the useful diagnostic.
@@ -249,3 +267,20 @@ func (e *ProbeError) Error() string {
 	}
 	return msg
 }
+
+// RelayError is returned when a UDPRelay cannot be set up, and by
+// UDPRelay.Close when its front socket failed while the relay was serving.
+// Op names the failing step and Addr the address it concerned.
+type RelayError struct {
+	Op   string
+	Addr string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *RelayError) Error() string {
+	return errPrefix + "udp relay: " + e.Op + " " + e.Addr + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *RelayError) Unwrap() error { return e.Err }

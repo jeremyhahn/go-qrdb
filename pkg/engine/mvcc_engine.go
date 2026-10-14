@@ -93,6 +93,10 @@ type MVCCEngine struct {
 	// explicit index API. Guarded by indexMu with the maps above.
 	indexOwners map[string]string
 
+	// indexValueTypes holds the term encoding each index was built with (see
+	// IndexCreateValueType). Guarded by indexMu with the maps above.
+	indexValueTypes map[string]index.IndexValueType
+
 	lessor     *lease.Lessor
 	auditChain *audit.Chain
 	hub        *watch.Hub
@@ -183,6 +187,8 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 		indexFields: make(map[string]string),
 		indexScopes: make(map[string][]byte),
 		indexOwners: make(map[string]string),
+
+		indexValueTypes: make(map[string]index.IndexValueType),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -542,7 +548,7 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		idx, ok := e.indexes[q.IndexName]
 		e.indexMu.RUnlock()
 		if !ok {
-			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+			return nil, &index.NotFoundError{Name: q.IndexName}
 		}
 		return idx.Get(q.Value)
 
@@ -551,7 +557,7 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		idx, ok := e.indexes[q.IndexName]
 		e.indexMu.RUnlock()
 		if !ok {
-			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+			return nil, &index.NotFoundError{Name: q.IndexName}
 		}
 		return idx.Scan(q.Start, q.End)
 
@@ -1937,29 +1943,40 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		return sm.Result{}, nil, err
 	}
 
+	valueType := IndexCreateValueType(opts)
+
 	e.indexMu.Lock()
-	if _, exists := e.indexes[name]; exists {
+	if existing, exists := e.indexes[name]; exists {
 		owner := e.indexOwners[name]
-		e.indexMu.Unlock()
 		// A create naming an index ANOTHER owner holds is refused rather than
 		// adopted (go-qrdb#426). It is an application error, not a Go error:
 		// the outcome is a deterministic consequence of committed input, and
 		// returning an error here would stall consensus.
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			e.indexMu.Unlock()
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 		}
-		// Index already present under the same owner — idempotent success so
-		// Raft Apply does not stall on duplicate create proposals. NOTE:
-		// existence is keyed by name only; a re-create by the SAME owner with
-		// a DIVERGENT definition (different field/uniqueness) is a no-op and
-		// the original definition wins. Reconciling a divergent re-create must
-		// be rejected at the service layer before the proposal.
-		return sm.Result{Value: 1}, nil, nil
-	}
-
-	valueType := index.IndexValueTypeString
-	if opts.Numeric {
-		valueType = index.IndexValueTypeNumeric
+		// Index already present under the same owner and value type —
+		// idempotent success so Raft Apply does not stall on duplicate create
+		// proposals. Existence is otherwise keyed by name only: a same-owner
+		// re-create diverging in field or uniqueness is a no-op and the
+		// original definition wins.
+		if e.indexValueTypes[name] == valueType {
+			e.indexMu.Unlock()
+			return sm.Result{Value: 1}, nil, nil
+		}
+		// A different value type rebuilds the index at the requested one (see
+		// IndexCreateValueType). The stale index is unpublished first, so a
+		// concurrent Lookup finds no index rather than one being cleared.
+		delete(e.indexes, name)
+		delete(e.indexFields, name)
+		delete(e.indexScopes, name)
+		delete(e.indexOwners, name)
+		delete(e.indexValueTypes, name)
+		if err := existing.Close(); err != nil {
+			e.indexMu.Unlock()
+			return sm.Result{}, nil, err
+		}
 	}
 
 	// Sparse is carried on the config for fidelity with the command, but no
@@ -1971,6 +1988,9 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		Unique:    opts.Unique,
 		Sparse:    opts.Sparse,
 		ValueType: valueType,
+		// A create builds the index now, so its terms are written at the
+		// current encoding; the clear below removes any written earlier.
+		EncodingVersion: index.NumericEncodingVersion,
 		// The key scope the creator declared, relative to the namespace the
 		// name carries. Recorded on the config so the index's definition is
 		// complete; the apply path reads the composed scope out of
@@ -2020,6 +2040,16 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// The scan is bounded by the scope rather than filtered after the fact, so
 	// creating an index on one database does not read every other database's
 	// keys on the way past.
+	//
+	// Entries already stored under the name are cleared first. They are
+	// what a create leaves behind when it is applied again over storage
+	// that outlived the in-memory index -- and they may be terms of an
+	// older encoding, which would sort among the new ones out of numeric
+	// order. Clearing and backfilling is the rebuild a stale definition
+	// gets.
+	if err := idx.Clear(); err != nil {
+		return sm.Result{}, nil, err
+	}
 	start, end := backfillRange(scope)
 	BackfillIndex(func() ([]*service.KeyValue, error) {
 		kvs, _, _, err := store.RangeInBatch(batch, start, end)
@@ -2031,6 +2061,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
 	e.indexOwners[name] = opts.Owner
+	e.indexValueTypes[name] = valueType
 	e.indexMu.Unlock()
 
 	return sm.Result{Value: 1}, nil, nil
@@ -2062,6 +2093,7 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 	delete(e.indexFields, name)
 	delete(e.indexScopes, name)
 	delete(e.indexOwners, name)
+	delete(e.indexValueTypes, name)
 	e.indexMu.Unlock()
 
 	if err := idx.Clear(); err != nil {

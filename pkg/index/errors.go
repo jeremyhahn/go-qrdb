@@ -14,6 +14,8 @@
 
 package index
 
+import "strconv"
+
 // ClosedError is returned when an operation is attempted on a closed index.
 type ClosedError struct {
 	Name string
@@ -89,6 +91,64 @@ func (e *InvalidNumericBoundError) Unwrap() error {
 }
 
 // KeyTooShortError is returned when an index key is too short to parse.
+// NumberRejection names why text offered to a numeric index is not a number
+// the index can order.
+type NumberRejection string
+
+const (
+	// NumberSyntax is text that is not a decimal number or an infinity.
+	NumberSyntax NumberRejection = "not a decimal number"
+
+	// NumberIsNaN is NaN, which has no place in the index's total order.
+	NumberIsNaN NumberRejection = "NaN is unordered and is not indexed"
+
+	// NumberExponentRange is a number whose decimal exponent does not fit
+	// in an int32.
+	NumberExponentRange NumberRejection = "decimal exponent out of range"
+)
+
+// InvalidNumberError is returned when text offered to a numeric index is not
+// a number the index can order. As a field value it means the record has no
+// indexable value and is skipped; as a scan bound it is wrapped in an
+// InvalidNumericBoundError and refused.
+type InvalidNumberError struct {
+	Value  string
+	Reason NumberRejection
+}
+
+// Error returns a human-readable description of the rejected number.
+func (e *InvalidNumberError) Error() string {
+	return "index: invalid number " + strconv.Quote(e.Value) + ": " + string(e.Reason)
+}
+
+// CorruptNumericTermError is returned when bytes read back from a numeric
+// index are not a term EncodeNumericValue writes.
+type CorruptNumericTermError struct {
+	Term   []byte
+	Reason string
+}
+
+// Error returns a human-readable description of the corrupt term.
+func (e *CorruptNumericTermError) Error() string {
+	return "index: corrupt numeric term " + strconv.Quote(string(e.Term)) + ": " + e.Reason
+}
+
+// StaleEncodingError is returned when a numeric index definition records a
+// term encoding other than NumericEncodingVersion. Its stored terms do not
+// sort in numeric order under this binary; the definition must be rebuilt --
+// entries cleared and backfilled at the current version -- not served.
+type StaleEncodingError struct {
+	IndexName string
+	Version   int
+}
+
+// Error returns a human-readable description of the stale definition.
+func (e *StaleEncodingError) Error() string {
+	return "index: numeric index " + e.IndexName + " has encoding version " +
+		strconv.Itoa(e.Version) + ", want " + strconv.Itoa(NumericEncodingVersion) +
+		"; rebuild it"
+}
+
 type KeyTooShortError struct{}
 
 // Error returns a human-readable description of the short key.
@@ -129,4 +189,18 @@ type OwnershipError struct {
 func (e *OwnershipError) Error() string {
 	return "index: " + e.Name + " is owned by " + OwnerLabel(e.Owner) +
 		", not " + OwnerLabel(e.Requested)
+}
+
+// NotFoundError is returned by a query or scan naming an index that does not
+// exist: never created, or dropped. It is a lookup that missed, not a failed
+// read, and the service layer reports it as such so every transport answers
+// NotFound rather than an internal error.
+type NotFoundError struct {
+	// Name is the index name the caller asked for.
+	Name string
+}
+
+// Error returns a human-readable description of the missing index.
+func (e *NotFoundError) Error() string {
+	return "index: " + e.Name + " not found"
 }

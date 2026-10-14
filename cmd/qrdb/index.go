@@ -48,6 +48,7 @@ func newIndexCreateCmd() *cobra.Command {
 		fieldName string
 		unique    bool
 		sparse    bool
+		numeric   bool
 	)
 
 	cmd := &cobra.Command{
@@ -56,8 +57,9 @@ func newIndexCreateCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			config := transport.IndexConfig{
-				Unique: unique,
-				Sparse: sparse,
+				Unique:  unique,
+				Sparse:  sparse,
+				Numeric: numeric,
 			}
 			if err := client.Index().IndexCreate(cmd.Context(), args[0], fieldName, config); err != nil {
 				return err
@@ -71,6 +73,8 @@ func newIndexCreateCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("field")
 	cmd.Flags().BoolVar(&unique, "unique", false, "Enforce uniqueness constraint")
 	cmd.Flags().BoolVar(&sparse, "sparse", false, "Allow missing indexed field values")
+	cmd.Flags().BoolVar(&numeric, "numeric", false,
+		"Index values as numbers, so scans run in numeric order (non-numbers and NaN are not indexed)")
 
 	return cmd
 }

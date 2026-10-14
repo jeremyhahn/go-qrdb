@@ -44,9 +44,8 @@ import (
 // "Index kinds"): Email is unique, Status is a plain equality index,
 // Username is unique+case-insensitive, Nickname is sparse (omitempty, so a
 // record that never sets it really omits the field), and Age is numeric --
-// deliberately omitted from the planner's RANGE catalog per #35, so its
-// equality lookup still indexes while a range query on it must fall back
-// to a correct full scan rather than an incomplete one.
+// indexed with order-preserving numeric terms, so both its equality lookup
+// and a RANGE query on it are answered by the index, in numeric order.
 type daoSDKUser struct {
 	ID       uint64 `json:"id"`
 	Email    string `json:"email"              index:"unique"`
@@ -88,7 +87,7 @@ func daoSDKClient(t *testing.T, ca *testCA, port int) *sdk.Client {
 }
 
 // TestDAO_RealBinary_StorageBackends proves entity CRUD, every index kind
-// and the documented #35 numeric-range fallback over a GenericDAO backed
+// and numeric RANGE queries over a GenericDAO backed
 // by every storage backend a DAO can sit on today: memory, pebble and
 // file, selected the same way sm_storage_file_test.go selects them
 // (--sm memory|pebble, --sm disk --sm-storage file), never a node-local
@@ -385,9 +384,23 @@ func exerciseDAOEntityStorage(t *testing.T, client *sdk.Client, entityType strin
 		t.Fatalf("Find().Where(Status >= s) returned %d entities, want at least the 3 shipped", len(ranged))
 	}
 
-	// --- #35: a numeric field's equality lookup still indexes, but a range
-	// query on it falls back to a (correct) full scan rather than an index
-	// scan that would miss decimal-text-misordered entries. -----------------
+	// --- numeric index: equality and RANGE over numeric terms ---------------
+	// Text order puts "10" before "2", so a text-ordered scan for Age >= 2
+	// drops the record aged 10 and answers with a nil error. The numeric
+	// index must return both, and every range below is asserted against the
+	// full scan's answer, so a partial result fails rather than passing.
+	for _, age := range []int{2, 10} {
+		u := &daoSDKUser{
+			Email:    fmt.Sprintf("aged-%d@example.com", age),
+			Status:   "aged",
+			Username: fmt.Sprintf("Aged%d", age),
+			Age:      age,
+			SortKey:  fmt.Sprintf("g%d", age),
+		}
+		if err := userDAO.Save(ctx, u); err != nil {
+			t.Fatalf("Save(aged %d): %v", age, err)
+		}
+	}
 	ageMatches, err := userDAO.QueryByIndex(ctx, "Age", 60)
 	if err != nil {
 		t.Fatalf("QueryByIndex(Age, 60): %v", err)
@@ -395,14 +408,50 @@ func exerciseDAOEntityStorage(t *testing.T, client *sdk.Client, entityType strin
 	if len(ageMatches) != 1 {
 		t.Fatalf("QueryByIndex(Age, 60) = %v, want exactly one match", ageMatches)
 	}
-	byAgeRange, err := userDAO.Find(ctx).Where("Age >= ?", 60).Execute()
+	everyone, err := userDAO.Find(ctx).Execute()
 	if err != nil {
-		t.Fatalf("Find().Where(Age >= 60).Execute(): %v", err)
+		t.Fatalf("Find().Execute() (full scan): %v", err)
 	}
-	wantAtLeast := 3 // the three "shipped-N" entities with Age 60,61,62
-	if len(byAgeRange) < wantAtLeast {
-		t.Fatalf("Find().Where(Age >= 60) returned %d entities, want at least %d (the full-scan fallback must still be correct)",
-			len(byAgeRange), wantAtLeast)
+	for _, rc := range []struct {
+		expr  string
+		args  []interface{}
+		match func(age int) bool
+	}{
+		{"Age >= ?", []interface{}{2}, func(a int) bool { return a >= 2 }},
+		{"Age > ?", []interface{}{10}, func(a int) bool { return a > 10 }},
+		{"Age < ?", []interface{}{10}, func(a int) bool { return a < 10 }},
+		{"Age <= ?", []interface{}{10}, func(a int) bool { return a <= 10 }},
+		{"Age BETWEEN ? AND ?", []interface{}{2, 10}, func(a int) bool { return a >= 2 && a <= 10 }},
+		{"Age >= ?", []interface{}{60}, func(a int) bool { return a >= 60 }},
+	} {
+		var want []string
+		for _, u := range everyone {
+			if rc.match(u.Age) {
+				want = append(want, u.Email)
+			}
+		}
+		ranged, err := userDAO.Find(ctx).Where(rc.expr, rc.args...).Execute()
+		if err != nil {
+			t.Fatalf("Find().Where(%s %v).Execute(): %v", rc.expr, rc.args, err)
+		}
+		got := make([]string, len(ranged))
+		for i, u := range ranged {
+			got[i] = u.Email
+		}
+		if len(got) == 0 || !sameStrings(got, want) {
+			t.Fatalf("Find().Where(%s %v) = %v, want exactly %v", rc.expr, rc.args, got, want)
+		}
+	}
+	byTwo, err := userDAO.Find(ctx).Where("Age >= ?", 2).Execute()
+	if err != nil {
+		t.Fatalf("Find().Where(Age >= 2).Execute(): %v", err)
+	}
+	gotAges := map[int]bool{}
+	for _, u := range byTwo {
+		gotAges[u.Age] = true
+	}
+	if !gotAges[2] || !gotAges[10] {
+		t.Fatalf("Find().Where(Age >= 2) ages = %v, want both 2 and 10", gotAges)
 	}
 
 	exerciseDAOPagination(t, store, entityType+"-page")

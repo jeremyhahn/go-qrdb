@@ -200,6 +200,9 @@ func startBackgroundWatch(t *testing.T, node *multiProtoNode, proto multiProtoco
 	buf := &watchOutputBuf{}
 	cmd.Stdout = buf
 	cmd.Stderr = buf
+	// Bounds stop's post-kill wait on the output copy, so the force-kill
+	// really is the last resort it promises to be.
+	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("[%s] start `qrdb watch %s`: %v", proto.name, strings.Join(watchArgs, " "), err)
 	}
@@ -650,14 +653,7 @@ func (n *watchRestartNode) restart(t *testing.T, prefix string) {
 		if err := n.proc.Process.Signal(syscall.SIGTERM); err != nil {
 			t.Fatalf("watchRestartNode.restart: signal previous process: %v", err)
 		}
-		done := make(chan error, 1)
-		go func() { done <- n.proc.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			_ = n.proc.Process.Kill()
-			t.Fatalf("watchRestartNode.restart: timed out waiting for previous process to exit")
-		}
+		_ = awaitNodeExit(t, n.proc, nodeStopTimeout)
 	}
 
 	n.proc = startNode(t, n.bin, n.startArgs, prefix)
