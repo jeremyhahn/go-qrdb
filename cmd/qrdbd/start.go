@@ -4614,7 +4614,14 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	// from (verifyAdminBindings wraps it the same way), so this fast path
 	// and the repair it falls through to can never disagree about what
 	// "needs binding" means.
-	if existingAdmin, ok := adminExists(ctx, userSvc, tenantid.System); ok {
+	//
+	// The lookup is bounded like every startup read: one that does not
+	// return in StartupReadAttemptTimeout reads as "no admin yet", and
+	// Phase 3's idempotent path decides instead.
+	actx, cancelLookup := context.WithTimeout(ctx, server.StartupReadAttemptTimeout)
+	existingAdmin, ok := adminExists(actx, userSvc, tenantid.System)
+	cancelLookup()
+	if ok {
 		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" {
 			slog.Debug("first-boot: admin user exists, is already the System user, and holds a live certificate binding, skipping")
 			return nil
@@ -4899,7 +4906,12 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 	backoff := 100 * time.Millisecond
 
 	for time.Now().Before(deadline) {
-		if _, ok := adminExists(ctx, userSvc, tenantID); ok {
+		// Each lookup is a startup read attempt with its own bound, so one
+		// that never returns costs an attempt, not the boot.
+		actx, cancel := server.StartupReadAttemptContext(ctx, deadline, server.StartupReadAttemptTimeout)
+		_, ok := adminExists(actx, userSvc, tenantID)
+		cancel()
+		if ok {
 			slog.Info("auth bootstrap: admin user replicated from leader")
 			return nil
 		}
@@ -4913,6 +4925,8 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 			backoff = time.Second
 		}
 	}
+	slog.Error("auth bootstrap: admin user not replicated before the deadline; boot fails",
+		slog.Duration("timeout", timeout))
 	return &AuthBootstrapError{
 		Step: "wait for admin replication",
 		Err:  &AdminReplicationTimeoutError{Timeout: timeout},

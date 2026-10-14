@@ -36,8 +36,8 @@ import (
 // Before installing the monitor it reads the cluster's feature activations,
 // as cmd/qrdbd does before it serves: a monitor whose gate has not read them
 // refuses every request, since it cannot tell an inactive feature from one
-// it has not learned of. The read waits out the system shard settling and
-// honours ctx; a cluster that has activated a feature this binary lacks
+// it has not learned of. The read is a startup read: it waits out the system
+// shard settling, each attempt bounded on its own, and honours ctx; a cluster that has activated a feature this binary lacks
 // fails the boot with *featuregate.UnsupportedFeatureError. A ctx already
 // ended fails it with ctx's error.
 func (n *Node) startClusterSeal(ctx context.Context, host *quicraft.Host, svcNode *lifecycle.Node, barriers *seal.BarrierRegistry, cfg *qrdbconfig.Config) error {
@@ -52,8 +52,8 @@ func (n *Node) startClusterSeal(ctx context.Context, host *quicraft.Host, svcNod
 		return nil
 	}
 	if n.featureGate != nil {
-		if err := server.WhileSystemShardSettling(ctx, func() error {
-			return n.featureGate.CheckActivated(ctx, svcNode.KV)
+		if err := server.WhileSystemShardSettling(ctx, "feature gate activation check", func(actx context.Context) error {
+			return n.featureGate.CheckActivated(actx, svcNode.KV)
 		}); err != nil {
 			return err
 		}

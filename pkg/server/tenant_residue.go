@@ -16,11 +16,8 @@ package server
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
-
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -87,7 +84,9 @@ func WireTenantRuntimeCloser(svc tenant.TenantServicer, hosts *TenantHostRegistr
 // logged with the step that failed, so the operator knows to run it; a pass
 // that failed only for some ids still logs what it reclaimed for the rest.
 func reconcileDeletedTenantsAtBoot(ctx context.Context, svc tenant.TenantServicer, logger *slog.Logger) {
-	report, err := whenReadIndexReady(ctx, func() (*tenant.ReconcileReport, error) {
+	// The reconcile reclaims what it finds, so it runs on the boot's context,
+	// not the attempt's: a cut-off attempt would race its own retry.
+	report, err := whenReadIndexReady(ctx, "deleted-tenant reconcile", func(context.Context) (*tenant.ReconcileReport, error) {
 		return svc.ReconcileDeletedTenants(ctx)
 	})
 	if err != nil {
@@ -105,24 +104,15 @@ func reconcileDeletedTenantsAtBoot(ctx context.Context, svc tenant.TenantService
 
 // whenReadIndexReady runs read, retrying only while a freshly elected leader
 // is still inside its ReadIndex warm-up window (quicraft.ErrReadIndexNotReady),
-// which resolves as soon as its first entry of the term commits. Any other
-// error, and the transient outlasting the deadline, is returned.
-func whenReadIndexReady[T any](ctx context.Context, read func() (T, error)) (T, error) {
+// which resolves as soon as its first entry of the term commits, or while an
+// attempt is cut off by its bound. It is a startup read (RunStartupRead) named
+// op: read gets each attempt's context, bounded by StartupReadAttemptTimeout.
+// Any other error is returned as read returned it; the transient outlasting
+// the deadline is a *StartupReadError.
+func whenReadIndexReady[T any](ctx context.Context, op string, read func(context.Context) (T, error)) (T, error) {
 	const (
 		readyDeadline = 15 * time.Second
 		retryInterval = 100 * time.Millisecond
 	)
-	deadline := time.Now().Add(readyDeadline)
-	for {
-		v, err := read()
-		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
-			return v, err
-		}
-		select {
-		case <-ctx.Done():
-			var zero T
-			return zero, ctx.Err()
-		case <-time.After(retryInterval):
-		}
-	}
+	return RunStartupRead(ctx, StartupRead{Op: op, Budget: readyDeadline, Delay: retryInterval}, read)
 }

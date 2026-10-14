@@ -256,7 +256,9 @@ such reads until it commits an entry in its own term
 (`quicraft.ErrReadIndexNotReady`). The read is therefore retried, with
 bounded backoff for up to 30 seconds, on that error as on a not-leader
 answer (`lifecycle.AwaitClusterCACertificate`); every other error fails the
-boot at once.
+boot at once. It is a startup read (see Invariants): each attempt is bounded on
+its own, so a readback that never returns fails the boot with a logged
+`*server.StartupReadError` instead of hanging it.
 
 **Every path that writes CA material records the role, including `Join`.**
 `Join` is exported and reachable without going through `Resolve`, and it
@@ -711,6 +713,35 @@ type ImbalanceReport struct {
   each reporting probe errors, a starved poller, or the genuine failure. Do not
   widen the budget to make either go away. `qrdbd`'s earlier best-effort
   ReadIndex warm-up is gone: the wait replaces it.
+- **Every startup read is bounded per attempt, and a boot it fails is logged.**
+  A boot-time read of the replicated store runs through
+  `server.RunStartupRead`: each attempt gets its own context, ending after
+  `server.StartupReadAttemptTimeout` (5s) or at the read's startup deadline,
+  whichever comes first, and the read uses it. An attempt that does not return
+  -- a ReadIndex handed to a leader that died, or one never answered -- is cut
+  off and retried, not waited on for the rest of the boot. go-quicraft's typed
+  retryable `quicraft.ErrReadIndexNotReady` (matched with `errors.Is`, classed
+  Unavailable, returned while a new leader has not committed in its term) is
+  retried with backoff until the startup deadline, as is any transient the read
+  names itself, such as a not-leader answer; any other error fails the boot at
+  once, as the read returned it. When the deadline passes, the boot fails with
+  `*server.StartupReadError`, which names the read, its budget, the attempts
+  made and how many were cut off, and unwraps to the last attempt's error. It
+  is logged at ERROR (`startup read did not succeed before its deadline`) with
+  the same fields. If the caller's context ends first, the same error carries
+  that context's error as well. The reads are the cluster-CA readback
+  (`lifecycle.AwaitClusterCACertificate`, 30s), and the reads made while the
+  system shard settles (`server.WhileSystemShardSettling`, 15s): the
+  feature-gate activation check, the boot tenant list, and the encryption
+  migrator's entitlement and isolation-mode reads. `qrdbd`'s wait for the
+  first admin's replication bounds each lookup the same way under its own
+  deadline, and so does first boot's lookup for an existing admin, where a
+  lookup cut off reads as "no admin yet" and the idempotent first-admin step
+  decides. `server.WaitForShardServing` already bounds each probe (500ms).
+  Writes made during boot -- database provisioning, the feature-gate start, the
+  deleted-tenant reconcile, the first-boot `Init` -- stay on the boot's context:
+  cutting off a write that may still commit would race the retry that follows
+  it.
 - **`qrdbd` waits for the system shard's leader by time, not by a count of
   polls.** Before its first Raft write -- the auth bootstrap and first boot,
   the cluster-CA path, and database provisioning -- `qrdbd` waits until the

@@ -186,8 +186,8 @@ func (m *scopedEncryptionMigrator) EnableEncryption(ctx context.Context, scope s
 		// entitlement read hit the freshly elected leader's ReadIndex warm-up
 		// window.
 		if m.tenantSvc != nil {
-			if _, err := whenReadIndexReady(ctx, func() (struct{}, error) {
-				return struct{}{}, m.tenantSvc.CheckBarrierMode(ctx, scope.TenantID, opts.TargetStrategy)
+			if _, err := whenReadIndexReady(ctx, "tenant barrier-mode entitlement", func(actx context.Context) (struct{}, error) {
+				return struct{}{}, m.tenantSvc.CheckBarrierMode(actx, scope.TenantID, opts.TargetStrategy)
 			}); err != nil {
 				return err
 			}
@@ -231,8 +231,8 @@ func (m *scopedEncryptionMigrator) isRaftTenant(ctx context.Context, tenantID st
 	if m.isolation == nil {
 		return false
 	}
-	info, err := whenReadIndexReady(ctx, func() (*tenant.TenantInfo, error) {
-		return m.isolation.GetTenant(ctx, tenantID)
+	info, err := whenReadIndexReady(ctx, "tenant isolation mode", func(actx context.Context) (*tenant.TenantInfo, error) {
+		return m.isolation.GetTenant(actx, tenantID)
 	})
 	if err != nil || info == nil {
 		return false

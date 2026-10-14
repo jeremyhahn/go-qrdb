@@ -26,6 +26,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -115,6 +116,35 @@ func TestAwaitClusterCACertificate_ReadIndexNotReadyPastDeadline(t *testing.T) {
 	}
 	if stub.calls < 2 {
 		t.Errorf("Certificate called %d times, want at least 2 (retried before the deadline)", stub.calls)
+	}
+}
+
+// hungClusterCAProvider answers Certificate only when the caller's context
+// ends, as a ReadIndex handed to a leader that died does.
+type hungClusterCAProvider struct {
+	flakyClusterCAProvider
+}
+
+func (h *hungClusterCAProvider) Certificate(ctx context.Context) (*x509.Certificate, error) {
+	h.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestAwaitClusterCACertificate_HungReadFailsTheBoot(t *testing.T) {
+	stub := &hungClusterCAProvider{}
+
+	start := time.Now()
+	_, err := AwaitClusterCACertificate(context.Background(), stub, 100*time.Millisecond, time.Millisecond, 5*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("AwaitClusterCACertificate took %s on a read that never returns, want the 100ms deadline honoured", elapsed)
+	}
+	var sre *server.StartupReadError
+	if !errors.As(err, &sre) {
+		t.Fatalf("AwaitClusterCACertificate = %v (%T), want *server.StartupReadError", err, err)
+	}
+	if sre.TimedOut < 1 || stub.calls != sre.Attempts {
+		t.Errorf("calls=%d Attempts=%d TimedOut=%d, want every attempt counted and the hung ones cut off", stub.calls, sre.Attempts, sre.TimedOut)
 	}
 }
 

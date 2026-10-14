@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -29,7 +30,7 @@ import (
 // other failure, and a cancelled context, is returned at once.
 func TestWhileSystemShardSettling(t *testing.T) {
 	calls := 0
-	err := WhileSystemShardSettling(context.Background(), func() error {
+	err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return quicraft.ErrReadIndexNotReady
@@ -42,7 +43,7 @@ func TestWhileSystemShardSettling(t *testing.T) {
 
 	boom := errors.New("boom")
 	calls = 0
-	err = WhileSystemShardSettling(context.Background(), func() error { calls++; return boom })
+	err = WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error { calls++; return boom })
 	if !errors.Is(err, boom) || calls != 1 {
 		t.Fatalf("err = %v after %d calls, want boom after 1", err, calls)
 	}
@@ -50,7 +51,7 @@ func TestWhileSystemShardSettling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	calls = 0
-	err = WhileSystemShardSettling(ctx, func() error { calls++; return nil })
+	err = WhileSystemShardSettling(ctx, "test read", func(context.Context) error { calls++; return nil })
 	if !errors.Is(err, context.Canceled) || calls != 0 {
 		t.Fatalf("err = %v after %d calls, want context.Canceled before any call", err, calls)
 	}
@@ -63,7 +64,7 @@ func TestWhileSystemShardSettling(t *testing.T) {
 // not-leader answer that names a leader is not an election and is returned.
 func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 	calls := 0
-	err := WhileSystemShardSettling(context.Background(), func() error {
+	err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return &service.NotLeaderError{ShardID: 1}
@@ -76,7 +77,7 @@ func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 
 	known := &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "192.0.2.2:5000"}
 	calls = 0
-	err = WhileSystemShardSettling(context.Background(), func() error { calls++; return known })
+	err = WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error { calls++; return known })
 	if !errors.Is(err, known) || calls != 1 {
 		t.Fatalf("err = %v after %d calls, want the known-leader error after 1", err, calls)
 	}
@@ -91,7 +92,7 @@ func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 // type -- and must be waited out exactly the same way.
 func TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer(t *testing.T) {
 	calls := 0
-	err := WhileSystemShardSettling(context.Background(), func() error {
+	err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return &transport.NotLeaderError{ShardID: 1}
@@ -104,8 +105,29 @@ func TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer(t *testing.T
 
 	known := &transport.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "192.0.2.2:5000"}
 	calls = 0
-	err = WhileSystemShardSettling(context.Background(), func() error { calls++; return known })
+	err = WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error { calls++; return known })
 	if !errors.Is(err, known) || calls != 1 {
 		t.Fatalf("err = %v after %d calls, want the known-leader error after 1", err, calls)
+	}
+}
+
+// Each attempt is a startup read with its own bound: fn is handed a context
+// that ends within StartupReadAttemptTimeout even when the caller's never
+// does, so a read in fn that never returns is cut off rather than holding the
+// boot.
+func TestWhileSystemShardSettling_BoundsEachAttempt(t *testing.T) {
+	var left time.Duration
+	hasDeadline := false
+	err := WhileSystemShardSettling(context.Background(), "test read", func(actx context.Context) error {
+		var dl time.Time
+		dl, hasDeadline = actx.Deadline()
+		left = time.Until(dl)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !hasDeadline || left <= 0 || left > StartupReadAttemptTimeout {
+		t.Fatalf("attempt context deadline: set=%v, %s left; want set and within %s", hasDeadline, left, StartupReadAttemptTimeout)
 	}
 }

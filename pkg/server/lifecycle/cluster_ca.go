@@ -23,6 +23,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -54,9 +55,12 @@ const (
 // immediately: waiting cannot resolve those, and retrying them would only
 // slow down a boot that was always going to fail.
 //
-// Bounded by both ctx (so a shutdown signal during the retry loop is
-// honored immediately) and deadline, measured from the first call: a
-// genuinely stuck shard fails rather than hanging the caller.
+// It is a startup read (server.RunStartupRead): bounded by ctx (so a
+// shutdown signal during the retry loop is honored immediately), by
+// deadline, measured from the first call, and on each attempt by
+// server.StartupReadAttemptTimeout, so neither a genuinely stuck shard nor
+// one read that never returns hangs the caller. Past the deadline it fails
+// with *server.StartupReadError, which unwraps to the last attempt's error.
 //
 // This is the ESTABLISHING call every composer with a self-issued cluster
 // (n.ClusterCAProv != nil) must make once, deliberately, during startup --
@@ -66,28 +70,13 @@ const (
 // whether to clean up a local ca-key.pem cache), which EstablishClusterCA's
 // simpler signature does not expose.
 func AwaitClusterCACertificate(ctx context.Context, provider cakey.Provider, deadline, baseDelay, maxDelay time.Duration) (*x509.Certificate, error) {
-	giveUpAt := time.Now().Add(deadline)
-	delay := baseDelay
-	for {
-		cert, err := provider.Certificate(ctx)
-		if err == nil {
-			return cert, nil
-		}
-		if !clusterCAReadSettling(err) {
-			return nil, err
-		}
-		if !time.Now().Before(giveUpAt) {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, err
-		case <-time.After(delay):
-		}
-		if delay *= 2; delay > maxDelay {
-			delay = maxDelay
-		}
-	}
+	return server.RunStartupRead(ctx, server.StartupRead{
+		Op:        "cluster CA certificate",
+		Budget:    deadline,
+		Delay:     baseDelay,
+		MaxDelay:  maxDelay,
+		Retryable: clusterCAReadSettling,
+	}, provider.Certificate)
 }
 
 // clusterCAReadSettling reports whether err is the system shard still

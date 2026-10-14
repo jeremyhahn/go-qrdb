@@ -198,7 +198,7 @@ func TestReconcileDeletedTenantsAtBoot_FailureDoesNotFailTheBoot(t *testing.T) {
 // transient is retried, any other error is returned at once.
 func TestWhenReadIndexReady_RetriesOnlyTheWarmUpTransient(t *testing.T) {
 	calls := 0
-	got, err := whenReadIndexReady(context.Background(), func() (int, error) {
+	got, err := whenReadIndexReady(context.Background(), "test read", func(context.Context) (int, error) {
 		calls++
 		if calls < 3 {
 			return 0, quicraft.ErrReadIndexNotReady
@@ -211,7 +211,7 @@ func TestWhenReadIndexReady_RetriesOnlyTheWarmUpTransient(t *testing.T) {
 
 	boom := errors.New("boom")
 	calls = 0
-	if _, err := whenReadIndexReady(context.Background(), func() (int, error) {
+	if _, err := whenReadIndexReady(context.Background(), "test read", func(context.Context) (int, error) {
 		calls++
 		return 0, boom
 	}); !errors.Is(err, boom) || calls != 1 {

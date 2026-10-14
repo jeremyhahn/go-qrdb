@@ -48,8 +48,8 @@ import (
 // rather than exiting over an accelerator this build never required.
 func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node, nodeSeal cluster.SealProbe) (io.Closer, error) {
 	if gate == nil {
-		err := server.WhileSystemShardSettling(ctx, func() error {
-			return featuregate.CheckActivated(ctx, svc.KV)
+		err := server.WhileSystemShardSettling(ctx, "feature gate activation check", func(actx context.Context) error {
+			return featuregate.CheckActivated(actx, svc.KV)
 		})
 		return nopCloser{}, err
 	}
@@ -58,7 +58,9 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 		return nil, err
 	}
 	var adv *cluster.Advertiser
-	err = server.WhileSystemShardSettling(ctx, func() error {
+	// The advertiser it starts keeps the context it is given for its whole
+	// life, so it gets the boot's, not the attempt's.
+	err = server.WhileSystemShardSettling(ctx, "feature gate start", func(context.Context) error {
 		var serr error
 		adv, serr = client.StartFeatureGate(ctx, gate, svc.KV, cluster.WithAdvertiseSealProbe(nodeSeal))
 		return serr

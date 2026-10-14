@@ -38,8 +38,8 @@ import (
 // other error — and the transient persisting past the deadline — is
 // returned to abort boot, preserving fail-closed behavior.
 func listTenantsWhenReady(ctx context.Context, tenantSvc tenant.TenantServicer) ([]tenant.TenantInfo, error) {
-	return whenReadIndexReady(ctx, func() ([]tenant.TenantInfo, error) {
-		return tenantSvc.ListTenants(ctx)
+	return whenReadIndexReady(ctx, "tenant list", func(actx context.Context) ([]tenant.TenantInfo, error) {
+		return tenantSvc.ListTenants(actx)
 	})
 }
 

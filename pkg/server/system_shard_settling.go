@@ -39,25 +39,28 @@ const systemShardSettlePoll = 100 * time.Millisecond
 // but a peer that restarts meanwhile -- every node in turn during a rolling
 // enable-encryption -- can take it away before the boot's next read.
 //
+// It is a startup read (RunStartupRead), and op names it. fn gets each
+// attempt's context, bounded by StartupReadAttemptTimeout, and a read in fn
+// uses it so an attempt that never returns is cut off and retried rather
+// than holding the boot. A step that must outlive the attempt -- a write, or
+// a start that keeps its context -- uses its own.
+//
 // fn is not run once ctx has ended: a read that does not itself consult ctx
 // -- an in-process one -- would otherwise let a boot its caller abandoned
 // carry on.
-func WhileSystemShardSettling(ctx context.Context, fn func() error) error {
-	deadline := time.Now().Add(SystemShardSettleBudget)
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		err := fn()
-		if err == nil || !SystemShardSettling(err) || time.Now().After(deadline) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(systemShardSettlePoll):
-		}
+func WhileSystemShardSettling(ctx context.Context, op string, fn func(context.Context) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	_, err := RunStartupRead(ctx, StartupRead{
+		Op:        op,
+		Budget:    SystemShardSettleBudget,
+		Delay:     systemShardSettlePoll,
+		Retryable: SystemShardSettling,
+	}, func(actx context.Context) (struct{}, error) {
+		return struct{}{}, fn(actx)
+	})
+	return err
 }
 
 // SystemShardSettling reports whether err is the system shard settling: the
