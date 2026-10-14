@@ -22,11 +22,12 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 func newCASEngine(t *testing.T) *Engine {
 	t.Helper()
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestRootHelpers_Errors(t *testing.T) {
 	}
 	relative.discardTemp("/absolute/elsewhere") // best effort: must not panic
 
-	gone := &Engine{dir: filepath.Join(t.TempDir(), "missing")}
+	gone := &Engine{dir: filepath.Join(memdir.TempDir(t), "missing")}
 	inside := filepath.Join(gone.dir, "ab", "cd")
 	if err := gone.removeRecord(filepath.Join(inside, "rec")); err == nil {
 		t.Error("removeRecord in a missing store succeeded")

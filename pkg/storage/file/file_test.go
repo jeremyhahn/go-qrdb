@@ -24,10 +24,11 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 func TestFileEngine_SetGet(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -48,7 +49,7 @@ func TestFileEngine_SetGet(t *testing.T) {
 }
 
 func TestFileEngine_SetOverwrite(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -72,7 +73,7 @@ func TestFileEngine_SetOverwrite(t *testing.T) {
 }
 
 func TestFileEngine_GetNotFound(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -89,7 +90,7 @@ func TestFileEngine_GetNotFound(t *testing.T) {
 }
 
 func TestFileEngine_Delete(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -113,7 +114,7 @@ func TestFileEngine_Delete(t *testing.T) {
 }
 
 func TestFileEngine_DeleteNonExistent(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -126,7 +127,7 @@ func TestFileEngine_DeleteNonExistent(t *testing.T) {
 }
 
 func TestFileEngine_List(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -161,7 +162,7 @@ func TestFileEngine_List(t *testing.T) {
 }
 
 func TestFileEngine_ListEmptyDir(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -178,7 +179,7 @@ func TestFileEngine_ListEmptyDir(t *testing.T) {
 }
 
 func TestFileEngine_ListAllKeys(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -214,7 +215,7 @@ func TestFileEngine_ListAllKeys(t *testing.T) {
 // than returning anything derived from the (hash-named, content-free)
 // filename.
 func TestFileEngine_List_DecodesEscapedKeys(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -251,7 +252,7 @@ func TestFileEngine_List_DecodesEscapedKeys(t *testing.T) {
 }
 
 func TestFileEngine_ListNoMatch(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -272,7 +273,7 @@ func TestFileEngine_ListNoMatch(t *testing.T) {
 }
 
 func TestFileEngine_Exists(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -301,7 +302,7 @@ func TestFileEngine_Exists(t *testing.T) {
 }
 
 func TestFileEngine_NestedKeys(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -333,7 +334,7 @@ func TestFileEngine_NestedKeys(t *testing.T) {
 }
 
 func TestFileEngine_EmptyKey(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -355,7 +356,7 @@ func TestFileEngine_EmptyKey(t *testing.T) {
 }
 
 func TestFileEngine_Closed(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -401,7 +402,7 @@ func TestFileEngine_InvalidPath(t *testing.T) {
 // TestNew_MkdirAllError verifies that New returns an OS error when the base directory
 // cannot be created because a regular file already occupies a component of the path.
 func TestNew_MkdirAllError(t *testing.T) {
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	// Create a regular file at the path we intend to use as a directory.
 	blockingFile := filepath.Join(base, "obstacle")
 	if err := os.WriteFile(blockingFile, []byte("x"), 0o600); err != nil {
@@ -421,7 +422,7 @@ func TestNew_MkdirAllError(t *testing.T) {
 // TestGet_OSError verifies that Get propagates a non-not-exist OS error (e.g.,
 // reading a directory) rather than returning nil, nil.
 func TestGet_OSError(t *testing.T) {
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	eng, err := New(base)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -453,7 +454,7 @@ func TestGet_OSError(t *testing.T) {
 // key's shard directory cannot be created because a regular file occupies
 // one of the two shard path components.
 func TestSet_MkdirAllError(t *testing.T) {
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	eng, err := New(base)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -485,7 +486,7 @@ func TestSet_MkdirAllError(t *testing.T) {
 // TestDelete_OSError verifies that Delete returns an OS error when os.Remove fails for
 // a reason other than the path not existing (e.g., attempting to remove a non-empty directory).
 func TestDelete_OSError(t *testing.T) {
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	eng, err := New(base)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -516,7 +517,7 @@ func TestDelete_OSError(t *testing.T) {
 // TestList_WalkError verifies that List propagates an error when filepath.Walk
 // encounters a path it cannot traverse.
 func TestList_WalkError(t *testing.T) {
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	eng, err := New(base)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -548,7 +549,7 @@ func TestList_WalkError(t *testing.T) {
 // TestExists_OSError verifies that Exists returns a non-nil error (not false) when
 // os.Stat fails for a reason other than the path not existing.
 func TestExists_OSError(t *testing.T) {
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	eng, err := New(base)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -591,7 +592,7 @@ func TestExists_OSError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFileEngine_BatchSetAndCommit(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -629,7 +630,7 @@ func TestFileEngine_BatchSetAndCommit(t *testing.T) {
 }
 
 func TestFileEngine_BatchDeleteAndCommit(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -658,7 +659,7 @@ func TestFileEngine_BatchDeleteAndCommit(t *testing.T) {
 }
 
 func TestFileEngine_BatchRollback(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -683,7 +684,7 @@ func TestFileEngine_BatchRollback(t *testing.T) {
 }
 
 func TestFileEngine_BatchClose(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -705,7 +706,7 @@ func TestFileEngine_BatchClose(t *testing.T) {
 }
 
 func TestFileEngine_BatchEmptyKey(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -724,7 +725,7 @@ func TestFileEngine_BatchEmptyKey(t *testing.T) {
 }
 
 func TestFileEngine_BatchClosedOperations(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -757,7 +758,7 @@ func TestFileEngine_BatchClosedOperations(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFileEngine_IteratorForwardScan(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -793,7 +794,7 @@ func TestFileEngine_IteratorForwardScan(t *testing.T) {
 }
 
 func TestFileEngine_IteratorReverse(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -829,7 +830,7 @@ func TestFileEngine_IteratorReverse(t *testing.T) {
 }
 
 func TestFileEngine_IteratorBounds(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -868,7 +869,7 @@ func TestFileEngine_IteratorBounds(t *testing.T) {
 }
 
 func TestFileEngine_IteratorSeek(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -899,7 +900,7 @@ func TestFileEngine_IteratorSeek(t *testing.T) {
 }
 
 func TestFileEngine_IteratorSeekToLast(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -924,7 +925,7 @@ func TestFileEngine_IteratorSeekToLast(t *testing.T) {
 }
 
 func TestFileEngine_IteratorPrev(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -955,7 +956,7 @@ func TestFileEngine_IteratorPrev(t *testing.T) {
 }
 
 func TestFileEngine_IteratorEmpty(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -983,7 +984,7 @@ func TestFileEngine_IteratorEmpty(t *testing.T) {
 }
 
 func TestFileEngine_IteratorOnlyKeys(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1010,7 +1011,7 @@ func TestFileEngine_IteratorOnlyKeys(t *testing.T) {
 }
 
 func TestFileEngine_IteratorNextWithoutSeek(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1038,7 +1039,7 @@ func TestFileEngine_IteratorNextWithoutSeek(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFileEngine_SnapshotGet(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1077,7 +1078,7 @@ func TestFileEngine_SnapshotGet(t *testing.T) {
 }
 
 func TestFileEngine_SnapshotGetNotFound(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1100,7 +1101,7 @@ func TestFileEngine_SnapshotGetNotFound(t *testing.T) {
 }
 
 func TestFileEngine_SnapshotGetEmptyKey(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1120,7 +1121,7 @@ func TestFileEngine_SnapshotGetEmptyKey(t *testing.T) {
 }
 
 func TestFileEngine_SnapshotIterator(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1162,7 +1163,7 @@ func TestFileEngine_SnapshotIterator(t *testing.T) {
 }
 
 func TestFileEngine_SnapshotClosed(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1198,7 +1199,7 @@ func TestFileEngine_SnapshotClosed(t *testing.T) {
 }
 
 func TestFileEngine_SnapshotIteratorBounds(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1238,7 +1239,7 @@ func TestFileEngine_SnapshotIteratorBounds(t *testing.T) {
 }
 
 func TestFileEngine_SnapshotIteratorReverse(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1287,7 +1288,7 @@ func TestMkdirAllDurable_StatErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	parent := filepath.Join(base, "parent")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatal(err)
@@ -1295,7 +1296,7 @@ func TestMkdirAllDurable_StatErrorPropagates(t *testing.T) {
 	if err := os.Chmod(parent, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	err := mkdirAllDurable(filepath.Join(parent, "child"))
 	if err == nil {
@@ -1314,12 +1315,12 @@ func TestMkdirAllDurable_MkdirErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	base := t.TempDir()
+	base := memdir.TempDir(t)
 	parent := filepath.Join(base, "parent")
 	if err := os.Mkdir(parent, 0o500); err != nil { // r-x: no write
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	err := mkdirAllDurable(filepath.Join(parent, "child"))
 	if err == nil {
@@ -1336,11 +1337,11 @@ func TestWriteFormatMarker_CreateTempErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	_, err := New(dir)
 	if err == nil {
@@ -1352,7 +1353,7 @@ func TestWriteFormatMarker_CreateTempErrorPropagates(t *testing.T) {
 // target path is occupied by a non-empty directory, so the rename that
 // publishes the temp file cannot succeed.
 func TestSet_RenameErrorPropagates(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1378,7 +1379,7 @@ func TestSet_RenameErrorPropagates(t *testing.T) {
 // recovery cleanup actually removes a ".tmp-set-*" leftover under a shard
 // directory, not merely that it compiles.
 func TestCleanupTempSetFiles_RemovesStrayTempFiles(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -1413,7 +1414,7 @@ func TestCleanupTempSetFiles_RemoveErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1430,7 +1431,7 @@ func TestCleanupTempSetFiles_RemoveErrorPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	if err := e.cleanupTempSetFiles(); err == nil {
 		t.Fatal("expected an error removing a temp file in a read-only directory")
@@ -1444,7 +1445,7 @@ func TestCleanupTempSetFiles_WalkErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1457,7 +1458,7 @@ func TestCleanupTempSetFiles_WalkErrorPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	if err := e.cleanupTempSetFiles(); err == nil {
 		t.Fatal("expected a permission error reading the shard directory")
@@ -1472,7 +1473,7 @@ func TestList_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1485,7 +1486,7 @@ func TestList_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	if _, err := e.List(nil); err == nil {
 		t.Fatal("expected a permission error reading the shard directory")
@@ -1498,7 +1499,7 @@ func TestIterator_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1511,7 +1512,7 @@ func TestIterator_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	it := e.NewIterator(nil)
 	defer func() { _ = it.Close() }()
@@ -1525,7 +1526,7 @@ func TestIterator_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 // TestSync_ClosedEngine covers Sync's own closed-engine check, otherwise
 // only exercised on an open engine elsewhere.
 func TestSync_ClosedEngine(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1628,7 +1629,7 @@ func TestDecodeRecord_CorruptRecords(t *testing.T) {
 // realistic SHA-256 collision -- exercised through Get itself rather than
 // only through KeyMismatchError.Error().
 func TestGet_KeyMismatchError(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1656,7 +1657,7 @@ func TestGet_KeyMismatchError(t *testing.T) {
 // occupied by a directory, so reading it as a file fails for a reason
 // other than absence.
 func TestEnsureFormatMarker_ReadFileErrorPropagates(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.Mkdir(filepath.Join(dir, formatMarkerFileName), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1674,7 +1675,7 @@ func TestSnapshot_PropagatesIteratorError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1687,7 +1688,7 @@ func TestSnapshot_PropagatesIteratorError(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	if _, err := e.Snapshot(); err == nil {
 		t.Fatal("expected Snapshot to propagate the permission error")

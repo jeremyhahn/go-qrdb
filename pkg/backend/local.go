@@ -32,16 +32,38 @@ import (
 // used for memory, file, and direct PebbleDB storage modes where
 // distributed consensus is not required.
 type LocalBackend struct {
-	sm        SMAdapter
-	index     atomic.Uint64
-	proposeMu sync.Mutex
-	closed    atomic.Bool
+	sm    SMAdapter
+	index atomic.Uint64
+
+	// applier is the token that admits one goroutine at a time to sm.Update,
+	// held across the whole Update, I/O included, so applies stay strictly
+	// sequential. It is a one-slot channel rather than a sync.Mutex so a
+	// proposer can wait for the token and for its own proposal to be applied
+	// in the same select (see SyncPropose).
+	applier chan struct{}
+
+	// queueMu guards queue, the proposals waiting for the next group commit.
+	// It is held only to append to queue or take it, never across an apply.
+	queueMu sync.Mutex
+	queue   []*proposal
+
+	closed atomic.Bool
+}
+
+// proposal is one SyncPropose waiting for the group commit that covers it.
+// result and err are written by the applier before it closes done, and read
+// by the proposer only after done is closed.
+type proposal struct {
+	cmd    []byte
+	result sm.Result
+	err    error
+	done   chan struct{}
 }
 
 // NewLocalBackend creates a LocalBackend that delegates to the given
 // state machine adapter.
 func NewLocalBackend(sm SMAdapter) *LocalBackend {
-	return &LocalBackend{sm: sm}
+	return &LocalBackend{sm: sm, applier: make(chan struct{}, 1)}
 }
 
 // ID returns the host identifier. LocalBackend always identifies as
@@ -91,22 +113,88 @@ func (b *LocalBackend) IsDraining() bool {
 	return false
 }
 
-// SyncPropose applies a command directly to the state machine under a
-// mutex to preserve sequential-apply semantics.
+// SyncPropose applies cmd to the state machine and returns once the Update
+// covering it has returned: for a persistent engine, once the commit that makes
+// cmd durable, and every fsync in it, has completed.
+//
+// Concurrent proposals are group-committed. Applies stay strictly sequential --
+// one goroutine at a time holds the applier token across a whole Update -- but
+// a proposal that arrives while an Update is running queues, and the next
+// goroutine to take the token applies EVERY queued proposal as one Update:
+// consecutive indices in arrival order, one storage batch, so one commit's
+// worth of fsyncs. Proposals that pile up behind a slow fsync therefore share
+// the next commit instead of paying one each, which is what let the lease
+// sweep, keepalives and client writes fall seconds behind on a busy disk
+// (DS-1689). It is the group commit of InnoDB's redo log and etcd's WAL; no
+// proposal is acknowledged before the commit covering it returns.
+//
+// An Update error fails every proposal in its group, each with that error:
+// none of them was acknowledged as applied, the same answer a lone proposal
+// gets.
 func (b *LocalBackend) SyncPropose(ctx context.Context, _ uint64, cmd []byte) (sm.Result, error) {
 	if b.closed.Load() {
 		return sm.Result{}, &BackendClosedError{}
 	}
-	b.proposeMu.Lock()
-	defer b.proposeMu.Unlock()
+	p := &proposal{cmd: cmd, done: make(chan struct{})}
+	b.queueMu.Lock()
+	b.queue = append(b.queue, p)
+	b.queueMu.Unlock()
 
-	idx := b.index.Add(1)
-	entries := []sm.Entry{{Index: idx, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := b.sm.Update(ctx, entries, results); err != nil {
-		return sm.Result{}, err
+	select {
+	case <-p.done:
+		// The group an earlier token holder applied included p.
+	case b.applier <- struct{}{}:
+		b.applyQueuedHoldingToken(ctx, p)
 	}
-	return results[0], nil
+	return p.result, p.err
+}
+
+// applyQueuedHoldingToken applies the queue as one group unless p has already
+// been applied, then releases the applier token the caller took. A token
+// holder completes its whole group before releasing the token, so while this
+// goroutine holds it p is either done or still queued.
+func (b *LocalBackend) applyQueuedHoldingToken(ctx context.Context, p *proposal) {
+	defer func() { <-b.applier }()
+	select {
+	case <-p.done:
+		return
+	default:
+	}
+
+	b.queueMu.Lock()
+	group := b.queue
+	b.queue = nil
+	b.queueMu.Unlock()
+
+	completed := false
+	defer func() {
+		// A panicking Update must not strand the rest of the group waiting on
+		// done forever: complete them with an error, then let the panic go on.
+		if !completed {
+			for _, q := range group {
+				q.err = &ApplyAbortedError{}
+				close(q.done)
+			}
+		}
+	}()
+
+	entries := make([]sm.Entry, len(group))
+	for i, q := range group {
+		entries[i] = sm.Entry{Index: b.index.Add(1), Cmd: q.cmd}
+	}
+	results := make([]sm.Result, len(group))
+	// The group is applied whatever becomes of the context of the proposer
+	// that happened to take the token: the others' proposals are in it too.
+	err := b.sm.Update(context.WithoutCancel(ctx), entries, results)
+	completed = true
+	for i, q := range group {
+		if err != nil {
+			q.err = err
+		} else {
+			q.result = results[i]
+		}
+		close(q.done)
+	}
 }
 
 // SyncRead performs a direct lookup on the state machine.

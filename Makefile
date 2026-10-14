@@ -786,6 +786,14 @@ test-engine:
 bench-engine:
 	$(GO) test $(TAG_FLAG) -run '^$$' -bench=. -benchmem $(PKG_ENGINE)
 
+# The file engine's commit cost is its fsyncs, so these benchmarks run on a
+# REAL disk (TMPDIR) -- on tmpfs every sync is free and they measure nothing.
+# BenchmarkBatchCommit is one commit of 1/8/32 keys; the LocalBackend one is
+# the standalone write path under concurrent proposers (group commit).
+.PHONY: bench-storage-file
+bench-storage-file: ## Benchmark file-engine commits and the standalone write path on a real disk
+	$(GO) test $(TAG_FLAG) -run '^$$' -bench=. -benchmem $(PKG_STORAGE_FILE) ./pkg/backend/
+
 # The standalone backend's write path, which serializes every write so its
 # guarded verbs can be atomic (go-qrdb#466). Run with -cpu at or above the
 # host's core count: a write mutex is invisible single-threaded.

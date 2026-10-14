@@ -30,8 +30,10 @@ type BufferedOp struct {
 }
 
 // ApplyFunc commits a batch's ordered operations to a backend. Implementations
-// must apply the operations in the given order; the backend decides how much
-// atomicity it can offer.
+// must leave the state applying the operations in the given order would: a
+// later operation on a key wins over an earlier one. Operations on distinct
+// keys may be applied in any order or concurrently. The backend decides how
+// much atomicity it can offer.
 type ApplyFunc func(ops []BufferedOp) error
 
 // BufferedBatch implements Batch for backends that have no engine-native

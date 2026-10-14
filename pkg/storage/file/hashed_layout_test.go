@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 // TestNew_RefusesOldLayoutInPlace reproduces a review probe finding: a
@@ -37,7 +38,7 @@ import (
 // it in place would misread stale files as nothing and let Set write
 // records this build's own readers would not recognise either.
 func TestNew_RefusesOldLayoutInPlace(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	// Old layout: key "foo" was the file <dir>/foo.
 	if err := os.WriteFile(filepath.Join(dir, "foo"), []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
@@ -54,7 +55,7 @@ func TestNew_RefusesOldLayoutInPlace(t *testing.T) {
 // guard: a marker naming a version other than this build's is refused by
 // name, not silently accepted or misread.
 func TestNew_RefusesMismatchedFormatVersion(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte("999"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestNew_RefusesMismatchedFormatVersion(t *testing.T) {
 func TestNew_FreshAndEmptyDirectoriesWriteTheMarker(t *testing.T) {
 	for _, name := range []string{"does-not-exist-yet", "already-empty"} {
 		t.Run(name, func(t *testing.T) {
-			base := t.TempDir()
+			base := memdir.TempDir(t)
 			dir := filepath.Join(base, "data")
 			if name == "already-empty" {
 				if err := os.Mkdir(dir, 0o700); err != nil {
@@ -117,7 +118,7 @@ func TestNew_FreshAndEmptyDirectoriesWriteTheMarker(t *testing.T) {
 func TestDeepNesting_NeverFails(t *testing.T) {
 	for _, n := range []int{100, 1000, 2100, 4000} {
 		key := []byte(strings.Repeat("a/", n) + "a")
-		e, err := New(t.TempDir())
+		e, err := New(memdir.TempDir(t))
 		if err != nil {
 			t.Fatalf("depth %d: New: %v", n, err)
 		}
@@ -149,7 +150,7 @@ func TestDeepNesting_NeverFails(t *testing.T) {
 // specifically commitBufferedOps's OWN handling once an op reaches it, and
 // that is what this test exercises directly).
 func TestCommitBufferedOps_RefusalWritesNoJournalAndAppliesNothing(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +189,7 @@ func TestCommitBufferedOps_RefusalWritesNoJournalAndAppliesNothing(t *testing.T)
 // first op. See TestCommitBufferedOps_RefusalWritesNoJournalAndAppliesNothing
 // for why this calls commitBufferedOps directly.
 func TestCommitBufferedOps_PartialRefusalNeverPartiallyApplies(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestCommitBufferedOps_PartialRefusalNeverPartiallyApplies(t *testing.T) {
 // the engine, proving the hashed layout never fails on key SHAPE — only a
 // genuine storage fault could make Set/Delete/Get return an error here.
 func TestPropertyPrefixNestingNeverCollides(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ func FuzzEngine_SetGetDeleteRoundTrip(f *testing.F) {
 		if len(key) == 0 {
 			t.Skip()
 		}
-		e, err := New(t.TempDir())
+		e, err := New(memdir.TempDir(t))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
@@ -327,7 +328,7 @@ func FuzzEngine_SetGetDeleteRoundTrip(f *testing.F) {
 // into a truncated Snapshot with a nil error.
 func TestConcurrentScan_StableUnderChurn(t *testing.T) {
 	const stableKeys = 2000
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +406,7 @@ func TestConcurrentScan_StableUnderChurn(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNew_IgnoresLostAndFoundWhenDecidingFreshness(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.Mkdir(filepath.Join(dir, "lost+found"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +433,7 @@ func TestNew_IgnoresLostAndFoundWhenDecidingFreshness(t *testing.T) {
 // A directory holding lost+found AND genuine old-layout content is still
 // refused: lost+found is ignored, not a license to ignore everything else.
 func TestNew_LostAndFoundDoesNotMaskOldLayoutContent(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.Mkdir(filepath.Join(dir, "lost+found"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +466,7 @@ func TestWalks_NeverDescendIntoAnUnreadableRootEntry(t *testing.T) {
 		t.Skip("running as root: a 0-mode directory is still readable by root, so this test cannot exercise the permission denial it is about")
 	}
 
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	lostAndFound := filepath.Join(dir, "lost+found")
 	if err := os.Mkdir(lostAndFound, 0o700); err != nil {
 		t.Fatal(err)
@@ -473,7 +474,7 @@ func TestWalks_NeverDescendIntoAnUnreadableRootEntry(t *testing.T) {
 	if err := os.Chmod(lostAndFound, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(lostAndFound, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(lostAndFound, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	// New itself must succeed: it runs cleanupTempSetFiles, which walks the
 	// tree exactly like List and the iterator do.
@@ -541,7 +542,7 @@ func TestWalks_NeverDescendIntoAnUnreadableRootEntry(t *testing.T) {
 // leaves the cache unchanged, and a key that hashes into a DIFFERENT shard
 // directory gets its own, separate entry.
 func TestEnsureShardDirDurable_CachesPerDirectory(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +603,7 @@ func TestEnsureShardDirDurable_CachesPerDirectory(t *testing.T) {
 // cache rather than re-verifying the directory on disk, which is exactly
 // the work the cache exists to skip.
 func TestEnsureShardDirDurable_SkipsMkdirAllDurableOnCacheHit(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +634,7 @@ func TestEnsureShardDirDurable_SkipsMkdirAllDurableOnCacheHit(t *testing.T) {
 // branch failing mid-batch: the journal is already durable (by design, for
 // a transient fault recovery can retry), and the error reaches the caller.
 func TestApplyBufferedOps_SetErrorPropagates(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +657,7 @@ func TestApplyBufferedOps_SetErrorPropagates(t *testing.T) {
 
 // TestApplyBufferedOps_DeleteErrorPropagates is the Delete-branch twin.
 func TestApplyBufferedOps_DeleteErrorPropagates(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

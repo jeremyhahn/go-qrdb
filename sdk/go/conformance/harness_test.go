@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -345,7 +346,7 @@ var raftPortSeed = 63940
 func (c cell) config(t *testing.T) *qrdbconfig.Config {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = t.TempDir()
+	cfg.Raft.DataDir = c.dataDir(t)
 	cfg.Server.Host = "127.0.0.1"
 	// Exactly one listener per cell. A cell tests ONE transport, and starting
 	// the others would spend ports and goroutines on paths this cell never
@@ -380,7 +381,7 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		cfg.Raft.SMType = c.smType
 		cfg.Raft.SMStorage = c.smStorage
 		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
-		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
+		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: c.dataDir(t)}}
 		// The non-default cells run with the barrier off: the disk cell's
 		// file storage cannot be encrypted and is refused under it
 		// (sdk/go/node.clusteredCreateFunc), and one seal setting across the
@@ -393,6 +394,20 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		}
 	}
 	return cfg
+}
+
+// dataDir returns a fresh data directory for the cell. A file-engine cell's
+// is on tmpfs: the engine fsyncs every write, and on a busy runner's disk
+// those syncs stall the cell long enough to miss the lease, watch and lock
+// deadlines it asserts on -- measuring the host's disk, not the protocol.
+// The cell still runs the real engine and its real fsync calls. The other
+// engines keep testing.T.TempDir.
+func (c cell) dataDir(t *testing.T) string {
+	t.Helper()
+	if c.backend == database.BackendFile {
+		return memdir.TempDir(t)
+	}
+	return t.TempDir()
 }
 
 // keepsRevisions reports whether the cell's engine keeps MVCC revisions and

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
 )
 
@@ -32,7 +33,7 @@ import (
 
 func openPair(t *testing.T) (*Engine, *Engine) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	a, err := New(dir)
 	if err != nil {
 		t.Fatalf("New a: %v", err)
@@ -56,7 +57,7 @@ func blocked(done <-chan struct{}) bool {
 }
 
 func TestNew_CreatesLockFileAndStillTreatsDirectoryAsFresh(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)

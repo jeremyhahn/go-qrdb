@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 // namedBackend pairs a backend label with its storage.Storage instance.
@@ -48,7 +49,7 @@ func newParityBackends(t *testing.T) []namedBackend {
 	if err != nil {
 		t.Fatalf("pebble.New: %v", err)
 	}
-	fdb, err := file.New(t.TempDir())
+	fdb, err := file.New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatalf("file.New: %v", err)
 	}

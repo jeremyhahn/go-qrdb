@@ -256,6 +256,28 @@ an error value, so an unchecked call panics rather than failing cleanly.
   exists; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
   bytes) is a client-input policy enforced before and at Apply, independent
   of any particular backend's constraints.
+- **File engine commit cost**: a batch commit publishes its journal durably,
+  then writes its records, then clears the journal, all under the write lock.
+  The records are reduced to the last operation per key first, so a batch
+  that writes one key twice leaves the in-order final state, and the distinct
+  keys are then written concurrently, at most 32 at a time
+  (`applyConcurrency` in `pkg/storage/file/batch.go`), so their fsyncs
+  overlap rather than queue. A record write that fails fails the commit and
+  leaves the journal in place; the next open replays it. `storage.ApplyFunc`
+  states the contract that permits this: distinct keys may be applied in any
+  order or concurrently.
+- **Standalone group commit** (`pkg/backend/local.go`): proposals that
+  arrive while one `Update` is in progress queue behind it, and the proposer
+  that next holds the apply token applies the whole queue in one `Update`, so
+  concurrent writers share one commit and its fsyncs instead of paying for
+  one each. Every proposal is acknowledged only after the `Update` that
+  applied it returns, so no write is acknowledged before the fsync covering
+  it. Indices stay consecutive and applies stay sequential. An `Update` error
+  fails every proposal in its group, and a panic in `Update` completes the
+  group with `ApplyAbortedError` and releases the token. A proposer whose
+  context is cancelled still has its proposal applied with its group: once
+  queued, a write is not withdrawn. There is no setting; a lone proposal is a
+  group of one.
 - **Objstore engine**: one object per key, named by the key's encoding,
   never by the key itself. A key whose segmented lowercase hex name fits the
   provider's 1,024-byte limit is stored as `k/<hex…>_`, with its value as the
@@ -291,6 +313,22 @@ an error value, so an unchecked call panics rather than failing cleanly.
 - **Namespace wrapper**: prefixing on write, prefix filtering on `List`, and
   that a second tenant's keys are invisible.
 - **File engine journal**: crash-mid-write replay at open.
+- **File engine on tmpfs**: the file engine's unit tests, the storage parity
+  tests and every file-engine cell of the `sdk/go/conformance` matrix make
+  their directories with `pkg/testutil/memdir`, which creates them under
+  `/dev/shm` on Linux and fails the test if that is not tmpfs, so an fsync
+  returns at once and a test's deadline measures the code, not the runner's
+  disk. `TestFileCells_RunOnTmpfs` asserts every file-engine cell's
+  directories are on tmpfs. Integration tests and the commit benchmarks
+  (`make bench-storage-file`) keep a real disk, since the disk is their
+  subject.
+- **Group commit and parallel record writes** (`pkg/backend/group_commit_test.go`,
+  `pkg/storage/file/parallel_apply_test.go`), driven by a slow fake sync:
+  32 concurrent proposals finish in about one sync time, no proposal is
+  acknowledged before the sync covering it, an `Update` error or panic
+  completes the whole group, a commit's record syncs overlap, a failed
+  record sync is recovered from the journal at reopen, and the last
+  operation on a key wins.
 - **File engine cross-process lock** (`pkg/storage/file/exclusive_test.go`,
   `pkg/util/filelock`): `Exclusive` blocking another engine's `Set` and batch
   commit until it returns, and `New` waiting for a writer in flight; the lock

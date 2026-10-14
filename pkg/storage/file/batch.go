@@ -15,6 +15,8 @@
 package file
 
 import (
+	"golang.org/x/sync/errgroup"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
@@ -77,21 +79,55 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 	return e.clearJournal()
 }
 
-// applyBufferedOps writes a batch's operations to the engine in order.
-// Each Set/Delete is individually durable (see Engine.Set). The caller holds
-// the write lock -- a commit, or open-time recovery -- so the unlocked set and
-// del are used.
+// applyConcurrency bounds how many records one commit writes at once. Every
+// record costs a file fsync and a directory fsync, so a commit of K keys
+// applied one after another waited 2K fsyncs in a row; issued together they
+// overlap in the device queue and the commit waits roughly one. The bound
+// keeps a large batch from opening thousands of descriptors at once. It is a
+// property of the write path, not a tuning knob.
+const applyConcurrency = 32
+
+// applyBufferedOps writes a batch's operations to the engine. Each Set/Delete
+// is individually durable (see Engine.Set). The caller holds the write lock
+// -- a commit, or open-time recovery -- so the unlocked set and del are used,
+// and nothing returns until every write has finished, so no write outlives
+// the lock or the journal that covers it.
+//
+// Order only matters between operations on the same key, so the batch is
+// reduced to the last operation per key -- the state applying every operation
+// in order would leave -- and the distinct keys, which share no file, are
+// written concurrently. A failure leaves the journal in place exactly as a
+// failure midway through a serial apply did: recovery replays the whole batch.
 func (e *Engine) applyBufferedOps(ops []storage.BufferedOp) error {
-	for _, op := range ops {
-		if op.Deleted {
-			if err := e.del(op.Key); err != nil {
-				return err
+	var g errgroup.Group
+	g.SetLimit(applyConcurrency)
+	for _, op := range lastOpPerKey(ops) {
+		g.Go(func() error {
+			if op.Deleted {
+				return e.del(op.Key)
 			}
-			continue
-		}
-		if err := e.set(op.Key, op.Value); err != nil {
-			return err
+			return e.set(op.Key, op.Value)
+		})
+	}
+	return g.Wait()
+}
+
+// lastOpPerKey returns ops reduced to the final operation on each key, in the
+// order those final operations appear. A batch that touches each key once is
+// returned as is.
+func lastOpPerKey(ops []storage.BufferedOp) []storage.BufferedOp {
+	last := make(map[string]int, len(ops))
+	for i, op := range ops {
+		last[string(op.Key)] = i
+	}
+	if len(last) == len(ops) {
+		return ops
+	}
+	final := make([]storage.BufferedOp, 0, len(last))
+	for i, op := range ops {
+		if last[string(op.Key)] == i {
+			final = append(final, op)
 		}
 	}
-	return nil
+	return final
 }

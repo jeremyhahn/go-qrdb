@@ -76,6 +76,16 @@ func (e *BackendClosedError) Unwrap() error {
 	return storage.ErrStorageClosed
 }
 
+// ApplyAbortedError is returned to every proposal in a group commit whose
+// state machine Update panicked. Whether any of them was applied is unknown;
+// none was acknowledged.
+type ApplyAbortedError struct{}
+
+// Error returns a human-readable description.
+func (e *ApplyAbortedError) Error() string {
+	return "backend: apply aborted by a panic in the state machine"
+}
+
 // LookupTypeError is returned when a Lookup query has an unsupported
 // type that the SimpleStateMachine cannot handle.
 type LookupTypeError struct {

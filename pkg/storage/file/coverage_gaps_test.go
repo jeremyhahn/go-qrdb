@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 // ---------------------------------------------------------------------------
@@ -37,7 +38,7 @@ func TestSet_CreateTempErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestSet_CreateTempErrorPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	if err := e.Set(key, []byte("v2")); err == nil {
 		t.Fatal("expected Set to fail creating a temp file in a read-only shard directory")
@@ -68,7 +69,7 @@ func TestSet_CreateTempErrorPropagates(t *testing.T) {
 // a file sitting at the exact hash-named path a key resolves to, but whose
 // content is too short to be a valid record.
 func TestGet_DecodeRecordErrorPropagates(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestList_ReadFileErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +120,7 @@ func TestList_ReadFileErrorPropagates(t *testing.T) {
 // TestList_DecodeRecordErrorPropagates covers List's decodeRecord error
 // path via a corrupt record discovered during the shard walk.
 func TestList_DecodeRecordErrorPropagates(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestIterator_ReadFileErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestIterator_ReadFileErrorPropagates(t *testing.T) {
 // TestIterator_DecodeRecordErrorPropagates is TestList_DecodeRecordErrorPropagates
 // for the iterator's own load, surfaced through Error().
 func TestIterator_DecodeRecordErrorPropagates(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +208,7 @@ func TestNew_CleanupTempSetFilesErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +228,7 @@ func TestNew_CleanupTempSetFilesErrorPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	if _, err := New(dir); err == nil {
 		t.Fatal("expected New to fail cleaning up temp set files in an unreadable shard directory")
@@ -247,11 +248,11 @@ func TestEnsureFormatMarker_ReadDirErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	e := &Engine{dir: dir}
 	if err := e.ensureFormatMarker(); err == nil {
@@ -265,11 +266,11 @@ func TestRecoverJournal_ReadDirErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	e := &Engine{dir: dir}
 	if err := e.recoverJournal(); err == nil {
@@ -284,7 +285,7 @@ func TestRecoverJournal_ReadFileErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	journalPath := filepath.Join(dir, journalFileName)
 	if err := os.WriteFile(journalPath, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -304,7 +305,7 @@ func TestRecoverJournal_ReadFileErrorPropagates(t *testing.T) {
 // applyBufferedOps error path: a committed journal whose single op is a Set
 // with an empty key, which checkKey refuses deterministically.
 func TestRecoverJournal_ApplyBufferedOpsErrorPropagates(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	ops := []storage.BufferedOp{{Key: []byte{}, Value: []byte("v")}}
 	if err := os.WriteFile(filepath.Join(dir, journalFileName), encodeJournal(ops), 0o600); err != nil {
 		t.Fatal(err)
@@ -381,7 +382,7 @@ func TestCommitBufferedOps_WriteJournalErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +392,7 @@ func TestCommitBufferedOps_WriteJournalErrorPropagates(t *testing.T) {
 	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	b := e.Batch()
 	if err := b.Set([]byte("a"), []byte("1")); err != nil {

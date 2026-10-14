@@ -24,6 +24,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 const (
@@ -69,7 +71,7 @@ func TestCASChildHelper(t *testing.T) {
 // Two processes racing CompareAndSwap on one key: exactly one wins, and the
 // stored value belongs to the winner.
 func TestCompareAndSwap_AcrossProcesses(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	seed, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)

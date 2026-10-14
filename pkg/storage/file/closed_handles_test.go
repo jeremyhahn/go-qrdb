@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 // A closed engine's Batch must be the shared inert handle, not a live batch
@@ -72,7 +73,7 @@ func TestClosedEngineIteratorReportsTheClosure(t *testing.T) {
 // mustNewFileEngine opens a file engine rooted in a per-test temp dir.
 func mustNewFileEngine(t *testing.T) *file.Engine {
 	t.Helper()
-	e, err := file.New(t.TempDir())
+	e, err := file.New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatalf("file.New: %v", err)
 	}

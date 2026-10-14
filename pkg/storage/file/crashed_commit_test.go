@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 const crashChildEnv = "QRDB_FILE_CRASH_CHILD"
@@ -58,7 +59,7 @@ func TestCrashedCommitHelper(t *testing.T) {
 // process's operations are lost, or a later reopen replays the stale journal
 // over newer writes.
 func TestLock_SurvivorFinishesCommitAbandonedByDeadProcess(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	survivor, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)

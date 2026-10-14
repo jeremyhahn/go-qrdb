@@ -22,12 +22,13 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 // TestBatchCommit_AppliesAllAndClearsJournal pins the happy path of the
 // journaled commit: every op lands and no journal or temp file survives.
 func TestBatchCommit_AppliesAllAndClearsJournal(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +80,7 @@ func TestBatchCommit_AppliesAllAndClearsJournal(t *testing.T) {
 // publish and apply: a complete journal exists but none of its files do.
 // Open must replay the whole batch and clear the journal.
 func TestOpen_RecoversPublishedJournal(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 
 	// Simulate a crash on an already-initialised data directory: the format
 	// marker was committed in an earlier (crash-free) Open, and a batch
@@ -145,7 +146,7 @@ func TestOpen_RefusedFormatLeavesJournalUnreplayed(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := memdir.TempDir(t)
 			if tc.marker != nil {
 				if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), tc.marker, 0o600); err != nil {
 					t.Fatal(err)
@@ -188,7 +189,7 @@ func TestOpen_RefusedFormatLeavesJournalUnreplayed(t *testing.T) {
 // checksum-failing journal means the last batch is in an unknown state,
 // and the open must refuse rather than serve it.
 func TestOpen_CorruptJournalFailsClosed(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	// As in TestOpen_RecoversPublishedJournal: the directory was already
 	// initialised before the crash that left this corrupt journal behind.
 	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatVersion), 0o600); err != nil {
@@ -255,7 +256,7 @@ func TestDecodeJournal_RejectsGarbage(t *testing.T) {
 // should find; anything else dot-prefixed is a stray ".tmp-set-*" or
 // ".tmp-journal-*" artifact.
 func TestSet_LeavesNoTempFiles(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +292,7 @@ func TestWriteJournal_CreateTempErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -301,7 +302,7 @@ func TestWriteJournal_CreateTempErrorPropagates(t *testing.T) {
 	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	err = e.writeJournal([]byte("x"))
 	var jwe *JournalWriteError
@@ -317,7 +318,7 @@ func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +331,7 @@ func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
 	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	err = e.clearJournal()
 	var jwe *JournalWriteError

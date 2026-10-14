@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ import (
 // TestFileIterator_Error verifies that Error() always returns nil for the
 // file iterator since it does not accumulate errors during normal operation.
 func TestFileIterator_Error(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -61,7 +62,7 @@ func TestFileIterator_Error(t *testing.T) {
 // TestFileIterator_Prev_NotInitialized verifies that Prev returns false when
 // the iterator has never been positioned.
 func TestFileIterator_Prev_NotInitialized(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -87,7 +88,7 @@ func TestFileIterator_Prev_NotInitialized(t *testing.T) {
 // TestFileIterator_Prev_ReachesStart verifies that iterating backward past the
 // first entry sets the iterator invalid.
 func TestFileIterator_Prev_ReachesStart(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -124,7 +125,7 @@ func TestFileIterator_Prev_ReachesStart(t *testing.T) {
 // TestFileBatch_Commit_WithDelete verifies that a batch containing both Set
 // and Delete operations is applied atomically on Commit.
 func TestFileBatch_Commit_WithDelete(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -169,7 +170,7 @@ func TestFileBatch_Commit_WithDelete(t *testing.T) {
 // TestFileBatch_Commit_Closed verifies that Commit on a closed batch
 // returns a BatchError wrapping ClosedError.
 func TestFileBatch_Commit_Closed(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -190,7 +191,7 @@ func TestFileBatch_Commit_Closed(t *testing.T) {
 // TestFileIterator_OnlyKeys verifies that loading with OnlyKeys=true omits
 // values from the entries (Value() returns nil).
 func TestFileIterator_OnlyKeys(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -223,7 +224,7 @@ func TestFileIterator_OnlyKeys(t *testing.T) {
 // TestFileIterator_Reverse verifies that setting Reverse=true returns keys
 // in descending order.
 func TestFileIterator_Reverse(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -258,7 +259,7 @@ func TestFileIterator_Reverse(t *testing.T) {
 
 // TestFileIterator_EmptyDir_SeekToLast verifies SeekToLast on an empty engine.
 func TestFileIterator_EmptyDir_SeekToLast(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -275,7 +276,7 @@ func TestFileIterator_EmptyDir_SeekToLast(t *testing.T) {
 
 // TestFileIterator_Next_BeforeSeek verifies that Next before any Seek returns false.
 func TestFileIterator_Next_BeforeSeek(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -296,7 +297,7 @@ func TestFileIterator_Next_BeforeSeek(t *testing.T) {
 
 // TestFileIterator_SeekToLast_ThenNext verifies iterating from last backward.
 func TestFileIterator_SeekToLast_ThenNext(t *testing.T) {
-	dir := t.TempDir()
+	dir := memdir.TempDir(t)
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)

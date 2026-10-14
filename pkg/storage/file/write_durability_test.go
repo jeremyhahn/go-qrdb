@@ -24,12 +24,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // TestSet_RoutesItsDirectorySyncThroughTheSharedPrimitive.
 func TestSet_RoutesItsDirectorySyncThroughTheSharedPrimitive(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestSet_RoutesItsDirectorySyncThroughTheSharedPrimitive(t *testing.T) {
 // journal's publish is the batch's commit point, and it must be durable
 // through the same one implementation.
 func TestBatch_RoutesItsJournalDirectorySyncThroughTheSharedPrimitive(t *testing.T) {
-	e, err := New(t.TempDir())
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
