@@ -67,6 +67,7 @@ The cluster engine and database system for every project in the stack: embedded,
 
 - **cluster-verification** — the qrdb-3-node-proven gate: linearizability checker, nemesis and soak; rate nemesis; pinned port set; cluster suites green on main — [#669](../../issues/669), [#679](../../issues/679), [#671](../../issues/671), [#668](../../issues/668); PRs [#673](../../pulls/673), [#689](../../pulls/689), [#691](../../pulls/691), [#692](../../pulls/692), [#693](../../pulls/693); PR [#696](../../pulls/696), the #668 rebalance fix (refuse a plan whose placement records cannot be read): merged, done — folder arrives with #669 — in review
 - **sealed-mode-serving** — adopt the go-quicraft v0.21.0 release candidate, with sealed-mode serving — [#659](../../issues/659); PR [#695](../../pulls/695) — [docs/barrier-seal/](docs/barrier-seal/) — in review
+- **bounded-startup-read** — each startup read attempt bounded and a boot failure logged; go-quicraft `ErrReadIndexNotReady` retried until the startup deadline — [#668](../../issues/668); PR [#673](../../pulls/673) — [docs/clustering/](docs/clustering/) — in review
 - **lease-reads** — lease reads documented as linearizable under the 1 % clock-rate bound — [#678](../../issues/678); PR [#681](../../pulls/681) — [docs/key-value/](docs/key-value/) — in review
 - **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684); PR [#681](../../pulls/681) — [docs/auth-factors/](docs/auth-factors/) — in review
 - **protected-memory** — scoped borrow and constant-time `Equal`; `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#650](../../issues/650), [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633); PR [#651](../../pulls/651) — [docs/barrier-seal/](docs/barrier-seal/) — in review
@@ -106,7 +107,7 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Dependencies
 
-- Up: go-quicraft v0.20.0 — the Raft library go-qrdb embeds; multi-group Raft consensus and the QUIC Raft transport; the barrier interfaces and minimal barrier; `EpochBarrier`, `StrategyNone`, `StrategyPassphrase`, re-exported through `sdk/go` — clustering, barrier-seal; v0.21 is sealed-mode-serving ([#659](../../issues/659)).
+- Up: go-quicraft v0.20.0 — the Raft library go-qrdb embeds; multi-group Raft consensus and the QUIC Raft transport; the barrier interfaces and minimal barrier; `EpochBarrier`, `StrategyNone`, `StrategyPassphrase`, re-exported through `sdk/go` — clustering, barrier-seal; v0.21 is sealed-mode-serving ([#659](../../issues/659)) and also provides `ErrReadIndexNotReady` for bounded-startup-read ([#668](../../issues/668)).
 - Up: go-enclave v0.8.0-alpha — the protected-memory primitives under `pkg/secure` — credentials, barrier-seal, protected-memory.
 - Up: go-objstore v0.4.0-alpha — the ObjStore storage backend and backup destinations — storage-engines, backup-restore.
 - Up: go-truststrap v0.6.0-alpha — the Noise bootstrap handler and session for cluster enrollment; the P-256 handshake ([#118](../../issues/118)) — clustering, fips-140-3.
