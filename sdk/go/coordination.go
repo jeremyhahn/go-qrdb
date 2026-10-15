@@ -480,6 +480,32 @@ func (e *LeaseLostError) Error() string {
 	return "sdk: lease lost before renewal was acknowledged: " + e.Key
 }
 
+// LeaseExpiredBeforeBindError is returned by AcquireLease when the lease it
+// granted had already ended by the time the exclusive bind reached the server:
+// the bind found that lease not found. Lease IDs are never reused, so this
+// means the time from the grant to the bind outlasted TTL and the expiry sweep
+// revoked the lease first. The key was not bound and nothing is held, so
+// there is nothing to release or revoke.
+//
+// It is not a fault: the TTL was shorter than the service's latency at that
+// moment. Acquire again, with a TTL comfortably longer than a round trip.
+type LeaseExpiredBeforeBindError struct {
+	// Key is the key that was not bound.
+	Key string
+	// TTL is the lease lifetime that was granted and ran out.
+	TTL time.Duration
+	// Err is the bind's own report of the missing lease.
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *LeaseExpiredBeforeBindError) Error() string {
+	return "sdk: lease expired before the key was bound (ttl " + e.TTL.String() + "): " + e.Key
+}
+
+// Unwrap returns the bind's report of the missing lease.
+func (e *LeaseExpiredBeforeBindError) Unwrap() error { return e.Err }
+
 // AcquireLease acquires an EXCLUSIVE TTL lease on key: it grants a lease and, in
 // a single transaction, binds key to it only if key does not already exist. If
 // another holder already owns key the transaction's precondition fails, the
@@ -488,6 +514,10 @@ func (e *LeaseLostError) Error() string {
 // automatically when the lease expires or is released, so the lease is a
 // TTL-scoped distributed lock and the returned Lease renews, releases, and
 // reports loss via Done.
+//
+// The grant and the bind are two round trips, and the lease's TTL runs from the
+// grant. When the bind lands after the lease has expired, nothing is bound and
+// AcquireLease returns LeaseExpiredBeforeBindError.
 //
 // The exclusive bind is one transaction (create-if-absent with the lease
 // attached to the put), so two racing callers cannot both win: the state
@@ -534,6 +564,14 @@ func (c *Coordinator) AcquireLease(ctx context.Context, key string, ttl time.Dur
 			LeaseID: info.ID,
 		}},
 	})
+	var notFound *transport.LeaseNotFoundError
+	if errors.As(err, &notFound) && notFound.LeaseID == info.ID {
+		// The bind outlived the lease this call granted: the expiry sweep
+		// revoked it, and every key it held, before the bind landed. Nothing
+		// is left to revoke, and the raw "lease not found" would name an ID
+		// the caller never chose.
+		return nil, &LeaseExpiredBeforeBindError{Key: key, TTL: time.Duration(secs) * time.Second, Err: err}
+	}
 	if err != nil || !resp.Succeeded {
 		// The grant succeeded but the exclusive bind did not (transport error,
 		// or the key is already held). Revoke so the grant does not leak.

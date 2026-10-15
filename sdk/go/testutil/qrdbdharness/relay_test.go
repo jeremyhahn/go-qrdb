@@ -97,10 +97,26 @@ func addrPortOf(t *testing.T, conn *net.UDPConn) netip.AddrPort {
 // waitDropped waits until the relay has dropped at least want datagrams.
 func waitDropped(t *testing.T, relay *UDPRelay, want uint64) {
 	t.Helper()
+	waitCount(t, "dropped", relay.Dropped, want)
+}
+
+// waitForwarded waits until the relay has forwarded at least want datagrams.
+// A relay counts a datagram once its write has returned, so a reader on the
+// far side can receive the datagram before the count moves; asserting the
+// count straight after a receive races that increment.
+func waitForwarded(t *testing.T, relay *UDPRelay, want uint64) {
+	t.Helper()
+	waitCount(t, "forwarded", relay.Forwarded, want)
+}
+
+// waitCount waits until count reports at least want, failing the test once
+// relayIOTimeout passes without it.
+func waitCount(t *testing.T, what string, count func() uint64, want uint64) {
+	t.Helper()
 	deadline := time.Now().Add(relayIOTimeout)
-	for relay.Dropped() < want {
+	for count() < want {
 		if time.Now().After(deadline) {
-			t.Fatalf("relay dropped %d datagrams, want at least %d", relay.Dropped(), want)
+			t.Fatalf("relay %s %d datagrams, want at least %d", what, count(), want)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -129,6 +145,9 @@ func TestUDPRelay_ForwardsBothDirections(t *testing.T) {
 	if from.String() != f.relay.Addr() {
 		t.Fatalf("reply came from %s, want the relay front %s", from, f.relay.Addr())
 	}
+	// Both datagrams have arrived, but each direction counts after its write
+	// returns, so the counter may still trail the receive.
+	waitForwarded(t, f.relay, 2)
 	if n := f.relay.Forwarded(); n != 2 {
 		t.Fatalf("Forwarded() = %d, want 2", n)
 	}

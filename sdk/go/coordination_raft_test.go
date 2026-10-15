@@ -573,13 +573,26 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 		// See runSubTTLRenewalCycles for why this instant and not another.
 		anchor := time.Now()
 		l, err := coord.AcquireLease(ctx, key, leaseTTL)
-		if err != nil {
-			t.Fatalf("AcquireLease(%s): %v", key, err)
-		}
 
 		// The acquire's own round trip is what set the first deadline, so it is
 		// part of the first cycle's budget exactly as a renewal's would be.
 		acquireTook := time.Since(anchor)
+		if err != nil {
+			// The grant and the bind are two round trips, and the TTL runs from
+			// the grant. A bind that lands after the TTL finds the lease swept
+			// (go-qrdb#730): the same overrun as a renewal landing late, so the
+			// same discard. The server's clock starts after anchor, so the error
+			// inside the TTL is a lease revoked early, and fails.
+			var expired *sdk.LeaseExpiredBeforeBindError
+			if !errors.As(err, &expired) || acquireTook < leaseTTL {
+				t.Fatalf("AcquireLease(%s) after %v: %v", key, acquireTook, err)
+			}
+			over := renewalOverrun{renewTook: acquireTook, heldFor: acquireTook}
+			overruns = append(overruns, over)
+			t.Logf("attempt %d/%d overran the %v TTL -- %s. Discarding this attempt: the "+
+				"assertion's precondition did not hold.", attempt, maxAttempts, leaseTTL, over)
+			continue
+		}
 
 		over, overran := runSubTTLRenewalCycles(
 			t, ctx, l, anchor, acquireTook, cycles, renewEvery, leaseTTL)
@@ -682,9 +695,9 @@ func overrunLines(os []renewalOverrun) []string {
 // ranged 2.3ms to 265ms. Reporting them separately is what lets the message
 // name a cause it has actually observed.
 type renewalOverrun struct {
-	cycle     int
+	cycle     int           // 0 is the acquire, whose grant expired before its bind
 	sleepOver time.Duration // beyond the requested cadence
-	renewTook time.Duration // this cycle's keepalive round trip
+	renewTook time.Duration // this cycle's keepalive round trip, or the acquire's
 	prevRenew time.Duration // the previous one, which set the deadline
 	heldFor   time.Duration // total since the confirmation that set the deadline
 }
@@ -692,12 +705,18 @@ type renewalOverrun struct {
 // String reports the breakdown and names the dominant consumer, or declines to
 // when no single interval dominates.
 func (o renewalOverrun) String() string {
-	s := fmt.Sprintf("cycle %d: sleep overran by %v, this renew took %v, "+
-		"the previous renew took %v, total held %v",
-		o.cycle, o.sleepOver.Round(time.Millisecond),
-		o.renewTook.Round(time.Millisecond),
-		o.prevRenew.Round(time.Millisecond),
-		o.heldFor.Round(time.Millisecond))
+	var s string
+	if o.cycle == 0 {
+		s = fmt.Sprintf("the acquire: its grant expired before its bind landed, "+
+			"the grant and bind round trips took %v", o.renewTook.Round(time.Millisecond))
+	} else {
+		s = fmt.Sprintf("cycle %d: sleep overran by %v, this renew took %v, "+
+			"the previous renew took %v, total held %v",
+			o.cycle, o.sleepOver.Round(time.Millisecond),
+			o.renewTook.Round(time.Millisecond),
+			o.prevRenew.Round(time.Millisecond),
+			o.heldFor.Round(time.Millisecond))
+	}
 
 	// Attribute only when one interval plainly dominates. "Plainly" is 2x the
 	// rest, which is deliberately coarse: the point is to refuse an attribution
@@ -708,8 +727,12 @@ func (o renewalOverrun) String() string {
 		s += " -- the SLEEP consumed the budget: the scheduler did not return " +
 			"within the cadence, which is host starvation"
 	case rt > 2*o.sleepOver:
+		path := "the keepalive path"
+		if o.cycle == 0 {
+			path = "the grant and bind proposals"
+		}
 		s += " -- the RENEW ROUND TRIPS consumed the budget, NOT the scheduler. " +
-			"A quiet host will not necessarily help; suspect the keepalive path"
+			"A quiet host will not necessarily help; suspect " + path
 	default:
 		s += " -- no single interval dominates, so this does not say which cause it was"
 	}
@@ -795,6 +818,72 @@ func TestRaft_LeaseTimeToLive_NotFoundIsRealNotHandcrafted(t *testing.T) {
 	}
 	if notFound.LeaseID != 999999999 {
 		t.Errorf("LeaseID = %d, want 999999999", notFound.LeaseID)
+	}
+}
+
+// bindAfterSweep holds every lease-bound transaction until the server reports
+// its lease gone, then sends it: the grant-to-bind gap a stalled raft group
+// opened on CI (go-qrdb#730), made deterministic.
+type bindAfterSweep struct {
+	transport.TransactionClient
+	lease transport.LeaseClient
+}
+
+var _ transport.TransactionClient = (*bindAfterSweep)(nil)
+
+func (b *bindAfterSweep) ExecuteTransaction(ctx context.Context, req *transport.TransactionRequest, opts ...transport.WriteOption) (*transport.TransactionResponse, error) {
+	for _, op := range req.SuccessOps {
+		if op.LeaseID == 0 {
+			continue
+		}
+		for {
+			_, err := b.lease.LeaseTimeToLive(ctx, op.LeaseID)
+			var notFound *transport.LeaseNotFoundError
+			if errors.As(err, &notFound) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	return b.TransactionClient.ExecuteTransaction(ctx, req, opts...)
+}
+
+// TestRaft_AcquireLease_GrantSweptBeforeBind drives go-qrdb#730 against a real
+// Lessor and sweeper: the grant lands, the sweep revokes it before the bind,
+// and AcquireLease must say so with LeaseExpiredBeforeBindError and leave the
+// key unbound.
+func TestRaft_AcquireLease_GrantSweptBeforeBind(t *testing.T) {
+	_, _, client := bootRaftNodeOpts(t, raftNodeOpts{})
+	coord, err := sdk.NewCoordinator(client.KV(), client.Lease(),
+		&bindAfterSweep{TransactionClient: client.Transaction(), lease: client.Lease()}, client.Watch())
+	if err != nil {
+		t.Fatalf("NewCoordinator: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
+	defer cancel()
+
+	_, err = coord.AcquireLease(ctx, "swept/lock", time.Second)
+	var expired *sdk.LeaseExpiredBeforeBindError
+	if !errors.As(err, &expired) {
+		t.Fatalf("AcquireLease with its grant swept before the bind: got %v, want LeaseExpiredBeforeBindError", err)
+	}
+	if expired.Key != "swept/lock" {
+		t.Errorf("Key = %q, want swept/lock", expired.Key)
+	}
+	got, err := coord.Get(ctx, "swept/lock")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("a bind refused for a swept lease must leave the key unbound, got %q", got)
 	}
 }
 
@@ -919,6 +1008,14 @@ func TestRenewalOverrun_AttributesOnlyWhatTheSplitShows(t *testing.T) {
 				prevRenew: 100 * ms, heldFor: 2100 * ms},
 			wantPhrase: "does not say which cause it was",
 			denyPhrase: "consumed the budget",
+		},
+		{
+			// The run that took main red (go-qrdb#730): the acquire's grant
+			// expired before its bind, with no sleep in the window at all.
+			name:       "an acquire that outlived its grant is round trips",
+			over:       renewalOverrun{renewTook: 2400 * ms, heldFor: 2400 * ms},
+			wantPhrase: "the acquire: its grant expired before its bind landed, the grant and bind round trips took 2.4s -- the RENEW ROUND TRIPS consumed the budget, NOT the scheduler. A quiet host will not necessarily help; suspect the grant and bind proposals",
+			denyPhrase: "keepalive",
 		},
 	}
 

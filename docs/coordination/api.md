@@ -159,6 +159,7 @@ What the coordination layer does with them:
 | Key not found, from `Get` | `(nil, nil)` — **translated, never surfaced** |
 | Precondition not met, from `CompareAndSwap` | `(false, nil)` — an outcome, not an error |
 | Precondition not met, from the acquire bind | `*LeaseHeldError{Key}` (and the grant is revoked) |
+| Lease not found, from the acquire bind, for the lease just granted | `*LeaseExpiredBeforeBindError{Key, TTL}` — the grant expired before the bind; nothing to revoke |
 | Lease not found / expired, from `Release`'s revoke | `nil` — the binding is already gone, which is what was asked for |
 | Lease not found / expired, from a liveness poll | `Done` closes; loss is proven |
 | Keep-alive accepted after the ownership deadline | `*LeaseLostError{Key}` — **not** `nil` |

@@ -93,6 +93,7 @@ Error types, all matched with `errors.As`:
 type CoordinationUnsupportedError struct{ Capability string }  // "kv" | "lease" | "transaction" | "watch"
 type LeaseHeldError            struct{ Key string }
 type LeaseLostError            struct{ Key string }
+type LeaseExpiredBeforeBindError struct{ Key string; TTL time.Duration; Err error } // Unwrap returns Err
 ```
 
 `Client.Coordination` additionally returns `*ClientClosedError` on a closed
@@ -165,6 +166,13 @@ behaviour below is measured against:
   `AcquireLease` open indefinitely. A cleanup that fails leaks one grant that
   expires on its own TTL; the **acquisition** error is what the caller gets
   either way.
+- The grant and the bind are two round trips, and the TTL runs from the grant.
+  A bind that lands after the TTL finds the lease already revoked by the sweep
+  and returns `LeaseExpiredBeforeBindError` (`Key`, `TTL`, unwrapping to the
+  transport's `LeaseNotFoundError` for that lease). Lease IDs are never reused,
+  so the not-found can only be that grant expiring: nothing was bound and there
+  is nothing to revoke, so this one bind failure skips the cleanup. A
+  not-found naming any other lease is an ordinary bind error and is revoked.
 - The value written under the key is `leaseMarker`, a fixed non-empty constant.
   The surface offers no way to store holder identity in the bound key; ownership
   is signalled by the key's existence and its lease attachment.
@@ -392,6 +400,7 @@ every one of those keepalives is a consensus proposal.
 | `*CoordinationUnsupportedError` | `Client.Coordination`, `NewCoordinator` | the transport lacks the named sub-client, or a nil argument | wiring bug |
 | `*LeaseHeldError` | `AcquireLease` | another holder owns the key | **no** — the ordinary outcome of losing an election |
 | `*LeaseLostError` | `Renew` | the keepalive was acknowledged after the deadline | **no** — a correct report of lost ownership; fence |
+| `*LeaseExpiredBeforeBindError` | `AcquireLease` | the grant-to-bind round trips outlasted the TTL, and the sweep revoked the grant before the bind landed; the key was not bound | **no** — acquire again, with a TTL longer than a round trip |
 | `*transport.KeyNotFoundError` | never surfaced by `Get` | translated to `(nil, nil)` | n/a |
 | `*transport.CapabilityUnsupportedError` | `AcquireLease` on a backend that keeps no leases (standalone file/objstore) | the engine cannot hold a lease | design-time, not runtime |
 | `*transport.WatchCanceledError` | `WatchStream.Err` | the server terminated the watch; reason carried verbatim | depends on the reason — see below |

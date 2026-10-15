@@ -297,6 +297,7 @@ Two limits to plan around:
 |---|---|---|
 | `LeaseHeldError` from `AcquireLease` | someone else holds the key | you are a follower — back off and retry; not a failure |
 | `LeaseHeldError` **forever**, and nobody is alive to hold it | expired leases are not being swept on this deployment | this is a server-side composition problem, not a client one — the leader's expiry sweep must be running; see [../leases/](../leases/) |
+| `LeaseExpiredBeforeBindError` from `AcquireLease` | the lease was granted, but it expired before the key could be bound — the two round trips took longer than the TTL | the key was not bound and nothing leaked; acquire again. If it recurs, the TTL is too short for the cluster's round trips: lengthen it |
 | `LeaseLostError` from `Renew` | the keepalive was accepted, but **too late** — your deadline had already passed | stop working. `Done` is already closed. Do **not** treat it as success. Then shorten your renewal interval — this is the symptom of a cadence that is too slow |
 | `Renew` returns a timeout / connection error | nothing was confirmed and nothing changed; you still hold the key until your deadline | retry **immediately**, do not wait out the interval |
 | `Done` closed and you have no idea why | either the deadline passed without an acknowledged renewal, or the server said the lease is gone | fence first, diagnose second. Check renewal round-trip times against the TTL |

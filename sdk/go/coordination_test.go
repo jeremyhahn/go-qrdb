@@ -691,6 +691,67 @@ func TestCoordinator_AcquireLease_BindErrorRevokesGrant(t *testing.T) {
 	}
 }
 
+func TestCoordinator_AcquireLease_GrantExpiredBeforeBind(t *testing.T) {
+	// The bind reports the lease this call granted as not found: the expiry
+	// sweep revoked it before the bind landed (go-qrdb#730).
+	lease := &fakeLease{grantedID: 9}
+	txn := &fakeTxn{err: &transport.LeaseNotFoundError{LeaseID: 9}}
+	c := newCoordinator(t, &fakeKV{}, lease, txn, &fakeWatch{})
+
+	_, err := c.AcquireLease(context.Background(), "k", 1500*time.Millisecond)
+	var expired *LeaseExpiredBeforeBindError
+	if !errors.As(err, &expired) {
+		t.Fatalf("got %v, want LeaseExpiredBeforeBindError", err)
+	}
+	if expired.Key != "k" || expired.TTL != 2*time.Second {
+		t.Fatalf("got key %q ttl %v, want key %q and the granted ttl 2s", expired.Key, expired.TTL, "k")
+	}
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) || notFound.LeaseID != 9 {
+		t.Fatalf("the bind's report must stay reachable through Unwrap, got %v", err)
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.revokeN != 0 {
+		t.Fatalf("an expired grant has nothing to revoke: revokeN=%d", lease.revokeN)
+	}
+}
+
+func TestCoordinator_AcquireLease_OtherLeaseNotFoundRevokesGrant(t *testing.T) {
+	// A missing lease that is not the one this call granted says nothing about
+	// the grant, so it is an ordinary bind error: revoked and returned as is.
+	lease := &fakeLease{grantedID: 9}
+	txn := &fakeTxn{err: &transport.LeaseNotFoundError{LeaseID: 8}}
+	c := newCoordinator(t, &fakeKV{}, lease, txn, &fakeWatch{})
+
+	_, err := c.AcquireLease(context.Background(), "k", time.Second)
+	var expired *LeaseExpiredBeforeBindError
+	if errors.As(err, &expired) {
+		t.Fatalf("another lease's absence must not be reported as this grant expiring: %v", err)
+	}
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) || notFound.LeaseID != 8 {
+		t.Fatalf("got %v, want the bind's LeaseNotFoundError{8}", err)
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.revokeN != 1 || lease.revokedID != 9 {
+		t.Fatalf("a bind error must revoke the just-granted lease: revokeN=%d revokedID=%d", lease.revokeN, lease.revokedID)
+	}
+}
+
+func TestLeaseExpiredBeforeBindError_NamesKeyAndTTL(t *testing.T) {
+	cause := &transport.LeaseNotFoundError{LeaseID: 5}
+	err := &LeaseExpiredBeforeBindError{Key: "renewed/lock", TTL: 2 * time.Second, Err: cause}
+	want := "sdk: lease expired before the key was bound (ttl 2s): renewed/lock"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("Unwrap must return the bind's report")
+	}
+}
+
 func TestCoordinator_AcquireLease_CleanupRevokeIsBounded(t *testing.T) {
 	// The bind loses the key and the cleanup revoke then hangs. The cleanup is
 	// detached from ctx on purpose — it must run even when ctx is already

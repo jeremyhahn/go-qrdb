@@ -168,7 +168,9 @@ to swap. A precondition miss is `(false, nil)`; it is an outcome, not an error.
    lease on a **detached but bounded** context and return — `LeaseHeldError` for
    a lost race, the transport's error otherwise. The acquisition error is what
    the caller gets either way; a cleanup that fails leaks one grant that expires
-   on its own TTL.
+   on its own TTL. The one exception: a bind that finds the just-granted lease
+   not found means the sweep revoked it before the bind landed, so nothing is
+   revoked and the caller gets `LeaseExpiredBeforeBindError`.
 5. On success, start the liveness observer and return the `Lease`.
 
 **`Watch`** — open a live prefix watch on the transport, then drain it on a
