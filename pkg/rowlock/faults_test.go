@@ -59,6 +59,45 @@ func (f *faultyMVCC) Range(ctx context.Context, start, end []byte, opts ...servi
 	return f.MVCCKVServicer.Range(ctx, start, end, opts...)
 }
 
+// detectionBarrier holds every deadlock-detection read -- a Range over the
+// whole lock table -- until n of them have arrived, so the detectors of n
+// requests all read a table in which every one of them has enqueued. Each
+// read signals arrived before it blocks.
+type detectionBarrier struct {
+	service.MVCCKVServicer
+	arrived chan struct{}
+	release chan struct{}
+	pending atomic.Int64
+}
+
+func newDetectionBarrier(inner service.MVCCKVServicer, n int64) *detectionBarrier {
+	b := &detectionBarrier{
+		MVCCKVServicer: inner,
+		arrived:        make(chan struct{}, n),
+		release:        make(chan struct{}),
+	}
+	b.pending.Store(n)
+	return b
+}
+
+func (b *detectionBarrier) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	if string(start) == Prefix {
+		select {
+		case b.arrived <- struct{}{}:
+		default:
+		}
+		if b.pending.Add(-1) == 0 {
+			close(b.release)
+		}
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return nil, 0, 0, ctx.Err()
+		}
+	}
+	return b.MVCCKVServicer.Range(ctx, start, end, opts...)
+}
+
 // failingGrant refuses every lease grant.
 type failingGrant struct{ service.LeaseServicer }
 

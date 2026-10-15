@@ -38,6 +38,13 @@
  * Expected bindings are derived from WailsBindings interface in wails.ts.
  * ConnectionBinding is present in the mock but absent from WailsBindings
  * because it is an internal plumbing binding; it is still verified here.
+ *
+ * The mock installs window.go.main from an init script, which runs before
+ * any page script, and the app only reads window.go. So the bindings are
+ * there as soon as page.goto resolves, and the tests check them then
+ * rather than waiting for the app to render its dashboard: that wait is a
+ * different event, and under load it can take longer than the time the
+ * test gives it.
  */
 
 import {
@@ -45,9 +52,6 @@ import {
   expect,
   secondLaunchEmbeddedState,
 } from "./fixtures/wails-mock.ts";
-
-/** Generous timeout for page load + mock injection. */
-const LOAD_TIMEOUT = 10_000;
 
 // ---------------------------------------------------------------------------
 // Binding manifest — keep this in sync with:
@@ -104,9 +108,6 @@ test.describe("Wails Binding Registration — presence", () => {
   for (const bindingName of EXPECTED_BINDINGS) {
     test(`${bindingName} is defined on window.go.main`, async ({ page }) => {
       await page.goto("/");
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const isDefined = await page.evaluate((name: BindingName) => {
         const w = window as unknown as {
@@ -132,9 +133,6 @@ test.describe("Wails Binding Registration — bulk check", () => {
 
   test("all expected bindings are defined in a single evaluation", async ({ page }) => {
     await page.goto("/");
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     const missing = await page.evaluate(
       (names: readonly string[]) => {
@@ -157,9 +155,6 @@ test.describe("Wails Binding Registration — bulk check", () => {
 
   test("window.go.main namespace exists", async ({ page }) => {
     await page.goto("/");
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     const hasMain = await page.evaluate(() => {
       const w = window as unknown as {
@@ -220,9 +215,6 @@ test.describe("Wails Binding Registration — method presence", () => {
   ][]) {
     test(`${bindingName} has expected methods`, async ({ page }) => {
       await page.goto("/");
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const missingMethods = await page.evaluate(
         ({ name, expectedMethods }: { name: string; expectedMethods: readonly string[] }) => {
@@ -261,9 +253,6 @@ test.describe("Wails Binding Registration — critical regression guards", () =>
    */
   test("TenantBinding.List() resolves without error (regression: 2026-04-06)", async ({ page }) => {
     await page.goto("/");
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     const result = await page.evaluate(async () => {
       const w = window as unknown as {
@@ -293,9 +282,6 @@ test.describe("Wails Binding Registration — critical regression guards", () =>
    */
   test("BackupBinding.List() resolves without error (regression: 2026-04-06)", async ({ page }) => {
     await page.goto("/");
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     const result = await page.evaluate(async () => {
       const w = window as unknown as {
@@ -326,9 +312,6 @@ test.describe("Wails Binding Registration — critical regression guards", () =>
    */
   test("window.go.main contains the expected number of bindings", async ({ page }) => {
     await page.goto("/");
-    await expect(
-      page.locator(".breadcrumbs").getByText("Dashboard"),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     // Count only the bindings whose names end in "Binding" to exclude
     // any auxiliary properties the mock may set (e.g. __indexStore).

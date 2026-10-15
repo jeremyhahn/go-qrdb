@@ -255,6 +255,85 @@ func TestAcquire_TwoPartyDeadlock_NewestRequestIsVictimAndReleased(t *testing.T)
 	require.ErrorAs(t, b.Acquire(context.Background(), tbl, []string{keyC}, ModeShared, 0), &released)
 }
 
+// Both requests of a two-party cycle have enqueued before either detector
+// reads the lock table -- what a loaded cluster does when the older
+// request's enqueue and read are slower than the newer one's -- so both
+// detectors see the whole cycle. Exactly one is the victim: the newest
+// request, whose edge closed the cycle. The older one waits and is granted
+// once the victim's rollback frees the row.
+func TestAcquire_ConcurrentDetection_OnlyTheNewestRequestIsVictim(t *testing.T) {
+	s := newStack(t)
+	d := s.deps
+	gate := newDetectionBarrier(s.deps.MVCC, 2)
+	d.MVCC = gate
+	tbl, err := New(d, "acme/shop")
+	require.NoError(t, err)
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
+	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
+
+	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
+	require.NoError(t, b.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0))
+
+	aDone := acquireAsync(a, tbl, []string{keyB}, ModeExclusive, 5*time.Second)
+	select {
+	case <-gate.arrived: // a has enqueued and is held before its detection read
+	case err := <-aDone:
+		t.Fatalf("a returned before detecting: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a never reached deadlock detection")
+	}
+	bDone := acquireAsync(b, tbl, []string{keyA}, ModeExclusive, 5*time.Second)
+
+	var dl *DeadlockError
+	require.ErrorAs(t, mustReturn(t, bDone, "the newest request"), &dl)
+	assert.Equal(t, keyA, dl.Key)
+	require.NoError(t, mustReturn(t, aDone, "the older request"), "the older request was made a second victim")
+	assert.True(t, a.Holds(keyB, ModeExclusive))
+}
+
+// The same with three parties: every detector reads a table in which the
+// whole cycle is queued, and only the request that closed it is the victim.
+func TestAcquire_ConcurrentDetection_ThreePartyCycleHasOneVictim(t *testing.T) {
+	s := newStack(t)
+	d := s.deps
+	gate := newDetectionBarrier(s.deps.MVCC, 3)
+	d.MVCC = gate
+	tbl, err := New(d, "acme/shop")
+	require.NoError(t, err)
+	a, b, c := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
+	t.Cleanup(func() {
+		for _, o := range []*Owner{a, b, c} {
+			_ = o.Release(context.Background())
+		}
+	})
+
+	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
+	require.NoError(t, b.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0))
+	require.NoError(t, c.Acquire(context.Background(), tbl, []string{keyC}, ModeExclusive, 0))
+
+	arrive := func(done <-chan error, who string) {
+		t.Helper()
+		select {
+		case <-gate.arrived:
+		case err := <-done:
+			t.Fatalf("%s returned before detecting: %v", who, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never reached deadlock detection", who)
+		}
+	}
+	aDone := acquireAsync(a, tbl, []string{keyB}, ModeExclusive, 5*time.Second)
+	arrive(aDone, "a")
+	bDone := acquireAsync(b, tbl, []string{keyC}, ModeExclusive, 5*time.Second)
+	arrive(bDone, "b")
+	cDone := acquireAsync(c, tbl, []string{keyA}, ModeExclusive, 5*time.Second)
+
+	var dl *DeadlockError
+	require.ErrorAs(t, mustReturn(t, cDone, "c"), &dl)
+	require.NoError(t, mustReturn(t, bDone, "b"), "b was made a second victim")
+	require.NoError(t, b.Release(context.Background()))
+	require.NoError(t, mustReturn(t, aDone, "a"), "a was made a second victim")
+}
+
 func TestAcquire_ThreePartyDeadlock_IsDetected(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)

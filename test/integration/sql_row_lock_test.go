@@ -24,6 +24,7 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"testing"
@@ -35,14 +36,22 @@ import (
 // erLockNowait is MySQL's ER_LOCK_NOWAIT.
 const erLockNowait = 3572
 
-// rowLockConn pins one connection of db: one session.
+// rowLockConn pins one connection of db: one session, which ends with the
+// test that opened it.
 func rowLockConn(t *testing.T, db *sql.DB) *sql.Conn {
 	t.Helper()
 	conn, err := db.Conn(context.Background())
 	if err != nil {
 		t.Fatalf("db.Conn: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() {
+		// Discard the connection rather than return it to db's pool: its
+		// session may still be inside a transaction -- one a failed
+		// assertion abandoned, or one aborted as a deadlock victim -- and
+		// the next subtest's session must not inherit it.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		_ = conn.Close()
+	})
 	return conn
 }
 

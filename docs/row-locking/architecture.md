@@ -183,9 +183,17 @@ records of other transactions on its row. Edges are only ever created by an
 enqueue, so a cycle is always closed by the **newest** request in it. The
 requesting node therefore checks for a cycle right after it enqueues and before
 it waits, from a linearizable read of the database's lock table; the request
-that closes the cycle is the **victim**. Two requests that close the same cycle
-at the same instant can both see it and both abort — detection errs toward an
-extra abort, never toward a missed deadlock.
+that closes the cycle is the **victim**, and the only one.
+
+Every edge carries the revision of the record that created it, and each
+enqueue is one transaction's proposal at its own revision, so every cycle has
+exactly one newest edge. A requester is the victim only of a cycle whose
+newest edge is its own. When the requests of a cycle all enqueue before any of
+their detectors reads the table, every detector sees the whole cycle, and all
+of them agree on the one victim. The other members keep waiting and proceed
+once the victim's rollback frees their rows. No deadlock is missed: the
+cycle's newest request reads the table after its own enqueue, so it sees every
+edge of the cycle.
 
 The victim's **whole transaction is rolled back** and every lock record it
 wrote deleted, as in InnoDB, and the client receives MySQL **1213** /

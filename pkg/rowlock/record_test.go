@@ -66,31 +66,75 @@ func TestSortQueue_OrdersByCreateRevisionThenKey(t *testing.T) {
 	assert.Equal(t, []string{ownerC, ownerA, ownerB}, []string{q[0].owner, q[1].owner, q[2].owner})
 }
 
-func TestWaitsFor_AndOnCycle(t *testing.T) {
-	recs := []record{
+func TestWaitsFor_LabelsEachEdgeWithTheRevisionThatCreatedIt(t *testing.T) {
+	edges := waitsFor([]record{
 		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
 		{key: "y", owner: ownerB, mode: ModeExclusive, createRev: 2},
 		{key: "y", owner: ownerA, mode: ModeExclusive, createRev: 3},
 		{key: "x", owner: ownerB, mode: ModeExclusive, createRev: 4},
 		{key: "z", owner: ownerC, mode: ModeShared, createRev: 5},
 		{key: "z", owner: ownerA, mode: ModeShared, createRev: 6},
-	}
-	edges := waitsFor(recs)
-	assert.Contains(t, edges[ownerA], ownerB)
-	assert.Contains(t, edges[ownerB], ownerA)
+		{key: "w", owner: ownerC, mode: ModeExclusive, createRev: 7},
+		{key: "v", owner: ownerC, mode: ModeExclusive, createRev: 8},
+		{key: "v", owner: ownerB, mode: ModeShared, createRev: 9},
+		{key: "w", owner: ownerB, mode: ModeShared, createRev: 10},
+	})
+	assert.Equal(t, int64(3), edges[ownerA][ownerB])
+	assert.Equal(t, int64(4), edges[ownerB][ownerA])
 	assert.NotContains(t, edges[ownerA], ownerC, "shared behind shared is no edge")
-	assert.True(t, onCycle(edges, ownerA))
-	assert.True(t, onCycle(edges, ownerB))
-	assert.False(t, onCycle(edges, ownerC))
+	assert.Equal(t, int64(9), edges[ownerB][ownerC], "an edge given twice exists from the older record")
+}
 
+func TestClosesCycle_OnlyTheOwnerOfTheNewestEdgeClosesIt(t *testing.T) {
+	two := waitsFor([]record{
+		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
+		{key: "y", owner: ownerB, mode: ModeExclusive, createRev: 2},
+		{key: "y", owner: ownerA, mode: ModeExclusive, createRev: 3},
+		{key: "x", owner: ownerB, mode: ModeExclusive, createRev: 4},
+	})
+	assert.True(t, closesCycle(two, ownerB), "B's request closed the cycle")
+	assert.False(t, closesCycle(two, ownerA), "A is on the cycle but did not close it")
+
+	three := waitsFor([]record{
+		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
+		{key: "y", owner: ownerB, mode: ModeExclusive, createRev: 2},
+		{key: "z", owner: ownerC, mode: ModeExclusive, createRev: 3},
+		{key: "y", owner: ownerA, mode: ModeExclusive, createRev: 4},
+		{key: "x", owner: ownerC, mode: ModeExclusive, createRev: 5},
+		{key: "z", owner: ownerB, mode: ModeExclusive, createRev: 6},
+	})
+	assert.True(t, closesCycle(three, ownerB))
+	assert.False(t, closesCycle(three, ownerA))
+	assert.False(t, closesCycle(three, ownerC))
+}
+
+func TestClosesCycle_JudgesEachOfTheOwnersBatchesByItsOwnRevision(t *testing.T) {
+	// A's request was written in two batches, at 3 and 6. B's request at 5
+	// closed a cycle with A's first batch, so B is the victim even though
+	// A's second batch is newer.
+	edges := waitsFor([]record{
+		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
+		{key: "y", owner: ownerB, mode: ModeExclusive, createRev: 2},
+		{key: "y", owner: ownerA, mode: ModeExclusive, createRev: 3},
+		{key: "w", owner: ownerC, mode: ModeExclusive, createRev: 4},
+		{key: "x", owner: ownerB, mode: ModeExclusive, createRev: 5},
+		{key: "w", owner: ownerA, mode: ModeExclusive, createRev: 6},
+	})
+	assert.True(t, closesCycle(edges, ownerB))
+	assert.False(t, closesCycle(edges, ownerA))
+	assert.False(t, closesCycle(edges, ownerC))
+}
+
+func TestClosesCycle_AChainIsNoCycle(t *testing.T) {
 	chain := waitsFor([]record{
 		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
 		{key: "x", owner: ownerB, mode: ModeExclusive, createRev: 2},
 		{key: "x", owner: ownerC, mode: ModeExclusive, createRev: 3},
 	})
 	for _, o := range []string{ownerA, ownerB, ownerC} {
-		assert.False(t, onCycle(chain, o), "a chain is not a cycle")
+		assert.False(t, closesCycle(chain, o), "a chain is not a cycle")
 	}
+	assert.False(t, closesCycle(chain, "nobody"), "an owner with no edges closes nothing")
 }
 
 func TestRecord_RoundTrip(t *testing.T) {

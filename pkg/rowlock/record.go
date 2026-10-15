@@ -216,13 +216,15 @@ func evaluate(q []record, owner string, mode Mode) grantState {
 
 // waitsFor builds the wait-for graph of a set of records: an edge from
 // owner A to owner B for every record of A queued behind an incompatible
-// record of B on the same key.
-func waitsFor(records []record) map[string]map[string]struct{} {
+// record of B on the same key, labelled with the revision that created it --
+// that of A's record, which sorts after B's. Where several records give A
+// the same edge, the label is the oldest of them: the edge exists from then.
+func waitsFor(records []record) map[string]map[string]int64 {
 	queues := make(map[string][]record)
 	for _, r := range records {
 		queues[r.key] = append(queues[r.key], r)
 	}
-	edges := make(map[string]map[string]struct{})
+	edges := make(map[string]map[string]int64)
 	for _, q := range queues {
 		sortQueue(q)
 		for i, r := range q {
@@ -231,34 +233,59 @@ func waitsFor(records []record) map[string]map[string]struct{} {
 					continue
 				}
 				if edges[r.owner] == nil {
-					edges[r.owner] = make(map[string]struct{})
+					edges[r.owner] = make(map[string]int64)
 				}
-				edges[r.owner][earlier.owner] = struct{}{}
+				if rev, ok := edges[r.owner][earlier.owner]; !ok || r.createRev < rev {
+					edges[r.owner][earlier.owner] = r.createRev
+				}
 			}
 		}
 	}
 	return edges
 }
 
-// onCycle reports whether owner is on a cycle of edges.
-func onCycle(edges map[string]map[string]struct{}, owner string) bool {
-	seen := make(map[string]bool)
-	stack := make([]string, 0, len(edges[owner]))
-	for next := range edges[owner] {
-		stack = append(stack, next)
+// closesCycle reports whether owner closed a cycle of edges: whether some
+// cycle through owner has one of owner's own edges as its newest.
+//
+// Every cycle has exactly one newest edge, because each enqueue is one
+// owner's proposal at its own revision, so exactly one of its members
+// closed it -- the victim. The other members are on the cycle too, but the
+// newest edge did not exist when their own requests closed nothing, and they
+// must not be aborted for it: every detector that reads a table in which the
+// whole cycle is queued agrees on the one victim, however its read
+// interleaves with theirs.
+func closesCycle(edges map[string]map[string]int64, owner string) bool {
+	byRev := make(map[int64][]string)
+	for next, rev := range edges[owner] {
+		byRev[rev] = append(byRev[rev], next)
 	}
+	for rev, starts := range byRev {
+		if reaches(edges, starts, owner, rev) {
+			return true
+		}
+	}
+	return false
+}
+
+// reaches reports whether target is reachable from starts over edges
+// created before revision before.
+func reaches(edges map[string]map[string]int64, starts []string, target string, before int64) bool {
+	seen := make(map[string]bool)
+	stack := append([]string(nil), starts...)
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if cur == owner {
+		if cur == target {
 			return true
 		}
 		if seen[cur] {
 			continue
 		}
 		seen[cur] = true
-		for next := range edges[cur] {
-			stack = append(stack, next)
+		for next, rev := range edges[cur] {
+			if rev < before {
+				stack = append(stack, next)
+			}
 		}
 	}
 	return false

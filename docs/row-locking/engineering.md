@@ -234,8 +234,11 @@ lease  = the owning session's lease in this store
    its lease expires, the same bound as its held locks.
 8. **Deadlock detection runs once per wait, after enqueue, before waiting**,
    over at most `MaxDetectionRecords` (10,000) records read linearizably. A
-   cycle through the requester, or a lock table larger than the bound, makes
-   the requester the victim.
+   cycle the requester closed — one through it whose newest edge, by the
+   revision of the record that created it, is the requester's own — or a lock
+   table larger than the bound, makes the requester the victim. Each cycle has
+   one newest edge, so it has **exactly one victim**, even when every member's
+   detector reads a table in which the whole cycle is already queued.
 9. **A missing own record is a lost lock.** A waiter whose record disappeared
    (its lease expired, or the database's namespace was reclaimed) fails with
    `*rowlock.LockLostError` and its transaction is rolled back. So does a
@@ -468,7 +471,9 @@ mean.
 - `pkg/rowlock`: grant rule and FIFO (table-driven over queues), shared
   compatibility, upgrade, re-entry, wait and wake-up on release, lock-wait
   timeout and `NOWAIT` cleaning up their waiting records, deadlock cycle
-  detection (two-party, three-party, upgrade), the detection bound, lease
+  detection (two-party, three-party, upgrade), exactly one victim when every
+  member of a cycle enqueues before any detector reads (only the request that
+  closed the cycle aborts, the others are granted), the detection bound, lease
   expiry releasing a crashed holder's locks, keepalive keeping a live holder's,
   lost-lock detection, release idempotence, fault injection on every servicer.
   The session lease: successive owners sharing one lease (one grant, no
@@ -503,7 +508,9 @@ mean.
 - `test/integration`: on a three-node cluster, two sessions on different
   replicas serialising on `FOR UPDATE`, a deadlock victim, and a lock held
   across a leader kill that is still held on the new leader until its holder
-  commits.
+  commits. Each subtest's sessions are discarded with it, never returned to
+  the connection pool, so no subtest inherits another's open or aborted
+  transaction.
 - `sdk/go/gorm`: GORM's `TestConcurrentMany2ManyAssociation` scenario (one user,
   concurrent many-to-many `Append`s) passes in pessimistic mode, where the
   optimistic default loses appends to 1213.

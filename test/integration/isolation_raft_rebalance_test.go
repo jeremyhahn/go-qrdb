@@ -92,6 +92,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -117,13 +118,17 @@ const rebalMoveDBName = "rebaldb"
 // sensitive membership change such as an observer-first MOVE. Matching is
 // gated by an armed flag so bootstrap-time elections (expected, harmless)
 // are not counted; call arm() once the cluster is healthy and the operation
-// under test is about to begin.
+// under test is about to begin. Only lines naming the shard passed to arm()
+// are counted: the system shard's elections and leaderless reads come from
+// whatever load the node is under, not from the MOVE, and a storm detector
+// that counts them fails the MOVE for a shard it never touched.
 type stormWatcher struct {
 	inner *logWriter
 
 	mu      sync.Mutex
 	buf     []byte
 	armed   bool
+	shard   string
 	matches []string
 }
 
@@ -134,16 +139,36 @@ type stormWatcher struct {
 // when a config change transiently breaks quorum.
 var stormSubstrings = []string{"campaign launched", "no leader currently known"}
 
+// shardLogKeys are the attribute keys go-quicraft logs a shard ID under:
+// "campaign launched" carries shard=<id>, the ReadIndex and peer.Handle
+// failures carry shard_id=<id>.
+var shardLogKeys = []string{"shard=", "shard_id="}
+
+// lineNamesShard reports whether line carries a shard attribute whose value
+// is exactly shard, so shard=1 does not match a watch on shard 1000.
+func lineNamesShard(line, shard string) bool {
+	for _, field := range strings.Fields(line) {
+		for _, key := range shardLogKeys {
+			if v, ok := strings.CutPrefix(field, key); ok && v == shard {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func newStormWatcher(t *testing.T, prefix string) *stormWatcher {
 	return &stormWatcher{inner: &logWriter{t: t, prefix: prefix}}
 }
 
-// arm enables match recording. Safe to call once the caller wants to start
-// watching for storm activity (typically right before issuing the MOVE).
-func (w *stormWatcher) arm() {
+// arm enables match recording for shardID's log lines. Safe to call once the
+// caller wants to start watching for storm activity (typically right before
+// issuing the MOVE of shardID).
+func (w *stormWatcher) arm(shardID uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.armed = true
+	w.shard = strconv.FormatUint(shardID, 10)
 }
 
 func (w *stormWatcher) Write(p []byte) (int, error) {
@@ -156,7 +181,7 @@ func (w *stormWatcher) Write(p []byte) (int, error) {
 		}
 		line := string(w.buf[:idx])
 		w.buf = w.buf[idx+1:]
-		if w.armed {
+		if w.armed && lineNamesShard(line, w.shard) {
 			lower := strings.ToLower(line)
 			for _, s := range stormSubstrings {
 				if strings.Contains(lower, s) {
@@ -180,6 +205,52 @@ func (w *stormWatcher) snapshot() []string {
 	out := make([]string, len(w.matches))
 	copy(out, w.matches)
 	return out
+}
+
+// TestStormWatcher_CountsOnlyArmedShard feeds the watcher lines of the shape
+// a loaded MOVE run logged: the system shard (1) losing and regaining its
+// leader around the MOVE of shard 1000. Only the moved shard's lines may be
+// counted, and shard=1 must not match a watch on 1000 or 10000.
+func TestStormWatcher_CountsOnlyArmedShard(t *testing.T) {
+	lines := []string{
+		`level=INFO msg="campaign launched" shard=1000 replica=1 term=2`,
+		`level=INFO msg="campaign launched" shard=1 replica=1 term=3`,
+		`level=WARN msg="batched ReadIndex failed" shard_id=1 replica_id=3 num_requests=1 error="raft: not leader, no leader currently known"`,
+		`level=WARN msg="peer.Handle failed" shard_id=1 replica_id=3 msg_type=19 msg_from=1 error="raft: not leader, no leader currently known"`,
+		`level=WARN msg="batched ReadIndex failed" shard_id=1000 replica_id=3 num_requests=1 error="raft: not leader, no leader currently known"`,
+		`level=INFO msg="campaign launched" shard=10000 replica=2 term=2`,
+		`level=WARN msg="rejected message from removed replica" shard=1000 from=1 type=RequestPreVote`,
+	}
+	w := newStormWatcher(t, "[storm-unit] ")
+	w.arm(1000)
+	for _, l := range lines {
+		if _, err := w.Write([]byte(l + "\n")); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	got := w.snapshot()
+	want := []string{lines[0], lines[4]}
+	if len(got) != len(want) {
+		t.Fatalf("matched %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("match %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestStormWatcher_IgnoresLinesBeforeArm checks bootstrap-time elections,
+// written before arm, are never counted even for the armed shard.
+func TestStormWatcher_IgnoresLinesBeforeArm(t *testing.T) {
+	w := newStormWatcher(t, "[storm-unit] ")
+	if _, err := w.Write([]byte(`msg="campaign launched" shard=1000 replica=1 term=1` + "\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	w.arm(1000)
+	if got := w.snapshot(); len(got) != 0 {
+		t.Fatalf("matched %d pre-arm lines, want 0:\n%s", len(got), strings.Join(got, "\n"))
+	}
 }
 
 // waitForNShardOwners polls GET /admin/topology on every port in ports until
@@ -521,10 +592,11 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	// ---------------------------------------------------------------------
 	// Execute the MOVE: src -> dst. Arm every node's stormWatcher immediately
 	// before issuing the request so bootstrap-time elections (expected,
-	// harmless) are excluded from the storm assertion below.
+	// harmless) are excluded from the storm assertion below, and scope them
+	// to the moved shard so system-shard churn is not charged to the MOVE.
 	// ---------------------------------------------------------------------
 	for _, w := range watchers {
-		w.arm()
+		w.arm(shardID)
 	}
 
 	srcAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[srcIdx])
@@ -649,10 +721,24 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	t.Logf("source node PASS: shard dir purged")
 
 	// The peer replica (untouched by the MOVE) must still serve the data,
-	// confirming the group's continuous voter was never disturbed.
+	// confirming the group's continuous voter was never disturbed. A request
+	// resolves its tenant through a system-shard read before it reaches the
+	// moved shard, and that read answers 503 while the system shard is
+	// between leaders, which load alone produces. So 503 means "not served
+	// yet" and is waited out; any other status fails at once. A disturbed
+	// voter on the moved shard is the storm assertion's to catch.
 	for i := range numKeys {
 		key := fmt.Sprintf("rebal-data/%04d", i)
-		got, status := dbScopedGetTolerant(t, tenantClient, adminPorts[peerIdx], rebalMoveDBName, key)
+		var got []byte
+		var status int
+		peerDeadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(peerDeadline) {
+			got, status = dbScopedGetTolerant(t, tenantClient, adminPorts[peerIdx], rebalMoveDBName, key)
+			if status != http.StatusServiceUnavailable {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
 		if status != http.StatusOK {
 			t.Fatalf("peer node (port %d) key %q: status %d", adminPorts[peerIdx], key, status)
 		}
@@ -663,9 +749,10 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	t.Logf("peer node PASS: untouched replica still serves all %d baseline keys", numKeys)
 
 	// ---------------------------------------------------------------------
-	// Assertion: NO election storm. A genuine quorum-break storm looks like
-	// dozens of repeated "campaign launched"/"no leader currently known"
-	// lines spanning many seconds, as a stranded voter retries an election
+	// Assertion: NO election storm on the moved shard. A genuine
+	// quorum-break storm looks like dozens of repeated "campaign
+	// launched"/"no leader currently known" lines for that shard spanning
+	// many seconds, as a stranded voter retries an election
 	// it can never win alone (this is exactly what an earlier version of
 	// this fix produced: a surviving voter campaigned every ~2-3s for over
 	// 55s straight after its peer self-removed as leader without replicating

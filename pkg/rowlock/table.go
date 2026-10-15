@@ -133,9 +133,10 @@ func (t *Table) state(ctx context.Context, key, owner string, mode Mode) (grantS
 	return evaluate(q, owner, mode), nil
 }
 
-// deadlocked reports whether owner is on a cycle of the live wait-for graph,
-// and whether the graph was too large to read (in which case owner is the
-// victim by rule).
+// deadlocked reports whether owner closed a cycle of the live wait-for graph
+// -- is on one whose newest edge is its own, so it is that cycle's one
+// victim -- and whether the graph was too large to read (in which case owner
+// is the victim by rule).
 func (t *Table) deadlocked(ctx context.Context, owner string) (cycle, unsearched bool, err error) {
 	kvs, _, _, err := t.deps.MVCC.Range(ctx, []byte(Prefix), prefixEnd(Prefix),
 		service.WithLimit(MaxDetectionRecords+1))
@@ -153,7 +154,7 @@ func (t *Table) deadlocked(ctx context.Context, owner string) (cycle, unsearched
 		}
 		records = append(records, r)
 	}
-	return onCycle(waitsFor(records), owner), false, nil
+	return closesCycle(waitsFor(records), owner), false, nil
 }
 
 // watchQueue watches key's queue for deletions. The watch is opened before
