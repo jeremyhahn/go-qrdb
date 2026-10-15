@@ -151,6 +151,18 @@ qrdb users enable  "$USER"     # and starts again
 Prefer this to `delete` for anyone you might want back — the record, its role
 bindings and its certificate bindings all survive.
 
+**Retire a role.**
+
+```bash
+qrdb roles delete "$ROLE"
+```
+
+Deleting a role takes it away from everyone who held it. You do not need to
+unassign it first, and nobody is left carrying a role that no longer exists.
+From the moment the delete starts, the role grants nothing. If the delete
+fails part way, for example because a node is unavailable, run it again: it
+picks up where it stopped.
+
 **List and page.**
 
 ```bash

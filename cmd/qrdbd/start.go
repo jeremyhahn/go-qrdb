@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -1006,7 +1007,7 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 	// are required and neither implies the other: TCP and UDP are separate
 	// port namespaces, and a number free on 127.0.0.1 can be held by another
 	// process on a non-loopback address that a wildcard bind then collides
-	// with. See freePortOn (go-qrdb#257, go-qrdb#253).
+	// with. See netport.FreePortOn (go-qrdb#257, go-qrdb#253).
 
 	// Auto-select a free port if listen/raft-address use the default port.
 	if !cmd.Flags().Changed("listen") && !cmd.Flags().Changed("raft-address") && f.configFile == "" {
@@ -1014,7 +1015,7 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 		// loopback address peers DIAL, not a bind, so the wildcard f.listen
 		// is the whole bind surface and the scope to probe at -- and a free
 		// wildcard bind implies the loopback one, never the reverse.
-		port, err := freePortOn(raftListenHost, networkUDP)
+		port, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 		if err != nil {
 			return err
 		}
@@ -1030,7 +1031,7 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 		// configured (pkg/api/rest/server.go). A TCP-only probe is what
 		// go-qrdb#257 reports -- the daemon refusing to start on a port the
 		// probe called free, because a UDP holder had it all along.
-		port, err := freePortOn(f.host, networkTCP, networkUDP)
+		port, err := netport.FreePortOn(f.host, netport.NetworkTCP, netport.NetworkUDP)
 		if err != nil {
 			return err
 		}
@@ -1043,7 +1044,7 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 		// gRPC is TCP-only and has no same-numbered UDP sibling, so the
 		// protocol here is right already. The HOST is what was wrong: this
 		// probed loopback while the listener binds f.host.
-		port, err := freePortOn(f.host, networkTCP)
+		port, err := netport.FreePortOn(f.host, netport.NetworkTCP)
 		if err != nil {
 			return err
 		}
@@ -1054,7 +1055,7 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 	// Auto-select QUIC port if not explicitly set and QUIC is enabled.
 	if f.enableQUIC && !cmd.Flags().Changed("quic-port") && f.configFile == "" {
 		// UDP-only, and likewise probed at f.host rather than at loopback.
-		port, err := freePortOn(f.host, networkUDP)
+		port, err := netport.FreePortOn(f.host, netport.NetworkUDP)
 		if err != nil {
 			return err
 		}
@@ -4136,8 +4137,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
+	bootHolders, err := user.NewRoleRevoker(bootUserSvc)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "boot role holder revoker", Err: err}
+	}
 	bootRoleSvc, err := role.NewStore(bootStore,
-		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity())
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity(),
+		role.WithHolderRevoker(bootHolders))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -4226,8 +4232,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
+	holders, err := user.NewRoleRevoker(userSvc)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "role holder revoker", Err: err}
+	}
 	roleSvc, err := role.NewStore(systemStore,
-		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity())
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity(),
+		role.WithHolderRevoker(holders))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -4266,7 +4277,11 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		if ruErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed user store", Err: ruErr}
 		}
-		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger))
+		routedHolders, rhErr := user.NewRoleRevoker(routedUsers)
+		if rhErr != nil {
+			return nil, &AuthBootstrapError{Step: "routed role holder revoker", Err: rhErr}
+		}
+		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger), role.WithHolderRevoker(routedHolders))
 		if rrErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role store", Err: rrErr}
 		}

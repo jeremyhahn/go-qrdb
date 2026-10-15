@@ -73,6 +73,7 @@ type kvRoleStore struct {
 	audit          audit.AuditLogger    // optional; nil disables audit emission
 	identity       tenant.IdentityIndex // optional; nil skips identity-index maintenance
 	atomicIdentity bool                 // set by WithAtomicIdentity; see that option's doc
+	holders        HolderRevoker        // set by WithHolderRevoker; nil refuses DeleteRole
 
 	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
 	// retry loop. Zero means "use the production default"; see that
@@ -604,6 +605,9 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	if existing.Deleting {
+		return nil, &RoleDeletingError{ID: existing.ID, Op: "updated"}
+	}
 
 	nameChanged := req.Name != "" && req.Name != existing.Name
 
@@ -717,7 +721,9 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 	return existing, nil
 }
 
-// DeleteRole removes a role by ID. System roles cannot be deleted.
+// DeleteRole removes a role by ID, after stripping it from every account
+// that holds it. System roles cannot be deleted. A failure part-way leaves
+// the role present and marked Deleting; calling DeleteRole again finishes it.
 func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 	if id == "" {
 		return &ValidationError{Field: "id", Reason: "must not be empty"}
@@ -729,6 +735,34 @@ func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 	}
 	if existing.System {
 		return &SystemRoleImmutableError{ID: id, Op: "deleted"}
+	}
+	if s.holders == nil {
+		return &HolderRevokerRequiredError{ID: id}
+	}
+
+	// Strip the role from every holder BEFORE anything is removed, with the
+	// record marked Deleting first. The mark is what lets the strip converge:
+	// from the moment it lands the role can no longer be assigned
+	// (ValidateAssignable) and grants nothing (ResolvePermissions), so the
+	// revoker chases only assignments that were already in flight. The record
+	// stays until the strip has finished because it is the retry anchor: a
+	// strip that fails part-way leaves the role present and Deleting, and a
+	// retry of this call resumes it. Deleting the record first would leave the
+	// remaining holders with an identifier nothing could find again.
+	if !existing.Deleting {
+		existing.Deleting = true
+		existing.UpdatedAt = time.Now().UTC()
+		data, err := marshalRole(existing)
+		if err != nil {
+			return &StoreError{Op: "delete", Detail: "marshal deleting mark", Err: err}
+		}
+		if err := s.store.Put(ctx, primaryKey(id), data); err != nil {
+			return &StoreError{Op: "delete", Detail: "mark deleting", Err: err}
+		}
+	}
+	revoked, err := s.holders.RevokeRole(ctx, existing.TenantID, id)
+	if err != nil {
+		return &HolderRevocationError{ID: id, TenantID: existing.TenantID, Err: err}
 	}
 
 	// ORDER IS LOAD-BEARING. The primary record is removed LAST of the
@@ -771,8 +805,9 @@ func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 	}
 
 	s.emitAudit(ctx, "delete", "role:"+id, map[string]any{
-		"name":     existing.Name,
-		"tenantID": existing.TenantID,
+		"name":            existing.Name,
+		"tenantID":        existing.TenantID,
+		"holders_revoked": revoked,
 	})
 
 	return nil
@@ -852,6 +887,11 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 		r, err := s.GetRole(ctx, id)
 		if err != nil {
 			return nil, err
+		}
+		if r.Deleting {
+			// Deletion revokes the grant at once; the record only outlives
+			// the mark while DeleteRole strips it from its holders.
+			continue
 		}
 		for _, p := range r.Permissions {
 			seen[p] = struct{}{}

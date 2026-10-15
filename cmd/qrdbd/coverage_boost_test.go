@@ -37,6 +37,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -1109,7 +1110,7 @@ func TestRunStart_SealConfig_SoftwareStrategy_SealedWindow_ThenSIGTERM(t *testin
 func TestRunStart_SealConfig_ShamirStrategy_InvalidParams_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -1151,11 +1152,11 @@ func TestRunStart_SealConfig_ShamirStrategy_InvalidParams_ReturnsError(t *testin
 func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
+	adminPort, err := netport.FreePortOn(testBindHost, netport.NetworkTCP, netport.NetworkUDP)
 	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
+	grpcPort, err := netport.FreePortOn(testBindHost, netport.NetworkTCP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)

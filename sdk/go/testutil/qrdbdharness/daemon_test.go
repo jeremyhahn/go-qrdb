@@ -82,16 +82,6 @@ func runHelper(mode string) int {
 	case argvHelperMode:
 		// The argv the harness actually launched the daemon with.
 		os.Stdout.WriteString(strings.Join(os.Args[1:], "\n") + "\n")
-	case reservePortsHelperMode:
-		// A second harness process, as `go test` runs one per package.
-		ports, err := ReserveUDPPorts(reservePortsHelperCount)
-		if err != nil {
-			os.Stderr.WriteString(err.Error() + "\n")
-			return 1
-		}
-		for _, p := range ports {
-			os.Stdout.WriteString(strconv.Itoa(p) + "\n")
-		}
 	default:
 		return 2
 	}

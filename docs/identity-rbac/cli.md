@@ -225,6 +225,12 @@ qrdb roles delete 7a1b...        # refused for the five built-in roles
 `get-by-name` takes `--tenant-id`, defaulting to the system tenant. **It is how
 you turn a role name into the ID the other verbs want.**
 
+`delete` strips the role from every account that holds it before it removes
+the role, so after it prints `OK` no `users get` lists the role's ID. Once it
+starts, the role grants nothing and can be neither assigned nor updated. If it
+fails part way, the role is left in place in that state; run the same `delete`
+again to finish it.
+
 ### `qrdb roles list`
 
 Flags: `--tenant-id`, `--page`, `--page-size`.

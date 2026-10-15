@@ -27,12 +27,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // joinNode builds a node's services over a local host.
@@ -77,11 +77,11 @@ func staticClusterCA(t *testing.T) cakey.Provider {
 
 func joinConfig(t *testing.T, enabled bool) lifecycle.ClusterJoinConfig {
 	t.Helper()
-	port, err := qrdbdharness.ReserveTCPPort()
+	ports, err := netport.Reserve("127.0.0.1", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return lifecycle.ClusterJoinConfig{Enabled: enabled, ListenHost: "127.0.0.1", ListenPort: port, AdminPort: 63002,
+	return lifecycle.ClusterJoinConfig{Enabled: enabled, ListenHost: "127.0.0.1", ListenPort: ports[0], AdminPort: 63002,
 		TrustDomain: "qrdb.cluster", DataDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler)}
 }
 

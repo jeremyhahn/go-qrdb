@@ -814,15 +814,27 @@ var identityRules = []rule{
 	// The state is valid; the record is not somewhere this move starts from.
 	as(&user.LifecycleTransitionError{}, FailedPrecondition),
 	as(&user.ValidationError{}, InvalidArgument),
+	// Assignments of the role kept landing while its holders were stripped:
+	// nothing is wrong, and retrying the delete finishes it.
+	as(&user.RoleRevocationIncompleteError{}, Aborted),
+	// The node's user service cannot strip a role from its holders as composed.
+	as(&user.RoleRevokerUnsupportedError{}, Unimplemented),
 	// A role-assignment write named a role that does not exist, or one that
 	// may not be granted in the tenant it targets: a bad field in the write,
 	// whose subject is a user, not the role. ReferenceError wraps the lookup's
 	// RoleNotFoundError, so it must precede that row.
 	as(&role.ReferenceError{}, InvalidArgument),
 	as(&role.NotAssignableError{}, InvalidArgument),
+	// The role exists but its delete has begun: it can no longer be granted.
+	as(&role.RoleDeletingError{}, InvalidArgument),
 	// A role-assignment write named a role and the node has no role service
 	// to check it against: the node cannot serve the write as composed.
 	as(&role.ServiceRequiredError{}, Unimplemented),
+	// A role delete on a node whose role store has no way to strip the
+	// role's holders: the node cannot serve the delete as composed.
+	// HolderRevocationError has no row on purpose — it wraps the failure that
+	// stopped the strip, and that failure's own row is the right answer.
+	as(&role.HolderRevokerRequiredError{}, Unimplemented),
 	as(&role.RoleNotFoundError{}, NotFound),
 	as(&role.RoleNameExistsError{}, AlreadyExists),
 	as(&role.RoleIDExistsError{}, AlreadyExists),

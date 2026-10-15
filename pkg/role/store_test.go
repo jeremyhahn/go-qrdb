@@ -255,7 +255,7 @@ func (f *faultKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte
 
 func newTestStore(t *testing.T) RoleServicer {
 	t.Helper()
-	store, err := NewStore(newMemKVStore())
+	store, err := NewStore(newMemKVStore(), WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -2411,7 +2411,7 @@ func TestUpdateRole_NameChange_PutNewIndexFails(t *testing.T) {
 func TestDeleteRole_DeletePrimaryFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, WithHolderRevoker(noHolders{}))
 	ctx := context.Background()
 
 	r := createTestRole(t, svc, "editor", "acme")
@@ -2432,7 +2432,7 @@ func TestDeleteRole_DeletePrimaryFails(t *testing.T) {
 func TestDeleteRole_DeleteTenantIndexFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, WithHolderRevoker(noHolders{}))
 	ctx := context.Background()
 
 	r := createTestRole(t, svc, "editor", "acme")
@@ -2453,7 +2453,7 @@ func TestDeleteRole_DeleteTenantIndexFails(t *testing.T) {
 func TestDeleteRole_DeleteNameIndexFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, WithHolderRevoker(noHolders{}))
 	ctx := context.Background()
 
 	r := createTestRole(t, svc, "editor", "acme")

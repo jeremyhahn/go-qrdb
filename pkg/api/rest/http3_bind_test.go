@@ -24,7 +24,10 @@ package rest
 import (
 	"errors"
 	"net"
+	"strconv"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 )
 
 // startTLSServerOn starts a TLS REST server bound to addr and returns it,
@@ -148,11 +151,9 @@ func TestHTTP3_WildcardBindStaysWildcard(t *testing.T) {
 	}
 }
 
-// portAttempts bounds every port search in this file.
-const portAttempts = 20
-
-// errNoDualStackPort reports that no candidate was free on both protocols.
-var errNoDualStackPort = errors.New("rest: no port free on both TCP and UDP")
+// bindRaceAttempts bounds how often TestHTTP3_BindFailureIsAStartError
+// re-establishes its precondition after losing the TCP side to another process.
+const bindRaceAttempts = 20
 
 // dualStackAddrOn returns an address on host whose port is free on BOTH TCP
 // and UDP, for a server whose REST listener takes the port on TCP and whose
@@ -168,25 +169,16 @@ var errNoDualStackPort = errors.New("rest: no port free on both TCP and UDP")
 //
 // The failure it prevents is not a wrong assertion; it is a setup failure
 // that reads as a test failure -- a check that could not answer, reported as
-// an answer.
+// an answer. netport.Reserve probes both protocols at host and keeps the port
+// from every other test process, so the number is still free when the server
+// binds it.
 func dualStackAddrOn(t *testing.T, host string) string {
 	t.Helper()
-	for i := 0; i < portAttempts; i++ {
-		ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
-		if err != nil {
-			continue
-		}
-		addr := ln.Addr().String()
-		pc, uerr := net.ListenPacket("udp", addr)
-		_ = ln.Close()
-		if uerr != nil {
-			continue // UDP side taken at this scope; the number is unusable
-		}
-		_ = pc.Close()
-		return addr
+	ports, err := netport.Reserve(host, 1)
+	if err != nil {
+		t.Fatalf("dualStackAddrOn(%q): %v", host, err)
 	}
-	t.Fatalf("dualStackAddrOn(%q): %v after %d attempts", host, errNoDualStackPort, portAttempts)
-	return ""
+	return net.JoinHostPort(host, strconv.Itoa(ports[0]))
 }
 
 // dualStackAddr is dualStackAddrOn for the loopback scope, which is what most
@@ -199,28 +191,18 @@ func dualStackAddr(t *testing.T) string {
 // reserveUDPLeavingTCPFree holds the UDP side of a port whose TCP side it has
 // just proven free, and returns the held socket and the address.
 //
-// The proof is the point. The previous version bound UDP on :0 and commented
-// that this left "its TCP side free" -- an assumption it never measured, and
-// on a loaded host the TCP side of that number can already be held by another
-// process (go-qrdb#253). Here the TCP side is bound first, which establishes
-// it was free, and only then is UDP taken on the same number.
+// The proof is the point. A version that bound UDP on :0 and assumed it left
+// "its TCP side free" never measured that, and on a loaded host the TCP side
+// of that number can already be held by another process (go-qrdb#253). Here
+// the reservation proves both sides free first, and only then is UDP taken.
 func reserveUDPLeavingTCPFree(t *testing.T) (net.PacketConn, string) {
 	t.Helper()
-	for i := 0; i < portAttempts; i++ {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			continue
-		}
-		addr := ln.Addr().String()
-		pc, uerr := net.ListenPacket("udp", addr)
-		_ = ln.Close() // release TCP; the server under test will take it
-		if uerr != nil {
-			continue
-		}
-		return pc, addr
+	addr := dualStackAddr(t)
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatalf("hold the UDP side of reserved %s: %v", addr, err)
 	}
-	t.Fatalf("reserveUDPLeavingTCPFree: %v after %d attempts", errNoDualStackPort, portAttempts)
-	return nil, ""
+	return pc, addr
 }
 
 // TestHTTP3_BindFailureIsAStartError: the UDP socket is opened synchronously,
@@ -242,7 +224,7 @@ func reserveUDPLeavingTCPFree(t *testing.T) (net.PacketConn, string) {
 // second. The discriminator was sitting in the error the assertion already
 // had.
 func TestHTTP3_BindFailureIsAStartError(t *testing.T) {
-	for attempt := 1; attempt <= portAttempts; attempt++ {
+	for attempt := 1; attempt <= bindRaceAttempts; attempt++ {
 		blocker, addr := reserveUDPLeavingTCPFree(t)
 
 		tlsCfg, _ := generateTestTLSConfig(t)
@@ -272,12 +254,12 @@ func TestHTTP3_BindFailureIsAStartError(t *testing.T) {
 	}
 	// Not a skip. AGENTS.md forbids skip guards, and a regression test for a
 	// silent-failure path must not be able to decline to run -- reaching here
-	// needs portAttempts independent losses of the TCP race, which means
+	// needs bindRaceAttempts independent losses of the TCP race, which means
 	// something is wrong with the host, and saying so is more useful than
 	// passing quietly.
 	t.Fatalf("could not establish the precondition (TCP free, UDP held) in %d attempts: "+
 		"every candidate port had its TCP side taken between release and bind, "+
-		"which is a host problem rather than a failure of the behaviour under test", portAttempts)
+		"which is a host problem rather than a failure of the behaviour under test", bindRaceAttempts)
 }
 
 // TestSameBindHost covers the invariant the runtime check enforces: the two

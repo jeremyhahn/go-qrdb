@@ -265,6 +265,88 @@ func testRolesLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	}
 }
 
+// TestRoles_CLI_DeleteStripsHolders_PerProtocol drives `roles delete` through
+// the real CLI on every transport and asserts, through `users get`, that no
+// account still names the deleted role afterwards while every other role it
+// held survives.
+func TestRoles_CLI_DeleteStripsHolders_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testRolesDeleteStripsHoldersOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testRolesDeleteStripsHoldersOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	stamp := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+
+	createRole := func(name string) string {
+		out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "create",
+			"--name", name, "--permissions", "users:read")
+		if err != nil {
+			t.Fatalf("[%s] roles create %s: %v\noutput: %s", proto.name, name, err, out)
+		}
+		var r roleCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &r); jerr != nil || r.ID == "" {
+			t.Fatalf("[%s] decode roles create JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		return r.ID
+	}
+	doomed := createRole("rds-doomed-" + stamp)
+	kept := createRole("rds-kept-" + stamp)
+
+	userIDs := make([]string, 0, 3)
+	for i := range 3 {
+		out, err := runCLIProto(t, node, proto, "--output", "json", "users", "create",
+			"--without-email-login-key", "--username", fmt.Sprintf("rds-user%d-%s", i, stamp))
+		if err != nil {
+			t.Fatalf("[%s] users create: %v\noutput: %s", proto.name, err, out)
+		}
+		var u userCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &u); jerr != nil {
+			t.Fatalf("[%s] decode users create JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		id := fmt.Sprintf("%d", u.ID)
+		for _, roleID := range []string{doomed, kept} {
+			if out, err := runCLIProto(t, node, proto, "roles", "assign", "--user", id, "--role", roleID); err != nil || !strings.Contains(out, "OK") {
+				t.Fatalf("[%s] roles assign %s to %s: %v\noutput: %s", proto.name, roleID, id, err, out)
+			}
+		}
+		userIDs = append(userIDs, id)
+	}
+
+	out, err := runCLIProto(t, node, proto, "roles", "delete", doomed)
+	if err != nil || !strings.Contains(out, "OK") {
+		t.Fatalf("[%s] roles delete: %v\noutput: %s", proto.name, err, out)
+	}
+
+	for _, id := range userIDs {
+		out, err := runCLIProto(t, node, proto, "--output", "json", "users", "get", id)
+		if err != nil {
+			t.Fatalf("[%s] users get %s: %v\noutput: %s", proto.name, id, err, out)
+		}
+		var u userCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &u); jerr != nil {
+			t.Fatalf("[%s] decode users get JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		if stringSliceContains(u.RoleIDs, doomed) {
+			t.Fatalf("[%s] user %s role_ids = %v, still holds deleted role %s", proto.name, id, u.RoleIDs, doomed)
+		}
+		if !stringSliceContains(u.RoleIDs, kept) {
+			t.Fatalf("[%s] user %s role_ids = %v, lost role %s that was not deleted", proto.name, id, u.RoleIDs, kept)
+		}
+	}
+
+	out, err = runCLIProto(t, node, proto, "roles", "get", doomed)
+	if err == nil || !strings.Contains(strings.ToLower(out), "not found") {
+		t.Fatalf("[%s] roles get after delete: err=%v output: %s", proto.name, err, out)
+	}
+}
+
 // roleListContainsID reports whether roles contains an entry with the given ID.
 func roleListContainsID(roles []roleCLIJSON, id string) bool {
 	for _, r := range roles {

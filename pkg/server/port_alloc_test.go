@@ -33,17 +33,18 @@ package server
 import (
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 )
 
 // freeDualStackPort returns a port free on both TCP and UDP, for a test that
 // starts a REST listener whose HTTP/3 sibling shares the port number.
 func freeDualStackPort(t *testing.T) int {
 	t.Helper()
-	port, err := qrdbdharness.ReserveTCPPort()
+	ports, err := netport.Reserve("127.0.0.1", 1)
 	if err != nil {
 		t.Fatalf("freeDualStackPort: %v", err)
 	}
+	port := ports[0]
 	return port
 }
 

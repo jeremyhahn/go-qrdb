@@ -563,9 +563,11 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	if userSvc, err := user.NewStore(authStore, userIDGen); err == nil {
 		opts = append(opts, embedded.WithUserService(userSvc))
-	}
-	if roleSvc, err := role.NewStore(authStore); err == nil {
-		opts = append(opts, embedded.WithRoleService(roleSvc))
+		if holders, err := user.NewRoleRevoker(userSvc); err == nil {
+			if roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(holders)); err == nil {
+				opts = append(opts, embedded.WithRoleService(roleSvc))
+			}
+		}
 	}
 
 	if barrierSvc != nil {

@@ -391,6 +391,31 @@ func (e *CommitOutcomeUnknownError) Error() string {
 // Unwrap exposes the underlying store error.
 func (e *CommitOutcomeUnknownError) Unwrap() error { return e.Err }
 
+// RoleRevokerUnsupportedError is returned by NewRoleRevoker for a UserServicer
+// that is not a store built by this package. Stripping a role must commit
+// against the bytes it read, which only the store can do.
+type RoleRevokerUnsupportedError struct{}
+
+// Error returns a human-readable description of the refusal.
+func (e *RoleRevokerUnsupportedError) Error() string {
+	return "user: this user service cannot revoke roles; build it with NewStore or NewRoutingService"
+}
+
+// RoleRevocationIncompleteError reports that RevokeRole swept a tenant Passes
+// times and every pass still found holders, because assignments of the role
+// kept committing while it ran. Every account it reached was stripped; a
+// retry finishes the rest.
+type RoleRevocationIncompleteError struct {
+	RoleID string
+	Passes int
+}
+
+// Error returns a human-readable description of the unfinished sweep.
+func (e *RoleRevocationIncompleteError) Error() string {
+	return "user: role " + e.RoleID + " was still being assigned after " +
+		strconv.Itoa(e.Passes) + " revocation passes; retry"
+}
+
 // InvalidLifecycleError is returned when a request names a lifecycle state
 // that is not defined, or one that is defined but not permitted in the position
 // it was used (creating an account directly as suspended, for example).

@@ -48,6 +48,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
@@ -123,7 +124,7 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 	require.NoError(t, err)
 	store := kvstore.NewMemoryKVStore()
 
-	port, err := freePortOn(testBindHost, networkTCP)
+	port, err := netport.FreePortOn(testBindHost, netport.NetworkTCP)
 	require.NoError(t, err)
 
 	f := resolveWithArgs(t,
@@ -176,7 +177,7 @@ func TestClusterJoinFlags_WrongTokenRefused(t *testing.T) {
 	provider := newClusterJoinFlagsTestCA(t)
 	store := kvstore.NewMemoryKVStore()
 
-	port, err := freePortOn(testBindHost, networkTCP)
+	port, err := netport.FreePortOn(testBindHost, netport.NetworkTCP)
 	require.NoError(t, err)
 
 	f := resolveWithArgs(t,

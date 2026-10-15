@@ -27,6 +27,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -53,11 +54,11 @@ func newSharedTransportTestHost(t *testing.T) (*quicraft.Host, uint64, string) {
 	if err != nil {
 		t.Fatalf("read CA: %v", err)
 	}
-	port, err := qrdbdharness.ReserveUDPPort()
+	ports, err := netport.Reserve("127.0.0.1", 1)
 	if err != nil {
-		t.Fatalf("ReserveUDPPort: %v", err)
+		t.Fatalf("netport.Reserve: %v", err)
 	}
-	addr := "127.0.0.1:" + strconv.Itoa(port)
+	addr := "127.0.0.1:" + strconv.Itoa(ports[0])
 	dir := t.TempDir()
 	cfg := quicraftconfig.HostConfig{
 		WALDir:        filepath.Join(dir, "wal"),

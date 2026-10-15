@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
 
@@ -59,7 +60,7 @@ import (
 // is what makes forgetting it fail every time instead of one run in three.
 func reserveNoisePort(t *testing.T, f *startFlags) {
 	t.Helper()
-	port, err := freePortOn(resolveNoiseHost(f), networkTCP)
+	port, err := netport.FreePortOn(resolveNoiseHost(f), netport.NetworkTCP)
 	if err != nil {
 		t.Fatalf("reserve a Noise port at %s: %v", resolveNoiseHost(f), err)
 	}
@@ -137,7 +138,7 @@ func holdPort(port int) *portHold {
 // the port is held, or the hold was released meanwhile.
 func (h *portHold) listen() bool {
 	lc := net.ListenConfig{Control: reusePort}
-	ln, err := lc.Listen(h.ctx, networkTCP, h.addr)
+	ln, err := lc.Listen(h.ctx, netport.NetworkTCP, h.addr)
 	if err != nil {
 		return h.ctx.Err() != nil
 	}
@@ -157,7 +158,7 @@ func (h *portHold) await(holder string) {
 	defer close(h.stopped)
 	var d net.Dialer
 	for {
-		conn, err := d.DialContext(h.ctx, networkTCP, holder)
+		conn, err := d.DialContext(h.ctx, netport.NetworkTCP, holder)
 		if err == nil {
 			stop := context.AfterFunc(h.ctx, func() { _ = conn.Close() })
 			_, _ = io.Copy(io.Discard, conn)
@@ -244,7 +245,7 @@ func TestPortHold_OutlivesAConcurrentCopy(t *testing.T) {
 // share the port, so the guard must take it the moment that holder lets go.
 func TestPortHold_TakesThePortWhenAForeignHolderLetsGo(t *testing.T) {
 	port := freeHoldPort(t)
-	foreign, err := net.Listen(networkTCP, net.JoinHostPort("", strconv.Itoa(port)))
+	foreign, err := net.Listen(netport.NetworkTCP, net.JoinHostPort("", strconv.Itoa(port)))
 	if err != nil {
 		t.Fatalf("foreign holder: %v", err)
 	}
@@ -261,14 +262,14 @@ func TestPortHold_TakesThePortWhenAForeignHolderLetsGo(t *testing.T) {
 func TestPortHold_ReleaseWhileWaitingLeavesThePortFree(t *testing.T) {
 	port := freeHoldPort(t)
 	addr := net.JoinHostPort("", strconv.Itoa(port))
-	foreign, err := net.Listen(networkTCP, addr)
+	foreign, err := net.Listen(netport.NetworkTCP, addr)
 	if err != nil {
 		t.Fatalf("foreign holder: %v", err)
 	}
 	h := holdPort(port)
 	h.release()
 	_ = foreign.Close()
-	ln, err := net.Listen(networkTCP, addr)
+	ln, err := net.Listen(netport.NetworkTCP, addr)
 	if err != nil {
 		t.Fatalf("a released guard still holds %s: %v", addr, err)
 	}
@@ -285,7 +286,7 @@ func TestPortHold_ReleaseWhileWaitingLeavesThePortFree(t *testing.T) {
 // TestMain holds.
 func freeHoldPort(t *testing.T) int {
 	t.Helper()
-	port, err := freePortOn(raftListenHost, networkTCP)
+	port, err := netport.FreePortOn(raftListenHost, netport.NetworkTCP)
 	if err != nil {
 		t.Fatalf("free port: %v", err)
 	}
@@ -310,7 +311,7 @@ func assertPortHeld(t *testing.T, port int) {
 	t.Helper()
 	for _, host := range []string{testBindHost, raftListenHost} {
 		addr := net.JoinHostPort(host, strconv.Itoa(port))
-		ln, err := net.Listen(networkTCP, addr)
+		ln, err := net.Listen(netport.NetworkTCP, addr)
 		if err == nil {
 			_ = ln.Close()
 			t.Fatalf("bound %s during the package's tests: holdDefaultNoisePort is not armed in TestMain, so a test that forgets reserveNoisePort would pass here and flake elsewhere", addr)

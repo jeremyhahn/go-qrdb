@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -42,7 +43,7 @@ import (
 func TestRunStart_SealConfig_ShamirInvalidParams_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -422,7 +423,7 @@ func TestRunStart_OpenAll_DatabasesDirUnreadable(t *testing.T) {
 	dbsPath := filepath.Join(dir, "databases")
 	require.NoError(t, os.WriteFile(dbsPath, nil, 0o600))
 
-	raftPort, portErr := freePortOn(raftListenHost, networkUDP)
+	raftPort, portErr := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, portErr)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 

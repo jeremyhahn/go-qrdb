@@ -24,8 +24,8 @@
 //     (qrdb's mTLS authenticator maps CN to user and OU to tenant, so the
 //     subject is caller-specifiable),
 //   - listen ports reserved from a window BELOW the kernel's ephemeral range
-//     and bind-verified before use (see ports.go for why this is not
-//     net.Listen(":0")),
+//     and bind-verified before use (see internal/netport's window.go for why
+//     this is not net.Listen(":0")),
 //   - a compiled qrdbd binary plus subprocess start/stop, and
 //   - readiness waits for the node host, the admin /health endpoint, and
 //     Raft leadership.

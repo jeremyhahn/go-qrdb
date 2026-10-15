@@ -278,3 +278,55 @@ type ResolverRequiredError struct {
 func (e *ResolverRequiredError) Error() string {
 	return "role: no name resolver to decide whether a caller holds " + e.Name
 }
+
+// RoleDeletingError is returned by ValidateAssignable and UpdateRole for a
+// role whose DeleteRole has begun (Role.Deleting). Assigning it would hand an
+// account a role the delete is in the middle of stripping from every holder,
+// and editing it would change a role that is on its way out, so both writes
+// are refused.
+type RoleDeletingError struct {
+	ID string
+	// Op is the refused operation: "assigned" or "updated".
+	Op string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *RoleDeletingError) Error() string {
+	return "role: " + e.ID + " is being deleted and cannot be " + e.Op
+}
+
+// HolderRevokerRequiredError is returned by DeleteRole when the store was
+// built without WithHolderRevoker. Deleting a role without stripping it from
+// the accounts that hold it would leave every holder carrying a dead role
+// identifier, which an access audit cannot tell from a live grant, so a
+// composition that cannot reach the user store refuses the delete instead.
+type HolderRevokerRequiredError struct {
+	ID string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *HolderRevokerRequiredError) Error() string {
+	return "role: deleting " + e.ID + " needs a holder revoker to strip it from its holders, and none was configured"
+}
+
+// HolderRevocationError is returned by DeleteRole when stripping the role from
+// its holders failed. The role record is still present, marked Deleting, so a
+// retry of the same DeleteRole resumes the strip; Err is the revoker's own
+// error and decides how the failure is classified.
+type HolderRevocationError struct {
+	ID       string
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the failed strip.
+func (e *HolderRevocationError) Error() string {
+	msg := "role: stripping " + e.ID + " from its holders in tenant " + e.TenantID + " failed; retry the delete"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap exposes the revoker's own error.
+func (e *HolderRevocationError) Unwrap() error { return e.Err }

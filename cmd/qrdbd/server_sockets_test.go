@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
@@ -58,7 +59,7 @@ func boundAddrs(t *testing.T, opts []server.ServerOption) []net.Addr {
 func requireBindable(t *testing.T, network, addr string) {
 	t.Helper()
 	var err error
-	if network == networkUDP {
+	if network == netport.NetworkUDP {
 		var pc net.PacketConn
 		if pc, err = net.ListenPacket(network, addr); err == nil {
 			_ = pc.Close()
@@ -86,7 +87,7 @@ func TestBindServerSockets_BindsRESTPairAndGRPC(t *testing.T) {
 		t.Fatalf("bound %d sockets, want REST TCP, REST UDP and gRPC TCP: %v", len(addrs), addrs)
 	}
 	restTCP, restUDP, grpcTCP := addrs[0], addrs[1], addrs[2]
-	if restTCP.Network() != networkTCP || restUDP.Network() != networkUDP || grpcTCP.Network() != networkTCP {
+	if restTCP.Network() != netport.NetworkTCP || restUDP.Network() != netport.NetworkUDP || grpcTCP.Network() != netport.NetworkTCP {
 		t.Fatalf("socket networks = %s, %s, %s; want tcp, udp, tcp",
 			restTCP.Network(), restUDP.Network(), grpcTCP.Network())
 	}
@@ -100,9 +101,9 @@ func TestBindServerSockets_BindsRESTPairAndGRPC(t *testing.T) {
 			t.Fatalf("socket bound on %s, want host %s", a, testBindHost)
 		}
 	}
-	requireBindable(t, networkTCP, restTCP.String())
-	requireBindable(t, networkUDP, restUDP.String())
-	requireBindable(t, networkTCP, grpcTCP.String())
+	requireBindable(t, netport.NetworkTCP, restTCP.String())
+	requireBindable(t, netport.NetworkUDP, restUDP.String())
+	requireBindable(t, netport.NetworkTCP, grpcTCP.String())
 }
 
 func TestBindServerSockets_DisabledProtocolsBindNothing(t *testing.T) {
@@ -126,14 +127,14 @@ func TestBindServerSockets_DisabledProtocolsBindNothing(t *testing.T) {
 }
 
 func TestBindServerSockets_GRPCBindFailureReleasesREST(t *testing.T) {
-	busy, err := net.Listen(networkTCP, net.JoinHostPort(testBindHost, "0"))
+	busy, err := net.Listen(netport.NetworkTCP, net.JoinHostPort(testBindHost, "0"))
 	if err != nil {
 		t.Fatalf("occupy a port: %v", err)
 	}
 	defer func() { _ = busy.Close() }()
 	busyPort := busy.Addr().(*net.TCPAddr).Port
 
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
+	adminPort, err := netport.FreePortOn(testBindHost, netport.NetworkTCP, netport.NetworkUDP)
 	if err != nil {
 		t.Fatalf("admin port: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestBindServerSockets_GRPCBindFailureReleasesREST(t *testing.T) {
 	if !errors.As(err, &bindErr) {
 		t.Fatalf("error %T (%v), want *ServerSocketBindError", err, err)
 	}
-	if bindErr.Protocol != "grpc" || bindErr.Network != networkTCP {
+	if bindErr.Protocol != "grpc" || bindErr.Network != netport.NetworkTCP {
 		t.Fatalf("failure attributed to %s %s, want grpc tcp", bindErr.Protocol, bindErr.Network)
 	}
 	if !errors.Is(err, syscall.EADDRINUSE) {
@@ -155,19 +156,19 @@ func TestBindServerSockets_GRPCBindFailureReleasesREST(t *testing.T) {
 	}
 	// The REST pair bound before the failure must not leak.
 	admin := net.JoinHostPort(testBindHost, strconv.Itoa(adminPort))
-	requireBindable(t, networkTCP, admin)
-	requireBindable(t, networkUDP, admin)
+	requireBindable(t, netport.NetworkTCP, admin)
+	requireBindable(t, netport.NetworkUDP, admin)
 }
 
 func TestBindServerSockets_HTTP3BindFailureReleasesTCP(t *testing.T) {
 	// A port free on both networks, then taken on UDP only: the TCP listener
 	// binds and the HTTP/3 socket beside it cannot.
-	port, err := freePortOn(testBindHost, networkTCP, networkUDP)
+	port, err := netport.FreePortOn(testBindHost, netport.NetworkTCP, netport.NetworkUDP)
 	if err != nil {
 		t.Fatalf("free port: %v", err)
 	}
 	addr := net.JoinHostPort(testBindHost, strconv.Itoa(port))
-	busy, err := net.ListenPacket(networkUDP, addr)
+	busy, err := net.ListenPacket(netport.NetworkUDP, addr)
 	if err != nil {
 		t.Fatalf("occupy UDP %s: %v", addr, err)
 	}
@@ -182,12 +183,12 @@ func TestBindServerSockets_HTTP3BindFailureReleasesTCP(t *testing.T) {
 	if !errors.As(err, &bindErr) {
 		t.Fatalf("error %T (%v), want *ServerSocketBindError", err, err)
 	}
-	if bindErr.Protocol != "rest" || bindErr.Network != networkUDP || bindErr.Addr != addr {
+	if bindErr.Protocol != "rest" || bindErr.Network != netport.NetworkUDP || bindErr.Addr != addr {
 		t.Fatalf("failure attributed to %s %s %s, want rest udp %s",
 			bindErr.Protocol, bindErr.Network, bindErr.Addr, addr)
 	}
 	// The TCP listener bound before the failure must not leak.
-	requireBindable(t, networkTCP, addr)
+	requireBindable(t, netport.NetworkTCP, addr)
 }
 
 func TestServerSockets_OptionsBindOnceAndCloseReleases(t *testing.T) {
@@ -213,15 +214,15 @@ func TestServerSockets_OptionsBindOnceAndCloseReleases(t *testing.T) {
 		}
 	}
 	// Held between the calls, as they are between two server lifetimes.
-	if ln, err := net.Listen(networkTCP, firstAddrs[0].String()); err == nil {
+	if ln, err := net.Listen(netport.NetworkTCP, firstAddrs[0].String()); err == nil {
 		_ = ln.Close()
 		t.Fatalf("REST port %s was free while serverSockets held it", firstAddrs[0])
 	}
 
 	sockets.Close()
-	requireBindable(t, networkTCP, firstAddrs[0].String())
-	requireBindable(t, networkUDP, firstAddrs[1].String())
-	requireBindable(t, networkTCP, firstAddrs[2].String())
+	requireBindable(t, netport.NetworkTCP, firstAddrs[0].String())
+	requireBindable(t, netport.NetworkUDP, firstAddrs[1].String())
+	requireBindable(t, netport.NetworkTCP, firstAddrs[2].String())
 }
 
 func TestServerSockets_CloseIsSafeUnboundAndTwice(t *testing.T) {
@@ -239,7 +240,7 @@ func TestServerSockets_CloseIsSafeUnboundAndTwice(t *testing.T) {
 }
 
 func TestServerSockets_OptionsReportsBindFailure(t *testing.T) {
-	busy, err := net.Listen(networkTCP, net.JoinHostPort(testBindHost, "0"))
+	busy, err := net.Listen(netport.NetworkTCP, net.JoinHostPort(testBindHost, "0"))
 	if err != nil {
 		t.Fatalf("occupy a port: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestServerSockets_OptionsReportsBindFailure(t *testing.T) {
 	defer sockets.Close()
 	_, err = sockets.options(socketsConfig(busy.Addr().(*net.TCPAddr).Port, 0, true, false))
 	var bindErr *ServerSocketBindError
-	if !errors.As(err, &bindErr) || bindErr.Protocol != "rest" || bindErr.Network != networkTCP {
+	if !errors.As(err, &bindErr) || bindErr.Protocol != "rest" || bindErr.Network != netport.NetworkTCP {
 		t.Fatalf("options on an occupied admin port = %v, want a rest tcp *ServerSocketBindError", err)
 	}
 	if sockets.bound {

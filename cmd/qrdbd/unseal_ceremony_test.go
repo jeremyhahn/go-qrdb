@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
@@ -92,9 +93,9 @@ func TestRunStart_UnsealCeremony_HandoverKeepsItsPorts(t *testing.T) {
 	thief := newPortThief(t)
 	bootThroughUnsealCeremony(t, nil, func(step string, f *startFlags) {
 		admin := net.JoinHostPort(f.host, strconv.Itoa(f.adminPort))
-		thief.try(step, networkTCP, admin)
-		thief.try(step, networkUDP, admin)
-		thief.try(step, networkTCP, net.JoinHostPort(f.host, strconv.Itoa(f.grpcPort)))
+		thief.try(step, netport.NetworkTCP, admin)
+		thief.try(step, netport.NetworkUDP, admin)
+		thief.try(step, netport.NetworkTCP, net.JoinHostPort(f.host, strconv.Itoa(f.grpcPort)))
 	})
 }
 
@@ -107,9 +108,9 @@ func TestRunStart_UnsealCeremony_HandoverKeepsTheQUICPort(t *testing.T) {
 	thief := newPortThief(t)
 	bootThroughUnsealCeremony(t, func(f *startFlags) {
 		f.enableQUIC = true
-		f.quicPort = drawTestPort(t, networkUDP)
+		f.quicPort = drawTestPort(t, netport.NetworkUDP)
 	}, func(step string, f *startFlags) {
-		thief.try(step, networkUDP, net.JoinHostPort(f.host, strconv.Itoa(f.quicPort)))
+		thief.try(step, netport.NetworkUDP, net.JoinHostPort(f.host, strconv.Itoa(f.quicPort)))
 	})
 }
 
@@ -120,9 +121,9 @@ func TestRunStart_UnsealCeremony_HandoverKeepsTheMCPPort(t *testing.T) {
 	thief := newPortThief(t)
 	bootThroughUnsealCeremony(t, func(f *startFlags) {
 		f.enableMCP = true
-		f.mcpPort = drawTestPort(t, networkTCP)
+		f.mcpPort = drawTestPort(t, netport.NetworkTCP)
 	}, func(step string, f *startFlags) {
-		thief.try(step, networkTCP, net.JoinHostPort(f.host, strconv.Itoa(f.mcpPort)))
+		thief.try(step, netport.NetworkTCP, net.JoinHostPort(f.host, strconv.Itoa(f.mcpPort)))
 	})
 }
 
@@ -174,7 +175,7 @@ func (p *portThief) try(step, network, addr string) {
 		c   io.Closer
 		err error
 	)
-	if network == networkUDP {
+	if network == netport.NetworkUDP {
 		c, err = net.ListenPacket(network, addr)
 	} else {
 		c, err = net.Listen(network, addr)
@@ -191,7 +192,7 @@ func (p *portThief) try(step, network, addr string) {
 // drawTestPort returns a port that is free on testBindHost for network.
 func drawTestPort(t *testing.T, network string) int {
 	t.Helper()
-	port, err := freePortOn(testBindHost, network)
+	port, err := netport.FreePortOn(testBindHost, network)
 	if err != nil {
 		t.Fatalf("%s port: %v", network, err)
 	}

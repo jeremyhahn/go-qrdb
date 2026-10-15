@@ -593,6 +593,10 @@ of its own, and the listing never contains one.
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |
+| Role-assignment write, or an update to the role itself, while a delete of that role is in progress (`role.RoleDeletingError`) | 400 | `INVALID_ARGUMENT` |
+| Deleting a role on a node whose role service cannot reach the user store to strip holders (`role.HolderRevokerRequiredError`) | 501 | `UNIMPLEMENTED` |
+| Deleting a role whose holders kept being reassigned it through every sweep (`user.RoleRevocationIncompleteError`; retry the delete) | 409 | `ABORTED` |
+| Deleting a role whose holder strip failed part way (`role.HolderRevocationError`; the role stays, marked, and a retry of the delete finishes it) | the cause's status, e.g. 500 for a store failure | the cause's code, e.g. `INTERNAL` |
 | The user's auth factors could not be listed while building the response | 503 | `UNAVAILABLE` |
 | A user/role request whose body (REST) or payload (QUIC) does not decode | 400 | `INVALID_ARGUMENT` |
 | A REST create, lookup or role-assignment body larger than 1 MiB | 413 | — |

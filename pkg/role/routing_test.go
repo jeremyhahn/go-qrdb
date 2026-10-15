@@ -317,7 +317,7 @@ func TestRoutingRoleService_DelegatesFullLifecycle(t *testing.T) {
 		shared:  newFakeKVStore(),
 		tenants: map[string]kvstore.KVStore{"acme": store},
 	}
-	svc, err := NewRoutingService(resolver)
+	svc, err := NewRoutingService(resolver, WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestRoutingRoleService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 		shared:  newFakeKVStore(),
 		tenants: map[string]kvstore.KVStore{"acme": newFakeKVStore()},
 	}
-	svc, err := NewRoutingService(resolver)
+	svc, err := NewRoutingService(resolver, WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestRoutingRoleService_AnInterruptedDeleteIsCompletedByRetry(t *testing.T) 
 		shared:  shared,
 		tenants: map[string]kvstore.KVStore{"acme": newFakeKVStore()},
 	}
-	svc, err := NewRoutingService(resolver)
+	svc, err := NewRoutingService(resolver, WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
@@ -1003,7 +1003,7 @@ func TestRoutingRoleService_ARetryNeverFreesAnotherTenantsClaim(t *testing.T) {
 		shared:  newFakeKVStore(),
 		tenants: map[string]kvstore.KVStore{"acme": acmeStore, "globex": newFakeKVStore()},
 	}
-	svc, err := NewRoutingService(resolver)
+	svc, err := NewRoutingService(resolver, WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
@@ -1068,7 +1068,7 @@ func TestRoutingRoleService_AnInterruptedDeleteLeaksNoIndexEntry(t *testing.T) {
 		shared:  newFakeKVStore(),
 		tenants: map[string]kvstore.KVStore{"acme": tenantStore},
 	}
-	svc, err := NewRoutingService(resolver)
+	svc, err := NewRoutingService(resolver, WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}

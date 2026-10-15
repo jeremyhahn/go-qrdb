@@ -23,11 +23,13 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 )
 
 // lostPortAttempts bounds how many fresh port draws startDaemon makes for one
 // daemon. A draw is lost only when another process takes one of its numbers in
-// the window between freePortOn releasing it and the daemon binding it, so a
+// the window between netport.FreePortOn releasing it and the daemon binding it, so a
 // second draw almost always succeeds. The bound is what keeps a daemon that
 // collides with ITSELF -- two of its own listeners on one number, which every
 // draw reproduces -- failing on the collision instead of retrying forever.
@@ -49,15 +51,15 @@ type daemonPorts struct {
 
 // drawDaemonPorts draws one set of daemon ports.
 func drawDaemonPorts() (daemonPorts, error) {
-	raft, err := freePortOn(raftListenHost, networkUDP)
+	raft, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	if err != nil {
 		return daemonPorts{}, err
 	}
-	admin, err := freePortOn(testBindHost, networkTCP, networkUDP)
+	admin, err := netport.FreePortOn(testBindHost, netport.NetworkTCP, netport.NetworkUDP)
 	if err != nil {
 		return daemonPorts{}, err
 	}
-	grpc, err := freePortOn(testBindHost, networkTCP)
+	grpc, err := netport.FreePortOn(testBindHost, netport.NetworkTCP)
 	if err != nil {
 		return daemonPorts{}, err
 	}
@@ -190,7 +192,7 @@ type daemonLaunch struct {
 // startDaemon launches the daemon launch builds from a fresh draw of ports and
 // returns, once that daemon is ready, the channel its result arrives on.
 //
-// Every port a test hands a daemon comes from freePortOn, which proves a number
+// Every port a test hands a daemon comes from netport.FreePortOn, which proves a number
 // free and then releases it, and the daemon binds it some hundreds of
 // milliseconds later. Anything else running in the same `go test` invocation
 // can take the number in between -- another package's listener, or an
@@ -233,25 +235,21 @@ func startDaemon(t *testing.T, launch func(p daemonPorts) daemonLaunch) <-chan e
 // its number, so a bind of that number collides deterministically.
 func occupiedTCP(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen(networkTCP, net.JoinHostPort(testBindHost, kernelDrawsPort))
+	ln, err := net.Listen(netport.NetworkTCP, net.JoinHostPort(testBindHost, "0"))
 	if err != nil {
 		t.Fatalf("hold a port: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	port, err := portOfAddr(ln.Addr())
-	if err != nil {
-		t.Fatalf("port of %v: %v", ln.Addr(), err)
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("held listener reports %T, want *net.TCPAddr", ln.Addr())
 	}
-	n, err := strconv.Atoi(port)
-	if err != nil {
-		t.Fatalf("parse port %q: %v", port, err)
-	}
-	return n
+	return addr.Port
 }
 
 // bindGRPC binds the draw's gRPC port the way the daemon's gRPC listener does.
 func bindGRPC(p daemonPorts) error {
-	ln, err := net.Listen(networkTCP, net.JoinHostPort(testBindHost, strconv.Itoa(p.grpc)))
+	ln, err := net.Listen(netport.NetworkTCP, net.JoinHostPort(testBindHost, strconv.Itoa(p.grpc)))
 	if err != nil {
 		return err
 	}
@@ -321,7 +319,7 @@ func TestRetryLostPorts_RetriesNothingButALostPort(t *testing.T) {
 // A failed draw ends the search with the draw's error: there are no ports to
 // hand the daemon.
 func TestRetryLostPorts_ReturnsADrawFailure(t *testing.T) {
-	drawErr := &NoProbeNetworkError{Host: testBindHost}
+	drawErr := &netport.NoProbeNetworkError{Host: testBindHost}
 	err := retryLostPorts(lostPortAttempts, func() (daemonPorts, error) {
 		return daemonPorts{}, drawErr
 	}, func(daemonPorts) error {

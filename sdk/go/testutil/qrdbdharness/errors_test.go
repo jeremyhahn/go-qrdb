@@ -46,36 +46,6 @@ func TestErrorMessages(t *testing.T) {
 			contains: []string{`"a/b"`, "must not contain a path separator"},
 		},
 		{
-			name:     "EphemeralRangeError with cause",
-			err:      &EphemeralRangeError{Path: "/proc/x", Reason: "read failed", Err: cause},
-			contains: []string{"/proc/x", "read failed", cause.Error()},
-		},
-		{
-			name:     "EphemeralRangeError without cause",
-			err:      &EphemeralRangeError{Path: "/proc/x", Reason: "expected two fields, got 1"},
-			contains: []string{"/proc/x", "expected two fields, got 1"},
-		},
-		{
-			name:     "PortWindowError",
-			err:      &PortWindowError{EphemeralLow: 2048, Window: portWindow},
-			contains: []string{"2048", "8192"},
-		},
-		{
-			name:     "PortExhaustedError",
-			err:      &PortExhaustedError{Window: portWindow, Base: 24576, Low: 32768},
-			contains: []string{"[24576,32768)"},
-		},
-		{
-			name:     "PortReservationError with cause",
-			err:      &PortReservationError{Network: "TCP", Requested: 3, Reserved: 1, LastErr: cause},
-			contains: []string{"TCP", "3", "1", cause.Error()},
-		},
-		{
-			name:     "PortReservationError without cause",
-			err:      &PortReservationError{Network: "UDP", Requested: 2, Reserved: 0},
-			contains: []string{"UDP", "2"},
-		},
-		{
 			name:     "RepoRootError with cause",
 			err:      &RepoRootError{Start: "/tmp/x", Err: cause},
 			contains: []string{"/tmp/x", cause.Error()},
@@ -156,8 +126,6 @@ func TestErrorUnwrapping(t *testing.T) {
 	wrapping := []error{
 		&CAError{Op: "write cert", Err: cause},
 		&CertError{CommonName: "admin", Op: "write key", Err: cause},
-		&EphemeralRangeError{Path: "/proc/x", Reason: "read failed", Err: cause},
-		&PortReservationError{Network: "TCP", Requested: 1, LastErr: cause},
 		&RepoRootError{Start: "/tmp/x", Err: cause},
 		&BuildError{Package: "./cmd/qrdbd", Err: cause},
 		&DaemonStartError{Binary: "/tmp/qrdbd", Err: cause},
@@ -174,8 +142,6 @@ func TestErrorUnwrapping(t *testing.T) {
 
 	notWrapping := []error{
 		&InvalidSubjectError{CommonName: "", Reason: "empty"},
-		&PortWindowError{EphemeralLow: 2048, Window: portWindow},
-		&PortExhaustedError{Window: portWindow, Base: 1024, Low: 9216},
 		&ProbeError{Reason: "request failed"},
 	}
 	for _, err := range notWrapping {

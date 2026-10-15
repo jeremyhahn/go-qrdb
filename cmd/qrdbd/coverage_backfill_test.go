@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -349,7 +350,7 @@ func TestGenerateReplicaID_ConcurrentCallsDistinct(t *testing.T) {
 func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -391,7 +392,7 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 func TestRunStart_VectorStorageFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -437,7 +438,7 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -485,7 +486,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -525,11 +526,11 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := freePortOn(raftListenHost, networkUDP)
+	raftPort, err := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
 	require.NoError(t, err)
-	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
+	adminPort, err := netport.FreePortOn(testBindHost, netport.NetworkTCP, netport.NetworkUDP)
 	require.NoError(t, err)
-	grpcPort, err := freePortOn(testBindHost, networkTCP)
+	grpcPort, err := netport.FreePortOn(testBindHost, netport.NetworkTCP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)

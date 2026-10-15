@@ -65,7 +65,7 @@ func (f *fakeAuditLogger) findByAction(action string) (audit.AuditEvent, bool) {
 func newAuditTestStore(t *testing.T) (RoleServicer, *fakeAuditLogger) {
 	t.Helper()
 	al := &fakeAuditLogger{}
-	svc, err := NewStore(newMemKVStore(), WithAuditLogger(al))
+	svc, err := NewStore(newMemKVStore(), WithAuditLogger(al), WithHolderRevoker(noHolders{}))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}

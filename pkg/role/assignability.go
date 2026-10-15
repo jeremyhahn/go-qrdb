@@ -32,7 +32,8 @@ import (
 //
 // A role that does not exist is a *ReferenceError wrapping the lookup's
 // *RoleNotFoundError; any other lookup failure is returned verbatim. A role
-// that exists in another tenant is a *NotAssignableError.
+// whose deletion has begun is a *RoleDeletingError. A role that exists in
+// another tenant is a *NotAssignableError.
 func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID string) error {
 	r, err := svc.GetRole(ctx, roleID)
 	var notFound *RoleNotFoundError
@@ -46,6 +47,9 @@ func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID 
 		// A nil role with a nil error breaks the RoleServicer contract; the
 		// reference is unresolved, so it is refused rather than dereferenced.
 		return &ReferenceError{RoleID: roleID, Err: &RoleNotFoundError{ID: roleID}}
+	}
+	if r.Deleting {
+		return &RoleDeletingError{ID: roleID, Op: "assigned"}
 	}
 	if tenantid.Normalize(r.TenantID) == tenantid.Normalize(tenantID) {
 		return nil

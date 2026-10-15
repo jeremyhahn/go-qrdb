@@ -84,6 +84,13 @@ type Role struct {
 	// System marks built-in roles that cannot be deleted.
 	System bool `json:"system"`
 
+	// Deleting marks a role whose DeleteRole has begun. From the moment it is
+	// set the role grants nothing (ResolvePermissions skips it) and can no
+	// longer be assigned (ValidateAssignable refuses it); the record stays
+	// only until every account holding it has been stripped of it, so that
+	// an interrupted delete is finished by a plain retry. It is never cleared.
+	Deleting bool `json:"deleting,omitempty"`
+
 	// RetiredPermissions lists the members of Permissions that the build's
 	// permission registry no longer defines. It is DERIVED on read from the
 	// live registry and is NEVER persisted — every store write goes through

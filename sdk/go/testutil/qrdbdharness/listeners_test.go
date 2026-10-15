@@ -19,6 +19,8 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 )
 
 // appendedPorts parses the flag/port pairs ReserveListenerPorts appended
@@ -44,10 +46,6 @@ func appendedPorts(t *testing.T, out []string, n int) map[string]int {
 }
 
 func TestReserveListenerPortsFillsDefaultOnListeners(t *testing.T) {
-	low, err := readEphemeralLow(ephemeralRangePath)
-	if err != nil {
-		t.Fatalf("readEphemeralLow: %v", err)
-	}
 	args := []string{"start", "--data-dir", "/data"}
 
 	out, err := ReserveListenerPorts(args)
@@ -62,14 +60,16 @@ func TestReserveListenerPortsFillsDefaultOnListeners(t *testing.T) {
 	if len(ports) != len(want) {
 		t.Fatalf("appended %v, want exactly %q", ports, want)
 	}
+	// Where in the window netport draws a port from is netport's to pin
+	// (internal/netport/window_test.go); here every listener gets its own.
 	seen := make(map[int]bool, len(ports))
 	for _, flag := range want {
 		port, ok := ports[flag]
 		if !ok {
 			t.Fatalf("%s not appended: %q", flag, out)
 		}
-		if port < low-portWindow || port >= low {
-			t.Errorf("%s = %d, outside the reservation window [%d, %d)", flag, port, low-portWindow, low)
+		if port <= 0 {
+			t.Errorf("%s = %d, want a reserved port", flag, port)
 		}
 		if seen[port] {
 			t.Errorf("port %d handed to two listeners", port)
@@ -136,7 +136,7 @@ func TestReserveListenerPortsDoesNotWriteThroughInput(t *testing.T) {
 }
 
 func TestReserveListenerPortsPropagatesReservationError(t *testing.T) {
-	want := &PortReservationError{Network: "TCP", Requested: 1}
+	want := &netport.PortReservationError{Host: loopbackHost, Networks: []string{netport.NetworkTCP}, Requested: 1}
 	saved := defaultPortListeners
 	t.Cleanup(func() { defaultPortListeners = saved })
 	defaultPortListeners = []listenerFlag{

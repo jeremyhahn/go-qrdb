@@ -305,6 +305,22 @@ decision honoured on one transport and silently discarded on the other.
 HTTP/3 starts whenever TLS is configured; making it opt-in or independently
 addressable is an open architecture question, not a decided one.
 
+When `qrdbd start` must auto-select a port for Raft, REST/admin, gRPC or native
+QUIC, it uses `internal/netport` to probe the same bind host and every protocol
+the eventual listener family will occupy. REST/admin is therefore checked on TCP
+and on the HTTP/3 UDP sibling together; single-protocol listeners are checked in
+their own namespace at the configured host rather than at loopback.
+
+`internal/netport` is the one port-reservation package in the tree, shared by
+`qrdbd` and the test harness. It has two pickers. `FreePortOn` draws a
+kernel-assigned number and proves it free on the named protocols at the named
+host, holding every probe until all of them succeed; `qrdbd`'s auto-ports use
+it. `Reserve` is for processes that start many listeners in a row — tests and
+`sdk/go/testutil/qrdbdharness` — and draws from a window below the kernel's
+ephemeral range, certifies each port on TCP and UDP together, and keeps a
+cross-process lock on it, so no other process in the network namespace is
+handed the same number.
+
 ### Pre-bound sockets
 
 An embedder that needs a kernel-assigned port — a test process booting many

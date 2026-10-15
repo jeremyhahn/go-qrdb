@@ -27,6 +27,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 )
@@ -84,7 +85,7 @@ func TestNodeIdentityCmd_Errors(t *testing.T) {
 // names an identity for every member.
 func multiNodeIdentityFlags(t *testing.T, memberIdentities []string) *startFlags {
 	t.Helper()
-	port, err := freePortOn(testBindHost, networkUDP)
+	port, err := netport.FreePortOn(testBindHost, netport.NetworkUDP)
 	require.NoError(t, err)
 	addr := "127.0.0.1:" + strconv.Itoa(port)
 	return &startFlags{

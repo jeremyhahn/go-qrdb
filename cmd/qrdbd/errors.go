@@ -17,7 +17,6 @@ package main
 import (
 	"errors"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -519,78 +518,6 @@ func (e *RestoreBackupShardNotInArtifactError) Error() string {
 	return "cli: backup " + strconv.Quote(e.BackupID) +
 		" contains no data for shard " + strconv.FormatUint(e.ShardID, 10)
 }
-
-// NoProbeNetworkError is returned when a port reservation is asked for with
-// no networks to prove the port free on.
-//
-// It is not a degenerate "reserve nothing" request that could be answered with
-// any free number. A caller that names no network has not said what the port
-// is for, and the whole point of the reservation is that the probe matches the
-// listener (go-qrdb#257) — so there is nothing to match against and the only
-// honest answer is a refusal.
-type NoProbeNetworkError struct {
-	Host string
-}
-
-// Error returns a human-readable description.
-func (e *NoProbeNetworkError) Error() string {
-	return "qrdbd: port reservation at " + strconv.Quote(e.Host) +
-		" named no network; a port must be proven free on the protocols its listener will bind"
-}
-
-// UnknownProbeNetworkError is returned when a port reservation names a
-// network the probe table does not know how to hold a port on.
-type UnknownProbeNetworkError struct {
-	Network string
-}
-
-// Error returns a human-readable description.
-func (e *UnknownProbeNetworkError) Error() string {
-	return "qrdbd: unknown port-probe network " + strconv.Quote(e.Network) + " (want \"tcp\" or \"udp\")"
-}
-
-// ProbeAddrError is returned when a bound probe listener reports an address
-// whose port cannot be parsed.
-type ProbeAddrError struct {
-	Addr string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *ProbeAddrError) Error() string {
-	return "qrdbd: cannot read the port from probe listener address " + strconv.Quote(e.Addr) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying parse error.
-func (e *ProbeAddrError) Unwrap() error { return e.Err }
-
-// NoFreePortError is returned when no candidate port was free on every
-// requested network at the requested host within the attempt budget.
-//
-// The host and the network list are both named because they are the two
-// things a reader needs in order to act: a failure at "0.0.0.0" on
-// ["tcp","udp"] means some other holder has each candidate on one stack or
-// one interface, and the remedy is to pin the port explicitly rather than to
-// re-run and hope.
-type NoFreePortError struct {
-	Host     string
-	Networks []string
-	Attempts int
-	Err      error
-}
-
-// Error returns a human-readable description.
-func (e *NoFreePortError) Error() string {
-	msg := "qrdbd: no port free on " + strings.Join(e.Networks, "+") +
-		" at " + strconv.Quote(e.Host) + " after " + strconv.Itoa(e.Attempts) + " attempts"
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
-}
-
-// Unwrap returns the last bind error observed while searching.
-func (e *NoFreePortError) Unwrap() error { return e.Err }
 
 // SystemMigrationSealDisabledError is returned when a system-scope
 // enable-encryption request reaches the boot loop while the node is running

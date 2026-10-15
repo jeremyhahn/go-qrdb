@@ -34,12 +34,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // freePort returns a TCP port with nothing bound to it.
@@ -51,16 +51,16 @@ import (
 // test's advertiser -- which is how this file first failed, fetching an
 // anchor-only bundle from a neighbouring test and reporting a missing CA key.
 //
-// The port comes from the shared harness allocator: a "127.0.0.1:0" probe
-// closed before the advertiser binds hands out an ephemeral-range number any
-// outbound socket -- or another test process -- can take in between.
+// The port comes from netport.Reserve: a "127.0.0.1:0" probe closed before
+// the advertiser binds hands out an ephemeral-range number any outbound
+// socket -- or another test process -- can take in between.
 func freePort(t *testing.T) int {
 	t.Helper()
-	port, err := qrdbdharness.ReserveTCPPort()
+	ports, err := netport.Reserve("127.0.0.1", 1)
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
 	}
-	return port
+	return ports[0]
 }
 
 // testBindHost is the bind host every advertiser in this package's tests

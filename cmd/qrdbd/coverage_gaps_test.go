@@ -38,6 +38,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -692,7 +693,7 @@ func TestInitializeNode_MultiNodeMTLSConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use a free port so the host can bind successfully.
-	port, err := freePortOn(testBindHost, networkUDP)
+	port, err := netport.FreePortOn(testBindHost, netport.NetworkUDP)
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
@@ -725,7 +726,7 @@ func TestInitializeNode_MultiNodeMTLSConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInitializeNode_MultiNodeNilBundle(t *testing.T) {
-	port, err := freePortOn(testBindHost, networkUDP)
+	port, err := netport.FreePortOn(testBindHost, netport.NetworkUDP)
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
