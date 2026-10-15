@@ -29,6 +29,11 @@ import (
 // and carrying its committed raft address, gate.AdvertisedSelf) and starts
 // gate.
 //
+// ctx bounds the start only, so a caller can give each attempt a deadline:
+// a linearizable read the leader drops is never answered, and without one
+// the start would wait for it forever. The advertisement and the gate both
+// run on past ctx until they are closed.
+//
 // The returned Advertiser keeps the advertisement alive; closing it
 // withdraws the advertisement. Close gate separately. opts configure the
 // advertiser; a composer passes cluster.WithAdvertiseSealProbe so nothing is
@@ -50,7 +55,18 @@ func (c *Client) StartFeatureGate(ctx context.Context, gate *featuregate.Gate, a
 	if err != nil {
 		return nil, err
 	}
-	if err := adv.Start(ctx); err != nil {
+	// The advertiser keeps the context it starts on for its whole life, so
+	// it gets one detached from ctx that ctx still cancels until it has
+	// started: ctx bounds the registration and not the keepalive.
+	life, stop := context.WithCancel(context.WithoutCancel(ctx))
+	bound := context.AfterFunc(ctx, stop)
+	err = adv.Start(life)
+	if !bound() && err == nil {
+		_ = adv.Close()
+		err = ctx.Err()
+	}
+	if err != nil {
+		stop()
 		return nil, err
 	}
 	// The gate follows the feature advertisements and, for a node that

@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -60,7 +61,11 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 		defer n.featureWG.Done()
 		for ctx.Err() == nil {
 			if _, ok, err := host.GetLeaderID(shard.ShardKV); err == nil && ok {
-				adv, err := client.StartFeatureGate(ctx, gate, activations, cluster.WithAdvertiseSealProbe(n))
+				// The attempt's deadline bounds the start's reads, which a
+				// leader not yet committed in its term drops unanswered.
+				actx, cancel := context.WithTimeout(ctx, server.StartupReadAttemptTimeout)
+				adv, err := client.StartFeatureGate(actx, gate, activations, cluster.WithAdvertiseSealProbe(n))
+				cancel()
 				if err == nil {
 					n.featureAdv.Store(adv)
 					return

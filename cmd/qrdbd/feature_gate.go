@@ -58,11 +58,12 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 		return nil, err
 	}
 	var adv *cluster.Advertiser
-	// The advertiser it starts keeps the context it is given for its whole
-	// life, so it gets the boot's, not the attempt's.
-	err = server.WhileSystemShardSettling(ctx, "feature gate start", func(context.Context) error {
+	// The attempt's deadline bounds the start's reads, which a leader not yet
+	// committed in its term drops unanswered; the advertisement and the gate
+	// it starts run on until featureGateCloser closes them.
+	err = server.WhileSystemShardSettling(ctx, "feature gate start", func(actx context.Context) error {
 		var serr error
-		adv, serr = client.StartFeatureGate(ctx, gate, svc.KV, cluster.WithAdvertiseSealProbe(nodeSeal))
+		adv, serr = client.StartFeatureGate(actx, gate, svc.KV, cluster.WithAdvertiseSealProbe(nodeSeal))
 		return serr
 	})
 	if err != nil {

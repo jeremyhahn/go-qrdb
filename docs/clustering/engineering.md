@@ -456,7 +456,13 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   opts...)` checks the activations (`*featuregate.UnsupportedFeatureError`),
   advertises through `cluster.Advertiser` over
   `client.NewMembershipStoreAt(featuregate.AdvertisementPrefix)`, and starts
-  the gate. The composer passes `cluster.WithAdvertiseSealProbe` with the node
+  the gate. `ctx` bounds the start only; the advertisement and the gate run
+  until they are closed. Both composers give each start attempt a deadline
+  (`server.StartupReadAttemptTimeout`, through
+  `server.WhileSystemShardSettling` in `qrdbd`) and retry: a leader that has
+  not yet committed in its term drops a follower's ReadIndex without
+  answering it, so the activation read of an attempt with no deadline waits
+  forever, and a restarted `qrdbd` never reaches its listeners. The composer passes `cluster.WithAdvertiseSealProbe` with the node
   barrier, so the advertisement proposes nothing while the barrier is sealed
   ([../barrier-seal/engineering.md](../barrier-seal/engineering.md)). `qrdbd` does this synchronously after provisioning, so a refused
   binary never serves; `sdk/go/node` does it in the background once the system

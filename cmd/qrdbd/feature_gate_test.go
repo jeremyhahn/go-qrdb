@@ -17,11 +17,15 @@ package main
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -56,6 +60,28 @@ func (leaseUnsupportedServicer) TimeToLive(context.Context, int64) (*lease.Lease
 
 func (leaseUnsupportedServicer) Leases(context.Context) ([]*lease.Lease, error) {
 	return nil, &service.CapabilityUnsupportedError{Message: "statemachine: lease not configured"}
+}
+
+// countingLeaseServicer counts the keepalives an advertisement sends.
+type countingLeaseServicer struct {
+	mockLeaseServicer
+	keepAlives atomic.Int64
+}
+
+func (c *countingLeaseServicer) KeepAlive(ctx context.Context, id int64) (*lease.Lease, error) {
+	c.keepAlives.Add(1)
+	return c.mockLeaseServicer.KeepAlive(ctx, id)
+}
+
+// cancelOnGrant ends the start's context while the advertisement registers.
+type cancelOnGrant struct {
+	mockLeaseServicer
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnGrant) Grant(ctx context.Context, ttl int64) (*lease.Lease, error) {
+	c.cancel()
+	return c.mockLeaseServicer.Grant(ctx, ttl)
 }
 
 // soloMembers is a system shard whose only replica is this node.
@@ -151,4 +177,71 @@ func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
 	require.NoError(t, closer.Close())
 	assert.False(t, g.Activated(featuregate.GuardedWrites),
 		"a degraded gate never started, so it tracks no activation locally")
+}
+
+// TestStartFeatureGate_BoundsEveryStartRead is the regression for a restarted
+// node that never served its API: the gate's activation read ran on the boot
+// context, which has no deadline, so a ReadIndex the leader dropped held the
+// boot forever. Every read the start makes must carry its attempt's deadline.
+func TestStartFeatureGate_BoundsEveryStartRead(t *testing.T) {
+	svc := gateServices(map[string][]byte{})
+	kv := svc.KV.(*mockKVServicer)
+	list := kv.listFn
+	var (
+		mu        sync.Mutex
+		returned  bool
+		unbounded []string
+	)
+	kv.listFn = func(ctx context.Context, prefix string) ([]string, error) {
+		mu.Lock()
+		if _, ok := ctx.Deadline(); !ok && !returned {
+			unbounded = append(unbounded, prefix)
+		}
+		mu.Unlock()
+		return list(ctx, prefix)
+	}
+
+	closer, err := startFeatureGate(context.Background(), soloGate(t), svc, nil)
+	mu.Lock()
+	returned = true
+	got := unbounded
+	mu.Unlock()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closer.Close() })
+	assert.Empty(t, got, "a start read ran without a deadline")
+}
+
+// TestStartFeatureGate_AdvertisementOutlivesTheAttempt pins the other half:
+// the attempt's context ends when the start returns, and the advertisement
+// must go on refreshing its lease until Close rather than stop with it.
+func TestStartFeatureGate_AdvertisementOutlivesTheAttempt(t *testing.T) {
+	svc := gateServices(map[string][]byte{})
+	leases := &countingLeaseServicer{}
+	svc.Lease = leases
+
+	closer, err := startFeatureGate(context.Background(), soloGate(t), svc, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closer.Close() })
+	require.Eventually(t, func() bool { return leases.keepAlives.Load() > 0 },
+		3*cluster.DefaultKeepAliveInterval, 50*time.Millisecond,
+		"the advertisement stopped refreshing when its start attempt ended")
+}
+
+// TestClientStartFeatureGate_FailsWhenItsContextEndsMidStart: a start whose
+// context ends while the advertisement registers fails, and withdraws the
+// advertisement rather than leave one running that its caller never holds.
+func TestClientStartFeatureGate_FailsWhenItsContextEndsMidStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc := gateServices(map[string][]byte{})
+	svc.Lease = &cancelOnGrant{cancel: cancel}
+	client, err := newEmbeddedClient(svc.KV, svc.Admin, svc.MVCC, svc.Lease, svc.Watch)
+	require.NoError(t, err)
+	g := soloGate(t)
+	t.Cleanup(func() { _ = g.Close() })
+
+	adv, err := client.StartFeatureGate(ctx, g, svc.KV)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, adv)
+	assert.False(t, g.Activated(featuregate.GuardedWrites), "the gate started although its start failed")
 }

@@ -35,9 +35,14 @@ import (
 type activationKV struct {
 	service.KVServicer
 	keys []string
+	// unbounded counts the reads made without a deadline.
+	unbounded atomic.Int32
 }
 
-func (a *activationKV) ListAll(_ context.Context, prefix string) ([]string, error) {
+func (a *activationKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		a.unbounded.Add(1)
+	}
 	var out []string
 	for _, k := range a.keys {
 		if strings.HasPrefix(k, prefix) {
@@ -94,6 +99,22 @@ func TestNode_StartFeatureGateNeverAdvertisesUnderAnUnknownActivation(t *testing
 	assert.Nil(t, n.featureAdv.Load(), "the node advertised under an activation it cannot honour")
 	var unsupported *featuregate.UnsupportedFeatureError
 	assert.ErrorAs(t, n.featureGate.Refusal(), &unsupported, "the refusal must be kept for the node's health")
+	n.bgCancel()
+	require.NoError(t, n.stopFeatureGate())
+}
+
+// Each start attempt reads under a deadline: a ReadIndex the leader drops is
+// never answered, and an attempt without one would wait for it forever
+// instead of retrying.
+func TestNode_StartFeatureGateBoundsEachAttempt(t *testing.T) {
+	kv := &activationKV{keys: []string{featuregate.ActivationPrefix + "future-opcode"}}
+	n := gatedNode(t, kv)
+	l := &leader{}
+	l.known.Store(true)
+
+	n.startFeatureGate(l, kv)
+	n.featureWG.Wait()
+	assert.Zero(t, kv.unbounded.Load(), "a start attempt read without a deadline")
 	n.bgCancel()
 	require.NoError(t, n.stopFeatureGate())
 }
