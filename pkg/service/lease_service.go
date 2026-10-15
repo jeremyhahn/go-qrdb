@@ -64,13 +64,14 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 		return nil, &ProposeError{Err: resultErr}
 	}
 
-	// The Grant proposal's Result carries only the assigned lease ID
-	// (Value); it has no field for the Lessor's granted/remaining TTL.
-	// Read the lease back from the authoritative Lessor state -- the same
-	// pattern KeepAlive uses -- rather than assuming RemainingTTL equals
-	// the just-requested ttl, so the response always reflects what the
-	// server actually granted.
-	return s.TimeToLive(ctx, int64(result.Value))
+	// The apply is the authority on what was granted: the Lessor stores the
+	// requested ttl verbatim under the ID it assigned (result.Value), with
+	// the whole ttl remaining and no keys yet, or refuses the command -- it
+	// never adjusts the ttl. Answer with that lease rather than reading it
+	// back: the expiry sweep may revoke a short lease between the apply and
+	// any later read, and a read would then report a lease this call
+	// granted as not found (DS-1689).
+	return &Lease{ID: int64(result.Value), TTL: ttl, GrantedTTL: ttl, RemainingTTL: ttl}, nil
 }
 
 // Revoke immediately expires a lease and deletes all attached keys.

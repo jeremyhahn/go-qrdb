@@ -220,6 +220,70 @@ func TestNamespacedLease_GrantRevokesWhenOwnershipIsNotRecorded(t *testing.T) {
 	}
 }
 
+// sweptBeforeOwnerRecord is the expiry sweep winning the race to the log: the
+// lease is revoked after its grant applied and before the ownership write
+// does, so the write finds no lease to attach to.
+type sweptBeforeOwnerRecord struct {
+	*sharedLessor
+}
+
+func (s sweptBeforeOwnerRecord) PutWithLease(ctx context.Context, key string, value []byte, id int64) (*service.KeyValue, error) {
+	if err := s.Revoke(ctx, id); err != nil {
+		return nil, err
+	}
+	return s.sharedLessor.PutWithLease(ctx, key, value, id)
+}
+
+// A lease the expiry sweep revoked before its ownership was recorded was
+// still granted: the grant answers with it, as an un-namespaced grant does,
+// and the namespace then finds it expired, as it would any lease whose TTL
+// ran out (DS-1689). Reporting the grant itself as not found blamed the
+// caller's request for the sweep's timing.
+func TestNamespacedLease_GrantAnswersALeaseTheSweepRevokedFirst(t *testing.T) {
+	lessor := newSharedLessor()
+	w := newNamespacedLeaseService(lessor, sweptBeforeOwnerRecord{lessor}, "acme/app/")
+	ctx := context.Background()
+
+	granted, err := w.Grant(ctx, 1)
+	if err != nil {
+		t.Fatalf("Grant = %v, want the lease its apply granted", err)
+	}
+	if granted.ID != 1 || granted.TTL != 1 || granted.GrantedTTL != 1 {
+		t.Fatalf("Grant = %+v, want lease 1 with ttl 1", granted)
+	}
+	if len(lessor.leases) != 0 || len(lessor.kv) != 0 {
+		t.Fatalf("the swept lease left state behind: leases %v, keys %v", lessor.leases, lessor.kv)
+	}
+	var notFound *service.LeaseNotFoundError
+	if _, err := w.TimeToLive(ctx, granted.ID); !errors.As(err, &notFound) {
+		t.Fatalf("TimeToLive of the swept lease = %v, want *service.LeaseNotFoundError", err)
+	}
+}
+
+// A not-found answer for some other lease is not the sweep claiming this
+// one: the grant still fails and revokes what it granted.
+func TestNamespacedLease_GrantRevokesOnAnotherLeaseNotFound(t *testing.T) {
+	lessor := newSharedLessor()
+	w := newNamespacedLeaseService(lessor, otherLeaseNotFound{lessor}, "acme/app/")
+	var notFound *service.LeaseNotFoundError
+	if _, err := w.Grant(context.Background(), 5); !errors.As(err, &notFound) {
+		t.Fatalf("Grant = %v, want the recording failure", err)
+	}
+	if len(lessor.leases) != 0 {
+		t.Fatalf("an unowned lease survived: %v", lessor.leases)
+	}
+}
+
+// otherLeaseNotFound refuses the ownership write as not found for a lease
+// other than the one it was asked to attach to.
+type otherLeaseNotFound struct {
+	*sharedLessor
+}
+
+func (o otherLeaseNotFound) PutWithLease(_ context.Context, _ string, _ []byte, id int64) (*service.KeyValue, error) {
+	return nil, &service.LeaseNotFoundError{LeaseID: id + 1}
+}
+
 func TestNamespacedLease_NoMVCCRefusesGrant(t *testing.T) {
 	w := newNamespacedLeaseService(newSharedLessor(), nil, "acme/app/")
 	var unsupported *service.CapabilityUnsupportedError

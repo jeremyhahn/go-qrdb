@@ -1865,9 +1865,10 @@ func runStart(f *startFlags) (err error) {
 			// survive a daemon restart -- required for disaster recovery, since
 			// an in-memory-only backup dies with the very process a DR restore
 			// needs to recover from. Opt-in via --backup-dir; the file-backed
-			// storage engine holds no OS-level lock, so restore.go's own
-			// short-lived open/close against the same directory (during a
-			// --restore-backup-id boot) never contends with this one.
+			// storage engine takes its directory lock per mutation and releases
+			// it before returning, so restore.go's own short-lived open/close
+			// against the same directory (during a --restore-backup-id boot)
+			// waits at most one mutation behind this one.
 			var backupSink service.BackupSink
 			if f.backupDir != "" {
 				backupFileStore, berr := file.New(f.backupDir)

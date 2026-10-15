@@ -128,6 +128,13 @@ func (s *namespacedLeaseService) requireOwned(ctx context.Context, leaseID int64
 // Grant creates a new lease with the specified TTL and records this namespace
 // as its owner. A lease whose ownership cannot be recorded is revoked and the
 // failure returned, so no lease exists that no namespace owns.
+//
+// The grant and the ownership record are two proposals, and the expiry sweep
+// may revoke a short lease between them. Lease IDs are never reused, so the
+// record finding this lease not found means exactly that: the lease was
+// granted and has since expired, with nothing attached to it. The grant
+// answers with what its apply granted, as an un-namespaced grant does, and
+// the namespace then finds the lease expired like any other (DS-1689).
 func (s *namespacedLeaseService) Grant(ctx context.Context, ttl int64) (*lease.Lease, error) {
 	if s.mvcc == nil {
 		return nil, &service.CapabilityUnsupportedError{Message: "lease: this database has no MVCC engine to record lease ownership"}
@@ -137,6 +144,10 @@ func (s *namespacedLeaseService) Grant(ctx context.Context, ttl int64) (*lease.L
 		return nil, err
 	}
 	if _, err := s.mvcc.PutWithLease(ctx, string(s.ownerKey(l.ID)), nil, l.ID); err != nil {
+		var notFound *service.LeaseNotFoundError
+		if errors.As(err, &notFound) && notFound.LeaseID == l.ID {
+			return s.stripLease(l), nil
+		}
 		_ = s.inner.Revoke(ctx, l.ID)
 		return nil, err
 	}

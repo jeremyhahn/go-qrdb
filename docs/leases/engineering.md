@@ -195,7 +195,12 @@ are lease-backed.
   not-yet-granted ID passed through could revoke a lease another scope is
   granted in between. The record is
   attached, so it is replicated with the lease and deleted with it. A lease
-  whose record cannot be written is revoked and the grant fails. A write may
+  whose record cannot be written is revoked and the grant fails -- except a
+  lease the expiry sweep revoked between the grant and the record: the grant
+  and the record are two proposals, so a short lease can expire in between.
+  That lease was granted, and IDs are never reused, so the grant answers with
+  it and the scope then finds it expired, as it finds any lease whose TTL ran
+  out. A write may
   attach only a lease its own namespace owns: `PutWithLease` and
   `PutWithLeaseAndMode` (and the etcd `Put` that rides on them) answer any
   other lease ID with `service.LeaseNotFoundError` and write nothing. This
