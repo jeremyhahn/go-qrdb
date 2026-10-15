@@ -144,6 +144,19 @@ barrier is sealed, and does two things:
    name), binds the certificate, and deletes the record. It is idempotent, so a
    failed attempt is finished by the next trigger.
 
+A **system-managed** barrier is initialized and unsealed by the create itself,
+and nothing raises the hook for it. Its admin is completed by the create's
+caller instead, **after** the response: `bootstrap.ProvisionTenant` reports
+`AdminCompletionDue`, and the onboarding service answers with the tenant record
+it committed, then runs `bootstrap.CompletePendingTenantAdminWithin` in the
+background — each attempt bounded, retried with backoff under its own budget,
+stopping on a sealed tenant or a permanent error. The account step writes
+through the tenant's own shard, which can be slower than the create's request
+deadline; keeping it out of the request means a create that committed always
+answers success. A completion that gives up leaves the record for the hook's
+next trigger. The success or failure audit record is written before the
+response, on its own bound rather than the request's.
+
 ### One unit, with compensation
 
 Every input that can be refused — the trust anchors, the CSR, the

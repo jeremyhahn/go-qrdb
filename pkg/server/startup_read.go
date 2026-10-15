@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -33,6 +34,11 @@ import (
 // the rest of the boot: a startup read whose only bound is the budget checked
 // between attempts hangs the boot on its first attempt that does not return.
 const StartupReadAttemptTimeout = 5 * time.Second
+
+// StartupWaitReportInterval paces the progress lines a startup wait logs
+// while it retries, so a boot that has not finished says what it is waiting
+// for rather than going quiet until its deadline.
+const StartupWaitReportInterval = 5 * time.Second
 
 // StartupRead configures RunStartupRead for one boot-time read.
 type StartupRead struct {
@@ -51,7 +57,11 @@ type StartupRead struct {
 	// startup read does: quicraft.ErrReadIndexNotReady and an attempt that
 	// hit its bound. Nil adds none.
 	Retryable func(error) bool
-	// Logger records the boot failure; nil means slog.Default().
+	// ReportInterval paces the progress lines of a read still retrying; zero
+	// means StartupWaitReportInterval.
+	ReportInterval time.Duration
+	// Logger records the progress lines and the boot failure; nil means
+	// slog.Default().
 	Logger *slog.Logger
 }
 
@@ -76,9 +86,19 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 	if timeout <= 0 {
 		timeout = StartupReadAttemptTimeout
 	}
+	logger := r.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	report := r.ReportInterval
+	if report <= 0 {
+		report = StartupWaitReportInterval
+	}
 	start := time.Now()
 	giveUpAt := start.Add(r.Budget)
 	failure := &StartupReadError{Op: r.Op, Budget: r.Budget, AttemptTimeout: timeout}
+	var progress atomic.Pointer[StartupReadError]
+	defer reportStartupRead(logger, r.Op, r.Budget, report, start, &progress)()
 	delay := r.Delay
 	for {
 		actx, cancel := StartupReadAttemptContext(ctx, giveUpAt, timeout)
@@ -103,11 +123,8 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 		if !timedOut && !startupReadTransient(r, err) {
 			return v, err
 		}
-		if !time.Now().Before(giveUpAt) {
-			logger := r.Logger
-			if logger == nil {
-				logger = slog.Default()
-			}
+		now := time.Now()
+		if !now.Before(giveUpAt) {
 			logger.Error("startup read did not succeed before its deadline",
 				slog.String("op", r.Op),
 				slog.Int("attempts", failure.Attempts),
@@ -118,6 +135,8 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 				slog.Any("error", err))
 			return zero, failure
 		}
+		snapshot := *failure
+		progress.Store(&snapshot)
 		select {
 		case <-ctx.Done():
 			failure.Cause = ctx.Err()
@@ -128,6 +147,36 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 		if delay < r.MaxDelay {
 			delay = min(2*delay, r.MaxDelay)
 		}
+	}
+}
+
+// reportStartupRead logs a startup read's progress every interval until the
+// returned stop is called, whether an attempt is in flight or the read is
+// between attempts: a read that ignores its attempt's context outlasts the
+// bound, and the boot must still say what it waits for. last holds the most
+// recent failed attempt's snapshot, nil before the first one fails.
+func reportStartupRead(logger *slog.Logger, op string, budget, interval time.Duration, start time.Time, last *atomic.Pointer[StartupReadError]) (stop func()) {
+	done, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+			attrs := []any{slog.String("op", op), slog.Duration("elapsed", time.Since(start)), slog.Duration("budget", budget)}
+			if s := last.Load(); s != nil {
+				attrs = append(attrs, slog.Int("attempts", s.Attempts), slog.Int("attempts_timed_out", s.TimedOut), slog.Any("error", s.Err))
+			}
+			logger.Warn("startup read still waiting", attrs...)
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
 	}
 }
 

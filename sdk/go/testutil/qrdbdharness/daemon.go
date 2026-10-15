@@ -220,6 +220,11 @@ type Daemon struct {
 	cmd  *exec.Cmd
 	tail *tailWriter
 
+	// args and out let dumpStacks find the daemon serving a port and wait
+	// for its goroutine dump to be written.
+	args []string
+	out  *outputWriter
+
 	waitOnce sync.Once
 	waitErr  error
 	done     chan struct{}
@@ -246,9 +251,9 @@ func Start(binary string, args []string, opts ...DaemonOption) (*Daemon, error) 
 	}
 
 	tail := newTailWriter(tailSize)
-	var out io.Writer = tail
+	var sink io.Writer = tail
 	if cfg.output != nil {
-		out = io.MultiWriter(tail, cfg.output)
+		sink = io.MultiWriter(tail, cfg.output)
 	}
 	// #nosec G204,G702 -- qrdbdharness is a test harness: `binary` is the path
 	// this package's own Build produced from a package path the test named, and
@@ -257,13 +262,16 @@ func Start(binary string, args []string, opts ...DaemonOption) (*Daemon, error) 
 	// path into it -- so both are named; suppressing one leaves the other red.
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = cfg.dir
+	out := newOutputWriter(sink)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	cmd.WaitDelay = cfg.waitDelay
 	if err := cmd.Start(); err != nil {
 		return nil, &DaemonStartError{Binary: binary, Err: err}
 	}
-	return &Daemon{cmd: cmd, tail: tail, done: make(chan struct{})}, nil
+	d := &Daemon{cmd: cmd, tail: tail, args: args, out: out, done: make(chan struct{})}
+	spawned.Store(d, struct{}{})
+	return d, nil
 }
 
 // Cmd exposes the underlying command, for callers that need the process ID or
@@ -306,6 +314,7 @@ func (d *Daemon) reap() {
 	d.waitOnce.Do(func() {
 		go func() {
 			d.waitErr = d.cmd.Wait()
+			spawned.Delete(d)
 			close(d.done)
 		}()
 	})

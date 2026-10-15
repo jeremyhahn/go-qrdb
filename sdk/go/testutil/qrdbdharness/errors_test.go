@@ -86,6 +86,11 @@ func TestErrorMessages(t *testing.T) {
 			contains: []string{"WaitForLeader", "https://host/status", "1m30s", cause.Error()},
 		},
 		{
+			name:     "TimeoutError with stack dump",
+			err:      &TimeoutError{Op: "WaitForHTTPOK", Target: "https://host/health", Timeout: time.Second, StackDumped: []int{4242}},
+			contains: []string{"WaitForHTTPOK", "SIGQUIT", "4242", "goroutine dump"},
+		},
+		{
 			name:     "TimeoutError without cause",
 			err:      &TimeoutError{Op: "WaitForFile", Target: "/data/host.id", Timeout: time.Second},
 			contains: []string{"WaitForFile", "/data/host.id", "1s"},

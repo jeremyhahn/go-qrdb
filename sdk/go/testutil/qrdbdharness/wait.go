@@ -107,6 +107,12 @@ func WaitForNodeHost(dataDir string, timeout time.Duration) error {
 }
 
 // WaitForHTTPOK polls url until it answers 200, optionally presenting cert.
+//
+// On a timeout it sends SIGQUIT to any daemon this package started whose
+// arguments name url's port, and waits for that daemon's goroutine dump to
+// reach its output before returning, so a node that stalled during startup
+// names the call it is blocked in. The signalled daemon exits; the returned
+// *TimeoutError lists its process ID in StackDumped.
 func WaitForHTTPOK(url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
 	client := HTTPSClient(pool, cert, probeTimeout)
 	deadline := time.Now().Add(timeout)
@@ -117,7 +123,7 @@ func WaitForHTTPOK(url string, pool *x509.CertPool, cert *tls.Certificate, timeo
 			return nil
 		}
 		if !sleepUntil(deadline, pollInterval) {
-			return &TimeoutError{Op: "WaitForHTTPOK", Target: url, Timeout: timeout, LastErr: lastErr}
+			return &TimeoutError{Op: "WaitForHTTPOK", Target: url, Timeout: timeout, LastErr: lastErr, StackDumped: dumpStacks(url)}
 		}
 	}
 }

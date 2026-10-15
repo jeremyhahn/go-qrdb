@@ -228,7 +228,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		data, st := iraftAPIGet(t, tenantClient,
+		data, st := iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/wal1", leaderPort))
 		if st == http.StatusOK && json.Unmarshal(data, &wal1Info) == nil && wal1Info.ShardID != 0 {
 			break

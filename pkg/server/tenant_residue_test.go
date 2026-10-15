@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,6 +192,59 @@ func TestReconcileDeletedTenantsAtBoot_FailureDoesNotFailTheBoot(t *testing.T) {
 	}
 	if failing.calls != 1 {
 		t.Fatalf("reconcile ran %d times at boot; want 1", failing.calls)
+	}
+}
+
+// stallingReconcileSvc is a reconcile whose first pass hangs until its
+// context ends -- a raft read that never answers -- and whose later passes
+// succeed. It records when the first pass returned and why.
+type stallingReconcileSvc struct {
+	tenant.TenantServicer
+	calls     atomic.Int32
+	firstDone chan error
+}
+
+func (s *stallingReconcileSvc) ReconcileDeletedTenants(ctx context.Context) (*tenant.ReconcileReport, error) {
+	if s.calls.Add(1) > 1 {
+		return &tenant.ReconcileReport{}, nil
+	}
+	<-ctx.Done()
+	s.firstDone <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+// A boot reconcile attempt that stalls returns at its startup-read attempt
+// bound and is retried, instead of holding the boot past the reconcile's
+// budget on a context that never ends (the boot's own).
+func TestReconcileDeletedTenantsAtBoot_AStalledAttemptReturnsAtItsBound(t *testing.T) {
+	boot, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc := &stallingReconcileSvc{firstDone: make(chan error, 1)}
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		reconcileDeletedTenantsAtBoot(boot, svc, slog.New(slog.DiscardHandler))
+	}()
+
+	bound := time.NewTimer(StartupReadAttemptTimeout + 5*time.Second)
+	defer bound.Stop()
+	select {
+	case err := <-svc.firstDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stalled attempt ended with %v; want its own deadline", err)
+		}
+		if elapsed := time.Since(start); elapsed > StartupReadAttemptTimeout+time.Second {
+			t.Fatalf("stalled attempt returned after %v; want at its %v bound", elapsed, StartupReadAttemptTimeout)
+		}
+	case <-bound.C:
+		cancel()
+		<-done
+		t.Fatalf("stalled attempt still running after %v; want it to return at its %v bound", time.Since(start), StartupReadAttemptTimeout)
+	}
+	<-done
+	if got := svc.calls.Load(); got != 2 {
+		t.Fatalf("reconcile ran %d times; want the stalled attempt retried once", got)
 	}
 }
 

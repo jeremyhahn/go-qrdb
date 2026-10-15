@@ -445,12 +445,6 @@ const nodeStopTimeout = 30 * time.Second
 // awaitNodeExit, which is bounded and reaps through the same Daemon.
 func startNode(t *testing.T, binary string, args []string, prefix string, tee ...io.Writer) *exec.Cmd {
 	t.Helper()
-	// A listener the test left at its fixed default port would collide with
-	// any other daemon on the host doing the same, so it gets a reserved one.
-	args, err := qrdbdharness.ReserveListenerPorts(args)
-	if err != nil {
-		t.Fatalf("startNode: %v", err)
-	}
 	out := io.MultiWriter(append([]io.Writer{&logWriter{t: t, prefix: prefix}}, tee...)...)
 	cmd := spawnNode(t, binary, args, out)
 	t.Cleanup(func() {
@@ -2745,8 +2739,9 @@ func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantI
 // raftTenantAdminClient builds an mTLS client for the admin createRaftTenant
 // onboarded, by pairing the private key it returned with the signed
 // certificate the tenant-create response carries in its "admin.cert_pem"
-// field (populated once BUG 3's immediate pending-admin completion runs for
-// an auto-unseal tenant -- createRaftTenant always requests one).
+// field. The create issues that certificate; the auto-unseal tenant's admin
+// account behind it is completed just after the create answers, which
+// selfAssignTenantSO waits for.
 func raftTenantAdminClient(t *testing.T, ca *testCA, adminKeyPEM, tenantCreateBody []byte) *http.Client {
 	t.Helper()
 	var resp struct {
@@ -2772,6 +2767,24 @@ func iraftAPIGet(t *testing.T, client *http.Client, rawURL string) ([]byte, int)
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		t.Fatalf("iraftAPIGet %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return body, resp.StatusCode
+}
+
+// iraftAPIGetTolerant is iraftAPIGet for a poll loop. A request that gets no
+// answer before the client's timeout -- the shard electing a leader, a
+// ReadIndex that has not come back -- is logged and returned as status 0 for
+// the loop to try again under its own deadline; iraftAPIGet would end the test
+// on that first attempt, leaving the loop's deadline nothing to wait out.
+func iraftAPIGetTolerant(t *testing.T, client *http.Client, rawURL string) ([]byte, int) {
+	t.Helper()
+
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Logf("iraftAPIGetTolerant %s: %v (polling again)", rawURL, err)
+		return nil, 0
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -2922,7 +2935,7 @@ func waitForShardCount(t *testing.T, client *http.Client, port int, wantCount in
 	var lastCount int
 	var lastBody string
 	for time.Now().Before(deadline) {
-		body, status := iraftAPIGet(t, client, rawURL)
+		body, status := iraftAPIGetTolerant(t, client, rawURL)
 		if status == http.StatusOK {
 			var topo struct {
 				ShardCount int `json:"shard_count"`

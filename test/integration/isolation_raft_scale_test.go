@@ -227,7 +227,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	var dbInfoStatus int
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		dbInfoData, dbInfoStatus = iraftAPIGet(t, tenantClient,
+		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, scaleFoundationDBName))
 		if dbInfoStatus == http.StatusOK && len(dbInfoData) > 0 {
 			break
@@ -360,7 +360,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		dbInfoData, dbInfoStatus = iraftAPIGet(t, tenantClient,
+		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, scaleFoundationDBName))
 		if dbInfoStatus == http.StatusOK {
 			if err := json.Unmarshal(dbInfoData, &dbInfo); err == nil && dbInfo.Replicas == 3 {
@@ -459,7 +459,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		dbInfoData, dbInfoStatus = iraftAPIGet(t, tenantClient,
+		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, scaleFoundationDBName))
 		if dbInfoStatus == http.StatusOK {
 			if err := json.Unmarshal(dbInfoData, &dbInfo); err == nil && dbInfo.Replicas == 1 {
@@ -567,7 +567,7 @@ func waitForAllShardOwners(t *testing.T, client *http.Client, ports []int, wantC
 		var owners []int
 		for i, port := range ports {
 			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-			body, status := iraftAPIGet(t, client, rawURL)
+			body, status := iraftAPIGetTolerant(t, client, rawURL)
 			if status != http.StatusOK {
 				continue
 			}
@@ -603,7 +603,7 @@ func waitForShardCountBelow(t *testing.T, client *http.Client, port int, thresho
 	deadline := time.Now().Add(timeout)
 	var lastCount int
 	for time.Now().Before(deadline) {
-		body, status := iraftAPIGet(t, client, rawURL)
+		body, status := iraftAPIGetTolerant(t, client, rawURL)
 		if status == http.StatusOK {
 			var topo struct {
 				ShardCount int `json:"shard_count"`
@@ -635,7 +635,7 @@ func waitForShardOwnerPort(t *testing.T, client *http.Client, ports []int, wantC
 	for time.Now().Before(deadline) {
 		for i, port := range ports {
 			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-			body, status := iraftAPIGet(t, client, rawURL)
+			body, status := iraftAPIGetTolerant(t, client, rawURL)
 			if status != http.StatusOK {
 				continue
 			}

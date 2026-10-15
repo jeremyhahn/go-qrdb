@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -622,6 +623,48 @@ func TestAwaitShardLeader_TimeoutNamesShardBudgetAndElapsed(t *testing.T) {
 	}
 	if msg := err.Error(); !strings.Contains(msg, "shard 9") || !strings.Contains(msg, "budget "+budget.String()) {
 		t.Fatalf("message %q does not name the shard and the budget", msg)
+	}
+}
+
+// useDefaultLogger points slog's default logger at a buffer for the test and
+// restores it after. The poll loop logs through the default logger, so a test
+// using this must not run in parallel.
+func useDefaultLogger(t *testing.T) *syncBuffer {
+	t.Helper()
+	logger, logs := captureLogger()
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return logs
+}
+
+// A leader wait that has not finished says what it is waiting for every
+// StartupWaitReportInterval, rather than going quiet until its deadline.
+func TestAwaitShardLeader_ReportsProgressWhileWaiting(t *testing.T) {
+	logs := useDefaultLogger(t)
+	clock := newVirtualClock()
+	// Twelve one-second polls of virtual time: two report intervals pass.
+	err := awaitShardLeader(context.Background(), &fakeLeaderSource{}, 9, clock.Now(), 12*time.Second, time.Second, clock)
+	var we *ShardLeaderWaitError
+	if !errors.As(err, &we) {
+		t.Fatalf("err = %v, want *ShardLeaderWaitError", err)
+	}
+	got := logs.String()
+	if n := strings.Count(got, `level=WARN msg="startup still waiting" for="shard leader" shard_id=9`); n != 2 {
+		t.Fatalf("%d progress lines over a 12s wait, want 2 (at 5s and 10s); log = %q", n, got)
+	}
+}
+
+// A wait that finishes inside the report interval logs nothing.
+func TestAwaitShardLeader_QuietWithinReportInterval(t *testing.T) {
+	logs := useDefaultLogger(t)
+	clock := newVirtualClock()
+	f := &fakeLeaderSource{leaderA: 3}
+	if err := awaitShardLeader(context.Background(), f, 7, clock.Now(), pollBudget(100, virtualInterval), virtualInterval, clock); err != nil {
+		t.Fatalf("awaitShardLeader: %v", err)
+	}
+	if got := logs.String(); got != "" {
+		t.Fatalf("a wait that found its leader at once logged %q", got)
 	}
 }
 

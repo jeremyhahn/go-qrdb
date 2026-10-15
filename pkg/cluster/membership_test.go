@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -654,6 +655,71 @@ func TestMembershipManager_StartRollbackAllowsRetry(t *testing.T) {
 		t.Fatalf("retry Start after rollback: %v", err)
 	}
 	_ = m.Close()
+}
+
+// droppingStore drops registrations while drop is set: PutMember answers only
+// when its context ends, as a write to a settling leader does.
+type droppingStore struct {
+	*fakeStore
+	drop atomic.Bool
+}
+
+func (d *droppingStore) PutMember(ctx context.Context, nodeID uint64, data []byte, ttl time.Duration) error {
+	if d.drop.Load() {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return d.fakeStore.PutMember(ctx, nodeID, data, ttl)
+}
+
+func TestMembershipManager_StartRegistrationEndsWithCtx(t *testing.T) {
+	store := &droppingStore{fakeStore: newFakeStore()}
+	store.drop.Store(true)
+	m, err := NewMembershipManager(store, selfMember(), 100, MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour})
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := m.Start(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start on a dropped registration = %v, want context.DeadlineExceeded", err)
+	}
+
+	// The failed attempt left the manager retryable.
+	store.drop.Store(false)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("retry Start: %v", err)
+	}
+}
+
+func TestMembershipManager_StartOutlivesStartupCtx(t *testing.T) {
+	store := newFakeStore()
+	m, err := NewMembershipManager(store, selfMember(), 100, MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	if err := m.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("Start: %v", err)
+	}
+	cancel()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for store.putCallCount() < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("refresh stopped with the startup ctx: %d puts", store.putCallCount())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if store.deleteCount() == 0 {
+		t.Fatal("Close did not deregister self")
+	}
 }
 
 func TestMembershipManager_CloseDeregisters(t *testing.T) {

@@ -280,33 +280,52 @@ func (a *Advertiser) Self() Member {
 	return a.self
 }
 
-// Start registers the local node and begins refreshing its lease. The refresh
-// goroutine runs until ctx is cancelled or Close is called. Start is not
-// idempotent: a second call on a started (or closed) Advertiser is an error.
+// Start registers the local node and begins refreshing its lease: Register
+// and then KeepAlive, both on ctx. The refresh goroutine runs until ctx is
+// cancelled or Close is called. Start is not idempotent: a second call on a
+// started (or closed) Advertiser is an error.
 func (a *Advertiser) Start(ctx context.Context) error {
 	a.mu.Lock()
-	if a.closed {
-		a.mu.Unlock()
-		return &MembershipError{Reason: "advertiser is closed"}
-	}
-	if a.started {
-		a.mu.Unlock()
-		return &MembershipError{Reason: "advertiser already started"}
-	}
+	err := a.startableLocked()
 	a.mu.Unlock()
-
+	if err != nil {
+		return err
+	}
 	if err := a.Register(ctx); err != nil {
 		return err
 	}
+	return a.KeepAlive(ctx)
+}
 
-	runCtx, cancel := context.WithCancel(ctx)
+// KeepAlive begins refreshing the registration Register wrote. The refresh
+// goroutine runs until ctx is cancelled or Close is called, and ctx is used
+// for nothing else; each refresh is bounded by the keep-alive interval. A
+// caller whose registration was bounded by a startup deadline passes
+// context.WithoutCancel of that context here, so the advertisement outlives
+// the startup. A second call on a started (or closed) Advertiser is an error.
+func (a *Advertiser) KeepAlive(ctx context.Context) error {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.startableLocked(); err != nil {
+		return err
+	}
+	runCtx, cancel := context.WithCancel(ctx)
 	a.started = true
 	a.cancel = cancel
-	a.mu.Unlock()
-
 	a.wg.Add(1)
-	go a.keepAlive(runCtx)
+	go a.refresh(runCtx)
+	return nil
+}
+
+// startableLocked reports why the refresh loop cannot start: the Advertiser
+// is closed or already started. The caller holds a.mu.
+func (a *Advertiser) startableLocked() error {
+	if a.closed {
+		return &MembershipError{Reason: "advertiser is closed"}
+	}
+	if a.started {
+		return &MembershipError{Reason: "advertiser already started"}
+	}
 	return nil
 }
 
@@ -348,9 +367,9 @@ func (a *Advertiser) Deregister() error {
 	return a.store.DeleteMember(ctx, a.self.NodeID)
 }
 
-// keepAlive periodically refreshes the registration so its lease does not
-// expire while the node is healthy.
-func (a *Advertiser) keepAlive(runCtx context.Context) {
+// refresh periodically renews the registration so its lease does not expire
+// while the node is healthy.
+func (a *Advertiser) refresh(runCtx context.Context) {
 	defer a.wg.Done()
 
 	data, err := json.Marshal(a.self)

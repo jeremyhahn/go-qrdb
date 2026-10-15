@@ -84,10 +84,15 @@ func WireTenantRuntimeCloser(svc tenant.TenantServicer, hosts *TenantHostRegistr
 // logged with the step that failed, so the operator knows to run it; a pass
 // that failed only for some ids still logs what it reclaimed for the rest.
 func reconcileDeletedTenantsAtBoot(ctx context.Context, svc tenant.TenantServicer, logger *slog.Logger) {
-	// The reconcile reclaims what it finds, so it runs on the boot's context,
-	// not the attempt's: a cut-off attempt would race its own retry.
-	report, err := whenReadIndexReady(ctx, "deleted-tenant reconcile", func(context.Context) (*tenant.ReconcileReport, error) {
-		return svc.ReconcileDeletedTenants(ctx)
+	// Each attempt runs on its own bounded context, as every startup read
+	// does: on the boot's context, which never ends, one raft read that
+	// never answers held the boot past the reconcile's budget. Cutting an
+	// attempt off is safe. The retry starts only after the attempt has
+	// returned, every read the pass makes fails closed, and the records that
+	// name a tenant's directories are dropped last, so the retry finds
+	// whatever the cut-off attempt left.
+	report, err := whenReadIndexReady(ctx, "deleted-tenant reconcile", func(actx context.Context) (*tenant.ReconcileReport, error) {
+		return svc.ReconcileDeletedTenants(actx)
 	})
 	if err != nil {
 		logger.Warn("start: deleted-tenant reconcile failed; run the reconcile-deleted-tenants verb to reclaim the residue",

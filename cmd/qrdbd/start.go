@@ -3530,7 +3530,10 @@ func startDynamicMembership(
 	if err != nil {
 		return nil, err
 	}
-	if err := mgr.Start(ctx); err != nil {
+	// Each attempt is bounded: a settling leader drops a registration without
+	// answering it, and the next attempt re-registers the same record. The
+	// manager's loops outlive the attempt; Close ends them.
+	if err := server.WhileSystemShardSettling(ctx, "dynamic membership start", mgr.Start); err != nil {
 		return nil, err
 	}
 	return mgr, nil
@@ -3600,18 +3603,32 @@ func startNodeAdvertiser(
 	p := &memberRecordPublisher{cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
-		for pctx.Err() == nil {
+		start, lastReport := time.Now(), time.Now()
+		for attempts := 1; pctx.Err() == nil; attempts++ {
 			adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{}, cluster.WithAdvertiseSealProbe(nodeSeal))
 			if aerr != nil {
 				slog.Error("member record: advertiser not built", slog.Any("error", aerr))
 				return
 			}
-			if serr := adv.Start(pctx); serr == nil {
+			// Each registration is bounded: a settling leader drops it
+			// without answering. The refresh loop outlives the attempt.
+			actx, acancel := context.WithTimeout(pctx, server.StartupReadAttemptTimeout)
+			serr := adv.Register(actx)
+			acancel()
+			if serr == nil {
+				serr = adv.KeepAlive(pctx)
+			}
+			if serr == nil {
 				p.adv.Store(adv)
 				slog.Info("member record published", "node_id", f.replicaID)
 				return
 			}
 			_ = adv.Close()
+			if now := time.Now(); now.Sub(lastReport) >= server.StartupWaitReportInterval {
+				lastReport = now
+				slog.Warn("member record still waiting to publish", "node_id", f.replicaID,
+					"attempts", attempts, "elapsed", now.Sub(start), slog.Any("error", serr))
+			}
 			select {
 			case <-pctx.Done():
 			case <-time.After(memberRecordRetryInterval):

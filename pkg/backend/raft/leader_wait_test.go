@@ -222,6 +222,85 @@ func TestHostAdapter_SyncRead_OtherErrorIsNotHeld(t *testing.T) {
 	assert.Equal(t, int64(1), calls.Load())
 }
 
+// strandedReadRefusal is go-quicraft's answer to a read a leadership change
+// stranded (failLeaderChangeRequests): the new leader is named, its address
+// is not.
+func strandedReadRefusal() error {
+	return &quicraft.NotLeaderError{ShardID: leaderWaitShard, LeaderID: 2}
+}
+
+// strandedReadAdapter is an adapter whose reads are stranded by a leadership
+// change refusals times and then served, with replica 2 known as leader.
+func strandedReadAdapter(refusals int64, calls *atomic.Int64) (*HostAdapter, *electionResolver) {
+	r := &electionResolver{}
+	return newTestAdapter(&mockQuicraftHost{
+		getLeaderIDFn: r.GetLeaderID,
+		syncReadFn: func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
+			return refuseFirst[interface{}](refusals, calls, strandedReadRefusal, q)()
+		},
+		followerReadFn: func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
+			return refuseFirst[interface{}](refusals, calls, strandedReadRefusal, q)()
+		},
+	}), r
+}
+
+func TestHostAdapter_SyncRead_ReissuedWhenALeaderChangeStrandsIt(t *testing.T) {
+	var calls atomic.Int64
+	a, _ := strandedReadAdapter(1, &calls)
+
+	got, err := a.SyncRead(context.Background(), leaderWaitShard, "q")
+	require.NoError(t, err, "a read the leader change stranded is reissued, not handed to a caller with nowhere to forward it")
+	assert.Equal(t, "q", got)
+	assert.Equal(t, int64(2), calls.Load())
+}
+
+func TestHostAdapter_FollowerRead_ReissuedWhenALeaderChangeStrandsIt(t *testing.T) {
+	var calls atomic.Int64
+	a, _ := strandedReadAdapter(1, &calls)
+
+	got, err := a.FollowerRead(context.Background(), leaderWaitShard, "q")
+	require.NoError(t, err)
+	assert.Equal(t, "q", got)
+	assert.Equal(t, int64(2), calls.Load())
+}
+
+func TestHostAdapter_SyncRead_StrandedReissueIsBounded(t *testing.T) {
+	var calls atomic.Int64
+	a, _ := strandedReadAdapter(1<<40, &calls)
+	a.leaderWait = 60 * time.Millisecond
+
+	start := time.Now()
+	_, err := a.SyncRead(context.Background(), leaderWaitShard, "q")
+	elapsed := time.Since(start)
+
+	var lwe *LeaderWaitError
+	require.ErrorAs(t, err, &lwe)
+	var nle *quicraft.NotLeaderError
+	require.ErrorAs(t, err, &nle, "the not-leader refusal stays classifiable")
+	assert.Equal(t, uint64(2), nle.LeaderID)
+	assert.GreaterOrEqual(t, elapsed, a.leaderWait)
+	assert.Less(t, elapsed, 5*time.Second)
+	assert.Greater(t, calls.Load(), int64(1))
+}
+
+func TestHostAdapter_SyncPropose_StrandedProposalIsNotReissued(t *testing.T) {
+	var calls atomic.Int64
+	r := &electionResolver{}
+	a := newTestAdapter(&mockQuicraftHost{
+		getLeaderIDFn: r.GetLeaderID,
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			calls.Add(1)
+			return sm.Result{}, strandedReadRefusal()
+		},
+	})
+
+	_, err := a.SyncPropose(context.Background(), leaderWaitShard, []byte("cmd"))
+	var nle *quicraft.NotLeaderError
+	require.ErrorAs(t, err, &nle)
+	assert.Equal(t, uint64(2), nle.LeaderID)
+	assert.Equal(t, int64(1), calls.Load(), "a stranded proposal may still commit, so it is never proposed again")
+}
+
 func TestHostAdapter_SyncPropose_RefusedAgainAfterLeaderKnown(t *testing.T) {
 	// The leader report and go-quicraft's proposal path can disagree for a
 	// moment; every re-proposal still waits a poll interval first.
@@ -282,4 +361,14 @@ func TestLeaderWaitError(t *testing.T) {
 	assert.True(t, strings.HasSuffix(msg, refusal.Error()), msg)
 	assert.Same(t, refusal, errors.Unwrap(err))
 	assert.ErrorIs(t, err, refusal)
+}
+
+func TestLeaderWaitError_LeaderNamed(t *testing.T) {
+	refusal := strandedReadRefusal()
+	err := &LeaderWaitError{ShardID: leaderWaitShard, Waited: 2 * time.Second, Err: refusal}
+
+	msg := err.Error()
+	assert.True(t, strings.HasPrefix(msg, "raft: shard 7: still refused as not leader after waiting 2s: "), msg)
+	assert.True(t, strings.HasSuffix(msg, refusal.Error()), msg)
+	assert.Same(t, refusal, errors.Unwrap(err))
 }

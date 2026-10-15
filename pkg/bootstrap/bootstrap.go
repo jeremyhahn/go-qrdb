@@ -461,6 +461,11 @@ type TenantProvisionResult struct {
 	// TenantID is the provisioned tenant id.
 	TenantID string
 
+	// Tenant is the tenant record this call committed, as CreateTenant
+	// returned it: a caller answers with it rather than reading the tenant
+	// back. Nil on a re-run that found the tenant already present.
+	Tenant *tenant.TenantInfo
+
 	// AdminUserID is the created tenant-admin user id.
 	AdminUserID uint64
 
@@ -488,6 +493,14 @@ type TenantProvisionResult struct {
 	// tenant barrier, and the account is created when it is
 	// (CompletePendingTenantAdmin). AdminUserID is then zero.
 	AdminAwaitsBarrierInit bool
+
+	// AdminCompletionDue reports that the admin's account is pending behind
+	// a barrier that is already serving -- a system-managed (auto-unseal)
+	// barrier this call created -- so no barrier initialization will
+	// complete it: the caller does, after answering, with
+	// CompletePendingTenantAdminWithin. AdminAwaitsBarrierInit is then
+	// false and AdminUserID zero.
+	AdminCompletionDue bool
 
 	// AdminRoleID is the tenant-scoped Admin role identifier the tenant-admin
 	// user is bound to. In deferred mode it is, with AdminUserID, what the
@@ -686,31 +699,19 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		if err != nil {
 			return result, err
 		}
-		// A system-managed (auto-unseal) barrier is already initialized and
-		// serving by the moment Step 1's CreateTenant above returned -- unlike
-		// a self-managed barrier, whose own admin later calls
-		// barrier-init/barrier-unseal to raise tenant.BarrierReadyHook, NOTHING
-		// else will ever fire that hook for an auto-unseal tenant, so the
-		// pending admin recorded above would never complete. Finish it now,
-		// gated on createdInfo so a re-run against an already-existing tenant
-		// (createdInfo nil) and a self-managed barrier (BarrierAutoUnseal
-		// false) are both left exactly as before: deferred to the admin's own
-		// barrier-init/unseal/status call. completeErr ==
-		// tenant.ErrTenantSealed is not expected here (the barrier this
-		// gate admits is never sealed) but is tolerated as the same
-		// non-fatal deferred case the hook itself allows.
+		result.Tenant = createdInfo
+		// A system-managed (auto-unseal) barrier is initialized and serving
+		// by the moment Step 1's CreateTenant returned, so its admin awaits
+		// no barrier initialization -- and nothing raises
+		// tenant.BarrierReadyHook for it the way a self-managed barrier's
+		// own admin does. The caller completes the account after it has
+		// answered (CompletePendingTenantAdminWithin): the completion is a
+		// chain of raft writes that may outlast the caller's request, and
+		// the tenant is committed whether it lands or not. A re-run against
+		// an existing tenant (createdInfo nil) is left to the hook.
 		if createdInfo != nil && createdInfo.BarrierAutoUnseal {
-			switch done, completeErr := CompletePendingTenantAdmin(ctx, cfg.TenantID, deps); {
-			case completeErr == nil && done:
-				result.AdminAwaitsBarrierInit = false
-				deps.Logger.Info("bootstrap: tenant-admin account completed immediately (barrier already ready)",
-					slog.String("tenant", cfg.TenantID), slog.String("admin", adminUsername))
-			case completeErr == nil:
-			case errors.Is(completeErr, tenant.ErrTenantSealed):
-			default:
-				deps.Logger.Error("tenant admin completion failed; retried on the next unseal or status read",
-					slog.String("tenant", cfg.TenantID), slog.Any("error", completeErr))
-			}
+			result.AdminAwaitsBarrierInit = false
+			result.AdminCompletionDue = true
 		}
 		return result, nil
 	}
@@ -791,6 +792,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 
 	result := &TenantProvisionResult{
 		TenantID:      cfg.TenantID,
+		Tenant:        createdInfo,
 		AdminUsername: adminUsername,
 		AdminRoleID:   adminRoleID,
 		AdminPending:  mode == AdminEnrollDeferred,

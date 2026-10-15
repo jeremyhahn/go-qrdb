@@ -170,6 +170,9 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 		{"inside a tenant store read", &tenant.StoreError{Op: "get", Err: &service.ReadError{Err: quicraft.ErrTimeout}}, Unavailable},
 		{"a caller's own deadline is still its own", &service.ProposeError{Err: context.DeadlineExceeded}, DeadlineExceeded},
 		{"another Raft failure is still a fault", &service.ProposeError{Err: quicraft.ErrRejected}, Internal},
+		{"a propose that may still commit", &service.ProposeError{Err: &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}}, Unavailable},
+		{"a user write whose raft wait ran out", &user.StoreError{Op: "create", Err: &service.ProposeError{Err: quicraft.ErrTimeout}}, Unavailable},
+		{"a failed rollback over a raft timeout stays itself", &user.IndexCompensationError{Op: "create", Cause: quicraft.ErrTimeout}, DataLoss},
 	} {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)

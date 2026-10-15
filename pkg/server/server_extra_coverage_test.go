@@ -27,6 +27,7 @@ import (
 
 	"log/slog"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -1098,8 +1099,9 @@ func TestRESTServiceRegistry_UnknownTenant_ReturnsTenantNotFoundError(t *testing
 }
 
 // TestRESTServiceRegistry_GenericTenantError_NonSystemTenant verifies that a
-// non-ErrTenantNotFound error from GetTenant still returns a TenantNotFoundError
-// (the registry normalizes all GetTenant errors to 404 for non-system tenants).
+// GetTenant failure other than ErrTenantNotFound reaches the caller as itself
+// rather than as a TenantNotFoundError: a lookup that could not run has not
+// found the tenant absent.
 func TestRESTServiceRegistry_GenericTenantError_NonSystemTenant(t *testing.T) {
 	r := NewRESTServiceRegistry(
 		newExtraFilledRegistry(),
@@ -1109,12 +1111,44 @@ func TestRESTServiceRegistry_GenericTenantError_NonSystemTenant(t *testing.T) {
 	)
 	_, err := r.KVService("sometenant", "default")
 	if err == nil {
-		t.Fatal("expected TenantNotFoundError for generic GetTenant error")
+		t.Fatal("expected the GetTenant error, got nil")
 	}
 	var tnf *rest.TenantNotFoundError
-	if !errors.As(err, &tnf) {
-		t.Errorf("expected *rest.TenantNotFoundError, got %T: %v", err, err)
+	if errors.As(err, &tnf) {
+		t.Errorf("a failed lookup reported the tenant missing: %v", err)
 	}
+	if err.Error() != "generic tenant error" {
+		t.Errorf("err = %v, want the GetTenant error", err)
+	}
+}
+
+// TestRESTServiceRegistry_LeaderlessTenantLookupIsUnavailable verifies that a
+// tenant lookup refused because the system shard has no leader classifies as
+// Unavailable, so a client retries it, and not as NotFound, which tells it
+// the tenant does not exist.
+func TestRESTServiceRegistry_LeaderlessTenantLookupIsUnavailable(t *testing.T) {
+	r := NewRESTServiceRegistry(
+		newExtraFilledRegistry(),
+		nil,
+		"system",
+		WithTenantServicer(&extraNotLeaderTenantServicer{}),
+	)
+	_, err := r.KVService("sometenant", "default")
+	var nle *service.NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("err = %T %v, want the *service.NotLeaderError", err, err)
+	}
+	if got := errclass.Classify(err); got != errclass.Unavailable {
+		t.Errorf("Classify = %v, want Unavailable", got)
+	}
+}
+
+// extraNotLeaderTenantServicer refuses every lookup the way a node does while
+// the system shard is between leaders.
+type extraNotLeaderTenantServicer struct{ mockTenantServicer }
+
+func (e *extraNotLeaderTenantServicer) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
+	return nil, &service.NotLeaderError{ShardID: 1}
 }
 
 // TestRESTServiceRegistry_SystemTenantGenericError_Fallback verifies that

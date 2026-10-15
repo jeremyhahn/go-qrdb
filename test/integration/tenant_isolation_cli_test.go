@@ -211,8 +211,17 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
 	t.Helper()
 	adminUsername := tenantID + "-admin"
-	lookupBody, lookupStatus := iraftAPIGet(t, adminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, adminUsername, tenantID))
+	// A system-managed tenant's admin account is completed just after the
+	// create answers (docs/multi-tenancy/api.md), and until it exists the
+	// admin's certificate is refused: 401 under the default binding policy,
+	// 403 otherwise. Only that refusal is waited out; any other status fails.
+	lookupURL := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, adminUsername, tenantID)
+	deadline := time.Now().Add(30 * time.Second)
+	lookupBody, lookupStatus := iraftAPIGet(t, adminClient, lookupURL)
+	for (lookupStatus == http.StatusUnauthorized || lookupStatus == http.StatusForbidden) && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		lookupBody, lookupStatus = iraftAPIGet(t, adminClient, lookupURL)
+	}
 	if lookupStatus != http.StatusOK {
 		t.Fatalf("selfAssignTenantSO: look up tenant admin %s: status %d, body: %s", adminUsername, lookupStatus, lookupBody)
 	}

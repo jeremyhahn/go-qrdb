@@ -110,6 +110,12 @@ type fakeCatalogStore struct {
 	// of every Execute call that carries compares -- i.e. a catalog
 	// compare-and-swap rather than an unconditional index publish.
 	beforeExecute func()
+
+	// failReads, keyed by key, fails every Get and GetRevision of that key
+	// with its error, for as long as the entry is present: a read that
+	// cannot run -- the shard between leaders, a timed-out ReadIndex --
+	// however often the caller asks.
+	failReads map[string]error
 }
 
 func newFakeCatalogStore() *fakeCatalogStore {
@@ -186,6 +192,9 @@ func (f *fakeCatalogStore) Get(_ context.Context, key string) ([]byte, error) {
 		f.injectGetErr = nil
 		return nil, err
 	}
+	if err, ok := f.failReads[key]; ok {
+		return nil, err
+	}
 
 	rec, ok := f.data[key]
 	var value []byte
@@ -250,6 +259,9 @@ func (f *fakeCatalogStore) GetRevision(_ context.Context, key string) (*KeyValue
 	if f.injectGetRevisionErr != nil {
 		err := f.injectGetRevisionErr
 		f.injectGetRevisionErr = nil
+		return nil, err
+	}
+	if err, ok := f.failReads[key]; ok {
 		return nil, err
 	}
 

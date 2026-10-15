@@ -786,21 +786,45 @@ type ImbalanceReport struct {
   that context's error as well. The reads are the cluster-CA readback
   (`lifecycle.AwaitClusterCACertificate`, 30s), and the reads made while the
   system shard settles (`server.WhileSystemShardSettling`, 15s): the
-  feature-gate activation check, the boot tenant list, and the encryption
-  migrator's entitlement and isolation-mode reads. Settling, for these
-  reads, includes a not-leader answer that names no leader, and one that names
-  a leader without an address: go-quicraft fails the reads and forwarded
-  proposals pending at a leader change with that notice and expects the caller
-  to retry. A not-leader answer that names a leader with an address is a
-  routing answer and fails the read at once. `qrdbd`'s wait for the
+  feature-gate start (its activation check and its self-advertisement), the
+  boot tenant list, the encryption migrator's entitlement and isolation-mode
+  reads, and `qrdbd`'s dynamic-membership start (its registration and first
+  membership snapshot). `sdk/go/node` bounds each feature-gate start attempt
+  the same way and retries it in the background. `qrdbd`'s member-record
+  publisher, which runs in the background after the API servers start,
+  bounds each registration the same way and retries until it lands. Settling,
+  for these reads, includes a not-leader answer that names no leader, and one
+  that names a leader without an address: go-quicraft fails the reads and
+  forwarded proposals pending at a leader change with that notice and expects
+  the caller to retry. A not-leader answer that names a leader with an address
+  is a routing answer and fails the read at once. `qrdbd`'s wait for the
   first admin's replication bounds each lookup the same way under its own
   deadline, and so does first boot's lookup for an existing admin, where a
   lookup cut off reads as "no admin yet" and the idempotent first-admin step
   decides. `server.WaitForShardServing` already bounds each probe (500ms).
-  Writes made during boot -- database provisioning, the feature-gate start, the
-  deleted-tenant reconcile, the first-boot `Init` -- stay on the boot's context:
+  Database provisioning and the first-boot `Init` stay on the boot's context:
   cutting off a write that may still commit would race the retry that follows
-  it.
+  it. A registration does not: it re-puts the node's own lease-bound record,
+  so a retry after a cut-off attempt writes the same record again, and an
+  orphaned lease expires with its TTL. Nor does the deleted-tenant reconcile:
+  it is a startup read (15s) with each attempt bounded, because on the boot's
+  context one read that never answered held a restarted node past the
+  reconcile's budget. A cut-off pass is safe to retry: every read it makes
+  fails closed, and the records that name a retired tenant's directories are
+  dropped last, so the retry finds whatever the cut-off pass left.
+- **A startup wait says what it waits for.** While a startup read waits --
+  inside an attempt or between two -- it logs `startup read still waiting` at
+  WARN every `server.StartupWaitReportInterval` (5s), naming the read, the time
+  elapsed and the budget, and once an attempt has failed, the attempts made
+  and cut off and the last error. A step that stays on the boot's context,
+  such as a provisioning write, is reported the same way while it outlasts its
+  attempt's bound. The shard
+  waits (`server.WaitForShardLeader`, `server.WaitForShardServing`) log
+  `startup still waiting` on the same interval with what they wait for, the
+  shard, the polls, the elapsed time, the budget and the last probe error, and
+  the member-record publisher logs `member record still waiting to publish`.
+  A restarted node that has not served `/health` after a few seconds has said
+  why in its log.
 - **`qrdbd` waits for the system shard's leader for as long as it runs, in
   rounds measured in time, not in a count of polls.** Before its first Raft
   write -- the auth bootstrap and first boot,
@@ -924,7 +948,8 @@ database's owning tenant.
 | A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
 | A shard opened or reopened whose leader is elected but never commits in its term within 15s | `*server.ShardReadWaitError` (wraps `server.ErrShardNotReadReady`); the host is not handed out. `qrdbd` refuses to start with `*SystemShardServingError` | **yes** |
 | `qrdbd`'s system shard knows no leader within a round of `leaderWaitBudget` (120 election timeouts) | `*server.ShardLeaderWaitError` (wraps `server.ErrTenantShardNoLeader`), naming the shard, the budget, the time spent and whether the poller was starved, is logged and the next round begins; the wait ends only with the boot context, and a signal returns the context's error as the `wait for leader` step of `*AuthBootstrapError` or `*DatabaseProvisionError` | **yes** |
-| A proposal or linearizable/follower read on a node that knows no leader for the shard (mid-election, or not yet reached by the new leader) | Held by the Raft host adapter (`throughElection`, `pkg/backend/raft/leader_wait.go`): it polls `GetLeaderID` with backoff (10 ms doubling to 250 ms) and re-runs the request once a leader is known. At 10 s or the caller's deadline it returns `*raft.LeaderWaitError` wrapping the last `*quicraft.NotLeaderError`, which the service layer's translations (`translateProposeError`, `translateReadError`) still find with `errors.As` and map to `*service.NotLeaderError`: `UNAVAILABLE` / REST 503 `NOT_LEADER`. A refusal naming a leader, and every other error, is returned at once. Previously the refusal reached the client immediately, so a follower's write right after a leader change failed although a leader was moments away | **yes** (retry) |
+| A proposal or linearizable/follower read on a node that knows no leader for the shard (mid-election, or not yet reached by the new leader) | Held by the Raft host adapter (`throughElection`, `pkg/backend/raft/leader_wait.go`): it polls `GetLeaderID` with backoff (10 ms doubling to 250 ms) and re-runs the request once a leader is known. At 10 s or the caller's deadline it returns `*raft.LeaderWaitError` wrapping the last `*quicraft.NotLeaderError`, which the service layer's translations (`translateProposeError`, `translateReadError`) still find with `errors.As` and map to `*service.NotLeaderError`: `UNAVAILABLE` / REST 503 `NOT_LEADER`. A proposal refused naming a leader, and every other error, is returned at once. Previously the refusal reached the client immediately, so a follower's write right after a leader change failed although a leader was moments away | **yes** (retry) |
+| A linearizable/follower read in flight when leadership changes hands | go-quicraft fails every request the change strands (`failLeaderChangeRequests`) with a `*quicraft.NotLeaderError` naming the new leader. A `ReadIndex` is otherwise refused only while no leader is known, so for a read that refusal means "stranded", never "served elsewhere": the adapter reissues it (`readThroughLeaderChange`) within the same 10 s bound, and go-quicraft forwards the reissued `ReadIndex` to the new leader. A read has no effect to repeat; a stranded proposal may still commit through the old leader's log and is never reissued. Previously the stranded read reached callers with nowhere to forward it — a MySQL statement inside a transaction failed with 1105 | **yes** (reissue) |
 | The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
 | An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |

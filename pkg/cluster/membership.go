@@ -304,6 +304,11 @@ func NewMembershipManager(store MembershipStore, self Member, shardID uint64, cf
 // Start registers the local node and begins tracking membership. When a
 // Reconfigurer is configured and the node is the leader, it also reconciles
 // the Raft group. Start launches background goroutines that run until Close.
+//
+// ctx bounds the startup -- the registration and the first membership
+// snapshot -- and nothing after it: a restarting node passes a deadline,
+// because a settling leader drops a request without answering it, and
+// retries a Start that fails. The goroutines outlive ctx.
 func (m *MembershipManager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	if m.closed {
@@ -314,9 +319,9 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 		m.mu.Unlock()
 		return &MembershipError{Reason: "manager already started"}
 	}
-	// The manager owns a run context derived from the caller's: cancelling
-	// either the caller's ctx OR calling Close stops every goroutine.
-	runCtx, cancel := context.WithCancel(ctx)
+	// The manager owns a run context detached from the caller's, so a
+	// startup deadline does not stop it; Close stops every goroutine.
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.runCtx, m.cancel = runCtx, cancel
 	m.mu.Unlock()
 
@@ -334,7 +339,11 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 	m.advertiser = advertiser
 	m.mu.Unlock()
 
-	if err := advertiser.Start(runCtx); err != nil {
+	if err := advertiser.Register(ctx); err != nil {
+		m.abortStart(runCtx)
+		return err
+	}
+	if err := advertiser.KeepAlive(runCtx); err != nil {
 		m.abortStart(runCtx)
 		return err
 	}
@@ -354,7 +363,7 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 	m.started = true
 	m.mu.Unlock()
 
-	m.reconcile(runCtx)
+	m.reconcile(ctx)
 
 	m.wg.Add(2)
 	go m.watchLoop(runCtx, events)

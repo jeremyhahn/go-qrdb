@@ -291,7 +291,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	var dbInfoStatus int
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		dbInfoData, dbInfoStatus = iraftAPIGet(t, tenantClient,
+		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, iraftDBName))
 		if dbInfoStatus == http.StatusOK && len(dbInfoData) > 0 {
 			break
@@ -429,7 +429,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 		}
 		if status != http.StatusOK {
-			t.Fatalf("assertion (e): db1 key %q read timed out (last status: %d)", key, status)
+			t.Fatalf("assertion (e): db1 key %q read timed out (last status: %d, body: %s)", key, status, got)
 		}
 		if string(got) != db1Values[i] {
 			t.Fatalf("assertion (e): db1 key %q: got %q, want %q", key, got, db1Values[i])
@@ -571,7 +571,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 		}
 		if status != http.StatusOK {
-			t.Fatalf("assertion (f): NO-DATA-LOSS FAIL: db1 key %q after restart: timed out reading (last status: %d)", key, status)
+			t.Fatalf("assertion (f): NO-DATA-LOSS FAIL: db1 key %q after restart: timed out reading (last status: %d, body: %s)", key, status, got)
 		}
 		if string(got) != db1Values[i] {
 			t.Fatalf("assertion (f): NO-DATA-LOSS FAIL: db1 key %q after restart: got %q, want %q",

@@ -376,7 +376,7 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 		return err
 	}
 
-	read, ok := pollShard(ctx, clock, start, deadline, interval, func() (bool, error) {
+	read, ok := pollShard(ctx, clock, "shard to serve reads", shardID, start, deadline, interval, func() (bool, error) {
 		err := host.ReadReady(ctx, shardID)
 		if err == nil {
 			return true, nil
@@ -416,7 +416,7 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 // was cancelled before it finished, and otherwise *ShardLeaderWaitError
 // carrying what the poll observed.
 func awaitShardLeader(ctx context.Context, src LeaderSource, shardID uint64, start time.Time, timeout, interval time.Duration, clock shardLeaderClock) error {
-	leader, ok := pollShard(ctx, clock, start, start.Add(timeout), interval, func() (bool, error) {
+	leader, ok := pollShard(ctx, clock, "shard leader", shardID, start, start.Add(timeout), interval, func() (bool, error) {
 		_, ok, err := src.GetLeaderID(shardID)
 		return err == nil && ok, err
 	})
@@ -453,9 +453,12 @@ type pollStats struct {
 // pollShard calls poll every interval until it reports done, ctx ends, or the
 // clock passes deadline, and reports whether it finished and what it saw.
 // Elapsed is measured from start, the beginning of the whole readiness wait.
-func pollShard(ctx context.Context, clock shardLeaderClock, start, deadline time.Time, interval time.Duration, poll func() (bool, error)) (pollStats, bool) {
+// While it waits it logs, every StartupWaitReportInterval, what it is waiting
+// for -- what, on shardID -- and what the polls have seen so far.
+func pollShard(ctx context.Context, clock shardLeaderClock, what string, shardID uint64, start, deadline time.Time, interval time.Duration, poll func() (bool, error)) (pollStats, bool) {
 	var st pollStats
 	last := clock.Now()
+	lastReport := start
 	for {
 		now := clock.Now()
 		if gap := now.Sub(last); gap > st.maxGap {
@@ -492,6 +495,16 @@ func pollShard(ctx context.Context, clock shardLeaderClock, start, deadline time
 		st.elapsed = end.Sub(start)
 		if end.After(deadline) || ctx.Err() != nil {
 			return st, false
+		}
+		if end.Sub(lastReport) >= StartupWaitReportInterval {
+			lastReport = end
+			slog.Warn("startup still waiting",
+				slog.String("for", what),
+				slog.Uint64("shard_id", shardID),
+				slog.Int("polls", st.polls),
+				slog.Duration("elapsed", st.elapsed),
+				slog.Duration("budget", deadline.Sub(start)),
+				slog.Any("last_error", st.lastErr))
 		}
 		clock.Sleep(interval)
 	}

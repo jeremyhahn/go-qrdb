@@ -692,7 +692,12 @@ func (r *restServiceRegistry) resolveTenant(tenantID string) (tenant.IsolationTy
 		if errors.Is(err, tenant.ErrTenantNotFound) {
 			return "", nil, &rest.TenantNotFoundError{TenantID: tenantID}
 		}
-		return "", nil, &rest.TenantNotFoundError{TenantID: tenantID}
+		// Any other failure means the lookup could not run -- the system
+		// shard between leaders, the bound above expiring -- not that the
+		// tenant is absent. Returned as itself it classifies by its cause
+		// (Unavailable, DeadlineExceeded: answers a client retries) instead
+		// of a 404 that tells it the tenant does not exist.
+		return "", nil, err
 	}
 
 	isolation := info.EffectiveIsolationType()
@@ -737,9 +742,8 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 	}
 	tb, err := r.barrierReg.GetTenant(tenantID)
 	if err != nil {
-		if errors.Is(err, seal.ErrTenantNotFound) || errors.Is(err, seal.ErrEmptyTenantID) {
-			return &rest.TenantNotFoundError{TenantID: tenantID}
-		}
+		// GetTenant fails only with seal.ErrTenantNotFound or
+		// seal.ErrEmptyTenantID; both mean no such tenant barrier.
 		return &rest.TenantNotFoundError{TenantID: tenantID}
 	}
 	if tb.IsSealed() || (r.clusterSeal != nil && r.clusterSeal.Refuses(clusterseal.TenantBarrier(tenantID))) {

@@ -81,6 +81,18 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   never elect a replacement.
 - **Standalone skips the raft identity requirements**; only `raft.data_dir`
   stays mandatory.
+- **A raft node's start never waits on one unanswered request.** A restarted
+  node can boot while its cluster elects or warms up a leader, and a settling
+  leader drops a forwarded read or registration without answering it. Every
+  leader wait, startup read and registration before the node serves `/health`
+  is therefore bounded per attempt, retried while the cluster converges, and
+  reported at WARN every 5s with what it waits for; a wait that cannot succeed
+  fails the start with a typed error (`*server.StartupReadError`,
+  `*server.ShardLeaderWaitError`, `*server.ShardReadWaitError`). Database
+  provisioning is the deliberate exception: a cut-off write could still commit
+  and race its retry, so it stays on the boot's context. Standalone has no
+  peer to wait for. The contract, the budgets and the log lines are in
+  [../clustering/engineering.md](../clustering/engineering.md) (Invariants).
 - **Every composer can keep the compliance audit trail.** The flat
   `standalone.NewServer` keeps it when `ServerConfig.AuditTrail` names its file
   (relative to `DataDir`; `audit.DefaultTrailFile` is qrdbd's name; empty,

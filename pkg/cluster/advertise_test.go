@@ -423,10 +423,10 @@ func TestAdvertiser_Start_RegistersAndKeepsAlive(t *testing.T) {
 	require.NoError(t, a.Start(ctx))
 	require.Equal(t, 1, store.putCount())
 
-	// keepAlive should refresh the registration at least once more.
+	// The refresh loop should refresh the registration at least once more.
 	require.Eventually(t, func() bool {
 		return store.putCallCount() >= 2
-	}, 500*time.Millisecond, 5*time.Millisecond, "keepAlive did not refresh the registration")
+	}, 500*time.Millisecond, 5*time.Millisecond, "the refresh loop did not refresh the registration")
 
 	require.NoError(t, a.Close())
 }
@@ -463,6 +463,51 @@ func TestAdvertiser_Start_OnClosedErrors(t *testing.T) {
 	require.Error(t, err)
 	var me *MembershipError
 	require.True(t, errors.As(err, &me))
+}
+
+// TestAdvertiser_KeepAlive_OutlivesRegistrationDeadline pins the split a
+// bounded startup uses: Register under a deadline, then KeepAlive on a
+// context detached from it, so the advertisement keeps refreshing after the
+// startup context ends.
+func TestAdvertiser_KeepAlive_OutlivesRegistrationDeadline(t *testing.T) {
+	store := newFakeStore()
+	self := Member{NodeID: 11, Address: "10.0.0.2:63001"}
+	a, err := NewAdvertiser(store, self, AdvertiseConfig{
+		LeaseTTL:          200 * time.Millisecond,
+		KeepAliveInterval: 10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	require.NoError(t, a.Register(ctx))
+	require.NoError(t, a.KeepAlive(context.WithoutCancel(ctx)))
+	cancel()
+
+	puts := store.putCallCount()
+	require.Eventually(t, func() bool {
+		return store.putCallCount() > puts
+	}, 500*time.Millisecond, 5*time.Millisecond, "the refresh loop stopped with the startup context")
+
+	require.NoError(t, a.Close())
+	assert.Equal(t, 1, store.deleteCount())
+}
+
+func TestAdvertiser_KeepAlive_RefusesSecondStartAndClosed(t *testing.T) {
+	store := newFakeStore()
+	// No tick lands within the test, so every put is a registration.
+	a, err := NewAdvertiser(store, Member{NodeID: 12, Address: "10.0.0.2:63001"}, AdvertiseConfig{
+		KeepAliveInterval: time.Hour,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, a.KeepAlive(context.Background()))
+	var me *MembershipError
+	require.ErrorAs(t, a.KeepAlive(context.Background()), &me)
+	require.ErrorAs(t, a.Start(context.Background()), &me)
+	assert.Equal(t, 0, store.putCount(), "a refused Start must not register")
+
+	require.NoError(t, a.Close())
+	require.ErrorAs(t, a.KeepAlive(context.Background()), &me)
 }
 
 func TestAdvertiser_Start_RegistrationFailurePropagates(t *testing.T) {

@@ -19,13 +19,16 @@ import (
 	"crypto/x509"
 	"errors"
 	"log/slog"
+	"math"
 	"slices"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/retry"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -320,6 +323,90 @@ func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Depen
 	deps.Logger.Info("bootstrap: pending tenant admin completed",
 		slog.String("tenant", tenantID), slog.String("admin", pending.Username))
 	return true, nil
+}
+
+// AdminCompletionBounds bounds CompletePendingTenantAdminWithin. A zero
+// field takes its default.
+type AdminCompletionBounds struct {
+	// Budget is the time every attempt together may take. Default 2m.
+	Budget time.Duration
+	// AttemptTimeout bounds one attempt. Default 10s.
+	AttemptTimeout time.Duration
+	// Delay is the wait before the first retry; each later wait doubles,
+	// up to MaxDelay. Defaults 250ms and 5s.
+	Delay    time.Duration
+	MaxDelay time.Duration
+}
+
+// withDefaults returns b with every zero field set to its default.
+func (b AdminCompletionBounds) withDefaults() AdminCompletionBounds {
+	if b.Budget <= 0 {
+		b.Budget = 2 * time.Minute
+	}
+	if b.AttemptTimeout <= 0 {
+		b.AttemptTimeout = 10 * time.Second
+	}
+	if b.Delay <= 0 {
+		b.Delay = 250 * time.Millisecond
+	}
+	if b.MaxDelay <= 0 {
+		b.MaxDelay = 5 * time.Second
+	}
+	return b
+}
+
+// CompletePendingTenantAdminWithin runs CompletePendingTenantAdmin until it
+// succeeds, each attempt on its own AttemptTimeout and all of them within
+// Budget of ctx. It is how a caller completes the admin of a tenant whose
+// barrier was serving when ProvisionTenant committed it
+// (TenantProvisionResult.AdminCompletionDue), after answering its own
+// request: hand it a context that request's end does not cancel.
+//
+// An attempt cut off or failed part-way is retried, which
+// CompletePendingTenantAdmin's idempotence makes safe. It stops without
+// retrying on tenant.ErrTenantSealed -- the barrier-ready hook completes the
+// admin when the barrier next unseals -- and on an error no retry can
+// change. Whatever it returns, a pending record left behind is completed by
+// the hook on the tenant's next barrier unseal or status read.
+func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps Dependencies, b AdminCompletionBounds) (bool, error) {
+	if deps.Logger == nil {
+		return false, &MissingLoggerError{}
+	}
+	b = b.withDefaults()
+	// The account and its roles are the tenant's own records, written as
+	// ProvisionTenant writes them.
+	ctx, cancel := context.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.Budget)
+	defer cancel()
+	var done bool
+	err := retry.Do(ctx, &retry.Config{
+		MaxAttempts:   math.MaxInt,
+		Backoff:       &retry.ExponentialBackoff{InitialDelay: b.Delay, MaxDelay: b.MaxDelay, Multiplier: 2},
+		RetryableFunc: adminCompletionRetryable,
+		OnRetry: func(attempt int, err error, wait time.Duration) {
+			deps.Logger.Warn("bootstrap: tenant admin completion failed; retrying",
+				slog.String("tenant", tenantID), slog.Int("attempt", attempt+1),
+				slog.Duration("retry_in", wait), slog.Any("error", err))
+		},
+	}, func(ctx context.Context) error {
+		actx, cancel := context.WithTimeout(ctx, b.AttemptTimeout)
+		defer cancel()
+		var err error
+		done, err = CompletePendingTenantAdmin(actx, tenantID, deps)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return done, nil
+}
+
+// adminCompletionRetryable reports whether a failed
+// CompletePendingTenantAdmin attempt is worth repeating: everything but a
+// sealed tenant and an error no retry can change.
+func adminCompletionRetryable(err error) bool {
+	var conflict *PendingAdminAccountConflictError
+	var seam *MissingProvisioningSeamError
+	return !errors.Is(err, tenant.ErrTenantSealed) && !errors.As(err, &conflict) && !errors.As(err, &seam)
 }
 
 // userResolver returns the username lookup provisioning should use: the

@@ -202,9 +202,10 @@ func (a *HostAdapter) StaleRead(ctx context.Context, shardID uint64, query inter
 
 // SyncRead performs a linearizable read against the state machine, holding
 // through a moment in which this node knows no leader to confirm the read
-// index with (see throughElection).
+// index with, and reissuing a read a leadership change stranded (see
+// readThroughLeaderChange).
 func (a *HostAdapter) SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
-	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
+	return readThroughLeaderChange(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
 		return a.inner.SyncRead(ctx, shardID, query)
 	})
 }
@@ -214,9 +215,10 @@ func (a *HostAdapter) SyncRead(ctx context.Context, shardID uint64, query interf
 // follower) to serve reads without a ReadIndex round-trip to the leader,
 // providing stronger guarantees than StaleRead with lower latency than
 // SyncRead on followers. Like SyncRead it holds through a moment in which
-// this node knows no leader (see throughElection).
+// this node knows no leader and reissues a read a leadership change stranded
+// (see readThroughLeaderChange).
 func (a *HostAdapter) FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
-	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
+	return readThroughLeaderChange(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
 		return a.inner.FollowerRead(ctx, shardID, query)
 	})
 }

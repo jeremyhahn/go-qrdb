@@ -213,6 +213,22 @@ created, granted the tenant's Admin role and bound to it as soon as the barrier
 is usable (on init, on every unseal, and on every status read that finds it
 unsealed, until it succeeds).
 
+A system-managed (`barrier_auto_unseal`) tenant's barrier is usable at
+creation, so its response omits both `user_id` and `awaits_barrier_init`: the
+account is completed right **after** the response, not inside the request.
+That step writes through the tenant's own shard and can take longer than the
+request's deadline; it runs on its own bound (each attempt cut off at 10s,
+retried with backoff for up to 2 minutes), and a step that still fails leaves
+the pending record for the next unseal or status read to finish. Until the
+account exists, a request made with the admin's certificate is refused — 401
+(`CertBindingRequiredError`) under the default `mtls_binding_policy: required`,
+403 otherwise — so a client that calls straight after the create retries that
+refusal for a few seconds.
+
+**The response is the record the create committed.** The create does not read
+the tenant back after committing it, so a slow read cannot turn a committed
+create into an error.
+
 **One unit.** Every input that can be refused — the anchors, the CSR, the
 certificate's chain and identity — is judged before anything is written, so a
 refusal leaves no tenant and the id stays usable. A failure after the first
@@ -367,6 +383,7 @@ leaks to a caller with no access to the tier.
 | Barrier endpoint on a `prefix` tenant | 409 | `FAILED_PRECONDITION` |
 | Tenant barrier sealed | 503 | `UNAVAILABLE` |
 | Unknown tenant, tenant service configured | 404 | `NOT_FOUND` |
+| Tenant lookup that could not run: the system shard has no leader, or the lookup's 3 s bound expired | 503 / 504 | `UNAVAILABLE` / `DEADLINE_EXCEEDED` — classified as the cause, never `NOT_FOUND`: a lookup that did not run has not found the tenant absent |
 | Create without `admin_username`, or with neither or both of `admin_csr_pem` / `admin_cert_pem` | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |
 | Create with an admin CSR or certificate that is refused, or invalid trust anchors | 400 | `INVALID_ARGUMENT` — classified as the cause (`cert.InvalidCSRError`, `trustanchor.CertificateNotTrustedError`, `certenroll.IdentityMismatchError`, `*bootstrap.InvalidTrustAnchorsError`); nothing written |
 | Create with `admin_cert_pem` and no `trust_anchors_pem` | 409 | `FAILED_PRECONDITION` — `trustanchor.NoAnchorsError`; nothing written |
@@ -389,6 +406,7 @@ leaks to a caller with no access to the tier.
 | Tenant id containing `/`, `\`, a control byte, or `.`/`..` | 400 | `INVALID_ARGUMENT` — `*InvalidTenantIDCharError` / `*InvalidTenantIDError`. Previously 500 / `INTERNAL` on create |
 | Rate-limit policy exhausted, including inside a barrier bootstrap window | 429 | `RESOURCE_EXHAUSTED` |
 | Isolation change while the tenant cannot be verified empty | 503 | `UNAVAILABLE` — `ErrTenantDataUnverifiable` / `*TenantDataProbeError` |
+| A tenant read or write whose raft wait ran out (`quicraft: timeout`) | 503 | `UNAVAILABLE` — previously 500 / `INTERNAL`. On create it means the tenant's record did not commit within the deadline: the create answers with the record it committed and reads nothing back, and its admin-account step for a system-managed tenant runs after the answer. A proposal cut off by the deadline can still commit, so read the tenant before retrying; a create retried after its commit answers 409 |
 
 > **Deployment gap, recorded deliberately.** If the data-plane service registry
 > is wired **without** a tenant service — a backward-compatibility path for

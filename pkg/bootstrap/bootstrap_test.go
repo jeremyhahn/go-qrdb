@@ -155,8 +155,8 @@ type fakeTenants struct {
 	// BarrierAutoUnseal: true, as the real TenantService does when the
 	// caller's CreateOptions included tenant.WithBarrierAutoUnseal(true) --
 	// this double ignores opts entirely, so a test that needs the
-	// auto-unseal immediate-completion path (ProvisionTenant) sets this
-	// field directly instead.
+	// auto-unseal path (ProvisionTenant reporting the admin completion due)
+	// sets this field directly instead.
 	autoUnseal bool
 }
 

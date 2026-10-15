@@ -81,15 +81,29 @@ type TenantProvisionConfig struct {
 	AdminEnrollment       AdminEnrollmentMode
 }
 
-// TenantProvisionResult gains AdminCertSerial and AdminAwaitsBarrierInit;
-// AdminKeyPEM is removed. AdminCertPEM, AdminChainPEM, TrustAnchorsPEM and
-// Exclusive are new on the config.
+// TenantProvisionResult gains AdminCertSerial, AdminAwaitsBarrierInit,
+// AdminCompletionDue and Tenant (the record CreateTenant committed; nil on a
+// re-run); AdminKeyPEM is removed. AdminCertPEM, AdminChainPEM,
+// TrustAnchorsPEM and Exclusive are new on the config.
 func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies) (*TenantProvisionResult, error)
 
 // CompletePendingTenantAdmin creates a pending admin's account once the
 // tenant's identity records can be written; idempotent.
 func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Dependencies) (bool, error)
+
+// CompletePendingTenantAdminWithin runs CompletePendingTenantAdmin with each
+// attempt bounded, retrying with backoff under an overall budget; it stops on
+// tenant.ErrTenantSealed and on permanent errors. Zero bounds take defaults
+// (2m budget, 10s attempt, 250ms to 5s backoff).
+type AdminCompletionBounds struct{ Budget, AttemptTimeout, Delay, MaxDelay time.Duration }
+func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps Dependencies, b AdminCompletionBounds) (bool, error)
 ```
+
+When `AdminCompletionDue` is set -- a system-managed barrier tenant, created
+now -- `OnboardTenant` writes the success audit record (on its own detached
+5s bound), answers with `result.Tenant`, and completes the admin in a
+goroutine through `CompletePendingTenantAdminWithin` on a context detached
+from the request. It reads nothing back after the commit.
 
 `Dependencies` gains `TrustAnchors trustanchor.Registry`,
 `PendingAdmins tenantadmin.Store`, `TrustDomain string` and `Now func() time.Time`.
@@ -1333,11 +1347,13 @@ phase 5, by removing the system lift it rides on.
     `ProvisionTenant`, not `registerDedicatedBarrier`: the pending-admin
     record `provisionPendingAdmin` writes does not exist yet at the point
     `CreateTenant` runs (Step 1, before the pending-admin step), so the hook
-    would have fired too early even if wired there. `ProvisionTenant` now
-    calls `CompletePendingTenantAdmin` inline immediately afterward, gated on
-    `CreateTenant`'s returned `*tenant.TenantInfo.BarrierAutoUnseal` so a
-    self-managed tenant's (or an idempotent re-run's) deferred semantics are
-    unchanged.
+    would have fired too early even if wired there. `ProvisionTenant` reports
+    `AdminCompletionDue`, gated on `CreateTenant`'s returned
+    `*tenant.TenantInfo.BarrierAutoUnseal` so a self-managed tenant's (or an
+    idempotent re-run's) deferred semantics are unchanged, and `OnboardTenant`
+    completes the admin after answering, on its own bound. It once ran inline,
+    inside the create's request deadline, where a slow tenant-shard proposal
+    turned a committed create into an error.
 - **No permission reaches tenant data across tenants.** Every data-plane
   permission is `ScopeSelf` or `ScopeTenantOnly`, never `ScopeCross`. That
   covers KV, MVCC, SQL, collections, vectors, time series, locks, leases,

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -987,110 +988,247 @@ func TestProvisionTenant_BarrierIsolation_NonExclusiveReRunKeepsTheRecordedCrede
 	}
 }
 
-// TestProvisionTenant_BarrierIsolation_AutoUnseal_CompletesAdminImmediately
-// proves the fix for a severe pre-existing bug found via integration testing
-// (go-qrdb strict-tenant-isolation work, 2026-10-06): a system-managed
-// (auto-unseal) barrier tenant's pending admin was never completed, because
-// nothing else ever fires tenant.BarrierReadyHook for it -- unlike a
-// self-managed barrier, whose own admin later calls barrier-init/-unseal to
-// raise the hook. ProvisionTenant now completes it inline, immediately,
-// whenever CreateTenant reports BarrierAutoUnseal: true.
-func TestProvisionTenant_BarrierIsolation_AutoUnseal_CompletesAdminImmediately(t *testing.T) {
-	ctx := context.Background()
-	roles := &fakeRoles{}
-	users := &fakeUsers{}
+// provisionAutoUnsealTenant provisions "acme" as a system-managed (auto-unseal)
+// barrier tenant with users as its user seam, and returns the result and the
+// dependencies a caller completes the pending admin with.
+func provisionAutoUnsealTenant(t *testing.T, users firstboot.UserCreator) (*TenantProvisionResult, Dependencies, tenantadmin.Store) {
+	t.Helper()
 	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
-
-	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
-		TenantID:    "acme",
-		AdminCSRPEM: validAdminCSR(t),
-	}, Dependencies{
-		Tenants: &fakeTenants{autoUnseal: true}, Users: users, Roles: roles,
+	deps := Dependencies{
+		Tenants: &fakeTenants{autoUnseal: true}, Users: users, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		PendingAdmins: pending, Logger: discardLogger(),
-	})
+	}
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, deps)
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	return result, deps, pending
+}
+
+// testAdminCompletionBounds keeps CompletePendingTenantAdminWithin's waits
+// short enough for a unit test while leaving the retry loop real.
+var testAdminCompletionBounds = AdminCompletionBounds{
+	Budget: 2 * time.Second, AttemptTimeout: 50 * time.Millisecond,
+	Delay: time.Millisecond, MaxDelay: 5 * time.Millisecond,
+}
+
+// TestProvisionTenant_BarrierIsolation_AutoUnseal_LeavesAdminCompletionDue
+// proves ProvisionTenant does not complete a system-managed (auto-unseal)
+// barrier tenant's admin inside the create: the account step proposes through
+// the tenant's own shard and can outlast the create's request budget, so the
+// result reports it due and the caller completes it after answering. Nothing
+// else fires tenant.BarrierReadyHook for such a tenant, which is why the
+// completion has to be reported rather than left to the hook.
+func TestProvisionTenant_BarrierIsolation_AutoUnseal_LeavesAdminCompletionDue(t *testing.T) {
+	users := &fakeUsers{}
+	result, _, pending := provisionAutoUnsealTenant(t, users)
+
+	if !result.AdminCompletionDue {
+		t.Error("result.AdminCompletionDue = false, want true (the caller completes the admin after answering)")
 	}
 	if result.AdminAwaitsBarrierInit {
 		t.Error("result.AdminAwaitsBarrierInit = true, want false (the auto-unseal barrier is already ready)")
 	}
+	if result.Tenant == nil || result.Tenant.ID != "acme" {
+		t.Errorf("result.Tenant = %+v, want the committed acme record", result.Tenant)
+	}
+	if len(users.createCalls) != 0 {
+		t.Errorf("user createCalls = %d, want 0 (the admin account is not created inside the create)", len(users.createCalls))
+	}
+	rec, err := pending.Get(context.Background(), "acme")
+	if err != nil || rec == nil {
+		t.Fatalf("pending.Get(acme) = %v, %v; want the pending record left for the completion", rec, err)
+	}
+}
+
+// TestProvisionTenant_BarrierIsolation_SelfManaged_NoAdminCompletionDue proves
+// a self-managed barrier tenant's admin stays with the barrier-ready hook: its
+// barrier is not initialized yet, so nothing can complete the admin now.
+func TestProvisionTenant_BarrierIsolation_SelfManaged_NoAdminCompletionDue(t *testing.T) {
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if result.AdminCompletionDue {
+		t.Error("result.AdminCompletionDue = true, want false (the hook completes a self-managed barrier's admin)")
+	}
+	if !result.AdminAwaitsBarrierInit {
+		t.Error("result.AdminAwaitsBarrierInit = false, want true")
+	}
+}
+
+// TestCompletePendingTenantAdminWithin_Completes proves the bounded completion
+// creates the pending admin's account, seeds the tenant's roles and deletes
+// the pending record.
+func TestCompletePendingTenantAdminWithin_Completes(t *testing.T) {
+	users := &fakeUsers{}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	if err != nil || !done {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want true, nil", done, err)
+	}
+	if len(users.createCalls) != 1 || users.createCalls[0].Username != "admin" {
+		t.Fatalf("user createCalls = %+v, want one call for the admin account", users.createCalls)
+	}
+	if got := deps.Roles.(*fakeRoles).createCalls; len(got) == 0 {
+		t.Error("role createCalls = 0, want the tenant's built-in roles seeded")
+	}
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec != nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record deleted", rec, err)
+	}
+}
+
+// TestCompletePendingTenantAdminWithin_NothingPending proves a tenant with no
+// pending record -- completed already, or never pending -- reports not done
+// without an error.
+func TestCompletePendingTenantAdminWithin_NothingPending(t *testing.T) {
+	deps := Dependencies{
+		Users: &fakeUsers{}, Roles: &fakeRoles{},
+		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
+	}
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	if err != nil || done {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false, nil", done, err)
+	}
+}
+
+// stallFirstCreateUsers is a fakeUsers whose first CreateUser hangs until its
+// context ends, the way a proposal forwarded to a leader that is still
+// settling goes unanswered.
+type stallFirstCreateUsers struct {
+	*fakeUsers
+	stalled bool
+}
+
+func (s *stallFirstCreateUsers) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	if !s.stalled {
+		s.stalled = true
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.fakeUsers.CreateUser(ctx, req)
+}
+
+// TestCompletePendingTenantAdminWithin_RetriesAStalledAttempt proves an
+// attempt that stalls is cut off at the attempt bound and the next attempt
+// completes the admin, well inside the overall budget.
+func TestCompletePendingTenantAdminWithin_RetriesAStalledAttempt(t *testing.T) {
+	users := &stallFirstCreateUsers{fakeUsers: &fakeUsers{}}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+
+	start := time.Now()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	if err != nil || !done {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want true, nil", done, err)
+	}
+	if elapsed := time.Since(start); elapsed >= testAdminCompletionBounds.Budget {
+		t.Errorf("completion took %v, want it inside the %v budget (the stalled attempt cut off at %v)",
+			elapsed, testAdminCompletionBounds.Budget, testAdminCompletionBounds.AttemptTimeout)
+	}
+	if !users.stalled || len(users.createCalls) != 1 {
+		t.Errorf("stalled = %v, completed createCalls = %d; want the stalled attempt then one completing call",
+			users.stalled, len(users.createCalls))
+	}
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec != nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record deleted", rec, err)
+	}
+}
+
+// TestCompletePendingTenantAdminWithin_StopsWhileSealed proves a sealed tenant
+// ends the completion after one attempt and leaves the pending record for the
+// barrier-ready hook, which completes it once the barrier unseals.
+func TestCompletePendingTenantAdminWithin_StopsWhileSealed(t *testing.T) {
+	users := &fakeUsers{createErr: tenant.ErrTenantSealed}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	if done || !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false, ErrTenantSealed", done, err)
+	}
 	if len(users.createCalls) != 1 {
-		t.Fatalf("user createCalls = %d, want 1 (the pending admin's account, created immediately)", len(users.createCalls))
+		t.Errorf("user createCalls = %d, want 1 (a sealed tenant is not retried)", len(users.createCalls))
 	}
-	if got := users.createCalls[0].Username; got != "admin" {
-		t.Errorf("completed admin username = %q, want %q", got, "admin")
-	}
-	if len(roles.createCalls) == 0 {
-		t.Error("role createCalls = 0, want the tenant's built-in roles seeded as part of completion")
-	}
-	rec, err := pending.Get(ctx, "acme")
-	if err != nil {
-		t.Fatalf("pending.Get(acme): %v", err)
-	}
-	if rec != nil {
-		t.Error("pending record still present after immediate completion, want it deleted")
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec == nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record left for the hook", rec, err)
 	}
 }
 
-// TestProvisionTenant_BarrierIsolation_AutoUnseal_StillSealedIsNotFatal
-// proves that a completion attempt refused with tenant.ErrTenantSealed --
-// not expected for a real auto-unseal tenant (its barrier is never sealed),
-// but a reachable code path (CompletePendingTenantAdmin is generic) -- is
-// tolerated exactly like the hook itself tolerates it: ProvisionTenant still
-// succeeds, and the pending record is left for a later retry.
-func TestProvisionTenant_BarrierIsolation_AutoUnseal_StillSealedIsNotFatal(t *testing.T) {
-	ctx := context.Background()
-	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+// TestCompletePendingTenantAdminWithin_StopsOnAMissingSeam proves a permanent
+// error -- here a composition with no user seam -- is not retried.
+func TestCompletePendingTenantAdminWithin_StopsOnAMissingSeam(t *testing.T) {
+	_, deps, _ := provisionAutoUnsealTenant(t, &fakeUsers{})
+	deps.Users = nil
 
-	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
-		TenantID:    "acme",
-		AdminCSRPEM: validAdminCSR(t),
-	}, Dependencies{
-		Tenants: &fakeTenants{autoUnseal: true}, Users: &fakeUsers{createErr: tenant.ErrTenantSealed}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		PendingAdmins: pending, Logger: discardLogger(),
-	})
-	if err != nil {
-		t.Fatalf("ProvisionTenant: %v, want nil (a sealed completion attempt is deferred, not fatal)", err)
+	start := time.Now()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	var seam *MissingProvisioningSeamError
+	if done || !errors.As(err, &seam) {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false, *MissingProvisioningSeamError", done, err)
 	}
-	if !result.AdminAwaitsBarrierInit {
-		t.Error("result.AdminAwaitsBarrierInit = false, want true (completion did not actually succeed)")
-	}
-	rec, err := pending.Get(ctx, "acme")
-	if err != nil || rec == nil {
-		t.Fatalf("pending.Get(acme) = %v, %v; want the record still present for a later retry", rec, err)
+	if elapsed := time.Since(start); elapsed >= testAdminCompletionBounds.Budget {
+		t.Errorf("completion took %v, want it to stop at once rather than retry to the %v budget",
+			elapsed, testAdminCompletionBounds.Budget)
 	}
 }
 
-// TestProvisionTenant_BarrierIsolation_AutoUnseal_OtherCompletionErrorIsNotFatal
-// proves an unrelated completion failure (anything but ErrTenantSealed) is
-// logged and swallowed, not propagated: the tenant record it created above
-// genuinely exists, and failing ProvisionTenant now would report a tenant
-// that demonstrably exists as "not created" -- the same best-effort
-// reasoning CreateTenant's own role-seeding step already documents.
-func TestProvisionTenant_BarrierIsolation_AutoUnseal_OtherCompletionErrorIsNotFatal(t *testing.T) {
-	ctx := context.Background()
-	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+// TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget proves a failure
+// that persists is retried until the budget runs out and then reported, with
+// the pending record left for the hook.
+func TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget(t *testing.T) {
 	boom := errors.New("boom")
+	users := &fakeUsers{createErr: boom}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+	bounds := testAdminCompletionBounds
+	bounds.Budget = 100 * time.Millisecond
 
-	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
-		TenantID:    "acme",
-		AdminCSRPEM: validAdminCSR(t),
-	}, Dependencies{
-		Tenants: &fakeTenants{autoUnseal: true}, Users: &fakeUsers{createErr: boom}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		PendingAdmins: pending, Logger: discardLogger(),
-	})
-	if err != nil {
-		t.Fatalf("ProvisionTenant: %v, want nil (a completion failure is best-effort, not fatal)", err)
+	start := time.Now()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
+	elapsed := time.Since(start)
+	if done || !errors.Is(err, boom) {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false and the last attempt's error", done, err)
 	}
-	if !result.AdminAwaitsBarrierInit {
-		t.Error("result.AdminAwaitsBarrierInit = false, want true (completion did not actually succeed)")
+	if elapsed < bounds.Budget || elapsed > 10*bounds.Budget {
+		t.Errorf("completion took %v, want it to give up at its %v budget", elapsed, bounds.Budget)
 	}
-	rec, err := pending.Get(ctx, "acme")
-	if err != nil || rec == nil {
-		t.Fatalf("pending.Get(acme) = %v, %v; want the record still present for a later retry", rec, err)
+	if len(users.createCalls) < 2 {
+		t.Errorf("user createCalls = %d, want the failure retried", len(users.createCalls))
+	}
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec == nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record left for the hook", rec, err)
+	}
+}
+
+// TestCompletePendingTenantAdminWithin_RequiresLogger proves the bounded
+// completion refuses a composition with no logger, as the unbounded one does.
+func TestCompletePendingTenantAdminWithin_RequiresLogger(t *testing.T) {
+	_, err := CompletePendingTenantAdminWithin(context.Background(), "acme", Dependencies{}, testAdminCompletionBounds)
+	var missing *MissingLoggerError
+	if !errors.As(err, &missing) {
+		t.Fatalf("CompletePendingTenantAdminWithin(no logger) = %v, want *MissingLoggerError", err)
+	}
+}
+
+// TestAdminCompletionBounds_Defaults proves a zero bound takes its default and
+// a set one is kept.
+func TestAdminCompletionBounds_Defaults(t *testing.T) {
+	got := AdminCompletionBounds{AttemptTimeout: time.Second}.withDefaults()
+	if got.Budget <= 0 || got.Delay <= 0 || got.MaxDelay <= 0 {
+		t.Errorf("withDefaults() = %+v, want every zero bound defaulted", got)
+	}
+	if got.AttemptTimeout != time.Second {
+		t.Errorf("withDefaults().AttemptTimeout = %v, want the set 1s kept", got.AttemptTimeout)
 	}
 }
 

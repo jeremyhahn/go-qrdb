@@ -57,8 +57,11 @@ type LeaderWaitError struct {
 
 // Error implements error.
 func (e *LeaderWaitError) Error() string {
-	return "raft: shard " + strconv.FormatUint(e.ShardID, 10) +
-		": no leader known after waiting " + e.Waited.String() + ": " + e.Err.Error()
+	state := ": no leader known after waiting "
+	if !leaderUnknown(e.Err) {
+		state = ": still refused as not leader after waiting "
+	}
+	return "raft: shard " + strconv.FormatUint(e.ShardID, 10) + state + e.Waited.String() + ": " + e.Err.Error()
 }
 
 // Unwrap returns the last not-leader refusal.
@@ -88,8 +91,36 @@ func leaderUnknown(err error) bool {
 // not-leader refusal that names a leader, is returned at once: that one is the
 // caller's to forward.
 func throughElection[T any](ctx context.Context, h leaderReporter, shardID uint64, timeout time.Duration, op func() (T, error)) (T, error) {
+	return holdWhileRefused(ctx, h, shardID, timeout, leaderUnknown, op)
+}
+
+// readThroughLeaderChange is throughElection for a read, which a not-leader
+// refusal naming a leader also does not end. go-quicraft refuses a ReadIndex
+// as not-leader only while this node knows no leader; a refusal that names one
+// is failLeaderChangeRequests failing a read the leadership change stranded
+// in flight, which never reached a decision. Reissued, the read goes to the
+// leader this node now knows -- go-quicraft forwards a follower's ReadIndex
+// itself -- and a read has no effect to repeat, so there is nothing for the
+// caller to forward: a caller with nowhere to forward it, a SQL session in
+// the middle of a transaction, failed the statement instead.
+//
+// A proposal is never reissued this way. A stranded proposal may already be
+// in the old leader's log and commit there.
+func readThroughLeaderChange[T any](ctx context.Context, h leaderReporter, shardID uint64, timeout time.Duration, op func() (T, error)) (T, error) {
+	return holdWhileRefused(ctx, h, shardID, timeout, notLeader, op)
+}
+
+// notLeader reports whether err is any go-quicraft not-leader refusal.
+func notLeader(err error) bool {
+	var nle *quicraft.NotLeaderError
+	return errors.As(err, &nle)
+}
+
+// holdWhileRefused runs op and, while refused reports its error, waits for a
+// leader of shardID to be known and runs op again, within timeout and ctx.
+func holdWhileRefused[T any](ctx context.Context, h leaderReporter, shardID uint64, timeout time.Duration, refused func(error) bool, op func() (T, error)) (T, error) {
 	v, err := op()
-	if !leaderUnknown(err) {
+	if !refused(err) {
 		return v, err
 	}
 
@@ -117,7 +148,7 @@ func throughElection[T any](ctx context.Context, h leaderReporter, shardID uint6
 			continue
 		}
 		v, err = op()
-		if !leaderUnknown(err) {
+		if !refused(err) {
 			return v, err
 		}
 	}

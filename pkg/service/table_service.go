@@ -324,7 +324,7 @@ func (s *TableService) DropTable(ctx context.Context, req *DropTableRequest) err
 	return s.runReclaimPublishingCAS(ctx, req.Database, req.Name, func() (*reclaimPublication, error) {
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, &TableNotFoundError{Database: req.Database, Name: req.Name}
+			return nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.Name})
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
@@ -411,7 +411,7 @@ func (s *TableService) RenameTable(ctx context.Context, req *RenameTableRequest)
 		}
 		fromRev, err := s.mvcc.GetRevision(ctx, fromKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.From}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.From})
 		}
 
 		var def TableDef
@@ -487,7 +487,7 @@ func (s *TableService) TruncateTable(ctx context.Context, database, name string,
 
 		metaRev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, &TableNotFoundError{Database: database, Name: name}
+			return nil, absentAs(err, &TableNotFoundError{Database: database, Name: name})
 		}
 		var def TableDef
 		if err := json.Unmarshal(metaRev.Value, &def); err != nil {
@@ -602,7 +602,7 @@ func (s *TableService) RenameIndex(ctx context.Context, req *RenameTableIndexReq
 		}
 		metaRev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.Table})
 		}
 		var def TableDef
 		if err := json.Unmarshal(metaRev.Value, &def); err != nil {
@@ -769,9 +769,15 @@ func (s *TableService) GetTable(ctx context.Context, database, name string) (*Ta
 	}
 
 	_, journalErr := s.kv.Get(ctx, tableDDLJournalKey(database, name))
+	if journalErr != nil && !isKeyNotFound(journalErr) {
+		return nil, journalErr
+	}
 	inRewrite := journalErr == nil
 
 	metaRev, err := s.mvcc.GetRevision(ctx, tableMetadataKey(database, name))
+	if err != nil && !isKeyNotFound(err) {
+		return nil, err
+	}
 	if err != nil || metaRev == nil || metaRev.Value == nil {
 		if inRewrite {
 			return nil, &TableRewriteInProgressError{Database: database, Name: name}
@@ -937,7 +943,7 @@ func (s *TableService) AlterTable(ctx context.Context, req *AlterTableRequest) (
 
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Name}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.Name})
 		}
 		if req.ExpectedRevision != 0 && req.ExpectedRevision != rev.ModRevision {
 			return nil, nil, &TableStaleRevisionError{
@@ -1330,7 +1336,7 @@ func (s *TableService) CreateIndex(ctx context.Context, req *CreateTableIndexReq
 		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.Table})
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
@@ -1396,7 +1402,7 @@ func (s *TableService) DropIndex(ctx context.Context, database, table, index str
 		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, &TableNotFoundError{Database: database, Name: table}
+			return nil, absentAs(err, &TableNotFoundError{Database: database, Name: table})
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
@@ -1465,7 +1471,7 @@ func (s *TableService) RewriteJournal(ctx context.Context, database, name string
 
 	journalData, err := s.kv.Get(ctx, tableDDLJournalKey(database, name))
 	if err != nil || journalData == nil {
-		return nil, nil, &TableNoRewriteInProgressError{Database: database, Name: name}
+		return nil, nil, absentAs(err, &TableNoRewriteInProgressError{Database: database, Name: name})
 	}
 	var journal TableDDLJournal
 	if err := json.Unmarshal(journalData, &journal); err != nil {
@@ -1474,7 +1480,7 @@ func (s *TableService) RewriteJournal(ctx context.Context, database, name string
 
 	currentData, err := s.kv.Get(ctx, tableMetadataKey(database, name))
 	if err != nil || currentData == nil {
-		return nil, nil, &TableNotFoundError{Database: database, Name: name}
+		return nil, nil, absentAs(err, &TableNotFoundError{Database: database, Name: name})
 	}
 	var current TableDef
 	if err := json.Unmarshal(currentData, &current); err != nil {
@@ -1521,7 +1527,7 @@ func (s *TableService) AbortRewrite(ctx context.Context, database, name string) 
 	return s.runReclaimPublishingCAS(ctx, database, name, func() (*reclaimPublication, error) {
 		rev, err := s.mvcc.GetRevision(ctx, journalKey)
 		if err != nil {
-			return nil, &TableNoRewriteInProgressError{Database: database, Name: name}
+			return nil, absentAs(err, &TableNoRewriteInProgressError{Database: database, Name: name})
 		}
 		pub := &reclaimPublication{
 			compares: []Compare{{
@@ -1589,7 +1595,7 @@ func (s *TableService) CompleteRewrite(ctx context.Context, database, name strin
 
 		journalRev, err := s.mvcc.GetRevision(ctx, journalKey)
 		if err != nil {
-			return nil, &TableNoRewriteInProgressError{Database: database, Name: name}
+			return nil, absentAs(err, &TableNoRewriteInProgressError{Database: database, Name: name})
 		}
 		var journal TableDDLJournal
 		if err := json.Unmarshal(journalRev.Value, &journal); err != nil {
@@ -1781,6 +1787,21 @@ func isTransactionConflict(err error) bool {
 func isKeyNotFound(err error) bool {
 	var knf *KeyNotFoundError
 	return errors.As(err, &knf)
+}
+
+// absentAs classifies the outcome of a catalog read that produced no record.
+// Only a key the store reports absent -- err a *KeyNotFoundError, or nil for
+// a read that succeeded with no value -- gets absent, the permanent answer
+// (a missing table, no rewrite in progress). Any other failure is a read
+// that could not run -- the shard between leaders, a ReadIndex that timed
+// out -- and is returned as itself, so it classifies by its own retryable
+// cause: answering it with absent would refuse a DROP TABLE of a table that
+// exists, or report an unfinished rewrite as completed.
+func absentAs(err, absent error) error {
+	if err == nil || isKeyNotFound(err) {
+		return absent
+	}
+	return err
 }
 
 // epochValue encodes the current time as an 8-byte big-endian UnixNano

@@ -19,7 +19,10 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
@@ -29,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // ---------------------------------------------------------------------------
@@ -81,19 +85,68 @@ func newOnboardingDeps(t *testing.T) TenantOnboardingDeps {
 	}
 }
 
-// onboardingFailingGetTenant wraps a real tenant.TenantServicer, delegating
-// every method except GetTenant, which it faithfully fails -- modeling a
-// read failure that surfaces only AFTER bootstrap.ProvisionTenant has
-// already committed the tenant (OnboardTenant's own confirmation read,
-// never seen by bootstrap itself: bootstrap only ever calls CreateTenant
-// through the narrow firstboot.TenantCreator seam).
-type onboardingFailingGetTenant struct {
+// errOnboardingReadBack is what committedOnlyTenants answers every GetTenant
+// with.
+var errOnboardingReadBack = errors.New("tenant read back after its create")
+
+// committedOnlyTenants wraps a real tenant.TenantServicer and fails every
+// GetTenant: a create answers with the record its CreateTenant committed and
+// never reads the tenant back. With autoUnseal set, CreateTenant answers as
+// the real service does for a system-managed barrier tenant, whose barrier
+// is serving by the time the record is committed; the double does not
+// register a barrier, so DeleteTenant has no record to remove.
+type committedOnlyTenants struct {
 	tenant.TenantServicer
-	err error
+	autoUnseal bool
 }
 
-func (f *onboardingFailingGetTenant) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
-	return nil, f.err
+func (c *committedOnlyTenants) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
+	if !c.autoUnseal {
+		return c.TenantServicer.CreateTenant(ctx, id, name, isolationType, opts...)
+	}
+	now := time.Now().UTC()
+	return &tenant.TenantInfo{ID: id, Name: name, IsolationType: isolationType, BarrierAutoUnseal: true, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (c *committedOnlyTenants) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
+	return nil, errOnboardingReadBack
+}
+
+// stallingAdminUsers is a user store whose CreateUser stalls until released,
+// as a raft proposal does while its shard's leader settles: the slow proposer
+// an auto-unseal tenant's admin account waits on. It closes entered when the
+// first CreateUser starts.
+type stallingAdminUsers struct {
+	user.UserServicer
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *stallingAdminUsers) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.UserServicer.CreateUser(ctx, req)
+}
+
+// signallingPendingAdmins closes deleted once a pending admin record has
+// been deleted, which is the last step of completing the admin's account.
+type signallingPendingAdmins struct {
+	tenantadmin.Store
+	deleted chan struct{}
+	once    sync.Once
+}
+
+func (s *signallingPendingAdmins) Delete(ctx context.Context, tenantID string) error {
+	if err := s.Store.Delete(ctx, tenantID); err != nil {
+		return err
+	}
+	s.once.Do(func() { close(s.deleted) })
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -351,16 +404,14 @@ func TestOnboardTenant_SettlesFailureFromProvisioning(t *testing.T) {
 	}
 }
 
-// TestOnboardTenant_SettlesFailureWhenPostProvisionGetTenantFails covers the
-// OnboardTenant-local GetTenant call made AFTER bootstrap.ProvisionTenant
-// already committed the tenant: that read failing must still settle the
-// audit record as a failure and propagate the error, even though the
-// tenant itself now exists.
-func TestOnboardTenant_SettlesFailureWhenPostProvisionGetTenantFails(t *testing.T) {
+// TestOnboardTenant_AnswersWithTheCommittedRecord proves the create answers
+// with the record its CreateTenant committed and does not read the tenant
+// back: a read after the commit spent the request's budget on one more raft
+// read, and when it failed it reported a tenant that existed as not created.
+func TestOnboardTenant_AnswersWithTheCommittedRecord(t *testing.T) {
 	ctx := context.Background()
 	deps := newOnboardingDeps(t)
-	sentinel := errors.New("read index not ready")
-	deps.Tenants = &onboardingFailingGetTenant{TenantServicer: deps.Tenants, err: sentinel}
+	deps.Tenants = &committedOnlyTenants{TenantServicer: deps.Tenants}
 	ring := audit.NewRingBuffer(16)
 	deps.Audit = ring
 
@@ -370,14 +421,99 @@ func TestOnboardTenant_SettlesFailureWhenPostProvisionGetTenantFails(t *testing.
 		t.Fatal(err)
 	}
 
-	_, err = svc.OnboardTenant(ctx, &OnboardTenantRequest{ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM})
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("OnboardTenant = %v, want it to surface the GetTenant failure %v", err, sentinel)
+	result, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{ID: "acme", Name: "Acme Corp", AdminUsername: "admin", AdminCSRPEM: csrPEM})
+	if err != nil {
+		t.Fatalf("OnboardTenant = %v, want the committed record without a read-back", err)
+	}
+	if result.Tenant == nil || result.Tenant.ID != "acme" || result.Tenant.Name != "Acme Corp" || result.Tenant.CreatedAt.IsZero() {
+		t.Fatalf("Tenant = %+v, want the committed acme record", result.Tenant)
 	}
 
 	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
-	if ev == nil || ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
-		t.Fatalf("event = %+v, want a recorded failure outcome", ev)
+	if ev == nil || ev.Outcome != audit.OutcomeSuccess {
+		t.Fatalf("event = %+v, want a recorded success outcome", ev)
+	}
+}
+
+// TestOnboardTenant_AnswersBeforeAStalledAdminStep proves a system-managed
+// (auto-unseal) barrier tenant's create answers inside the request's budget
+// with the record it committed while the admin's account creation is
+// stalled, and that the account is created once the stall clears, after the
+// request's context has ended: the admin step runs after the answer, on its
+// own bound, never on the request's.
+func TestOnboardTenant_AnswersBeforeAStalledAdminStep(t *testing.T) {
+	deps := newOnboardingDeps(t)
+	users := &stallingAdminUsers{UserServicer: deps.Users, entered: make(chan struct{}), release: make(chan struct{})}
+	deps.Users = users
+	deps.Tenants = &committedOnlyTenants{TenantServicer: deps.Tenants, autoUnseal: true}
+	pending := &signallingPendingAdmins{Store: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), deleted: make(chan struct{})}
+	deps.Pending = pending
+	ring := audit.NewRingBuffer(16)
+	deps.Audit = ring
+
+	svc := NewTenantOnboardingService(deps)
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The budget every transport gives a tenant create.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	type answer struct {
+		result *OnboardTenantResult
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		result, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+			ID: "acme", Name: "Acme Corp", IsolationType: tenant.IsolationBarrier, BarrierAutoUnseal: true,
+			AdminUsername: "admin", AdminCSRPEM: csrPEM,
+		})
+		answered <- answer{result, err}
+	}()
+	var got answer
+	select {
+	case got = <-answered:
+	case <-ctx.Done():
+		close(users.release)
+		t.Fatal("OnboardTenant did not answer inside the request's budget while the admin step stalled")
+	}
+	// The request is over: its handler's deferred cancel ends its context.
+	cancel()
+
+	if got.err != nil {
+		t.Fatalf("OnboardTenant: %v", got.err)
+	}
+	if got.result.Tenant == nil || got.result.Tenant.ID != "acme" || !got.result.Tenant.BarrierAutoUnseal || got.result.Tenant.IsolationType != tenant.IsolationBarrier {
+		t.Fatalf("Tenant = %+v, want the committed acme barrier record", got.result.Tenant)
+	}
+	if got.result.Admin.AwaitsBarrierInit {
+		t.Error("Admin.AwaitsBarrierInit = true, want false: a system-managed barrier awaits no initialization")
+	}
+	if got.result.Admin.UserID != 0 || len(got.result.Admin.CertPEM) == 0 || got.result.Admin.Thumbprint == "" {
+		t.Errorf("Admin = %+v, want the issued certificate and no account id yet", got.result.Admin)
+	}
+	if ev := findEvent(ring.Snapshot(), ActionTenantOnboard); ev == nil || ev.Outcome != audit.OutcomeSuccess {
+		t.Fatalf("event = %+v, want a recorded success outcome", ev)
+	}
+
+	select {
+	case <-users.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the admin step never started after the create answered")
+	}
+	close(users.release)
+	select {
+	case <-pending.deleted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pending admin was not completed after its stalled step was released")
+	}
+	admin, err := users.UserServicer.GetUserByUsername(context.Background(), "acme", "admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername(acme, admin): %v", err)
+	}
+	if !slices.Contains(admin.RoleIDs, role.SystemRoleID("acme", role.RoleNameAdmin)) {
+		t.Fatalf("admin RoleIDs = %v, want the tenant's Admin role", admin.RoleIDs)
 	}
 }
 

@@ -814,8 +814,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--tls-key-file", nodeKeyPaths[i],
 		}
 
-		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
-		cmds[i] = cmd
+		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[node%d-R1] ", i+1))
 	}
 
 	bootstrapNodes(t, ca, adminPorts...)
@@ -882,13 +881,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--tls-key-file", nodeKeyPaths[i],
 		}
 
-		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
-		cmds2[i] = cmd
-
-		// Register cleanup for the restarted process.
-		t.Cleanup(func() {
-			killNode(t, cmd)
-		})
+		cmds2[i] = startNode(t, bin, args, fmt.Sprintf("[node%d-R2] ", i+1))
 	}
 
 	// Phase 5: Unseal the restarted nodes and wait for all of them to become
@@ -1003,8 +996,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--tls-key-file", nodeKeyPaths[i],
 		}
 
-		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
-		cmds[i] = cmd
+		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[node%d-R1] ", i+1))
 	}
 
 	bootstrapNodes(t, ca, adminPorts...)
@@ -1047,10 +1039,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
-		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
-		t.Cleanup(func() {
-			killNode(t, cmd)
-		})
+		startNode(t, bin, args, fmt.Sprintf("[node%d-R2] ", i+1))
 	}
 
 	unsealNodes(t, ca, adminPorts...)
@@ -1166,8 +1155,7 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 	// First boot: fresh bootstrap, self-issued cluster CA.
 	for i := range 3 {
 		dataDirs[i] = t.TempDir()
-		cmd := spawnNode(t, bin, nodeArgs(i), &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
-		cmds[i] = cmd
+		cmds[i] = startNode(t, bin, nodeArgs(i), fmt.Sprintf("[node%d-R1] ", i+1))
 	}
 	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
@@ -1195,10 +1183,7 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 	// every one of them now (no CAKeyPEM on disk): this is the exact B4
 	// boundary.
 	for i := range 3 {
-		cmd := spawnNode(t, bin, nodeArgs(i), &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
-		t.Cleanup(func() {
-			killNode(t, cmd)
-		})
+		startNode(t, bin, nodeArgs(i), fmt.Sprintf("[node%d-R2] ", i+1))
 	}
 	unsealNodes(t, ca, adminPorts...)
 	for i := range 3 {

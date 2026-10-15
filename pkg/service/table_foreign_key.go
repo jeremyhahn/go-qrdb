@@ -81,7 +81,7 @@ func (s *TableService) AddForeignKey(ctx context.Context, req *CreateTableForeig
 
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.Table})
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
@@ -117,7 +117,7 @@ func (s *TableService) DropForeignKey(ctx context.Context, database, table, name
 		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: database, Name: table}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: database, Name: table})
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
@@ -159,7 +159,7 @@ func (s *TableService) UpdateForeignKey(ctx context.Context, req *UpdateTableFor
 		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
+			return nil, nil, absentAs(err, &TableNotFoundError{Database: req.Database, Name: req.Table})
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {

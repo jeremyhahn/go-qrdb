@@ -130,5 +130,12 @@ other state machine carries its own storage and rejects a non-pebble
 compiled in.** Both need the MVCC-capable engine, so they do not work over the
 file or objstore backends.
 
+**A restarted raft node has not started serving `/health`.** It is waiting on
+its cluster, and its log says on what: every 5 seconds it logs a WARN line,
+`startup read still waiting` or `startup still waiting`, naming the step, the
+time spent and the last error. A quorum of the cluster has to be running for the
+wait to end. A wait that runs out of its budget stops the start with an error
+naming the step, and the node can simply be started again.
+
 **Switching modes.** The mode is fixed at composition. Changing it is a restart,
 not a runtime operation.

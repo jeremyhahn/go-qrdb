@@ -287,6 +287,76 @@ func TestRunStartupRead_ContextEndsMidAttempt(t *testing.T) {
 
 // The attempt context ends at the earliest of its bound and the startup
 // deadline, and with its parent.
+// A read still retrying says so every ReportInterval, naming its op, so a
+// boot that has not finished is never silent until its deadline.
+func TestRunStartupRead_ReportsProgressWhileRetrying(t *testing.T) {
+	logger, logs := captureLogger()
+	_, err := RunStartupRead(context.Background(), StartupRead{
+		Op:             "settling read",
+		Budget:         300 * time.Millisecond,
+		Delay:          5 * time.Millisecond,
+		ReportInterval: 30 * time.Millisecond,
+		Logger:         logger,
+	}, func(context.Context) (int, error) {
+		return 0, quicraft.ErrReadIndexNotReady
+	})
+	var sre *StartupReadError
+	if !errors.As(err, &sre) {
+		t.Fatalf("err = %v (%T), want *StartupReadError", err, err)
+	}
+	got := logs.String()
+	if n := strings.Count(got, `level=WARN msg="startup read still waiting" op="settling read"`); n < 2 {
+		t.Errorf("%d progress lines over a 300ms wait reported every 30ms, want several; log = %q", n, got)
+	}
+}
+
+func TestRunStartupRead_ReportsAnAttemptThatOutlivesItsBound(t *testing.T) {
+	logger, logs := captureLogger()
+	_, err := RunStartupRead(context.Background(), StartupRead{
+		Op:             "write on the boot context",
+		Budget:         time.Second,
+		AttemptTimeout: 10 * time.Millisecond,
+		ReportInterval: 30 * time.Millisecond,
+		Logger:         logger,
+	}, func(context.Context) (int, error) {
+		// Ignores its attempt's context, as a step on the boot's own does.
+		time.Sleep(200 * time.Millisecond)
+		return 7, nil
+	})
+	if err != nil {
+		t.Fatalf("RunStartupRead: %v", err)
+	}
+	got := logs.String()
+	if n := strings.Count(got, `level=WARN msg="startup read still waiting" op="write on the boot context"`); n < 2 {
+		t.Errorf("%d progress lines over a 200ms attempt reported every 30ms, want several; log = %q", n, got)
+	}
+}
+
+// A read that succeeds within the report interval logs nothing: progress
+// lines are for waits, not for every retry.
+func TestRunStartupRead_QuietWithinReportInterval(t *testing.T) {
+	logger, logs := captureLogger()
+	calls := 0
+	v, err := RunStartupRead(context.Background(), StartupRead{
+		Op:     "quick read",
+		Budget: time.Minute,
+		Delay:  time.Millisecond,
+		Logger: logger,
+	}, func(context.Context) (int, error) {
+		calls++
+		if calls < 3 {
+			return 0, quicraft.ErrReadIndexNotReady
+		}
+		return 7, nil
+	})
+	if err != nil || v != 7 {
+		t.Fatalf("RunStartupRead = %d, %v; want 7, nil", v, err)
+	}
+	if got := logs.String(); got != "" {
+		t.Errorf("a read that succeeded at once logged %q", got)
+	}
+}
+
 func TestStartupReadAttemptContext(t *testing.T) {
 	giveUpAt := time.Now().Add(50 * time.Millisecond)
 	actx, cancel := StartupReadAttemptContext(context.Background(), giveUpAt, time.Hour)

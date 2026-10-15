@@ -163,6 +163,9 @@ type TimeoutError struct {
 	Target  string
 	Timeout time.Duration
 	LastErr error
+	// StackDumped lists the daemons sent SIGQUIT when the wait gave up;
+	// each one's goroutine dump is in its output.
+	StackDumped []int
 }
 
 // Error returns a human-readable description.
@@ -170,6 +173,9 @@ func (e *TimeoutError) Error() string {
 	msg := errPrefix + e.Op + ": timed out after " + e.Timeout.String() + " waiting for " + e.Target
 	if e.LastErr != nil {
 		msg += " (last: " + e.LastErr.Error() + ")"
+	}
+	for _, pid := range e.StackDumped {
+		msg += "; sent SIGQUIT to daemon pid " + strconv.Itoa(pid) + ", its goroutine dump is in its output"
 	}
 	return msg
 }

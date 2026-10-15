@@ -197,7 +197,7 @@ func waitForNShardOwners(t *testing.T, client *http.Client, ports []int, wantCou
 		var owners []int
 		for i, port := range ports {
 			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-			body, status := iraftAPIGet(t, client, rawURL)
+			body, status := iraftAPIGetTolerant(t, client, rawURL)
 			if status != http.StatusOK {
 				continue
 			}
@@ -412,7 +412,7 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	var dbInfoStatus int
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		dbInfoData, dbInfoStatus = iraftAPIGet(t, tenantClient,
+		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, rebalMoveDBName))
 		if dbInfoStatus == http.StatusOK && len(dbInfoData) > 0 {
 			break

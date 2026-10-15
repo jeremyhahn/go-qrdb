@@ -157,10 +157,10 @@ code. The embedded transport returns the typed error itself.
 | `OutOfRange` | Revision below the compaction floor | 416 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
 | `Canceled` | Work stopped (`context.Canceled`, a canceled watch) | 500 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
 | `DataLoss` | Persisted or secondary state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
-| `Unavailable` | Barrier sealed, seal state unconfirmed (`SEAL_STATE_UNCONFIRMED`, retryable — not sealed), store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
+| `Unavailable` | Barrier sealed, seal state unconfirmed (`SEAL_STATE_UNCONFIRMED`, retryable — not sealed), store closed, not leader, draining, a raft request whose wait ran out (`quicraft: timeout`) | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
 | `Unimplemented` | Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
 | — | Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
-| `DeadlineExceeded` | The caller's deadline passed before the operation completed (`context.DeadlineExceeded`), or a module's origin said so | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
+| `DeadlineExceeded` | The caller's deadline passed before the operation completed (`context.DeadlineExceeded`), or a module's origin said so; raft reports its own wait running out as `quicraft: timeout`, which is `Unavailable` | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
 | — | A module's origin could not classify | — | `UNKNOWN` | `StatusUnknown` (16) | `UNKNOWN` (−32018) |
 | `Internal`, or unclassified | Server fault | 500 | `INTERNAL` | `StatusError` (1) | `INTERNAL` (−32603) |
 

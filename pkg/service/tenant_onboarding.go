@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -36,6 +37,11 @@ const ActionTenantOnboard = "tenant.onboard"
 // tenantOnboardingAuditComponent labels an onboarding record that could not
 // be written, on qrdb_audit_write_failures_total{component=...}.
 const tenantOnboardingAuditComponent = "tenant-onboarding"
+
+// tenantOnboardingSettleTimeout bounds the write of an onboarding's outcome
+// record, which is made after the tenant is committed or refused and so
+// does not ride on the request's budget.
+const tenantOnboardingSettleTimeout = 5 * time.Second
 
 // TenantOnboardingServicer is the one service every transport's tenant-create
 // verb delegates to. A tenant is created with its first admin's login
@@ -99,7 +105,6 @@ type TenantAdminCredential struct {
 // tenantOnboardingTenants is the slice of the tenant service onboarding needs.
 type tenantOnboardingTenants interface {
 	CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error)
-	GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
 	DeleteTenant(ctx context.Context, tenantID string) error
 }
 
@@ -212,6 +217,9 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 			return nil, err
 		}
 	}
+	// The outcome is recorded after the tenant is committed or refused, so
+	// it does not ride on the request's budget, which the provisioning may
+	// have spent: it writes on its own bound.
 	settle := func(err error) {
 		if s.audit == nil {
 			return
@@ -221,9 +229,22 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		} else {
 			ev.Outcome = audit.OutcomeFailure + ":onboard-failed"
 		}
-		audit.EmitBestEffort(ctx, s.audit, tenantOnboardingAuditComponent, ev)
+		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tenantOnboardingSettleTimeout)
+		defer cancel()
+		audit.EmitBestEffort(actx, s.audit, tenantOnboardingAuditComponent, ev)
 	}
 
+	deps := bootstrap.Dependencies{
+		Tenants:        s.tenants,
+		Users:          s.users,
+		Roles:          s.roles,
+		Signer:         &bootstrap.KeyBSigner{Certs: s.certs},
+		TrustAnchors:   s.anchors,
+		PendingAdmins:  s.pending,
+		BarrierAnchors: s.barrierPins,
+		TrustDomain:    s.trustDomain,
+		Logger:         s.logger,
+	}
 	result, err := bootstrap.ProvisionTenant(ctx, bootstrap.TenantProvisionConfig{
 		TenantID:        req.ID,
 		DisplayName:     req.Name,
@@ -236,29 +257,24 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		CreateOptions:   opts,
 		AdminEnrollment: bootstrap.AdminEnrollCert,
 		Exclusive:       true,
-	}, bootstrap.Dependencies{
-		Tenants:        s.tenants,
-		Users:          s.users,
-		Roles:          s.roles,
-		Signer:         &bootstrap.KeyBSigner{Certs: s.certs},
-		TrustAnchors:   s.anchors,
-		PendingAdmins:  s.pending,
-		BarrierAnchors: s.barrierPins,
-		TrustDomain:    s.trustDomain,
-		Logger:         s.logger,
-	})
+	}, deps)
 	if err != nil {
 		settle(err)
 		return nil, err
 	}
-	info, err := s.tenants.GetTenant(ctx, req.ID)
-	if err != nil {
-		settle(err)
-		return nil, err
+	if result.AdminCompletionDue {
+		// The admin's account is a chain of raft writes after the commit:
+		// it completes alongside the answer, retried on its own bound, never
+		// on the request's. A completion that runs out of its bound is
+		// finished by the tenant's next barrier unseal or status read.
+		go s.completeAdmin(context.WithoutCancel(ctx), req.ID, deps)
 	}
 	settle(nil)
+	// The record the create committed is the answer: reading it back would
+	// spend the request's budget on one more read and, failing, report a
+	// committed tenant as not created.
 	return &OnboardTenantResult{
-		Tenant: info,
+		Tenant: result.Tenant,
 		Admin: TenantAdminCredential{
 			UserID:            result.AdminUserID,
 			Username:          result.AdminUsername,
@@ -268,4 +284,20 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 			AwaitsBarrierInit: result.AdminAwaitsBarrierInit,
 		},
 	}, nil
+}
+
+// completeAdmin creates the account of a tenant admin whose barrier was
+// serving when the tenant was committed (bootstrap's AdminCompletionDue),
+// retried within bootstrap's default bounds, and logs how it ended.
+func (s *TenantOnboardingService) completeAdmin(ctx context.Context, tenantID string, deps bootstrap.Dependencies) {
+	done, err := bootstrap.CompletePendingTenantAdminWithin(ctx, tenantID, deps, bootstrap.AdminCompletionBounds{})
+	switch {
+	case err == nil && done:
+		s.logger.Info("tenant admin account created after its tenant's create answered",
+			slog.String("tenant", tenantID))
+	case err == nil:
+	default:
+		s.logger.Error("tenant admin completion stopped; the tenant's next barrier unseal or status read completes it",
+			slog.String("tenant", tenantID), slog.Any("error", err))
+	}
 }
