@@ -192,6 +192,7 @@ row.
 | release-readiness | planned | Release readiness for the public release. | #565, [release/](release/) |
 | arm64-release | planned | linux-arm64 and linux-arm64 FIPS artifacts from the release workflow; the integration suite run once on arm64 before the RC. | #702, [release/](release/) |
 | seal-pause-resume | planned | `service.SealWholeNode` pauses every shard the node hosts, the system shard included (no proposals, no applies, state kept), through go-quicraft's `Host.PauseShard`: the seal record commits, the shards are paused (`PauseShard` returns once nothing is in flight), then the keys are wiped; unseal restores the keys, then calls `Host.ResumeShard`; go-quicraft's `ErrShardPaused` answers Unavailable on every transport; nothing shuts a shard down. The consuming side of the seam with go-quicraft, pending go-quicraft's `shard-pause` row (go-quicraft#353). | [barrier-seal/](barrier-seal/) |
+| verifiable-log | planned | A database type created per tenant like key-value, time-series and vector: append-only (no update, no delete), sequence-numbered entries, a Merkle tree over them, inclusion proofs and consistency proofs between tree sizes, checkpoints, and tree heads signed by the log owner's own key (the CA key for go-xkms's transparency log, a tenant key for a tenant's own log); served on every transport and in the SDK with the tenant's isolation, DEK, barrier and replication; no PKI semantics. Engine surface: create, append, get, proof-inclusion, proof-consistency, head, and a sign-head hook. It generalises `pkg/audit.Chain` with no new state machine, in standalone and Raft modes: one apply-time opcode behind a feature gate for mixed-version groups, dispatched by both state-machine families, the sequence assigned at apply; a head's signature is produced outside apply by the owner's key and appended as a record; the audit trail becomes one log instance. The provider side of the seam with go-xkms's transparency log. | [databases/](databases/) |
 | range-delete | future | An engine range delete, so reclaiming a dropped database is not one proposal per key. | #457, [key-value/](key-value/) |
 | dead-code-triage | future | Triage the unreachable symbols; wiring is an answer as well as deletion. | #350, [release/](release/) |
 | barrier-passphrase-change | future | A supported passphrase change for the system barrier, for embedders. | #631, [barrier-seal/](barrier-seal/) |
@@ -223,7 +224,7 @@ row.
 
 ## Release criteria
 
-The [Release candidate](../../milestone/12) milestone is the public release. It closes when:
+The [Dev complete](../../milestone/12) milestone is the public release. It closes when:
 
 1. every issue in the milestone is closed: #20, #22, #118, #145, #565, #646,
    #649, #650, #655, #657, #658, #670, #678; and

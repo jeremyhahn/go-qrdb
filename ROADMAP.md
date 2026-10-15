@@ -11,7 +11,7 @@ The cluster engine and database system for every project in the stack: embedded,
 ## Milestones
 
 - [Working fundamentally: Raft clustering and storage](../../milestone/28) — 5 open, 1 closed, due 2026-10-27 — closes when main is green on every on-push job for three consecutive pushes and the qrdb-3-node-proven gate has passed on the three-node cluster; order go-quicraft, go-qrdb, go-xkms, go-quicbaas — cluster-verification, sealed-mode-serving — open
-- [Release candidate](../../milestone/12) — 13 open, 22 closed, due 2026-11-02 — the public release; the version is confirmed at the owner's publish approval; criteria in [docs/SPEC.md, Release criteria](docs/SPEC.md#release-criteria) — lease-reads, auth-factor-claim, protected-memory, storage-compare-and-swap, request-context-dpop, fips-140-3, documentation, identity-hydrator, release-readiness — open
+- [Dev complete](../../milestone/12) — 13 open, 22 closed, due 2026-11-09 — the public release; the version is confirmed at the owner's publish approval; criteria in [docs/SPEC.md, Release criteria](docs/SPEC.md#release-criteria) — lease-reads, auth-factor-claim, protected-memory, storage-compare-and-swap, request-context-dpop, fips-140-3, documentation, identity-hydrator, release-readiness, verifiable-log — open
 
 ## Complete
 
@@ -84,6 +84,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **numeric-index-ranges** — numeric RANGE plans order numerically — [#35](../../issues/35) — [docs/secondary-indexes/](docs/secondary-indexes/) — open
 - **ci-actionlint** — `make lint` runs actionlint — [#636](../../issues/636); PR [#651](../../pulls/651) — [docs/release/](docs/release/) — in review
 - **port-reservation-package** — decide the shared port-reservation package — [#306](../../issues/306) — no folder — open
+- **verifiable-log** — an append-only, Merkle-tree database type per tenant with inclusion and consistency proofs and owner-signed tree heads; the provider side of the seam, consumed by go-xkms's transparency log — [docs/databases/](docs/databases/) — open
 
 ## Later
 
