@@ -429,10 +429,11 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 // start.go: runStart — awaitUnseal error return (lines 956-958)
 // ---------------------------------------------------------------------------
 
-// TestRunStart_SealEnabled_AwaitUnsealFails covers start.go:956-958 by
-// enabling the seal subsystem and pointing the admin port at an occupied port so that
-// awaitUnseal's srv.Start() fails, returning a SealedListenerStartupError.
-// runStart then returns that error at line 957 (not as awaitUnsealCanceled).
+// TestRunStart_SealEnabled_AwaitUnsealFails enables the seal subsystem and
+// points the admin port at an occupied port, so the sockets the sealed-window
+// listener is to serve on cannot be bound. runStart returns a
+// SealedListenerStartupError wrapping the ServerSocketBindError (not
+// awaitUnsealCanceled).
 func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 	dir := t.TempDir()
 
@@ -467,6 +468,10 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 	var listenerErr *SealedListenerStartupError
 	require.True(t, errors.As(err, &listenerErr),
 		"expected SealedListenerStartupError, got %T: %v", err, err)
+	var bindErr *ServerSocketBindError
+	require.True(t, errors.As(err, &bindErr),
+		"expected the bind failure to unwrap to ServerSocketBindError, got %v", err)
+	require.Equal(t, "rest", bindErr.Protocol)
 }
 
 // ---------------------------------------------------------------------------

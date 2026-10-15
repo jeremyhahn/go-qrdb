@@ -80,6 +80,8 @@ var WithServerTLS        = qrdbserver.WithTLS
 var WithRESTListener     = qrdbserver.WithRESTListener
 var WithRESTPacketConn   = qrdbserver.WithRESTPacketConn
 var WithGRPCListener     = qrdbserver.WithGRPCListener
+var WithQUICPacketConn   = qrdbserver.WithQUICPacketConn
+var WithMCPListener      = qrdbserver.WithMCPListener
 
 type ServiceModule                = apimodule.ServiceModule
 type BaseModule                   = apimodule.BaseModule

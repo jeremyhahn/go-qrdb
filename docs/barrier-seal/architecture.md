@@ -310,6 +310,20 @@ Custody is per node. A Shamir barrier is unsealed only by a quorum of its own
 authenticated share holders ([../shamir-custody/](../shamir-custody/)); nodes
 never exchange shares.
 
+Because each node is unsealed on its own, a cluster's nodes come back minutes
+apart. **A node that has unsealed waits for its system shard's leader for as
+long as it runs** — until a quorum of its peers is running and unsealed too —
+and logs `waiting for a Raft leader` while it does; it serves nothing until
+then. It never gives up and exits, because a node that left would be the one
+its peers are waiting on. The same holds after the in-process restart a system
+encryption migration performs, where every node recycles and is unsealed in
+turn. Through the sealed window, the unseal and that wait the node keeps every
+port it serves on bound — REST, the HTTP/3 socket beside it, gRPC, the QUIC
+transport and MCP — and hands the same sockets from the sealed-window listener
+to its own server, so no other process on the host can take one meanwhile
+(see "Pre-bound sockets" in
+[the API server architecture](../api-server/architecture.md)).
+
 
 ## Sealing in a cluster
 

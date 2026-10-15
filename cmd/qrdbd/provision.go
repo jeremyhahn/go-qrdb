@@ -51,7 +51,8 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // marker, a Raft write, so it first waits for that shard to know its
 // leader: a proposal made before any leader is elected is refused rather
 // than queued, and a follower's proposal is forwarded only once it knows
-// where to. The wait is bounded by leaderWaitBudget(f) and by ctx.
+// where to. The wait runs in rounds of leaderWaitBudget(f) and ends only
+// with ctx.
 //
 // awaitLeader only confirms a leader is locally KNOWN, not that the shard
 // has finished settling onto it (the same ReadIndex warm-up / election

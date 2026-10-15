@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,20 +77,24 @@ func TestAwaitLeader_CancelStopsTheWaitAtOnce(t *testing.T) {
 // TestAwaitLeader_BudgetExhaustedNamesShardAndBudget asserts the typed error a
 // wait that runs out of budget returns, and that its message carries the
 // shard and how long it waited.
-func TestAwaitLeader_BudgetExhaustedNamesShardAndBudget(t *testing.T) {
+func TestAwaitLeader_ExhaustedRoundsDoNotEndTheWait(t *testing.T) {
+	// The leader becomes known only after several rounds of the budget have
+	// run out -- a quorum unsealed long after this node. Each exhausted round
+	// is logged and the wait goes on, so the leader is still found.
+	const budget = 50 * time.Millisecond
+	const leaderAfter = 4 * budget
+	start := time.Now()
 	node := &mockRaftNode{
-		getLeaderFn: func(uint64) (uint64, bool, error) { return 0, false, nil },
+		getLeaderFn: func(uint64) (uint64, bool, error) {
+			if time.Since(start) < leaderAfter {
+				return 0, false, nil
+			}
+			return 1, true, nil
+		},
 	}
-	const budget = 100 * time.Millisecond
 
-	err := awaitLeader(context.Background(), node, budget, 7)
-	var we *server.ShardLeaderWaitError
-	require.ErrorAs(t, err, &we)
-	assert.Equal(t, uint64(7), we.ShardID)
-	assert.Equal(t, budget, we.Timeout)
-	assert.GreaterOrEqual(t, we.Elapsed, budget)
-	assert.True(t, strings.Contains(err.Error(), "shard 7"), "message %q does not name the shard", err)
-	assert.True(t, strings.Contains(err.Error(), budget.String()), "message %q does not name the budget", err)
+	require.NoError(t, awaitLeader(context.Background(), node, budget, 7))
+	assert.GreaterOrEqual(t, time.Since(start), leaderAfter)
 }
 
 // TestWaitForLeaderElection_ReportsTheLeaderWaitAsAnAuthBootstrapStep asserts
@@ -100,15 +103,16 @@ func TestWaitForLeaderElection_ReportsTheLeaderWaitAsAnAuthBootstrapStep(t *test
 	node := &mockRaftNode{
 		getLeaderFn: func(uint64) (uint64, bool, error) { return 0, false, nil },
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
 
-	err := waitForLeaderElection(context.Background(), node, 50*time.Millisecond, 3)
+	err := waitForLeaderElection(ctx, node, 50*time.Millisecond, 3)
 	var abe *AuthBootstrapError
 	require.ErrorAs(t, err, &abe)
 	assert.Equal(t, "wait for leader", abe.Step)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	var we *server.ShardLeaderWaitError
-	require.ErrorAs(t, err, &we)
-	assert.Equal(t, uint64(3), we.ShardID)
-	assert.True(t, errors.Is(err, server.ErrTenantShardNoLeader))
+	assert.False(t, errors.As(err, &we), "an exhausted round of the budget must not end the wait: %v", err)
 }
 
 // TestLeaderWaitBudget_MultiNodeIsElectionsAtQuicraftDefaults: a clustered

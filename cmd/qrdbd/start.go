@@ -1503,6 +1503,12 @@ func runStart(f *startFlags) (err error) {
 	// and the envelopes a migration to Shamir has just distributed; a fresh
 	// instance would lose them and leave a sealed barrier no holder can open.
 	var carriedCeremony *ceremony.CeremonyService
+	// The API servers' sockets outlive every server this process runs -- the
+	// sealed-window listener, the node's own server, and the one each boot
+	// iteration rebuilds -- so no handover between them releases a port
+	// (serverSockets).
+	var sockets serverSockets
+	defer sockets.Close()
 	for {
 		var rebootForMigration bool
 		bootErr := func() error {
@@ -1653,7 +1659,15 @@ func runStart(f *startFlags) (err error) {
 			// survive into the post-unseal service graph.
 			var sealedWindowNode *lifecycle.Node
 			if sealSub != nil && sealSub.SealBarrier.IsSealed() {
-				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA, carriedCeremony, complianceAudit)
+				sealedCfg, err := buildServerConfig(f)
+				if err != nil {
+					return err
+				}
+				handover, err := sockets.options(sealedCfg)
+				if err != nil {
+					return &SealedListenerStartupError{Err: err}
+				}
+				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA, carriedCeremony, complianceAudit, handover...)
 				if err == nil && barrierUnsealed != nil {
 					barrierUnsealed()
 				}
@@ -2869,6 +2883,15 @@ func runStart(f *startFlags) (err error) {
 			dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 			dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shard.ShardKV))
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
+
+			// The sockets the sealed-window listener served on, if it ran;
+			// bound here otherwise.
+			handover, err := sockets.options(serverCfg)
+			if err != nil {
+				_ = shutdownNode(nodeCloser)
+				return err
+			}
+			serverOpts = append(serverOpts, handover...)
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
 			if err := srv.Start(); err != nil {
@@ -4856,12 +4879,33 @@ func leaderWaitBudget(f *startFlags) time.Duration {
 	return leaderWaitElections * electionTimeout
 }
 
-// awaitLeader waits until shardID has a known leader, for at most leaderWait
-// and no longer than ctx allows. It returns *server.ShardLeaderWaitError --
-// naming the shard, the budget and the time actually spent -- when none is
-// elected, or ctx's error when ctx ends first.
+// awaitLeader waits until shardID has a known leader for as long as ctx lives,
+// and returns ctx's error if it ends first. The wait has no budget of its own:
+// each node is unsealed by its own operator, so a quorum can form minutes
+// after this node is ready -- and after a system encryption migration's
+// in-process restart, only once the peers have restarted and been unsealed
+// too. A node that gave up instead would exit, and its peers would then be
+// waiting on it.
+//
+// leaderWait (leaderWaitBudget) is the length of one round of the wait. A
+// round that ends without a leader is logged with its
+// *server.ShardLeaderWaitError -- naming the shard, the budget and the time
+// actually spent -- and the next round begins.
 func awaitLeader(ctx context.Context, node server.LeaderSource, leaderWait time.Duration, shardID uint64) error {
-	return server.WaitForShardLeader(ctx, node, shardID, leaderWait)
+	if _, ok, err := node.GetLeaderID(shardID); err == nil && ok {
+		return nil
+	}
+	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",
+		"shard_id", shardID)
+	for {
+		err := server.WaitForShardLeader(ctx, node, shardID, leaderWait)
+		var we *server.ShardLeaderWaitError
+		if !errors.As(err, &we) {
+			return err
+		}
+		slog.Warn("still waiting for a Raft leader; a quorum of members must be running and unsealed",
+			"shard_id", shardID, "error", err)
+	}
 }
 
 // adminExists checks whether the admin user already exists using a local

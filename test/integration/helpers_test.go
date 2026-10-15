@@ -2796,6 +2796,45 @@ func createVolumePoolREST(t *testing.T, client *http.Client, adminPort int, name
 	}
 }
 
+// waitForVolumePoolReady blocks until the volume pool's detail reports
+// nodes rows, every one "ready". Those rows are exactly what raft placement's
+// volume-pool filter admits a node on, so a test that places replicas right
+// after creating the pool waits on this rather than racing each node's first
+// report.
+func waitForVolumePoolReady(t *testing.T, client *http.Client, adminPort int, name string, nodes int, timeout time.Duration) {
+	t.Helper()
+	url := fmt.Sprintf("https://127.0.0.1:%d/v1/volume-pools/%s", adminPort, name)
+	deadline := time.Now().Add(timeout)
+	for {
+		body, status := iraftAPIGet(t, client, url)
+		if status == http.StatusOK {
+			var detail struct {
+				NodeReports []struct {
+					NodeID string `json:"nodeId"`
+					State  string `json:"state"`
+				} `json:"nodeReports"`
+			}
+			if err := json.Unmarshal(body, &detail); err != nil {
+				t.Fatalf("decode volume pool %q: %v, body: %s", name, err, body)
+			}
+			ready := 0
+			for _, row := range detail.NodeReports {
+				if row.State == "ready" {
+					ready++
+				}
+			}
+			if ready >= nodes {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("volume pool %q: %d node(s) not all ready after %v, last status %d, body: %s",
+				name, nodes, timeout, status, body)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // createVolumePoolCLI registers a named pool in the replicated catalog via
 // the CLI's "volume-pool create" verb. Same rationale as
 // createVolumePoolREST, for fixtures that drive tenant placement through

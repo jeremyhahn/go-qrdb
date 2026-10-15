@@ -1094,7 +1094,7 @@ type Node struct {
 
 	// preboundSockets are the listeners and packet conns the caller handed
 	// over through server.WithRESTListener / WithRESTPacketConn /
-	// WithGRPCListener. Each server lifetime serves on them without closing
+	// WithGRPCListener / WithQUICPacketConn / WithMCPListener. Each server lifetime serves on them without closing
 	// them, so a data-plane rebuild keeps its ports; Close closes them.
 	preboundSockets []io.Closer
 

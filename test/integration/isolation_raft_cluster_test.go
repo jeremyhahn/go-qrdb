@@ -177,6 +177,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
+	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
 	// ---------------------------------------------------------------------------
 	// Phase 2: Create tenant "t1" with IsolationRaft + barrier_auto_unseal.

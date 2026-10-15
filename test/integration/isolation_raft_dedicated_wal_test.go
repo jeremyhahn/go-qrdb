@@ -160,6 +160,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
+	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
 	// ---------------------------------------------------------------------------
 	// Phase 2: tenant + role + user.

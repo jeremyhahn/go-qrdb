@@ -37,15 +37,29 @@ func TestPreboundSocketOptions(t *testing.T) {
 		t.Fatalf("listen udp: %v", err)
 	}
 	t.Cleanup(func() { _ = pc.Close() })
+	mcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = mcpLn.Close() })
+	quicPC, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = quicPC.Close() })
 
 	var o serverOptions
 	WithRESTListener(restLn)(&o)
-	if o.restListener != restLn || o.restPacketConn != nil || o.grpcListener != nil {
+	if o.restListener != restLn || o.restPacketConn != nil || o.grpcListener != nil ||
+		o.quicPacketConn != nil || o.mcpListener != nil {
 		t.Fatalf("WithRESTListener set %+v", o)
 	}
 	WithRESTPacketConn(pc)(&o)
 	WithGRPCListener(grpcLn)(&o)
-	if o.restListener != restLn || o.restPacketConn != pc || o.grpcListener != grpcLn {
+	WithQUICPacketConn(quicPC)(&o)
+	WithMCPListener(mcpLn)(&o)
+	if o.restListener != restLn || o.restPacketConn != pc || o.grpcListener != grpcLn ||
+		o.quicPacketConn != quicPC || o.mcpListener != mcpLn {
 		t.Fatalf("options did not each record their own socket: %+v", o)
 	}
 
@@ -53,7 +67,10 @@ func TestPreboundSocketOptions(t *testing.T) {
 	WithRESTListener(nil)(&zero)
 	WithRESTPacketConn(nil)(&zero)
 	WithGRPCListener(nil)(&zero)
-	if zero.restListener != nil || zero.restPacketConn != nil || zero.grpcListener != nil {
+	WithQUICPacketConn(nil)(&zero)
+	WithMCPListener(nil)(&zero)
+	if zero.restListener != nil || zero.restPacketConn != nil || zero.grpcListener != nil ||
+		zero.quicPacketConn != nil || zero.mcpListener != nil {
 		t.Fatal("a nil socket must leave the server binding its configured port")
 	}
 }

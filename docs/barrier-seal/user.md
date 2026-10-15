@@ -236,7 +236,10 @@ the node's seal probe, and reconnect once the node serves again. A sealed
 record is not a window: the barrier it names stays refused until it is
 unsealed.
 
-**Unsealing is per node.** Every node unseals with its own credential.
+**Unsealing is per node.** Every node unseals with its own credential. Take
+the nodes at whatever pace you need: a node unsealed ahead of the others logs
+`waiting for a Raft leader` and waits, serving nothing, until enough of its
+peers are unsealed to form a quorum.
 
 - *A tenant or database:* unseal it on each node that serves it. The first
   unseal also clears the cluster record.

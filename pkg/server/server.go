@@ -361,13 +361,16 @@ type serverOptions struct {
 	clusterJoinStore       kvstore.AtomicKVStore
 	clusterJoinTrustDomain string
 
-	// restListener, restPacketConn and grpcListener are sockets the embedder
-	// pre-bound (WithRESTListener, WithRESTPacketConn, WithGRPCListener,
-	// go-qrdb#374). Each replaces the bind of the corresponding configured
-	// port.
+	// restListener, restPacketConn, grpcListener, quicPacketConn and
+	// mcpListener are sockets the embedder pre-bound (WithRESTListener,
+	// WithRESTPacketConn, WithGRPCListener, WithQUICPacketConn,
+	// WithMCPListener, go-qrdb#374). Each replaces the bind of the
+	// corresponding configured port.
 	restListener   net.Listener
 	restPacketConn net.PacketConn
 	grpcListener   net.Listener
+	quicPacketConn net.PacketConn
+	mcpListener    net.Listener
 
 	// grpcMaxConcurrentStreams carries an embedder's explicit opt-in into the
 	// TCP gRPC and Unix socket servers' per-connection stream cap; see
@@ -503,6 +506,24 @@ func WithRESTPacketConn(pc net.PacketConn) ServerOption {
 func WithGRPCListener(ln net.Listener) ServerOption {
 	return func(o *serverOptions) {
 		o.grpcListener = ln
+	}
+}
+
+// WithQUICPacketConn makes the native QUIC server serve on pc, a UDP socket
+// the embedder has already bound, instead of binding server.quic_port. See
+// WithRESTListener for why and for ownership.
+func WithQUICPacketConn(pc net.PacketConn) ServerOption {
+	return func(o *serverOptions) {
+		o.quicPacketConn = pc
+	}
+}
+
+// WithMCPListener makes the MCP server serve on ln, a TCP listener the
+// embedder has already bound, instead of binding mcp.port. See
+// WithRESTListener for why and for ownership.
+func WithMCPListener(ln net.Listener) ServerOption {
+	return func(o *serverOptions) {
+		o.mcpListener = ln
 	}
 }
 
@@ -2332,6 +2353,9 @@ func (s *Server) startQUIC() error {
 		quicapi.WithMaxStreamsPerConn(s.config.Transport.ResolvedMaxStreamsPerConn()),
 		quicapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
 	)
+	if s.opts.quicPacketConn != nil {
+		quicOpts = append(quicOpts, quicapi.WithPacketConn(newLifetimePacketConn(s.opts.quicPacketConn)))
+	}
 	if s.opts.userSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithUserService(s.opts.userSvc))
 	}
@@ -2659,6 +2683,13 @@ func (s *Server) startMCP() error {
 		mcpapi.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
 		mcpapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
 	)
+	if s.opts.mcpListener != nil {
+		ln, err := newLifetimeListener("mcp", s.opts.mcpListener)
+		if err != nil {
+			return err
+		}
+		mcpOpts = append(mcpOpts, mcpapi.WithListener(ln))
+	}
 	if s.opts.authMW != nil {
 		// Authenticate the mTLS peer and authorize every tool call
 		// (default-deny). Parity with REST/gRPC/QUIC.

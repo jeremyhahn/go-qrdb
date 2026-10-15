@@ -109,6 +109,10 @@ type Server struct {
 	httpSrv   *http.Server
 	listener  net.Listener
 
+	// preboundListener is the listener the embedder bound and handed over
+	// (WithListener). When set, Start serves on it instead of binding addr.
+	preboundListener net.Listener
+
 	// toolPerms is the single source of truth for per-tool authorization.
 	// addTools populates it from each tool's registration-site permission
 	// declaration (the serverTool.Perm field), so every tool declares its
@@ -198,6 +202,17 @@ const ProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource"
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithListener makes Start serve HTTPS on ln instead of binding the server's
+// address. The caller binds it and hands it over, so the port is never
+// released between reservation and serving -- the sealed-window handover
+// relies on this to hold the MCP port from the first boot-time listener to
+// the regular server (go-qrdb#693). ln must be a plain TCP listener: Start
+// wraps it in TLS. The server owns ln from Start on and closes it in Stop, or
+// in Start when it refuses to serve.
+func WithListener(ln net.Listener) ServerOption {
+	return func(s *Server) { s.preboundListener = ln }
+}
 
 // WithMaxBodyBytes bounds every authenticated request body this server
 // reads. n <= 0 leaves the package default (maxRequestBodyBytes) in
@@ -876,9 +891,11 @@ func (s *Server) Start() error {
 	// A WithTLS config with an explicitly weak MinVersion was rejected at
 	// option-application time; surface it now.
 	if s.tlsErr != nil {
+		s.closePrebound()
 		return s.tlsErr
 	}
 	if s.publicToolsErr != nil {
+		s.closePrebound()
 		return s.publicToolsErr
 	}
 	// TLS-only: fail closed rather than bind a plaintext listener. The
@@ -886,12 +903,16 @@ func (s *Server) Start() error {
 	// auto-provisioned from the node CA); a nil here means a direct caller
 	// tried to start the raw server without TLS.
 	if s.tlsConfig == nil {
+		s.closePrebound()
 		return &TLSNotConfiguredError{}
 	}
 
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return &StartError{Addr: s.addr, Err: err}
+	ln := s.preboundListener
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", s.addr); err != nil {
+			return &StartError{Addr: s.addr, Err: err}
+		}
 	}
 
 	// Bound the number of simultaneously open connections BEFORE anything
@@ -1014,6 +1035,14 @@ func (s *Server) Stop() {
 		s.forwarder.close()
 	}
 	slog.Info("MCP server stopped")
+}
+
+// closePrebound closes a pre-bound listener Start refused to serve on, so the
+// listener handed over is not leaked.
+func (s *Server) closePrebound() {
+	if s.preboundListener != nil {
+		_ = s.preboundListener.Close()
+	}
 }
 
 // Addr returns the listener address. Useful for tests that use port 0.

@@ -17,7 +17,10 @@
 package main
 
 import (
+	"sync"
 	"syscall"
+	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,4 +35,45 @@ func reusePort(_, _ string, c syscall.RawConn) error {
 		return err
 	}
 	return sockErr
+}
+
+// TestPortHold_TakesThePortFromAHolderItCannotReach: a holder that has the
+// port bound but accepts nowhere refuses the guard's dial, so await has no
+// connection to wait on. The guard must still take the port when that holder
+// lets go, not give up on its first failed listen.
+func TestPortHold_TakesThePortFromAHolderItCannotReach(t *testing.T) {
+	port := freeHoldPort(t)
+	letGo := bindWithoutListen(t, port)
+	h := holdPort(port)
+	t.Cleanup(h.release)
+	// Let await dial, be refused and find the port still taken, so the
+	// holder lets go only after the guard has had to fall back on polling.
+	time.Sleep(4 * portHoldRetryInterval)
+	select {
+	case <-h.armed:
+		t.Fatalf("the guard reported port %d armed while another socket had it bound", port)
+	default:
+	}
+	letGo()
+	awaitArmed(t, h)
+	assertPortHeld(t, port)
+}
+
+// bindWithoutListen binds port on the IPv4 wildcard address without
+// listening or SO_REUSEADDR, so the port is taken but a dial to it is
+// refused. It returns the function that closes the socket, which t's cleanup
+// also calls.
+func bindWithoutListen(t *testing.T, port int) func() {
+	t.Helper()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	var once sync.Once
+	letGo := func() { once.Do(func() { _ = unix.Close(fd) }) }
+	t.Cleanup(letGo)
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: port}); err != nil {
+		t.Fatalf("bind port %d without listening: %v", port, err)
+	}
+	return letGo
 }

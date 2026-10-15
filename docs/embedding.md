@@ -319,7 +319,9 @@ n, err := node.NewStandaloneNode(ctx, cfg, []server.ServerOption{
 
 The node owns the sockets from then on: every server it builds — including the
 one an in-process encryption migration rebuilds — serves on them, and
-`Node.Close` closes them. See
+`Node.Close` closes them. `server.WithQUICPacketConn` and
+`server.WithMCPListener` do the same for the QUIC transport and MCP when those
+protocols are enabled. See
 [api-server/architecture.md](api-server/architecture.md#pre-bound-sockets).
 
 ---

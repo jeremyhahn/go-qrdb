@@ -1268,10 +1268,10 @@ func TestRunFirstBoot_FollowerWaitsForReplication(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runFirstBoot: no leader after max attempts
+// runFirstBoot: no leader before the context ends
 // ---------------------------------------------------------------------------
 
-func TestRunFirstBoot_NoLeaderExhaustsTheLeaderWait(t *testing.T) {
+func TestRunFirstBoot_NoLeaderWaitsUntilTheContextEnds(t *testing.T) {
 	node := &mockRaftNode{
 		getLeaderFn: func(_ uint64) (uint64, bool, error) {
 			return 0, false, nil // never returns a leader
@@ -1285,17 +1285,19 @@ func TestRunFirstBoot_NoLeaderExhaustsTheLeaderWait(t *testing.T) {
 	}
 	roleSvc := &mockRoleServicer{}
 
-	// The wait ends on its own budget, not on the caller's context.
+	// Rounds of the 100 ms leader-wait budget run out one after another; the
+	// wait ends only when the caller's context does.
 	const leaderWait = 100 * time.Millisecond
-	err := runFirstBoot(context.Background(), node, leaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err := runFirstBoot(ctx, node, leaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
 	assert.Equal(t, "wait for leader", abe.Step)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	var we *server.ShardLeaderWaitError
-	require.True(t, errors.As(err, &we))
-	assert.Equal(t, uint64(1), we.ShardID)
-	assert.Equal(t, leaderWait, we.Timeout)
+	assert.False(t, errors.As(err, &we), "an exhausted round of the budget must not end the wait: %v", err)
 }
 
 // ---------------------------------------------------------------------------

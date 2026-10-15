@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -755,8 +756,31 @@ func TestNewCertReloader_KeyDirDifferentFromCertDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// start.go: waitForLeaderElection — max-attempts path
+// start.go: waitForLeaderElection — a wait that ends only with its context
 // ---------------------------------------------------------------------------
+
+func TestWaitForLeaderElection_EndsOnlyWithItsContext(t *testing.T) {
+	var attempts atomic.Int32
+	node := &mockRaftNode{
+		getLeaderFn: func(_ uint64) (uint64, bool, error) {
+			attempts.Add(1)
+			return 0, false, nil
+		},
+	}
+
+	// No leader ever appears: rounds of the 100 ms budget run out one after
+	// another, and the wait ends only when its context does, reporting the
+	// context's error.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	err := waitForLeaderElection(ctx, node, 100*time.Millisecond, 1)
+	var abe *AuthBootstrapError
+	require.ErrorAs(t, err, &abe)
+	assert.Equal(t, "wait for leader", abe.Step)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Greater(t, attempts.Load(), int32(1), "the leader is polled until the context ends")
+}
 
 // ---------------------------------------------------------------------------
 // seal_subsystem.go: awaitUnseal — lifecycle.BuildSealServicesOnly error path

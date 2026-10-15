@@ -392,6 +392,26 @@ func (e *SealedListenerStartupError) Unwrap() error {
 	return e.Err
 }
 
+// ServerSocketBindError is returned when the daemon cannot bind a socket its
+// API servers serve on. The daemon binds these once, before its first server
+// starts, and hands them to every server it runs (see serverSockets).
+type ServerSocketBindError struct {
+	Protocol string
+	Network  string
+	Addr     string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *ServerSocketBindError) Error() string {
+	return "cli: " + e.Protocol + " " + e.Network + " socket bind on " + e.Addr + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ServerSocketBindError) Unwrap() error {
+	return e.Err
+}
+
 // CeremonyCAError is returned when the ceremony CA cannot be built
 // from the node's TLS bundle (CA certificate or key parse failure).
 type CeremonyCAError struct {

@@ -120,7 +120,7 @@ func TestReporter_SelfHealsAfterLeaseLost(t *testing.T) {
 func TestReporter_ReportPropagatesGrantFailure(t *testing.T) {
 	r, _, leases := newTestReporter(t, "node-1")
 	wantErr := errors.New("grant unavailable")
-	leases.failGrant = wantErr
+	leases.setFailGrant(wantErr)
 	if err := r.Report(context.Background(), NodeReport{}); !errors.Is(err, wantErr) {
 		t.Fatalf("Report error = %v, want %v", err, wantErr)
 	}
@@ -211,6 +211,54 @@ func TestReporter_WithReporterLeaseTTL(t *testing.T) {
 	}
 	if r2.ttl != DefaultLeaseTTL {
 		t.Fatalf("ttl after WithReporterLeaseTTL(-1) = %v, want default %v", r2.ttl, DefaultLeaseTTL)
+	}
+}
+
+func TestReporter_WithReporterInterval(t *testing.T) {
+	r, _, _ := newTestReporter(t, "node-1", WithReporterInterval(time.Second))
+	if r.interval != time.Second {
+		t.Fatalf("interval = %v, want 1s", r.interval)
+	}
+
+	r2, _, _ := newTestReporter(t, "node-2", WithReporterInterval(0))
+	if r2.interval != DefaultReportInterval {
+		t.Fatalf("interval after WithReporterInterval(0) = %v, want default %v", r2.interval, DefaultReportInterval)
+	}
+}
+
+// TestReporter_StartRetriesAFailedInitialReport pins the boot-time case: the
+// first publish fails (no system-shard leader yet), Start still succeeds, and
+// the refresh loop publishes the report once the failure clears. A Reporter
+// that gave up here left its node out of every raft placement.
+func TestReporter_StartRetriesAFailedInitialReport(t *testing.T) {
+	r, mvcc, leases := newTestReporter(t, "node-1", WithReporterInterval(10*time.Millisecond))
+	leases.setFailGrant(errors.New("not leader for shard 1, leader unknown"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	build := func() NodeReport {
+		return NodeReport{Pools: map[string]PoolOnNode{"fast": {Mapped: true}}}
+	}
+	if err := r.Start(ctx, build); err != nil {
+		t.Fatalf("Start with a failing initial report = %v, want nil", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	if raw, err := mvcc.Get(context.Background(), NodeReportKey("node-1")); err != nil || raw != nil {
+		t.Fatalf("report published while Grant fails: raw=%v err=%v", raw, err)
+	}
+
+	leases.setFailGrant(nil)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		raw, err := mvcc.Get(context.Background(), NodeReportKey("node-1"))
+		if err == nil && raw != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refresh loop never published the report after the failure cleared: raw=%v err=%v", raw, err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

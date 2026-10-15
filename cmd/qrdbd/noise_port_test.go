@@ -102,7 +102,8 @@ func holdDefaultNoisePort() func() {
 //     listener or exits, and takes the port at that moment. No polling.
 //
 // A holder that cannot be reached at testBindHost while it still holds the
-// wildcard port leaves the guard unarmed; there is nothing to wait on.
+// wildcard port gives the guard nothing to wait on, so it polls instead,
+// until it takes the port or is released.
 type portHold struct {
 	addr    string
 	ctx     context.Context
@@ -163,8 +164,35 @@ func (h *portHold) await(holder string) {
 			stop()
 			_ = conn.Close()
 		}
-		if h.listen() || err != nil {
+		if h.listen() {
 			return
+		}
+		if err != nil {
+			h.poll()
+			return
+		}
+	}
+}
+
+// portHoldRetryInterval is how often poll tries the port again.
+const portHoldRetryInterval = 50 * time.Millisecond
+
+// poll retries the listen on a ticker until it takes the port or the hold is
+// released. It serves the one holder await cannot wait on: one that holds the
+// wildcard port without accepting at testBindHost. Giving up there instead
+// would leave the guard unarmed for the rest of the run the moment that
+// holder let go -- the failure this hold exists to rule out.
+func (h *portHold) poll() {
+	ticker := time.NewTicker(portHoldRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-ticker.C:
+			if h.listen() {
+				return
+			}
 		}
 	}
 }

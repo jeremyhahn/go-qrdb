@@ -63,6 +63,8 @@ type fakeLeases struct {
 
 	// failGrant / failKeepAlive, when set, are returned instead of a real
 	// grant/keepalive -- the fault seam Reporter's self-healing tests need.
+	// Both are read under mu; setFailGrant changes one while a refresh loop
+	// is running.
 	failGrant     error
 	failKeepAlive error
 }
@@ -75,12 +77,19 @@ func newFakeLeases() *fakeLeases {
 	}
 }
 
+// setFailGrant sets (or, with nil, clears) the error Grant returns.
+func (f *fakeLeases) setFailGrant(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failGrant = err
+}
+
 func (f *fakeLeases) Grant(_ context.Context, ttl int64) (*lease.Lease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.failGrant != nil {
 		return nil, f.failGrant
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.nextID++
 	id := f.nextID
 	f.ttl[id] = ttl
@@ -102,11 +111,11 @@ func (f *fakeLeases) Revoke(_ context.Context, leaseID int64) error {
 }
 
 func (f *fakeLeases) KeepAlive(_ context.Context, leaseID int64) (*lease.Lease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.failKeepAlive != nil {
 		return nil, f.failKeepAlive
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	ttl, ok := f.ttl[leaseID]
 	if !ok || f.revoked[leaseID] {
 		return nil, &InvalidCatalogDependencyError{Reason: "fakeLeases: unknown or revoked lease"}

@@ -317,6 +317,8 @@ on the HTTP/3 UDP side. It binds the socket itself and hands the socket over:
 | `server.WithRESTListener(net.Listener)` | `server.admin_port` (TCP) |
 | `server.WithRESTPacketConn(net.PacketConn)` | the HTTP/3 socket beside it (UDP); requires `WithRESTListener` |
 | `server.WithGRPCListener(net.Listener)` | `server.grpc_port` (TCP) |
+| `server.WithQUICPacketConn(net.PacketConn)` | `server.quic_port`, the QUIC transport (UDP) |
+| `server.WithMCPListener(net.Listener)` | `mcp.port` (TCP) |
 
 A handed-over socket **outlives any one server**. An embedded node rebuilds its
 server in process — a system encryption migration tears the data plane down and
@@ -340,6 +342,24 @@ all. `node.NewStandaloneNode` and `node.NewClusteredNode` likewise close the
 sockets when they return an error: the caller has handed them over, and no
 node exists whose `Close` would. `Start` refuses a pre-bound socket for a protocol that is disabled, and a
 listener that cannot take a deadline, with `*server.PreboundSocketError`.
+
+`qrdbd` is such a builder. One `qrdbd start` can run three servers on the same
+ports: the sealed-window listener, the node's own server once the barrier is
+unsealed, and a rebuilt server after each in-process system encryption
+migration. It binds the REST TCP listener, the HTTP/3 UDP socket beside it,
+the gRPC listener, the QUIC transport's UDP socket and the MCP listener —
+each one whose protocol is enabled — once, immediately before the first of those servers starts,
+hands them to every one of them, and closes them when `start` returns. Were each
+server to bind its own, the ports would belong to nobody between the
+sealed-window listener's `Stop` and the node server's `Start` — as long as
+opening the node and first boot take — and an outbound connection drawing one
+as its ephemeral source port, or any other process, could take it: the node
+would unseal and then fail to serve with `bind: address already in use`. A
+failed bind is reported as `*ServerSocketBindError`, naming the protocol,
+network and address; when the barrier is sealed it is the sealed-window listener
+that cannot start, and the error is wrapped in `*SealedListenerStartupError`.
+No port `qrdbd` serves on is released while the node is sealed or across the
+unseal.
 
 A pre-bound HTTP/3 socket is held to the same containment rule as a bound one,
 and additionally to the TCP listener's port, which is the one Alt-Svc

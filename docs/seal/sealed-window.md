@@ -365,7 +365,12 @@ restructures the boot sequence as follows:
    on `SIGINT`/`SIGTERM`, which the daemon treats as a clean exit.
    The poll only stops the listener. Refusing requests after unseal is
    done by the listener's gate on every request, so the window between
-   unseal and `Stop` serves nothing.
+   unseal and `Stop` serves nothing. `Stop` does not release the ports:
+   `cmd/qrdbd` binds the REST, HTTP/3, gRPC, QUIC transport and MCP
+   sockets before the sealed-window listener starts and hands the same sockets to the
+   production server in step 5, so nothing else on the host can take a
+   port while the node boots (see "Pre-bound sockets" in
+   [the API server architecture](../api-server/architecture.md)).
 5. After unseal, the regular boot resumes: `initializeNode` opens
    the host on top of the encfs-wrapped Pebble,
    `lifecycle.BuildServices` constructs the full service graph,

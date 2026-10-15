@@ -145,9 +145,14 @@ type Server struct {
 	// a ListenAddr socket stays bound until quic-go retires the IDs of every
 	// connection Stop closed (about three probe timeouts), and the server that
 	// replaces this one on the same address -- a system-scope encryption
-	// migration's recycle -- failed to bind in that window.
-	udpConn   *net.UDPConn
+	// migration's recycle -- failed to bind in that window. udpConn is the
+	// pre-bound socket when WithPacketConn handed one over.
+	udpConn   net.PacketConn
 	transport *quicgo.Transport
+
+	// preboundPacketConn is the socket the embedder bound and handed over
+	// (WithPacketConn). When set, Start serves on it instead of binding addr.
+	preboundPacketConn net.PacketConn
 
 	// methodPerms is the single source of truth for per-method authorization.
 	// buildHandlers populates it through the s.handle/s.handleIf registration
@@ -265,6 +270,16 @@ const DefaultMaxStreamsPerConn = 128
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithPacketConn makes Start serve on pc instead of binding the server's
+// address. The caller binds it and hands it over, so the port is never
+// released between reservation and serving -- the sealed-window handover
+// relies on this to hold the QUIC port from the first boot-time listener to
+// the regular server (go-qrdb#693). The server owns pc from Start on and
+// closes it in Stop, or in Start when it refuses to serve.
+func WithPacketConn(pc net.PacketConn) ServerOption {
+	return func(s *Server) { s.preboundPacketConn = pc }
+}
 
 // WithMaxPayloadBytes bounds a single request frame's payload this server
 // will allocate a buffer for. n <= 0 resolves to DefaultMaxPayloadBytes at
@@ -666,6 +681,7 @@ func quicOnlyTLSConfig(base *tls.Config) *tls.Config {
 // served in the background.
 func (s *Server) Start() error {
 	if s.tlsConfig == nil {
+		s.closePrebound()
 		return &StartError{Addr: s.addr, Err: &tlsRequiredError{}}
 	}
 
@@ -686,11 +702,7 @@ func (s *Server) Start() error {
 		MaxIncomingUniStreams: 0,
 	}
 
-	udpAddr, err := net.ResolveUDPAddr("udp", s.addr)
-	if err != nil {
-		return &StartError{Addr: s.addr, Err: err}
-	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := s.packetConn()
 	if err != nil {
 		return &StartError{Addr: s.addr, Err: err}
 	}
@@ -791,6 +803,32 @@ func (s *Server) writeResponse(stream *quicgo.Stream, requestID uint64, status u
 	_ = stream.Close()
 	awaitStreamAck(stream)
 	return nil
+}
+
+// packetConn returns the socket Start serves on: the pre-bound one when the
+// embedder handed one over, otherwise a UDP socket bound on the server's
+// address.
+func (s *Server) packetConn() (net.PacketConn, error) {
+	if s.preboundPacketConn != nil {
+		return s.preboundPacketConn, nil
+	}
+	udpAddr, err := net.ResolveUDPAddr("udp", s.addr)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// closePrebound closes a pre-bound socket Start refused to serve on, so the
+// socket handed over is not leaked.
+func (s *Server) closePrebound() {
+	if s.preboundPacketConn != nil {
+		_ = s.preboundPacketConn.Close()
+	}
 }
 
 // Stop gracefully shuts down the QUIC server. It closes the listener (so no

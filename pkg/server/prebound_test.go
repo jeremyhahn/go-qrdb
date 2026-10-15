@@ -244,29 +244,34 @@ type noUDP struct{ net.PacketConn }
 func TestStart_RefusesPreboundSocketForDisabledProtocol(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		rest     bool
-		grpc     bool
+		flags    protocolFlags
 		protocol string
 	}{
-		{name: "rest disabled", rest: false, grpc: true, protocol: "rest"},
-		{name: "grpc disabled", rest: true, grpc: false, protocol: "grpc"},
+		{name: "rest disabled", flags: protocolFlags{grpc: true, quic: true, mcp: true}, protocol: "rest"},
+		{name: "grpc disabled", flags: protocolFlags{rest: true, quic: true, mcp: true}, protocol: "grpc"},
+		{name: "quic disabled", flags: protocolFlags{rest: true, grpc: true, mcp: true}, protocol: "quic"},
+		{name: "mcp disabled", flags: protocolFlags{rest: true, grpc: true, quic: true}, protocol: "mcp"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfigFull(t, protocolFlags{rest: tc.rest, grpc: tc.grpc}, "")
+			cfg := testConfigFull(t, tc.flags, "")
 			cfg.Server.Host = "127.0.0.1"
-			restLn, grpcLn := listenTCP(t), listenTCP(t)
+			restLn, grpcLn, mcpLn, quicPC := listenTCP(t), listenTCP(t), listenTCP(t), listenUDP(t)
 			srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA),
-				WithRESTListener(restLn), WithGRPCListener(grpcLn))
+				WithRESTListener(restLn), WithGRPCListener(grpcLn),
+				WithQUICPacketConn(quicPC), WithMCPListener(mcpLn))
 			err := srv.Start()
 			var want *PreboundSocketError
 			if !errors.As(err, &want) || want.Protocol != tc.protocol {
 				srv.Stop()
 				t.Fatalf("Start = %v, want *PreboundSocketError for %s", err, tc.protocol)
 			}
-			for _, ln := range []net.Listener{restLn, grpcLn} {
+			for _, ln := range []net.Listener{restLn, grpcLn, mcpLn} {
 				if _, err := ln.Accept(); !errors.Is(err, net.ErrClosed) {
 					t.Fatalf("a refused Start must close every pre-bound socket (Accept err = %v)", err)
 				}
+			}
+			if err := quicPC.SetReadDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("a refused Start must close the pre-bound QUIC socket (SetReadDeadline err = %v)", err)
 			}
 		})
 	}
@@ -276,23 +281,25 @@ func TestStart_RefusesPreboundSocketForDisabledProtocol(t *testing.T) {
 // orchestrator: Stop ends a Server's use of its pre-bound listeners without
 // closing them, so a second Server from the same options serves on them.
 func TestServer_StopKeepsPreboundSocketsForTheNextLifetime(t *testing.T) {
-	cfg := testConfigFull(t, protocolFlags{rest: true, grpc: true}, "")
+	cfg := testConfigFull(t, protocolFlags{rest: true, grpc: true, quic: true, mcp: true}, "")
 	cfg.Server.Host = "127.0.0.1"
-	restLn, grpcLn := listenTCP(t), listenTCP(t)
-	opts := []ServerOption{WithCeremonyCA(testServerCA), WithRESTListener(restLn), WithGRPCListener(grpcLn)}
+	restLn, grpcLn, mcpLn, quicPC := listenTCP(t), listenTCP(t), listenTCP(t), listenUDP(t)
+	opts := []ServerOption{WithCeremonyCA(testServerCA), WithRESTListener(restLn), WithGRPCListener(grpcLn),
+		WithQUICPacketConn(quicPC), WithMCPListener(mcpLn)}
 
 	for lifetime := 1; lifetime <= 2; lifetime++ {
 		srv := New(cfg, newMockKVService(), &mockAdminService{}, opts...)
 		if err := srv.Start(); err != nil {
 			t.Fatalf("lifetime %d Start: %v", lifetime, err)
 		}
-		if srv.RESTAddr() != restLn.Addr().String() || srv.GRPCAddr() != grpcLn.Addr().String() {
-			t.Fatalf("lifetime %d did not serve on the pre-bound listeners", lifetime)
+		if srv.RESTAddr() != restLn.Addr().String() || srv.GRPCAddr() != grpcLn.Addr().String() ||
+			srv.QUICAddr() != quicPC.LocalAddr().String() || srv.MCPAddr() != mcpLn.Addr().String() {
+			t.Fatalf("lifetime %d did not serve on the pre-bound sockets", lifetime)
 		}
 		srv.Stop()
 	}
-	if got := len(PreboundSockets(opts...)); got != 2 {
-		t.Fatalf("PreboundSockets = %d sockets, want 2", got)
+	if got := len(PreboundSockets(opts...)); got != 4 {
+		t.Fatalf("PreboundSockets = %d sockets, want 4", got)
 	}
 }
 

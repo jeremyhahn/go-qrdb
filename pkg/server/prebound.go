@@ -24,8 +24,8 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-// Pre-bound sockets (WithRESTListener, WithRESTPacketConn, WithGRPCListener)
-// outlive any one Server. An embedded node rebuilds its Server in process —
+// Pre-bound sockets (WithRESTListener, WithRESTPacketConn, WithGRPCListener,
+// WithQUICPacketConn, WithMCPListener) outlive any one Server. An embedded node rebuilds its Server in process —
 // an encryption migration tears the data plane down and builds a new one from
 // the same options — so the socket a caller handed over must still be open
 // for the second lifetime (go-qrdb#374). Each lifetime therefore serves on a
@@ -278,7 +278,8 @@ func newLifetimePacketConn(pc net.PacketConn) net.PacketConn {
 }
 
 // PreboundSockets returns the sockets handed over by WithRESTListener,
-// WithRESTPacketConn and WithGRPCListener among opts. A caller that builds
+// WithRESTPacketConn, WithGRPCListener, WithQUICPacketConn and
+// WithMCPListener among opts. A caller that builds
 // successive Servers from the same options owns these across every lifetime
 // and closes them when it is done — a Server never closes them on Stop. The
 // SDK node does this in Node.Close.
@@ -301,6 +302,12 @@ func (o *serverOptions) preboundSockets() []io.Closer {
 	if o.grpcListener != nil {
 		out = append(out, o.grpcListener)
 	}
+	if o.quicPacketConn != nil {
+		out = append(out, o.quicPacketConn)
+	}
+	if o.mcpListener != nil {
+		out = append(out, o.mcpListener)
+	}
 	return out
 }
 
@@ -320,6 +327,12 @@ func (s *Server) checkPreboundSockets() error {
 	}
 	if !s.config.Protocols.GRPC && s.opts.grpcListener != nil {
 		return &PreboundSocketError{Protocol: "grpc", Reason: "the gRPC protocol is disabled"}
+	}
+	if !s.config.Protocols.QUIC && s.opts.quicPacketConn != nil {
+		return &PreboundSocketError{Protocol: "quic", Reason: "the QUIC protocol is disabled"}
+	}
+	if !s.config.Protocols.MCP && s.opts.mcpListener != nil {
+		return &PreboundSocketError{Protocol: "mcp", Reason: "the MCP protocol is disabled"}
 	}
 	return nil
 }

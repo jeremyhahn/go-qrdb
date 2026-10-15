@@ -21,9 +21,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -57,16 +61,173 @@ import (
 // listener and the post-unseal server bind the SAME address, so a TCP dial is
 // satisfied while the barrier is still shut.
 func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
+	dir := bootThroughUnsealCeremony(t, func(f *startFlags) { f.enableGRPC = false }, nil)
+
+	// The cluster CA key (Key A) is confirmed persisted into the replicated
+	// store during this same boot (confirmClusterCAPersisted, called once
+	// waitForLeaderElection succeeds) and the local ca-key.pem fixture --
+	// present on disk before runStart ever ran, exactly as a real first
+	// node's bootstrap-generated file would be -- is deleted as soon as that
+	// is confirmed. No CA private key file survives a completed boot.
+	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); !os.IsNotExist(err) {
+		t.Fatalf("ca-key.pem still exists in the data directory after a completed boot (stat err = %v)", err)
+	}
+}
+
+// TestRunStart_UnsealCeremony_HandoverKeepsItsPorts is the regression test
+// for a node that unsealed and then could not serve: "rest: server failed to
+// start on 127.0.0.1:46273: bind: address already in use". The sealed-window
+// listener used to close its sockets on unseal and the node's own server
+// bound the same ports again only after initializeNode and first boot, so for
+// that whole stretch the ports belonged to nobody, and any socket on the host
+// could take one -- an outbound connection drawing it as its ephemeral source
+// port is enough, and on a loaded CI runner one did.
+//
+// barrierUnsealed runs in exactly that stretch: after the sealed window has
+// stopped serving, before the regular server starts. The probe tries to bind
+// every port the handover has to keep there, and also while the sealed window
+// serves and once the regular server serves, so the port is shown held at
+// every step of the boot rather than at one.
+func TestRunStart_UnsealCeremony_HandoverKeepsItsPorts(t *testing.T) {
+	thief := newPortThief(t)
+	bootThroughUnsealCeremony(t, nil, func(step string, f *startFlags) {
+		admin := net.JoinHostPort(f.host, strconv.Itoa(f.adminPort))
+		thief.try(step, networkTCP, admin)
+		thief.try(step, networkUDP, admin)
+		thief.try(step, networkTCP, net.JoinHostPort(f.host, strconv.Itoa(f.grpcPort)))
+	})
+}
+
+// TestRunStart_UnsealCeremony_HandoverKeepsTheQUICPort is
+// TestRunStart_UnsealCeremony_HandoverKeepsItsPorts for the native QUIC
+// transport's UDP port: no port is released while the node is sealed, so
+// this one is handed over too, not closed by the sealed window and bound
+// again by the regular server.
+func TestRunStart_UnsealCeremony_HandoverKeepsTheQUICPort(t *testing.T) {
+	thief := newPortThief(t)
+	bootThroughUnsealCeremony(t, func(f *startFlags) {
+		f.enableQUIC = true
+		f.quicPort = drawTestPort(t, networkUDP)
+	}, func(step string, f *startFlags) {
+		thief.try(step, networkUDP, net.JoinHostPort(f.host, strconv.Itoa(f.quicPort)))
+	})
+}
+
+// TestRunStart_UnsealCeremony_HandoverKeepsTheMCPPort is
+// TestRunStart_UnsealCeremony_HandoverKeepsItsPorts for the MCP server's TCP
+// port.
+func TestRunStart_UnsealCeremony_HandoverKeepsTheMCPPort(t *testing.T) {
+	thief := newPortThief(t)
+	bootThroughUnsealCeremony(t, func(f *startFlags) {
+		f.enableMCP = true
+		f.mcpPort = drawTestPort(t, networkTCP)
+	}, func(step string, f *startFlags) {
+		thief.try(step, networkTCP, net.JoinHostPort(f.host, strconv.Itoa(f.mcpPort)))
+	})
+}
+
+// The steps of a sealed boot at which bootThroughUnsealCeremony runs its
+// probe, worded to complete "the port was free ...".
+const (
+	stepSealed   = "while the sealed window served"
+	stepUnsealed = "between the sealed window and the regular server"
+	stepServing  = "while the regular server served"
+)
+
+// portThief binds, at a boot step, a port the daemon should be holding, and
+// keeps whatever it gets until the test ends, so a port that was released
+// fails the boot the way it failed in CI rather than merely being recorded.
+// startDaemon starts again on fresh ports when a boot loses one, so the
+// record spans every attempt and is reported from a cleanup, which runs even
+// when the last attempt ends the test.
+type portThief struct {
+	mu     sync.Mutex
+	stolen []string
+	held   []io.Closer
+}
+
+// newPortThief returns a portThief whose findings fail t and whose sockets
+// are closed when t ends.
+func newPortThief(t *testing.T) *portThief {
+	t.Helper()
+	p := &portThief{}
+	t.Cleanup(func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for _, c := range p.held {
+			_ = c.Close()
+		}
+	})
+	t.Cleanup(func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for _, s := range p.stolen {
+			t.Errorf("%s: the handover released the port instead of handing it over", s)
+		}
+	})
+	return p
+}
+
+// try binds addr on network and records step when the bind succeeds.
+func (p *portThief) try(step, network, addr string) {
+	var (
+		c   io.Closer
+		err error
+	)
+	if network == networkUDP {
+		c, err = net.ListenPacket(network, addr)
+	} else {
+		c, err = net.Listen(network, addr)
+	}
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.held = append(p.held, c)
+	p.stolen = append(p.stolen, network+" "+addr+" was free "+step)
+}
+
+// drawTestPort returns a port that is free on testBindHost for network.
+func drawTestPort(t *testing.T, network string) int {
+	t.Helper()
+	port, err := freePortOn(testBindHost, network)
+	if err != nil {
+		t.Fatalf("%s port: %v", network, err)
+	}
+	return port
+}
+
+// bootThroughUnsealCeremony boots runStart with a sealed barrier, performs the
+// unseal ceremony through the sealed-window listener, waits for the regular
+// server to serve, shuts the daemon down cleanly, and returns the data
+// directory of the attempt that served. configure, when non-nil, adjusts each
+// attempt's flags before runStart. probe, when non-nil, runs with the
+// attempt's flags at each step: once the sealed window serves (stepSealed),
+// on runStart's goroutine between the sealed window's teardown and the
+// regular server's start (stepUnsealed), and once the regular server serves
+// (stepServing).
+func bootThroughUnsealCeremony(t *testing.T, configure func(f *startFlags), probe func(step string, f *startFlags)) string {
+	t.Helper()
+	if probe == nil {
+		probe = func(string, *startFlags) {}
+	}
+
 	// TWO milestones, because they are different claims. barrierUnsealed says
 	// the ceremony worked; serverServing says the handover completed. Between
 	// them lie initializeNode, first boot, service construction and the server
 	// bind, any of which can fail — so a test that stopped at the first would
 	// prove the barrier opened and nothing about reaching a serving node,
 	// while being named for the latter.
+	//
+	// f is the current attempt's flags: startDaemon assigns it before it runs
+	// runStart, which is the goroutine that calls barrierUnsealed.
+	var f *startFlags
 	unsealed := make(chan struct{}, 1)
 	origUnsealed := barrierUnsealed
 	t.Cleanup(func() { barrierUnsealed = origUnsealed })
 	barrierUnsealed = func() {
+		probe(stepUnsealed, f)
 		select {
 		case unsealed <- struct{}{}:
 		default:
@@ -101,8 +262,7 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 		// "pebble", the production default. This test exercises the
 		// unseal-to-serving handover, which does not depend on which --sm
 		// backs it.
-		f := fullStartFlags(dir, p)
-		f.enableGRPC = false
+		f = fullStartFlags(dir, p)
 		f.sealConfig = qrdbconfig.SealConfig{
 			// Enabled is the gate: without it runStart never brings up the
 			// sealed window and the admin port is the ordinary server, which
@@ -110,6 +270,9 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 			Enabled:     true,
 			Strategy:    "",
 			RootKeyPath: "__sys:seal/root_key",
+		}
+		if configure != nil {
+			configure(f)
 		}
 
 		listening, isServing := adminReady(p), hookFired(serving)
@@ -120,6 +283,7 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 				if !listening() {
 					return false
 				}
+				probe(stepSealed, f)
 				initializeCeremony(t, bundle, p.admin, "unseal-ceremony-passphrase")
 				initialized = true
 			}
@@ -133,22 +297,14 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 		t.Fatal("the regular server is serving but the barrier never " +
 			"reported the unseal: startup did not pass through awaitUnseal")
 	}
+	probe(stepServing, f)
 
 	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
 		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
-
-	// The cluster CA key (Key A) is confirmed persisted into the replicated
-	// store during this same boot (confirmClusterCAPersisted, called once
-	// waitForLeaderElection succeeds) and the local ca-key.pem fixture --
-	// present on disk before runStart ever ran, exactly as a real first
-	// node's bootstrap-generated file would be -- is deleted as soon as that
-	// is confirmed. No CA private key file survives a completed boot.
-	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); !os.IsNotExist(err) {
-		t.Fatalf("ca-key.pem still exists in the data directory after a completed boot (stat err = %v)", err)
-	}
+	return dir
 }
 
 // initializeCeremony performs the operator's half of the ceremony: a single

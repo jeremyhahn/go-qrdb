@@ -32,12 +32,13 @@ import (
 // KeepAlive on an already-granted lease) then PutWithLease with the
 // caller's fresh content, every cycle.
 type Reporter struct {
-	mvcc   MVCCServicer
-	leases lease.LeaseServicer
-	nodeID string
-	ttl    time.Duration
-	logger *slog.Logger
-	seal   SealProbe
+	mvcc     MVCCServicer
+	leases   lease.LeaseServicer
+	nodeID   string
+	ttl      time.Duration
+	interval time.Duration
+	logger   *slog.Logger
+	seal     SealProbe
 
 	mu      sync.Mutex
 	leaseID int64
@@ -66,6 +67,16 @@ func WithReporterLeaseTTL(d time.Duration) ReporterOption {
 	return func(r *Reporter) {
 		if d > 0 {
 			r.ttl = d
+		}
+	}
+}
+
+// WithReporterInterval overrides DefaultReportInterval. A non-positive value
+// is ignored.
+func WithReporterInterval(d time.Duration) ReporterOption {
+	return func(r *Reporter) {
+		if d > 0 {
+			r.interval = d
 		}
 	}
 }
@@ -101,7 +112,7 @@ func NewReporter(mvcc MVCCServicer, leases lease.LeaseServicer, nodeID string, o
 	if nodeID == "" {
 		return nil, &InvalidCatalogDependencyError{Reason: "empty node id"}
 	}
-	r := &Reporter{mvcc: mvcc, leases: leases, nodeID: nodeID, ttl: DefaultLeaseTTL, logger: slog.Default()}
+	r := &Reporter{mvcc: mvcc, leases: leases, nodeID: nodeID, ttl: DefaultLeaseTTL, interval: DefaultReportInterval, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -113,6 +124,16 @@ func NewReporter(mvcc MVCCServicer, leases lease.LeaseServicer, nodeID string, o
 // is called. The refresh goroutine logs (rather than returns) a failed
 // refresh and retries on the next tick, exactly as cluster.Advertiser's
 // keepAlive loop tolerates a transient failure instead of giving up.
+//
+// The initial report is no exception: a failed one is logged and left to the
+// refresh loop, not returned. It fails whenever the system shard has no
+// leader -- an election during boot is enough -- and a Reporter that gave up
+// then would leave this node without a report for as long as it runs, so
+// placement would never put a replica of a pool's tenant on it.
+//
+// A sealed node barrier is the exception: Start is refused with
+// *NodeSealedError and nothing is started, because the caller started the
+// Reporter too early rather than meeting a transient failure.
 //
 // Start is not idempotent: a second call on a started (or closed) Reporter
 // is an *InvalidCatalogDependencyError.
@@ -128,8 +149,12 @@ func (r *Reporter) Start(ctx context.Context, build func() NodeReport) error {
 	}
 	r.mu.Unlock()
 
+	if r.sealed() {
+		return &NodeSealedError{Op: "node report"}
+	}
 	if err := r.Report(ctx, build()); err != nil {
-		return err
+		r.logger.Warn("volume: initial node report failed; retrying on the refresh interval",
+			slog.String("node", r.nodeID), slog.String("error", err.Error()))
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -143,11 +168,11 @@ func (r *Reporter) Start(ctx context.Context, build func() NodeReport) error {
 	return nil
 }
 
-// refreshLoop re-publishes the report on DefaultReportInterval until
+// refreshLoop re-publishes the report on the Reporter's interval until
 // runCtx is cancelled.
 func (r *Reporter) refreshLoop(runCtx context.Context, build func() NodeReport) {
 	defer r.wg.Done()
-	ticker := time.NewTicker(DefaultReportInterval)
+	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
 		select {

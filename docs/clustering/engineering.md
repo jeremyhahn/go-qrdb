@@ -785,24 +785,31 @@ type ImbalanceReport struct {
   deleted-tenant reconcile, the first-boot `Init` -- stay on the boot's context:
   cutting off a write that may still commit would race the retry that follows
   it.
-- **`qrdbd` waits for the system shard's leader by time, not by a count of
-  polls.** Before its first Raft write -- the auth bootstrap and first boot,
+- **`qrdbd` waits for the system shard's leader for as long as it runs, in
+  rounds measured in time, not in a count of polls.** Before its first Raft
+  write -- the auth bootstrap and first boot,
   the cluster-CA path, and database provisioning -- `qrdbd` waits until the
   system shard knows its leader (`awaitLeader` in `cmd/qrdbd`, which calls
   `server.WaitForShardLeader`: the leader phase of `WaitForShardServing` on its
-  own). The budget is `leaderWaitBudget`: `leaderWaitElections` (120) election
+  own) in rounds of `leaderWaitBudget`: `leaderWaitElections` (120) election
   timeouts, where the election timeout is `ElectionRTT` × `RTTMillisecond` of
   the host and shard configurations the daemon starts the shard with, after
   go-quicraft fills their defaults. That is 15s for a single-node daemon (the
   transport-less tuning, 5 × 25ms) and 4min at go-quicraft's defaults
   (10 × 200ms), where the wait also covers the peers' own start-up -- no
-  election completes before a quorum of replicas runs. The caller's ctx bounds
-  it too, so a signal ends the wait at once. It used to give up after 30
-  polls on a capped backoff, about 13s of wall time whatever the election
-  timeout, which a loaded host running a 2-4s election could exhaust; no
-  configuration now waits less than that. A wait that runs out returns
-  `*server.ShardLeaderWaitError`, naming the shard, the budget and the time
-  spent, with the same starvation verdict as the shard-serving wait.
+  election completes before a quorum of replicas runs. A round that runs out
+  is logged with its `*server.ShardLeaderWaitError` -- naming the shard, the
+  budget and the time spent, with the same starvation verdict as the
+  shard-serving wait -- and the next round begins: each node is unsealed by
+  its own operator, so a quorum can form long after this node is ready, and a
+  node that gave up would exit and leave its peers waiting on it. Only the
+  caller's ctx ends the wait, so a signal ends it at once. It used to give up
+  after 30 polls on a capped backoff, about 13s of wall time whatever the
+  election timeout. However long the wait, the node's ports stay held:
+  `cmd/qrdbd` binds the REST, HTTP/3, gRPC, QUIC transport and MCP sockets
+  once, before the sealed-window listener, and hands them on to the node's
+  own server (`serverSockets` in `cmd/qrdbd/server_sockets.go`), so none is
+  free between the unseal and the node serving.
 - **Dynamic membership is off by default.** Raft reconfiguration occurs only
   when a `Reconfigurer` is supplied **and the local node is the leader**.
 - **A first node serves enrollment on every boot, not only its first.** The
@@ -900,7 +907,7 @@ database's owning tenant.
 | A supplied identity contradicting the one committed for that replica or host | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityConflictError`; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
 | A shard opened or reopened whose leader is elected but never commits in its term within 15s | `*server.ShardReadWaitError` (wraps `server.ErrShardNotReadReady`); the host is not handed out. `qrdbd` refuses to start with `*SystemShardServingError` | **yes** |
-| `qrdbd`'s system shard knows no leader within `leaderWaitBudget` (120 election timeouts) | `*server.ShardLeaderWaitError` (wraps `server.ErrTenantShardNoLeader`), naming the shard, the budget, the time spent and whether the poller was starved, wrapped as the `wait for leader` step of `*AuthBootstrapError` or `*DatabaseProvisionError`; `qrdbd` refuses to start | **yes** |
+| `qrdbd`'s system shard knows no leader within a round of `leaderWaitBudget` (120 election timeouts) | `*server.ShardLeaderWaitError` (wraps `server.ErrTenantShardNoLeader`), naming the shard, the budget, the time spent and whether the poller was starved, is logged and the next round begins; the wait ends only with the boot context, and a signal returns the context's error as the `wait for leader` step of `*AuthBootstrapError` or `*DatabaseProvisionError` | **yes** |
 | The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
 | An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |
@@ -983,7 +990,12 @@ and neither opens a listener there — see
   `qrdbd start` through cobra gets 63006 from the flag default rather than
   from zero. `cmd/qrdbd`'s `TestMain` therefore holds 63006 for the whole run
   (`holdDefaultNoisePort`): a test that forgets the reservation fails on every
-  run, in that test, instead of one run in three somewhere else.
+  run, in that test, instead of one run in three somewhere else. CI runs
+  several copies of the package on one host, and a copy that exits mid-run
+  must not take the guard with it, so the hold never gives up on its first
+  failed listen: copies share the port through `SO_REUSEPORT`, a foreign
+  holder is waited on through a connection to it, and one that refuses that
+  connection is polled until it lets go.
   `TestDefaultNoisePortIsHeld` fails if the hold is ever dropped. In
   `pkg/clusterenroll`, the test of the zero-means-63006 rule reads the address
   at the `newNoiseServer` seam and listens on an ephemeral port, so no unit

@@ -249,6 +249,15 @@ var WithRESTPacketConn = qrdbserver.WithRESTPacketConn
 // bound, which it serves gRPC on instead of binding server.grpc_port.
 var WithGRPCListener = qrdbserver.WithGRPCListener
 
+// WithQUICPacketConn hands the embedded server a UDP socket the caller already
+// bound, which it serves the QUIC transport on instead of binding
+// server.quic_port.
+var WithQUICPacketConn = qrdbserver.WithQUICPacketConn
+
+// WithMCPListener hands the embedded server a TCP listener the caller already
+// bound, which it serves MCP on instead of binding mcp.port.
+var WithMCPListener = qrdbserver.WithMCPListener
+
 // ModuleAuthFallback is the optional ServiceModule extension for capability
 // session-token planes: when the unified server's REST middleware finds no
 // qrdb identity on a request targeting the module's routes, it invokes the

@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -376,6 +377,48 @@ func TestClusterSeal_CutOffNodeStopsServing_RF3(t *testing.T) {
 	for h.kvStatus(0, "cutoff-key") != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatal("node 1 did not serve again after reconnecting")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// TestClusterSeal_NodeUnsealedAheadOfItsPeersWaits_RF3 restarts the whole
+// cluster and unseals one node well before the others, as an operator
+// unsealing node by node does. That node has no quorum until a peer is
+// unsealed too, and it waits for the system shard's leader for as long as it
+// takes rather than giving up and exiting.
+func TestClusterSeal_NodeUnsealedAheadOfItsPeersWaits_RF3(t *testing.T) {
+	h := startSealCluster(t, "6s", "1s", "3s")
+	httpPut(t, h.ca, waitForLeaderViaAdmin(t, h.ca, h.ports(), 60*time.Second), "ahead-key", []byte("kept"))
+	for i := range h.nodes {
+		h.stop(i)
+	}
+	for i := range h.nodes {
+		h.start(i)
+	}
+
+	waitForBarrierStatusReachable(t, h.ca, h.nodes[0].adminPort, 90*time.Second)
+	h.unsealOwn(0)
+	// The operator's pace, not a condition to poll for: the peers stay sealed
+	// for longer than a boot that gave up on its leader would have waited.
+	time.Sleep(20 * time.Second)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", h.nodes[0].adminPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("node 1, unsealed ahead of its peers, stopped listening: %v", err)
+	}
+	_ = conn.Close()
+
+	for _, i := range []int{1, 2} {
+		waitForBarrierStatusReachable(t, h.ca, h.nodes[i].adminPort, 90*time.Second)
+		h.unsealOwn(i)
+	}
+	for _, n := range h.nodes {
+		waitForAdmin(t, h.ca.Pool, n.adminPort, 90*time.Second)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for h.kvStatus(0, "ahead-key") != http.StatusOK {
+		if time.Now().After(deadline) {
+			t.Fatal("node 1 did not serve the pre-restart write once its peers were unsealed")
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

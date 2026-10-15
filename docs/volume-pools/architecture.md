@@ -278,7 +278,10 @@ sequence, not an open failure the default's fail-fast check reacts to.
 **Raft placement.** The placement scheduler places a `raft` tenant's replicas
 only on nodes whose latest health report shows the tenant's pool healthy. A
 node without the pool is never chosen, so it never has to refuse a replica it
-was given.
+was given. A node whose first report fails -- the system shard is electing a
+leader while it boots -- keeps retrying on the report interval, so it joins
+placement as soon as that report lands rather than staying out for its whole
+life.
 
 **Removal.** Every removal of a tenant or shard directory stays inside the
 pool's resolved root. The check is the existing `RequireInsideLocalPool`

@@ -339,6 +339,7 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
+	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
 	// ---------------------------------------------------------------------
 	// Tenant + role + user, mirroring TestIsolationRaft_Scale_Foundation.

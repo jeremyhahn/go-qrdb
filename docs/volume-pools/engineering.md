@@ -77,6 +77,9 @@ func DeriveVolumeKey(masterKey []byte, nodeID, pool string) (VolumeKey, error)
 // attached to the lease via PutWithLease so the engine deletes it
 // automatically if the node stops refreshing it -- "a dead node reports
 // nothing" is the engine's own lease expiry, not reader-side staleness.
+// Start's first publish is no different from a refresh: when it fails (no
+// system-shard leader during boot) it is logged and retried on the next
+// tick, never abandoned -- a node with no report is never placed on.
 func NewReporter(mvcc MVCCServicer, leases lease.LeaseServicer, nodeID string, opts ...ReporterOption) (*Reporter, error)
 func (r *Reporter) Start(ctx context.Context, build func() NodeReport) error
 func (r *Reporter) Report(ctx context.Context, report NodeReport) error

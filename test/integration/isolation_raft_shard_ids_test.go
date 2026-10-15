@@ -119,6 +119,7 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 
 	sys := mtlsHTTPClient(t, ca, 15*time.Second)
 	createVolumePoolREST(t, sys, leaderPort, "default")
+	waitForVolumePoolReady(t, sys, leaderPort, "default", len(dataDirs), 60*time.Second)
 	adminKeyPEM, tBody, tStatus := createRaftTenant(t, sys, leaderPort, shardIDsTenantID, "Shard IDs Test Tenant")
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d", tStatus)

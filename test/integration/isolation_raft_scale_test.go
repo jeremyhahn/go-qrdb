@@ -152,6 +152,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
+	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
 	// ---------------------------------------------------------------------
 	// Tenant + role + user, mirroring TestIsolationRaft_EndToEnd.
@@ -818,6 +819,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
+	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
 	// ---------------------------------------------------------------------
 	// Tenant + role + user.

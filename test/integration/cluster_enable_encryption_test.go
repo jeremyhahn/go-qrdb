@@ -388,6 +388,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	t.Logf("cluster healthy, leader on admin port %d", leaderPort)
 
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
+	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
 	// Create a self-managed (auto_unseal=false) IsolationRaft tenant with
 	// its first admin: a tenant is created with its first admin, or not at

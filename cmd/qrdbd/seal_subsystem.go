@@ -409,7 +409,12 @@ var (
 // complianceAudit is the node's compliance audit trail, already open: the
 // holder events of the window -- envelope claims, quorum submissions -- are
 // recorded on it.
-func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA, carried *ceremony.CeremonyService, complianceAudit audit.AuditLogger) (*lifecycle.Node, error) {
+//
+// sockets are the handed-over sockets runStart binds once for every server
+// it runs (serverSockets). The listener serves on them and its teardown ends
+// its use of them without closing them, so the node's own server takes the
+// same ports over with no moment in which they are free.
+func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA, carried *ceremony.CeremonyService, complianceAudit audit.AuditLogger, sockets ...server.ServerOption) (*lifecycle.Node, error) {
 	auditPolicy, err := audit.ParseFailurePolicy(f.auditFailurePolicy)
 	if err != nil {
 		return nil, err
@@ -461,6 +466,7 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 	if sub.BarrierRegistry != nil {
 		serverOpts = append(serverOpts, server.WithBarrierRegistry(sub.BarrierRegistry))
 	}
+	serverOpts = append(serverOpts, sockets...)
 
 	slog.Info("starting sealed-window listener",
 		slog.String("admin_port", strconvI(f.adminPort)),
