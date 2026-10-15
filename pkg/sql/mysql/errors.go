@@ -21,7 +21,11 @@
 // chain when configured.
 package mysql
 
-import "time"
+import (
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+)
 
 // ServerStartError is returned when the MySQL server fails to start.
 type ServerStartError struct {
@@ -70,6 +74,22 @@ type BarrierSealedError struct{}
 func (e *BarrierSealedError) Error() string {
 	return "sql/mysql: barrier sealed"
 }
+
+// SealStateUnconfirmedError is returned when a MySQL connection or query
+// reaches a node whose barrier is unsealed but which cannot confirm the
+// cluster seal state: its lease on the seal records ran out, typically while
+// the system shard has no leader. It reaches the client as error 1105 with its
+// own message, distinct from BarrierSealedError, and is retryable: the node
+// serves again once it reads the records.
+type SealStateUnconfirmedError struct{}
+
+// Error returns a human-readable description.
+func (e *SealStateUnconfirmedError) Error() string {
+	return "sql/mysql: seal state unconfirmed: this node cannot confirm the cluster seal state; retry"
+}
+
+// Unwrap exposes the cluster-seal refusal it reports.
+func (e *SealStateUnconfirmedError) Unwrap() error { return &clusterseal.SealStateUnconfirmedError{} }
 
 // QueryTimeoutError reports a statement cancelled at the query timeout
 // (WithQueryTimeout, sql.query_timeout). On the wire it is ER_QUERY_TIMEOUT.

@@ -150,7 +150,10 @@ instead.
 
 **Everything returns 503.** The barrier is sealed, the node is draining, or this
 node is not the leader and no resolver is configured. `qrdb barrier status` and
-`qrdb admin status` tell you which.
+`qrdb admin status` tell you which. A `SEAL_STATE_UNCONFIRMED` code means the
+barrier is not sealed: this node cannot read the cluster seal records — the
+system shard has no leader, for example — and the call succeeds on retry once
+it can.
 
 **The same call behaves differently on two transports.** It should not — that is
 the property this feature exists to guarantee, and the parity suite exists to

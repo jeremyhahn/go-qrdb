@@ -244,7 +244,9 @@ peers are unsealed to form a quorum.
 - *A tenant or database:* unseal it on each node that serves it. The first
   unseal also clears the cluster record.
 - *The node barrier:* restart each node and unseal it at boot as usual. Each
-  comes back **held** — keys loaded, Raft running, requests refused — until you
+  comes back **held** — keys loaded, Raft running, requests refused as sealed —
+  once it has read the seal records; in the moment before that it refuses them
+  as `SEAL_STATE_UNCONFIRMED`, which a client retries. It stays held until you
   clear the record once, from any unsealed node:
 
   ```bash

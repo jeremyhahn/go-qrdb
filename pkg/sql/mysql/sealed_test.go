@@ -19,6 +19,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -29,6 +30,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sessionguard"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 )
 
@@ -91,6 +94,58 @@ func TestWithSealedWindowProbe_Option(t *testing.T) {
 // identifies its origin.
 func TestBarrierSealedError_Message(t *testing.T) {
 	assert.Equal(t, "sql/mysql: barrier sealed", (&BarrierSealedError{}).Error())
+}
+
+// stateSealedProbe reports a seal state through sealedwindow.StateProbe.
+type stateSealedProbe struct{ sealed, unconfirmed bool }
+
+func (p stateSealedProbe) IsSealed() bool                        { return p.sealed }
+func (p stateSealedProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+// TestSessionBuilder_Unconfirmed_IsNotSealed: a node that cannot confirm
+// the cluster seal state refuses the connection with SealStateUnconfirmedError,
+// never BarrierSealedError; a sealed barrier still reports BarrierSealedError.
+func TestSessionBuilder_Unconfirmed_IsNotSealed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		probe       stateSealedProbe
+		unconfirmed bool
+	}{
+		"seal state unconfirmed": {probe: stateSealedProbe{sealed: true, unconfirmed: true}, unconfirmed: true},
+		"barrier sealed":         {probe: stateSealedProbe{sealed: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn := newPlainConn()
+			defer func() { _ = conn.Conn.Close() }()
+			sess, err := newSessionBuilder(nil, tc.probe).Build(context.Background(), conn, "127.0.0.1:3306")
+			require.Nil(t, sess)
+			_, isUnconfirmed := errors.AsType[*SealStateUnconfirmedError](err)
+			_, isSealed := errors.AsType[*BarrierSealedError](err)
+			assert.Equal(t, tc.unconfirmed, isUnconfirmed, "err = %v", err)
+			assert.Equal(t, !tc.unconfirmed, isSealed, "err = %v", err)
+		})
+	}
+}
+
+// TestWireRefusal: each sessionguard refusal maps to its typed MySQL error;
+// any other error, and nil, pass through untouched.
+func TestWireRefusal(t *testing.T) {
+	other := &QueryTimeoutError{}
+	assert.NoError(t, wireRefusal(nil))
+	assert.Same(t, error(other), wireRefusal(other))
+	var sealedErr *BarrierSealedError
+	assert.ErrorAs(t, wireRefusal(&sessionguard.SealedError{}), &sealedErr)
+	var unconfirmed *SealStateUnconfirmedError
+	assert.ErrorAs(t, wireRefusal(&clusterseal.SealStateUnconfirmedError{}), &unconfirmed)
+	assert.NoError(t, probeRefusal(stateSealedProbe{}))
+	assert.ErrorAs(t, probeRefusal(stateSealedProbe{sealed: true, unconfirmed: true}), &unconfirmed)
+}
+
+// TestSealStateUnconfirmedError_Message: the typed error names its origin,
+// says the caller should retry, and unwraps to the clusterseal cause.
+func TestSealStateUnconfirmedError_Message(t *testing.T) {
+	assert.Equal(t, "sql/mysql: seal state unconfirmed: this node cannot confirm the cluster seal state; retry", (&SealStateUnconfirmedError{}).Error())
+	var cause *clusterseal.SealStateUnconfirmedError
+	assert.ErrorAs(t, &SealStateUnconfirmedError{}, &cause)
 }
 
 // TestOpenSession_RefusedOnItsNextQueryOnceSealed pins the per-query half of

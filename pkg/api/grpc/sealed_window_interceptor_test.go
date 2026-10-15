@@ -20,11 +20,14 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
 type fakeSealProbe struct {
@@ -106,6 +109,40 @@ func TestSealedWindow_Unary_SealedNonAllowlistRejected(t *testing.T) {
 				t.Errorf("message = %q, want barrier sealed", st.Message())
 			}
 		})
+	}
+}
+
+// stateProbe reports the two-valued seal state of sealedwindow.StateProbe.
+type stateProbe struct{ sealed, unconfirmed bool }
+
+func (p stateProbe) IsSealed() bool                        { return p.sealed }
+func (p stateProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+var _ sealedwindow.StateProbe = stateProbe{}
+
+func TestSealedWindow_Unary_UnconfirmedIsNotSealed(t *testing.T) {
+	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/KVGet"}
+	_, err := SealedWindowUnaryInterceptor(stateProbe{sealed: true, unconfirmed: true}, nil)(context.Background(), nil, info, dummyHandler)
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unavailable {
+		t.Fatalf("err = %v, want Unavailable", err)
+	}
+	if want := (&clusterseal.SealStateUnconfirmedError{}).Error(); st.Message() != want {
+		t.Errorf("message = %q, want %q", st.Message(), want)
+	}
+	var reason, domain string
+	for _, d := range st.Details() {
+		if ei, isInfo := d.(*errdetails.ErrorInfo); isInfo {
+			reason, domain = ei.GetReason(), ei.GetDomain()
+		}
+	}
+	if reason != replicaforward.ReasonSealStateUnconfirmed || domain != replicaforward.ErrorDomain {
+		t.Errorf("ErrorInfo = %s/%s, want %s/%s", domain, reason, replicaforward.ErrorDomain, replicaforward.ReasonSealStateUnconfirmed)
+	}
+
+	allowed := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Status"}
+	if _, err := SealedWindowUnaryInterceptor(stateProbe{sealed: true, unconfirmed: true}, nil)(context.Background(), nil, allowed, dummyHandler); err != nil {
+		t.Errorf("allowlisted Status on an unconfirmed node: %v, want nil", err)
 	}
 }
 

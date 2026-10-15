@@ -828,7 +828,9 @@ statement text alone cannot express:
   statement prepared while the node still served -- a parameterized statement
   would run its query, a parameterless one would write rows it read before
   the seal. Each is refused with SQLSTATE `57P03` and serves again once the
-  probe reopens. The MySQL wire matches: every query, prepare, execute and
+  probe reopens. A node cut off or not yet confirmed is refused as
+  `seal state unconfirmed`, never `barrier sealed`: its barrier is unsealed,
+  and the client retries. The MySQL wire matches: every query, prepare, execute and
   `COM_INIT_DB` (the protocol's `USE`) of an open session is refused, the
   last for any database name, so the refusal does not reveal which databases
   exist.
@@ -861,6 +863,7 @@ QRDB-specific string:
 | Column access denied | MySQL **1143** | `ER_COLUMNACCESS_DENIED_ERROR` |
 | Cached plan result-type change | SQLSTATE **0A000** | `cached plan must not change result type` |
 | Node sealed (new session, or any statement of an open one) | SQLSTATE **57P03**; MySQL `sql/mysql: barrier sealed` | including Execute of a statement prepared before the seal, and MySQL `COM_INIT_DB` |
+| Seal state unconfirmed (cut off from the cluster seal records, or not yet read them; the barrier is not sealed) | SQLSTATE **57P03**, `sql/pgsql: seal state unconfirmed: …`; MySQL **1105**, `sql/mysql: seal state unconfirmed: …` | retryable; refused at the same points as a seal, never reported as `barrier sealed` |
 | Foreign key violations | MySQL **1451** / **1452** | see [gorm.md](gorm.md) |
 
 Named Go error types on the QRDB side: `RowKeyTooLargeError`,

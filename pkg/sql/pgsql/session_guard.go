@@ -18,7 +18,6 @@ package pgsql
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 
@@ -90,11 +89,7 @@ func guardSessionHandler(guard *sessionguard.Guard, l *trackingListener) wire.Se
 		addr := wire.RemoteAddress(ctx)
 		sess, err := guard.Open(tenantID, func() { l.closeConn(addr) })
 		if err != nil {
-			var sealed *sessionguard.SealedError
-			if errors.As(err, &sealed) {
-				return ctx, sealedWireError(psqlerr.LevelFatal)
-			}
-			return ctx, err
+			return ctx, wireRefusal(err, psqlerr.LevelFatal)
 		}
 		return context.WithValue(ctx, guardSessionKey{}, sess), nil
 	}

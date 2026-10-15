@@ -43,6 +43,12 @@ var SealedWindowAllowlist = sealedwindow.RESTAllowlist()
 // the barrier is sealed and they hit a non-allowlist endpoint.
 const sealedResponseBody = `{"error":"barrier sealed","code":"SEALED"}`
 
+// unconfirmedResponseBody is the envelope returned while the barrier is
+// unsealed but this node cannot confirm the cluster seal state -- its lease on
+// the seal records ran out. It is retryable like any 503, and it is not SEALED:
+// a client told SEALED sends an operator to unseal a barrier that is open.
+const unconfirmedResponseBody = `{"error":"clusterseal: this node cannot confirm the cluster seal state; retry","code":"SEAL_STATE_UNCONFIRMED"}`
+
 // closedResponseBody is the JSON envelope the boot-time sealed-window
 // listener returns for every request once the barrier is unsealed.
 const closedResponseBody = `{"error":"` + sealedwindow.ClosedMessage + `","code":"SEALED_WINDOW_CLOSED"}`
@@ -75,6 +81,7 @@ type sealedWindowRefusal struct {
 // response. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
 	sealedwindow.RefuseSealed:           {status: http.StatusServiceUnavailable, body: sealedResponseBody, retryAfter: true},
+	sealedwindow.RefuseUnconfirmed:      {status: http.StatusServiceUnavailable, body: unconfirmedResponseBody, retryAfter: true},
 	sealedwindow.RefuseClosed:           {status: http.StatusServiceUnavailable, body: closedResponseBody, retryAfter: true},
 	sealedwindow.RefuseEnrollmentClosed: {status: http.StatusForbidden, body: enrollmentClosedResponseBody},
 }
@@ -122,8 +129,10 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 				// Held until the request completes; see sealedwindow.Admission.
 				defer listener.Admit(requestInAllowlist(r, sealedWindowTransition))()
 			}
+			sealed, unconfirmed := sealedwindow.Sample(barrier)
 			req := sealedwindow.Request{
-				Sealed:            barrier != nil && barrier.IsSealed(),
+				Sealed:            sealed,
+				Unconfirmed:       unconfirmed,
 				Allowlisted:       requestInAllowlist(r, allowlist),
 				Listener:          listener != nil,
 				AuthenticatedOnly: requestInAllowlist(r, sealedWindowAuthenticatedOnly),

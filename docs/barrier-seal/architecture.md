@@ -495,8 +495,11 @@ A node that cannot read the records would never see a seal. To bound that,
   the lease rather than extending it.
 - When the lease runs out, the node **stops serving**: the gate closes for
   every request outside the sealed-window allowlist and every open stream ends
-  with `SealStateUnconfirmedError` (`503` / `UNAVAILABLE`, retryable). **Its
-  keys stay in memory.**
+  with `SealStateUnconfirmedError` (`503` / `UNAVAILABLE`, retryable). The
+  gate refuses requests with the same status, `SEAL_STATE_UNCONFIRMED` on
+  every transport, never `SEALED`: the barrier is unsealed, and a client that
+  read a cut-off as a seal would stop retrying a node that recovers on its own
+  once the system shard has a leader again. **Its keys stay in memory.**
 - When it can read the records again it resumes **without a re-unseal**. If a
   barrier was sealed in the meantime, it enforces that seal first, before it
   serves anything.

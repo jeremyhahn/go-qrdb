@@ -19,6 +19,7 @@ package pgsql
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"time"
@@ -225,7 +226,10 @@ func WithIndex(svc service.IndexServicer) ServerOption {
 // probe reports sealed, new PostgreSQL sessions are refused at startup
 // and in-flight sessions have every query rejected, both with SQLSTATE
 // 57P03 (cannot_connect_now) and message "barrier sealed" — consistent
-// with the sealed-window envelope on the other protocol transports.
+// with the sealed-window envelope on the other protocol transports. A
+// sealedwindow.StateProbe reporting the seal state unconfirmed is refused
+// under the same SQLSTATE with SealStateUnconfirmedError instead: retryable,
+// and never reported as sealed.
 // Once the barrier is unsealed the gate is a passthrough; on re-seal it
 // engages again.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
@@ -539,13 +543,10 @@ func sessionHandler(authenticator *Authenticator) wire.SessionHandler {
 
 // sealedSessionHandler returns a psql-wire SessionHandler that refuses
 // new sessions with SQLSTATE 57P03 (cannot_connect_now) while the
-// storage barrier is sealed.
+// storage barrier is sealed or the node cannot confirm the cluster seal state.
 func sealedSessionHandler(probe sealedWindowProbe) wire.SessionHandler {
 	return func(ctx context.Context) (context.Context, error) {
-		if probe.IsSealed() {
-			return ctx, sealedWireError(psqlerr.LevelFatal)
-		}
-		return ctx, nil
+		return ctx, probeWireError(probe, psqlerr.LevelFatal)
 	}
 }
 
@@ -579,11 +580,26 @@ func serverParameters() wire.Parameters {
 	}
 }
 
-// sealedWireError builds the canonical sealed-window error for the PG
-// wire protocol: SQLSTATE 57P03 (cannot_connect_now) at the supplied
-// severity, wrapping the typed BarrierSealedError.
-func sealedWireError(severity psqlerr.Severity) error {
-	return psqlerr.WithSeverity(psqlerr.WithCode(&BarrierSealedError{}, codes.CannotConnectNow), severity)
+// probeWireError is the PG wire refusal for a closed probe at the supplied
+// severity, or nil while it serves: see wireRefusal.
+func probeWireError(probe sealedWindowProbe, severity psqlerr.Severity) error {
+	return wireRefusal(sessionguard.Refusal(probe), severity)
+}
+
+// wireRefusal translates a sessionguard refusal into the PG wire error the
+// client reads: SQLSTATE 57P03 (cannot_connect_now) at the supplied severity,
+// wrapping SealStateUnconfirmedError for a node that cannot confirm the
+// cluster seal state and BarrierSealedError for a sealed one. The two are
+// kept apart because reporting an unconfirmed node as sealed sends an
+// operator to unseal an open barrier. Any other error is returned as it is.
+func wireRefusal(err error, severity psqlerr.Severity) error {
+	var typed error = &BarrierSealedError{}
+	if _, unconfirmed := errors.AsType[*clusterseal.SealStateUnconfirmedError](err); unconfirmed {
+		typed = &SealStateUnconfirmedError{}
+	} else if _, sealed := errors.AsType[*sessionguard.SealedError](err); !sealed {
+		return err
+	}
+	return psqlerr.WithSeverity(psqlerr.WithCode(typed, codes.CannotConnectNow), severity)
 }
 
 // closeHandler returns a psql-wire CloseFn that ends the connection's SQL

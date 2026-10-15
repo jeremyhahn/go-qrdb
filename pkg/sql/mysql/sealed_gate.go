@@ -29,6 +29,7 @@ import (
 	querypb "github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/dolthub/vitess/go/vt/sqlparser"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sessionguard"
 )
 
@@ -44,12 +45,28 @@ type sealedQueryGate struct {
 
 var _ server.Interceptor = sealedQueryGate{}
 
-// refuse returns the sealed refusal while the probe is closed.
+// refuse returns the sealed-window refusal while the probe is closed.
 func (g sealedQueryGate) refuse() error {
-	if g.probe != nil && g.probe.IsSealed() {
+	return probeRefusal(g.probe)
+}
+
+// probeRefusal is this listener's answer to a closed probe: see wireRefusal.
+func probeRefusal(p sealedWindowProbe) error {
+	return wireRefusal(sessionguard.Refusal(p))
+}
+
+// wireRefusal translates a sessionguard refusal into the MySQL typed error the
+// client reads: a node that cannot confirm the cluster seal state is not a
+// sealed barrier, and saying so would send an operator to unseal an open one.
+// Any other error is returned as it is.
+func wireRefusal(err error) error {
+	if _, unconfirmed := errors.AsType[*clusterseal.SealStateUnconfirmedError](err); unconfirmed {
+		return &SealStateUnconfirmedError{}
+	}
+	if _, sealed := errors.AsType[*sessionguard.SealedError](err); sealed {
 		return &BarrierSealedError{}
 	}
-	return nil
+	return err
 }
 
 // Priority runs the gate before any other interceptor.
@@ -231,11 +248,7 @@ func (s *sealedSessions) openConn(conn *mysql.Conn, tenantID string) error {
 	}
 	sess, err := s.guard.Open(tenantID, conn.Close)
 	if err != nil {
-		var sealed *sessionguard.SealedError
-		if errors.As(err, &sealed) {
-			return &BarrierSealedError{}
-		}
-		return err
+		return wireRefusal(err)
 	}
 	// COM_RESET_CONNECTION rebuilds the session under the same connection
 	// ID: the session it replaces is released, not leaked.

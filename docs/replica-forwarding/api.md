@@ -79,6 +79,12 @@ On gRPC and the Unix socket the same data is a `google.rpc.ErrorInfo` detail
 frame's `google.rpc.Status`. On MCP it is the error envelope's `reason` and
 `metadata`.
 
+A node that cannot confirm the cluster seal state — its lease on the seal
+records lapsed, as it does while the system shard has no leader — refuses with
+reason `SEAL_STATE_UNCONFIRMED` and no metadata, on the same carriers. It is
+retryable like any `UNAVAILABLE`, and it is not `SEALED`: the barrier is
+unsealed ([../barrier-seal/api.md](../barrier-seal/api.md)).
+
 ## Embedded
 
 The embedded client has no wire of its own, so a call its node refuses as a

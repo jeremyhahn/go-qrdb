@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
 
 // sealedWindowProbe is the abstraction the sealed-window tool-handler
@@ -60,8 +61,10 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			}
 			_, allowlisted := SealedWindowAllowlist[name]
 			_, authOnly := sealedWindowAuthenticatedOnly[name]
+			sealed, unconfirmed := sealedwindow.Sample(s.sealedWindowProbe)
 			decision := sealedwindow.Request{
-				Sealed:            s.sealedWindowSealed(),
+				Sealed:            sealed,
+				Unconfirmed:       unconfirmed,
 				Allowlisted:       allowlisted,
 				Listener:          s.sealedWindowListener != nil,
 				AuthenticatedOnly: authOnly,
@@ -83,7 +86,12 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			// tool later, and a client that can read that from the code
 			// retries instead of reporting a failure its operator then has to
 			// diagnose from prose (go-qrdb#438). A closed enrollment is
-			// CodePermissionDenied: retrying will not help.
+			// CodePermissionDenied: retrying will not help. A refusal that
+			// carries a typed error is classified like any service error, so
+			// its envelope names the reason (SEAL_STATE_UNCONFIRMED).
+			if refusal.err != nil {
+				return classifiedToolError(name, refusal.err), nil
+			}
 			return toolErrorResult(name, refusal.code, refusal.msg), nil
 		}
 	}
@@ -105,12 +113,16 @@ var sealedWindowPreOperationalOnly = sealedwindow.MCPPreOperationalOnly()
 type sealedWindowRefusal struct {
 	code wire.Code
 	msg  string
+	// err, when set, is the typed error the refusal reports; it wins over
+	// code and msg.
+	err error
 }
 
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its tool
 // error. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
 	sealedwindow.RefuseSealed:           {code: wire.CodeUnavailable, msg: "barrier sealed"},
+	sealedwindow.RefuseUnconfirmed:      {err: &clusterseal.SealStateUnconfirmedError{}},
 	sealedwindow.RefuseClosed:           {code: wire.CodeUnavailable, msg: sealedwindow.ClosedMessage},
 	sealedwindow.RefuseEnrollmentClosed: {code: wire.CodePermissionDenied, msg: sealedwindow.EnrollmentClosedMessage},
 }

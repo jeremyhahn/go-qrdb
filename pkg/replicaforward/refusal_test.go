@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -88,6 +89,24 @@ func TestRefusal_ClassifiesTheTwoReplicaRefusals(t *testing.T) {
 	}
 	if _, _, ok := Refusal(errors.New("boom")); ok {
 		t.Fatal("an unrelated error classified as a replica refusal")
+	}
+}
+
+// TestRefusal_SealStateUnconfirmed: a node that cannot confirm the cluster
+// seal state carries its own reason, wrapped or not, and a sealed barrier
+// does not.
+func TestRefusal_SealStateUnconfirmed(t *testing.T) {
+	for _, err := range []error{
+		&clusterseal.SealStateUnconfirmedError{},
+		&service.ReadError{Err: &clusterseal.SealStateUnconfirmedError{}},
+	} {
+		reason, md, ok := Refusal(err)
+		if !ok || reason != ReasonSealStateUnconfirmed || md != nil {
+			t.Fatalf("Refusal(%v) = %q, %v, %v; want %q, nil, true", err, reason, md, ok, ReasonSealStateUnconfirmed)
+		}
+	}
+	if reason, _, ok := Refusal(&clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()}); ok {
+		t.Fatalf("a sealed barrier classified as refusal %q", reason)
 	}
 }
 

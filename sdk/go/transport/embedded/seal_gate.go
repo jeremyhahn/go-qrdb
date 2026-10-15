@@ -105,8 +105,19 @@ func (t *Transport) gate(method string) error {
 		return nil
 	}
 	_, allowlisted := embeddedAllowlist[method]
-	if sealedwindow.Decide(sealedwindow.Request{Sealed: t.sealProbe.IsSealed(), Allowlisted: allowlisted}) == sealedwindow.Serve {
+	sealed, unconfirmed := sealedwindow.Sample(t.sealProbe)
+	decision := sealedwindow.Decide(sealedwindow.Request{Sealed: sealed, Unconfirmed: unconfirmed, Allowlisted: allowlisted})
+	if decision == sealedwindow.Serve {
 		return nil
 	}
+	if refuse, ok := embeddedRefusals[decision]; ok {
+		return refuse()
+	}
 	return &BarrierSealedError{Err: seal.ErrSealed}
+}
+
+// embeddedRefusals names the refusals that are not a sealed barrier. Any
+// other refusing decision fails closed as BarrierSealedError.
+var embeddedRefusals = map[sealedwindow.Decision]func() error{
+	sealedwindow.RefuseUnconfirmed: func() error { return &clusterseal.SealStateUnconfirmedError{} },
 }

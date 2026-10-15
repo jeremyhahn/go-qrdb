@@ -605,8 +605,11 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // WithSealedWindowProbe installs the sealed-window middleware on REST
 // and the equivalent interceptors on gRPC. While the probe reports
 // sealed, every endpoint not on the allowlist returns 503 / Unavailable
-// with body {"error":"barrier sealed","code":"SEALED"}. Once unsealed
-// the wrappers are passthrough; on re-seal they engage again. The same
+// with body {"error":"barrier sealed","code":"SEALED"}. A probe that also
+// implements sealedwindow.StateProbe -- the cluster seal's, once applied --
+// reports a node cut off from the seal records as unconfirmed, refused
+// instead as SEAL_STATE_UNCONFIRMED: retryable, and never reported as
+// sealed. Once unsealed the wrappers are passthrough; on re-seal they engage again. The same
 // option drives all protocol surfaces so operators see consistent
 // behavior across transports.
 func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {

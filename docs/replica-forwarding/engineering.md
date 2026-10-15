@@ -75,6 +75,7 @@ const ReconnectBaseDelay, ReconnectMultiplier, ReconnectJitter, ReconnectMaxDela
 // The structured refusal, carried beside the message on every transport.
 const ErrorDomain = "qrdb.v1"
 const ReasonNotAReplica, ReasonNotLeader = "NOT_A_REPLICA", "NOT_LEADER"
+const ReasonSealStateUnconfirmed = "SEAL_STATE_UNCONFIRMED" // *clusterseal.SealStateUnconfirmedError, no metadata
 func Refusal(err error) (reason string, md map[string]string, ok bool)
 func NotAReplicaMetadata(e *placement.NotAReplicaError) map[string]string
 func ParseNotAReplica(md map[string]string) (*placement.NotAReplicaError, error)

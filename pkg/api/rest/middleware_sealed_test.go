@@ -16,6 +16,7 @@ package rest
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,8 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
 type fakeSealProbe struct {
@@ -97,6 +100,50 @@ func TestSealedWindow_SealedNonAllowlistReturns503(t *testing.T) {
 				t.Errorf("body = %q, want SEALED code", rr.Body.String())
 			}
 		})
+	}
+}
+
+// stateSealProbe reports the two-valued seal state of sealedwindow.StateProbe.
+type stateSealProbe struct{ sealed, unconfirmed bool }
+
+func (p stateSealProbe) IsSealed() bool                        { return p.sealed }
+func (p stateSealProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+var _ sealedwindow.StateProbe = stateSealProbe{}
+
+func TestSealedWindow_UnconfirmedIsNotSealed(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		probe stateSealProbe
+		code  string
+		msg   string
+	}{
+		{"unconfirmed", stateSealProbe{sealed: true, unconfirmed: true}, replicaforward.ReasonSealStateUnconfirmed, (&clusterseal.SealStateUnconfirmedError{}).Error()},
+		{"sealed", stateSealProbe{sealed: true}, "SEALED", "barrier sealed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			SealedWindowMiddleware(tc.probe, nil)(okHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/kv/foo", nil))
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503", rr.Code)
+			}
+			if got := rr.Header().Get("Retry-After"); got != "5" {
+				t.Errorf("Retry-After = %q, want 5", got)
+			}
+			var body struct{ Error, Code string }
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %q: %v", rr.Body.String(), err)
+			}
+			if body.Code != tc.code || body.Error != tc.msg {
+				t.Fatalf("body = %+v, want code %q error %q", body, tc.code, tc.msg)
+			}
+		})
+	}
+
+	rr := httptest.NewRecorder()
+	SealedWindowMiddleware(stateSealProbe{sealed: true, unconfirmed: true}, nil)(okHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unconfirmed node, allowlisted status route: %d, want 200", rr.Code)
 	}
 }
 

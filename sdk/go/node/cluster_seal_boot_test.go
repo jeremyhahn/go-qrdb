@@ -38,8 +38,9 @@ import (
 // feature gate starts in the background: a cluster restarted under an
 // activated cluster-seal feature and a sealed node record refuses each node's
 // very first request after unseal -- it neither serves on a gate that has not
-// read the activations nor on a monitor that has not read the records -- then
-// settles held, and serves once one cluster-unseal clears the record.
+// read the activations nor on a monitor that has not read the records, which
+// refuses as SEAL_STATE_UNCONFIRMED -- then settles held, refusing as sealed,
+// and serves once one cluster-unseal clears the record.
 func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *testing.T) {
 	ca, replicas := newFormationReplicas(t, 3)
 	caPEM := mustReadCAPEM(t, ca)
@@ -135,13 +136,23 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 	}
 
 	restarted := boot()
+	// Boot starts the monitor without awaiting its first read, so the first
+	// request meets a node that has either read the sealed record -- the
+	// sealed refusal -- or not yet -- SEAL_STATE_UNCONFIRMED
+	// (docs/barrier-seal/api.md). Either refuses; neither serves.
 	for i, n := range restarted {
-		if _, err := n.Client().KV().Get(ctx, "any"); !errors.Is(err, seal.ErrSealed) {
-			t.Fatalf("node %d's first request after restart under a sealed node record: err = %v, want the sealed refusal", replicas[i].id, err)
+		_, err := n.Client().KV().Get(ctx, "any")
+		if !errors.Is(err, seal.ErrSealed) && !sealStateUnconfirmed(err) {
+			t.Fatalf("node %d's first request after restart under a sealed node record: err = %v, want the sealed or the seal-state-unconfirmed refusal", replicas[i].id, err)
 		}
 	}
-	for _, n := range restarted {
+	// Once a node has read the record it is held, which is sealed and never
+	// unconfirmed.
+	for i, n := range restarted {
 		waitClusterSeal(n, "held", func(cs *transport.ClusterSeal) bool { return cs.Local == "held" })
+		if _, err := n.Client().KV().Get(ctx, "any"); !errors.Is(err, seal.ErrSealed) || sealStateUnconfirmed(err) {
+			t.Fatalf("node %d held under a sealed node record: err = %v, want the sealed refusal", replicas[i].id, err)
+		}
 	}
 	// A clear unseals nothing and a refused one changes nothing, so it is
 	// retried through the same node.
@@ -173,6 +184,14 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 // 503.
 func recordUnconfirmed(err error) bool {
 	var unconfirmed *clusterseal.RecordNotConfirmedError
+	return errors.As(err, &unconfirmed)
+}
+
+// sealStateUnconfirmed reports whether err is the refusal of a node that
+// cannot confirm the cluster seal state, which docs/barrier-seal/api.md makes
+// a retryable 503 distinct from the sealed refusal.
+func sealStateUnconfirmed(err error) bool {
+	var unconfirmed *clusterseal.SealStateUnconfirmedError
 	return errors.As(err, &unconfirmed)
 }
 

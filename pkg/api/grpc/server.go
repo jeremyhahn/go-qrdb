@@ -520,7 +520,9 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // interceptors backed by the supplied probe. While probe.IsSealed()
 // returns true, every method whose trailing component is not on
 // SealedWindowAllowlist is rejected with codes.Unavailable + message
-// "barrier sealed". Once unsealed the interceptors are passthrough;
+// "barrier sealed"; a sealedwindow.StateProbe reporting the seal state
+// unconfirmed is refused instead with codes.Unavailable and ErrorInfo reason
+// SEAL_STATE_UNCONFIRMED. Once unsealed the interceptors are passthrough;
 // on re-seal they engage again.
 //
 // The interceptors are appended to the chain after auth, so an

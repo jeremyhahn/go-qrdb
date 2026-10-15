@@ -1139,7 +1139,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			defer s.sealedWindowListener.Admit(transition)()
 		}
 		if refusal, refused := s.sealedWindowRefusal(ctx, method); refused {
-			st, body := errorFrameBody(refusal.status, wire.ErrorPayload{Message: refusal.msg})
+			st, body := errorFrameBody(refusal.status, refusal.payload)
 			_ = s.writeResponse(stream, requestID, st, body)
 			s.logRequest(method, requestID, st, start)
 			return

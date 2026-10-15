@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
 
@@ -119,7 +120,18 @@ func (g *Guard) watchProbe() {
 
 // refuses is a session open's refusal: the probe is closed.
 func (g *Guard) refuses() error {
-	if g.probe != nil && g.probe.IsSealed() {
+	return Refusal(g.probe)
+}
+
+// Refusal reports why p refuses SQL work right now: a
+// *clusterseal.SealStateUnconfirmedError when the barrier is open but the node
+// cannot confirm the cluster seal state, a *SealedError when it is sealed, nil
+// when it serves. A nil probe serves.
+func Refusal(p Probe) error {
+	switch sealed, unconfirmed := sealedwindow.Sample(p); {
+	case unconfirmed:
+		return &clusterseal.SealStateUnconfirmedError{}
+	case sealed:
 		return &SealedError{}
 	}
 	return nil

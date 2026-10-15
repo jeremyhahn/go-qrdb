@@ -178,3 +178,58 @@ func TestSealedError(t *testing.T) {
 	g.Stop()
 	g.Stop()
 }
+
+// stateProbe reports a seal state through sealedwindow.StateProbe.
+type stateProbe struct{ sealed, unconfirmed bool }
+
+func (p stateProbe) IsSealed() bool                        { return p.sealed }
+func (p stateProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+// TestRefusal: an unconfirmed seal state is refused as
+// SealStateUnconfirmedError, never as SealedError; a sealed or closed
+// probe is SealedError; an open probe, or none, admits.
+func TestRefusal(t *testing.T) {
+	sealedProbe := &testProbe{}
+	sealedProbe.sealed.Store(true)
+	for name, tc := range map[string]struct {
+		probe           Probe
+		want, notWanted string
+	}{
+		"no probe":           {},
+		"open":               {probe: &testProbe{}},
+		"closed bool probe":  {probe: sealedProbe, want: "sealed"},
+		"barrier sealed":     {probe: stateProbe{sealed: true}, want: "sealed", notWanted: "unconfirmed"},
+		"seal unconfirmed":   {probe: stateProbe{sealed: true, unconfirmed: true}, want: "unconfirmed", notWanted: "sealed"},
+		"state probe serves": {probe: stateProbe{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := Refusal(tc.probe)
+			_, isSealed := errors.AsType[*SealedError](err)
+			_, isUnconfirmed := errors.AsType[*clusterseal.SealStateUnconfirmedError](err)
+			got := map[string]bool{"sealed": isSealed, "unconfirmed": isUnconfirmed}
+			if tc.want == "" && err != nil {
+				t.Fatalf("Refusal = %v, want nil", err)
+			}
+			if tc.want != "" && !got[tc.want] {
+				t.Fatalf("Refusal = %v, want the %s error", err, tc.want)
+			}
+			if tc.notWanted != "" && got[tc.notWanted] {
+				t.Fatalf("Refusal = %v, must not be the %s error", err, tc.notWanted)
+			}
+		})
+	}
+}
+
+// TestOpen_RefusesUnconfirmed: Open reports the unconfirmed state with its
+// own error and registers nothing.
+func TestOpen_RefusesUnconfirmed(t *testing.T) {
+	streams := clusterseal.NewStreams()
+	g := newStarted(t, stateProbe{sealed: true, unconfirmed: true}, streams)
+	_, err := g.Open("acme", func() {})
+	if _, ok := errors.AsType[*clusterseal.SealStateUnconfirmedError](err); !ok {
+		t.Fatalf("Open while unconfirmed = %v, want *clusterseal.SealStateUnconfirmedError", err)
+	}
+	if g.Len() != 0 || streams.Len() != 0 {
+		t.Fatal("a refused open stayed registered")
+	}
+}

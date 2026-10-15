@@ -23,6 +23,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
 
 // sealedWindowProbe is the abstraction the interceptor needs to know
@@ -166,6 +167,7 @@ func sealedWindowAllowSet(allowlist []string) map[string]struct{} {
 // status. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]error{
 	sealedwindow.RefuseSealed:           status.Error(codes.Unavailable, "barrier sealed"),
+	sealedwindow.RefuseUnconfirmed:      mapServiceError(&clusterseal.SealStateUnconfirmedError{}),
 	sealedwindow.RefuseClosed:           status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
 	sealedwindow.RefuseEnrollmentClosed: status.Error(codes.PermissionDenied, sealedwindow.EnrollmentClosedMessage),
 }
@@ -185,8 +187,10 @@ var sealedWindowAuthenticatedOnly = sealedwindow.GRPCFullMethodAuthenticatedOnly
 // sealedWindowAdmit returns nil when the gate admits fullMethod, and the
 // refusal status otherwise.
 func sealedWindowAdmit(ctx context.Context, barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener sealedwindow.ListenerProbe) error {
+	sealed, unconfirmed := sealedwindow.Sample(barrier)
 	req := sealedwindow.Request{
-		Sealed:            barrier != nil && barrier.IsSealed(),
+		Sealed:            sealed,
+		Unconfirmed:       unconfirmed,
 		Allowlisted:       methodAllowed(fullMethod, allowSet),
 		Listener:          listener != nil,
 		AuthenticatedOnly: methodAllowed(fullMethod, sealedWindowAuthenticatedOnly),

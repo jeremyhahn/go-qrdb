@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -78,6 +79,22 @@ func (p nodeSealProbe) IsSealed() bool {
 	return p.barrier.IsSealed() || p.seal.Refusing()
 }
 
+// SealState implements sealedwindow.StateProbe, so every transport refuses a
+// node that cannot confirm the cluster seal state as SEAL_STATE_UNCONFIRMED
+// rather than as sealed: a sealed node barrier, or a cluster seal holding
+// the node, is sealed; a node cut off from the seal records, or not yet
+// confirmed, is unconfirmed.
+func (p nodeSealProbe) SealState() (sealed, unconfirmed bool) {
+	if p.barrier.IsSealed() {
+		return true, false
+	}
+	err := clusterSealNodeRefusal(p.seal)
+	_, unconfirmed = errors.AsType[*clusterseal.SealStateUnconfirmedError](err)
+	return err != nil, unconfirmed
+}
+
+var _ sealedwindow.StateProbe = nodeSealProbe{}
+
 // NodeSealProbe returns the probe every request-serving surface of a node
 // gates on: the regular listener here, and the in-process embedded transport
 // (embedded.WithSealProbe). It is closed while barrier is sealed and, when cs
@@ -96,27 +113,34 @@ func NodeSealProbe(barrier SealedWindowProbe, cs ClusterSeal) SealedWindowProbe 
 // *clusterseal.SealStateUnconfirmedError. Listeners with no sealed-window
 // middleware of their own -- the per-database etcd listener -- refuse with it.
 func (s *Server) nodeRefusal() error {
-	if err := clusterSealNodeRefusal(s.opts.clusterSeal); err != nil {
-		return err
-	}
-	if p := s.opts.sealedWindowProbe; p != nil && p.IsSealed() {
+	if sealed, unconfirmed := sealedwindow.Sample(s.opts.sealedWindowProbe); sealed && !unconfirmed {
 		return &clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()}
 	}
-	return nil
+	return clusterSealNodeRefusal(s.opts.clusterSeal)
 }
 
 // clusterSealNodeRefusal returns why cs refuses this node, or nil while it
-// serves or cs is nil: a node a cluster seal holds is *clusterseal.SealedError
-// for the node barrier; one cut off from the seal records, or not yet
-// confirmed, is *clusterseal.SealStateUnconfirmedError.
+// serves or cs is nil: a node a cluster seal holds, or whose node barrier is
+// sealed here, is *clusterseal.SealedError for the node barrier; one cut off
+// from the seal records, or not yet confirmed, is
+// *clusterseal.SealStateUnconfirmedError.
 func clusterSealNodeRefusal(cs ClusterSeal) error {
 	if cs == nil || !cs.Refusing() {
 		return nil
 	}
-	if cs.Status(clusterseal.NodeBarrier()).Local == clusterseal.LocalHeld {
+	if sealedLocal[cs.Status(clusterseal.NodeBarrier()).Local] {
 		return &clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()}
 	}
 	return &clusterseal.SealStateUnconfirmedError{}
+}
+
+// sealedLocal names the node barrier's local states in which a refusing
+// cluster seal has confirmed the node sealed. In every other -- cut off,
+// unconfirmed, or not yet known -- the node cannot confirm the seal records,
+// and its refusal must not say sealed.
+var sealedLocal = map[clusterseal.Local]bool{
+	clusterseal.LocalHeld:   true,
+	clusterseal.LocalSealed: true,
 }
 
 // applyClusterSeal wraps the regular listener's probe once options are

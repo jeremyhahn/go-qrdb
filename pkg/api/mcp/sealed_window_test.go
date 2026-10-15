@@ -24,6 +24,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
 // fakeMCPSealedProbe is a deterministic sealedWindowProbe test double.
@@ -233,6 +235,40 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 	called = false
 	if _, err := mw(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{})); err != nil || !called {
 		t.Errorf("enrollment open: called=%v err=%v", called, err)
+	}
+}
+
+// stateMCPProbe reports the two-valued seal state of sealedwindow.StateProbe.
+type stateMCPProbe struct{ sealed, unconfirmed bool }
+
+func (p stateMCPProbe) IsSealed() bool                        { return p.sealed }
+func (p stateMCPProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+var _ sealedwindow.StateProbe = stateMCPProbe{}
+
+func TestSealedWindow_UnconfirmedIsNotSealed(t *testing.T) {
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowProbe(stateMCPProbe{sealed: true, unconfirmed: true}))
+	called := false
+	next := func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		called = true
+		return mcpgo.NewToolResultText("ok"), nil
+	}
+	result, err := srv.sealedWindowMiddleware()(next)(context.Background(), buildCallToolRequest(t, "qrdb_get", map[string]any{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	payload, ok := wire.DecodeErrorPayload(result.StructuredContent)
+	if called || !ok || payload.Code != wire.CodeUnavailable {
+		t.Fatalf("called=%v payload=%+v, want UNAVAILABLE", called, payload)
+	}
+	if payload.Reason != replicaforward.ReasonSealStateUnconfirmed {
+		t.Errorf("reason = %q, want %q", payload.Reason, replicaforward.ReasonSealStateUnconfirmed)
+	}
+	if want := (&clusterseal.SealStateUnconfirmedError{}).Error(); payload.Message != want {
+		t.Errorf("message = %q, want %q", payload.Message, want)
+	}
+	if _, err := srv.sealedWindowMiddleware()(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_status", map[string]any{})); err != nil || !called {
+		t.Errorf("allowlisted status on an unconfirmed node: called=%v err=%v", called, err)
 	}
 }
 

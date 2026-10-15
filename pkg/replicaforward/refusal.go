@@ -18,6 +18,7 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -36,6 +37,13 @@ const (
 	// ReasonNotLeader marks a write refused by a follower; its metadata
 	// names the leader's Raft address when the follower knows it.
 	ReasonNotLeader = "NOT_LEADER"
+
+	// ReasonSealStateUnconfirmed marks a node that cannot confirm the
+	// cluster seal state (*clusterseal.SealStateUnconfirmedError): its lease
+	// on the seal records ran out, or it has not read them since it started.
+	// Its barrier is not sealed; the refusal is retryable. It has no
+	// metadata.
+	ReasonSealStateUnconfirmed = "SEAL_STATE_UNCONFIRMED"
 )
 
 // Metadata keys a forward carries besides the on-behalf assertion.
@@ -64,16 +72,20 @@ const (
 	keyLeaderRaftAddr  = "leader_raft_addr"
 )
 
-// Refusal returns the structured form of the replica refusal err carries --
-// a node that holds no replica of the database (ReasonNotAReplica), or a
-// follower refusing a write (ReasonNotLeader) -- for a transport to put on
-// the wire beside the message. Any other error is not one.
+// Refusal returns the structured form of the refusal err carries -- a node
+// that holds no replica of the database (ReasonNotAReplica), a follower
+// refusing a write (ReasonNotLeader), or a node that cannot confirm the
+// cluster seal state (ReasonSealStateUnconfirmed) -- for a transport to put
+// on the wire beside the message. Any other error is not one.
 func Refusal(err error) (reason string, md map[string]string, ok bool) {
 	if nar, isNAR := errors.AsType[*placement.NotAReplicaError](err); isNAR {
 		return ReasonNotAReplica, NotAReplicaMetadata(nar), true
 	}
 	if nle, isNLE := errors.AsType[*service.NotLeaderError](err); isNLE {
 		return ReasonNotLeader, NotLeaderMetadata(nle.LeaderAddress), true
+	}
+	if _, isUnconfirmed := errors.AsType[*clusterseal.SealStateUnconfirmedError](err); isUnconfirmed {
+		return ReasonSealStateUnconfirmed, nil, true
 	}
 	return "", nil, false
 }

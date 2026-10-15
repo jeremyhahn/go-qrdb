@@ -177,10 +177,7 @@ func (h *ParseHandler) statementTimeoutError(ctx context.Context, err error) err
 // runs or writes a query -- Parse, and each Execute of a prepared statement,
 // which a session can issue long after the Parse that admitted it -- asks it.
 func (h *ParseHandler) refuseWhileSealed() error {
-	if h.sealedProbe != nil && h.sealedProbe.IsSealed() {
-		return sealedWireError(psqlerr.LevelError)
-	}
-	return nil
+	return probeWireError(h.sealedProbe, psqlerr.LevelError)
 }
 
 // HandleParse implements the psql-wire ParseFn signature. It receives raw

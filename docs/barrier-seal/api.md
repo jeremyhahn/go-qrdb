@@ -320,9 +320,25 @@ that is deliberate, since it is how an operator finds out what to do next.
 | A seal whose record could not be confirmed. **The receiving node is sealed**; the other nodes may not be | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry through another node |
 | An unseal whose clear record could not be written. The node sealed the barrier again | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry |
 | Cluster unseal before `cluster-seal` is activated | 409 | `FAILED_PRECONDITION` — `clusterseal.ErrInactive` |
-| Any request on a node that is held, cut off, or has not yet read the records | 503 | `UNAVAILABLE` — the sealed-window refusal (`SEALED`); `barrier status` shows why in `cluster_seal.local` |
+| Any request on a node a cluster seal holds, or whose node record is sealed | 503 | `UNAVAILABLE` — the sealed-window refusal (`SEALED`); `barrier status` shows why in `cluster_seal.local` |
+| Any request on a node cut off from the seal records — its lease lapsed, for example while the system shard has no leader — or that has not yet read them | 503 `SEAL_STATE_UNCONFIRMED`, `Retry-After: 5` | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, `ErrorInfo` reason `SEAL_STATE_UNCONFIRMED`; retryable. The barrier is not sealed: `barrier status` reports `sealed: false` and `cluster_seal.local` `cut_off` or `unconfirmed` |
 | An open stream ended by a seal | — | the barrier's sealed error: `UNAVAILABLE` |
 | An open stream ended because this node's lease ran out | — | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, retryable |
+
+**An unconfirmed seal state is not a seal.** A node that cannot confirm the
+cluster seal state refuses with its own status on every transport, so a client
+retries it as it would `UNAVAILABLE` instead of treating the barrier as sealed:
+
+| Transport | Refusal |
+|---|---|
+| REST | `503 {"error":"clusterseal: this node cannot confirm the cluster seal state; retry","code":"SEAL_STATE_UNCONFIRMED"}`, `Retry-After: 5` |
+| gRPC / Unix | `UNAVAILABLE` with `ErrorInfo{reason: "SEAL_STATE_UNCONFIRMED", domain: "qrdb.v1"}` |
+| QUIC | `wire.StatusUnavailable`, error payload reason `SEAL_STATE_UNCONFIRMED`, domain `qrdb.v1` |
+| MCP | tool error, code `Unavailable`, reason `SEAL_STATE_UNCONFIRMED` |
+| Embedded | `*clusterseal.SealStateUnconfirmedError` |
+| MySQL | error 1105, `sql/mysql: seal state unconfirmed: this node cannot confirm the cluster seal state; retry` |
+| PostgreSQL | SQLSTATE `57P03`, `sql/pgsql: seal state unconfirmed: …` (FATAL at startup, ERROR on a query) |
+| etcd | `UNAVAILABLE`, the `clusterseal` message |
 
 Share-holder and quorum errors are classified in
 [../shamir-custody/api.md](../shamir-custody/api.md#error-classes).

@@ -25,6 +25,9 @@ import (
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sessionguard"
 )
 
 // fakeSealedProbe is a deterministic sealedWindowProbe for tests.
@@ -115,4 +118,70 @@ func TestWithSealedWindowProbe_Option(t *testing.T) {
 // identifies its origin.
 func TestBarrierSealedError_Message(t *testing.T) {
 	assert.Equal(t, "sql/pgsql: barrier sealed", (&BarrierSealedError{}).Error())
+}
+
+// stateSealedProbe reports a seal state through sealedwindow.StateProbe.
+type stateSealedProbe struct{ sealed, unconfirmed bool }
+
+func (p stateSealedProbe) IsSealed() bool                        { return p.sealed }
+func (p stateSealedProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+// TestSealedSessionHandler_Unconfirmed_IsNotSealed: a node that cannot
+// confirm the cluster seal state refuses the session as
+// SealStateUnconfirmedError under 57P03, never as BarrierSealedError.
+func TestSealedSessionHandler_Unconfirmed_IsNotSealed(t *testing.T) {
+	_, err := sealedSessionHandler(stateSealedProbe{sealed: true, unconfirmed: true})(context.Background())
+	var unconfirmed *SealStateUnconfirmedError
+	require.ErrorAs(t, err, &unconfirmed)
+	var sealedErr *BarrierSealedError
+	assert.NotErrorAs(t, err, &sealedErr)
+	var cause *clusterseal.SealStateUnconfirmedError
+	assert.ErrorAs(t, err, &cause, "the wire error unwraps to the clusterseal cause")
+	desc := psqlerr.Flatten(err)
+	assert.Equal(t, codes.CannotConnectNow, desc.Code)
+	assert.Equal(t, psqlerr.LevelFatal, desc.Severity)
+}
+
+// TestHandleParse_Unconfirmed_IsNotSealed: the query gate reports the
+// unconfirmed state with its own error at ERROR severity, and a sealed
+// state probe still reports BarrierSealedError.
+func TestHandleParse_Unconfirmed_IsNotSealed(t *testing.T) {
+	h := NewParseHandler(nil, nil, "qrdb")
+	h.sealedProbe = stateSealedProbe{sealed: true, unconfirmed: true}
+	_, err := h.HandleParse(context.Background(), "SELECT 1")
+	var unconfirmed *SealStateUnconfirmedError
+	require.ErrorAs(t, err, &unconfirmed)
+	assert.Equal(t, psqlerr.LevelError, psqlerr.Flatten(err).Severity)
+
+	h.sealedProbe = stateSealedProbe{sealed: true}
+	_, err = h.HandleParse(context.Background(), "SELECT 1")
+	var sealedErr *BarrierSealedError
+	require.ErrorAs(t, err, &sealedErr)
+	assert.NotErrorAs(t, err, &unconfirmed)
+}
+
+// TestWireRefusal: each sessionguard refusal maps to its typed wire error
+// under 57P03; any other error, and nil, pass through untouched.
+func TestWireRefusal(t *testing.T) {
+	other := &BarrierSealedError{}
+	assert.NoError(t, wireRefusal(nil, psqlerr.LevelError))
+	assert.Same(t, error(other), wireRefusal(other, psqlerr.LevelError), "an unrelated error passes through")
+
+	err := wireRefusal(&sessionguard.SealedError{}, psqlerr.LevelFatal)
+	var sealedErr *BarrierSealedError
+	require.ErrorAs(t, err, &sealedErr)
+	assert.Equal(t, codes.CannotConnectNow, psqlerr.Flatten(err).Code)
+
+	err = wireRefusal(&clusterseal.SealStateUnconfirmedError{}, psqlerr.LevelError)
+	var unconfirmed *SealStateUnconfirmedError
+	require.ErrorAs(t, err, &unconfirmed)
+	assert.Equal(t, codes.CannotConnectNow, psqlerr.Flatten(err).Code)
+}
+
+// TestSealStateUnconfirmedError_Message: the typed error names its origin
+// and says the caller should retry.
+func TestSealStateUnconfirmedError_Message(t *testing.T) {
+	assert.Equal(t, "sql/pgsql: seal state unconfirmed: this node cannot confirm the cluster seal state; retry", (&SealStateUnconfirmedError{}).Error())
+	var cause *clusterseal.SealStateUnconfirmedError
+	assert.ErrorAs(t, &SealStateUnconfirmedError{}, &cause)
 }

@@ -487,7 +487,13 @@ services and to the server, which wraps the node's sealed-window probe with
   (`server.NodeSealProbe`: the node barrier, plus the cluster seal when there
   is one), gates every request method before reading its arguments, and
   refuses with `*embedded.BarrierSealedError` (`errors.Is(err,
-  seal.ErrSealed)`). `Connect`, `Close` and `WithDatabase` are lifecycle, not
+  seal.ErrSealed)`). Every gate samples its probe with `sealedwindow.Sample`:
+  a probe that implements `sealedwindow.StateProbe` -- `server.NodeSealProbe`
+  does -- reports a cut-off or unconfirmed node apart from a sealed one, and
+  `Decide` answers it `RefuseUnconfirmed`, which each transport maps to its
+  `SEAL_STATE_UNCONFIRMED` form (the embedded one to
+  `*clusterseal.SealStateUnconfirmedError`), never to its sealed refusal.
+  `Connect`, `Close` and `WithDatabase` are lifecycle, not
   requests; a database-scoped transport inherits the gate.
   `TestSealGate_RefusesEveryRequestOutsideTheAllowlist` walks the method set
   by reflection, so a request method added without the gate fails. The node's
@@ -1000,7 +1006,7 @@ key.
 | Raft-isolated tenant barrier unseal with no recorded statement | `*tenant.InitStatementMissingError`; stays sealed | **yes** |
 | Statement record for a barrier level the node cannot yet self-initialise | `*lifecycle.UnsupportedBarrierKindError`; retried on the next poll | **yes** |
 | Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*featuregate.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
-| Node lease expired, or no read since start | node gate refuses; streams end with `SealStateUnconfirmedError`; keys kept | **yes** |
+| Node lease expired, or no read since start | node gate refuses as `SEAL_STATE_UNCONFIRMED`, never `SEALED` (`sealedwindow.StateProbe`, `TestClusterSeal_LapsedLeaseIsUnconfirmedNotSealed`); streams end with `SealStateUnconfirmedError`; keys kept | **yes** |
 | Enforcement step fails on a node (shard close, key wipe) | logged and retried on the next poll; the gate stays closed | **yes** |
 | Platform operator seals or unseals a tenant's barrier | `403` (`tenant_barrier:*` are tenant-only) and `TenantScopeError` in the service | **yes** |
 | A tenant seals another tenant's database, or the `system` tenant a tenant's | refused as not found (`databases:*` seal permissions are owner-only) | **yes** |

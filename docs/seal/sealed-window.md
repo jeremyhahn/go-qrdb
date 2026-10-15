@@ -214,6 +214,13 @@ Retry-After: 5
 
 gRPC returns `codes.Unavailable` with message `"barrier sealed"`.
 
+A node whose barrier is unsealed but which cannot confirm the cluster seal
+state — cut off from the seal records, or not yet having read them — is not
+sealed and does not answer `SEALED`. It refuses the same requests with
+`503 {"code":"SEAL_STATE_UNCONFIRMED"}` and `Retry-After: 5`, or
+`codes.Unavailable` with `ErrorInfo` reason `SEAL_STATE_UNCONFIRMED`; every
+transport's form is in [../barrier-seal/api.md](../barrier-seal/api.md).
+
 Once its barrier is unsealed, the boot-time sealed-window listener refuses
 every request with a distinct envelope:
 

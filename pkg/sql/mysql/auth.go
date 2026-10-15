@@ -57,8 +57,8 @@ func (b *sessionBuilder) Build(ctx context.Context, conn *mysql.Conn, addr strin
 	// Fail closed while the storage barrier is sealed: no SQL session may
 	// be established until the operator drives the unseal API. Mirrors
 	// the 503 / Unavailable envelope on the other protocol transports.
-	if b.sealedProbe != nil && b.sealedProbe.IsSealed() {
-		return nil, &BarrierSealedError{}
+	if err := probeRefusal(b.sealedProbe); err != nil {
+		return nil, err
 	}
 
 	base := sql.NewBaseSessionWithClientServer(addr, sql.Client{

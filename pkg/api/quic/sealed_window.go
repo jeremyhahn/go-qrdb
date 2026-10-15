@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
 
 // SealedWindowAllowlist is the set of native QUIC method names that
@@ -52,16 +53,17 @@ var sealedWindowAuthenticatedOnly = sealedwindow.QUICAuthenticatedOnly()
 
 // sealedWindowRefusal is how the QUIC gate answers one refusing Decision.
 type sealedWindowRefusal struct {
-	status uint16
-	msg    string
+	status  uint16
+	payload wire.ErrorPayload
 }
 
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its
 // response. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
-	sealedwindow.RefuseSealed:           {status: wire.StatusUnavailable, msg: "barrier sealed"},
-	sealedwindow.RefuseClosed:           {status: wire.StatusUnavailable, msg: sealedwindow.ClosedMessage},
-	sealedwindow.RefuseEnrollmentClosed: {status: wire.StatusPermissionDenied, msg: sealedwindow.EnrollmentClosedMessage},
+	sealedwindow.RefuseSealed:           {status: wire.StatusUnavailable, payload: wire.ErrorPayload{Message: "barrier sealed"}},
+	sealedwindow.RefuseUnconfirmed:      {status: wire.StatusUnavailable, payload: errorPayloadOf(&clusterseal.SealStateUnconfirmedError{})},
+	sealedwindow.RefuseClosed:           {status: wire.StatusUnavailable, payload: wire.ErrorPayload{Message: sealedwindow.ClosedMessage}},
+	sealedwindow.RefuseEnrollmentClosed: {status: wire.StatusPermissionDenied, payload: wire.ErrorPayload{Message: sealedwindow.EnrollmentClosedMessage}},
 }
 
 // sealedWindowRefusal applies the sealed-window gate to method. It reports
@@ -72,8 +74,10 @@ func (s *Server) sealedWindowRefusal(ctx context.Context, method string) (sealed
 		return sealedWindowRefusal{}, false
 	}
 	_, authOnly := sealedWindowAuthenticatedOnly[method]
+	sealed, unconfirmed := sealedwindow.Sample(s.sealedWindowProbe)
 	req := sealedwindow.Request{
-		Sealed:            s.sealedWindowProbe.IsSealed(),
+		Sealed:            sealed,
+		Unconfirmed:       unconfirmed,
 		Allowlisted:       sealedWindowAllowed(method),
 		Listener:          s.sealedWindowListener != nil,
 		AuthenticatedOnly: authOnly,

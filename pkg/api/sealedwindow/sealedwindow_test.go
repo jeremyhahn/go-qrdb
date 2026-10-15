@@ -385,10 +385,51 @@ func TestDecide(t *testing.T) {
 		{R{Sealed: true, Allowlisted: true, AuthenticatedOnly: true}, sealedwindow.Serve},
 		{R{Sealed: true, Allowlisted: true, AuthenticatedOnly: true, Listener: true}, sealedwindow.RefuseSealed},
 		{R{Allowlisted: true, AuthenticatedOnly: true, Listener: true}, sealedwindow.RefuseClosed},
+		// A node that cannot confirm the cluster seal state is refused as
+		// unconfirmed, never as sealed, and still serves the allowlist.
+		{R{Sealed: true, Unconfirmed: true}, sealedwindow.RefuseUnconfirmed},
+		{R{Sealed: true, Unconfirmed: true, Allowlisted: true}, sealedwindow.Serve},
+		{R{Sealed: true, Unconfirmed: true, Allowlisted: true, AuthenticatedOnly: true}, sealedwindow.Serve},
 	}
 	for _, c := range cases {
 		if got := sealedwindow.Decide(c.req); got != c.want {
 			t.Errorf("Decide(%+v) = %v, want %v", c.req, got, c.want)
+		}
+	}
+}
+
+// boolProbe is a probe that can only say open or closed.
+type boolProbe bool
+
+func (p boolProbe) IsSealed() bool { return bool(p) }
+
+// stateProbe is a probe that also says why it is closed.
+type stateProbe struct{ sealed, unconfirmed bool }
+
+func (p stateProbe) IsSealed() bool                        { return p.sealed }
+func (p stateProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+var _ sealedwindow.StateProbe = stateProbe{}
+
+// TestSample reads a StateProbe's reason, and never reports a plain probe,
+// or a nil one, as unconfirmed.
+func TestSample(t *testing.T) {
+	cases := []struct {
+		name                    string
+		probe                   interface{ IsSealed() bool }
+		wantSealed, wantUnconfd bool
+	}{
+		{"nil", nil, false, false},
+		{"plain open", boolProbe(false), false, false},
+		{"plain sealed", boolProbe(true), true, false},
+		{"state open", stateProbe{}, false, false},
+		{"state sealed", stateProbe{sealed: true}, true, false},
+		{"state unconfirmed", stateProbe{sealed: true, unconfirmed: true}, true, true},
+	}
+	for _, c := range cases {
+		sealed, unconfirmed := sealedwindow.Sample(c.probe)
+		if sealed != c.wantSealed || unconfirmed != c.wantUnconfd {
+			t.Errorf("%s: Sample = (%v, %v), want (%v, %v)", c.name, sealed, unconfirmed, c.wantSealed, c.wantUnconfd)
 		}
 	}
 }

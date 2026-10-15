@@ -85,6 +85,35 @@ func TestNodeSealProbe(t *testing.T) {
 	}
 }
 
+func TestNodeSealProbe_SealState(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		barrierSealed       bool
+		refusing            bool
+		local               clusterseal.Local
+		sealed, unconfirmed bool
+	}{
+		{name: "serving", local: clusterseal.LocalServing},
+		{name: "barrier sealed", barrierSealed: true, sealed: true},
+		{name: "barrier sealed and cut off", barrierSealed: true, refusing: true, local: clusterseal.LocalCutOff, sealed: true},
+		{name: "held", refusing: true, local: clusterseal.LocalHeld, sealed: true},
+		{name: "node record sealed", refusing: true, local: clusterseal.LocalSealed, sealed: true},
+		{name: "cut off", refusing: true, local: clusterseal.LocalCutOff, sealed: true, unconfirmed: true},
+		{name: "unconfirmed", refusing: true, local: clusterseal.LocalUnconfirmed, sealed: true, unconfirmed: true},
+		{name: "not yet loaded", refusing: true, sealed: true, unconfirmed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := newTestClusterSeal()
+			cs.setRefusing(tc.refusing)
+			cs.SetLocal(tc.local)
+			sealed, unconfirmed := (nodeSealProbe{barrier: boolProbe(tc.barrierSealed), seal: cs}).SealState()
+			if sealed != tc.sealed || unconfirmed != tc.unconfirmed {
+				t.Fatalf("SealState = (%v, %v), want (%v, %v)", sealed, unconfirmed, tc.sealed, tc.unconfirmed)
+			}
+		})
+	}
+}
+
 // TestNodeRefusal answers why the node refuses, with the typed cause each
 // listener without sealed-window middleware of its own returns: held or a
 // sealed node barrier is the node barrier's SealedError; cut off or
@@ -104,9 +133,24 @@ func TestNodeRefusal(t *testing.T) {
 	if err := held.nodeRefusal(); !errors.As(err, &sealed) || sealed.Barrier != clusterseal.NodeBarrier() {
 		t.Fatalf("held: %v, want the node barrier's SealedError", err)
 	}
+	cs.SetLocal(clusterseal.LocalSealed)
+	if err := held.nodeRefusal(); !errors.As(err, &sealed) {
+		t.Fatalf("node record sealed: %v, want SealedError", err)
+	}
 	cs.SetLocal(clusterseal.LocalCutOff)
 	if err := held.nodeRefusal(); !errors.As(err, &unconfirmed) {
 		t.Fatalf("cut off: %v, want SealStateUnconfirmedError", err)
+	}
+
+	// The server installs the composed probe, which reports a cut-off node as
+	// closed; nodeRefusal must still name the state it cannot confirm.
+	wrapped := &Server{opts: serverOptions{clusterSeal: cs, sealedWindowProbe: NodeSealProbe(boolProbe(false), cs)}}
+	if err := wrapped.nodeRefusal(); !errors.As(err, &unconfirmed) {
+		t.Fatalf("composed probe, cut off: %v, want SealStateUnconfirmedError", err)
+	}
+	cs.SetLocal(clusterseal.LocalHeld)
+	if err := wrapped.nodeRefusal(); !errors.As(err, &sealed) {
+		t.Fatalf("composed probe, held: %v, want SealedError", err)
 	}
 
 	barrierSealed := &Server{opts: serverOptions{sealedWindowProbe: boolProbe(true)}}

@@ -65,6 +65,7 @@ return the protocol's own codes directly.
 | Cached plan result-type change | — | — | SQLSTATE **0A000** (PostgreSQL only) |
 | Missing `kv:range` | 403 | `PERMISSION_DENIED` | connection refused at auth |
 | Barrier sealed | 503 | `UNAVAILABLE` | connection refused |
+| Seal state unconfirmed (the node cannot read the cluster seal records; the barrier is not sealed — retry) | 503 `SEAL_STATE_UNCONFIRMED` | `UNAVAILABLE`, reason `SEAL_STATE_UNCONFIRMED` | MySQL **1105** `sql/mysql: seal state unconfirmed: …` / SQLSTATE **57P03** `sql/pgsql: seal state unconfirmed: …` |
 | Built without `qrdb_sql` | 501 | `UNIMPLEMENTED` | listener not started |
 
 Statement-level ceilings surface as their own errors before any proposal is

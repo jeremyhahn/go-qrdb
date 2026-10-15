@@ -712,9 +712,37 @@ func Anonymous(ctx context.Context) bool {
 }
 
 // Request is what a sealed-window gate knows about one request.
+// StateProbe is implemented by a probe that can say why it is closed. The
+// node gate a cluster seal composes is closed both while the node is sealed
+// and while the node cannot confirm the cluster seal state, and every
+// transport refuses the two differently: a node that cannot read its seal
+// records has not been sealed, and reporting it as sealed sends an operator
+// to unseal a barrier that is already unsealed.
+type StateProbe interface {
+	// SealState reports whether the probe is closed and, when it is,
+	// whether only because the node cannot confirm the cluster seal state.
+	SealState() (sealed, unconfirmed bool)
+}
+
+// Sample reads p once for one request: whether it is closed, and whether
+// only because the node cannot confirm the cluster seal state. A probe that
+// is not a StateProbe is never unconfirmed, and a nil probe is open.
+func Sample(p interface{ IsSealed() bool }) (sealed, unconfirmed bool) {
+	if p == nil {
+		return false, false
+	}
+	if sp, ok := p.(StateProbe); ok {
+		return sp.SealState()
+	}
+	return p.IsSealed(), false
+}
+
 type Request struct {
 	// Sealed is the barrier state sampled for this request.
 	Sealed bool
+	// Unconfirmed reports that the gate is closed only because the node
+	// cannot confirm the cluster seal state (see Sample).
+	Unconfirmed bool
 	// Allowlisted reports whether the request names a Table verb on its
 	// transport.
 	Allowlisted bool
@@ -744,6 +772,12 @@ const (
 	// RefuseEnrollmentClosed refuses a PreOperationalOnly request on the
 	// boot-time sealed-window listener once officer enrollment has closed.
 	RefuseEnrollmentClosed
+	// RefuseUnconfirmed refuses a request that is not on the allowlist while
+	// the node cannot confirm the cluster seal state: its lease on the seal
+	// records ran out, or it has not read them since it started. The barrier
+	// is not sealed and the node keeps its keys, so the refusal is retryable
+	// and is not reported as sealed.
+	RefuseUnconfirmed
 )
 
 // ClosedMessage is the refusal text of the boot-time sealed-window listener
@@ -778,6 +812,8 @@ func Decide(r Request) Decision {
 		return RefuseClosed
 	case !r.Sealed:
 		return Serve
+	case !r.Allowlisted && r.Unconfirmed:
+		return RefuseUnconfirmed
 	case !r.Allowlisted, r.Listener && r.AuthenticatedOnly:
 		return RefuseSealed
 	case r.Listener && r.PreOperationalOnly && !r.EnrollmentOpen:

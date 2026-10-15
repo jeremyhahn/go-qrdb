@@ -212,7 +212,9 @@ func WithIndex(svc service.IndexServicer) ServerOption {
 
 // WithSealedWindowProbe installs the sealed-window connection gate.
 // While the probe reports sealed, every new MySQL connection is refused
-// during the handshake with a "barrier sealed" error, consistent with
+// during the handshake with a "barrier sealed" error -- or, when the probe
+// is a sealedwindow.StateProbe reporting the seal state unconfirmed, with
+// SealStateUnconfirmedError (1105, retryable) -- consistent with
 // the sealed-window envelope on the other protocol transports. Once the
 // barrier is unsealed the gate is a passthrough; on re-seal it engages
 // again for new connections.

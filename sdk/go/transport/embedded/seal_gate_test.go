@@ -193,6 +193,37 @@ func TestSealGate_OpensWithTheProbe(t *testing.T) {
 	}
 }
 
+// stateGateProbe reports the two-valued seal state of sealedwindow.StateProbe.
+type stateGateProbe struct{ sealed, unconfirmed bool }
+
+func (p stateGateProbe) IsSealed() bool                        { return p.sealed }
+func (p stateGateProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.unconfirmed }
+
+var _ sealedwindow.StateProbe = stateGateProbe{}
+
+func TestSealGate_UnconfirmedIsNotSealed(t *testing.T) {
+	ctx := context.Background()
+	unconfirmed, err := New(newMockKVService(), &mockAdminService{}, WithSealProbe(stateGateProbe{sealed: true, unconfirmed: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = unconfirmed.Put(ctx, "k", []byte("v"))
+	if _, ok := errors.AsType[*clusterseal.SealStateUnconfirmedError](err); !ok {
+		t.Fatalf("Put on an unconfirmed node: %v, want *clusterseal.SealStateUnconfirmedError", err)
+	}
+	if _, sealed := errors.AsType[*BarrierSealedError](err); sealed {
+		t.Fatalf("Put on an unconfirmed node reported a sealed barrier: %v", err)
+	}
+
+	sealedTr, err := New(newMockKVService(), &mockAdminService{}, WithSealProbe(stateGateProbe{sealed: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, sealed := errors.AsType[*BarrierSealedError](sealedTr.Put(ctx, "k", []byte("v"))); !sealed {
+		t.Fatal("Put on a sealed node: want *BarrierSealedError")
+	}
+}
+
 // minGatedSubClientMethods is the sub-client walk's discovery floor, for the
 // same reason as minGatedMethods. Lowered from 20 to 18 when
 // *Transport.VolumePoolClient was deleted (docs/volume-pools decision D8):
