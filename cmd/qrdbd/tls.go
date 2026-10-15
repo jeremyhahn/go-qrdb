@@ -143,16 +143,16 @@ func (b *TLSBundle) SetClientAuthMode(mode tls.ClientAuthType, clientCAs *x509.C
 // pool (wireClientTrustPool) reads Key B's CA certificates from. Call it
 // once, as soon as the CertProvider exists -- which is after
 // lifecycle.BuildServices runs, meaning after the barrier is first unsealed.
-// Safe to call concurrently with a live GetConfigForClient hook: the next
-// connection sees the newly installed provider. Must be called after
-// wireClientTrustPool.
+// Safe to call concurrently with a live GetConfigForClient hook: Key B
+// trust is withdrawn until the pool's background loop has rebuilt from
+// the newly installed provider. Must be called after wireClientTrustPool.
 func (b *TLSBundle) SetKeyBProvider(p cert.CertProvider) {
 	b.trustPool.SetKeyBProvider(p)
 }
 
 // SetClusterCA installs the cluster CA (Key A) resolver the dynamic
-// client-auth trust pool checks on every handshake: to add it to the
-// widened pool and to grant the cluster-CA exemption on the issuer-tenant
+// client-auth trust pool consults: on every rebuild, to add it to the
+// widened pool, and per request, to grant the cluster-CA exemption on the issuer-tenant
 // binding (TrustPool's IsClusterCA/VerifyIssuer -- see auth.IssuerVerifier).
 // Call it once, as soon as the cluster CA exists. Must be called after
 // wireClientTrustPool.

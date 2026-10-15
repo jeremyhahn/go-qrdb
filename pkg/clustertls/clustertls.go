@@ -662,25 +662,29 @@ func LoadCAFromDir(dataDir string) (caCertPEM, caKeyPEM []byte, err error) {
 // files with 0o600. Each file is written atomically (write to a temporary file
 // in the same directory, then rename) so a crash mid-write never leaves a
 // half-written, corrupt PEM file in place.
+//
+// ca.pem is written last, after every key: its presence means the set it
+// belongs to, including the CA key, is already durable. A crash or a failed
+// write therefore never leaves a CA certificate whose key was lost, which
+// LoadFromDir would accept as a CA that silently cannot sign.
 func PersistMaterial(m *Material, dataDir string) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return &WriteError{Path: dataDir, Err: err}
 	}
 
-	files := []struct {
+	type file struct {
 		name string
 		data []byte
-	}{
-		{"ca.pem", m.CACertPEM},
-		{"node-cert.pem", m.CertPEM},
-		{"node-key.pem", m.KeyPEM},
 	}
+	var files []file
 	if len(m.CAKeyPEM) > 0 {
-		files = append(files, struct {
-			name string
-			data []byte
-		}{"ca-key.pem", m.CAKeyPEM})
+		files = append(files, file{"ca-key.pem", m.CAKeyPEM})
 	}
+	files = append(files,
+		file{"node-key.pem", m.KeyPEM},
+		file{"node-cert.pem", m.CertPEM},
+		file{"ca.pem", m.CACertPEM},
+	)
 
 	for _, f := range files {
 		path := filepath.Join(dataDir, f.name)
@@ -696,7 +700,8 @@ func PersistMaterial(m *Material, dataDir string) error {
 // (ca-key.pem) to dataDir. The directory is created with 0o700 permissions
 // and files with 0o600, each written atomically. Used when the node leaf
 // certificate is issued separately via IssueLeafForKey so there is no
-// node-cert.pem or node-key.pem to persist.
+// node-cert.pem or node-key.pem to persist. The key is written first, for the
+// reason PersistMaterial gives.
 func PersistCA(caCertPEM, caKeyPEM []byte, dataDir string) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return &WriteError{Path: dataDir, Err: err}
@@ -706,8 +711,8 @@ func PersistCA(caCertPEM, caKeyPEM []byte, dataDir string) error {
 		name string
 		data []byte
 	}{
-		{"ca.pem", caCertPEM},
 		{"ca-key.pem", caKeyPEM},
+		{"ca.pem", caCertPEM},
 	} {
 		path := filepath.Join(dataDir, f.name)
 		if err := securefile.WriteFileAtomic(path, f.data, 0o600); err != nil {

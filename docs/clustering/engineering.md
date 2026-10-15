@@ -225,10 +225,15 @@ opens an enrollment socket nobody asked for, the other withholds one that was.
 
 **A recorded role is not sufficient on its own; the material has to be able to
 back the listener.** "Material present" is four files written one at a time.
-`PersistMaterial` writes `ca.pem`, `node-cert.pem`, `node-key.pem` and then
-`ca-key.pem` — each atomically, the sequence not — and `LoadFromDir` treats
-`ca-key.pem` as optional, since a node holding only a leaf legitimately has
-none.
+`PersistMaterial` writes `ca-key.pem` (when there is one), `node-key.pem`,
+`node-cert.pem` and then `ca.pem` — each atomically, the sequence not — and
+`LoadFromDir` treats `ca-key.pem` as optional, since a node holding only a leaf
+legitimately has none. `ca.pem` goes last, and `PersistCA` writes the key
+before it too, so a visible `ca.pem` means every key written with it is already
+durable: an interrupted write can no longer leave a CA certificate whose key was
+lost, which `LoadFromDir` would accept as a CA that cannot sign. Anything that
+watches the directory for `ca.pem` may rely on the rest of the set being in
+place.
 
 The resume's own completeness check requires **only `ca.pem`**, now that the
 cluster CA (Key A) is persisted in the replicated store
@@ -913,6 +918,7 @@ database's owning tenant.
 | A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
 | A shard opened or reopened whose leader is elected but never commits in its term within 15s | `*server.ShardReadWaitError` (wraps `server.ErrShardNotReadReady`); the host is not handed out. `qrdbd` refuses to start with `*SystemShardServingError` | **yes** |
 | `qrdbd`'s system shard knows no leader within a round of `leaderWaitBudget` (120 election timeouts) | `*server.ShardLeaderWaitError` (wraps `server.ErrTenantShardNoLeader`), naming the shard, the budget, the time spent and whether the poller was starved, is logged and the next round begins; the wait ends only with the boot context, and a signal returns the context's error as the `wait for leader` step of `*AuthBootstrapError` or `*DatabaseProvisionError` | **yes** |
+| A proposal or linearizable/follower read on a node that knows no leader for the shard (mid-election, or not yet reached by the new leader) | Held by the Raft host adapter (`throughElection`, `pkg/backend/raft/leader_wait.go`): it polls `GetLeaderID` with backoff (10 ms doubling to 250 ms) and re-runs the request once a leader is known. At 10 s or the caller's deadline it returns `*raft.LeaderWaitError` wrapping the last `*quicraft.NotLeaderError`, which the service layer's translations (`translateProposeError`, `translateReadError`) still find with `errors.As` and map to `*service.NotLeaderError`: `UNAVAILABLE` / REST 503 `NOT_LEADER`. A refusal naming a leader, and every other error, is returned at once. Previously the refusal reached the client immediately, so a follower's write right after a leader change failed although a leader was moments away | **yes** (retry) |
 | The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
 | An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |

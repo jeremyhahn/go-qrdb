@@ -277,11 +277,14 @@ func stopSealNode(t *testing.T, n *sealNode) {
 // value (same package: unexported cert/key fields are accessible here) so
 // this file can reuse waitForAdmin / waitForLeaderViaAdmin / httpPut /
 // httpGet without modifying helpers_test.go.
+//
+// The key is required: a missing key is a failure here rather than a
+// cert-only CA that fails later, at its first signature, with no sign of why.
 func loadDaemonCA(t *testing.T, dataDir string) *testCA {
 	t.Helper()
 	certPath := filepath.Join(dataDir, "ca.pem")
 	keyPath := filepath.Join(dataDir, "ca-key.pem")
-	// clustertls.PersistMaterial writes ca.pem first and ca-key.pem last, each
+	// clustertls.PersistMaterial writes ca-key.pem first and ca.pem last, each
 	// an fsynced atomic write, and the daemon deletes ca-key.pem only once the
 	// key is confirmed in the replicated store -- after the barrier is
 	// unsealed, which every caller does after this returns. So the key file is
@@ -292,7 +295,7 @@ func loadDaemonCA(t *testing.T, dataDir string) *testCA {
 
 	ca, err := qrdbdharness.LoadCA(certPath, keyPath)
 	if err != nil {
-		t.Fatalf("loadDaemonCA: %v", err)
+		t.Fatalf("loadDaemonCA: ca.pem is present but the CA key is not loadable: %v", err)
 	}
 	return &testCA{CA: ca}
 }

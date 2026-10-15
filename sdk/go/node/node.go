@@ -3729,6 +3729,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// Every tenant's registered trust anchors join the same pool -- trusted
 	// at the TLS layer and bound to their own tenant at the auth layer.
 	svcNode.WireTrustAnchors(n.trustPool)
+	// The handshake hook only loads the snapshot Run builds; it never reads
+	// storage itself.
+	go n.trustPool.Run(n.background())
 
 	// n.trustPool is ALWAYS handed to the auth layer as the enforcement
 	// source, regardless of whether a cluster CA was resolved above: that

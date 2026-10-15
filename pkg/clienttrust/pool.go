@@ -20,9 +20,12 @@
 // See docs/certificate-authority/architecture.md, "Key B trust on the
 // client-facing listeners": a presented client certificate must verify
 // against Key A (the cluster CA) plus every tenant's Key B CA certificate
-// (the login CA, read fresh on every connection so a CA created -- or
-// rotated to an HSM-backed one -- after the listener started is picked up
-// without a restart).
+// (the login CA). The handshake never reads storage: it loads an immutable
+// snapshot that Run rebuilds in the background on every change event and
+// every poolCacheTTL, so a CA created -- or rotated to an HSM-backed one --
+// after the listener started is picked up without a restart, and a store
+// that stalls (no Raft leader, a reseal) can never hold a handshake past its
+// deadline.
 //
 // Pool is ALSO the issuer-tenant binding (IsClusterCA / VerifyIssuer): the
 // pool and the binding are the SAME object, deliberately, so Key B can
@@ -35,45 +38,44 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"sync/atomic"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
-// poolCacheTTL bounds how long a widened ClientCAs pool is reused before
-// CACertPEMs is consulted again. It is the current mitigation for the
-// per-handshake cost of scanning and parsing every tenant's CA certificate
-// (go-qrdb#560 review, B2-4). On the node where it happens, a change is
-// pushed: a tenant's Key B CA coming into use (cert.WithNewCAHook) and a
-// trust anchor added or removed both reach Invalidate through the
-// composer's change feed, so the next handshake sees them -- a tenant
-// onboarded a moment ago logs in at once. This window bounds only what no
-// local event announces: a CA first used on ANOTHER node. SetKeyBProvider
-// and SetClusterCA also invalidate the cache immediately.
+// poolCacheTTL is the interval at which Run rebuilds the trust snapshot
+// when no change event has asked for a rebuild sooner. The handshake never
+// reads storage: it loads the snapshot Run last built (go-qrdb#713). On the
+// node where it happens, a change is pushed: a tenant's Key B CA coming
+// into use (cert.WithNewCAHook), a watched tenant or CA deletion
+// (InvalidationSource) and a trust anchor added or removed all reach
+// Invalidate, which asks Run to rebuild at once, so a tenant onboarded a
+// moment ago logs in as soon as that one rebuild lands. This interval bounds
+// only what no local event announces: a CA first used on ANOTHER node, and
+// a reseal.
 const poolCacheTTL = 2 * time.Second
 
-// handshakeTrustTimeout bounds how long a single TLS handshake's trust
-// resolution (configForClient's ClientCAs widening, by extension
-// VerifyConnection's peer check against the pool that resolution produces)
-// may take. hello.Context() is canceled when the handshake's own connection
-// deadline fires or the connection closes early, but carries no deadline of
-// its own, so configForClient always derives a bounded one from it, never
-// context.Background() (go-qrdb#591's review, B5): an unbounded resolve on
-// the handshake path would let one slow storage read hang that connection's
-// handshake indefinitely, and context.Background() can never be canceled by
-// anything, including the listener shutting down.
+// refreshTimeout bounds one rebuild's storage reads. A rebuild that runs
+// out of time has failed, and a failed rebuild withdraws Key B trust
+// (go-qrdb#591, blocker 2), so a store that stops answering costs Key B
+// logins until it answers again, never the handshake itself. It sits well
+// inside the 5 s handshake deadline the listeners set, as a second line of
+// defence: the handshake does not wait on a rebuild at all.
 //
-// A var, not a const: pool_test.go shortens it for
-// TestPool_ConfigForClient_HandshakeBoundedNotBackground, which proves the
-// bound is real by making a resolver block until canceled -- at the
-// production value that test would have to wait out the whole 5 seconds to
-// observe the deadline firing.
-var handshakeTrustTimeout = 5 * time.Second
+// A var, not a const: pool_test.go shortens it to observe the bound
+// without waiting out the production value.
+var refreshTimeout = 2 * time.Second
+
+// snapshotMaxAge is how old a snapshot may grow before the handshake
+// treats it as withdrawn. Run replaces it every poolCacheTTL, so one three
+// intervals old means rebuilds have stopped landing -- Run never started,
+// or a store read that ignores its deadline -- and Key B trust must not
+// outlive its source of truth without bound.
+const snapshotMaxAge = 3 * poolCacheTTL
 
 // CertSource is the capability DefaultCertProvider provides: every tenant's
 // Key B CA certificate (or, with an injected cakey.Provider, the single one
@@ -94,8 +96,8 @@ type CertSource interface {
 // alongside CertSource: a way for Pool to learn, immediately, when the
 // provider's own Key B cache changes outside of any handshake -- a
 // watched tenant deletion (tombstone) or a watched CA material/certificate
-// deletion, see DefaultCertProvider.WatchForDeletions -- so the widened
-// pool's cache drops that tenant's CA right away instead of waiting out
+// deletion, see DefaultCertProvider.WatchForDeletions -- so Run rebuilds
+// the snapshot without that tenant's CA right away instead of waiting out
 // poolCacheTTL. Declared here, not added to cert.CertProvider, for the
 // same reason CertSource is: a type assertion against this shape is how
 // Pool asks for the capability without widening the interface every
@@ -109,14 +111,14 @@ type InvalidationSource interface {
 }
 
 // ClusterCA resolves the cluster CA (Key A) certificate, fresh on every
-// call -- never cached by the caller, because a reseal, rotation, or
-// bootstrap-to-persisted transition must be visible on the very next call.
-// ceremony.CeremonyCA satisfies this structurally.
+// call -- never cached by the caller beyond one snapshot, because a reseal,
+// rotation, or bootstrap-to-persisted transition must be visible to the
+// authentication layer (IsClusterCA) on the very next call, and to the
+// handshake on the next rebuild. ceremony.CeremonyCA satisfies this
+// structurally.
 //
-// ctx bounds the resolution. A handshake-time caller (configForClient, via
-// resolveClientCAs/resolveClusterCA) derives it from the handshake's own
-// *tls.ClientHelloInfo.Context() with a bounded timeout, never
-// context.Background() -- see handshakeTrustTimeout.
+// ctx bounds the resolution. The rebuild (Refresh) bounds it by
+// refreshTimeout; the handshake never calls it.
 type ClusterCA interface {
 	CACertificate(ctx context.Context) (*x509.Certificate, error)
 }
@@ -158,33 +160,23 @@ func (s *StaticClusterCA) CACertificate(context.Context) (*x509.Certificate, err
 
 // Pool holds the dynamic Key B trust state, and the issuer-tenant binding,
 // behind a tls.Config.GetConfigForClient hook installed by Wire. The zero
-// value is not usable; construct with New.
+// value is not usable; construct with New, and start Run.
+//
+// The configuration (provider, clusterCA, anchors, staticBase) and the
+// trust built from it (snapshot) are separate: the setters replace the
+// configuration and withdraw the snapshot, Refresh reads storage and
+// publishes a new one, and the handshake only loads it (go-qrdb#713).
 type Pool struct {
 	provider   atomic.Pointer[providerBox]
 	clusterCA  atomic.Pointer[clusterCABox]
 	anchors    atomic.Pointer[anchorsBox]
-	cache      atomic.Pointer[poolCache]
-	keyBCache  atomic.Pointer[keyBCacheEntry]
 	staticBase atomic.Pointer[x509.CertPool]
+	snapshot   atomic.Pointer[trustSnapshot]
 
-	// keyBGroup dedupes concurrent refreshKeyBOnlyCache rebuilds: N
-	// handshakes landing here in the same instant right as poolCacheTTL
-	// ages out must share ONE CACertPEMs call (a scan and parse of every
-	// tenant's CA certificate), not each issue their own (go-qrdb#591's
-	// review, non-blocking). The zero value is ready to use.
-	keyBGroup singleflight.Group
-
-	// keyBGeneration closes a race between an eviction (SetKeyBProvider,
-	// or the OnInvalidate callback it subscribes) and a refresh already
-	// in flight (go-qrdb#591's review, non-blocking): CACertPEMs can take
-	// long enough that an eviction clearing keyBCache happens WHILE a
-	// refresh started before it is still waiting on that same call, and
-	// without this, the refresh's own store afterward would silently
-	// resurrect the pre-eviction data the eviction just cleared.
-	// Incremented on every eviction; refreshKeyBOnlyCache captures it
-	// before calling CACertPEMs and discards its result, rather than
-	// storing it, if the generation moved on while it was in flight.
-	keyBGeneration atomic.Int64
+	// kick asks Run to rebuild now. Capacity one: any number of Invalidate
+	// calls before Run gets to it collapse into a single rebuild, and
+	// Invalidate never blocks.
+	kick chan struct{}
 }
 
 // TenantLister enumerates the tenants whose trust anchors join the widened
@@ -205,60 +197,79 @@ type anchorsBox struct {
 	src     trustanchor.Source
 	tenants TenantLister
 }
-type poolCache struct {
+
+// trustSnapshot is one immutable result of Refresh: everything the
+// handshake and VerifyPeerChain need, built from storage once and then
+// only read. Never modified after it is published, except for derived,
+// which is itself a write-once cache of a pure function of the rest.
+//
+// keyBOnly is filled whenever the Key B read succeeded, independently of
+// the cluster CA's own health (go-qrdb#591's review, B3): isRegisteredKeyBCA
+// -- and through it IsStaticallyTrusted, the exemption Key A and every
+// operator/harness login relies on -- must never depend on whether the
+// cluster CA currently resolves.
+type trustSnapshot struct {
 	built time.Time
-	pool  *x509.CertPool
+
+	// err is why this snapshot grants no widening: Key B unreadable, an
+	// installed cluster CA resolver failing (a reseal), or a configuration
+	// change whose rebuild has not landed yet. widened is nil exactly when
+	// err is non-nil.
+	err error
+
+	// base is the static pool widened was built over (staticBase when the
+	// rebuild ran); extra is every certificate added to it.
+	base    *x509.CertPool
+	extra   []*x509.Certificate
+	widened *x509.CertPool
+
+	keyBOnly  *x509.CertPool
+	clusterCA *x509.Certificate
+
+	// derived holds the widened pool over a base OTHER than base -- a
+	// listener whose cfg.ClientCAs was replaced after Wire, or a composed
+	// hook returning its own config -- built on first use and kept for
+	// this snapshot's lifetime, so a handshake clones at most once per
+	// rebuild.
+	derived atomic.Pointer[derivedPool]
 }
 
-// keyBCacheEntry holds every tenant's Key B certificate CACertPEMs
-// returned, refreshed INDEPENDENTLY of the cluster CA's own health
-// (go-qrdb#591's review, B3): isRegisteredKeyBCA -- and through it,
-// IsStaticallyTrusted, the exemption Key A and every operator/harness
-// login the composer trusted before Key B ever existed relies on -- must
-// never depend on whether the cluster CA currently resolves. Before this
-// split, both read the SAME cache resolveClientCAs built, and
-// resolveClientCAs returned early, before ever reaching CACertPEMs,
-// whenever an installed cluster CA resolver was merely failing right now
-// (a corrupt record, a reseal): the Key-B-only cache then never
-// refreshed, isRegisteredKeyBCA answered "uncertain" forever, and
-// IsStaticallyTrusted refused the exemption for every issuer, including
-// ones with nothing to do with Key B at all.
-//
-// pems is kept alongside keyBOnly (not reconstructed from it -- CertPool
-// exposes no enumeration) so resolveClientCAs can merge the identical set
-// into the full widened pool without a second CACertPEMs call.
-type keyBCacheEntry struct {
-	built    time.Time
-	pems     [][]byte
-	keyBOnly *x509.CertPool
+type derivedPool struct {
+	base *x509.CertPool
+	pool *x509.CertPool
 }
 
 // New returns a Pool with neither a Key B provider nor a cluster CA
-// installed yet: until SetKeyBProvider is called, every connection sees the
-// listener's static ClientCAs pool unchanged (Key A only, whatever the
-// composer set there directly), which is the correct pre-unseal state.
-// SetClusterCA is independent of that: a composer with no cluster-CA
-// concept at all (SetClusterCA never called, or called with nil) still
-// gets Key B trust once SetKeyBProvider is called -- the issuer-tenant
-// binding's per-tenant check (VerifyIssuer's IsTenantIssuer branch) needs
-// no cluster CA to operate, only the cluster-CA EXEMPTION does. What
-// SetClusterCA's absence can never do is grant that exemption: see
-// IsClusterCA, VerifyIssuer, resolveClientCAs.
+// installed yet: until SetKeyBProvider is called and a rebuild has run,
+// every connection sees the listener's static ClientCAs pool unchanged
+// (Key A only, whatever the composer set there directly), which is the
+// correct pre-unseal state. SetClusterCA is independent of that: a
+// composer with no cluster-CA concept at all (SetClusterCA never called,
+// or called with nil) still gets Key B trust once SetKeyBProvider is
+// called -- the issuer-tenant binding's per-tenant check (VerifyIssuer's
+// IsTenantIssuer branch) needs no cluster CA to operate, only the
+// cluster-CA EXEMPTION does. What SetClusterCA's absence can never do is
+// grant that exemption: see IsClusterCA, VerifyIssuer, build.
+//
+// The composer must start Run for the pool to ever widen: nothing else
+// builds a snapshot.
 func New() *Pool {
-	return &Pool{}
+	return &Pool{kick: make(chan struct{}, 1)}
 }
 
 // SetKeyBProvider installs the CertProvider the pool reads Key B's CA
-// certificates from, and invalidates the cached widened pool so the next
-// connection reflects it immediately. Call it once, as soon as the
-// CertProvider exists. A nil prov (or one that does not implement
-// CertSource) means Key B is never trusted.
+// certificates from, withdraws the current snapshot -- trust read from the
+// previous provider is not this one's -- and asks Run to rebuild. Call it
+// once, as soon as the CertProvider exists. A nil prov (or one that does
+// not implement CertSource) means Key B is never trusted.
 //
 // When prov also implements InvalidationSource (DefaultCertProvider, when
-// WatchForDeletions is running), Pool subscribes its own cache
-// invalidation so a deleted tenant's CA stops being trusted immediately --
+// WatchForDeletions is running), Pool subscribes Invalidate so a deleted
+// tenant's CA leaves the handshake's pool as soon as one rebuild lands --
 // on every node the watched deletion replicates to, not only the one that
-// issued it -- rather than up to poolCacheTTL later.
+// issued it -- rather than up to poolCacheTTL later. The authentication
+// layer does not wait for that rebuild: VerifyIssuer's IsTenantIssuer
+// re-checks the issuer on every request.
 //
 // The composer calling this MUST ALSO pass this SAME Pool as the
 // auth.IssuerVerifier wired into the authentication layer (mTLS
@@ -271,15 +282,9 @@ func New() *Pool {
 // wiring discipline is where it is actually enforced.
 func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 	p.provider.Store(&providerBox{prov: prov})
-	p.cache.Store(nil)
-	p.keyBCache.Store(nil)
-	p.keyBGeneration.Add(1)
+	p.withdraw(false)
 	if inv, ok := prov.(InvalidationSource); ok {
-		inv.OnInvalidate(func() {
-			p.cache.Store(nil)
-			p.keyBCache.Store(nil)
-			p.keyBGeneration.Add(1)
-		})
+		inv.OnInvalidate(p.Invalidate)
 	}
 }
 
@@ -287,25 +292,25 @@ func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 // for the cluster-CA EXEMPTION on both the TLS-layer widening decision
 // (the cluster CA certificate is added to the widened pool) and the
 // issuer-tenant binding (IsClusterCA, VerifyIssuer's cluster-CA branch).
-// Invalidates the cached widened pool.
+// Withdraws the current snapshot and asks Run to rebuild.
 //
 // Never calling this (or calling it with a nil ca) is a deployment shape
 // with no cluster-CA concept at all -- the exemption never applies, but
 // Key B is STILL trusted once SetKeyBProvider is called, gated purely by
-// the per-tenant binding (see resolveClientCAs, VerifyIssuer). This is
-// different from a ca that resolves to an ERROR once installed (a reseal,
-// a transient failure): that withdraws Key B trust entirely until the
+// the per-tenant binding (see build, VerifyIssuer). This is different
+// from a ca that resolves to an ERROR once installed (a reseal, a
+// transient failure): that withdraws Key B trust entirely until the
 // resolver succeeds again, because an installed resolver answering
 // differently now is a signal, where "no resolver was ever installed" is
 // not.
 func (p *Pool) SetClusterCA(ca ClusterCA) {
 	p.clusterCA.Store(&clusterCABox{ca: ca})
-	p.cache.Store(nil)
+	p.withdraw(true)
 }
 
 // SetTrustAnchors installs the source of every tenant's registered trust
-// anchors (pkg/trustanchor) and the lister that enumerates the tenants, and
-// invalidates the cached widened pool.
+// anchors (pkg/trustanchor) and the lister that enumerates the tenants,
+// withdraws the current snapshot and asks Run to rebuild.
 //
 // Each tenant's anchors then join the widened ClientCAs pool, so a
 // bring-your-own certificate chaining to one completes a handshake, and
@@ -314,34 +319,234 @@ func (p *Pool) SetClusterCA(ca ClusterCA) {
 //
 // Install the Registry through trustanchor.Observe with Invalidate as the
 // callback, so a tenant adding or withdrawing an anchor on this node is
-// reflected on the very next handshake rather than after poolCacheTTL.
+// reflected as soon as one rebuild lands rather than after poolCacheTTL.
 func (p *Pool) SetTrustAnchors(src trustanchor.Source, tenants TenantLister) {
 	if src == nil {
 		p.anchors.Store(nil)
 	} else {
 		p.anchors.Store(&anchorsBox{src: src, tenants: tenants})
 	}
-	p.cache.Store(nil)
+	p.withdraw(true)
 }
 
-// Invalidate drops the cached widened pool AND the Key-B-only cache
-// isRegisteredKeyBCA and refreshKeyBOnlyCache read, so the next handshake
-// rebuilds both from the current Key B and trust-anchor state -- not merely
-// once the Key-B-only cache's OWN independent poolCacheTTL happens to have
-// lapsed too. Dropping only p.cache left WithNewCAHook's documented
-// immediacy false whenever a tenant's first-ever certificate (which makes
-// CACertPEMs grow) landed inside that second cache's still-fresh window:
-// resolveClientCAs' own cache miss would call refreshKeyBOnlyCache, which
-// would see its cache as fresh and skip the very CACertPEMs() re-fetch that
-// would have picked up the new CA, serving the stale (pre-growth) PEM set
-// for up to the remainder of that window.
+// withdraw publishes a snapshot that grants no widening, so trust built
+// from the configuration a setter just replaced is never served again,
+// and asks Run to rebuild from the new one. keepKeyBOnly carries the
+// Key-B-only pool over when the provider did not change: what it confirms
+// about Key B is still true, and dropping it would only re-open
+// IsStaticallyTrusted's exemption to a registered Key B CA until the
+// rebuild lands.
+func (p *Pool) withdraw(keepKeyBOnly bool) {
+	next := &trustSnapshot{
+		built: time.Now(),
+		err:   &KeyBUnavailableError{Reason: "trust configuration changed; rebuild pending"},
+	}
+	if prev := p.snapshot.Load(); prev != nil && keepKeyBOnly {
+		next.keyBOnly = prev.keyBOnly
+	}
+	p.snapshot.Store(next)
+	p.Invalidate()
+}
+
+// Invalidate asks Run to rebuild the snapshot now rather than at the next
+// poolCacheTTL tick. It never reads storage and never blocks: it is called
+// from a CA-creation hook, a watch callback and the trust-anchor observer,
+// none of which may stall on the store. Calls made before Run gets to the
+// first collapse into one rebuild. Until that rebuild lands the handshake
+// keeps the last snapshot -- a newly onboarded tenant waits one rebuild,
+// and a deleted tenant's CA is still refused at once by VerifyIssuer's
+// per-request IsTenantIssuer check.
 func (p *Pool) Invalidate() {
-	p.cache.Store(nil)
-	p.keyBCache.Store(nil)
+	select {
+	case p.kick <- struct{}{}:
+	default:
+	}
+}
+
+// Run rebuilds the snapshot whenever Invalidate asks and every
+// poolCacheTTL otherwise, until ctx is done. The composer starts it once,
+// in its own goroutine, for the lifetime of the listeners Wire touched;
+// the first rebuild runs at once.
+func (p *Pool) Run(ctx context.Context) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.kick:
+		case <-timer.C:
+		}
+		_ = p.Refresh(ctx)
+		timer.Reset(poolCacheTTL)
+	}
+}
+
+// Refresh reads the current trust state from storage, bounded by
+// refreshTimeout, and publishes it as the snapshot the handshake loads.
+// It returns the reason the new snapshot grants no widening, or nil. A
+// setter that ran while the read was in flight wins: the result, built
+// partly from the configuration that setter replaced, is discarded rather
+// than published over the setter's withdrawal, and the setter's own
+// Invalidate has already asked for the rebuild that replaces it.
+//
+// Run is the caller in production; it is exported for a composer or test
+// that needs one rebuild to have landed before it proceeds.
+func (p *Pool) Refresh(ctx context.Context) error {
+	prev := p.snapshot.Load()
+	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+	snap := p.build(ctx)
+	p.snapshot.CompareAndSwap(prev, snap)
+	return snap.err
+}
+
+// build reads one snapshot. The static pool, the cluster CA, every tenant's
+// Key B CA and every trust anchor join the widened pool, but the cluster
+// CA's two failure shapes are NOT treated the same (B2-2's actual
+// requirement is that the issuer-tenant binding is always enforced
+// alongside Key B trust, which SetKeyBProvider's doc comment states as a
+// composer-wiring obligation -- it is not "Key B requires a cluster CA to
+// exist"):
+//   - *ClusterCANotConfiguredError (SetClusterCA never called, or called
+//     with nil): a deployment shape with no cluster-CA concept at all. Key
+//     B still widens; VerifyIssuer's per-tenant IsTenantIssuer branch gates
+//     it, and needs no cluster CA to operate -- only the exemption does.
+//   - Any other error (an installed resolver that is CURRENTLY failing --
+//     sealed, a transient store failure): the snapshot grants no widening
+//     -- a resolver that answered before and is answering differently now
+//     is a signal this function must not paper over. keyBOnly is still
+//     filled (B3, see trustSnapshot).
+//
+// A failed Key B read also grants no widening (go-qrdb#591, blocker 2):
+// Key B stops being trusted once its source of truth stops answering, at
+// the latest one rebuild later -- a reseal is the ordinary cause in Raft
+// mode (docs/certificate-authority/architecture.md's "a runtime reseal must
+// make the dynamic client-auth trust pool drop Key B immediately" rule).
+func (p *Pool) build(ctx context.Context) *trustSnapshot {
+	snap := &trustSnapshot{built: time.Now(), base: p.staticBase.Load()}
+	keyBCerts, keyBErr := p.readKeyB(ctx)
+	if keyBErr == nil {
+		snap.keyBOnly = x509.NewCertPool()
+		for _, c := range keyBCerts {
+			snap.keyBOnly.AddCert(c)
+		}
+	}
+	clusterCACert, err := p.resolveClusterCA(ctx)
+	switch {
+	case err == nil:
+		snap.clusterCA = clusterCACert
+	case !errors.As(err, new(*ClusterCANotConfiguredError)):
+		snap.err = err
+	}
+	if snap.err == nil {
+		snap.err = keyBErr
+	}
+	if snap.err != nil {
+		return snap
+	}
+	if snap.clusterCA != nil {
+		snap.extra = append(snap.extra, snap.clusterCA)
+	}
+	snap.extra = append(snap.extra, keyBCerts...)
+	for _, bundle := range p.anchorBundles(ctx) {
+		snap.extra = append(snap.extra, parsePEMCertificates(bundle)...)
+	}
+	snap.widened = widen(snap.base, snap.extra)
+	return snap
+}
+
+// readKeyB returns every tenant's Key B CA certificate, or why Key B
+// cannot be trusted right now.
+func (p *Pool) readKeyB(ctx context.Context) ([]*x509.Certificate, error) {
+	box := p.provider.Load()
+	if box == nil || box.prov == nil {
+		return nil, &KeyBUnavailableError{Reason: "no Key B provider installed"}
+	}
+	src, ok := box.prov.(CertSource)
+	if !ok {
+		return nil, &KeyBUnavailableError{Reason: "the installed CertProvider does not implement CertSource"}
+	}
+	pems, err := src.CACertPEMs(ctx)
+	if err != nil {
+		return nil, &KeyBUnavailableError{Reason: "CACertPEMs failed", Err: err}
+	}
+	var certs []*x509.Certificate
+	for _, certPEM := range pems {
+		certs = append(certs, parsePEMCertificates(certPEM)...)
+	}
+	return certs, nil
+}
+
+// parsePEMCertificates returns every certificate in data, skipping what
+// x509.CertPool.AppendCertsFromPEM skips: blocks that are not
+// CERTIFICATE, blocks carrying headers, and certificates that do not
+// parse. Parsed once per rebuild, so deriving a pool over another base
+// costs AddCert calls, not a second parse.
+func parsePEMCertificates(data []byte) []*x509.Certificate {
+	var certs []*x509.Certificate
+	for len(data) > 0 {
+		var block *pem.Block
+		block, data = pem.Decode(data)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			continue
+		}
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		certs = append(certs, c)
+	}
+	return certs
+}
+
+// widen returns a copy of base (an empty pool when base is nil) with every
+// certificate in extra added.
+func widen(base *x509.CertPool, extra []*x509.Certificate) *x509.CertPool {
+	pool := x509.NewCertPool()
+	if base != nil {
+		pool = base.Clone()
+	}
+	for _, c := range extra {
+		pool.AddCert(c)
+	}
+	return pool
+}
+
+// current returns the snapshot when it grants widening and is younger
+// than snapshotMaxAge, or nil.
+func (p *Pool) current() *trustSnapshot {
+	snap := p.snapshot.Load()
+	if snap == nil || snap.widened == nil || time.Since(snap.built) >= snapshotMaxAge {
+		return nil
+	}
+	return snap
+}
+
+// widenedFor returns the current widened pool over base, or nil when no
+// current snapshot grants widening. It loads atomics and does CPU work
+// only: this is the handshake path, and it never reads storage.
+func (p *Pool) widenedFor(base *x509.CertPool) *x509.CertPool {
+	snap := p.current()
+	if snap == nil {
+		return nil
+	}
+	if base == snap.base {
+		return snap.widened
+	}
+	if d := snap.derived.Load(); d != nil && d.base == base {
+		return d.pool
+	}
+	pool := widen(base, snap.extra)
+	snap.derived.Store(&derivedPool{base: base, pool: pool})
+	return pool
 }
 
 // resolveClusterCA returns the current cluster CA certificate, resolved
-// fresh (never from the pool's own cache -- see ClusterCA). ctx bounds the
+// fresh (never from the snapshot -- see ClusterCA). ctx bounds the
 // resolution; see ClusterCA's own doc comment.
 func (p *Pool) resolveClusterCA(ctx context.Context) (*x509.Certificate, error) {
 	box := p.clusterCA.Load()
@@ -392,11 +597,11 @@ func (p *Pool) IsClusterCA(ctx context.Context, cert *x509.Certificate) bool {
 //
 // Refuses the exemption outright when issuer is AFFIRMATIVELY CONFIRMED to
 // be a registered Key B CA for some tenant (isRegisteredKeyBCA against a
-// BUILT Key-B-only cache): an operator (or a test harness) that accidentally
-// adds a tenant's Key B CA to the static ClientCAs must not thereby grant
-// that CA a blanket, any-tenant pass -- it stays scoped to its own tenant
-// via the ordinary per-tenant check below. A Key-B-only cache that has never
-// been built (Key B provider never read successfully, e.g. still sealed) is
+// snapshot's Key-B-only pool): an operator (or a test harness) that
+// accidentally adds a tenant's Key B CA to the static ClientCAs must not
+// thereby grant that CA a blanket, any-tenant pass -- it stays scoped to
+// its own tenant via the ordinary per-tenant check below. A Key B that no
+// rebuild has read successfully (e.g. still sealed) is
 // NOT treated as a match -- it proves nothing about issuer either way, and
 // B3's actual requirement (go-qrdb#591's review, B3 remainder) is that a
 // static anchor is honored regardless of Key B's own state; only an
@@ -416,14 +621,15 @@ func (p *Pool) IsStaticallyTrusted(issuer *x509.Certificate) bool {
 }
 
 // isRegisteredKeyBCA reports whether issuer AFFIRMATIVELY verifies against
-// the Key-B-only portion of the most recently cached widened pool (see
-// poolCache.keyBOnly) -- i.e. whether it is CONFIRMED to be some tenant's
-// registered Key B CA, regardless of which.
+// the Key-B-only pool of the latest snapshot (trustSnapshot.keyBOnly) --
+// i.e. whether it is CONFIRMED to be some tenant's registered Key B CA,
+// regardless of which. The snapshot's age does not matter here: an old
+// confirmation can only make IsStaticallyTrusted stricter.
 //
 // No Key B provider installed at all (SetKeyBProvider never called), or a
-// provider installed but no handshake has built the cache yet (sealed, or
-// simply not yet run), both answer false: an unbuilt cache is not evidence
-// that issuer IS a Key B CA, only that this Pool cannot yet say either way,
+// provider installed but no rebuild has read it yet (sealed, or Run not
+// yet run), both answer false: an unread Key B is not evidence that
+// issuer IS a Key B CA, only that this Pool cannot yet say either way,
 // and B3's actual requirement (go-qrdb#591's review, B3 remainder) is that
 // static, Key A and operator anchors are ALWAYS honored regardless of Key
 // B's state -- only an issuer this Pool can AFFIRMATIVELY confirm is a
@@ -438,11 +644,11 @@ func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
 	if box == nil || box.prov == nil {
 		return false
 	}
-	cached := p.keyBCache.Load()
-	if cached == nil || cached.keyBOnly == nil {
+	snap := p.snapshot.Load()
+	if snap == nil || snap.keyBOnly == nil {
 		return false
 	}
-	_, err := issuer.Verify(x509.VerifyOptions{Roots: cached.keyBOnly, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	_, err := issuer.Verify(x509.VerifyOptions{Roots: snap.keyBOnly, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 	return err == nil
 }
 
@@ -505,27 +711,26 @@ func (p *Pool) verifyKeyBIssuer(ctx context.Context, tenantID string, issuer *x5
 
 // Wire installs cfg.GetConfigForClient, so that every client-facing
 // listener using cfg verifies a presented client certificate against Key A
-// (cfg.ClientCAs, read fresh on every connection via the closure below --
-// the WIDENING decision reads the live field, so an operator rotating
+// (cfg.ClientCAs, read on every connection via the closure below -- the
+// WIDENING decision uses the live field, so an operator rotating
 // additional client CA files is picked up without re-wiring) plus every
-// tenant's Key B CA certificate, read from whatever provider
-// SetKeyBProvider most recently installed -- see resolveClientCAs for
-// exactly how SetClusterCA's presence, absence, or failure each affect
-// this. cfg.ClientCAs is ALSO captured once, right here, as a fixed
+// tenant's Key B CA certificate, from the snapshot Run last built -- see
+// build for exactly how SetClusterCA's presence, absence, or failure each
+// affect this. cfg.ClientCAs is ALSO captured once, right here, as a fixed
 // snapshot for IsStaticallyTrusted's exemption specifically -- see its own
 // doc comment for why that check needs a stable, Wire-time value rather
 // than the live field the widening decision reads.
 //
 // Call once per *tls.Config, after cfg.ClientCAs already holds its Key-A
 // baseline, and before any listener sharing it starts.
-// A failed Key B resolution makes the installed hook return the base config
-// unmodified -- cfg itself (equivalent to crypto/tls's own "no override"
-// convention) when Wire composed with no prior hook, or whatever a prior
-// composed hook itself returned otherwise -- the correct behavior before
-// SetKeyBProvider has been called, on a reseal (CACertPEMs then fails: see
-// docs/certificate-authority/architecture.md's "while sealed, Key B isn't
-// available" rule), and for a CertProvider that does not implement
-// CertSource.
+// A snapshot that grants no widening makes the installed hook return the
+// base config unmodified -- cfg itself (equivalent to crypto/tls's own "no
+// override" convention) when Wire composed with no prior hook, or whatever
+// a prior composed hook itself returned otherwise -- the correct behavior
+// before SetKeyBProvider has been called and a rebuild has run, on a
+// reseal (CACertPEMs then fails: see docs/certificate-authority/
+// architecture.md's "while sealed, Key B isn't available" rule), and for
+// a CertProvider that does not implement CertSource.
 //
 // This hook does not reassert any OTHER field a listener-specific wrapper
 // tunes (REST/gRPC/Unix/MCP's TLS 1.3 floor, QUIC's exclusive ALPN
@@ -564,12 +769,15 @@ func (p *Pool) Wire(cfg *tls.Config) {
 				base = got
 			}
 		}
-		return p.configForClient(hello, base)
+		return p.configForClient(base), nil
 	}
 }
 
 // configForClient builds the per-connection config GetConfigForClient
-// returns, or (base, nil) to keep base unchanged on a failed resolution.
+// returns, or base unchanged when no current snapshot grants widening. It
+// never reads storage and never waits (go-qrdb#713): a store that has
+// stalled -- no Raft leader, a reseal -- cannot hold a handshake past the
+// listener's deadline, the handshake simply keeps the last snapshot built.
 //
 // clone.ClientCAs is deliberately left as base's own static baseline --
 // NEVER the widened pool -- because crypto/tls derives the
@@ -591,34 +799,16 @@ func (p *Pool) Wire(cfg *tls.Config) {
 // certificate is required at all -- the operator's own
 // mtls_binding_policy choice -- while moving ALL verification to one
 // place for both Key A and Key B.
-//
-// The trust resolution below is bounded by a context derived from hello's
-// own Context(), never context.Background() -- see handshakeTrustTimeout.
-func (p *Pool) configForClient(hello *tls.ClientHelloInfo, base *tls.Config) (*tls.Config, error) {
-	// A real crypto/tls handshake always supplies a non-nil Context()
-	// (since Go 1.17); nil is reachable only from a caller that built a
-	// *tls.ClientHelloInfo directly rather than through an actual
-	// handshake, which several packages' own tests do to exercise
-	// GetConfigForClient without a real TLS connection. Falling back to
-	// context.Background() only in that case keeps those tests a safe
-	// no-op rather than a context.WithTimeout panic ("cannot create
-	// context from nil parent") -- the real handshake path above always
-	// has a genuine one to derive from.
-	parent := hello.Context()
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, handshakeTrustTimeout)
-	defer cancel()
-	pool, err := p.resolveClientCAs(ctx, base.ClientCAs)
-	if err != nil {
+func (p *Pool) configForClient(base *tls.Config) *tls.Config {
+	pool := p.widenedFor(base.ClientCAs)
+	if pool == nil {
 		// base, not nil: base is cfg itself when Wire's caller installed no
 		// prior GetConfigForClient hook, so returning it is equivalent to
 		// the original (nil, nil) "keep crypto/tls on the unmodified cfg"
 		// behavior -- but when Wire composed with an existing hook, base is
-		// THAT hook's own returned config, which must survive a failure
-		// here untouched rather than being silently discarded.
-		return base, nil
+		// THAT hook's own returned config, which must survive here
+		// untouched rather than being silently discarded.
+		return base
 	}
 	clone := base.Clone()
 	switch clone.ClientAuth {
@@ -634,7 +824,7 @@ func (p *Pool) configForClient(hello *tls.ClientHelloInfo, base *tls.Config) (*t
 	// this is not re-entered for the connection being set up; nil it anyway
 	// so the clone is never mistaken for a second, live hook.
 	clone.GetConfigForClient = nil
-	return clone, nil
+	return clone
 }
 
 // verifyPeerConnection is Wire's VerifyConnection hook: the manual
@@ -684,27 +874,30 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 // rather than treating an unverified PeerCertificates list as good enough.
 // Returns the verified chain (leaf first) on success.
 //
-// A resolveClientCAs failure (Key B unavailable -- sealed, or any other
-// transient resolution failure) does NOT refuse every leaf outright
-// (go-qrdb#591's review, re-review blocker 2 regression). configForClient
-// hits this exact failure on a FRESH handshake and falls back to cfg
-// unmodified, which leaves crypto/tls to verify that new connection
-// against cfg's own static ClientCAs (this listener's baseline, already
-// carrying Key A for every composer -- see Wire) with no Key B widening
-// at all; this fallback reproduces that SAME trust decision for a
-// long-lived connection re-verified here instead of at a fresh handshake,
-// so a connection accepted while Key B was healthy keeps authenticating
-// for a Key A or operator-trusted leaf across a reseal, exactly as a new
-// connection made in that same sealed state would. Only a Key B-issued
-// leaf -- never part of the static baseline -- is refused once Key B
-// stops resolving.
-func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
+// Like the handshake, it reads the snapshot and never storage, so a
+// stalled store cannot hold a request either; ctx is accepted for the
+// auth layer's interface and unused.
+//
+// A snapshot that grants no widening (Key B unavailable -- sealed, or any
+// other failed rebuild) does NOT refuse every leaf outright (go-qrdb#591's
+// review, re-review blocker 2 regression). configForClient hits this exact
+// state on a FRESH handshake and falls back to cfg unmodified, which
+// leaves crypto/tls to verify that new connection against cfg's own
+// static ClientCAs (this listener's baseline, already carrying Key A for
+// every composer -- see Wire) with no Key B widening at all; this fallback
+// reproduces that SAME trust decision for a long-lived connection
+// re-verified here instead of at a fresh handshake, so a connection
+// accepted while Key B was healthy keeps authenticating for a Key A or
+// operator-trusted leaf across a reseal, exactly as a new connection made
+// in that same sealed state would. Only a Key B-issued leaf -- never part
+// of the static baseline -- is refused once Key B stops resolving.
+func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
 	if leaf == nil {
 		return nil, &PeerCertificateNotTrustedError{}
 	}
-	pool, err := p.resolveClientCAs(ctx, p.staticBase.Load())
-	if err != nil {
-		pool = p.fallbackClientCAs(ctx)
+	pool := p.widenedFor(p.staticBase.Load())
+	if pool == nil {
+		pool = p.fallbackClientCAs()
 	}
 	inter := x509.NewCertPool()
 	for _, c := range intermediates {
@@ -722,187 +915,30 @@ func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, inte
 }
 
 // fallbackClientCAs returns the pool a FRESH handshake would be verified
-// against in whatever state made resolveClientCAs fail: this listener's
-// own static ClientCAs baseline (p.staticBase, captured once at Wire --
-// see IsStaticallyTrusted) plus the cluster CA, when it still resolves
-// right now on its own. It never includes Key B: that is exactly the
-// trust resolveClientCAs could not produce, and the only thing this
-// fallback must NOT grant. See VerifyPeerChain's doc comment for why this
-// must match configForClient's own unmodified-cfg fallback rather than
-// refusing every leaf.
-func (p *Pool) fallbackClientCAs(ctx context.Context) *x509.CertPool {
+// against when no current snapshot grants widening: this listener's own
+// static ClientCAs baseline (p.staticBase, captured once at Wire -- see
+// IsStaticallyTrusted) plus the cluster CA, when the latest rebuild
+// resolved one and is younger than snapshotMaxAge. It never includes
+// Key B: that is exactly the trust the snapshot withholds, and the only
+// thing this fallback must NOT grant. See VerifyPeerChain's doc comment
+// for why this must match configForClient's own unmodified-cfg fallback
+// rather than refusing every leaf.
+func (p *Pool) fallbackClientCAs() *x509.CertPool {
 	pool := x509.NewCertPool()
 	if base := p.staticBase.Load(); base != nil {
 		pool = base.Clone()
 	}
-	if cert, err := p.resolveClusterCA(ctx); err == nil && cert != nil {
-		pool.AddCert(cert)
+	if snap := p.snapshot.Load(); snap != nil && snap.clusterCA != nil && time.Since(snap.built) < snapshotMaxAge {
+		pool.AddCert(snap.clusterCA)
 	}
 	return pool
-}
-
-// resolveClientCAs returns the widened ClientCAs pool (the cluster CA, when
-// one is configured and resolves, plus every tenant's Key B CA
-// certificate), consulting a short-lived cache (see poolCacheTTL), or an
-// error when Key B must not be trusted right now.
-//
-// The cluster CA is resolved FIRST, unconditionally, on every call, but its
-// two failure shapes are NOT treated the same (B2-2's actual requirement is
-// that the issuer-tenant binding is always enforced alongside Key B trust,
-// which SetKeyBProvider's doc comment states as a composer-wiring
-// obligation -- it is not "Key B requires a cluster CA to exist"):
-//   - *ClusterCANotConfiguredError (SetClusterCA never called, or called
-//     with nil): a deployment shape with no cluster-CA concept at all. Key
-//     B still widens; VerifyIssuer's per-tenant IsTenantIssuer branch gates
-//     it, and needs no cluster CA to operate -- only the exemption does.
-//   - Any other error (an installed resolver that is CURRENTLY failing --
-//     sealed, a transient store failure): the WIDENED pool this call
-//     returns fails closed -- a resolver that answered before and is
-//     answering differently now is a signal this function must not paper
-//     over. This withdraws the cluster-CA entry and exemption from THIS
-//     call's pool, never the Key-B-only cache refresh below (B3, see
-//     refreshKeyBOnlyCache's own doc comment): a broken cluster CA must
-//     not also make isRegisteredKeyBCA -- and through it,
-//     IsStaticallyTrusted's exemption for Key A and every operator/harness
-//     login -- degrade to "uncertain" forever.
-func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPool) (*x509.CertPool, error) {
-	// Refreshed FIRST, and unconditionally of the cluster CA's own state
-	// below: see refreshKeyBOnlyCache's own doc comment for why.
-	p.refreshKeyBOnlyCache(ctx)
-
-	clusterCACert, err := p.resolveClusterCA(ctx)
-	if err != nil {
-		var notConfiguredErr *ClusterCANotConfiguredError
-		if !errors.As(err, &notConfiguredErr) {
-			return nil, err
-		}
-		clusterCACert = nil
-	}
-
-	if cached := p.cache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
-		return cached.pool, nil
-	}
-
-	keyB := p.keyBCache.Load()
-	if keyB == nil {
-		box := p.provider.Load()
-		if box == nil || box.prov == nil {
-			return nil, &KeyBUnavailableError{Reason: "no Key B provider installed"}
-		}
-		if _, ok := box.prov.(CertSource); !ok {
-			return nil, &KeyBUnavailableError{Reason: "the installed CertProvider does not implement CertSource"}
-		}
-		// A provider IS installed and does implement CertSource, but
-		// refreshKeyBOnlyCache has never once succeeded (every attempt
-		// so far, including the one just above, failed): sealed is the
-		// ordinary cause in Raft mode.
-		return nil, &KeyBUnavailableError{Reason: "CACertPEMs has not yet succeeded"}
-	}
-
-	pool := x509.NewCertPool()
-	if baseClientCAs != nil {
-		pool = baseClientCAs.Clone()
-	}
-	if clusterCACert != nil {
-		pool.AddCert(clusterCACert)
-	}
-	for _, certPEM := range keyB.pems {
-		pool.AppendCertsFromPEM(certPEM)
-	}
-	for _, bundle := range p.anchorBundles(ctx) {
-		pool.AppendCertsFromPEM(bundle)
-	}
-
-	p.cache.Store(&poolCache{built: time.Now(), pool: pool})
-	return pool, nil
-}
-
-// refreshKeyBOnlyCache rebuilds p.keyBCache from the installed Key B
-// provider's CACertPEMs, when the current entry (if any) is older than
-// poolCacheTTL. It never returns an error, but a CACertPEMs failure (a
-// reseal is the ordinary cause in Raft mode, where the barrier is checked
-// explicitly and sealed refuses it -- see
-// docs/certificate-authority/architecture.md's "a runtime reseal must
-// make the dynamic client-auth trust pool drop Key B immediately" rule)
-// CLEARS the cache rather than leaving a stale, pre-reseal entry in
-// place (go-qrdb#591's review, blocker 2): resolveClientCAs's own
-// caller-visible promise is that Key B stops being trusted once its
-// source of truth stops answering, bounded only by poolCacheTTL, and a
-// cache that kept the last successful read forever violated that for as
-// long as CACertPEMs kept failing, with no bound at all.
-//
-// Called from resolveClientCAs UNCONDITIONALLY, before that function's
-// own cluster-CA resolution: a broken cluster CA resolver must never
-// prevent this refresh (go-qrdb#591's review, B3), because
-// isRegisteredKeyBCA reads ONLY this cache, and a cache that stops
-// refreshing degrades to "never built" -- which isRegisteredKeyBCA now
-// answers false for (go-qrdb#591's review, B3 remainder), so
-// IsStaticallyTrusted's static-anchor exemption -- Key A, the cluster's
-// own operator-configured anchors, a test harness's ad-hoc CA, none of
-// which has anything to do with Key B -- is unaffected either way.
-func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
-	if cached := p.keyBCache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
-		return
-	}
-	box := p.provider.Load()
-	if box == nil || box.prov == nil {
-		return
-	}
-	src, ok := box.prov.(CertSource)
-	if !ok {
-		return
-	}
-	// Singleflight: only ONE CACertPEMs call is ever in flight at a time,
-	// however many goroutines arrive here concurrently right as the cache
-	// ages out; the rest wait for and share that one call's result rather
-	// than each scanning and parsing every tenant's CA certificate
-	// themselves (go-qrdb#591's review, non-blocking).
-	_, _, _ = p.keyBGroup.Do("refresh", func() (any, error) {
-		// Re-checked inside the singleflight section: the load above runs
-		// before Do is even called, so a cache another goroutine just
-		// finished building between that load and this one becoming the
-		// leader must not be discarded by a redundant CACertPEMs call.
-		if cached := p.keyBCache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
-			return nil, nil
-		}
-		// Captured before the (potentially slow) CACertPEMs call, not
-		// after: an eviction (SetKeyBProvider, or the OnInvalidate
-		// callback it subscribes) landing WHILE this call is in flight
-		// bumps this, and the store below must then discard its result
-		// rather than resurrecting pre-eviction data the eviction already
-		// cleared (go-qrdb#591's review, non-blocking).
-		gen := p.keyBGeneration.Load()
-		pems, err := src.CACertPEMs(ctx)
-		if p.keyBGeneration.Load() != gen {
-			// An eviction already cleared keyBCache more recently than
-			// this call started; storing either outcome now would move
-			// backward in time. Leave it exactly as the eviction left it.
-			return nil, nil
-		}
-		if err != nil {
-			// Cleared, not left in place: a failure here (go-qrdb#591's
-			// review, blocker 2) means Key B must stop being trusted, not
-			// keep widening from certificates read before whatever just
-			// started failing. Never propagated as Do's own error: the
-			// caller (resolveClientCAs) learns of this through the now-nil
-			// cache, not through an error from this function.
-			p.keyBCache.Store(nil)
-			return nil, nil
-		}
-		keyBOnly := x509.NewCertPool()
-		for _, certPEM := range pems {
-			keyBOnly.AppendCertsFromPEM(certPEM)
-		}
-		p.keyBCache.Store(&keyBCacheEntry{built: time.Now(), pems: pems, keyBOnly: keyBOnly})
-		return nil, nil
-	})
 }
 
 // anchorBundles returns every tenant's trust-anchor bundle for the widened
 // pool. A failure to enumerate the tenants omits every anchor, and a failure
 // to read one tenant's anchors omits that tenant's: an anchor the pool cannot
 // read is not trusted, and Key B trust does not depend on it. Either omission
-// lasts only until the cache next lapses.
+// lasts only until the next rebuild.
 func (p *Pool) anchorBundles(ctx context.Context) [][]byte {
 	ab := p.anchors.Load()
 	if ab == nil || ab.tenants == nil {

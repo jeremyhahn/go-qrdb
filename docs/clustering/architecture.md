@@ -823,6 +823,22 @@ cadence is `DefaultMembershipPollInterval`.
   follower over them answered `not leader`. The Unix socket
   forwards as gRPC does -- it serves the gRPC services -- and the embedded
   transport forwards as its QUIC client transport does.
+- **A request holds through a leaderless moment instead of failing.** A
+  follower that briefly knows no leader for a shard -- mid-election, or not
+  yet reached by a newly elected leader -- has nowhere to forward a proposal
+  or a ReadIndex, and go-quicraft refuses it at once with a
+  `*quicraft.NotLeaderError` that names no leader. The Raft host adapter
+  (`pkg/backend/raft/leader_wait.go`) holds such a request, polling the
+  node's leader report with backoff, and re-runs it once a leader is known,
+  so a write or linearizable read sent to any node right after a leader
+  change succeeds rather than answering `not leader`. The refusal comes
+  before anything is proposed, so the retry cannot apply a command twice.
+  The hold is bounded by 10 seconds and by the caller's deadline; at the
+  bound the request fails with `*raft.LeaderWaitError`, which wraps the
+  last refusal and so still reaches the client as a not-leader 503. It sits
+  below the service layer, so every transport gets it. A refusal that names
+  a leader is not held; the transport forwards it as above. Stale reads
+  never consult a leader and are not affected.
 - **Replica states are read where the replica lives, and only there.** The
   read (`service.ReplicaStateReader`, `qrdb admin replica-states`) answers for
   the replicas on the node it reaches and is never forwarded: a node cannot

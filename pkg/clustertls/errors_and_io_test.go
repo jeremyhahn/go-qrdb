@@ -244,6 +244,58 @@ func TestPersistCAReportsAWriteFailure(t *testing.T) {
 	}
 }
 
+// blockCAKeyWrite makes every write of dataDir/ca-key.pem fail by occupying
+// the path with a directory, which an atomic rename cannot replace.
+func blockCAKeyWrite(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "ca-key.pem"), 0o700); err != nil {
+		t.Fatalf("mkdir ca-key.pem: %v", err)
+	}
+	return dir
+}
+
+// TestPersistMaterialWritesTheCAKeyBeforeTheCertificate pins the write order
+// a reader of the directory relies on: ca.pem is the file that announces the
+// material, so it must never be visible while a CA key that belongs with it is
+// not yet durable. A failed key write therefore leaves no ca.pem, and
+// LoadFromDir reports no cached material instead of a CA that cannot sign.
+func TestPersistMaterialWritesTheCAKeyBeforeTheCertificate(t *testing.T) {
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	dir := blockCAKeyWrite(t)
+
+	if err := clustertls.PersistMaterial(mat, dir); err == nil {
+		t.Fatal("expected PersistMaterial to fail when ca-key.pem cannot be written")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); !os.IsNotExist(err) {
+		t.Fatalf("ca.pem stat err = %v, want not-exist: the certificate became visible before its key was durable", err)
+	}
+	got, err := clustertls.LoadFromDir(dir)
+	if err != nil || got != nil {
+		t.Fatalf("LoadFromDir = %v, %v; want nil, nil", got, err)
+	}
+}
+
+// TestPersistCAWritesTheCAKeyBeforeTheCertificate is the PersistCA form of the
+// ordering contract above.
+func TestPersistCAWritesTheCAKeyBeforeTheCertificate(t *testing.T) {
+	caCertPEM, caKeyPEM, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	dir := blockCAKeyWrite(t)
+
+	if err := clustertls.PersistCA(caCertPEM, caKeyPEM, dir); err == nil {
+		t.Fatal("expected PersistCA to fail when ca-key.pem cannot be written")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); !os.IsNotExist(err) {
+		t.Fatalf("ca.pem stat err = %v, want not-exist: the certificate became visible before its key was durable", err)
+	}
+}
+
 // TestPersistCARoundTripsThroughLoadCAFromDir covers the CA persist/load pair
 // together, which is the only combination that proves the two agree on file
 // names.

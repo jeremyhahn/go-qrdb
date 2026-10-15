@@ -187,8 +187,8 @@ func (p *DefaultCertProvider) reestablishWatch(ctx context.Context, label, prefi
 // OnInvalidate registers fn to be called, going forward, whenever a
 // watched deletion evicts a tenant's cached Key B state (WatchForDeletions'
 // two consumers). pkg/clienttrust.Pool is the first subscriber, from
-// SetKeyBProvider, so its own widened-pool cache drops a deleted tenant's
-// CA immediately instead of waiting out poolCacheTTL. Safe to call before
+// SetKeyBProvider, so it rebuilds its trust snapshot without a deleted
+// tenant's CA at once instead of at its next periodic refresh. Safe to call before
 // WatchForDeletions has started, or when it is never called at all; fn is
 // simply never invoked in that case.
 func (p *DefaultCertProvider) OnInvalidate(fn func()) {

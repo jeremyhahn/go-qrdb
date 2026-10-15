@@ -86,7 +86,12 @@ listeners:
 
 ```go
 svcNode.WireTrustAnchors(pool) // pool.SetTrustAnchors(...) + Changes.Subscribe(pool.Invalidate)
+go pool.Run(ctx)               // rebuilds the handshake's trust snapshot
 ```
+
+`Invalidate` only schedules a rebuild on the pool's `Run` loop and never
+blocks the notifier; the TLS handshake reads the last snapshot built and never
+the store.
 
 `sdk/go/node` and `cmd/qrdbd` both do this. An embedder with its own trust
 store passes `server.WithTrustAnchors(myRegistry)`; a store whose anchors are

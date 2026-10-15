@@ -24,6 +24,7 @@ package raft
 
 import (
 	"context"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -52,6 +53,9 @@ type QuicraftHost interface {
 	// dynamically added replica from ReplicaStateObserver to
 	// ReplicaStateObserverReady once it has caught up.
 	IsShardJoining(shardID uint64) bool
+	// GetLeaderID returns the shard's current leader replica ID and whether
+	// a leader is known. Read by the leader wait (see throughElection).
+	GetLeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // HostAdapter wraps a QuicraftHost to satisfy the service.Host interface.
@@ -64,6 +68,9 @@ type HostAdapter struct {
 	*quicraft.Host
 	inner QuicraftHost
 	gate  *featuregate.Gate
+	// leaderWait bounds how long a request holds while this node knows no
+	// leader for its shard (see throughElection).
+	leaderWait time.Duration
 }
 
 // Option configures a HostAdapter.
@@ -95,7 +102,7 @@ func NewFeatureGate(host *quicraft.Host, replicaID, systemShardID uint64) (*feat
 
 // New creates a HostAdapter backed by the given quicraft.Host.
 func New(h *quicraft.Host, opts ...Option) *HostAdapter {
-	a := &HostAdapter{Host: h, inner: h}
+	a := &HostAdapter{Host: h, inner: h, leaderWait: defaultLeaderWaitTimeout}
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -158,7 +165,16 @@ func (a *HostAdapter) FeatureEnabled(shardID uint64, feature featuregate.Feature
 // from the nil host (e.g. Close, GetLeaderID) without providing a
 // concrete *quicraft.Host.
 func NewWithInner(host *quicraft.Host, inner QuicraftHost) *HostAdapter {
-	return &HostAdapter{Host: host, inner: inner}
+	return &HostAdapter{Host: host, inner: inner, leaderWait: defaultLeaderWaitTimeout}
+}
+
+// SyncPropose proposes cmd through Raft consensus and waits for it to be
+// applied, holding through a moment in which this node knows no leader for
+// shardID rather than refusing at once (see throughElection).
+func (a *HostAdapter) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (sm.Result, error) {
+		return a.inner.SyncPropose(ctx, shardID, cmd)
+	})
 }
 
 // ProposeWithMode proposes a write with the specified durability guarantee.
@@ -168,14 +184,14 @@ func NewWithInner(host *quicraft.Host, inner QuicraftHost) *HostAdapter {
 func (a *HostAdapter) ProposeWithMode(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error) {
 	switch mode {
 	case writemode.Sync:
-		return a.inner.SyncPropose(ctx, shardID, cmd)
+		return a.SyncPropose(ctx, shardID, cmd)
 	case writemode.WALDurable, writemode.Batched:
 		// WALDurable and Batched require additional infrastructure
 		// (proposer adapter, batch aggregator). For now, fall through
 		// to synchronous consensus to guarantee correctness.
-		return a.inner.SyncPropose(ctx, shardID, cmd)
+		return a.SyncPropose(ctx, shardID, cmd)
 	default:
-		return a.inner.SyncPropose(ctx, shardID, cmd)
+		return a.SyncPropose(ctx, shardID, cmd)
 	}
 }
 
@@ -184,18 +200,25 @@ func (a *HostAdapter) StaleRead(ctx context.Context, shardID uint64, query inter
 	return a.inner.StaleRead(ctx, shardID, query)
 }
 
-// SyncRead performs a linearizable read against the state machine.
+// SyncRead performs a linearizable read against the state machine, holding
+// through a moment in which this node knows no leader to confirm the read
+// index with (see throughElection).
 func (a *HostAdapter) SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
-	return a.inner.SyncRead(ctx, shardID, query)
+	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
+		return a.inner.SyncRead(ctx, shardID, query)
+	})
 }
 
 // FollowerRead reads from the local state machine after ensuring it has
 // applied up to the committed index. This allows any node (leader or
 // follower) to serve reads without a ReadIndex round-trip to the leader,
 // providing stronger guarantees than StaleRead with lower latency than
-// SyncRead on followers.
+// SyncRead on followers. Like SyncRead it holds through a moment in which
+// this node knows no leader (see throughElection).
 func (a *HostAdapter) FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
-	return a.inner.FollowerRead(ctx, shardID, query)
+	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
+		return a.inner.FollowerRead(ctx, shardID, query)
+	})
 }
 
 // ReadWithConsistency routes a read to the appropriate quicraft method
@@ -219,16 +242,16 @@ func (a *HostAdapter) FollowerRead(ctx context.Context, shardID uint64, query in
 func (a *HostAdapter) ReadWithConsistency(ctx context.Context, shardID uint64, query interface{}, opts consistency.ReadOptions) (interface{}, error) {
 	switch opts.Consistency {
 	case consistency.Linearizable, consistency.LeaseRead:
-		return a.inner.SyncRead(ctx, shardID, query)
+		return a.SyncRead(ctx, shardID, query)
 	case consistency.FollowerRead:
-		return a.inner.FollowerRead(ctx, shardID, query)
+		return a.FollowerRead(ctx, shardID, query)
 	case consistency.Eventual:
 		return a.inner.StaleRead(ctx, shardID, query)
 	}
 	if opts.AllowStale {
 		return a.inner.StaleRead(ctx, shardID, query)
 	}
-	return a.inner.SyncRead(ctx, shardID, query)
+	return a.SyncRead(ctx, shardID, query)
 }
 
 // RequestSnapshot requests an asynchronous snapshot for the specified shard.

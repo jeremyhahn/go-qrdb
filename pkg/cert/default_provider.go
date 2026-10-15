@@ -281,8 +281,8 @@ type DefaultCertProvider struct {
 	// invalidateHooks are called, in order, whenever a watched deletion
 	// evicts a tenant's cached state (evictTenant's callers). Registered
 	// by OnInvalidate -- pkg/clienttrust.Pool subscribes one from
-	// SetKeyBProvider, so its own widened-pool cache drops a deleted
-	// tenant immediately rather than waiting out poolCacheTTL. Guarded by
+	// SetKeyBProvider, so it rebuilds its trust snapshot without a deleted
+	// tenant at once rather than at its next periodic refresh. Guarded by
 	// mu, the same lock perTenant uses.
 	invalidateHooks []func()
 

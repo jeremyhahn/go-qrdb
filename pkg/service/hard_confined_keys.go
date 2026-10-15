@@ -30,7 +30,7 @@ import "strings"
 // legitimately Scans this exact prefix, through this package's own
 // FilterInternalMap (below), to enumerate every tenant's Key B
 // certificate for the dynamic client-auth trust pool
-// (pkg/clienttrust.Pool.resolveClientCAs). Confining "certificate" too
+// (pkg/clienttrust.Pool.Refresh). Confining "certificate" too
 // made that Scan filter its own enumeration's result out, under its own
 // guard -- so a cert the trust pool legitimately needed to advertise
 // disappeared, withdrawing Key B's TLS trust for every tenant with no

@@ -204,6 +204,9 @@ func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 	// been called (go-qrdb#560 review, B2-2): the pool and the
 	// issuer-tenant binding are the same object.
 	bundle.SetClusterCA(bundleClusterCA(t, bundle))
+	if err := bundle.TrustPool().Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
 
 	cfg := getConfigForClient(t, bundle)
 	if cfg == nil {
@@ -238,6 +241,9 @@ func TestWireClientTrustPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	// CACertPEMs failure path rather than being masked by the separate
 	// "no cluster CA configured" fallback.
 	bundle.SetClusterCA(bundleClusterCA(t, bundle))
+	if err := bundle.TrustPool().Refresh(t.Context()); err == nil {
+		t.Fatal("expected Refresh to report the failing CACertPEMs")
+	}
 
 	cfg := getConfigForClient(t, bundle)
 	if cfg == nil {
@@ -266,6 +272,9 @@ func TestWireClientTrustPool_NoClusterCA_KeyBStillWidensOnPerTenantBindingAlone(
 	bundle := testBundle(t)
 	keyB := genSecondCAPEM(t)
 	bundle.SetKeyBProvider(&fakeKeyBCertProvider{pems: [][]byte{keyB}})
+	if err := bundle.TrustPool().Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
 
 	cfg := getConfigForClient(t, bundle)
 	if cfg == nil {

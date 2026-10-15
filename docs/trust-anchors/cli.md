@@ -41,8 +41,9 @@ qrdb tenant trust-anchors remove --tenant-id acme \
   --fingerprint 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 ```
 
-The anchor stops vouching for logins at once: the node drops its cached
-client trust pool on every change. Certificates already enrolled under the
+The anchor stops vouching for logins at once: every login checks the tenant's
+anchors fresh, and the change also schedules an immediate rebuild of the
+node's client trust pool. Certificates already enrolled under the
 removed anchor no longer log in unless another registered anchor still
 vouches for them.
 

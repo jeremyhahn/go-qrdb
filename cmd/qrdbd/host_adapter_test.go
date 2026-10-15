@@ -102,6 +102,12 @@ func (m *mockQuicraftHost) IsShardJoining(shardID uint64) bool {
 	return false
 }
 
+// GetLeaderID reports a known leader: these tests never exercise the
+// adapter's leader wait.
+func (m *mockQuicraftHost) GetLeaderID(uint64) (uint64, bool, error) {
+	return 1, true, nil
+}
+
 // newTestHostAdapter creates a hostAdapter with a mock inner host.
 // The Host field is left nil since test code only calls adapter methods
 // that delegate to inner (not promoted Host methods).

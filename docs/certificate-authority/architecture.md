@@ -870,65 +870,77 @@ copies of the same logic:
 
 - **Client-facing listeners (REST, gRPC, Unix, QUIC, MCP)** verify a
   presented client certificate against Key A **and** every tenant's Key B CA
-  certificate, read fresh (subject to a short cache, below) via
-  `DefaultCertProvider.CACertPEMs`. `clienttrust.Pool.Wire` installs
-  `tls.Config.GetConfigForClient` on the composer's own `*tls.Config`, reading
-  its `ClientCAs` field fresh on every connection (not captured at Wire time)
-  as the Key A baseline; `clienttrust.Pool.SetKeyBProvider` installs the live
-  `cert.CertProvider` once it exists (after the first unseal), so a Key B CA
-  created — or rotated to an HSM-backed one via `WithCertKeyProviderFactory`
-  — after the listener started is picked up on the next connection, not
-  only at boot.
+  certificate, read via `DefaultCertProvider.CACertPEMs` into a trust
+  snapshot the pool rebuilds in the background (below).
+  `clienttrust.Pool.Wire` installs `tls.Config.GetConfigForClient` on the
+  composer's own `*tls.Config`, reading its `ClientCAs` field fresh on every
+  connection (not captured at Wire time) as the Key A baseline;
+  `clienttrust.Pool.SetKeyBProvider` installs the live `cert.CertProvider`
+  once it exists (after the first unseal), so a Key B CA created — or
+  rotated to an HSM-backed one via `WithCertKeyProviderFactory` — after the
+  listener started is picked up at the next rebuild, not only at boot.
   `GetConfigForClient` returning `(base, nil)` — the unmodified base
-  config, never `nil` — keeps the original, static (Key A-only) config on
-  a failed resolution: `base` is `cfg` itself when `Wire`'s caller
-  installed no prior `GetConfigForClient` hook (the ordinary case), or
-  whatever a composed PRIOR hook itself returned, so that hook's own
-  effect is never discarded on this path. This is what happens before the
-  first `SetKeyBProvider` call, and on every call where `CACertPEMs`
-  fails — the ordinary outcome while sealed in Raft mode, where the
-  replicated store cannot be opened at all.
+  config, never `nil` — keeps the original, static (Key A-only) config
+  whenever the current snapshot carries no widened pool: `base` is `cfg`
+  itself when `Wire`'s caller installed no prior `GetConfigForClient` hook
+  (the ordinary case), or whatever a composed PRIOR hook itself returned,
+  so that hook's own effect is never discarded on this path. This is what
+  happens before the first rebuild after `SetKeyBProvider`, and whenever
+  the last rebuild's `CACertPEMs` failed — the ordinary outcome while
+  sealed in Raft mode, where the replicated store cannot be opened at all.
   - **The pool and the issuer-tenant binding are the SAME object.**
     `clienttrust.Pool` is both the TLS-layer widening decision and the
     authentication-layer binding check (`IsClusterCA`, `VerifyIssuer` —
     see "Issuer-tenant binding"). `SetClusterCA` installs the resolver BOTH
-    halves check, resolved fresh, FIRST, and unconditionally on every call
+    halves check — every rebuild resolves it for the TLS half, and the
+    authentication layer resolves it fresh on every call
     — but its absence is not one thing: a deployment with no cluster-CA
     concept at all (`SetClusterCA` never called, or called with `nil`)
     still trusts Key B once `SetKeyBProvider` is called, gated purely by
     the per-tenant check (`VerifyIssuer`'s `IsTenantIssuer` branch, which
     needs no cluster CA to operate — only the cluster-CA EXEMPTION does);
     a resolver that WAS installed and is CURRENTLY failing (a reseal, a
-    transient store failure) withdraws Key B trust entirely, for that call
-    only, never stickily. The composer's obligation — unconditionally
+    transient store failure) withdraws Key B trust entirely from the
+    snapshot that rebuild publishes, until a later rebuild succeeds —
+    never stickily. The composer's obligation — unconditionally
     wiring this SAME pool as the `auth.IssuerVerifier` at the
     authentication layer, regardless of whether a cluster CA happens to
     exist — is what actually closes the gap a security review found: Key B
     trusted at the TLS layer with the binding unenforced at the
     authentication layer. `Pool` cannot verify that obligation for itself;
     see `SetKeyBProvider`'s own doc comment.
-  - **The resolution is bounded by a deadline derived from the handshake
-    itself, and can never generate a CA** (owner ruling). `configForClient`
-    derives its context from the handshake's own
-    `*tls.ClientHelloInfo.Context()` with an additional bounded timeout
-    (`handshakeTrustTimeout`), never `context.Background()`: an unbounded
-    resolve on the handshake path would let one slow storage read hang that
-    connection's handshake indefinitely, where `context.Background()` can
-    never be canceled by anything, including the listener shutting down.
-    The cluster-CA half of that resolution
+  - **The handshake never reads storage, and the rebuild can never
+    generate a CA** (owner ruling). `GetConfigForClient` only loads an
+    immutable snapshot from an `atomic.Pointer` and, at most, clones a
+    pool; `Pool.Run`, started once by the composer for the life of the
+    process, builds that snapshot from storage. A storage read held up by
+    a leader election (the replicated read waits up to 10 seconds for a
+    leader) used to sit inside the handshake and outlast its 5-second
+    deadline, so clients saw a closed connection on every election; now
+    the handshake returns at once with the last snapshot built. The
+    rebuild's own read is bounded as a second line of defence
+    (`refreshTimeout`, 2 seconds, well inside the handshake deadline). The
+    cluster-CA half of the rebuild
     (`ceremony.ProviderCA.CACertificate`) prefers
     `cakey.CertOnlyProvider.CertificateOnly` when the wrapped provider
-    offers it, so a TLS handshake can never establish a self-issued
-    cluster's Key A as a side effect of a connection attempt — every
-    composer instead calls the new `lifecycle.EstablishClusterCA` once,
-    deliberately, during startup.
-  - **The widened pool is cached for 2 seconds** (`poolCacheTTL`), the
-    current mitigation for the per-handshake cost of scanning and parsing
-    every tenant's CA certificate (measured at ~20ms at 1,000 tenants
-    without the cache, ~20µs with it). `SetKeyBProvider` and `SetClusterCA`
-    both invalidate the cache immediately, so a provider or cluster-CA swap
-    is never subject to this staleness window; a newly created or rotated
-    Key B CA otherwise is, for up to the TTL.
+    offers it, so trust-pool maintenance can never establish a self-issued
+    cluster's Key A as a side effect — every composer instead calls the
+    new `lifecycle.EstablishClusterCA` once, deliberately, during startup.
+  - **The snapshot is rebuilt on every invalidation and every 2 seconds**
+    (`poolCacheTTL`). Scanning and parsing every tenant's CA certificate
+    costs ~20ms at 1,000 tenants; the handshake pays none of it.
+    `Invalidate` — fired by the `CertProvider`'s tenant-deletion watch and
+    by trust-anchor changes — schedules a rebuild without blocking its
+    caller, and any number of invalidations before the rebuild runs
+    collapse into one. A newly created or rotated Key B CA with no
+    invalidation behind it is picked up within the 2-second period.
+    `SetKeyBProvider`, `SetClusterCA` and `SetTrustAnchors` withdraw the
+    widened pool at once and schedule a rebuild, so a provider or
+    cluster-CA swap never serves trust read from the previous one; a
+    rebuild that was already reading when a setter ran is discarded rather
+    than published (compare-and-swap). A snapshot older than three periods
+    is treated as withdrawn, so a stopped rebuild loop falls back to the
+    static baseline instead of serving old Key B trust indefinitely.
   - **Every listener-specific TLS override composes with
     `clienttrust.ReassertListenerTLS`**, not a bare clone-and-mutate:
     `GetConfigForClient`'s returned config REPLACES the connection's
@@ -944,9 +956,11 @@ copies of the same logic:
     `SetClusterCA` (`cmd/qrdbd/tls.go`) delegate to `clienttrust.Pool`
     directly; `TLSBundle.TrustPool()` exposes the same instance as the
     `auth.IssuerVerifier` `bootstrapAuthEnforcement` wires into the auth
-    middleware.
+    middleware, and `runStart` starts its `Run` loop under the process's
+    signal context.
   - **sdk/go/node**: `wireClientAndServer` builds ONE `clienttrust.Pool`,
-    calls `SetClusterCA`/`SetKeyBProvider` on it, passes it as the
+    calls `SetClusterCA`/`SetKeyBProvider` on it, starts its `Run` loop
+    under the node's background context, passes it as the
     `auth.IssuerVerifier` to `wiring.BuildAuthMiddleware`, and later calls
     `Wire` on whatever `*tls.Config` the embedder supplied via
     `server.WithTLS` (resolved with `server.ResolveTLSConfig`) — the SAME
@@ -1112,8 +1126,11 @@ provider.
 - **`CACertPEMs()` checks the barrier explicitly** and refuses with
   `BarrierSealedError` while sealed: outside Raft mode the plaintext
   records are reachable even while sealed, and a runtime reseal must make
-  the dynamic client-auth trust pool drop Key B immediately, not merely
-  whenever the underlying store happens to become unreadable.
+  the dynamic client-auth trust pool drop Key B at its next rebuild (within
+  the 2-second period), not merely whenever the underlying store happens
+  to become unreadable. A connection already established keeps its
+  handshake; its per-request issuer check (`VerifyIssuer`) reads the store
+  fresh and refuses a Key B leaf while sealed.
 - Issuance, enrolment, revocation and listing are separately permissioned
   (`certs:issue`, `certs:enroll`, `certs:revoke`, `certs:list`).
 - **An injected `cakey.ProviderFactory` (`WithKeyProviderFactory` /

@@ -28,7 +28,6 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,11 +50,11 @@ type fakeCertProvider struct {
 
 	// blockUntil, when non-nil, makes CACertPEMs wait for it to close
 	// before returning -- after already having incremented
-	// blockingCalls -- so a test can force genuine concurrent contention
-	// over a single in-flight call
-	// (TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds).
-	// Separate from callCounts because it is incremented with atomic,
-	// safe for the concurrent callers that test deliberately creates.
+	// blockingCalls -- so a test can hold a rebuild inside its store read
+	// (TestPool_HandshakeNeverWaitsOnABlockedRead,
+	// TestPool_Refresh_SetDuringFlightWins). Separate from callCounts
+	// because it is incremented with atomic, safe for the test goroutine
+	// that polls it while the rebuild's goroutine is blocked.
 	blockUntil    chan struct{}
 	blockingCalls int32
 }
@@ -65,8 +64,8 @@ var _ CertSource = (*fakeCertProvider)(nil)
 
 // fakeInvalidatingCertProvider extends fakeCertProvider with
 // InvalidationSource, so a test can prove Pool.SetKeyBProvider subscribes
-// to it, and that firing the subscribed hook actually drops Pool's own
-// cached widened pool immediately (go-qrdb#591's review).
+// to it, and that firing the subscribed hook schedules the rebuild that
+// drops a deleted tenant's CA (go-qrdb#591's review).
 type fakeInvalidatingCertProvider struct {
 	fakeCertProvider
 	hooks []func()
@@ -250,6 +249,16 @@ func genLeafTLSCert(t testing.TB, caCert *x509.Certificate, caKey *ecdsa.Private
 	return tls.Certificate{Certificate: [][]byte{der, caCert.Raw}, PrivateKey: leafKey}
 }
 
+// parseTLSLeaf returns tc's leaf certificate, failing the test on error.
+func parseTLSLeaf(t testing.TB, tc tls.Certificate) *x509.Certificate {
+	t.Helper()
+	leaf, err := x509.ParseCertificate(tc.Certificate[0])
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	return leaf
+}
+
 // genLeafWithEKU signs a leaf certificate under caCert/caKey carrying ONLY
 // the given extended key usages -- no ExtKeyUsageClientAuth unless eku
 // names it -- for a test that needs a cert a client-auth verification must
@@ -298,6 +307,26 @@ func getConfigForClient(t testing.TB, cfg *tls.Config) *tls.Config {
 		t.Fatalf("GetConfigForClient: %v", err)
 	}
 	return got
+}
+
+// rebuild runs one Refresh, the rebuild Run performs in production, so the
+// next handshake sees the trust state the test just configured. Its error
+// is the test's to assert where it matters; most callers only need the
+// snapshot published.
+func rebuild(t testing.TB, p *Pool) {
+	t.Helper()
+	_ = p.Refresh(context.Background())
+}
+
+// assertKickPending proves Invalidate (directly, or through a hook that
+// calls it) asked Run for a rebuild, and consumes that request.
+func assertKickPending(t testing.TB, p *Pool) {
+	t.Helper()
+	select {
+	case <-p.kick:
+	default:
+		t.Fatal("expected a rebuild request pending on the pool")
+	}
 }
 
 // assertTrustedByConnection proves cert would be accepted as a presented
@@ -359,9 +388,10 @@ func TestPool_NoClusterCA_KeyBStillWidensOnPerTenantBindingAlone(t *testing.T) {
 	// Key B provider IS installed; ClusterCA is NEVER configured.
 	keyBPEM, keyBCert := genCAPEM(t)
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config even with no ClusterCA configured")
 	}
 	assertTrustedByConnection(t, got, keyBCert)
@@ -380,17 +410,19 @@ func TestPool_ClusterCATransientError_KeyBNotTrustedThisCallOnly(t *testing.T) {
 
 	transientCA := &fakeClusterCA{err: errors.New("replicated store unreachable")}
 	pool.SetClusterCA(transientCA)
+	rebuild(t, pool)
 	if got := getConfigForClient(t, cfg); got != cfg {
 		t.Fatalf("expected the unmodified base config while ClusterCA fails, got %+v", got)
 	}
 
-	// The SAME Pool, no re-wiring: a later call where ClusterCA resolves
+	// The SAME Pool, no re-wiring: a later rebuild where ClusterCA resolves
 	// must succeed. A transient error must not disable the binding for the
 	// life of the process.
 	transientCA.err = nil
 	transientCA.cert = keyACert
+	rebuild(t, pool)
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected Key B to be trusted once ClusterCA resolves again")
 	}
 }
@@ -407,10 +439,11 @@ func TestPool_WidensPoolWithKeyBCerts(t *testing.T) {
 
 	keyBPEM, keyBCert := genCAPEM(t)
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
-		t.Fatal("expected a widened config, got the static fallback (nil)")
+	if got == cfg {
+		t.Fatal("expected a widened config, got the static fallback")
 	}
 	assertTrustedByConnection(t, got, keyBCert)
 	assertTrustedByConnection(t, got, keyACert)
@@ -427,9 +460,10 @@ func TestPool_PreservesOtherConfigFields(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	keyBPEM, _ := genCAPEM(t)
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config")
 	}
 	if got.MinVersion != cfg.MinVersion {
@@ -459,6 +493,7 @@ func TestPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	pool.Wire(cfg)
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakeCertProvider{err: errors.New("barrier is sealed")})
+	rebuild(t, pool)
 
 	if got := getConfigForClient(t, cfg); got != cfg {
 		t.Fatalf("expected the unmodified base config when CACertPEMs fails (simulating sealed), got %+v", got)
@@ -472,12 +507,13 @@ func TestPool_NoKeyBCertsYetStillTrustsClusterCA(t *testing.T) {
 	pool.Wire(cfg)
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakeCertProvider{})
+	rebuild(t, pool)
 
 	// No tenant has established Key B yet (CACertPEMs succeeds with zero
 	// entries): the widened pool trusts Key A, same as the static fallback
 	// would, since there is nothing else to add.
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a config (possibly equivalent to the static one)")
 	}
 	assertTrustedByConnection(t, got, keyACert)
@@ -490,6 +526,7 @@ func TestPool_ProviderWithoutCertSourceFallsBackToStatic(t *testing.T) {
 	pool.Wire(cfg)
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakePlainCertProvider{})
+	rebuild(t, pool)
 
 	if got := getConfigForClient(t, cfg); got != cfg {
 		t.Fatalf("expected the unmodified base config for a CertProvider that does not implement CertSource, got %+v", got)
@@ -504,10 +541,13 @@ func TestPool_NilKeyBProviderRevertsToStatic(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	keyBPEM, _ := genCAPEM(t)
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
-	if got := getConfigForClient(t, cfg); got == nil {
+	rebuild(t, pool)
+	if got := getConfigForClient(t, cfg); got == cfg {
 		t.Fatal("expected a widened config before reverting")
 	}
 
+	// No rebuild: SetKeyBProvider withdraws the snapshot itself, so the
+	// revert is immediate.
 	pool.SetKeyBProvider(nil)
 	if got := getConfigForClient(t, cfg); got != cfg {
 		t.Fatalf("expected the unmodified base config after SetKeyBProvider(nil), got %+v", got)
@@ -522,19 +562,21 @@ func TestPool_NilStaticClientCAs(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	keyBPEM, keyBCert := genCAPEM(t)
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config even when the base ClientCAs was nil")
 	}
 	assertTrustedByConnection(t, got, keyBCert)
 }
 
 // ---------------------------------------------------------------------------
-// B2-4: caching bounds the pre-auth cost of scanning every tenant's CA.
+// B2-4: the handshake never pays the pre-auth cost of scanning every
+// tenant's CA; only a rebuild does.
 // ---------------------------------------------------------------------------
 
-func TestPool_CachesWidenedPoolAcrossCalls(t *testing.T) {
+func TestPool_HandshakesNeverReadTheStore(t *testing.T) {
 	_, keyACert := genCAPEM(t)
 	cfg := baseConfig(t, x509.NewCertPool())
 	pool := New()
@@ -544,18 +586,19 @@ func TestPool_CachesWidenedPoolAcrossCalls(t *testing.T) {
 	keyBPEM, _ := genCAPEM(t)
 	calls := 0
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}, callCounts: &calls})
+	rebuild(t, pool)
 
 	for i := 0; i < 5; i++ {
-		if got := getConfigForClient(t, cfg); got == nil {
+		if got := getConfigForClient(t, cfg); got == cfg {
 			t.Fatalf("call %d: expected a widened config", i)
 		}
 	}
 	if calls != 1 {
-		t.Errorf("CACertPEMs called %d times across 5 connections, want 1 (cached)", calls)
+		t.Errorf("CACertPEMs called %d times for one rebuild and 5 connections, want 1 (handshakes never read)", calls)
 	}
 }
 
-func TestPool_SetKeyBProviderInvalidatesCache(t *testing.T) {
+func TestPool_SetKeyBProviderWithdrawsSnapshot(t *testing.T) {
 	_, keyACert := genCAPEM(t)
 	cfg := baseConfig(t, x509.NewCertPool())
 	pool := New()
@@ -565,16 +608,20 @@ func TestPool_SetKeyBProviderInvalidatesCache(t *testing.T) {
 	keyBPEM1, _ := genCAPEM(t)
 	calls1 := 0
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM1}, callCounts: &calls1})
-	getConfigForClient(t, cfg)
+	rebuild(t, pool)
 
 	keyBPEM2, keyBCert2 := genCAPEM(t)
 	calls2 := 0
 	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM2}, callCounts: &calls2})
-	got := getConfigForClient(t, cfg)
-	if calls2 != 1 {
-		t.Errorf("expected the new provider to be consulted immediately after SetKeyBProvider, calls=%d", calls2)
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Fatal("expected trust read from the replaced provider to be withdrawn at once")
 	}
-	assertTrustedByConnection(t, got, keyBCert2)
+	assertKickPending(t, pool)
+	rebuild(t, pool)
+	if calls2 != 1 {
+		t.Errorf("expected the new provider to be read by the rebuild SetKeyBProvider asked for, calls=%d", calls2)
+	}
+	assertTrustedByConnection(t, getConfigForClient(t, cfg), keyBCert2)
 }
 
 // ---------------------------------------------------------------------------
@@ -652,17 +699,15 @@ func TestPool_VerifyIssuer_ForeignTenantCARefused(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestPool_ClusterCABroken_StaticExemptionStillWorks is go-qrdb#591's B3
-// regression proof: before the fix, resolveClientCAs returned on a BROKEN
-// (not merely unconfigured) cluster CA resolver before ever reaching
-// CACertPEMs, so the Key-B-only cache isRegisteredKeyBCA reads never
+// regression proof: before the fix, the pool's resolution returned on a
+// BROKEN (not merely unconfigured) cluster CA resolver before ever reaching
+// CACertPEMs, so the Key-B-only pool isRegisteredKeyBCA reads never
 // refreshed and stayed "uncertain" (true) forever -- which
 // IsStaticallyTrusted treats as "assume this issuer might be a Key B CA,
 // refuse the exemption", for every issuer, including the harness's own
-// static CA that has nothing to do with Key B at all. A real connection
-// triggers this through configForClient/GetConfigForClient; this test
-// calls resolveClientCAs directly, the seam both that path and
-// VerifyPeerChain share, to observe its effect on IsStaticallyTrusted
-// without needing a live TLS handshake.
+// static CA that has nothing to do with Key B at all. This test runs the
+// rebuild directly to observe its effect on IsStaticallyTrusted without
+// needing a live TLS handshake.
 func TestPool_ClusterCABroken_StaticExemptionStillWorks(t *testing.T) {
 	harnessCAPEM, harnessCACert := genCAPEM(t)
 	harnessPool := x509.NewCertPool()
@@ -680,12 +725,11 @@ func TestPool_ClusterCABroken_StaticExemptionStillWorks(t *testing.T) {
 	// non-blocking case.
 	pool.SetClusterCA(&fakeClusterCA{err: errors.New("stored cluster CA record is corrupt")})
 
-	// Simulates the live connection that would normally trigger this via
-	// GetConfigForClient: the widened pool itself correctly fails closed
-	// (the cluster CA entry and exemption are unavailable this call), but
-	// the Key-B-only cache underneath must still have refreshed.
-	if _, err := pool.resolveClientCAs(context.Background(), cfg.ClientCAs); err == nil {
-		t.Fatal("expected resolveClientCAs to fail closed while the cluster CA resolver is broken")
+	// The widened pool itself correctly fails closed (the cluster CA entry
+	// and exemption are unavailable this rebuild), but the Key-B-only pool
+	// underneath must still have been read.
+	if err := pool.Refresh(context.Background()); err == nil {
+		t.Fatal("expected Refresh to fail closed while the cluster CA resolver is broken")
 	}
 
 	if !pool.IsStaticallyTrusted(harnessCACert) {
@@ -721,8 +765,8 @@ func TestPool_KeyBNeverSucceeded_StaticExemptionStillHonored(t *testing.T) {
 	pool.Wire(cfg)
 	pool.SetKeyBProvider(&fakeCertProvider{err: errors.New("barrier is sealed")})
 
-	if _, err := pool.resolveClientCAs(context.Background(), cfg.ClientCAs); err == nil {
-		t.Fatal("expected resolveClientCAs to fail while Key B has never once succeeded")
+	if err := pool.Refresh(context.Background()); err == nil {
+		t.Fatal("expected Refresh to fail while Key B has never once succeeded")
 	}
 
 	// The static anchor must still be honored: it is not, and has never
@@ -842,9 +886,10 @@ func TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA(t *testing
 		pems:     [][]byte{keyBPEMA},
 		registry: map[string]*x509.Certificate{"A": keyBCertA},
 	})
-	// Run the handshake path once so the Key-B-only cache is built from the
-	// SAME CACertPEMs the registry mirrors.
-	if got := getConfigForClient(t, cfg); got == nil {
+	// Rebuild once so the Key-B-only pool is built from the SAME
+	// CACertPEMs the registry mirrors.
+	rebuild(t, pool)
+	if got := getConfigForClient(t, cfg); got == cfg {
 		t.Fatal("expected a widened config")
 	}
 
@@ -870,8 +915,8 @@ func TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA(t *testing
 // TestPool_IsStaticallyTrusted_UncertainBeforeCacheIsHonored is
 // isRegisteredKeyBCA's "uncertain" branch, corrected per the B3 remainder
 // (go-qrdb#591's review): a Key B provider IS installed (so there is a
-// Key B concept in play for this Pool), but no handshake has run yet, so
-// poolCache.keyBOnly does not exist. An unbuilt cache is not evidence
+// Key B concept in play for this Pool), but no rebuild has run yet, so
+// trustSnapshot.keyBOnly does not exist. An unbuilt cache is not evidence
 // that staticCert IS a Key B CA -- it proves nothing about it either way
 // -- so IsStaticallyTrusted must honor the static exemption rather than
 // refuse on an unproven suspicion; only an AFFIRMATIVELY confirmed Key B
@@ -887,8 +932,8 @@ func TestPool_IsStaticallyTrusted_UncertainBeforeCacheIsHonored(t *testing.T) {
 	pool := New()
 	pool.Wire(cfg)
 	pool.SetKeyBProvider(&fakeCertProvider{})
-	// No handshake run: cfg.GetConfigForClient is never invoked, so
-	// p.cache.Load() is still nil here.
+	// No rebuild run: the snapshot is the withdrawal SetKeyBProvider
+	// published, with no Key-B-only pool.
 
 	if !pool.IsStaticallyTrusted(staticCert) {
 		t.Fatal("expected the static exemption to be honored while the Key-B-only cache is still unbuilt (B3 remainder)")
@@ -992,10 +1037,9 @@ func newManyTenantProvider(b testing.TB, n int) *manyTenantProvider {
 }
 
 // BenchmarkResolveClientCAs_NoCache_1000Tenants is B2-4's proof: every call
-// re-scans and re-parses every tenant's CA certificate with no cache at all
-// (bypassing Pool's cache by rebuilding the pool from the PEMs directly, the
-// shape DefaultCertProvider.CACertPEMs' caller used to pay on every
-// handshake before this fix).
+// re-scans and re-parses every tenant's CA certificate (rebuilding the pool
+// from the PEMs directly, the shape DefaultCertProvider.CACertPEMs' caller
+// used to pay on every handshake before the pool was cached).
 func BenchmarkResolveClientCAs_NoCache_1000Tenants(b *testing.B) {
 	prov := newManyTenantProvider(b, 1000)
 	ctx := context.Background()
@@ -1009,21 +1053,24 @@ func BenchmarkResolveClientCAs_NoCache_1000Tenants(b *testing.B) {
 	}
 }
 
-// BenchmarkPool_ResolveClientCAs_1000Tenants_Cached is the fixed path: the
-// same 1,000-tenant cost is paid once per poolCacheTTL window, not once per
-// handshake.
-func BenchmarkPool_ResolveClientCAs_1000Tenants_Cached(b *testing.B) {
+// BenchmarkPool_Handshake_1000Tenants is the fixed path: the same
+// 1,000-tenant cost is paid once per rebuild, in the background, and a
+// handshake only loads the snapshot.
+func BenchmarkPool_Handshake_1000Tenants(b *testing.B) {
 	_, keyACert := genCAPEM(b)
-	prov := newManyTenantProvider(b, 1000)
+	cfg := baseConfig(b, x509.NewCertPool())
 	pool := New()
+	pool.Wire(cfg)
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
-	pool.SetKeyBProvider(prov)
-	ctx := context.Background()
+	pool.SetKeyBProvider(newManyTenantProvider(b, 1000))
+	if err := pool.Refresh(context.Background()); err != nil {
+		b.Fatalf("Refresh: %v", err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := pool.resolveClientCAs(ctx, nil); err != nil {
-			b.Fatalf("resolveClientCAs: %v", err)
+		if got := pool.configForClient(cfg); got == cfg {
+			b.Fatal("expected a widened config")
 		}
 	}
 }
@@ -1086,6 +1133,7 @@ func TestPool_RealHandshake_3000Tenants_AdvertisesNoTenantCA(t *testing.T) {
 	pool := New()
 	pool.Wire(serverCfg)
 	pool.SetKeyBProvider(&fakeCertProvider{pems: tenantCAPEMs})
+	rebuild(t, pool)
 
 	var acceptableCAs [][]byte
 	clientCfg := &tls.Config{
@@ -1151,12 +1199,9 @@ func TestPool_RealHandshake_3000Tenants_AdvertisesNoTenantCA(t *testing.T) {
 }
 
 // blockingClusterCA is a ClusterCA whose CACertificate blocks until ctx is
-// done, then reports ctx's own error. It exists to prove that
-// configForClient's resolution is bounded by a context DERIVED FROM the
-// handshake -- never context.Background(), which nothing can ever cancel --
-// so a resolver that never otherwise returns still lets that one
-// connection's handshake conclude rather than hang forever (go-qrdb#591's
-// review, B5).
+// done, then reports ctx's own error: a store that has stopped answering,
+// as one with no Raft leader does while it holds a read through an
+// election.
 type blockingClusterCA struct{}
 
 func (blockingClusterCA) CACertificate(ctx context.Context) (*x509.Certificate, error) {
@@ -1164,77 +1209,92 @@ func (blockingClusterCA) CACertificate(ctx context.Context) (*x509.Certificate, 
 	return nil, ctx.Err()
 }
 
-// TestPool_ConfigForClient_HandshakeBoundedNotBackground proves
-// configForClient derives a BOUNDED context from the handshake's own
-// hello.Context(), never context.Background(), for its trust resolution.
+// TestPool_Refresh_BoundedByRefreshTimeout proves the second line of
+// defence the go-qrdb#713 ruling keeps: a rebuild's reads are bounded by
+// refreshTimeout even when the caller's own context never ends, so a store
+// that stops answering costs one failed rebuild -- which withdraws Key B
+// trust (go-qrdb#591, blocker 2) -- rather than a Run loop stuck forever.
 //
-// handshakeTrustTimeout is shortened for this test (see its own doc
-// comment) so the assertion below is cheap at the production value too: a
-// resolver that blocks forever still causes THIS test's own handshake to
-// conclude well within the test's own outer deadline, which is set to many
-// multiples of the shortened timeout -- proving a bound shorter than
-// "forever" exists, independent of its exact production duration.
-//
-// The outer HandshakeContext call is given a context with NO deadline of
-// its own (context.WithCancel, never fired early): any bound observed
-// cannot be credited to the caller's own context, only to configForClient's
-// own internal derivation from hello.Context().
-func TestPool_ConfigForClient_HandshakeBoundedNotBackground(t *testing.T) {
-	savedTimeout := handshakeTrustTimeout
-	handshakeTrustTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { handshakeTrustTimeout = savedTimeout })
+// refreshTimeout is shortened so the assertion is cheap; the caller's
+// context is context.Background(), so any bound observed can only be
+// Refresh's own.
+func TestPool_Refresh_BoundedByRefreshTimeout(t *testing.T) {
+	saved := refreshTimeout
+	refreshTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { refreshTimeout = saved })
 
-	_, operatorCACert, operatorCAKey := genCAWithKey(t, "operator-static-ca")
-	operatorPool := x509.NewCertPool()
-	operatorPool.AddCert(operatorCACert)
-	serverLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
-	clientLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
-
-	serverCfg := &tls.Config{
-		Certificates: []tls.Certificate{serverLeaf},
-		ClientCAs:    operatorPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS13,
-	}
+	keyAPool := x509.NewCertPool()
+	cfg := baseConfig(t, keyAPool)
+	keyBPEM, keyBCert := genCAPEM(t)
 	pool := New()
-	pool.Wire(serverCfg)
-	pool.SetClusterCA(blockingClusterCA{})
-	pool.SetKeyBProvider(&fakeCertProvider{})
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
+	assertTrustedByConnection(t, getConfigForClient(t, cfg), keyBCert)
 
-	clientCfg := &tls.Config{
-		InsecureSkipVerify: true, // #nosec G402 -- this test measures the SERVER's handshake bound, not the client's verification of the server
-		MinVersion:         tls.VersionTLS13,
-		Certificates:       []tls.Certificate{clientLeaf},
+	pool.SetClusterCA(blockingClusterCA{})
+	done := make(chan error, 1)
+	go func() { done <- pool.Refresh(context.Background()) }()
+	select {
+	case err := <-done:
+		var unavailable *ClusterCAUnavailableError
+		if !errors.As(err, &unavailable) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Refresh error = %v, want *ClusterCAUnavailableError wrapping context.DeadlineExceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Refresh did not return: its reads are not bounded by refreshTimeout")
+	}
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Fatal("expected a timed-out rebuild to withdraw Key B trust")
+	}
+}
+
+// TestPool_HandshakeNeverWaitsOnABlockedRead is go-qrdb#713's red/green
+// proof: with a rebuild stuck inside a storage read -- a store with no
+// leader holds a read through an election for longer than the 5 s TLS
+// handshake deadline -- a handshake must return at once, widened from the
+// last snapshot built, rather than wait on that read and time out.
+func TestPool_HandshakeNeverWaitsOnABlockedRead(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	keyAPool := x509.NewCertPool()
+	keyAPool.AddCert(keyACert)
+	cfg := baseConfig(t, keyAPool)
+
+	keyBPEM, keyBCert := genCAPEM(t)
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	pool.SetKeyBProvider(prov)
+	if err := pool.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
 	}
 
-	serverConn, clientConn := net.Pipe()
-	defer serverConn.Close()
-	defer clientConn.Close()
+	// From here every Key B read blocks until released, and a rebuild is
+	// already inside one when the handshake arrives.
+	release := make(chan struct{})
+	defer close(release)
+	prov.blockUntil = release
+	pool.Invalidate()
+	go func() { _ = pool.Refresh(context.Background()) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&prov.blockingCalls) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the rebuild to enter CACertPEMs")
+		}
+		time.Sleep(time.Millisecond)
+	}
 
-	// No deadline of its own -- see doc comment above.
-	outerCtx, outerCancel := context.WithCancel(context.Background())
-	defer outerCancel()
-
-	serverDone := make(chan struct{})
+	done := make(chan *tls.Config, 1)
 	go func() {
-		defer close(serverDone)
-		// An error here (the expected outcome: configForClient's own
-		// resolveClientCAs failed, so GetConfigForClient returns (nil,
-		// nil) and crypto/tls falls back to serverCfg's static ClientCAs,
-		// OR the resolution's failure surfaces some other way) is not
-		// itself the point -- only that this returns at all, promptly.
-		_ = tls.Server(serverConn, serverCfg).HandshakeContext(outerCtx)
+		got, _ := cfg.GetConfigForClient(&tls.ClientHelloInfo{})
+		done <- got
 	}()
-	go func() {
-		_ = tls.Client(clientConn, clientCfg).HandshakeContext(outerCtx)
-	}()
-
 	select {
-	case <-serverDone:
-		// configForClient's own bounded context expired and the handshake
-		// concluded -- the behavior under test.
-	case <-time.After(5 * time.Second):
-		t.Fatal("server handshake did not conclude: configForClient is not bounding its trust resolution to a context derived from the handshake (handshakeTrustTimeout), so a resolver that never returns hangs the connection forever")
+	case got := <-done:
+		assertTrustedByConnection(t, got, keyBCert)
+	case <-time.After(time.Second):
+		t.Fatal("the handshake waited on a blocked trust read; it must return at once with the last built pool")
 	}
 }
 
@@ -1278,8 +1338,8 @@ func TestPool_Wire_ExistingHookSurvivesAFailedResolution(t *testing.T) {
 	cfg := &tls.Config{GetConfigForClient: existing}
 	pool := New()
 	pool.Wire(cfg)
-	// No SetKeyBProvider call at all: resolveClientCAs fails with
-	// *KeyBUnavailableError, the ordinary "nothing installed yet" case.
+	// No SetKeyBProvider call and no rebuild at all: there is no snapshot,
+	// the ordinary "nothing installed yet" case.
 
 	got := getConfigForClient(t, cfg)
 	if got == nil {
@@ -1291,9 +1351,9 @@ func TestPool_Wire_ExistingHookSurvivesAFailedResolution(t *testing.T) {
 }
 
 // TestPool_SetKeyBProvider_SubscribesToInvalidationSource proves Pool
-// subscribes its own cache invalidation to a provider that implements
-// InvalidationSource, so a deleted tenant's CA stops being trusted the
-// moment the provider fires its hook -- not merely after poolCacheTTL
+// subscribes its rebuild to a provider that implements InvalidationSource,
+// so a deleted tenant's CA stops being trusted as soon as the rebuild that
+// hook schedules lands -- not merely at the next poolCacheTTL tick
 // (go-qrdb#591's review).
 func TestPool_SetKeyBProvider_SubscribesToInvalidationSource(t *testing.T) {
 	_, keyACert := genCAPEM(t)
@@ -1308,20 +1368,21 @@ func TestPool_SetKeyBProvider_SubscribesToInvalidationSource(t *testing.T) {
 	keyBPEM, keyBCert := genCAPEM(t)
 	prov := &fakeInvalidatingCertProvider{fakeCertProvider: fakeCertProvider{pems: [][]byte{keyBPEM}}}
 	pool.SetKeyBProvider(prov)
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config")
 	}
 	assertTrustedByConnection(t, got, keyBCert)
 
 	// Simulate the tenant's CA being deleted (CACertPEMs now returns
-	// nothing for it) and fire the invalidation hook -- WITHOUT this,
-	// Pool's own cache would keep trusting keyBCert for up to
-	// poolCacheTTL, since resolveClientCAs never re-consults
-	// fakeCertProvider until the cache ages out on its own.
+	// nothing for it) and fire the invalidation hook: it must schedule a
+	// rebuild, and that rebuild must drop keyBCert.
 	prov.pems = nil
 	prov.fire()
+	assertKickPending(t, pool)
+	rebuild(t, pool)
 
 	got2 := getConfigForClient(t, cfg)
 	if got2 == nil {
@@ -1330,101 +1391,88 @@ func TestPool_SetKeyBProvider_SubscribesToInvalidationSource(t *testing.T) {
 	assertNotTrustedByConnection(t, got2, keyBCert)
 }
 
-// TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds proves N
-// concurrent callers landing in refreshKeyBOnlyCache right as poolCacheTTL
-// ages out share ONE CACertPEMs call rather than each issuing their own
-// (go-qrdb#591's review, non-blocking): the provider's CACertPEMs blocks
-// until every goroutine has had a chance to arrive, so if more than one of
-// them actually entered it, singleflight did not dedupe them.
-func TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds(t *testing.T) {
-	keyBPEM, _ := genCAPEM(t)
-	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}, blockUntil: make(chan struct{})}
+// TestPool_Invalidate_CollapsesAndNeverBlocks proves Invalidate is safe to
+// call from a store watcher's own goroutine: any number of calls with no
+// Run loop draining them neither blocks nor queues more than the one
+// pending rebuild.
+func TestPool_Invalidate_CollapsesAndNeverBlocks(t *testing.T) {
 	pool := New()
-	pool.SetKeyBProvider(prov)
-
-	const n = 20
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			pool.refreshKeyBOnlyCache(context.Background())
-		}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			pool.Invalidate()
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Invalidate blocked with no Run loop draining it")
 	}
-
-	// Give every goroutine a chance to reach the blocking CACertPEMs call,
-	// or queue behind singleflight waiting on it, before releasing it.
-	time.Sleep(100 * time.Millisecond)
-	close(prov.blockUntil)
-	wg.Wait()
-
-	if got := atomic.LoadInt32(&prov.blockingCalls); got != 1 {
-		t.Errorf("CACertPEMs entered %d times for %d concurrent refreshes, want exactly 1", got, n)
-	}
-	cached := pool.keyBCache.Load()
-	if cached == nil || len(cached.pems) != 1 {
-		t.Fatal("expected the singleflighted call's result to populate the cache for every waiter")
+	if got := len(pool.kick); got != 1 {
+		t.Errorf("expected exactly one pending rebuild after 100 invalidations, got %d", got)
 	}
 }
 
-// TestPool_RefreshKeyBOnlyCache_EvictionDuringFlightWins is go-qrdb#591's
-// review (non-blocking) red/green proof: an eviction (SetKeyBProvider, or
-// the OnInvalidate callback it subscribes -- here, firing the SAME way a
-// watched tenant deletion would) landing WHILE a refresh's own CACertPEMs
-// call is still in flight must not be undone by that refresh's store once
-// it finally returns. Without the generation counter, the refresh's own
-// (now stale, pre-eviction) result would silently resurrect exactly what
-// the eviction just cleared.
-func TestPool_RefreshKeyBOnlyCache_EvictionDuringFlightWins(t *testing.T) {
-	keyBPEM, _ := genCAPEM(t)
-	prov := &fakeInvalidatingCertProvider{
-		fakeCertProvider: fakeCertProvider{pems: [][]byte{keyBPEM}, blockUntil: make(chan struct{})},
-	}
+// TestPool_Refresh_SetDuringFlightWins is go-qrdb#591's review red/green
+// proof, carried to the snapshot design: a configuration change
+// (SetKeyBProvider here) landing WHILE a rebuild's own CACertPEMs call is
+// still in flight must not be undone by that rebuild's publish once it
+// finally returns. Refresh publishes with a compare-and-swap against the
+// snapshot it started from, so the setter's withdrawal wins and the stale,
+// pre-change result is discarded.
+func TestPool_Refresh_SetDuringFlightWins(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	keyAPool := x509.NewCertPool()
+	keyAPool.AddCert(keyACert)
+	cfg := baseConfig(t, keyAPool)
+
+	keyBPEM, keyBCert := genCAPEM(t)
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}, blockUntil: make(chan struct{})}
 	pool := New()
+	pool.Wire(cfg)
 	pool.SetKeyBProvider(prov)
 
 	refreshDone := make(chan struct{})
 	go func() {
 		defer close(refreshDone)
-		pool.refreshKeyBOnlyCache(context.Background())
+		_ = pool.Refresh(context.Background())
 	}()
 
-	// Wait for the refresh to actually be inside the blocking CACertPEMs
-	// call before evicting, so the eviction genuinely lands mid-flight.
+	// Wait for the rebuild to actually be inside the blocking CACertPEMs
+	// call before the change, so it genuinely lands mid-flight.
 	deadline := time.Now().Add(2 * time.Second)
 	for atomic.LoadInt32(&prov.blockingCalls) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the refresh to enter CACertPEMs")
+			t.Fatal("timed out waiting for the rebuild to enter CACertPEMs")
 		}
 		time.Sleep(time.Millisecond)
 	}
 
-	prov.fire() // the eviction: clears keyBCache and bumps keyBGeneration.
+	pool.SetKeyBProvider(nil)
 	close(prov.blockUntil)
 	<-refreshDone
 
-	if cached := pool.keyBCache.Load(); cached != nil {
-		t.Fatalf("expected the in-flight refresh's stale result to be discarded after an eviction mid-flight, got a cache built at %v with %d cert(s)", cached.built, len(cached.pems))
+	if got := getConfigForClient(t, cfg); got != cfg {
+		assertNotTrustedByConnection(t, got, keyBCert)
+		t.Fatal("expected the in-flight rebuild's stale result to be discarded after a change mid-flight")
 	}
 }
 
 // TestPool_Reseal_DropsKeyBTrust is go-qrdb#591's review (blocker 2) red/
 // green proof: docs/certificate-authority/architecture.md promises that a
-// runtime reseal makes the dynamic trust pool drop Key B, bounded only by
-// the existing poolCacheTTL mitigation window, never indefinitely. Before
-// this fix, refreshKeyBOnlyCache left the LAST SUCCESSFUL keyBCache entry
-// in place forever once CACertPEMs started failing (the documented
-// contract for a merely transient blip), so a reseal's failing CACertPEMs
-// never actually cleared it: resolveClientCAs kept widening from
-// certificates read before the seal, with no path back to the static
-// baseline short of CACertPEMs succeeding again.
+// runtime reseal makes the dynamic trust pool drop Key B at the next
+// rebuild, never indefinitely: a rebuild whose CACertPEMs fails publishes a
+// snapshot with no Key B trust rather than keeping the last good one (the
+// pre-#591 contract for a merely transient blip), so a reseal never leaves
+// the listener widening from certificates read before the seal.
 //
 // A Key B-issued leaf authenticates while the provider is healthy; once
-// CACertPEMs starts failing (simulating a reseal) and poolCacheTTL has
-// elapsed, the SAME leaf must be refused, and the listener's
-// GetConfigForClient hook must have reverted to the static baseline: no
-// VerifyConnection override installed, so a subsequent real handshake's
-// verification runs through crypto/tls's OWN path and populates
+// CACertPEMs starts failing (simulating a reseal) and a rebuild has run,
+// the SAME leaf must be refused, and the listener's GetConfigForClient
+// hook must have reverted to the static baseline: no VerifyConnection
+// override installed, so a subsequent real handshake's verification runs
+// through crypto/tls's OWN path and populates
 // ConnectionState.VerifiedChains -- never populated for a connection this
 // Pool's own VerifyConnection hook handled (see VerifyPeerChain's doc
 // comment) -- directly proving the pool, not merely Pool's own
@@ -1450,6 +1498,7 @@ func TestPool_Reseal_DropsKeyBTrust(t *testing.T) {
 	pool.Wire(serverCfg)
 	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
 	pool.SetKeyBProvider(prov)
+	rebuild(t, pool)
 
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", serverCfg)
 	if err != nil {
@@ -1519,15 +1568,15 @@ func TestPool_Reseal_DropsKeyBTrust(t *testing.T) {
 		t.Error("expected VerifiedChains empty while Pool's own VerifyConnection hook is active")
 	}
 
-	// Simulate a reseal: CACertPEMs starts failing, and poolCacheTTL
-	// elapses -- both the widened-pool cache AND the Key-B-only cache
-	// expire and are not refreshed from stale data.
+	// Simulate a reseal: CACertPEMs starts failing, and the next rebuild
+	// runs -- it must publish a snapshot with no Key B trust rather than
+	// keep the last good one.
 	prov.err = errors.New("barrier is sealed")
-	time.Sleep(poolCacheTTL + 50*time.Millisecond)
+	rebuild(t, pool)
 
 	// The Key B leaf must now be refused outright.
 	if serverErr, clientErr, _ := handshake(keyBClientLeaf); serverErr == nil && clientErr == nil {
-		t.Fatal("expected the Key B leaf to be refused once CACertPEMs has been failing past poolCacheTTL")
+		t.Fatal("expected the Key B leaf to be refused once a rebuild has seen CACertPEMs failing")
 	}
 
 	// A leaf the STATIC baseline (the operator's own CA) signs must still
@@ -1567,10 +1616,11 @@ func TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf(t *testing.T) {
 	pool.Wire(cfg)
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakeCertProvider{})
+	rebuild(t, pool)
 
-	widened, err := pool.resolveClientCAs(context.Background(), cfg.ClientCAs)
-	if err != nil {
-		t.Fatalf("resolveClientCAs: %v", err)
+	widened := pool.widenedFor(cfg.ClientCAs)
+	if widened == nil {
+		t.Fatal("expected a widened pool after a successful rebuild")
 	}
 
 	cases := []struct {
@@ -1600,8 +1650,8 @@ func TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf(t *testing.T) {
 // request once VerifiedChains comes back empty -- which Wire's ClientAuth
 // remap makes true for EVERY connection this Pool wires, healthy or not
 // (see VerifyPeerChain's own doc comment). Before this fix, a
-// resolveClientCAs failure (Key B unavailable: sealed, or any other
-// transient CACertPEMs failure) made VerifyPeerChain refuse EVERY leaf
+// failed Key B resolution (sealed, or any other transient CACertPEMs
+// failure) made VerifyPeerChain refuse EVERY leaf
 // outright, including a Key A-issued or operator-CA-issued leaf that a
 // FRESH handshake made in that exact same sealed state would still accept
 // (configForClient's own fallback to the unmodified cfg, verified by
@@ -1625,6 +1675,7 @@ func TestRV794_LongLivedConnStaticAnchorAfterReseal(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
 	pool.SetKeyBProvider(prov)
+	rebuild(t, pool)
 
 	parseLeaf := func(tc tls.Certificate) *x509.Certificate {
 		leaf, err := x509.ParseCertificate(tc.Certificate[0])
@@ -1649,13 +1700,12 @@ func TestRV794_LongLivedConnStaticAnchorAfterReseal(t *testing.T) {
 		}
 	}
 
-	// Simulate a reseal: CACertPEMs starts failing, and poolCacheTTL
-	// elapses so the widened-pool cache and the Key-B-only cache are not
-	// merely serving a stale pre-reseal entry. The cluster CA resolver
-	// itself stays healthy throughout, matching an ordinary reseal where
-	// Key A's own certificate is still readable.
+	// Simulate a reseal: CACertPEMs starts failing, and the next rebuild
+	// runs, so the snapshot is not merely a stale pre-reseal one. The
+	// cluster CA resolver itself stays healthy throughout, matching an
+	// ordinary reseal where Key A's own certificate is still readable.
 	prov.err = errors.New("barrier is sealed")
-	time.Sleep(poolCacheTTL + 50*time.Millisecond)
+	rebuild(t, pool)
 
 	// A long-lived connection presenting a Key A or operator-CA leaf must
 	// keep authenticating -- the regression this test guards against.
@@ -1830,9 +1880,10 @@ func TestPool_SetTrustAnchors_WidensPoolWithAnchor(t *testing.T) {
 	anchorPEM, anchorCert := genCAPEM(t)
 	registerAnchor(t, reg, "tenant-a", anchorPEM)
 	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config")
 	}
 	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
@@ -1842,7 +1893,8 @@ func TestPool_SetTrustAnchors_WidensPoolWithAnchor(t *testing.T) {
 
 // TestPool_SetTrustAnchors_NilSourceRemovesAnchorTrust proves a nil Source
 // (SetTrustAnchors(nil, nil)) drops anchor trust from the widened pool
-// immediately -- SetTrustAnchors invalidates the cache itself.
+// immediately, before any rebuild -- SetTrustAnchors withdraws the
+// snapshot itself.
 func TestPool_SetTrustAnchors_NilSourceRemovesAnchorTrust(t *testing.T) {
 	cfg := baseConfig(t, x509.NewCertPool())
 	pool := New()
@@ -1853,6 +1905,7 @@ func TestPool_SetTrustAnchors_NilSourceRemovesAnchorTrust(t *testing.T) {
 	anchorPEM, anchorCert := genCAPEM(t)
 	registerAnchor(t, reg, "tenant-a", anchorPEM)
 	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+	rebuild(t, pool)
 
 	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
 		t.Fatalf("expected the anchor to be trusted before removal: %v", err)
@@ -1865,9 +1918,10 @@ func TestPool_SetTrustAnchors_NilSourceRemovesAnchorTrust(t *testing.T) {
 }
 
 // TestPool_RemoveAnchor_InvalidateDropsFromPool proves withdrawing a
-// registered anchor and calling Invalidate drops it from both the widened
-// pool and VerifyIssuer's acceptance on the very next call -- cluster CA /
-// Key B trust is untouched.
+// registered anchor and calling Invalidate drops it from the widened pool
+// once the rebuild Invalidate schedules lands, and from VerifyIssuer's
+// acceptance on the very next call (VerifyIssuer reads the store directly)
+// -- cluster CA / Key B trust is untouched.
 func TestPool_RemoveAnchor_InvalidateDropsFromPool(t *testing.T) {
 	_, keyACert := genCAPEM(t)
 	cfg := baseConfig(t, x509.NewCertPool())
@@ -1881,9 +1935,10 @@ func TestPool_RemoveAnchor_InvalidateDropsFromPool(t *testing.T) {
 	anchorPEM, anchorCert := genCAPEM(t)
 	registerAnchor(t, reg, "tenant-a", anchorPEM)
 	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config")
 	}
 	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
@@ -1897,9 +1952,11 @@ func TestPool_RemoveAnchor_InvalidateDropsFromPool(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	pool.Invalidate()
+	assertKickPending(t, pool)
+	rebuild(t, pool)
 
 	got = getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a config after invalidation (cluster CA and Key B still trusted)")
 	}
 	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err == nil {
@@ -1936,9 +1993,10 @@ func TestPool_AnchorBundles_TenantListerErrorOmitsAnchorsOnly(t *testing.T) {
 		return nil, errors.New("tenant service unavailable")
 	})
 	pool.SetTrustAnchors(reg, failingLister)
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a config despite the TenantLister failing")
 	}
 	if _, err := pool.VerifyPeerChain(context.Background(), keyACert, nil); err != nil {
@@ -1982,12 +2040,154 @@ func TestPool_AnchorBundles_PerTenantSourceErrorOmitsThatTenantOnly(t *testing.T
 	registerAnchor(t, reg, "tenant-a", anchorPEM)
 	src := &partialErrSource{real: reg, failTenant: "tenant-b"}
 	pool.SetTrustAnchors(src, listerOf("tenant-a", "tenant-b"))
+	rebuild(t, pool)
 
 	got := getConfigForClient(t, cfg)
-	if got == nil {
-		t.Fatal("expected a config despite tenant-b's anchor read failing")
+	if got == cfg {
+		t.Fatal("expected a widened config despite tenant-b's anchor read failing")
 	}
 	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
 		t.Errorf("expected tenant-a's anchor to still widen the pool: %v", err)
+	}
+}
+
+// TestPool_Run_RebuildsOnInvalidate proves the background loop is what
+// keeps the snapshot current: with Run started, an anchor registered after
+// the first build is trusted once Invalidate kicks it, with no test-driven
+// Refresh call, and Run returns when its context is cancelled.
+func TestPool_Run_RebuildsOnInvalidate(t *testing.T) {
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{})
+	reg := newRegistry(t)
+	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		pool.Run(ctx)
+	}()
+
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+	pool.Invalidate()
+
+	deadline := time.Now().Add(poolCacheTTL / 2)
+	for {
+		if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("Run did not rebuild on Invalidate before the next TTL tick")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
+
+// TestPool_StaleSnapshotIsWithdrawn proves a snapshot older than
+// snapshotMaxAge is not served: if the background loop has stopped
+// rebuilding, the handshake reverts to the static baseline and
+// VerifyPeerChain to the static fallback, rather than trusting Key B from
+// a read that is no longer being repeated.
+func TestPool_StaleSnapshotIsWithdrawn(t *testing.T) {
+	_, keyACert, keyAKey := genCAWithKey(t, "key-a")
+	keyBPEM, keyBCert, keyBKey := genCAWithKey(t, "tenant-key-b-ca")
+	staticPool := x509.NewCertPool()
+	staticPool.AddCert(keyACert)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
+
+	fresh := pool.snapshot.Load()
+	pool.snapshot.Store(&trustSnapshot{
+		built:    fresh.built.Add(-snapshotMaxAge - time.Second),
+		base:     fresh.base,
+		extra:    fresh.extra,
+		widened:  fresh.widened,
+		keyBOnly: fresh.keyBOnly,
+	})
+
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Error("expected the handshake to revert to the static baseline on a stale snapshot")
+	}
+	keyBLeaf := parseTLSLeaf(t, genLeafTLSCert(t, keyBCert, keyBKey))
+	if _, err := pool.VerifyPeerChain(context.Background(), keyBLeaf, nil); err == nil {
+		t.Error("expected a Key B leaf to be refused on a stale snapshot")
+	}
+	keyALeaf := parseTLSLeaf(t, genLeafTLSCert(t, keyACert, keyAKey))
+	if _, err := pool.VerifyPeerChain(context.Background(), keyALeaf, nil); err != nil {
+		t.Errorf("expected a static-anchor leaf to still verify on a stale snapshot: %v", err)
+	}
+}
+
+// TestPool_WidenedFor_DerivesForAnotherBase proves a listener whose own
+// ClientCAs differs from the one Wire recorded (a GetConfigForClient hook
+// returning its own pool) is widened from ITS base, and that the derived
+// pool is cached for the next handshake on that base.
+func TestPool_WidenedFor_DerivesForAnotherBase(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	_, otherCert := genCAPEM(t)
+	keyBPEM, keyBCert := genCAPEM(t)
+	staticPool := x509.NewCertPool()
+	staticPool.AddCert(keyACert)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	rebuild(t, pool)
+
+	other := x509.NewCertPool()
+	other.AddCert(otherCert)
+	first := pool.widenedFor(other)
+	if first == nil {
+		t.Fatal("expected a widened pool for another base")
+	}
+	if first == pool.widenedFor(cfg.ClientCAs) {
+		t.Fatal("expected a pool derived from the other base, not Wire's own")
+	}
+	if second := pool.widenedFor(other); second != first {
+		t.Error("expected the derived pool to be cached for the same base")
+	}
+	for name, c := range map[string]*x509.Certificate{"other base": otherCert, "key B": keyBCert} {
+		if _, err := c.Verify(x509.VerifyOptions{Roots: first, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+			t.Errorf("%s: expected the derived pool to trust it: %v", name, err)
+		}
+	}
+	if pool.widenedFor(nil) == nil {
+		t.Error("expected a widened pool for a nil base")
+	}
+}
+
+// TestParsePEMCertificates_SkipsWhatIsNotACertificate proves the anchor
+// bundle parser keeps only CERTIFICATE blocks that parse, so one malformed
+// or foreign block in a tenant's bundle never drops that tenant's other
+// anchors.
+func TestParsePEMCertificates_SkipsWhatIsNotACertificate(t *testing.T) {
+	goodPEM, goodCert := genCAPEM(t)
+	bundle := append([]byte{}, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("not a cert")})...)
+	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("bad der")})...)
+	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}, Bytes: goodCert.Raw})...)
+	bundle = append(bundle, goodPEM...)
+
+	got := parsePEMCertificates(bundle)
+	if len(got) != 1 || !got[0].Equal(goodCert) {
+		t.Fatalf("expected exactly the one well-formed certificate, got %d", len(got))
+	}
+	if got := parsePEMCertificates(nil); len(got) != 0 {
+		t.Errorf("expected nothing from an empty bundle, got %d", len(got))
 	}
 }

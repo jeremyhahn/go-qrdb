@@ -76,17 +76,19 @@ that binding is made for an anchor-issued certificate.
   builders forward it into the services before they are built; the embedded
   desktop binding has `EmbeddedServerBinding.SetTrustAnchors`.
 
-## Cache and invalidation
+## Snapshot and invalidation
 
-The widened client trust pool is cached briefly to keep handshakes cheap.
-Every successful `Add` or `Remove` is announced on the node's client-trust
-change feed (a `trustanchor.Changes`), as is a tenant's login CA coming into
-use for the first time on that node, and the pool drops its cache on that
-announcement: a removed anchor stops vouching, and a tenant onboarded a moment
-ago can log in, on the next handshake on that node. Other nodes rebuild their
-pool when their own short cache expires. A failure to read anchors omits the
-anchors from the pool and leaves the cluster CA, static CAs and tenant login
-CAs trusted.
+The TLS handshake never reads the store: it loads a snapshot of the widened
+client trust pool that a background loop on each node rebuilds every
+2 seconds. Every successful `Add` or `Remove` is announced on the node's
+client-trust change feed (a `trustanchor.Changes`), as is a tenant's login CA
+coming into use for the first time on that node, and the announcement
+schedules an immediate rebuild: a tenant onboarded a moment ago can log in as
+soon as that rebuild lands on that node. Other nodes pick the change up at
+their own next periodic rebuild. A removed anchor stops vouching at once
+regardless, because the per-request issuer check (`VerifyIssuer`) reads the
+tenant's anchors fresh. A failure to read anchors omits the anchors from the
+snapshot and leaves the cluster CA, static CAs and tenant login CAs trusted.
 
 ## Enrollment of a bring-your-own certificate
 
@@ -107,5 +109,6 @@ The private key never reaches the node.
 - An anchor never vouches across tenants.
 - Anchor management is tenant-self only; an operator cannot add an anchor to a
   tenant it does not belong to.
-- Removing an anchor invalidates the local pool cache immediately.
+- Removing an anchor schedules an immediate rebuild of the local trust
+  snapshot, and the per-request issuer check refuses it at once.
 - No anchor record is kept on a node's local disk.

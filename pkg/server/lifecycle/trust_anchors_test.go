@@ -220,32 +220,49 @@ func TestWireTrustAnchors_WiresPoolAndSubscribesInvalidation(t *testing.T) {
 	n.WireTrustAnchors(pool)
 
 	// The issuer-tenant binding is wired through the SAME pool regardless of
-	// the TLS-layer widening cache below.
+	// the TLS-layer trust snapshot below.
 	if err := pool.VerifyIssuer(ctx, "tenant-a", []*x509.Certificate{{Raw: []byte("leaf")}, anchorCert}); err != nil {
 		t.Fatalf("expected tenant-a's registered anchor to be trusted, got: %v", err)
 	}
 
-	// Populate the widened-pool cache without the second anchor yet.
-	cfg.GetConfigForClient(&tls.ClientHelloInfo{})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go pool.Run(runCtx)
+
+	// waitTrusted polls until cert verifies against the pool's snapshot,
+	// failing after within -- well inside the pool's 2 s periodic refresh,
+	// so only a rebuild the subscription scheduled can satisfy it.
+	waitTrusted := func(cert *x509.Certificate, within time.Duration) {
+		t.Helper()
+		deadline := time.Now().Add(within)
+		for {
+			if _, err := pool.VerifyPeerChain(ctx, cert, nil); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("certificate not trusted within %v", within)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	// Run's first build, without the second anchor yet.
+	waitTrusted(anchorCert, 5*time.Second)
 
 	secondPEM, secondCert := genSelfSignedCA(t)
 	if _, err := reg.Add(ctx, "tenant-a", secondPEM); err != nil {
 		t.Fatalf("Add (second): %v", err)
 	}
 
-	// Without invalidation this would still read the stale cached pool
-	// (poolCacheTTL has not lapsed): the subscription is what makes the new
-	// anchor visible on the very next handshake.
+	// Without the subscription the snapshot would not be rebuilt until the
+	// next periodic refresh: Notify is what makes the new anchor visible.
 	n.ClientTrustChanges.Notify()
+	waitTrusted(secondCert, time.Second)
 
 	got, err := cfg.GetConfigForClient(&tls.ClientHelloInfo{})
 	if err != nil {
 		t.Fatalf("GetConfigForClient: %v", err)
 	}
-	if got == nil {
+	if got == cfg {
 		t.Fatal("expected a widened config")
-	}
-	if _, verr := pool.VerifyPeerChain(ctx, secondCert, nil); verr != nil {
-		t.Errorf("expected the anchor added after the cache was populated to be trusted post-invalidation: %v", verr)
 	}
 }

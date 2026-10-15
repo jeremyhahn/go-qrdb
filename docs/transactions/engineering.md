@@ -286,6 +286,7 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | `ImportCommit` carries more encoded ops than one Raft proposal admits (`maxImportProposalBytes`, 8 MiB) and `--transactional` is set | refused before anything is proposed (`*ImportProposalTooLargeError`); all-or-nothing has no multi-proposal path, so this is the hard ceiling on a transactional import's size | **yes** |
 | A chunked (non-transactional) import's Raft proposal for one chunk suffers an outcome-unknown fault (`errors.Is(err, service.ErrOutcomeUnknown)` — the entry may or may not have committed) | the WHOLE `ImportCommit` call fails; no later chunk is attempted, and the session is NOT revoked, so the caller can retry `ImportCommit` — never downgraded to a per-row failure in either mode, because the chunk is not provably "nothing stored" | **yes** |
 | Same, but the chunk's proposal commits and is refused ON ITS MERITS (a result-level `AppError` — `checkResultError`'s path, provably nothing stored) | that chunk's rows are recorded failed; later chunks are still attempted (non-transactional) or the whole commit is refused (transactional) | **yes** |
+| `ImportCommit` reaches a replica that knows no leader for the shard: mid-election, or right after a leader change when the new leader steps down on losing quorum | every session read and chunk proposal is held by the Raft host adapter until a leader is known, then reissued — the leader-wait contract in [../clustering/engineering.md](../clustering/engineering.md) — and a read the new leader cannot serve yet (`quicraft.ErrReadIndexNotReady`: nothing committed in its term) is retried for up to 5 s on top. A refusal naming a leader returns at once, for the transport to forward. At the 10 s bound a refused session read fails the call with `UNAVAILABLE` / REST 503 `NOT_LEADER` before anything is applied, leaving the session retryable; a refused chunk proposal stored nothing and is handled like the refusal on its merits above | **yes** |
 | Missing `transaction:execute` / `batch:execute` | permission denied | **yes** |
 | `UnitOfWork.Commit` by a caller holding `kv:put`/`kv:delete` but not `transaction:execute` | permission denied (**BREAKING**: the removed compensating fallback needed only `kv:put`/`kv:delete`) | **yes** |
 | Barrier sealed | refused | **yes** |
@@ -381,7 +382,9 @@ never replays it over its own result.
   Raft group under `sdk/go/testutil/raftharness` with an actual
   `RequestLeaderTransfer`, `ImportCommit` reissued against the new leader
   through a separate `BatchService` instance sharing nothing with the one
-  that staged the chunk).
+  that staged the chunk). If the new leader steps down before that commit
+  lands, the commit holds through the re-election rather than failing; the
+  hold itself is unit-tested in `pkg/backend/raft/leader_wait_test.go`.
 
 ## Observability
 

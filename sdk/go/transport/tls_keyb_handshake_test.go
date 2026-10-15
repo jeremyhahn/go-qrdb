@@ -192,6 +192,9 @@ func TestBuildTLSConfig_KeyBCertPresentedOnEveryTransport(t *testing.T) {
 	pool := clienttrust.New()
 	pool.Wire(serverCfg)
 	pool.SetKeyBProvider(&fakeKeyBCertSource{pems: [][]byte{keyBPEM}})
+	if err := pool.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
 
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", serverCfg)
 	if err != nil {
@@ -302,6 +305,9 @@ func TestBuildTLSConfig_CustomConfigKeyBCertPresented(t *testing.T) {
 	pool := clienttrust.New()
 	pool.Wire(serverCfg)
 	pool.SetKeyBProvider(&fakeKeyBCertSource{pems: [][]byte{keyBPEM}})
+	if err := pool.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
 
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", serverCfg)
 	if err != nil {

@@ -1,0 +1,124 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package raft
+
+import (
+	"context"
+	"errors"
+	"strconv"
+	"time"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+)
+
+const (
+	// defaultLeaderWaitTimeout bounds how long a request holds through a
+	// moment in which this node knows no leader for its shard: an election
+	// in progress, or a follower that has not yet heard from a new leader.
+	// It covers several elections on a loaded host, whose election timeout
+	// can run to seconds, and the caller's context bounds it further.
+	defaultLeaderWaitTimeout = 10 * time.Second
+
+	// leaderPollBaseDelay is the first interval between checks for a known
+	// leader, doubled on each check up to leaderPollMaxDelay.
+	leaderPollBaseDelay = 10 * time.Millisecond
+
+	// leaderPollMaxDelay caps the interval between checks for a known leader.
+	leaderPollMaxDelay = 250 * time.Millisecond
+)
+
+// leaderReporter is the part of *quicraft.Host the leader wait reads: whether
+// this node currently knows a leader for a shard.
+type leaderReporter interface {
+	GetLeaderID(shardID uint64) (uint64, bool, error)
+}
+
+// LeaderWaitError is returned when go-quicraft refused a request because this
+// node knew no leader for ShardID, and it still knew none after Waited. Err is
+// the last refusal, a *quicraft.NotLeaderError, so a caller that classifies
+// the not-leader condition with errors.As still finds it.
+type LeaderWaitError struct {
+	ShardID uint64
+	Waited  time.Duration
+	Err     error
+}
+
+// Error implements error.
+func (e *LeaderWaitError) Error() string {
+	return "raft: shard " + strconv.FormatUint(e.ShardID, 10) +
+		": no leader known after waiting " + e.Waited.String() + ": " + e.Err.Error()
+}
+
+// Unwrap returns the last not-leader refusal.
+func (e *LeaderWaitError) Unwrap() error { return e.Err }
+
+// leaderUnknown reports whether err is go-quicraft's refusal of a request on
+// a node that knows no leader for the shard: the one not-leader refusal that
+// names nowhere to forward the request to.
+func leaderUnknown(err error) bool {
+	var nle *quicraft.NotLeaderError
+	return errors.As(err, &nle) && nle.LeaderID == 0 && nle.LeaderAddress == ""
+}
+
+// throughElection runs op and, while go-quicraft refuses it because this node
+// knows no leader for shardID, waits for one and runs op again. A follower
+// forwards proposals and ReadIndex requests to its leader inside go-quicraft,
+// so a node that briefly knows none -- mid-election, or a follower a new
+// leader has not reached yet -- would otherwise fail an ordinary request that
+// a moment later it could have served; every node serves every endpoint, and
+// a client must not have to retry through leadership changing hands.
+//
+// Re-running op is safe: go-quicraft refuses a request as not-leader before it
+// is proposed, so the refused attempt left nothing in the log.
+//
+// The wait is bounded by timeout and by ctx. At the bound the last refusal is
+// returned inside a *LeaderWaitError. Any other outcome of op, including a
+// not-leader refusal that names a leader, is returned at once: that one is the
+// caller's to forward.
+func throughElection[T any](ctx context.Context, h leaderReporter, shardID uint64, timeout time.Duration, op func() (T, error)) (T, error) {
+	v, err := op()
+	if !leaderUnknown(err) {
+		return v, err
+	}
+
+	start := time.Now()
+	deadline := start.Add(timeout)
+	delay := leaderPollBaseDelay
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		wait := min(delay, time.Until(deadline))
+		if wait <= 0 {
+			return v, &LeaderWaitError{ShardID: shardID, Waited: time.Since(start), Err: err}
+		}
+		timer.Reset(wait)
+		select {
+		case <-ctx.Done():
+			return v, &LeaderWaitError{ShardID: shardID, Waited: time.Since(start), Err: err}
+		case <-timer.C:
+		}
+		delay = min(delay*2, leaderPollMaxDelay)
+
+		// A shard this host cannot report on is left to op, which names
+		// the failure; only a definite "no leader yet" keeps waiting.
+		if _, known, lerr := h.GetLeaderID(shardID); lerr == nil && !known {
+			continue
+		}
+		v, err = op()
+		if !leaderUnknown(err) {
+			return v, err
+		}
+	}
+}

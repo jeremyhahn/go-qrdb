@@ -47,7 +47,10 @@ type mockQuicraftHost struct {
 	getShardMembershipFn     func(shardID uint64) (*quicraft.Membership, error)
 	requestSnapshotFn        func(ctx context.Context, shardID uint64, opt quicraft.SnapshotOption) (*quicraft.RequestState, error)
 	isShardJoiningFn         func(shardID uint64) bool
+	getLeaderIDFn            func(shardID uint64) (uint64, bool, error)
 }
+
+var _ QuicraftHost = (*mockQuicraftHost)(nil)
 
 func (m *mockQuicraftHost) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
 	if m.syncProposeFn != nil {
@@ -103,6 +106,13 @@ func (m *mockQuicraftHost) IsShardJoining(shardID uint64) bool {
 		return m.isShardJoiningFn(shardID)
 	}
 	return false
+}
+
+func (m *mockQuicraftHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
+	if m.getLeaderIDFn != nil {
+		return m.getLeaderIDFn(shardID)
+	}
+	return 1, true, nil
 }
 
 // ---------------------------------------------------------------------------

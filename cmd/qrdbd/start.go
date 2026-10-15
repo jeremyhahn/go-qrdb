@@ -1460,6 +1460,12 @@ func runStart(f *startFlags) (err error) {
 		context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer sigStop()
 
+	// The trust pool's handshake hook only loads the snapshot this loop
+	// builds; it never reads storage itself. Started once, for the whole
+	// process: SetClusterCA, SetKeyBProvider and every Invalidate below
+	// kick it to rebuild.
+	go bundle.TrustPool().Run(sigCtx)
+
 	// The compliance audit trail is opened BEFORE the seal subsystem, so it
 	// exists through the sealed window: share holders claim their envelopes
 	// and gather unseal quorums there, and those events are recorded on it
@@ -2735,8 +2741,9 @@ func runStart(f *startFlags) (err error) {
 			}
 			// bundle.SetClusterCA wires the dynamic client-auth trust pool's
 			// cluster-CA exemption (wireClientTrustPool, installed before any
-			// listener started): resolved fresh on every handshake, both to
-			// add the cluster CA to the widened pool and to grant it on the
+			// listener started): resolved on every rebuild of the pool's
+			// snapshot to add the cluster CA to the widened pool, and fresh
+			// per request to grant it on the
 			// issuer-tenant binding (bundle.TrustPool, wired above as the
 			// auth.IssuerVerifier bootstrapAuthEnforcement installed) and to
 			// authenticateOnBehalf's cluster-peer check. Key B is trusted via
