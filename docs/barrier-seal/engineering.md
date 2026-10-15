@@ -616,6 +616,20 @@ services — and the rebuild starts new ones over the new services. A worker
 left running proposes into closed storage; the engine then fails the apply
 with `storage is closed` and reports that the lessor could not be rebuilt.
 
+On a cluster, a `qrdbd` node that leads the system shard hands that
+leadership to a peer before it stops anything (`handOffLeadership`,
+`cmd/qrdbd/leader_handoff.go`), and closes its Raft host only once another
+replica leads or `leaderHandoffTimeout` (5s) passes. It picks the voter it has
+heard from within the election timeout that holds the most of its log; when it
+has heard from none -- the peers are down for their own migration -- it skips
+the transfer. A leader that closed without handing off left every peer's
+system-shard reads forwarded to a replica that no longer answered until they
+elected one themselves, and those reads are the TLS handshake's trust
+resolution and each request's revocation check: the peers stopped serving
+authenticated requests for that window. A handoff that fails or times out is
+logged at WARN and the recycle proceeds; it costs only the election it was
+meant to spare.
+
 A tenant on the **shared** system barrier cannot change its encryption; the
 server rejects the request. `system-barrier` and `none` are the two valid
 enable-encryption source strategies.

@@ -211,6 +211,19 @@ func (e *AdminReplicationTimeoutError) Error() string {
 	return "admin user not replicated within " + e.Timeout.String()
 }
 
+// LeaderHandoffTimeoutError is returned by handOffLeadership when the shard
+// this replica leads did not name another leader within Timeout of the
+// transfer request.
+type LeaderHandoffTimeoutError struct {
+	ShardID uint64
+	Timeout time.Duration
+}
+
+// Error returns a human-readable description of the handoff timeout.
+func (e *LeaderHandoffTimeoutError) Error() string {
+	return "leadership of shard " + strconv.FormatUint(e.ShardID, 10) + " not handed off within " + e.Timeout.String()
+}
+
 // BootstrapFetchError is returned when fetching the CA bundle from a
 // bootstrap server fails. Aliased from pkg/clusterenroll.
 type BootstrapFetchError = clusterenroll.FetchError

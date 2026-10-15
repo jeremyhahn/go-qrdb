@@ -208,6 +208,17 @@ func handleSystemMigration(
 	slog.Info("system encryption migration requested; quiescing data plane in-process",
 		slog.String("strategy", string(req.opts.TargetStrategy)))
 
+	// Hand the system shard to a peer first, while this host still serves it:
+	// a leader that just closes leaves the peers' system-shard reads -- the
+	// TLS trust resolution and revocation check behind every authenticated
+	// request -- stalled until they elect one themselves.
+	if host != nil {
+		if herr := handOffLeadership(context.Background(), host, shard.ShardKV, f.replicaID); herr != nil {
+			slog.Warn("system shard leadership handoff before migration failed; closing anyway",
+				slog.Any("error", herr))
+		}
+	}
+
 	// Stop this iteration's long-lived goroutines (lease sweeper, quota
 	// reconciler, tenant reconciler, dynamic membership) before tearing down the
 	// services they call into.

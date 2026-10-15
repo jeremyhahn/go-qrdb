@@ -776,7 +776,12 @@ type ImbalanceReport struct {
   (`lifecycle.AwaitClusterCACertificate`, 30s), and the reads made while the
   system shard settles (`server.WhileSystemShardSettling`, 15s): the
   feature-gate activation check, the boot tenant list, and the encryption
-  migrator's entitlement and isolation-mode reads. `qrdbd`'s wait for the
+  migrator's entitlement and isolation-mode reads. Settling, for these
+  reads, includes a not-leader answer that names no leader, and one that names
+  a leader without an address: go-quicraft fails the reads and forwarded
+  proposals pending at a leader change with that notice and expects the caller
+  to retry. A not-leader answer that names a leader with an address is a
+  routing answer and fails the read at once. `qrdbd`'s wait for the
   first admin's replication bounds each lookup the same way under its own
   deadline, and so does first boot's lookup for an existing admin, where a
   lookup cut off reads as "no admin yet" and the idempotent first-admin step

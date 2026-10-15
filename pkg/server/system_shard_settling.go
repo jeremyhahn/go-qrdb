@@ -64,8 +64,11 @@ func WhileSystemShardSettling(ctx context.Context, op string, fn func(context.Co
 }
 
 // SystemShardSettling reports whether err is the system shard settling: the
-// ReadIndex warm-up of a new leader, or no leader known while one is elected.
-// A not-leader answer that names a leader is not settling.
+// ReadIndex warm-up of a new leader, no leader known while one is elected, or
+// a leader change that failed a read pending on this follower. go-quicraft
+// fails such a read with a not-leader error naming the new leader but no
+// address, so the caller retries against it; a refusal that names a leader
+// AND its address is an answer, not settling.
 //
 // Two typed not-leader errors are checked, not one: a caller fed through the
 // embedded transport (e.g. the feature gate's self-advertisement, which
@@ -81,11 +84,18 @@ func SystemShardSettling(err error) bool {
 	}
 	var nl *service.NotLeaderError
 	if errors.As(err, &nl) {
-		return nl.LeaderID == 0
+		return leaderSettling(nl.LeaderID, nl.LeaderAddress)
 	}
 	var tnl *transport.NotLeaderError
 	if errors.As(err, &tnl) {
-		return tnl.LeaderID == 0
+		return leaderSettling(tnl.LeaderID, tnl.LeaderAddress)
 	}
 	return false
+}
+
+// leaderSettling reports whether a not-leader answer leaves the leader still
+// to be reached: none is known, or a leader change named one whose address
+// the notice does not carry.
+func leaderSettling(leaderID uint64, leaderAddress string) bool {
+	return leaderID == 0 || leaderAddress == ""
 }

@@ -111,6 +111,32 @@ func TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer(t *testing.T
 	}
 }
 
+// A read pending on a follower when the leader changes is failed with a
+// not-leader error naming the new leader but no address (go-quicraft's
+// leader-change notice), so the caller retries against it. That is the shard
+// settling, at either layer: a boot read that gave up on it exited the node
+// mid-election, and the exit took the quorum its peers were electing with.
+func TestWhileSystemShardSettling_WaitsOutALeaderChange(t *testing.T) {
+	for name, notice := range map[string]error{
+		"service":   &service.NotLeaderError{ShardID: 1, LeaderID: 1},
+		"transport": &transport.NotLeaderError{ShardID: 1, LeaderID: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
+				calls++
+				if calls < 3 {
+					return notice
+				}
+				return nil
+			})
+			if err != nil || calls != 3 {
+				t.Fatalf("err = %v after %d calls, want nil after 3", err, calls)
+			}
+		})
+	}
+}
+
 // Each attempt is a startup read with its own bound: fn is handed a context
 // that ends within StartupReadAttemptTimeout even when the caller's never
 // does, so a read in fn that never returns is cut off rather than holding the
