@@ -32,7 +32,7 @@ require (
 	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-enclave v0.8.0-alpha
 	github.com/jeremyhahn/go-objstore v0.4.0-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.48.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.49.0-alpha
 	github.com/jeremyhahn/go-quicraft v0.20.0
 	github.com/jeremyhahn/go-truststrap v0.6.0-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0

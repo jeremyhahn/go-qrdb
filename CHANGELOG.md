@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.49.0-alpha] - 2026-10-15
+
 ### Added
 
 - **Numeric secondary indexes with a documented total order** (go-qrdb#35).
@@ -46,6 +48,26 @@ are not reconstructed here — their history is in the git log.
   MCP tool are replaced by `init/begin` + `init/complete`; the TypeScript
   `tenants.barrierInit` throws `DesktopOnlyError` where the node asks a proof a
   browser cannot compute.
+
+- **DPoP (RFC 9449) request metadata for embedder authenticators**
+  (go-qrdb#646). The request context carries the `DPoP` proof and the method
+  and URI it is bound to as `auth.DPoPRequestFromContext(ctx)` (SDK:
+  `sdk.DPoPRequestFromContext`), a `DPoPRequest{Proof, Method, URI}`, on REST
+  and MCP over HTTP/2 and HTTP/3 (the `DPoP` header) and on gRPC and
+  gRPC-over-UDS (the `dpop` metadata). qrdb only carries the data: it does not
+  verify proofs, track `jti` replay or issue nonces. Native QUIC, embedded and
+  MCP stdio requests never carry it.
+
+- **A `file` data directory can be shared between processes** (go-qrdb#632).
+  Writes are serialized across processes by an advisory lock on
+  `.qrdb-file-lock` in the directory, so the guarded writes (`SaveIfAbsent`,
+  `CompareAndSwap`, `CompareAndDelete`) stay atomic across them. A new optional
+  `storage.GuardedStorage` interface (re-exported by the SDK) offers
+  `CompareAndSwap(ctx, key, expected, next) (bool, error)` on raw bytes, and
+  Memory, File, Pebble and ObjStore implement it; a mismatch or an absent key
+  is `false` with a nil error and never creates the key. Only the File engine's
+  guarantee holds across processes. The `file` engine also implements
+  `storage.Exclusive`, which runs a read-check-write under that lock.
 
 ### Changed
 
@@ -83,6 +105,58 @@ are not reconstructed here — their history is in the git log.
   `tenant.TenantBarrierInitOption`s. See `docs/barrier-seal/architecture.md`,
   "The barrier key seam".
 
+- **Deleting a role takes it away from everyone who holds it** (go-qrdb#697).
+  `qrdb roles delete` strips the role from every account holding it before it
+  removes the role, so no holder needs unassigning first. From the moment the
+  delete starts the role grants nothing, and a role-assignment write or an
+  update to the role is refused (`role.RoleDeletingError`, 400 /
+  `INVALID_ARGUMENT`). A delete that fails part way leaves the role in place,
+  marked (`role.HolderRevocationError`); running the same delete again
+  finishes it. A role service that cannot reach the user store refuses the
+  delete (`role.HolderRevokerRequiredError`, 501 / `UNIMPLEMENTED`), and holders
+  reassigned through every sweep fail it with
+  `user.RoleRevocationIncompleteError` (409 / `ABORTED`; retry).
+- **The built-in User role may change and remove its own passwords.** It now
+  carries `passwords:write` and `passwords:delete` beside `passwords:read`,
+  `passwords:lock` and `passwords:unlock`, self-scoped like every
+  `passwords:*` permission: the authorizer confines them to the caller's
+  tenant.
+- **An unconfirmed cluster seal state is no longer reported as sealed.** A node
+  cut off from the seal records — its lease lapsed, for example while the
+  system shard has no leader — or that has not yet read them refuses with
+  `SEAL_STATE_UNCONFIRMED`, which a client retries like any `UNAVAILABLE`:
+  REST `503` with `Retry-After: 5`; gRPC and Unix `UNAVAILABLE` with
+  `ErrorInfo{reason: "SEAL_STATE_UNCONFIRMED", domain: "qrdb.v1"}`; QUIC
+  `wire.StatusUnavailable` with that reason; MCP code `Unavailable` with that
+  reason; embedded `*clusterseal.SealStateUnconfirmedError`; MySQL error 1105;
+  PostgreSQL SQLSTATE `57P03`; etcd `UNAVAILABLE`. `SEALED` now means a cluster
+  seal holds the node or its node record is sealed.
+- **An unsealed `qrdbd` node waits for its system shard's leader for as long as
+  it runs.** Each node unseals on its own, so a quorum can form long after one
+  node is ready; the node logs `still waiting for a Raft leader` with the
+  `no raft leader after ...` detail once every 120 election timeouts and serves
+  nothing until a leader is known, instead of failing to start. SIGINT/SIGTERM
+  still ends the wait at once.
+- **`qrdbd` keeps every port it serves on bound across the sealed-window
+  handover** (go-qrdb#693). The REST listener, the HTTP/3 socket beside it,
+  gRPC, the QUIC transport and MCP are bound once, before the first server
+  starts, and handed to the sealed-window listener, the node's own server and
+  every server an in-process encryption migration rebuilds, so no other
+  process or outbound connection can take a port between them. A failed bind
+  is `*ServerSocketBindError`, naming the protocol, network and address.
+  Embedders get the same with the new `server.WithQUICPacketConn` and
+  `server.WithMCPListener`.
+- **A `qrdbd` node that leads the system shard hands leadership to a peer**
+  before an in-process encryption migration recycles it, and closes its Raft
+  host once another replica leads or 5 seconds pass, so its peers' system-shard
+  reads — trust resolution in the TLS handshake and each request's revocation
+  check — are not left forwarded to a node that no longer answers.
+- **Concurrent writes on a standalone node share one commit.** Proposals that
+  arrive while an `Update` is in progress are applied together in the next
+  one, and each is acknowledged only after the `Update` that applied it
+  returns. The `file` engine writes a batch's distinct keys concurrently, at
+  most 32 at a time, so their fsyncs overlap.
+
 ### Fixed
 
 - **A membership change no longer fails because it arrived mid-election.**
@@ -114,6 +188,40 @@ are not reconstructed here — their history is in the git log.
   created and removed by every batch, so a time-series query racing a write
   failed with `lstat ...qrdb-objstore-journal: no such file or directory`. The
   local provider now keeps its journal in a sibling `<path>.journal` tree.
+
+- **A request sent right after a leader change no longer fails with `not
+  leader`.** A follower that briefly knows no leader for a shard holds a
+  proposal or linearizable read, and re-runs it once a leader is known, on
+  every transport. Nothing has been proposed when it is held, so the retry
+  cannot apply a command twice. The hold is bounded by 10 seconds and the
+  caller's deadline; at the bound the request fails with `*raft.LeaderWaitError`,
+  still a not-leader 503 to the client. Stale reads are not affected.
+- **A boot-time read can no longer hang a node's startup** (go-qrdb#668). Each
+  attempt of a startup read is bounded to 5 seconds, and go-quicraft's
+  retryable `ErrReadIndexNotReady` — a new leader that has not yet committed in
+  its term — and transient not-leader answers are retried until the read's
+  startup deadline. A boot that runs out fails with `*server.StartupReadError`,
+  logged at ERROR, naming the read, its budget and the attempts made.
+- **A restarted `qrdbd` node no longer hangs starting its feature gate.** A
+  leader that has not yet committed in its term drops a follower's ReadIndex
+  without answering it, so the gate's activation read could wait forever and
+  the node never reached its listeners. `qrdbd` and `sdk/go/node` now bound
+  each start attempt by `server.StartupReadAttemptTimeout` and retry it
+  (`server.WhileSystemShardSettling` in `qrdbd`). `Client.StartFeatureGate`'s
+  context bounds the start only; the advertisement and the gate run on until
+  they are closed.
+- **A lease grant no longer reports a lease it granted as not found.** The
+  grant read the lease back after its apply, and the expiry sweep can revoke a
+  short lease in between, so a successful grant failed with
+  `*service.LeaseNotFoundError`. The grant now answers with what its apply
+  granted (the assigned ID and the requested TTL, all of it remaining). On a
+  tenant-scoped grant, a lease the sweep revoked before its ownership record
+  was written is returned the same way, and the scope then finds it expired
+  like any lease whose TTL ran out; lease IDs are never reused.
+- **Raft groups on one node no longer share an audit chain.** Each state
+  machine now has its own audit `Chain`; a shared one numbered one group's
+  events after another's, and opening or recovering either group overwrote the
+  other's chain heads.
 
 ## [0.48.0-alpha] - 2026-10-14
 
