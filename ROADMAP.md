@@ -90,6 +90,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **identity-hydrator** — `WithIdentityHydrator`; the login Subject is the immutable user id — [#670](../../issues/670) — [docs/identity-rbac/](docs/identity-rbac/) — open
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — [docs/release/](docs/release/) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — [docs/release/](docs/release/) — open
+- **seal-pause-resume** — seal pauses every shard the node hosts, the system shard included, through go-quicraft `Host.PauseShard` after the seal record commits and before the keys are wiped; unseal restores the keys, then `Host.ResumeShard`; `ErrShardPaused` answers Unavailable on every transport, never a shutdown — [docs/barrier-seal/](docs/barrier-seal/) — blocked: pending go-quicraft `shard-pause` (go-quicraft#353)
 
 ## Future
 
