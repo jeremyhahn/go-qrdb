@@ -11,7 +11,7 @@ The cluster engine and database system for every project in the stack: embedded,
 ## Milestones
 
 - [Working fundamentally: Raft clustering and storage](../../milestone/28) — 5 open, 1 closed, due 2026-10-27 — closes when main is green on every on-push job for three consecutive pushes and the qrdb-3-node-proven gate has passed on the three-node cluster; order go-quicraft, go-qrdb, go-xkms, go-quicbaas — cluster-verification, sealed-mode-serving — open
-- [Dev complete](../../milestone/12) — 13 open, 22 closed, due 2026-11-09 — the public release; the version is confirmed at the owner's publish approval; criteria in [docs/SPEC.md, Release criteria](docs/SPEC.md#release-criteria) — lease-reads, auth-factor-claim, protected-memory, storage-compare-and-swap, request-context-dpop, fips-140-3, documentation, identity-hydrator, release-readiness, verifiable-log — open
+- [Dev complete](../../milestone/12) — 13 open, 22 closed, due 2026-11-09 — the public release; the version is confirmed at the owner's publish approval; criteria in [docs/SPEC.md, Release criteria](docs/SPEC.md#release-criteria) — lease-reads, auth-factor-claim, protected-memory, storage-compare-and-swap, request-context-dpop, fips-140-3, documentation, user-password-self-scope, identity-hydrator, release-readiness, verifiable-log, spiffe-trust-domain-tenant — open
 
 ## Complete
 
@@ -75,6 +75,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **request-context-dpop** — DPoP proof, method and URI in the request context — [#646](../../issues/646); PR [#651](../../pulls/651) — [docs/api-server/](docs/api-server/) — in review
 - **fips-140-3** — nightly FIPS 140-3 job green and placed; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118) — [docs/seal/fips140-mode.md](docs/seal/fips140-mode.md) — open
 - **documentation** — ROADMAP names every milestone and folder; banners; RC spec scrub; agent spec home — [#657](../../issues/657), [#658](../../issues/658), [#635](../../issues/635), [#634](../../issues/634) — [docs/README.md](docs/README.md) — open
+- **user-password-self-scope** — the User role holds self-scoped `passwords:write` and `passwords:delete`; go-xkms's password service confines a user to its own password (go-xkms#1538) — [docs/auth/](docs/auth/) — open
 
 ## Next
 
@@ -92,6 +93,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — [docs/release/](docs/release/) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — [docs/release/](docs/release/) — open
 - **seal-pause-resume** — seal pauses every shard the node hosts, the system shard included, through go-quicraft `Host.PauseShard` after the seal record commits and before the keys are wiped; unseal restores the keys, then `Host.ResumeShard`; `ErrShardPaused` answers Unavailable on every transport, never a shutdown — [docs/barrier-seal/](docs/barrier-seal/) — blocked: pending go-quicraft `shard-pause` (go-quicraft#353)
+- **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain (`spiffe://<tenant>/...`), accepted in the X.509 field the tenant is read from; the reading side of go-xkms's x509-svid profile — [docs/auth/](docs/auth/) — open
 
 ## Future
 
