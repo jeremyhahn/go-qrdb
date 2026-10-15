@@ -24,7 +24,9 @@ import "context"
 // transport-agnostic view of pkg/auth.Identity — a struct used for RBAC
 // admission decisions.
 //
-// Subject is the canonical principal name (e.g. CN from a client cert).
+// Subject is the immutable user id of the account the caller resolved to,
+// in decimal; a caller that resolved to no account keeps its authenticated
+// name (e.g. the CN of a client cert).
 // TenantID is always non-empty for a well-formed identity; the
 // system-tenant rule grants cross-tenant scope when TenantID equals
 // the system tenant id ("system").

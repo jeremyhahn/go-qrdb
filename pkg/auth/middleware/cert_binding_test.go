@@ -241,8 +241,8 @@ func TestAuthenticate_AdmitsCertMatchingItsBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enrolled certificate refused: %v", err)
 	}
-	if identity.Subject != "alice" || identity.TenantID != "victim" {
-		t.Fatalf("identity = %s/%s, want victim/alice", identity.TenantID, identity.Subject)
+	if identity.UserID == 0 || identity.Username != "alice" || identity.TenantID != "victim" {
+		t.Fatalf("identity = %s/%s, want victim/alice", identity.TenantID, identity.AccountName())
 	}
 	if len(identity.Roles) != 2 {
 		t.Fatalf("roles = %v, want the store's two", identity.Roles)
@@ -299,8 +299,8 @@ func TestAuthenticate_NoBindingsAdmitsAndEnrollingOneCloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unenrolled account refused: %v", err)
 	}
-	if identity.Subject != "bob" || identity.TenantID != "acme" {
-		t.Fatalf("identity = %s/%s, want acme/bob", identity.TenantID, identity.Subject)
+	if identity.Subject != auth.UserSubject(bob.ID) || identity.Username != "bob" || identity.TenantID != "acme" {
+		t.Fatalf("identity = %s/%s, want acme/bob", identity.TenantID, identity.AccountName())
 	}
 
 	// Direction 2: enrol a DIFFERENT certificate; the same presentation is now

@@ -140,6 +140,30 @@ func TestNewEmbeddedSession_CarriesIdentity(t *testing.T) {
 	}
 }
 
+// TestNewEmbeddedSession_ClientUserIsAccountName pins the session's SQL user
+// to the account name, the grantee privileges are recorded under, rather than
+// the Subject, which for a resolved account is its user id.
+func TestNewEmbeddedSession_ClientUserIsAccountName(t *testing.T) {
+	id := &auth.Identity{TenantID: "acme"}
+	id.BindUser(42, "alice")
+
+	sess := newEmbeddedSession(id, "mydb")
+
+	if got := sess.Client().User; got != "alice" {
+		t.Errorf("Client().User = %q, want alice", got)
+	}
+}
+
+// TestNewEmbeddedSession_ClientUserIsUnresolvedSubject keeps a DSN-built
+// identity, which names no account, under the name it was given.
+func TestNewEmbeddedSession_ClientUserIsUnresolvedSubject(t *testing.T) {
+	sess := newEmbeddedSession(&auth.Identity{Subject: "bob"}, "mydb")
+
+	if got := sess.Client().User; got != "bob" {
+		t.Errorf("Client().User = %q, want bob", got)
+	}
+}
+
 // TestNewEmbeddedSession_NilIdentityIsSystemTenant verifies a session without
 // an identity runs as the system tenant, preserving the behaviour of a DSN
 // that names no tenant.

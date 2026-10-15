@@ -535,7 +535,7 @@ Target compliance schema (`pkg/audit/types.go`):
 | Field | Meaning |
 |---|---|
 | `Timestamp` | UTC; auto-set to `time.Now()` if zero |
-| `Actor` | identity from the mTLS certificate CN, JWT subject, or API key |
+| `Actor` | the caller's `Identity.Subject`: the resolved account's immutable user id, or, for a caller resolved to no account, its authenticated name (certificate CN, JWT subject, API key) |
 | `TenantID` | tenant owning the resource |
 | `Role` | the actor's role **at the time of the event** |
 | `Resource` | barrier, ceremony, keys, user, role, … |
@@ -599,7 +599,7 @@ One JSON object per line:
 
 ```json
 {"time":"2026-02-26T12:00:00Z","level":"INFO","msg":"audit",
- "tenant_id":"system","subject":"admin","action":"user.create",
+ "tenant_id":"system","subject":"1","action":"user.create",
  "resource":"user:operator","result":"success",
  "event_time":"2026-02-26T12:00:00Z"}
 ```
@@ -863,6 +863,16 @@ configuration surface that could ever omit it (review finding N4) — see
 [architecture.md's Status section](architecture.md#status-of-the-replicated-chain)
 for why a conditional attachment would be a cluster-state-divergence bug,
 not a degraded feature.
+
+**One chain per state machine, by construction.** The create function
+`buildSMCreateFunc` returns builds a fresh `audit.NewChain()` for every state
+machine instance it creates, and `NewLocalEngine` one per call; the daemon
+keeps no node-wide `Chain`. `Chain.Restore` replaces the whole head table, so
+a `Chain` shared by two Raft groups would interleave their sequence numbers
+and let one group's open or recovery overwrite the other's heads.
+`cmd/qrdbd/audit_chain_per_sm_test.go` starts two groups from one create
+function, appends to each, reopens each in turn, and asserts that every
+group's sequence continues from its own storage alone.
 
 ## Test strategy
 

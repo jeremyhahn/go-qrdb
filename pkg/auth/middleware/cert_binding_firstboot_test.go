@@ -123,7 +123,7 @@ func TestFirstBoot_UnboundAdminStillAuthenticates_UnderEnrolled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrapped admin refused: %v", err)
 	}
-	if identity.Subject != "admin" || len(identity.Roles) == 0 {
+	if identity.UserID == 0 || identity.Username != "admin" || len(identity.Roles) == 0 {
 		t.Fatalf("identity = %+v, want the admin with its bootstrapped roles", identity)
 	}
 }

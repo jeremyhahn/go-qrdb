@@ -211,8 +211,8 @@ func TestLoginClient_FinishLogin_Happy(t *testing.T) {
 	if finish.Bearer == "" {
 		t.Error("expected non-empty bearer")
 	}
-	if finish.Identity == nil || finish.Identity.Subject != "alice" {
-		t.Errorf("expected identity for alice, got %+v", finish.Identity)
+	if finish.Identity == nil || finish.Identity.Subject != "1" {
+		t.Errorf("expected identity for alice's user id 1, got %+v", finish.Identity)
 	}
 	if finish.Identity.TenantID != "acme" {
 		t.Errorf("expected tenantID acme, got %q", finish.Identity.TenantID)
@@ -379,8 +379,8 @@ func TestLoginClient_ResolveIdentity_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveIdentity: %v", err)
 	}
-	if id.Subject != "alice" {
-		t.Errorf("expected alice, got %q", id.Subject)
+	if id.Subject != "1" {
+		t.Errorf("expected alice's user id 1, got %q", id.Subject)
 	}
 }
 
@@ -459,7 +459,8 @@ func TestDefaultIdentityHydrator_Hydrate_PassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}
-	if id.Subject != "alice" || id.TenantID != "acme" {
+	// The hydrator does not name the account: FinishLogin binds it.
+	if id.Subject != "" || id.UserID != 0 || id.TenantID != "acme" {
 		t.Errorf("unexpected identity: %+v", id)
 	}
 	if id.Metadata["factor_id"] != "f-1" {
@@ -517,8 +518,82 @@ func TestLoginClient_FinishLogin_WithCustomHydrator(t *testing.T) {
 	if !hyd.called {
 		t.Error("custom hydrator was not invoked")
 	}
-	if finish.Identity.Subject != "stubbed" {
-		t.Errorf("expected hydrated subject 'stubbed', got %q", finish.Identity.Subject)
+	// The hydrator's own Subject is overridden: the issued Subject is the
+	// resolved principal's immutable user id.
+	if finish.Identity.Subject != "1" {
+		t.Errorf("expected the user id %q as the subject, got %q", "1", finish.Identity.Subject)
+	}
+}
+
+// nilHydrator returns no identity and no error.
+type nilHydrator struct{}
+
+func (nilHydrator) Hydrate(context.Context, *auth.Principal, *auth.AuthFactor) (*auth.Identity, error) {
+	return nil, nil
+}
+
+// finishLoginAs runs one BeginLogin/FinishLogin ceremony against a
+// transport whose resolver maps a factor enrolled for userID to principal.
+func finishLoginAs(t *testing.T, userID uint64, principal *auth.Principal, opts ...Option) (*transport.FinishLoginResponse, error) {
+	t.Helper()
+	svc := newMemUserAuthFactorService()
+	cred := []byte("c")
+	enrolledFactor(t, svc, userID, auth.AuthFactorFIDO2, cred)
+	lookup := &memUserLookup{principals: map[uint64]*auth.Principal{userID: principal}}
+	opts = append([]Option{
+		WithUserAuthFactorService(svc),
+		WithLoginResolver(auth.NewLoginResolver(svc, lookup)),
+		WithSessionIssuer(newMemSessionIssuer()),
+	}, opts...)
+	tr, err := New(newMockKVService(), &mockAdminService{}, opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lc := tr.LoginClient()
+	begin, err := lc.BeginLogin(context.Background(), transport.BeginLoginRequest{Type: transport.FactorTypeFIDO2})
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	return lc.FinishLogin(context.Background(), transport.FinishLoginRequest{
+		SessionID: begin.SessionID,
+		Type:      transport.FactorTypeFIDO2,
+		LookupKey: cred,
+	})
+}
+
+func TestLoginClient_FinishLogin_SubjectIsUserIDAcrossRename(t *testing.T) {
+	// The same account logs in under its old and its new username and
+	// address: the Subject is the user id both times, never the name.
+	for _, p := range []*auth.Principal{
+		{ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "acme", Active: true},
+		{ID: 42, Username: "alice2", Email: "alice2@example.com", TenantID: "acme", Active: true},
+	} {
+		finish, err := finishLoginAs(t, p.ID, p)
+		if err != nil {
+			t.Fatalf("FinishLogin as %q: %v", p.Username, err)
+		}
+		if finish.Identity.Subject != "42" {
+			t.Errorf("FinishLogin as %q: subject = %q, want the user id %q", p.Username, finish.Identity.Subject, "42")
+		}
+	}
+}
+
+func TestLoginClient_FinishLogin_RefusesPrincipalWithoutUserID(t *testing.T) {
+	// A user lookup that answers with a principal carrying no id.
+	_, err := finishLoginAs(t, 9, &auth.Principal{ID: 0, Username: "ghost", TenantID: "acme", Active: true})
+	var invalid *auth.InvalidFactorError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("FinishLogin = %v, want *auth.InvalidFactorError", err)
+	}
+}
+
+func TestLoginClient_FinishLogin_RefusesNilHydratedIdentity(t *testing.T) {
+	_, err := finishLoginAs(t, 7,
+		&auth.Principal{ID: 7, Username: "alice", TenantID: "acme", Active: true},
+		WithIdentityHydrator(nilHydrator{}))
+	var invalid *auth.InvalidFactorError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("FinishLogin = %v, want *auth.InvalidFactorError", err)
 	}
 }
 
@@ -734,8 +809,8 @@ func TestLoginClient_FinishLogin_ScopesResolutionToSessionTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinishLogin: expected the session's own tenant to resolve, got: %v", err)
 	}
-	if finish.Identity == nil || finish.Identity.Subject != "alice" {
-		t.Errorf("expected identity for alice, got %+v", finish.Identity)
+	if finish.Identity == nil || finish.Identity.Subject != "1" {
+		t.Errorf("expected identity for alice's user id 1, got %+v", finish.Identity)
 	}
 }
 

@@ -50,7 +50,7 @@ func TestMTLSBindingPolicy_UnboundAccount_AdmittedUnderEnrolledRefusedUnderRequi
 	if err != nil {
 		t.Fatalf("enrolled posture refused an unbound account: %v", err)
 	}
-	if identity.Subject != "bob" || len(identity.Roles) != 1 {
+	if identity.UserID == 0 || identity.Username != "bob" || len(identity.Roles) != 1 {
 		t.Fatalf("identity = %+v, want bob with the store's role", identity)
 	}
 

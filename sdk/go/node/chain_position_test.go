@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -160,7 +161,11 @@ func TestWithAuthenticators_PositionDecidesTheEmbeddedCaller(t *testing.T) {
 			id, err := n.Server().AuthenticateCertificate(context.Background(), []*x509.Certificate{leaf})
 			if tc.admitted {
 				require.NoError(t, err)
-				require.Equal(t, chainCertSubject, id.Subject)
+				// The certificate resolved to the chain-client account, so the
+				// Subject is that account's user id, not the name it carries.
+				require.Equal(t, chainCertSubject, id.Username)
+				require.NotZero(t, id.UserID)
+				require.Equal(t, auth.UserSubject(id.UserID), id.Subject)
 			} else {
 				require.ErrorIs(t, err, sdk.ErrUnauthenticated)
 			}

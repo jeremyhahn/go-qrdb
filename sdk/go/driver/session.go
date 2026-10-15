@@ -133,9 +133,11 @@ func ConnectionTenant(cfg *DSNConfig, opts ...EmbeddedOption) string {
 // via sql.NewEmptyContext — discards the transaction between statements, so
 // BEGIN can never have an effect, and leaks a cache entry per statement.
 func newEmbeddedSession(id *auth.Identity, database string) *provider.QRDBSession {
+	// The SQL user is the account name privileges are granted to, not the
+	// Subject, which for a resolved account is its user id.
 	user := ""
 	if id != nil {
-		user = id.Subject
+		user = id.AccountName()
 	}
 
 	base := gmssql.NewBaseSessionWithClientServer(

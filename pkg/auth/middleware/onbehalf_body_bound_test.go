@@ -57,7 +57,7 @@ func (b *countingBody) Close() error { return nil }
 // headers of a small signed assertion and a body of size bytes.
 func hostileOnBehalfRequest(t *testing.T, peerCert *x509.Certificate, signKey *ecdsa.PrivateKey, size int64) (*http.Request, *countingBody) {
 	t.Helper()
-	signed := buildOnBehalfRequest(t, peerCert, signKey, "alice", "acme", obNodeID, time.Now(), []byte("x"), http.MethodPut, "/kv/foo")
+	signed := buildOnBehalfRequest(t, peerCert, signKey, obAliceSubject, "acme", obNodeID, time.Now(), []byte("x"), http.MethodPut, "/kv/foo")
 	body := &countingBody{remaining: size}
 	r := httptest.NewRequest(http.MethodPut, "/kv/foo", nil)
 	r.Body = body
@@ -81,7 +81,7 @@ func TestOnBehalf_NonClusterPeerBodyNeverRead(t *testing.T) {
 	userC, userKey := obUserCert(t)
 	r, body := hostileOnBehalfRequest(t, userC, userKey, hostileBodyBytes)
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran for a non-cluster presenter")
 	}
@@ -100,7 +100,7 @@ func TestOnBehalf_ClusterPeerBodyBounded(t *testing.T) {
 	nodeC, nodeKey := obNodeCert(t, obNodeID)
 	r, body := hostileOnBehalfRequest(t, nodeC, nodeKey, hostileBodyBytes)
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran for an oversized forwarded body")
 	}

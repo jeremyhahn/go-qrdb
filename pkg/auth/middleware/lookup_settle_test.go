@@ -70,7 +70,7 @@ func TestLookupUser_WaitsOutElection(t *testing.T) {
 	}
 	m := &AuthMiddleware{users: primary}
 
-	got, err := m.lookupUser(context.Background(), "t1", "alice")
+	got, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if err != nil {
 		t.Fatalf("lookupUser during an election: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestLookupUser_NonTransientErrorIsFinal(t *testing.T) {
 	}
 	m := &AuthMiddleware{users: primary}
 
-	_, err := m.lookupUser(context.Background(), "t1", "alice")
+	_, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if !errors.Is(err, cause) {
 		t.Fatalf("lookupUser err = %v, want %v", err, cause)
 	}
@@ -112,7 +112,7 @@ func TestLookupUser_ElectionOutlastsBudget(t *testing.T) {
 	m := &AuthMiddleware{users: primary, lookupSettleBudget: 150 * time.Millisecond}
 
 	start := time.Now()
-	_, err := m.lookupUser(context.Background(), "t1", "alice")
+	_, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if !errors.Is(err, quicraft.ErrTimeout) {
 		t.Fatalf("lookupUser err = %v, want the election's %v", err, quicraft.ErrTimeout)
 	}
@@ -131,7 +131,7 @@ func TestLookupUser_ContextEndsTheWait(t *testing.T) {
 	primary := &cancellingUserServicer{cancel: cancel}
 	m := &AuthMiddleware{users: primary}
 
-	_, err := m.lookupUser(ctx, "t1", "alice")
+	_, err := m.lookupUser(ctx, "t1", userKey{username: "alice"})
 	if !errors.Is(err, quicraft.ErrTimeout) {
 		t.Fatalf("lookupUser err = %v, want the election's %v", err, quicraft.ErrTimeout)
 	}
@@ -151,7 +151,7 @@ func TestLookupUser_ContextEndsDuringPoll(t *testing.T) {
 	}}
 	m := &AuthMiddleware{users: primary}
 
-	_, err := m.lookupUser(ctx, "t1", "alice")
+	_, err := m.lookupUser(ctx, "t1", userKey{username: "alice"})
 	if !errors.Is(err, quicraft.ErrTimeout) {
 		t.Fatalf("lookupUser err = %v, want the election's %v", err, quicraft.ErrTimeout)
 	}
@@ -172,7 +172,7 @@ func TestLookupUser_SystemTenantWaitsWhenFallbackAlsoElecting(t *testing.T) {
 	fallback := &mockUserServicer{err: &service.ReadError{Err: quicraft.ErrNotLeader}}
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	got, err := m.lookupUser(context.Background(), tenantid.System, "bob")
+	got, err := m.lookupUser(context.Background(), tenantid.System, userKey{username: "bob"})
 	if err != nil {
 		t.Fatalf("lookupUser during an election: %v", err)
 	}

@@ -228,8 +228,7 @@ stricter than MySQL, deliberately.
 **A `GRANT` was refused by name.** Server-wide privileges, routine and trigger
 privileges, `ON FUNCTION`/`ON PROCEDURE`, `ON *.*`, and host-qualified grantees
 other than `'user'@'%'` cannot be represented, so they are refused rather than
-stored and never enforced. QRDB identities are certificate subjects and have no
-host.
+stored and never enforced. A grantee is a QRDB account name, which has no host.
 
 **pgx or GORM fails with "cached plan must not change result type"
 (SQLSTATE 0A000).** Something ran DDL that changed a prepared statement's

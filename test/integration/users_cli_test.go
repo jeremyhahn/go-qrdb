@@ -26,11 +26,29 @@
 package integration_test
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
 // userCLIJSON mirrors transport.User, decoded from the unwrapped JSON
@@ -214,6 +232,306 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if out, err := runCLIProto(t, node, proto, "roles", "delete", role.ID); err != nil {
 		t.Fatalf("[%s] roles delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
 	}
+}
+
+// TestUsers_CLI_SubjectIsUserID_PerProtocol proves a caller's Subject is the
+// immutable user id of the account it resolves to, on every transport: the
+// account logs in, is renamed, has its email changed, and every action it
+// takes in between is attributed to the same user id. On the network
+// transports the CLI acts as the account with its own bound client
+// certificate and the audit actor of each action it takes is read back; the
+// embedded transport has no CLI, so it drives the login ceremony directly and
+// reads the Subject of the identity each login returns.
+func TestUsers_CLI_SubjectIsUserID_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testSubjectIsUserIDOverProtocol(t, node, proto)
+		})
+	}
+	t.Run("embedded", testSubjectIsUserIDEmbedded)
+}
+
+// testSubjectIsUserIDOverProtocol creates an account through the CLI, acts
+// as it, renames it, acts again under a certificate naming the new username,
+// changes its email, acts a third time, and asserts the audit trail names
+// the same user id as the actor of all three actions.
+func testSubjectIsUserIDOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	base := fmt.Sprintf("subj-%s-%d", proto.name, time.Now().UnixNano())
+
+	// The account may create roles, an audited mutation whose event names
+	// the acting identity, holding the one permission those roles grant.
+	out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "create",
+		"--name", base+"-role",
+		"--permissions", "roles:create,users:read",
+	)
+	if err != nil {
+		t.Fatalf("[%s] roles create (fixture): %v\noutput: %s", proto.name, err, out)
+	}
+	var grant roleCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &grant); jerr != nil {
+		t.Fatalf("[%s] decode roles create JSON (fixture): %v\noutput: %s", proto.name, jerr, out)
+	}
+
+	username := base
+	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create",
+		"--username", username,
+		"--email", base+"@example.com",
+		"--roles", grant.ID,
+	)
+	if err != nil {
+		t.Fatalf("[%s] users create: %v\noutput: %s", proto.name, err, out)
+	}
+	var created userCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &created); jerr != nil || created.ID == 0 {
+		t.Fatalf("[%s] decode users create JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	userID := strconv.FormatUint(created.ID, 10)
+	admin := mtlsHTTPClient(t, node.ca, 15*time.Second)
+
+	// certFor issues a client certificate naming the account's current
+	// username and enrols it on the account, as the default
+	// auth.mtls_binding_policy ("required") demands.
+	certFor := func(name string) []string {
+		kp := node.ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(name, tenantid.System))
+		bindUserCert(t, admin, node.restPort, created.ID, kp.CertPath)
+		return tenantCLIArgsForProto(node, proto, kp.CertPath, kp.KeyPath)
+	}
+
+	// actAs creates a role as the account and returns the audit actor of
+	// that create.
+	actAs := func(step string, conn []string) string {
+		t.Helper()
+		out, err := runQRDB(t, node.cli, conn, "--output", "json", "roles", "create",
+			"--name", base+"-"+step,
+			"--permissions", "users:read",
+		)
+		if err != nil {
+			t.Fatalf("[%s] %s: roles create as the account: %v\noutput: %s", proto.name, step, err, out)
+		}
+		var acted roleCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &acted); jerr != nil || acted.ID == "" {
+			t.Fatalf("[%s] %s: decode roles create JSON: %v\noutput: %s", proto.name, step, jerr, out)
+		}
+		return findAuditEvent(t, node, proto, "--resource", "role:"+acted.ID).Actor
+	}
+
+	conn := certFor(username)
+	if got := actAs("login", conn); got != userID {
+		t.Fatalf("[%s] audit actor after login = %q, want the user id %q", proto.name, got, userID)
+	}
+
+	// --- rename: the certificate names the new username; the actor does not
+	// move.
+	renamed := username + "-renamed"
+	if out, err := runCLIProto(t, node, proto, "--output", "json", "users", "update", userID,
+		"--username", renamed,
+		"--roles", grant.ID,
+	); err != nil {
+		t.Fatalf("[%s] users update --username: %v\noutput: %s", proto.name, err, out)
+	}
+	conn = certFor(renamed)
+	if got := actAs("renamed", conn); got != userID {
+		t.Fatalf("[%s] audit actor after rename = %q, want the user id %q", proto.name, got, userID)
+	}
+
+	// --- email change: the same certificate, the same actor.
+	if out, err := runCLIProto(t, node, proto, "--output", "json", "users", "update", userID,
+		"--username", renamed,
+		"--email", base+"-changed@example.com",
+		"--roles", grant.ID,
+	); err != nil {
+		t.Fatalf("[%s] users update --email: %v\noutput: %s", proto.name, err, out)
+	}
+	if got := actAs("email-changed", conn); got != userID {
+		t.Fatalf("[%s] audit actor after email change = %q, want the user id %q", proto.name, got, userID)
+	}
+}
+
+// testSubjectIsUserIDEmbedded logs an account in through the embedded
+// transport's login ceremony, renames it, changes its email, and asserts
+// every login yields the same Subject: the account's user id.
+func testSubjectIsUserIDEmbedded(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+
+	n, err := node.NewStandaloneNode(context.Background(), cfg, nil,
+		node.WithSessionIssuer(newMemorySessionIssuer()),
+		node.WithLoginFactorVerifier(signedPIVVerifier{}),
+	)
+	if err != nil {
+		t.Fatalf("[embedded] NewStandaloneNode: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+	svcNode := n.Services()
+	adminRole, err := svcNode.Role.CreateRole(ctx, &role.CreateRoleRequest{
+		Name:     "subject-embedded-admin",
+		TenantID: tenantid.System,
+		Permissions: []permission.Permission{
+			permission.UsersRead,
+			permission.UsersUpdate,
+			permission.UserAuthFactorsAdd,
+		},
+	})
+	if err != nil {
+		t.Fatalf("[embedded] CreateRole: %v", err)
+	}
+	adminUser, err := svcNode.User.CreateUser(ctx, &user.CreateUserRequest{
+		Username: "subject-embedded-admin",
+		Email:    "subject-embedded-admin@example.com",
+		TenantID: tenantid.System,
+		RoleIDs:  []string{adminRole.ID},
+	})
+	if err != nil {
+		t.Fatalf("[embedded] CreateUser (admin): %v", err)
+	}
+	adminIdentity := &auth.Identity{TenantID: tenantid.System, Roles: []string{adminRole.ID}}
+	adminIdentity.BindUser(adminUser.ID, adminUser.Username)
+	adminCtx := auth.WithIdentity(ctx, adminIdentity)
+
+	account, err := svcNode.User.CreateUser(ctx, &user.CreateUserRequest{
+		Username: "subject-embedded",
+		Email:    "subject-embedded@example.com",
+		TenantID: tenantid.System,
+	})
+	if err != nil {
+		t.Fatalf("[embedded] CreateUser (account): %v", err)
+	}
+	client := n.Client()
+	credential := []byte("subject-embedded-piv")
+	if err := client.Factors().Enroll(adminCtx, account.ID, transport.Factor{
+		Type:       transport.FactorTypePIV,
+		Label:      "piv",
+		Credential: credential,
+	}); err != nil {
+		t.Fatalf("[embedded] enrol factor: %v", err)
+	}
+
+	login := func(step string) string {
+		t.Helper()
+		begin, err := client.Login().BeginLogin(ctx, transport.BeginLoginRequest{
+			Type:     transport.FactorTypePIV,
+			TenantID: tenantid.System,
+		})
+		if err != nil {
+			t.Fatalf("[embedded] %s: BeginLogin: %v", step, err)
+		}
+		fin, err := client.Login().FinishLogin(ctx, transport.FinishLoginRequest{
+			SessionID: begin.SessionID,
+			Type:      transport.FactorTypePIV,
+			LookupKey: credential,
+			Signature: []byte("proof"),
+		})
+		if err != nil {
+			t.Fatalf("[embedded] %s: FinishLogin: %v", step, err)
+		}
+		resolved, err := client.Login().ResolveIdentity(ctx, fin.Bearer)
+		if err != nil {
+			t.Fatalf("[embedded] %s: ResolveIdentity: %v", step, err)
+		}
+		if resolved.Subject != fin.Identity.Subject {
+			t.Fatalf("[embedded] %s: bearer resolves to Subject %q, login returned %q", step, resolved.Subject, fin.Identity.Subject)
+		}
+		return fin.Identity.Subject
+	}
+
+	want := strconv.FormatUint(account.ID, 10)
+	if got := login("login"); got != want {
+		t.Fatalf("[embedded] Subject after login = %q, want the user id %q", got, want)
+	}
+	if _, err := client.Users().UpdateUser(adminCtx, &transport.UpdateUserRequest{
+		ID:       account.ID,
+		Username: "subject-embedded-renamed",
+	}); err != nil {
+		t.Fatalf("[embedded] rename: %v", err)
+	}
+	if got := login("renamed"); got != want {
+		t.Fatalf("[embedded] Subject after rename = %q, want the user id %q", got, want)
+	}
+	if _, err := client.Users().UpdateUser(adminCtx, &transport.UpdateUserRequest{
+		ID:    account.ID,
+		Email: "subject-embedded-changed@example.com",
+	}); err != nil {
+		t.Fatalf("[embedded] email change: %v", err)
+	}
+	if got := login("email-changed"); got != want {
+		t.Fatalf("[embedded] Subject after email change = %q, want the user id %q", got, want)
+	}
+}
+
+// memorySessionIssuer is the session store a composer injects through
+// node.WithSessionIssuer (qrdb owns none): it mints a random bearer per
+// login and resolves it to the identity the ceremony produced.
+type memorySessionIssuer struct {
+	mu       sync.Mutex
+	sessions map[string]*auth.Identity
+}
+
+var _ embedded.SessionIssuer = (*memorySessionIssuer)(nil)
+
+func newMemorySessionIssuer() *memorySessionIssuer {
+	return &memorySessionIssuer{sessions: make(map[string]*auth.Identity)}
+}
+
+func (s *memorySessionIssuer) Issue(_ context.Context, identity *auth.Identity) (string, time.Time, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", time.Time{}, err
+	}
+	bearer := hex.EncodeToString(raw)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[bearer] = identity
+	return bearer, time.Now().Add(time.Hour), nil
+}
+
+func (s *memorySessionIssuer) Resolve(_ context.Context, bearer string) (*auth.Identity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	identity, ok := s.sessions[bearer]
+	if !ok {
+		return nil, &transport.InvalidBearerError{Reason: "unknown bearer"}
+	}
+	return identity, nil
+}
+
+func (s *memorySessionIssuer) Revoke(_ context.Context, bearer string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, bearer)
+	return nil
+}
+
+// signedPIVVerifier stands in for the hardware PIV verifier go-xkms injects
+// through node.WithLoginFactorVerifier: it refuses a revoked factor and an
+// empty signature, and accepts any other proof, which is all the Subject
+// assertions above depend on.
+type signedPIVVerifier struct{}
+
+var _ embedded.FactorVerifier = signedPIVVerifier{}
+
+func (signedPIVVerifier) Type() transport.FactorType { return transport.FactorTypePIV }
+
+func (signedPIVVerifier) Verify(_ context.Context, factor *auth.AuthFactor, ch transport.VerifyChallenge) error {
+	if factor == nil || factor.RevokedAt != nil {
+		return &auth.InvalidFactorError{Reason: "revoked or nil factor"}
+	}
+	if len(ch.Signature) == 0 {
+		return &auth.InvalidFactorError{Reason: "empty signature"}
+	}
+	return nil
 }
 
 // userListContainsID reports whether users contains an entry with the given ID.

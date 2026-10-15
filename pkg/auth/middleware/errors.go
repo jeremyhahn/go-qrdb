@@ -399,6 +399,33 @@ func (e *ServicePrincipalPresentedError) Error() string {
 // Unwrap exposes auth.ErrUnauthenticated.
 func (e *ServicePrincipalPresentedError) Unwrap() error { return auth.ErrUnauthenticated }
 
+// UnresolvedUserSubjectError is returned when an identity names a user
+// account by its immutable id -- its UserID is set, or its Subject has the
+// form auth.UserSubject renders -- and no account with that id exists in the
+// identity's tenant. A user-id Subject is set only by auth.Identity.BindUser
+// on a resolved account, so an unresolved identity carrying one would pass
+// for that account to every reader keyed on the Subject (the audit actor, the
+// rate-limit bucket, an import session's owner); it is refused instead.
+//
+// It matches auth.ErrUnauthenticated under errors.Is and errors.As, so every
+// transport answers its unauthenticated status (401, Unauthenticated).
+type UnresolvedUserSubjectError struct {
+	// Subject is the presented subject.
+	Subject string
+
+	// TenantID is the tenant the account was looked up in.
+	TenantID string
+}
+
+// Error names the subject and tenant.
+func (e *UnresolvedUserSubjectError) Error() string {
+	return "auth/middleware: identity " + strconv.Quote(e.Subject) + " in tenant " + e.TenantID +
+		" names a user id that resolves to no account"
+}
+
+// Unwrap exposes auth.ErrUnauthenticated.
+func (e *UnresolvedUserSubjectError) Unwrap() error { return auth.ErrUnauthenticated }
+
 // FirstInitCertificateMismatchError is returned when a tenant barrier's
 // trust-on-first-init window is reached with a certificate other than the one
 // the tenant's first admin was onboarded with. Only that admin may initialize

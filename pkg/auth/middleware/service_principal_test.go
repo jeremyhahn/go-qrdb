@@ -50,8 +50,11 @@ func servicePrincipalClaims() map[string]*auth.Identity {
 // with a user store that would resolve any subject to an active account
 // holding roles -- so a refusal is the service-principal rule's, never a
 // missing account's.
+// claimantUserID is the immutable id of the account claimantMiddleware stores.
+const claimantUserID = 4242
+
 func claimantMiddleware(claim *auth.Identity) *AuthMiddleware {
-	stored := &user.User{Username: claim.Subject, TenantID: claim.TenantID, Lifecycle: user.LifecycleActive, RoleIDs: []string{"admin-role"}}
+	stored := &user.User{ID: claimantUserID, Username: claim.Subject, TenantID: claim.TenantID, Lifecycle: user.LifecycleActive, RoleIDs: []string{"admin-role"}}
 	return New(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "host-bearer", identity: claim}),
 		WithUserService(&mockUserServicer{user: stored}))
@@ -101,8 +104,9 @@ func TestAuthenticate_ServicePrincipalClaimIsRefused(t *testing.T) {
 func TestAuthenticate_OrdinaryIdentityIsNotAServicePrincipal(t *testing.T) {
 	for _, subject := range []string{"qrdb-service", "service:xkms", "xkms"} {
 		m := claimantMiddleware(&auth.Identity{Subject: subject, TenantID: "acme"})
-		if _, id, err := m.Authenticate(context.Background()); err != nil || id == nil || id.Subject != subject {
-			t.Fatalf("%q: Authenticate = (%+v, %v), want the identity admitted", subject, id, err)
+		_, id, err := m.Authenticate(context.Background())
+		if err != nil || id == nil || id.Subject != auth.UserSubject(claimantUserID) || id.Username != subject {
+			t.Fatalf("%q: Authenticate = (%+v, %v), want the identity admitted as user id %d", subject, id, err, claimantUserID)
 		}
 	}
 }

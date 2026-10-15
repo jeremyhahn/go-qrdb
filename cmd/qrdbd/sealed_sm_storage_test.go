@@ -34,7 +34,6 @@ import (
 func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T) {
 	sealed := atrest.New(sealtest.UnsealedBarrier(t))
 	lr, hub := lease.NewLessor(), watch.NewHub()
-	chain := audit.NewChain()
 	t.Cleanup(hub.Close)
 
 	for _, tc := range []struct {
@@ -51,7 +50,7 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 		{"mvcc", "", false},
 	} {
 		f := &startFlags{smType: tc.smType, smStorage: tc.storage, dataDir: t.TempDir()}
-		fn, err := buildSMCreateFunc(f, sealed, lr, chain, hub)
+		fn, err := buildSMCreateFunc(f, sealed, lr, hub)
 		var plaintext *SealedSMStoragePlaintextError
 		if got := errors.As(err, &plaintext); got != tc.refused {
 			t.Fatalf("--sm %s --sm-storage %q under the barrier: err = %v; refused=%v, want %v",
@@ -70,7 +69,7 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 
 	// The barrier off: storage-backed disk builds, as it always has.
 	f := &startFlags{smType: "disk", smStorage: "file", dataDir: t.TempDir()}
-	if _, err := buildSMCreateFunc(f, atrest.New(nil), lr, chain, hub); err != nil {
+	if _, err := buildSMCreateFunc(f, atrest.New(nil), lr, hub); err != nil {
 		t.Fatalf("--sm disk --sm-storage file with the barrier off: %v", err)
 	}
 }
@@ -98,7 +97,7 @@ func TestBuildSMCreateFunc_AttachesAuditChainUnconditionally(t *testing.T) {
 	for _, smType := range []string{"mvcc", "pebble"} {
 		t.Run(smType, func(t *testing.T) {
 			f := &startFlags{smType: smType, dataDir: t.TempDir()}
-			fn, err := buildSMCreateFunc(f, enc, lr, audit.NewChain(), hub)
+			fn, err := buildSMCreateFunc(f, enc, lr, hub)
 			if err != nil {
 				t.Fatalf("buildSMCreateFunc(%s): %v", smType, err)
 			}

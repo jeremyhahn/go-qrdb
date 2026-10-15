@@ -92,8 +92,11 @@ func principalOf(sess sqle.Session) principal {
 	}
 
 	p := principal{tenant: tenantID}
-	if id := ident.Identity(); id != nil && id.Subject != "" {
-		p.grantee = canonicalGrantee(id.Subject)
+	// SQL grants name an account, as GRANT ... TO 'name' does, so the
+	// grantee is the account name, never the Subject: a resolved
+	// identity's Subject is its immutable user id.
+	if name := ident.Identity().AccountName(); name != "" {
+		p.grantee = canonicalGrantee(name)
 	}
 	p.exempt = tenantID == tenantid.System || p.grantee == ""
 	return p

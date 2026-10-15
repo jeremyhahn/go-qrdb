@@ -461,8 +461,13 @@ func registerUserGrants() {
 		KeysGet, KeysList,
 		// PIV slot cryptographic use
 		PIVUse,
-		// Personal password vault (use own credentials)
-		PasswordsRead, PasswordsLock, PasswordsUnlock,
+		// Personal password vault: use, change and remove own credentials
+		// (owner ruling, 2026-10-15). Self-scoped like every passwords:*
+		// permission (self_scope.go): the authorizer confines it to the
+		// caller's tenant. Confining it to the caller's own entries is the
+		// password service's check (go-xkms); qrdb serves no password store.
+		PasswordsRead, PasswordsWrite, PasswordsDelete,
+		PasswordsLock, PasswordsUnlock,
 		// System health (all roles can check health)
 		AdminHealth, AdminStatus,
 		// Orchestrator: the consumer slice (17 verbs). End users are CONSUMERS of

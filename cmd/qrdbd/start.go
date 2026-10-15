@@ -1408,16 +1408,16 @@ func runStart(f *startFlags) (err error) {
 	// the SM, the WatchHub delivers change events to watchers, and
 	// time-series storage is lazily created by the SM when the DB opens.
 	//
-	// auditChain is attached to every mvcc/pebble state machine this node
-	// builds unconditionally, exactly like lr: it must never be
-	// conditioned on per-node configuration, because a replica missing it
-	// answers protocol.OpAuditAppend with a refusal while a sibling
+	// The replicated audit chain is not among them: buildSMCreateFunc
+	// attaches a fresh audit.Chain to every mvcc/pebble state machine it
+	// creates, unconditionally, exactly like lr is attached: it must never
+	// be conditioned on per-node configuration, because a replica missing
+	// it answers protocol.OpAuditAppend with a refusal while a sibling
 	// replica that has it applies the write, which is state divergence
 	// within the same Raft group, not a degraded feature. Whether the
 	// opcode is ever proposed is the featuregate.AuditAppend gate's
 	// decision, not this attachment's.
 	lr := lease.NewLessor()
-	auditChain := audit.NewChain()
 	watchHub := watch.NewHub()
 
 	// Run one-time migration from flat layout to per-database structure.
@@ -1638,7 +1638,7 @@ func runStart(f *startFlags) (err error) {
 			// Build the state machine factory with this node's subsystems and
 			// its at-rest encryptor; see buildSMCreateFunc.
 			if f.mode != capabilities.ModeStandalone {
-				createFn, err := buildSMCreateFunc(f, enc, lr, auditChain, watchHub)
+				createFn, err := buildSMCreateFunc(f, enc, lr, watchHub)
 				if err != nil {
 					return err
 				}
@@ -3690,9 +3690,14 @@ func shutdownNode(node io.Closer) error {
 // (file) is refused here, at start, while the seal barrier is enabled
 // (SealedSMStoragePlaintextError), rather than opened.
 //
-// chain is attached unconditionally, exactly like lr -- see its construction
-// site's comment for why this attachment must never be conditioned on
-// per-node configuration.
+// Every state machine the returned function creates gets a fresh audit.Chain
+// of its own: Chain.Restore replaces the whole head table with what one
+// state machine's storage holds, so a chain shared by two Raft groups on this
+// node would number one group's events after the other's and let either
+// group's open or recovery overwrite the other's heads. The chain is attached
+// unconditionally, exactly like lr -- see the lessor's construction site's
+// comment for why this attachment must never be conditioned on per-node
+// configuration.
 //
 // Every registry type is built with the node's lessor too
 // (statemachine.WithKVLessor): it keeps its leases durably in its own
@@ -3700,13 +3705,13 @@ func shutdownNode(node io.Closer) error {
 // them. A type that cannot keep leases is refused at start
 // (SMLeasesUnsupportedError) rather than run without them: cluster membership
 // and the feature gate are lease-backed, so it could not form a cluster.
-func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, chain *audit.Chain, hub *watch.Hub) (sm.CreateFunc, error) {
+func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
 	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
 	switch f.smType {
 	case "mvcc":
 		return store.NewMVCCCreateFuncWith(pebbleOpts,
 			store.WithLessor(lr),
-			store.WithAuditChain(chain),
+			func(s *store.MVCCStateMachine) { s.SetAuditChain(audit.NewChain()) },
 			store.WithWatchHub(hub),
 			store.WithTimeSeriesEnabled(),
 		), nil
@@ -3714,7 +3719,7 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, c
 		return store.NewPebbleCreateFuncWith(pebbleOpts,
 			func(s *store.PebbleStateMachine) {
 				s.SetLessor(lr)
-				s.SetAuditChain(chain)
+				s.SetAuditChain(audit.NewChain())
 				s.SetWatchHub(hub)
 				s.SetTimeSeriesEnabled(true)
 			},

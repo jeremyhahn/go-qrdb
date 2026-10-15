@@ -133,7 +133,7 @@ Both in-process schemes share one grammar (`driver.ParseEmbeddedDSN`):
 | `database` | **Required.** Target database name. |
 | `backend` | `memory`, `file`, `pebble`. Defaults to the host component, then to `memory`. |
 | `tenant` | Scopes every statement on the connection to a tenant namespace. Empty means the system tenant. |
-| `user` | Subject recorded on the session identity (informational for in-process connections, which the driver does not authenticate). |
+| `user` | Subject recorded on the session identity, and the session's SQL user (informational for in-process connections, which the driver does not authenticate). An identity passed with `WithIdentity` that names an account uses that account's name as the SQL user. |
 | `loc` | IANA time zone (or `Local`) used to render `time.Time` arguments as SQL datetime literals. Empty means UTC. |
 | `concurrency` | `optimistic` or `pessimistic`: sets `qrdb_concurrency` on every connection. Empty leaves the database's own setting in force. See [../row-locking/](../row-locking/). |
 

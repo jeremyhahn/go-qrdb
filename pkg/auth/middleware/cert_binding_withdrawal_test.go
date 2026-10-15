@@ -162,7 +162,7 @@ func TestAuthenticate_WithdrawingTheLastBindingRestoresTheEmptySetAdmission(t *t
 	if err != nil {
 		t.Fatalf("after the last withdrawal the account did not return to CN/OU admission: %v", err)
 	}
-	if identity.Subject != "carol" || identity.TenantID != "acme" {
+	if identity.UserID == 0 || identity.Username != "carol" || identity.TenantID != "acme" {
 		t.Fatalf("identity = %s/%s, want acme/carol", identity.TenantID, identity.Subject)
 	}
 

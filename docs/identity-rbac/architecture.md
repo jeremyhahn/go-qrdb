@@ -98,6 +98,31 @@ renewed certificate for the same key produces the same thumbprint, so bindings
 survive renewal — which is what makes certificate rotation an operation rather
 than a re-enrolment.
 
+### The Subject is the user id
+
+Once a request resolves to an account, its identity's `Subject` is that
+account's **immutable user id**, in decimal — not the username, and not the
+email. `auth.Identity.BindUser` is the one place it is set, from
+`AuthMiddleware.finalizeIdentity` on the network transports, the on-behalf
+assertion a forwarding node carries, and the embedded login ceremony
+(`FinishLogin`, after any `node.WithIdentityHydrator` hydrator has run, so a
+hydrator cannot name the account). `UserID` carries the same id and
+`Username` the account's current name; `Identity.AccountName()` returns that
+name for the readers that want one.
+
+So every reader keyed on the Subject — the authorizer's decision cache, the
+audit `actor`, the rate-limit bucket, an import session's owner, the enroller
+recorded on a barrier or ceremony — names the account by an id that a rename
+or an email change does not move. A caller that resolves to no account (a
+holder certificate, a certificate naming no account under a non-`required`
+binding policy) keeps the name its authenticator produced; one whose
+unresolved Subject is shaped like a user id is refused
+(`*UnresolvedUserSubjectError`, 401), so a CN of digits cannot pose as one.
+
+The certificate CN still **selects** the account by its username. After a
+rename, a certificate naming the old username selects nothing; re-certify the
+same key under the new name and its SPKI binding carries over unchanged.
+
 ### What a certificate actually claims
 
 The three fields above are not equally trusted, and the difference is the whole
@@ -497,7 +522,12 @@ Identity in qrdb has two handles, and they answer different questions.
 `Username` is the tenant-scoped human name, and for a system identity it is the
 only one — `admin` is not an address. `Email` is the **canonical login key**:
 the handle every layer above this one resolves a principal by, from the WebAuthn
-credential name through the session subject to the CLI's user identifier.
+credential name to the CLI's user identifier.
+
+Neither is the Subject. Both can change, so the identity a login produces
+names the account by its immutable user id
+([The Subject is the user id](#the-subject-is-the-user-id)); the handles only
+find the account.
 
 Before this existed, each layer above kept its own answer — go-xkms named
 credentials from one field, go-quicbaas held an email in a side table beside the

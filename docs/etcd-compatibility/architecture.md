@@ -96,7 +96,8 @@ port, or serve the raw shard.
 Client cert (CN=alice, OU=acme-corp)
   --> mTLS handshake
   --> Identity{Subject: "alice", TenantID: "acme-corp"}
-  --> User store enrichment (roles)
+  --> User store resolution: account "alice" (id 42), roles
+  --> Identity{Subject: "42", UserID: 42, Username: "alice", ...}
   --> owning tenant and RBAC check, database re-resolved
 ```
 

@@ -27,7 +27,7 @@ import (
 )
 
 func httpOBMiddleware(direct *mockAuthenticator) *AuthMiddleware {
-	stored := &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
+	stored := &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
 	// This file is about on-behalf forwarding, not auth.mtls_binding_policy
 	// (go-qrdb#517/#548): alice has no enrolled certificate binding, and
 	// under the default MTLSBindingRequired that refuses every cert login
@@ -44,11 +44,11 @@ func httpOBMiddleware(direct *mockAuthenticator) *AuthMiddleware {
 func TestAuthenticateHTTP_ForwardedRequestIsTheCaller(t *testing.T) {
 	cert, key := obNodeCert(t, obNodeID)
 	body := []byte(`{"jsonrpc":"2.0","method":"tools/call"}`)
-	r := buildOnBehalfRequest(t, cert, key, "alice", "acme", obNodeID, time.Now(), body, http.MethodPost, "/mcp")
+	r := buildOnBehalfRequest(t, cert, key, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPost, "/mcp")
 	m := httpOBMiddleware(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate})
 
 	ctx, id, err := m.AuthenticateHTTP(r.Context(), httptest.NewRecorder(), r)
-	if err != nil || id == nil || id.Subject != "alice" || !IsOnBehalf(id) || !IsOnBehalf(auth.IdentityFromContext(ctx)) {
+	if err != nil || id == nil || id.Subject != obAliceSubject || !IsOnBehalf(id) || !IsOnBehalf(auth.IdentityFromContext(ctx)) {
 		t.Fatalf("AuthenticateHTTP = %+v, %v; want alice, on-behalf", id, err)
 	}
 	if got, _ := io.ReadAll(r.Body); string(got) != string(body) {
@@ -67,7 +67,7 @@ func TestAuthenticateHTTP_AnyOtherRequestRunsTheChain(t *testing.T) {
 	}
 
 	cert, key := obNodeCert(t, obNodeID)
-	r = buildOnBehalfRequest(t, cert, key, "alice", "acme", obNodeID, time.Now(), []byte("signed"), http.MethodPost, "/mcp")
+	r = buildOnBehalfRequest(t, cert, key, obAliceSubject, "acme", obNodeID, time.Now(), []byte("signed"), http.MethodPost, "/mcp")
 	r.Body = io.NopCloser(strings.NewReader("swapped"))
 	if _, _, err := m.AuthenticateHTTP(r.Context(), httptest.NewRecorder(), r); err == nil {
 		t.Fatal("a forwarded request whose body was swapped authenticated")

@@ -470,7 +470,8 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 
 	// Bind the context's tenant to the (already-normalized) identity tenant
 	// BEFORE any lookup below: m.lookupUser calls the ROUTED user service's
-	// GetUserByUsername(ctx, identity.TenantID, subject), whose own
+	// GetUserByUsername(ctx, identity.TenantID, subject) or GetUser(ctx, id),
+	// whose own
 	// tenant.EffectiveTenant check now refuses a mismatch between ctx's
 	// bound tenant and the tenantID it was explicitly asked to resolve
 	// (the system-tenant lift was removed, owner ruling 2026-10-01) — so an
@@ -523,7 +524,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	}
 
 	if m.users != nil {
-		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
+		u, err := m.lookupUser(ctx, identity.TenantID, accountKey(identity))
 		if err != nil {
 			// A dedicated-isolation tenant whose barrier is sealed (or not
 			// yet initialized) cannot resolve ANY user: its IAM is encrypted
@@ -547,6 +548,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			var unf *user.UserNotFoundError
 			if errors.As(err, &unf) {
 				if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
+					return ctx, nil, rerr
+				}
+				if rerr := checkUnresolvedUserSubject(identity); rerr != nil {
 					return ctx, nil, rerr
 				}
 			} else {
@@ -618,6 +622,12 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				return ctx, nil, perr
 			}
 
+			// The identity IS this account from here on: its Subject becomes
+			// the account's immutable id, which no rename or email change
+			// moves, and every reader of the Subject -- the authorizer's
+			// cache, the audit actor, the rate-limit bucket -- keys on that.
+			identity.BindUser(u.ID, u.Username)
+
 			// Enrich identity with persistent role assignments. Roles,
 			// RoleBindings and Attributes are overwritten from the store's
 			// current state, never merged, so a withdrawal on the record
@@ -636,6 +646,8 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 		// No user store: no account can be resolved, so under the
 		// "required" posture no certificate login can show an enrolment.
 		return ctx, nil, rerr
+	} else if rerr := checkUnresolvedUserSubject(identity); rerr != nil {
+		return ctx, nil, rerr
 	}
 
 	ctx = auth.WithIdentity(ctx, identity)
@@ -648,6 +660,19 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	ctx = tenant.WithTenantID(ctx, identity.TenantID)
 
 	return ctx, identity, nil
+}
+
+// checkUnresolvedUserSubject refuses an identity that resolved to no account
+// yet names one by id: its UserID is set, or its Subject has the form
+// auth.UserSubject renders. Only auth.Identity.BindUser sets a user-id
+// Subject, on a resolved account, so every reader keyed on the Subject takes
+// one for that account; a certificate whose CN is a number, or an assertion
+// for an account since deleted, must not pass for it.
+func checkUnresolvedUserSubject(identity *auth.Identity) error {
+	if _, ok := auth.ParseUserSubject(identity.Subject); ok || identity.UserID != 0 {
+		return &UnresolvedUserSubjectError{Subject: identity.Subject, TenantID: identity.TenantID}
+	}
+	return nil
 }
 
 // convertRoleBindings copies a user's RoleBindings into their auth.RoleBinding
@@ -671,7 +696,42 @@ func convertRoleBindings(bindings []user.RoleBinding) []auth.RoleBinding {
 	return out
 }
 
-// lookupUser looks up a user by username, first trying the primary user
+// userKey names the account an identity claims: by its immutable id when the
+// identity carries one (auth.Identity.UserID -- a forwarded assertion of an
+// identity the origin node resolved, or an authenticator that knows the
+// account), otherwise by the username its credential presented (a
+// certificate's CN).
+type userKey struct {
+	id       uint64
+	username string
+}
+
+// accountKey returns the key identity claims its account by.
+func accountKey(identity *auth.Identity) userKey {
+	if identity.UserID != 0 {
+		return userKey{id: identity.UserID}
+	}
+	return userKey{username: identity.Subject}
+}
+
+// get fetches the account k names from users. A lookup by id answers only for
+// an account of tenantID: an id is global, and an identity of one tenant
+// naming another tenant's account has named no account of its own.
+func (k userKey) get(ctx context.Context, users user.UserServicer, tenantID string) (*user.User, error) {
+	if k.id == 0 {
+		return users.GetUserByUsername(ctx, tenantID, k.username)
+	}
+	u, err := users.GetUser(ctx, k.id)
+	if err != nil {
+		return nil, err
+	}
+	if tenantid.Normalize(u.TenantID) != tenantID {
+		return nil, &user.UserNotFoundError{ID: k.id}
+	}
+	return u, nil
+}
+
+// lookupUser looks up the user key names, first trying the primary user
 // store (SyncRead for linearizable reads), then falling back to the
 // optional fallback store (StaleRead from local state machine) when the
 // primary fails with a transient error. The fallback is safe because
@@ -683,14 +743,14 @@ func convertRoleBindings(bindings []user.RoleBinding) []auth.RoleBinding {
 // transport authenticates through here, so each of them waits out an election
 // rather than answering the request with a 503. Any other error is final at
 // once.
-func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject string) (*user.User, error) {
+func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID string, key userKey) (*user.User, error) {
 	budget := m.lookupSettleBudget
 	if budget == 0 {
 		budget = authLookupSettleBudget
 	}
 	deadline := time.Now().Add(budget)
 	for {
-		u, err := m.lookupUserOnce(ctx, tenantID, subject)
+		u, err := m.lookupUserOnce(ctx, tenantID, key)
 		if err == nil || !service.LeadershipTransient(err) || ctx.Err() != nil {
 			return u, err
 		}
@@ -708,7 +768,7 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject strin
 
 // lookupUserOnce is one attempt of lookupUser: the user store, then, for the
 // system tenant only, its fallback.
-func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID, subject string) (*user.User, error) {
+func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID string, key userKey) (*user.User, error) {
 	// Bound the linearizable (SyncRead) lookup tightly so a transient
 	// ReadIndex slowdown fails over to the StaleRead fallback in well under a
 	// second instead of stalling every authenticated request for seconds. A
@@ -718,7 +778,7 @@ func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID, subject s
 	// rarely). This is the key guard against a brief consensus blip
 	// cascading into per-request latency that trips client/connect timeouts.
 	lookupCtx, cancel := context.WithTimeout(ctx, authLookupSyncTimeout)
-	u, err := m.users.GetUserByUsername(lookupCtx, tenantID, subject)
+	u, err := key.get(lookupCtx, m.users, tenantID)
 	cancel()
 	if err == nil {
 		return u, nil
@@ -749,11 +809,11 @@ func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID, subject s
 	// stands, and the caller gets the retryable 503 it describes.
 	if m.usersFallback != nil && tenantid.IsSystem(tenantID) {
 		fallbackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		u, ferr := m.usersFallback.GetUserByUsername(fallbackCtx, tenantID, subject)
+		u, ferr := key.get(fallbackCtx, m.usersFallback, tenantID)
 		cancel()
 		if ferr == nil {
 			slog.Debug("auth/middleware: used fallback user store",
-				"subject", subject, "tenant", tenantID)
+				"user_id", key.id, "username", key.username, "tenant", tenantID)
 			return u, nil
 		}
 		// If fallback also returns UserNotFoundError, use that.

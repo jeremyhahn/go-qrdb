@@ -45,7 +45,7 @@ func grpcOnBehalfCtx(t *testing.T, peerCert *x509.Certificate, signKey *ecdsa.Pr
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := forward.RPCBinding("grpc", method, payload).Assertion("alice", "acme", obNodeID, time.Now())
+	a := forward.RPCBinding("grpc", method, payload).Assertion(obAliceSubject, "acme", obNodeID, time.Now())
 	ab, sb, err := forward.Sign(a, signKey)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func runGRPCOnBehalf(t *testing.T, ctx context.Context, req any, authn *mockAuth
 		authn = &mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}
 	}
 	if stored == nil {
-		stored = &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
+		stored = &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
 	}
 	authz := &capturingAuthorizer{}
 	// This file is about on-behalf forwarding, not auth.mtls_binding_policy
@@ -105,7 +105,7 @@ func TestGRPCOnBehalf_ValidAuthenticatesAsTheCaller(t *testing.T) {
 	if err != nil || !ran {
 		t.Fatalf("interceptor = %v (handler ran %v); want the forwarded request authenticated", err, ran)
 	}
-	if seen == nil || seen.Subject != "alice" || seen.TenantID != "acme" || !isOnBehalfIdentity(seen) {
+	if seen == nil || seen.Subject != obAliceSubject || seen.TenantID != "acme" || !isOnBehalfIdentity(seen) {
 		t.Fatalf("identity = %+v; want the asserted caller, marked on-behalf", seen)
 	}
 }
@@ -136,8 +136,8 @@ func TestGRPCOnBehalf_HalfAnAssertionIsNotForwarded(t *testing.T) {
 	req := wrapperspb.String("payload")
 	direct := &mockAuthenticator{name: "mtls", identity: &auth.Identity{Subject: "bob", TenantID: "acme"}}
 	ran, seen, err := runGRPCOnBehalf(t, grpcOnBehalfCtx(t, cert, key, grpcOBMethod, req, forward.MetadataAssertion), req, direct,
-		&user.User{Username: "bob", TenantID: "acme", Lifecycle: user.LifecycleActive})
-	if err != nil || !ran || seen == nil || seen.Subject != "bob" || isOnBehalfIdentity(seen) {
+		&user.User{ID: 4200, Username: "bob", TenantID: "acme", Lifecycle: user.LifecycleActive})
+	if err != nil || !ran || seen == nil || seen.Subject != auth.UserSubject(4200) || seen.Username != "bob" || isOnBehalfIdentity(seen) {
 		t.Fatalf("interceptor = %v, identity %+v; want the ordinary authenticator's caller", err, seen)
 	}
 }

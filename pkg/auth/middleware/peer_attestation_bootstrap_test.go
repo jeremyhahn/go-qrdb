@@ -54,7 +54,7 @@ func bootstrapGate(t *testing.T, rbacErr error) *gateFixture {
 		t.Fatalf("NewPeerAttestationGate: %v", err)
 	}
 	gate.now = func() time.Time { return now }
-	f := &gateFixture{cert: cert, verifier: v, audit: &mockAuditLogger{}, authz: &mockAuthorizer{err: rbacErr}, now: now}
+	f := &gateFixture{cert: cert, verifier: v, audit: &mockAuditLogger{}, authz: &mockAuthorizer{err: rbacErr}, now: now, subject: auth.UserSubject(u.ID)}
 	// This fixture exercises the peer-attestation gate over the bootstrap
 	// windows, not the separate first-admin-onboarding gate (see
 	// first_init_gate_test.go), so it runs under the "enrolled" posture,
@@ -86,13 +86,13 @@ var bootstrapRefusals = []struct {
 		f.verifier.err = errors.New("xkms: evidence cache unavailable")
 	}, PeerAttestationVerifierError, false},
 	{"stale evidence", func(_ *testing.T, f *gateFixture) {
-		f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{
+		f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{
 			peerThumbprint: user.ComputeSPKIThumbprint(f.cert.cert), collectedAt: f.now.Add(-time.Hour), passed: true,
 		}
 	}, PeerAttestationEvidenceStale, false},
 	{"thumbprint mismatch", func(t *testing.T, f *gateFixture) {
 		other := mintCert(t, "bob", "acme", nil, "")
-		f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{
+		f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{
 			peerThumbprint: user.ComputeSPKIThumbprint(other.cert), collectedAt: f.now.Add(-time.Minute), passed: true,
 		}
 	}, PeerAttestationPeerMismatch, true},
@@ -135,7 +135,7 @@ func TestAuthorizeTenantBarrierInit_GateRefusalDoesNotOpenTheWindow(t *testing.T
 			tc.setup(t, f)
 			status := &countingStatusReader{}
 			err := f.m.AuthorizeTenantBarrierInit(f.ctx, "acme", status)
-			requirePeerRefusal(t, err, tc.reason, tc.security)
+			requirePeerRefusal(t, err, f.subject, tc.reason, tc.security)
 			if status.calls != 0 {
 				t.Fatalf("the bootstrap window was consulted %d time(s) for a gate refusal", status.calls)
 			}
@@ -154,7 +154,7 @@ func TestAuthorizeTenantBarrierInit_WindowGrantIsGated(t *testing.T) {
 			f := bootstrapGate(t, errors.New("rbac: permission denied"))
 			tc.setup(t, f)
 			err := f.m.AuthorizeTenantBarrierInit(f.ctx, "acme", uninitialized())
-			requirePeerRefusal(t, err, tc.reason, tc.security)
+			requirePeerRefusal(t, err, f.subject, tc.reason, tc.security)
 			last := f.audit.entries[len(f.audit.entries)-1]
 			if last.Action != "auth.authorize" || last.Result != "denied" {
 				t.Fatalf("final decision record = %+v, want the window's decision recorded as denied", last)
@@ -173,21 +173,25 @@ func TestAuthorizeTenantBarrierInit_WindowGrantIsGated(t *testing.T) {
 // request is answered "sealed" by authorize() BEFORE the gate runs, so the
 // window's grant is the only point the gate can apply -- and must.
 func TestAuthorizeTenantBarrierSealedOp_WindowGrantIsGated(t *testing.T) {
+	// Sealed tenant IAM resolves no account, so the Subject stays the CN.
+	sealedFixture := func(t *testing.T) (*gateFixture, *auth.Identity) {
+		f := bootstrapGate(t, nil)
+		f.subject = "bob"
+		return f, &auth.Identity{Subject: f.subject, TenantID: "acme", Metadata: map[string]string{tenantIAMSealedMetadataKey: "true"}}
+	}
 	for _, perm := range []permission.Permission{permission.TenantBarrierUnseal, permission.TenantBarrierStatus} {
 		for _, tc := range bootstrapRefusals {
 			t.Run(perm.String()+"/"+tc.name, func(t *testing.T) {
-				f := bootstrapGate(t, nil)
+				f, sealed := sealedFixture(t)
 				tc.setup(t, f)
-				sealed := &auth.Identity{Subject: "bob", TenantID: "acme", Metadata: map[string]string{tenantIAMSealedMetadataKey: "true"}}
 				ctx := auth.WithIdentity(f.ctx, sealed)
 				err := f.m.AuthorizeTenantBarrierSealedOp(ctx, "acme", perm)
-				requirePeerRefusal(t, err, tc.reason, tc.security)
+				requirePeerRefusal(t, err, f.subject, tc.reason, tc.security)
 			})
 		}
 	}
-	f := bootstrapGate(t, nil)
+	f, sealed := sealedFixture(t)
 	f.attest()
-	sealed := &auth.Identity{Subject: "bob", TenantID: "acme", Metadata: map[string]string{tenantIAMSealedMetadataKey: "true"}}
 	if err := f.m.AuthorizeTenantBarrierSealedOp(auth.WithIdentity(f.ctx, sealed), "acme", permission.TenantBarrierUnseal); err != nil {
 		t.Fatalf("attested sealed-window unseal refused: %v", err)
 	}
@@ -200,7 +204,7 @@ func TestAuthorizeTenantBarrierSealedOp_GateRefusalReturnedUnchanged(t *testing.
 	f := bootstrapGate(t, nil)
 	f.verifier.err = errors.New("xkms: evidence cache unavailable")
 	err := f.m.AuthorizeTenantBarrierSealedOp(f.ctx, "acme", permission.TenantBarrierUnseal)
-	requirePeerRefusal(t, err, PeerAttestationVerifierError, false)
+	requirePeerRefusal(t, err, f.subject, PeerAttestationVerifierError, false)
 }
 
 func TestIsGateRefusal(t *testing.T) {

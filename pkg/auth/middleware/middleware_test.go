@@ -101,8 +101,15 @@ func (m *mockUserServicer) CreateUser(_ context.Context, _ *user.CreateUserReque
 	return nil, nil
 }
 
-func (m *mockUserServicer) GetUser(_ context.Context, _ uint64) (*user.User, error) {
-	return nil, nil
+func (m *mockUserServicer) GetUser(_ context.Context, id uint64) (*user.User, error) {
+	m.calls.Add(1)
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.user == nil || m.user.ID != id {
+		return nil, &user.UserNotFoundError{ID: id}
+	}
+	return m.user, nil
 }
 
 func (m *mockUserServicer) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
@@ -585,6 +592,103 @@ func TestAuthenticate_NoUserService(t *testing.T) {
 	}
 	if len(identity.Roles) != 1 || identity.Roles[0] != "dev" {
 		t.Errorf("expected roles [dev], got %v", identity.Roles)
+	}
+}
+
+// TestAuthenticate_SubjectIsTheImmutableUserID proves a resolved identity's
+// Subject is the account's immutable id, and stays that id when the account
+// is renamed and presents a credential naming its new username.
+func TestAuthenticate_SubjectIsTheImmutableUserID(t *testing.T) {
+	stored := &user.User{ID: 7, Username: "charlie", Email: "c@example.com", TenantID: "t1", Lifecycle: user.LifecycleActive}
+	for _, name := range []string{"charlie", "charlie-renamed"} {
+		stored.Username = name
+		authn := &mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: name, TenantID: "t1"}}
+		m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}))
+
+		_, identity, err := m.authenticate(context.Background())
+		if err != nil {
+			t.Fatalf("%s: authenticate: %v", name, err)
+		}
+		if identity.Subject != "7" || identity.UserID != 7 || identity.Username != name || identity.AccountName() != name {
+			t.Fatalf("%s: identity = %+v, want Subject 7 for account %s", name, identity, name)
+		}
+	}
+}
+
+// TestAuthenticate_UserIDResolvesByID proves an identity that already names
+// an account by id (a forwarded caller) is resolved by that id, never by
+// name, and only within its own tenant.
+func TestAuthenticate_UserIDResolvesByID(t *testing.T) {
+	t.Run("same tenant", func(t *testing.T) {
+		users := &mockUserServicer{user: &user.User{ID: 9, Username: "dave", TenantID: "t1", Lifecycle: user.LifecycleActive}}
+		claim := &auth.Identity{Subject: auth.UserSubject(9), UserID: 9, TenantID: "t1"}
+		m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claim}), WithUserService(users))
+
+		_, identity, err := m.authenticate(context.Background())
+		if err != nil {
+			t.Fatalf("authenticate: %v", err)
+		}
+		if identity.Subject != "9" || identity.Username != "dave" {
+			t.Fatalf("identity = %+v, want user 9 (dave)", identity)
+		}
+		if users.lastUser != "" {
+			t.Fatalf("resolved by username %q, want by id", users.lastUser)
+		}
+	})
+	t.Run("other tenant", func(t *testing.T) {
+		users := &mockUserServicer{user: &user.User{ID: 9, Username: "dave", TenantID: "t2", Lifecycle: user.LifecycleActive}}
+		claim := &auth.Identity{Subject: auth.UserSubject(9), UserID: 9, TenantID: "t1"}
+		m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claim}), WithUserService(users))
+
+		_, _, err := m.authenticate(context.Background())
+		var unresolved *UnresolvedUserSubjectError
+		if !errors.As(err, &unresolved) {
+			t.Fatalf("err = %v, want *UnresolvedUserSubjectError for another tenant's account", err)
+		}
+	})
+}
+
+// TestAuthenticate_UnresolvedUserIDSubjectRefused proves a Subject shaped as
+// a user id that resolves to no account is refused, with and without a user
+// store, while an unresolved name is still admitted unenriched.
+func TestAuthenticate_UnresolvedUserIDSubjectRefused(t *testing.T) {
+	notFound := &mockUserServicer{err: &user.UserNotFoundError{Lookup: "t1/x"}}
+	cases := []struct {
+		name    string
+		claim   *auth.Identity
+		opts    []Option
+		refused bool
+	}{
+		{"id-shaped subject, store", &auth.Identity{Subject: "12345", TenantID: "t1"}, []Option{WithUserService(notFound)}, true},
+		{"user id set, store", &auth.Identity{Subject: "12345", UserID: 12345, TenantID: "t1"}, []Option{WithUserService(notFound)}, true},
+		{"id-shaped subject, no store", &auth.Identity{Subject: "12345", TenantID: "t1"}, nil, true},
+		{"name subject, store", &auth.Identity{Subject: "erin", TenantID: "t1"}, []Option{WithUserService(notFound)}, false},
+		{"name subject, no store", &auth.Identity{Subject: "erin", TenantID: "t1"}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]Option{WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: tc.claim})}, tc.opts...)
+			_, _, err := New(&mockAuthorizer{}, opts...).authenticate(context.Background())
+			var unresolved *UnresolvedUserSubjectError
+			if got := errors.As(err, &unresolved); got != tc.refused {
+				t.Fatalf("err = %v, refused = %v, want %v", err, got, tc.refused)
+			}
+			if tc.refused && !errors.Is(err, auth.ErrUnauthenticated) {
+				t.Fatalf("err = %v, want it to wrap auth.ErrUnauthenticated", err)
+			}
+		})
+	}
+}
+
+// TestUnresolvedUserSubjectError_Message names the subject and tenant.
+func TestUnresolvedUserSubjectError_Message(t *testing.T) {
+	err := &UnresolvedUserSubjectError{Subject: "12345", TenantID: "t1"}
+	want := `auth/middleware: identity "12345" in tenant t1 names a user id that resolves to no account`
+	if err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+	if !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatal("UnresolvedUserSubjectError does not unwrap to auth.ErrUnauthenticated")
 	}
 }
 

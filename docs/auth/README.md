@@ -14,7 +14,9 @@ go-qrdb defines pluggable `Authenticator` and `Authorizer` interfaces in `pkg/au
 
 ```go
 type Identity struct {
-    Subject   string
+    Subject   string // the account's immutable user id once resolved
+    UserID    uint64 // the resolved account; 0 when none
+    Username  string // the resolved account's current name
     TenantID  string
     Roles     []string
     Metadata  map[string]string
@@ -36,7 +38,7 @@ Extracts identity from TLS peer certificates:
 
 | Field | Source |
 |-------|--------|
-| `Subject` | Certificate Subject CN |
+| `Subject` | Certificate Subject CN, until the account is resolved (below) |
 | `TenantID` | the tenant-scoped SPIFFE URI SAN when present (with a configured trust domain PINNED), otherwise Certificate Subject OU[0] |
 | `Roles` | Not populated (external RBAC) |
 
@@ -48,6 +50,19 @@ authenticates only with a certificate matching one of them
 authenticates on the CN and OU alone. The SPIFFE SAN is not exempt — the same
 CA issues it. See
 [../identity-rbac/architecture.md](../identity-rbac/architecture.md#what-a-certificate-actually-claims).
+
+**Once the account is resolved, the Subject is its user id.**
+`finalizeIdentity` calls `Identity.BindUser`, the one place a Subject is set
+from an account: `Subject` becomes the account's immutable user id in decimal,
+`UserID` that id, and `Username` its current name. A rename or an email change
+moves neither the id nor anything keyed on it — the authorizer's cache, the
+audit actor, the rate-limit bucket. A caller that resolves to no account keeps
+the name its authenticator produced. An identity that arrives already carrying
+a `UserID` is resolved by that id within its tenant, never by name; an
+unresolved Subject shaped like a user id is refused
+(`*UnresolvedUserSubjectError`, 401), so a certificate CN of digits cannot
+pose as an account. `Identity.AccountName()` returns the account name for the
+readers that want one (SQL grantee, ABAC `subject.name`).
 
 **It also enforces certificate revocation, on every request.** A peer
 certificate whose serial has been revoked is refused (`ErrCertificateRevoked`,

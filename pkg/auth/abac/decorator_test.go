@@ -501,6 +501,57 @@ func TestDecorator_UserAttrsConditionNamespace(t *testing.T) {
 	}
 }
 
+func TestDecorator_SubjectIDIsUserIDAndNameIsAccount(t *testing.T) {
+	// A resolved identity's Subject is its immutable user id: subject.id is
+	// that id and subject.name the account name, which a rename changes. An
+	// unresolved identity has no account, so its name is its Subject.
+	resolved := &auth.Identity{TenantID: "tenant-a"}
+	resolved.BindUser(77, "alice")
+	tests := []struct {
+		name   string
+		id     *auth.Identity
+		expr   string
+		wantOK bool
+	}{
+		{name: "id is the user id", id: resolved, expr: "subject.id == '77'", wantOK: true},
+		{name: "id is not the name", id: resolved, expr: "subject.id == 'alice'", wantOK: false},
+		{name: "name is the account name", id: resolved, expr: "subject.name == 'alice'", wantOK: true},
+		{name: "unresolved name is the subject", id: testIdentity("svc", "tenant-a"), expr: "subject.name == 'svc'", wantOK: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakeAuthorizer{err: fakeDeniedError{}}
+			policy := &Policy{
+				APIVersion: "abac.qrdb.io/v1",
+				Kind:       PolicyKind,
+				Metadata:   PolicyMetadata{Name: "owner", Tenant: "tenant-a"},
+				Spec: PolicySpec{
+					Subjects: SubjectSelector{Authenticated: true},
+					Rules: []Rule{{
+						Name:      "owner-read",
+						Effect:    EffectAllow,
+						Actions:   []string{"read"},
+						Resources: []string{"/docs/**"},
+						When:      []Condition{{Expression: tt.expr}},
+					}},
+				},
+			}
+			authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
+			if err != nil {
+				t.Fatalf("Decorate() error = %v", err)
+			}
+			ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+			err = authz.Authorize(ctx, tt.id, "/docs/plan", "read")
+			if tt.wantOK && err != nil {
+				t.Fatalf("Authorize() = %v, want allowed", err)
+			}
+			if !tt.wantOK && !errors.As(err, &fakeDeniedError{}) {
+				t.Fatalf("Authorize() = %v, want the inner denial", err)
+			}
+		})
+	}
+}
+
 func TestDecorate_PolicyDir(t *testing.T) {
 	dir := t.TempDir()
 	policyYAML := `apiVersion: abac.qrdb.io/v1

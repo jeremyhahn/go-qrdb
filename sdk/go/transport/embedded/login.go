@@ -71,9 +71,12 @@ type SessionIssuer interface {
 // IdentityHydrator translates a resolved auth.Principal + auth.AuthFactor
 // pair into a full auth.Identity ready to be issued as a bearer. The
 // hydrator is responsible for assembling the role set and any
-// implementation-specific metadata. A default implementation (the
-// principal's Roles + a simple Subject) is supplied when none is
-// configured — see defaultIdentityHydrator.
+// implementation-specific metadata. It does not name the account: once it
+// returns, FinishLogin binds the identity to the resolved principal with
+// auth.Identity.BindUser, so the Subject is always the immutable user id
+// whatever the hydrator set. A default implementation (the principal's
+// Roles and factor metadata) is supplied when none is configured — see
+// defaultIdentityHydrator.
 type IdentityHydrator interface {
 	// Hydrate produces an *auth.Identity ready to be wrapped in a
 	// bearer. Implementations may return a typed error to abort login
@@ -98,7 +101,6 @@ func (d *defaultIdentityHydrator) Hydrate(_ context.Context, principal *auth.Pri
 		meta["factor_type"] = string(factor.Type)
 	}
 	return &auth.Identity{
-		Subject:  principal.Username,
 		TenantID: principal.TenantID,
 		Roles:    roles,
 		Metadata: meta,
@@ -361,6 +363,11 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	if err != nil {
 		return nil, mapFactorError(err)
 	}
+	// The issued Subject is the principal's immutable user id, so a
+	// principal without one names no account and cannot log in.
+	if principal == nil || principal.ID == 0 {
+		return nil, &auth.InvalidFactorError{Reason: "resolved principal has no user id"}
+	}
 
 	// Charged to the RESOLVED principal, never the caller-supplied
 	// LookupKey/hint: the lookup key is attacker-controlled before any
@@ -371,10 +378,11 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	// so this remains the per-account brute-force defense; BeginLogin's
 	// own throttle above is deliberately a separate Permission
 	// (permission.LoginBeginAttempt) so the two bucket shapes can be
-	// tuned independently. A nil t.authMW or no declared policy is a
-	// no-op.
+	// tuned independently. The bucket is keyed by the user id, the Subject
+	// the network transports charge, so a rename never resets it. A nil
+	// t.authMW or no declared policy is a no-op.
 	if c.transport.authMW != nil {
-		if err := c.transport.authMW.CheckLoginRateLimit(ctx, principal.TenantID, principal.Username, permission.UserAuthFactorsLogin); err != nil {
+		if err := c.transport.authMW.CheckLoginRateLimit(ctx, principal.TenantID, auth.UserSubject(principal.ID), permission.UserAuthFactorsLogin); err != nil {
 			return nil, err
 		}
 	}
@@ -421,6 +429,10 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	if err != nil {
 		return nil, err
 	}
+	if identity == nil {
+		return nil, &auth.InvalidFactorError{Reason: "identity hydrator returned no identity"}
+	}
+	identity.BindUser(principal.ID, principal.Username)
 
 	bearer, expiresAt, err := c.transport.sessionIssuer.Issue(ctx, identity)
 	if err != nil {
@@ -478,7 +490,8 @@ func WithSessionIssuer(s SessionIssuer) Option {
 
 // WithIdentityHydrator injects a custom IdentityHydrator into the
 // embedded transport. When unset, a default hydrator that maps the
-// principal's fields directly is used.
+// principal's fields directly is used. Either way the issued identity's
+// Subject is the principal's immutable user id.
 func WithIdentityHydrator(h IdentityHydrator) Option {
 	return func(t *Transport) {
 		t.identityHydrator = h

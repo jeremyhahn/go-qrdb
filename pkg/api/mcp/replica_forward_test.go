@@ -344,8 +344,8 @@ func TestReplicaForwardMCP_ForwardsAsTheCallerAndRelaysTheAnswer(t *testing.T) {
 	if res.IsError || forwardedTo(res) != "1" {
 		t.Fatalf("result %+v; want the replica's success, forwarded to replica 1", res)
 	}
-	if got := b.lastSeen(t); got != "alice" {
-		t.Fatalf("the target ran the call as %q; want alice, on-behalf", got)
+	if got, want := b.lastSeen(t), auth.UserSubject(authtest.UserInBindingTenant); got != want {
+		t.Fatalf("the target ran the call as %q; want alice's user id %q, on-behalf", got, want)
 	}
 	if l, ok := c.cache.Get(42); !ok || l.RaftAddr != "raft-b" {
 		t.Fatalf("cache = %+v, %v; want the replica that served", l, ok)

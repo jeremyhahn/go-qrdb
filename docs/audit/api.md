@@ -138,7 +138,7 @@ that carry no tenant, and is refused every other tenant's. See
 | Field | Meaning |
 |---|---|
 | `timestamp` | UTC; auto-set when zero |
-| `actor` | from the mTLS certificate CN, JWT subject, or API key |
+| `actor` | the caller's Subject: the resolved account's immutable user id, or, for a caller resolved to no account, its authenticated name (certificate CN, JWT subject, API key) |
 | `tenant_id` | tenant owning the resource |
 | `role` | the actor's role **at the time of the event** |
 | `resource` | barrier, ceremony, keys, user, role, … |

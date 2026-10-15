@@ -17,12 +17,33 @@
 // while go-qrdb provides a default mTLS authenticator.
 package auth
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 // Identity represents an authenticated entity.
 type Identity struct {
-	// Subject identifies the authenticated principal (e.g., CN from cert, JWT sub).
+	// Subject identifies the authenticated principal. An identity that
+	// resolved to a user account carries that account's immutable id here,
+	// rendered by UserSubject and set only by BindUser, so it survives a
+	// change of the account's username or email. An identity that resolved
+	// to no account carries the name its credential presented: a holder
+	// certificate's CN, a service principal's name, or the CN of a
+	// certificate naming no account.
 	Subject string
+
+	// UserID is the immutable id of the user account this identity resolved
+	// to, or zero when it resolved to none. BindUser sets it together with
+	// Subject.
+	UserID uint64
+
+	// Username is the resolved account's username at the moment the identity
+	// was established, for readers that name an account the way people do (a
+	// SQL grantee). It is display data, never an identity key: compare
+	// Subject or UserID. Empty when UserID is zero; read it through
+	// AccountName.
+	Username string
 
 	// TenantID identifies the tenant namespace. Always non-empty for a
 	// well-formed identity — the bootstrap flow guarantees every user is
@@ -108,6 +129,48 @@ func (id *Identity) HasRole(roleID string) bool {
 		}
 	}
 	return false
+}
+
+// BindUser makes the identity the user account userID, whose username is
+// currently username: it sets UserID, Username and Subject =
+// UserSubject(userID). It is the one place an account's Subject is set, so
+// every transport's identity names an account by the same immutable value.
+func (id *Identity) BindUser(userID uint64, username string) {
+	id.UserID = userID
+	id.Username = username
+	id.Subject = UserSubject(userID)
+}
+
+// AccountName returns the name the identity is known by: the resolved
+// account's username when it resolved to one, otherwise the Subject its
+// credential presented. It is for display and for readers whose own
+// namespace is usernames; it is not stable across a rename.
+func (id *Identity) AccountName() string {
+	if id == nil {
+		return ""
+	}
+	if id.UserID != 0 {
+		return id.Username
+	}
+	return id.Subject
+}
+
+// UserSubject renders a user id as the Subject of an identity resolved to
+// that account: the id in base 10.
+func UserSubject(userID uint64) string {
+	return strconv.FormatUint(userID, 10)
+}
+
+// ParseUserSubject reports whether subject is a Subject UserSubject renders,
+// and the user id it names. Only the canonical form is accepted -- base 10,
+// no sign, no leading zero, non-zero -- so a subject parses back to exactly
+// one id and UserSubject(id) == subject.
+func ParseUserSubject(subject string) (uint64, bool) {
+	userID, err := strconv.ParseUint(subject, 10, 64)
+	if err != nil || userID == 0 || UserSubject(userID) != subject {
+		return 0, false
+	}
+	return userID, true
 }
 
 // Authenticator validates incoming requests and extracts identity.

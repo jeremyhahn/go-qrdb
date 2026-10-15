@@ -110,7 +110,7 @@ func (v clusterOnly) VerifyIssuer(ctx context.Context, _ string, chain []*x509.C
 }
 
 func issuerOBMiddleware(v auth.IssuerVerifier) *AuthMiddleware {
-	stored := &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
+	stored := &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
 	return New(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: stored}), WithIssuerVerifier(v))
 }
@@ -135,7 +135,7 @@ func TestOnBehalf_OnlyTheClusterCAsNodeMayForward(t *testing.T) {
 
 	transports := map[string]func(leaf *x509.Certificate, key *ecdsa.PrivateKey, issuer *x509.Certificate) (*auth.Identity, error){
 		"rest": func(leaf *x509.Certificate, key *ecdsa.PrivateKey, issuer *x509.Certificate) (*auth.Identity, error) {
-			r := buildOnBehalfRequest(t, leaf, key, "alice", "acme", obNodeID, time.Now(), []byte("v"), "PUT", "/kv/k")
+			r := buildOnBehalfRequest(t, leaf, key, obAliceSubject, "acme", obNodeID, time.Now(), []byte("v"), "PUT", "/kv/k")
 			r.TLS = chainState(leaf, issuer)
 			_, id, err := m.authenticateOnBehalf(context.Background(), httptest.NewRecorder(), r)
 			return id, err
@@ -145,7 +145,7 @@ func TestOnBehalf_OnlyTheClusterCAsNodeMayForward(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ab, sb, err := forward.Sign(forward.RPCBinding("grpc", "/qrdb.v1.QRDBService/Put", msg).Assertion("alice", "acme", obNodeID, time.Now()), key)
+			ab, sb, err := forward.Sign(forward.RPCBinding("grpc", "/qrdb.v1.QRDBService/Put", msg).Assertion(obAliceSubject, "acme", obNodeID, time.Now()), key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +154,7 @@ func TestOnBehalf_OnlyTheClusterCAsNodeMayForward(t *testing.T) {
 			return id, err
 		},
 		"quic": func(leaf *x509.Certificate, key *ecdsa.PrivateKey, issuer *x509.Certificate) (*auth.Identity, error) {
-			ab, sb, err := forward.Sign(forward.RPCBinding("quic", "kv.Put", payload).Assertion("alice", "acme", obNodeID, time.Now()), key)
+			ab, sb, err := forward.Sign(forward.RPCBinding("quic", "kv.Put", payload).Assertion(obAliceSubject, "acme", obNodeID, time.Now()), key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,7 +165,7 @@ func TestOnBehalf_OnlyTheClusterCAsNodeMayForward(t *testing.T) {
 	for name, run := range transports {
 		t.Run(name, func(t *testing.T) {
 			leaf, key := clusterCA.nodeLeaf(t, obNodeID)
-			if id, err := run(leaf, key, clusterCA.cert); err != nil || id == nil || id.Subject != "alice" {
+			if id, err := run(leaf, key, clusterCA.cert); err != nil || id == nil || id.Subject != obAliceSubject {
 				t.Fatalf("the cluster CA's node: %+v, %v; want the asserted caller", id, err)
 			}
 			forged, fkey := keyB.nodeLeaf(t, obNodeID)

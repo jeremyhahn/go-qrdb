@@ -188,7 +188,7 @@ func TestLookupUser_PrimarySucceeds(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary}
 
-	u, err := m.lookupUser(context.Background(), "t1", "alice")
+	u, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestLookupUser_PrimaryNotFound_NoFallback(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary}
 
-	_, err := m.lookupUser(context.Background(), "t1", "alice")
+	_, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -230,7 +230,7 @@ func TestLookupUser_PrimaryTransient_FallbackSucceeds(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	u, err := m.lookupUser(context.Background(), "system", "bob")
+	u, err := m.lookupUser(context.Background(), "system", userKey{username: "bob"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestLookupUser_PrimaryTransient_FallbackNotFound(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	_, err := m.lookupUser(context.Background(), "system", "ghost")
+	_, err := m.lookupUser(context.Background(), "system", userKey{username: "ghost"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -276,7 +276,7 @@ func TestLookupUser_PrimaryTransient_FallbackTransient(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	_, err := m.lookupUser(context.Background(), tenantid.System, "alice")
+	_, err := m.lookupUser(context.Background(), tenantid.System, userKey{username: "alice"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -300,7 +300,7 @@ func TestLookupUser_PrimaryTransient_FallbackNeverConsultedForAnotherTenant(t *t
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	_, err := m.lookupUser(context.Background(), "t1", "alice")
+	_, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -320,7 +320,7 @@ func TestLookupUser_PrimaryTransient_NoFallback(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary}
 
-	_, err := m.lookupUser(context.Background(), "t1", "alice")
+	_, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

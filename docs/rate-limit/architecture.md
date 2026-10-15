@@ -110,7 +110,10 @@ comes and goes rather than staying fixed.
 - **Keys are scoped by tenant, subject, and permission together.** Two
   tenants may share a subject name without sharing a bucket, and one
   caller's exhaustion of one permission's bucket never touches another
-  permission's bucket for the same caller. The tenant is normalized
+  permission's bucket for the same caller. The subject is
+  `Identity.Subject`, which for a caller resolved to an account is its
+  immutable user id, so renaming the account or changing its email keeps
+  its buckets rather than opening fresh ones. The tenant is normalized
   (`tenantid.Normalize`) before it is folded into the key: an identity
   with an empty `TenantID` IS the system tenant, so it spends the system
   tenant's bucket rather than a second, fresh one obtained by alternating

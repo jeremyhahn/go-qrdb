@@ -445,6 +445,11 @@ type nodeOptions struct {
 	// which keys the verifier by its Type() (last-write-wins per type).
 	loginFactorVerifiers []embedded.FactorVerifier
 
+	// identityHydrator assembles the role set and metadata of a logged-in
+	// identity. When non-nil it is forwarded to the embedded transport via
+	// embedded.WithIdentityHydrator; the Subject stays the user id either way.
+	identityHydrator embedded.IdentityHydrator
+
 	// tenantIsolation enables the IsolationVolume tenant stack. When true,
 	// completeStandaloneBoot calls server.BuildTenantInfra to restore volume
 	// tenants and wire the TenantHostRegistry into the multi-protocol server and
@@ -600,6 +605,17 @@ func WithNoSyncWrites() NodeOption {
 // nil-safe: a nil issuer is ignored.
 func WithSessionIssuer(s embedded.SessionIssuer) NodeOption {
 	return func(o *nodeOptions) { o.sessionIssuer = s }
+}
+
+// WithIdentityHydrator injects the IdentityHydrator that assembles a
+// logged-in identity's roles and metadata from the resolved principal and
+// factor. It is forwarded to the in-process embedded transport via
+// embedded.WithIdentityHydrator; without one the principal's own roles are
+// used. The hydrator cannot name the account: the login Subject is the
+// principal's immutable user id, so a rename or an email change never
+// changes it. A nil hydrator is ignored.
+func WithIdentityHydrator(h embedded.IdentityHydrator) NodeOption {
+	return func(o *nodeOptions) { o.identityHydrator = h }
 }
 
 // WithLoginFactorVerifier registers a hardware FactorVerifier (PIV, FIDO2,
@@ -1106,6 +1122,7 @@ type Node struct {
 	// present) even when these are absent.
 	sessionIssuer        embedded.SessionIssuer
 	loginFactorVerifiers []embedded.FactorVerifier
+	identityHydrator     embedded.IdentityHydrator
 
 	// abacPolicies / abacPolicyDir / abacLiveReload carry the ABAC decorator
 	// configuration from the node constructor to buildEmbeddedOpts, which
@@ -2715,6 +2732,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		preboundSockets:           server.PreboundSockets(serverOpts...),
 		sessionIssuer:             nOpts.sessionIssuer,
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
+		identityHydrator:          nOpts.identityHydrator,
 		tenantIsolation:           nOpts.tenantIsolation,
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
@@ -2937,6 +2955,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		preboundSockets:           server.PreboundSockets(serverOpts...),
 		sessionIssuer:             nOpts.sessionIssuer,
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
+		identityHydrator:          nOpts.identityHydrator,
 		tenantIsolation:           nOpts.tenantIsolation,
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
@@ -4259,6 +4278,7 @@ func (n *Node) buildLoginOpts(svcNode *lifecycle.Node) ([]embedded.Option, error
 		return &auth.Principal{
 			ID:       u.ID,
 			Username: u.Username,
+			Email:    u.Email,
 			TenantID: u.TenantID,
 			Roles:    principalRoles(u),
 			Active:   u.CanAuthenticate(),
@@ -4276,6 +4296,9 @@ func (n *Node) buildLoginOpts(svcNode *lifecycle.Node) ([]embedded.Option, error
 	}
 	for _, v := range n.loginFactorVerifiers {
 		opts = append(opts, embedded.WithFactorVerifier(v))
+	}
+	if n.identityHydrator != nil {
+		opts = append(opts, embedded.WithIdentityHydrator(n.identityHydrator))
 	}
 	return opts, nil
 }

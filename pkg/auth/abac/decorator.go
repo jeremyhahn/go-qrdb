@@ -195,7 +195,10 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 
 	subject := Subject{Authenticated: identity != nil}
 	if identity != nil {
+		// The ID is the Subject, a resolved account's immutable user id; the
+		// Name is the account name, which a rename changes.
 		subject.ID = identity.Subject
+		subject.Name = identity.AccountName()
 		subject.TenantID = identity.TenantID
 		subject.Roles = identity.Roles
 		subject.Attributes = stringMapToAttributes(identity.Metadata)

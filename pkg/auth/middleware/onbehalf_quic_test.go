@@ -32,7 +32,7 @@ import (
 // server builds it from the connection.
 func quicOnBehalf(t *testing.T, peerCert *x509.Certificate, signKey *ecdsa.PrivateKey, method string, payload []byte) (context.Context, string, string) {
 	t.Helper()
-	a := forward.RPCBinding("quic", method, payload).Assertion("alice", "acme", obNodeID, time.Now())
+	a := forward.RPCBinding("quic", method, payload).Assertion(obAliceSubject, "acme", obNodeID, time.Now())
 	ab, sb, err := forward.Sign(a, signKey)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func quicOnBehalf(t *testing.T, peerCert *x509.Certificate, signKey *ecdsa.Priva
 }
 
 func quicOBMiddleware() *AuthMiddleware {
-	stored := &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
+	stored := &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
 	return New(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: stored}))
 }
@@ -55,7 +55,7 @@ func TestQUICOnBehalf_ValidAuthenticatesAsTheCaller(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthenticateQUICOnBehalf = %v", err)
 	}
-	if id := auth.IdentityFromContext(got); id == nil || id.Subject != "alice" || id.TenantID != "acme" || !isOnBehalfIdentity(id) {
+	if id := auth.IdentityFromContext(got); id == nil || id.Subject != obAliceSubject || id.TenantID != "acme" || !isOnBehalfIdentity(id) {
 		t.Fatalf("identity = %+v; want the asserted caller, marked on-behalf", id)
 	}
 }
@@ -77,7 +77,7 @@ func TestQUICOnBehalf_RefusesEveryTamperAndANonClusterPeer(t *testing.T) {
 			return err
 		},
 		"bound to another transport": func() error {
-			a := forward.RPCBinding("grpc", "kv.Put", payload).Assertion("alice", "acme", obNodeID, time.Now())
+			a := forward.RPCBinding("grpc", "kv.Put", payload).Assertion(obAliceSubject, "acme", obNodeID, time.Now())
 			ab, sb, _ := forward.Sign(a, key)
 			ctx, _, _ := quicOnBehalf(t, cert, key, "kv.Put", payload)
 			_, err := m.AuthenticateQUICOnBehalf(ctx, "kv.Put", payload, ab, sb)

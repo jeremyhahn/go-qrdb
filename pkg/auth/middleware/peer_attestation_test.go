@@ -116,6 +116,8 @@ type gateFixture struct {
 	authz    *mockAuthorizer
 	m        *AuthMiddleware
 	now      time.Time
+	// subject is bob's login Subject: his immutable user id.
+	subject string
 }
 
 func newGateFixture(t *testing.T) *gateFixture {
@@ -136,7 +138,7 @@ func newGateFixture(t *testing.T) *gateFixture {
 	}
 	gate.now = func() time.Time { return now }
 
-	f := &gateFixture{cert: cert, verifier: v, audit: &mockAuditLogger{}, authz: &mockAuthorizer{}, now: now}
+	f := &gateFixture{cert: cert, verifier: v, audit: &mockAuditLogger{}, authz: &mockAuthorizer{}, now: now, subject: auth.UserSubject(u.ID)}
 	f.m = New(f.authz,
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
@@ -153,14 +155,14 @@ func newGateFixture(t *testing.T) *gateFixture {
 
 // attest records fresh, passing evidence for bob collected from his own peer.
 func (f *gateFixture) attest() {
-	f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{
+	f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{
 		peerThumbprint: user.ComputeSPKIThumbprint(f.cert.cert),
 		collectedAt:    f.now.Add(-time.Minute),
 		passed:         true,
 	}
 }
 
-func requirePeerRefusal(t *testing.T, err error, reason PeerAttestationReason, securityRelevant bool) *PeerAttestationRefusedError {
+func requirePeerRefusal(t *testing.T, err error, subject string, reason PeerAttestationReason, securityRelevant bool) *PeerAttestationRefusedError {
 	t.Helper()
 	var refusal *PeerAttestationRefusedError
 	if !errors.As(err, &refusal) {
@@ -169,8 +171,8 @@ func requirePeerRefusal(t *testing.T, err error, reason PeerAttestationReason, s
 	if refusal.Reason != reason || refusal.SecurityRelevant != securityRelevant {
 		t.Fatalf("refusal = {reason %q, security %v}, want {%q, %v}", refusal.Reason, refusal.SecurityRelevant, reason, securityRelevant)
 	}
-	if refusal.Subject != "bob" || refusal.TenantID != "acme" || refusal.Permission == "" {
-		t.Fatalf("refusal names %s/%s for %q, want acme/bob", refusal.TenantID, refusal.Subject, refusal.Permission)
+	if refusal.Subject != subject || refusal.TenantID != "acme" || refusal.Permission == "" {
+		t.Fatalf("refusal names %s/%s for %q, want acme/%s", refusal.TenantID, refusal.Subject, refusal.Permission, subject)
 	}
 	return refusal
 }
@@ -185,7 +187,7 @@ func TestPeerAttestationGate_AttestedPeerAdmitted(t *testing.T) {
 		t.Fatalf("verifier calls = %d, want 1", f.verifier.callCount())
 	}
 	got := f.verifier.calls[0]
-	if got.Identity.Subject != "bob" || got.Identity.TenantID != "acme" {
+	if got.Identity.Subject != f.subject || got.Identity.UserID == 0 || got.Identity.TenantID != "acme" {
 		t.Fatalf("verifier was handed %s/%s, want the authenticated identity", got.Identity.TenantID, got.Identity.Subject)
 	}
 	if got.Thumbprint != user.ComputeSPKIThumbprint(f.cert.cert) || !got.Certificate.Equal(f.cert.cert) {
@@ -216,11 +218,11 @@ func TestPeerAttestationGate_FailsClosed(t *testing.T) {
 	}{
 		{name: "no evidence at all", setup: func(*gateFixture) {}, reason: PeerAttestationNoEvidence},
 		{name: "evidence older than the max age", setup: func(f *gateFixture) {
-			f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-6 * time.Minute), passed: true}
+			f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-6 * time.Minute), passed: true}
 		}, reason: PeerAttestationEvidenceStale},
 		{name: "evidence for a different peer than the connection's", setup: func(f *gateFixture) {
 			other := mintCert(t, "bob", "acme", nil, "")
-			f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{peerThumbprint: user.ComputeSPKIThumbprint(other.cert), collectedAt: f.now.Add(-time.Minute), passed: true}
+			f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{peerThumbprint: user.ComputeSPKIThumbprint(other.cert), collectedAt: f.now.Add(-time.Minute), passed: true}
 		}, reason: PeerAttestationPeerMismatch, security: true},
 		{name: "the verifier returns an error", setup: func(f *gateFixture) {
 			f.attest()
@@ -231,16 +233,16 @@ func TestPeerAttestationGate_FailsClosed(t *testing.T) {
 			f.verifier.nilReply = true
 		}, reason: PeerAttestationNoVerdict},
 		{name: "evidence dated in the future", setup: func(f *gateFixture) {
-			f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(time.Hour), passed: true}
+			f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(time.Hour), passed: true}
 		}, reason: PeerAttestationEvidenceFromFuture, security: true},
 		{name: "state rejected for absence", setup: func(f *gateFixture) {
-			f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-time.Minute), failure: auth.PeerAttestationFailureAbsence, reason: "PCR 10 not quoted"}
+			f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-time.Minute), failure: auth.PeerAttestationFailureAbsence, reason: "PCR 10 not quoted"}
 		}, reason: PeerAttestationStateRejected},
 		{name: "state rejected cryptographically", setup: func(f *gateFixture) {
-			f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-time.Minute), failure: auth.PeerAttestationFailureCryptographic, reason: "quote signature invalid"}
+			f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-time.Minute), failure: auth.PeerAttestationFailureCryptographic, reason: "quote signature invalid"}
 		}, reason: PeerAttestationStateRejected, security: true},
 		{name: "a passing verdict that names a failure", setup: func(f *gateFixture) {
-			f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-time.Minute), passed: true, failure: auth.PeerAttestationFailureCryptographic}
+			f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{peerThumbprint: peerThumb(f), collectedAt: f.now.Add(-time.Minute), passed: true, failure: auth.PeerAttestationFailureCryptographic}
 		}, reason: PeerAttestationInconsistentVerdict},
 		{name: "no peer certificate on the connection", setup: func(f *gateFixture) { f.attest() },
 			ctx: func(f *gateFixture) context.Context {
@@ -256,7 +258,7 @@ func TestPeerAttestationGate_FailsClosed(t *testing.T) {
 				ctx = tc.ctx(f)
 			}
 			err := f.m.authorize(ctx, f.identity, gatedPerm)
-			refusal := requirePeerRefusal(t, err, tc.reason, tc.security)
+			refusal := requirePeerRefusal(t, err, f.subject, tc.reason, tc.security)
 
 			wantClass := AuthFailureUnauthorized
 			if tc.reason == PeerAttestationVerifierError {
@@ -284,7 +286,7 @@ func TestPeerAttestationGate_VerifierErrorClassifiedByTheGate(t *testing.T) {
 	f := newGateFixture(t)
 	f.verifier.err = auth.ErrUnauthenticated
 	err := f.m.authorize(f.ctx, f.identity, gatedPerm)
-	requirePeerRefusal(t, err, PeerAttestationVerifierError, false)
+	requirePeerRefusal(t, err, f.subject, PeerAttestationVerifierError, false)
 	if got := ClassifyAuthError(err); got != AuthFailureUnavailable {
 		t.Fatalf("ClassifyAuthError = %v, want AuthFailureUnavailable", got)
 	}
@@ -297,11 +299,11 @@ func TestPeerAttestationGate_VerifierErrorClassifiedByTheGate(t *testing.T) {
 func TestPeerAttestationGate_ForwardedIdentityRefusedFirst(t *testing.T) {
 	f := newGateFixture(t)
 	f.attest()
-	forwarded := &auth.Identity{Subject: "bob", TenantID: "acme", Metadata: map[string]string{
+	forwarded := &auth.Identity{Subject: f.subject, TenantID: "acme", Metadata: map[string]string{
 		authSourceMetadataKey: authSourceOnBehalf, "forwarder_nodeid": "node-2",
 	}}
 	err := f.m.authorize(f.ctx, forwarded, gatedPerm)
-	refusal := requirePeerRefusal(t, err, PeerAttestationForwarded, false)
+	refusal := requirePeerRefusal(t, err, f.subject, PeerAttestationForwarded, false)
 	if !strings.Contains(refusal.Detail, "node-2") {
 		t.Fatalf("detail %q does not name the forwarding node", refusal.Detail)
 	}
@@ -338,7 +340,7 @@ func TestPeerAttestationGate_RunsOnlyAfterRBACGrants(t *testing.T) {
 func TestPeerAttestationGate_GatesTheRBACBypassingBranches(t *testing.T) {
 	t.Run("IdentityGated", func(t *testing.T) {
 		f := newGateFixture(t)
-		requirePeerRefusal(t, f.m.authorize(f.ctx, f.identity, permission.IdentityGated), PeerAttestationNoEvidence, false)
+		requirePeerRefusal(t, f.m.authorize(f.ctx, f.identity, permission.IdentityGated), f.subject, PeerAttestationNoEvidence, false)
 		f.attest()
 		if err := f.m.authorize(f.ctx, f.identity, permission.IdentityGated); err != nil {
 			t.Fatalf("attested IdentityGated refused: %v", err)
@@ -346,8 +348,10 @@ func TestPeerAttestationGate_GatesTheRBACBypassingBranches(t *testing.T) {
 	})
 	t.Run("sealed tenant health", func(t *testing.T) {
 		f := newGateFixture(t)
-		sealed := &auth.Identity{Subject: "bob", TenantID: "acme", Metadata: map[string]string{tenantIAMSealedMetadataKey: "true"}}
-		requirePeerRefusal(t, f.m.authorize(f.ctx, sealed, permission.AdminHealth), PeerAttestationNoEvidence, false)
+		// Sealed tenant IAM resolves no account, so the Subject stays the CN.
+		f.subject = "bob"
+		sealed := &auth.Identity{Subject: f.subject, TenantID: "acme", Metadata: map[string]string{tenantIAMSealedMetadataKey: "true"}}
+		requirePeerRefusal(t, f.m.authorize(f.ctx, sealed, permission.AdminHealth), f.subject, PeerAttestationNoEvidence, false)
 		f.attest()
 		if err := f.m.authorize(f.ctx, sealed, permission.AdminHealth); err != nil {
 			t.Fatalf("attested sealed-tenant health refused: %v", err)
@@ -359,7 +363,7 @@ func TestPeerAttestationGate_GatesTheRBACBypassingBranches(t *testing.T) {
 // refusal must be distinguishable from an ordinary denial in the trail.
 func TestPeerAttestationGate_RefusalIsAuditedAsItsOwnEvent(t *testing.T) {
 	f := newGateFixture(t)
-	f.verifier.evidence[identityKey("acme", "bob")] = cachedEvidence{
+	f.verifier.evidence[identityKey("acme", f.subject)] = cachedEvidence{
 		peerThumbprint: user.ComputeSPKIThumbprint(f.cert.cert), collectedAt: f.now.Add(-time.Minute),
 		failure: auth.PeerAttestationFailureCryptographic, reason: "PCR 10 mismatch",
 	}
@@ -383,7 +387,7 @@ func TestPeerAttestationGate_RefusalIsAuditedAsItsOwnEvent(t *testing.T) {
 	if attest.Metadata["reason"] != string(PeerAttestationStateRejected) ||
 		attest.Metadata["security_relevant"] != "true" ||
 		attest.Metadata["detail"] != "PCR 10 mismatch" ||
-		attest.Subject != "bob" || attest.TenantID != "acme" || attest.Resource != gatedPerm.String() {
+		attest.Subject != f.subject || attest.TenantID != "acme" || attest.Resource != gatedPerm.String() {
 		t.Fatalf("attestation record = %+v", attest)
 	}
 
@@ -416,7 +420,7 @@ func TestPeerAttestationGate_UnrecordableRefusal(t *testing.T) {
 				t.Fatalf("fail-closed err = %v, want *audit.GateError", err)
 			}
 			if policy == audit.FailOpen {
-				requirePeerRefusal(t, err, PeerAttestationNoEvidence, false)
+				requirePeerRefusal(t, err, f.subject, PeerAttestationNoEvidence, false)
 			}
 		})
 	}

@@ -49,6 +49,28 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **BREAKING: the login Subject is the immutable user id, not the username**
+  (go-qrdb#670). Once a caller resolves to an account, `Identity.Subject` is
+  that account's user id in decimal (`auth.UserSubject`), set only by
+  `Identity.BindUser`, on every transport — REST, gRPC, QUIC, the Unix socket,
+  MCP and embedded — so renaming the account or changing its email leaves
+  every Subject reader naming the same caller. The username-as-Subject path is
+  deleted, with no flag or alias. What a deployment sees change: the audit
+  `actor` and the enroller fields on ceremonies, barriers and tenants record
+  the id; rate-limit buckets and lockout counters are keyed by it; ABAC
+  `subject.id` is the id and `subject.name` is the account name
+  (`Identity.AccountName()`), so a policy matching usernames on `subject.id`
+  must move to `subject.name`; SQL grantees and the embedded driver's SQL user
+  stay the account name. An unresolved Subject that is id-shaped is refused
+  with `middleware.UnresolvedUserSubjectError` (401 / `UNAUTHENTICATED`), so an
+  embedder's bearer authenticator must set `UserID`. Embedded `FinishLogin`
+  binds the Subject after its hydrator runs, which can no longer choose it, and
+  refuses a principal with no id. `node.WithIdentityHydrator` injects that
+  hydrator. A certificate's CN still selects the account by username, so after
+  a rename the holder re-certifies under the new name; a binding over the same
+  key carries over. Tests: `TestUsers_CLI_SubjectIsUserID_PerProtocol`, on every
+  transport through the real CLI and in process for embedded.
+
 - **Breaking: tenant barrier init resolves its strategy through
   `seal.BarrierKeyProvider`.** Each node asks the provider for the strategy
   sealing its own key for a tenant barrier, naming the barrier, its node

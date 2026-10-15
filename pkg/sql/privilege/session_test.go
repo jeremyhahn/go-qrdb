@@ -47,6 +47,14 @@ func newFakeSession(tenantID, subject string) *fakeSession {
 	return s
 }
 
+// resolvedIdentity is an identity the auth middleware resolved to an account:
+// its Subject is the account's user id, its name in Username.
+func resolvedIdentity(tenantID string, userID uint64, username string) *auth.Identity {
+	id := &auth.Identity{TenantID: tenantID}
+	id.BindUser(userID, username)
+	return id
+}
+
 func (s *fakeSession) Identity() *auth.Identity { return s.identity }
 func (s *fakeSession) TenantID() string         { return s.tenantID }
 
@@ -96,6 +104,12 @@ func TestPrincipalOf(t *testing.T) {
 		{
 			name:        "a named tenant identity is governed",
 			session:     newFakeSession("acme", "alice"),
+			wantTenant:  "acme",
+			wantGrantee: "alice@%",
+		},
+		{
+			name:        "a resolved identity is granted by account name, not by its user id",
+			session:     &fakeSession{BaseSession: sqle.NewBaseSession(), tenantID: "acme", identity: resolvedIdentity("acme", 77, "alice")},
 			wantTenant:  "acme",
 			wantGrantee: "alice@%",
 		},

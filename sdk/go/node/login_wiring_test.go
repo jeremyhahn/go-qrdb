@@ -224,15 +224,105 @@ func TestBuildEmbeddedOpts_WiresFunctionalLoginCeremony(t *testing.T) {
 	require.NotEmpty(t, fin.Bearer, "SessionIssuer must mint a bearer")
 	require.NotNil(t, fin.Identity)
 
-	// Identity reflects the qrdb user.User -> auth.Principal mapping.
-	assert.Equal(t, "alice", fin.Identity.Subject)
+	// Identity reflects the qrdb user.User -> auth.Principal mapping; the
+	// Subject is the immutable user id, never the username.
+	assert.Equal(t, auth.UserSubject(u.ID), fin.Identity.Subject)
 	assert.Equal(t, "tenant-a", fin.Identity.TenantID)
 	assert.Equal(t, []string{"admin"}, fin.Identity.Roles)
 
 	// The bearer resolves back to the same identity via the issuer.
 	resolved, err := tp.LoginClient().ResolveIdentity(ctx, fin.Bearer)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", resolved.Subject)
+	assert.Equal(t, auth.UserSubject(u.ID), resolved.Subject)
+}
+
+// recordingHydrator is an embedded.IdentityHydrator that records the
+// principals it hydrates and tries to name the account itself.
+type recordingHydrator struct {
+	principals []auth.Principal
+}
+
+func (h *recordingHydrator) Hydrate(_ context.Context, p *auth.Principal, _ *auth.AuthFactor) (*auth.Identity, error) {
+	h.principals = append(h.principals, *p)
+	return &auth.Identity{Subject: p.Email, TenantID: p.TenantID, Roles: []string{"hydrated"}}, nil
+}
+
+func TestWithIdentityHydrator_SubjectIsUserIDAcrossRenameAndEmailChange(t *testing.T) {
+	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+	hyd := &recordingHydrator{}
+	n := newMemoryNodeWithUser(t,
+		WithSessionIssuer(newFakeSessionIssuer()),
+		WithLoginFactorVerifier(fakePIVVerifier{}),
+		WithIdentityHydrator(hyd),
+	)
+	svcNode := n.Services()
+	u, err := svcNode.User.CreateUser(ctx, &user.CreateUserRequest{
+		Username: "alice",
+		Email:    "alice@example.com",
+		TenantID: "tenant-a",
+	})
+	require.NoError(t, err)
+
+	opts, err := n.buildEmbeddedOpts(svcNode, nil, false, false)
+	require.NoError(t, err)
+	tp, err := embedded.New(svcNode.KV, svcNode.Admin, opts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tp.Close() })
+	credential := []byte("piv-credential-id-rename")
+	require.NoError(t, tp.FactorClient().Enroll(ctx, u.ID, transport.Factor{
+		Type:       transport.FactorTypePIV,
+		Label:      "yubikey",
+		Credential: credential,
+	}))
+
+	login := func() *transport.Identity {
+		t.Helper()
+		begin, err := tp.LoginClient().BeginLogin(ctx, transport.BeginLoginRequest{
+			Type:     transport.FactorTypePIV,
+			TenantID: "tenant-a",
+		})
+		require.NoError(t, err)
+		fin, err := tp.LoginClient().FinishLogin(ctx, transport.FinishLoginRequest{
+			SessionID: begin.SessionID,
+			Type:      transport.FactorTypePIV,
+			LookupKey: credential,
+			Signature: []byte("valid-proof"),
+		})
+		require.NoError(t, err)
+		return fin.Identity
+	}
+
+	want := auth.UserSubject(u.ID)
+	first := login()
+	assert.Equal(t, want, first.Subject, "the Subject is the user id, not the hydrator's choice")
+	assert.Equal(t, []string{"hydrated"}, first.Roles, "the injected hydrator assembles the roles")
+
+	_, err = svcNode.User.UpdateUser(ctx, &user.UpdateUserRequest{ID: u.ID, Username: "alice2"})
+	require.NoError(t, err)
+	assert.Equal(t, want, login().Subject, "a rename must not change the Subject")
+
+	_, err = svcNode.User.UpdateUser(ctx, &user.UpdateUserRequest{ID: u.ID, Email: "alice2@example.com"})
+	require.NoError(t, err)
+	assert.Equal(t, want, login().Subject, "an email change must not change the Subject")
+
+	// The hydrator saw the account's current name and address each time.
+	require.Len(t, hyd.principals, 3)
+	assert.Equal(t, "alice", hyd.principals[0].Username)
+	assert.Equal(t, "alice2", hyd.principals[1].Username)
+	assert.Equal(t, "alice2@example.com", hyd.principals[2].Email)
+}
+
+func TestWithIdentityHydrator_SetsOption(t *testing.T) {
+	hyd := &recordingHydrator{}
+	o := &nodeOptions{}
+	WithIdentityHydrator(hyd)(o)
+	assert.Same(t, hyd, o.identityHydrator)
+}
+
+func TestWithIdentityHydrator_NilIsAccepted(t *testing.T) {
+	o := &nodeOptions{}
+	WithIdentityHydrator(nil)(o)
+	assert.Nil(t, o.identityHydrator)
 }
 
 // TestBuildEmbeddedOpts_LoginUnknownFactor_NotFound proves the resolver is

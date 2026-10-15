@@ -212,6 +212,11 @@ func (m *AuthMiddleware) authenticateOnBehalfBinding(ctx context.Context, peerCe
 			return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
 		}
 		identity.Metadata[auth.HolderProfileMetadataKey] = assertion.HolderProfile
+	} else if userID, ok := auth.ParseUserSubject(assertion.Subject); ok {
+		// The forwarding node resolved the caller to an account, so the
+		// asserted Subject is its immutable user id: re-resolve that account
+		// by id here, never by a name it may since have changed.
+		identity.UserID = userID
 	}
 
 	// No auth method: the SUBJECT presented nothing here. This is a cluster peer

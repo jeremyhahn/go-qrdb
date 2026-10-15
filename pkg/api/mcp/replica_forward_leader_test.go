@@ -106,8 +106,10 @@ func TestReplicaForwardMCP_NotLeaderForwardsToTheLeaderAsTheCaller(t *testing.T)
 	if n := leader.calls.Load(); n != 1 {
 		t.Fatalf("leader removed %d members; want 1", n)
 	}
-	if got, _ := leader.caller.Load().(string); got != "alice" {
-		t.Fatalf("leader authorized %q; want the original caller alice", got)
+	// The caller resolved to alice's account, so the leader sees her user id.
+	want := auth.UserSubject(authtest.UserInBindingTenant)
+	if got, _ := leader.caller.Load().(string); got != want {
+		t.Fatalf("leader authorized %q; want the original caller alice's user id %q", got, want)
 	}
 }
 

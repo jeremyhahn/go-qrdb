@@ -83,7 +83,7 @@ func obRevocationRequest(t *testing.T) *http.Request {
 }
 
 func obStoreUser() *user.User {
-	return &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}
+	return &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}
 }
 
 // TestOnBehalf_RevokedForwarderIsRefused closes a bypass the authenticator's

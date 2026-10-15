@@ -328,7 +328,7 @@ func (m *AuthMiddleware) checkFirstInitCertificate(ctx context.Context, caller *
 		return nil
 	}
 	presented := presentedThumbprint(ctx)
-	if presented == "" || presented != pending.Thumbprint || caller.Subject != pending.Username {
+	if presented == "" || presented != pending.Thumbprint || caller.AccountName() != pending.Username {
 		return &FirstInitCertificateMismatchError{
 			TenantID:            tenantID,
 			Username:            pending.Username,

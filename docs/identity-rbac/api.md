@@ -104,6 +104,13 @@ takes a password, and no password field anywhere in the user model.
 **The tenant comes from the certificate, never from a request field.** That is
 the root of tenant isolation in every other feature.
 
+**The CN selects the account; the Subject is its user id.** Once a request
+resolves to an account, `Identity.Subject` is that account's immutable user id
+in decimal, `Identity.UserID` the same id and `Identity.Username` its current
+name, on every transport. A rename or an email change moves no Subject, so no
+audit actor or other reader keyed on it
+([architecture](architecture.md#the-subject-is-the-user-id)).
+
 `GET /users/by-cert-thumbprint/{thumbprint}` is the lookup that turns a
 presented certificate into a user. Because the thumbprint is over the public
 key, a renewed certificate for the same key resolves to the same user.
@@ -621,8 +628,9 @@ outright rather than deprecated (see the breaking-change notes under
 ## The email login key
 
 `Email` is the **canonical login key**: unique within a tenant, and what every
-layer above qrdb resolves a principal by — the WebAuthn credential handle, the
-session subject, the CLI's user identifier.
+layer above qrdb resolves a principal by — the WebAuthn credential handle and
+the CLI's user identifier. It is not the session Subject: that is the account's
+immutable user id, so changing the email moves no Subject.
 
 - **Tenant-scoped, not global.** The same person may hold an account in two
   tenants, and every login path supplies the tenant alongside the handle.

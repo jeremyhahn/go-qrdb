@@ -64,10 +64,18 @@ func TestCheckFirstInitCertificate_PendingMatch_Allowed(t *testing.T) {
 	}
 
 	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
-	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
-
-	if err := m.checkFirstInitCertificate(mtlsContext(ck), caller, "acme"); err != nil {
-		t.Errorf("expected the onboarded admin's own certificate to be admitted, got: %v", err)
+	// The caller is compared by account name whether or not it resolved: an
+	// unresolved one carries the CN as its Subject, a resolved one its user
+	// id, with the name in Username.
+	resolved := &auth.Identity{TenantID: "acme"}
+	resolved.BindUser(11, "alice")
+	for name, caller := range map[string]*auth.Identity{
+		"unresolved": {Subject: "alice", TenantID: "acme"},
+		"resolved":   resolved,
+	} {
+		if err := m.checkFirstInitCertificate(mtlsContext(ck), caller, "acme"); err != nil {
+			t.Errorf("%s: expected the onboarded admin's own certificate to be admitted, got: %v", name, err)
+		}
 	}
 }
 

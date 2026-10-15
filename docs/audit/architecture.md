@@ -463,6 +463,12 @@ agree on one hash-chained audit trail per tenant exists end to end:
   replica missing it would answer `OpAuditAppend` with a refusal while a
   sibling that has one applies the write: state divergence within one Raft
   group, not a degraded feature.
+- Each state machine gets a `Chain` of its own, built with it; no `Chain` is
+  shared between state machines, even two Raft groups on one node built by
+  the same factory. `Chain.Restore` replaces the whole head table with what
+  one state machine's storage holds, so a shared `Chain` would number one
+  group's events after another's, and opening or recovering either group
+  would overwrite the other's heads.
 
 **Phase 2 (this revision): shipped.** Something now proposes
 `OpAuditAppend`, and a caller can read back what it proposed:

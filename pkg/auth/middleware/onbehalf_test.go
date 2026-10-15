@@ -96,6 +96,12 @@ func obUserCert(t *testing.T) (*x509.Certificate, *ecdsa.PrivateKey) {
 
 const obNodeID = "127.0.0.1:63001"
 
+// obAliceID is the immutable id of the "alice" account the on-behalf tests
+// store, and obAliceSubject the Subject a forwarding node asserts for her.
+const obAliceID = 4100
+
+var obAliceSubject = auth.UserSubject(obAliceID)
+
 // buildOnBehalfRequest constructs a PUT /kv/foo request carrying a TLS state
 // with peerCert as the verified peer, a body, and the on-behalf headers built
 // by signing an assertion (bound to method/path/body) with signKey. The
@@ -150,9 +156,10 @@ func runOnBehalf(t *testing.T, r *http.Request, storeUser *user.User, authz *cap
 func TestOnBehalf_ValidSwapsIdentityAndReResolvesRoles(t *testing.T) {
 	nodeCert, nodeKey := obNodeCert(t, obNodeID)
 	body := []byte(`{"value":"x"}`)
-	r := buildOnBehalfRequest(t, nodeCert, nodeKey, "alice", "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	const aliceID = 42
+	r := buildOnBehalfRequest(t, nodeCert, nodeKey, auth.UserSubject(aliceID), "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
 
-	storeUser := &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"db-admin", "kv-writer"}}
+	storeUser := &user.User{ID: aliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"db-admin", "kv-writer"}}
 	authz := &capturingAuthorizer{}
 
 	rec, ran, seen := runOnBehalf(t, r, storeUser, authz)
@@ -160,17 +167,53 @@ func TestOnBehalf_ValidSwapsIdentityAndReResolvesRoles(t *testing.T) {
 	if !ran {
 		t.Fatalf("handler did not run; status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if seen == nil || seen.Subject != "alice" || seen.TenantID != "acme" {
+	if seen == nil || seen.Subject != auth.UserSubject(aliceID) || seen.UserID != aliceID || seen.Username != "alice" || seen.TenantID != "acme" {
 		t.Fatalf("identity not swapped to caller: %+v", seen)
 	}
 	if len(seen.Roles) != 2 || seen.Roles[0] != "db-admin" || seen.Roles[1] != "kv-writer" {
 		t.Fatalf("roles not re-resolved from store: %+v", seen.Roles)
 	}
-	if authz.seen == nil || authz.seen.Subject != "alice" {
+	if authz.seen == nil || authz.seen.Subject != auth.UserSubject(aliceID) {
 		t.Fatalf("authorizer did not see caller identity: %+v", authz.seen)
 	}
 	if seen.Metadata["auth_source"] != "on_behalf" {
 		t.Fatalf("expected on_behalf auth_source, got %q", seen.Metadata["auth_source"])
+	}
+}
+
+// TestOnBehalf_UserIDSubjectResolvesByIDAcrossRename proves the target node
+// re-resolves a forwarded caller by its immutable id: the account was renamed
+// after the forwarding node asserted it, and the identity is still that
+// account, under its current name.
+func TestOnBehalf_UserIDSubjectResolvesByIDAcrossRename(t *testing.T) {
+	nodeCert, nodeKey := obNodeCert(t, obNodeID)
+	const aliceID = 77
+	r := buildOnBehalfRequest(t, nodeCert, nodeKey, auth.UserSubject(aliceID), "acme", obNodeID, time.Now(), nil, http.MethodGet, "/kv/foo")
+	renamed := &user.User{ID: aliceID, Username: "alice-renamed", TenantID: "acme", Lifecycle: user.LifecycleActive}
+
+	rec, ran, seen := runOnBehalf(t, r, renamed, &capturingAuthorizer{})
+	if !ran {
+		t.Fatalf("handler did not run; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if seen.Subject != auth.UserSubject(aliceID) || seen.Username != "alice-renamed" {
+		t.Fatalf("identity = %+v, want user id %d under its current name", seen, aliceID)
+	}
+}
+
+// TestOnBehalf_UserIDSubjectNamingNoAccountRefused proves a forwarded user id
+// that resolves to no account here is refused, never admitted unenriched
+// under a Subject that every downstream reader takes for an account.
+func TestOnBehalf_UserIDSubjectNamingNoAccountRefused(t *testing.T) {
+	nodeCert, nodeKey := obNodeCert(t, obNodeID)
+	r := buildOnBehalfRequest(t, nodeCert, nodeKey, auth.UserSubject(99), "acme", obNodeID, time.Now(), nil, http.MethodGet, "/kv/foo")
+	other := &user.User{ID: 100, Username: "mallory", TenantID: "acme", Lifecycle: user.LifecycleActive}
+
+	rec, ran, _ := runOnBehalf(t, r, other, &capturingAuthorizer{})
+	if ran {
+		t.Fatal("a user id naming no account was admitted")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 
@@ -180,9 +223,9 @@ func TestOnBehalf_ValidSwapsIdentityAndReResolvesRoles(t *testing.T) {
 func TestOnBehalf_AssertedRolesNeverTrusted(t *testing.T) {
 	nodeCert, nodeKey := obNodeCert(t, obNodeID)
 	body := []byte("x")
-	r := buildOnBehalfRequest(t, nodeCert, nodeKey, "alice", "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	r := buildOnBehalfRequest(t, nodeCert, nodeKey, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
 
-	storeUser := &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: nil}
+	storeUser := &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: nil}
 	authz := &capturingAuthorizer{}
 	_, ran, seen := runOnBehalf(t, r, storeUser, authz)
 	if !ran {
@@ -200,9 +243,9 @@ func TestOnBehalf_ForgedSignatureRejected(t *testing.T) {
 	_, otherKey := obNodeCert(t, obNodeID)
 	body := []byte("x")
 	// Sign with otherKey but present nodeCert.
-	r := buildOnBehalfRequest(t, nodeCert, otherKey, "alice", "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	r := buildOnBehalfRequest(t, nodeCert, otherKey, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran despite forged signature")
 	}
@@ -216,9 +259,9 @@ func TestOnBehalf_ForgedSignatureRejected(t *testing.T) {
 func TestOnBehalf_NonClusterPeerRejected(t *testing.T) {
 	userC, userKey := obUserCert(t)
 	body := []byte("x")
-	r := buildOnBehalfRequest(t, userC, userKey, "alice", "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	r := buildOnBehalfRequest(t, userC, userKey, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran despite non-cluster-peer presenter")
 	}
@@ -233,9 +276,9 @@ func TestOnBehalf_ExpiredRejected(t *testing.T) {
 	nodeCert, nodeKey := obNodeCert(t, obNodeID)
 	body := []byte("x")
 	issued := time.Now().Add(-forward.DefaultTTL - time.Minute)
-	r := buildOnBehalfRequest(t, nodeCert, nodeKey, "alice", "acme", obNodeID, issued, body, http.MethodPut, "/kv/foo")
+	r := buildOnBehalfRequest(t, nodeCert, nodeKey, obAliceSubject, "acme", obNodeID, issued, body, http.MethodPut, "/kv/foo")
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran despite expired assertion")
 	}
@@ -250,13 +293,13 @@ func TestOnBehalf_BodySwapRejected(t *testing.T) {
 	nodeCert, nodeKey := obNodeCert(t, obNodeID)
 	origBody := []byte("original")
 	// Build the request with the assertion bound to origBody...
-	r := buildOnBehalfRequest(t, nodeCert, nodeKey, "alice", "acme", obNodeID, time.Now(), origBody, http.MethodPut, "/kv/foo")
+	r := buildOnBehalfRequest(t, nodeCert, nodeKey, obAliceSubject, "acme", obNodeID, time.Now(), origBody, http.MethodPut, "/kv/foo")
 	// ...but replace the body the leader actually receives.
 	tampered := []byte("tampered")
 	r.Body = io.NopCloser(bytes.NewReader(tampered))
 	r.ContentLength = int64(len(tampered))
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran despite body swap")
 	}
@@ -271,7 +314,7 @@ func TestOnBehalf_PathSwapRejected(t *testing.T) {
 	nodeCert, nodeKey := obNodeCert(t, obNodeID)
 	body := []byte("x")
 	// Sign an assertion bound to /kv/other, then submit it on /kv/foo.
-	a := forward.NewCallerAssertion("alice", "acme", http.MethodPut, "/kv/other", forward.BodyDigest(body), obNodeID, time.Now(), forward.DefaultTTL)
+	a := forward.NewCallerAssertion(obAliceSubject, "acme", http.MethodPut, "/kv/other", forward.BodyDigest(body), obNodeID, time.Now(), forward.DefaultTTL)
 	ab, sb, err := forward.Sign(a, nodeKey)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -281,7 +324,7 @@ func TestOnBehalf_PathSwapRejected(t *testing.T) {
 	r.Header.Set(forward.HeaderSignature, sb)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{nodeCert}}}
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran despite path swap")
 	}
@@ -295,9 +338,9 @@ func TestOnBehalf_PathSwapRejected(t *testing.T) {
 func TestOnBehalf_NoPeerCertRejected(t *testing.T) {
 	_, nodeKey := obNodeCert(t, obNodeID)
 	body := []byte("x")
-	r := buildOnBehalfRequest(t, nil, nodeKey, "alice", "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	r := buildOnBehalfRequest(t, nil, nodeKey, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
 
-	rec, ran, _ := runOnBehalf(t, r, &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
 	if ran {
 		t.Fatal("handler ran despite missing peer cert")
 	}
