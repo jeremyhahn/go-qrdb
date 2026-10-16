@@ -53,8 +53,10 @@ import (
 // node where it happens, a change is pushed: a tenant's Key B CA coming
 // into use (cert.WithNewCAHook), a watched tenant or CA deletion
 // (InvalidationSource) and a trust anchor added or removed all reach
-// Invalidate, which asks Run to rebuild at once, so a tenant onboarded a
-// moment ago logs in as soon as that one rebuild lands. This interval bounds
+// Invalidate, which asks Run to rebuild at once. A tenant create does not
+// wait on that rebuild: it calls Refresh before answering, so the admin
+// certificate it returns is admitted on this node's next handshake. This
+// interval bounds
 // only what no local event announces: a CA first used on ANOTHER node, and
 // a reseal.
 const poolCacheTTL = 2 * time.Second
@@ -353,8 +355,8 @@ func (p *Pool) withdraw(keepKeyBOnly bool) {
 // from a CA-creation hook, a watch callback and the trust-anchor observer,
 // none of which may stall on the store. Calls made before Run gets to the
 // first collapse into one rebuild. Until that rebuild lands the handshake
-// keeps the last snapshot -- a newly onboarded tenant waits one rebuild,
-// and a deleted tenant's CA is still refused at once by VerifyIssuer's
+// keeps the last snapshot -- a caller that must not wait for it calls
+// Refresh instead -- and a deleted tenant's CA is still refused at once by VerifyIssuer's
 // per-request IsTenantIssuer check.
 func (p *Pool) Invalidate() {
 	select {
@@ -384,21 +386,33 @@ func (p *Pool) Run(ctx context.Context) {
 
 // Refresh reads the current trust state from storage, bounded by
 // refreshTimeout, and publishes it as the snapshot the handshake loads.
-// It returns the reason the new snapshot grants no widening, or nil. A
-// setter that ran while the read was in flight wins: the result, built
-// partly from the configuration that setter replaced, is discarded rather
-// than published over the setter's withdrawal, and the setter's own
-// Invalidate has already asked for the rebuild that replaces it.
+// It returns the reason the new snapshot grants no widening, or nil.
 //
-// Run is the caller in production; it is exported for a composer or test
-// that needs one rebuild to have landed before it proceeds.
+// When Refresh returns, the published snapshot was built after the call
+// began. A change that lands while the read is in flight -- a setter's
+// withdrawal, or a concurrent rebuild that read the store earlier --
+// supersedes this rebuild: its result, read partly from the state that
+// change replaced, is discarded rather than published over it, and Refresh
+// builds again from the current state. A rebuild superseded on every
+// attempt until refreshTimeout runs out returns *RefreshSupersededError.
+//
+// Run is the caller in production. A caller that has just changed trust and
+// hands out a certificate depending on it (a tenant create answering with a
+// certificate its new CA signed) calls it so this node's next handshake
+// admits that certificate.
 func (p *Pool) Refresh(ctx context.Context) error {
-	prev := p.snapshot.Load()
 	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
-	snap := p.build(ctx)
-	p.snapshot.CompareAndSwap(prev, snap)
-	return snap.err
+	for {
+		prev := p.snapshot.Load()
+		snap := p.build(ctx)
+		if p.snapshot.CompareAndSwap(prev, snap) {
+			return snap.err
+		}
+		if err := ctx.Err(); err != nil {
+			return &RefreshSupersededError{Err: err}
+		}
+	}
 }
 
 // build reads one snapshot. The static pool, the cluster CA, every tenant's

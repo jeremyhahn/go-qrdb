@@ -15,11 +15,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -401,6 +403,87 @@ func TestOnboardTenant_SettlesFailureFromProvisioning(t *testing.T) {
 	}
 	if ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
 		t.Fatalf("event Outcome = %q, want %q", ev.Outcome, audit.OutcomeFailure+":onboard-failed")
+	}
+}
+
+// TestOnboardTenant_RefreshesClientTrustBeforeAnswering pins that a create
+// rebuilds this node's client trust once the tenant is committed and before
+// it answers, so the handshake that follows the answer admits the admin
+// certificate it carries (run 53320: the next request was refused with
+// "certificate signed by unknown authority").
+func TestOnboardTenant_RefreshesClientTrustBeforeAnswering(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	var calls int
+	var committedAtRefresh bool
+	deps.ClientTrust = ClientTrustRefresherFunc(func(ctx context.Context) error {
+		calls++
+		_, err := deps.Tenants.GetTenant(ctx, "acme")
+		committedAtRefresh = err == nil
+		return nil
+	})
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewTenantOnboardingService(deps)
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("client trust refreshed %d times before the answer, want 1", calls)
+	}
+	if !committedAtRefresh {
+		t.Fatal("client trust refreshed before the tenant was committed, want after")
+	}
+}
+
+// TestOnboardTenant_ClientTrustRefreshFailureStillAnswers pins that a failed
+// rebuild does not turn a committed create into an error: it is logged, and
+// the node's periodic rebuild admits the certificate. A create the
+// provisioning refused rebuilds nothing.
+func TestOnboardTenant_ClientTrustRefreshFailureStillAnswers(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	var calls int
+	deps.ClientTrust = ClientTrustRefresherFunc(func(context.Context) error {
+		calls++
+		return errors.New("rebuild failed")
+	})
+	svc := NewTenantOnboardingService(deps)
+
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "refused", AdminUsername: "admin", AdminCSRPEM: []byte("not a csr"),
+	}); err == nil {
+		t.Fatal("OnboardTenant with an unparsable CSR = nil error, want a provisioning failure")
+	}
+	if calls != 0 {
+		t.Fatalf("a refused create refreshed client trust %d times, want 0", calls)
+	}
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+	})
+	if err != nil {
+		t.Fatalf("OnboardTenant with a failing client-trust rebuild: %v, want the committed tenant", err)
+	}
+	if result.Tenant == nil || result.Tenant.ID != "acme" || len(result.Admin.CertPEM) == 0 {
+		t.Fatalf("result = %+v, want the committed tenant and its admin certificate", result)
+	}
+	if calls != 1 {
+		t.Fatalf("client trust refreshed %d times, want 1", calls)
+	}
+	if out := logs.String(); !strings.Contains(out, "client trust not rebuilt") || !strings.Contains(out, "rebuild failed") {
+		t.Fatalf("log = %q, want the failed rebuild reported", out)
 	}
 }
 

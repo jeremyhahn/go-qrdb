@@ -15,6 +15,7 @@
 package clienttrust
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -74,6 +75,16 @@ func TestKeyBUnavailableError_Error(t *testing.T) {
 			t.Errorf("expected errors.Is to reach the underlying cause via Unwrap")
 		}
 	})
+}
+
+func TestRefreshSupersededError_Error(t *testing.T) {
+	err := &RefreshSupersededError{Err: context.DeadlineExceeded}
+	if !strings.Contains(err.Error(), "superseded") || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Errorf("expected the cause and the supersession in the message, got %q", err.Error())
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected errors.Is to reach the bound that ran out via Unwrap")
+	}
 }
 
 func TestIssuerNotTrustedError_Error(t *testing.T) {

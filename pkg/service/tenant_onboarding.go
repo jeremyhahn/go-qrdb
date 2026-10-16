@@ -121,7 +121,21 @@ type TenantOnboardingService struct {
 	audit       audit.AuditLogger
 	auditPolicy audit.FailurePolicy
 	barrierPins bootstrap.FirstAdminPinner
+	clientTrust ClientTrustRefresher
 }
+
+// ClientTrustRefresher rebuilds the client-certificate trust this node's
+// handshakes check, returning once the rebuilt trust is the one they read.
+// clienttrust.Pool.Refresh is the implementation.
+type ClientTrustRefresher interface {
+	Refresh(ctx context.Context) error
+}
+
+// ClientTrustRefresherFunc adapts a function to ClientTrustRefresher.
+type ClientTrustRefresherFunc func(ctx context.Context) error
+
+// Refresh calls f.
+func (f ClientTrustRefresherFunc) Refresh(ctx context.Context) error { return f(ctx) }
 
 // Compile-time interface check.
 var _ TenantOnboardingServicer = (*TenantOnboardingService)(nil)
@@ -150,6 +164,12 @@ type TenantOnboardingDeps struct {
 	// pins nothing, which is right only for a node whose tenant service claims
 	// no init statements.
 	BarrierAnchors bootstrap.FirstAdminPinner
+	// ClientTrust rebuilds this node's client-certificate trust after a
+	// create commits and before it answers, so the admin certificate the
+	// answer carries -- signed by the tenant's new login CA -- is admitted
+	// on this node's next handshake. Nil skips the rebuild, which is right
+	// only for a node whose handshakes do not check client certificates.
+	ClientTrust ClientTrustRefresher
 }
 
 // NewTenantOnboardingService returns the production TenantOnboardingServicer.
@@ -166,6 +186,7 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		audit:       deps.Audit,
 		auditPolicy: deps.AuditPolicy,
 		barrierPins: deps.BarrierAnchors,
+		clientTrust: deps.ClientTrust,
 	}
 }
 
@@ -269,6 +290,7 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		// finished by the tenant's next barrier unseal or status read.
 		go s.completeAdmin(context.WithoutCancel(ctx), req.ID, deps)
 	}
+	s.refreshClientTrust(ctx, req.ID)
 	settle(nil)
 	// The record the create committed is the answer: reading it back would
 	// spend the request's budget on one more read and, failing, report a
@@ -284,6 +306,21 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 			AwaitsBarrierInit: result.AdminAwaitsBarrierInit,
 		},
 	}, nil
+}
+
+// refreshClientTrust rebuilds this node's client-certificate trust so the
+// handshake that follows the answer admits the admin certificate it carries.
+// The tenant is committed whatever this returns, so a failed rebuild is
+// logged, not reported: the node's periodic rebuild admits the certificate
+// within its interval.
+func (s *TenantOnboardingService) refreshClientTrust(ctx context.Context, tenantID string) {
+	if s.clientTrust == nil {
+		return
+	}
+	if err := s.clientTrust.Refresh(ctx); err != nil {
+		s.logger.Warn("tenant onboarding: client trust not rebuilt before answering; the periodic rebuild will admit the admin certificate",
+			"tenant", tenantID, "error", err)
+	}
 }
 
 // completeAdmin creates the account of a tenant admin whose barrier was

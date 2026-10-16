@@ -25,14 +25,27 @@ import (
 // composer's client-auth trust pool -- the TLS-layer widening and the
 // issuer-tenant binding at once -- and subscribes the pool's cache
 // invalidation to anchor changes, so an anchor added or withdrawn on this
-// node is reflected on the very next handshake. A nil pool, or a node built
-// without a certificate provider (no anchors), is a no-op.
+// node is reflected on the very next handshake. It also hands the pool to
+// TenantOnboarding, which rebuilds it before answering a create. A nil pool,
+// or a node built without a certificate provider (no anchors), is a no-op.
 func (n *Node) WireTrustAnchors(pool *clienttrust.Pool) {
 	if pool == nil || n.TrustAnchors == nil {
 		return
 	}
 	pool.SetTrustAnchors(n.TrustAnchors, clienttrust.TenantListerFunc(n.trustAnchorTenants))
 	n.ClientTrustChanges.Subscribe(pool.Invalidate)
+	n.clientTrust.Store(pool)
+}
+
+// refreshClientTrust rebuilds the trust pool WireTrustAnchors wired, returning
+// once its next handshake reads the rebuilt trust. Before a pool is wired it
+// has nothing to rebuild and returns nil.
+func (n *Node) refreshClientTrust(ctx context.Context) error {
+	pool := n.clientTrust.Load()
+	if pool == nil {
+		return nil
+	}
+	return pool.Refresh(ctx)
 }
 
 // trustAnchorTenants lists every tenant that may hold trust anchors: each

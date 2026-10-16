@@ -229,6 +229,14 @@ refusal for a few seconds.
 the tenant back after committing it, so a slow read cannot turn a committed
 create into an error.
 
+**The answering node already trusts the returned certificate.** A CSR-issued
+admin certificate is signed by the tenant's new login CA. Before answering, the
+create rebuilds the answering node's client-certificate trust, so the next TLS
+handshake on that node admits the certificate. Other nodes pick up the new CA
+within their 2-second rebuild interval. If the rebuild fails, the failure is
+logged and the create still answers; the next periodic rebuild admits the
+certificate.
+
 **One unit.** Every input that can be refused — the anchors, the CSR, the
 certificate's chain and identity — is judged before anything is written, so a
 refusal leaves no tenant and the id stays usable. A failure after the first

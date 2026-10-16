@@ -266,3 +266,50 @@ func TestWireTrustAnchors_WiresPoolAndSubscribesInvalidation(t *testing.T) {
 		t.Fatal("expected a widened config")
 	}
 }
+
+// TestNode_RefreshClientTrust_RebuildsTheWiredPool pins the seam
+// TenantOnboarding answers through: once WireTrustAnchors has run,
+// refreshClientTrust returns only after the pool's next handshake reads trust
+// that includes a CA added a moment ago -- with no Run loop to rebuild it.
+func TestNode_RefreshClientTrust_RebuildsTheWiredPool(t *testing.T) {
+	ctx := context.Background()
+	reg := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+	n := &Node{
+		TrustAnchors:       reg,
+		ClientTrustChanges: &trustanchor.Changes{},
+		Tenant:             listTenantsStub{infos: []tenant.TenantInfo{{ID: "tenant-a"}}},
+	}
+	pool := clienttrust.New()
+	pool.Wire(&tls.Config{ClientCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS13})
+	pool.SetKeyBProvider(emptyKeyBProvider{})
+	n.WireTrustAnchors(pool)
+
+	anchorPEM, anchorCert := genSelfSignedCA(t)
+	if _, err := reg.Add(ctx, "tenant-a", anchorPEM); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(ctx, anchorCert, nil); err == nil {
+		t.Fatal("anchor trusted before any rebuild; the test cannot tell a refresh from none")
+	}
+	if err := n.refreshClientTrust(ctx); err != nil {
+		t.Fatalf("refreshClientTrust: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(ctx, anchorCert, nil); err != nil {
+		t.Fatalf("anchor added before refreshClientTrust not trusted after it returned: %v", err)
+	}
+}
+
+// TestNode_RefreshClientTrust_NothingWiredIsNil pins that a node whose
+// WireTrustAnchors never wired a pool -- none given, or no anchor registry --
+// has no client trust to rebuild, and says so with nil.
+func TestNode_RefreshClientTrust_NothingWiredIsNil(t *testing.T) {
+	ctx := context.Background()
+	if err := (&Node{}).refreshClientTrust(ctx); err != nil {
+		t.Fatalf("refreshClientTrust with no pool: %v, want nil", err)
+	}
+	n := &Node{} // TrustAnchors deliberately nil
+	n.WireTrustAnchors(clienttrust.New())
+	if err := n.refreshClientTrust(ctx); err != nil {
+		t.Fatalf("refreshClientTrust after a no-op wiring: %v, want nil", err)
+	}
+}

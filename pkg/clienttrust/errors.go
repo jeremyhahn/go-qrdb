@@ -72,6 +72,23 @@ func (e *KeyBUnavailableError) Unwrap() error {
 	return e.Err
 }
 
+// RefreshSupersededError reports a Refresh whose every rebuild was
+// superseded by a concurrent change before its bound ran out, so no snapshot
+// built after the call began was published.
+type RefreshSupersededError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *RefreshSupersededError) Error() string {
+	return "clienttrust: every rebuild was superseded before it could be published: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *RefreshSupersededError) Unwrap() error {
+	return e.Err
+}
+
 // IssuerNotTrustedError reports that a certificate's issuer is neither the
 // cluster CA (Key A) nor tenantID's registered Key B CA.
 type IssuerNotTrustedError struct {

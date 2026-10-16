@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -93,11 +94,37 @@ func TestBuildEmbeddedOpts_NoUser_SkipsLoginWiring(t *testing.T) {
 	// must not error.
 	n := &Node{}
 	svcNode := newMemoryNodeWithUser(t).Services()
-	// Force the User accessor to nil for this path.
-	noUser := *svcNode
-	noUser.User = nil
+	// The same services with no User. A lifecycle.Node is never copied (it
+	// owns its closers and the client trust pool slot), so this one is
+	// assembled from the running node's handles instead.
+	noUser := &lifecycle.Node{
+		KV:               svcNode.KV,
+		Admin:            svcNode.Admin,
+		MVCC:             svcNode.MVCC,
+		Batch:            svcNode.Batch,
+		Transaction:      svcNode.Transaction,
+		Lease:            svcNode.Lease,
+		Index:            svcNode.Index,
+		TimeSeries:       svcNode.TimeSeries,
+		Watch:            svcNode.Watch,
+		Lock:             svcNode.Lock,
+		Database:         svcNode.Database,
+		Vector:           svcNode.Vector,
+		Backup:           svcNode.Backup,
+		Embedding:        svcNode.Embedding,
+		RAG:              svcNode.RAG,
+		Role:             svcNode.Role,
+		Barrier:          svcNode.Barrier,
+		Tenant:           svcNode.Tenant,
+		CertProv:         svcNode.CertProv,
+		ReplicatedAudit:  svcNode.ReplicatedAudit,
+		CertEnrollment:   svcNode.CertEnrollment,
+		TenantOnboarding: svcNode.TenantOnboarding,
+		Invitations:      svcNode.Invitations,
+		DEK:              svcNode.DEK,
+	}
 
-	opts, err := n.buildEmbeddedOpts(&noUser, nil, false, false)
+	opts, err := n.buildEmbeddedOpts(noUser, nil, false, false)
 	require.NoError(t, err)
 	require.NotEmpty(t, opts)
 

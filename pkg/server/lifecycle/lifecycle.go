@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -37,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
@@ -490,7 +492,10 @@ type Infra struct {
 }
 
 // Node aggregates all services built by BuildServices and provides a
-// coordinated Stop method that closes resources in reverse order.
+// coordinated Stop method that closes resources in reverse order. A Node
+// must not be copied: it owns its closers and the client trust pool
+// WireTrustAnchors wired, and a copy would share the first and detach the
+// second.
 type Node struct {
 	// Core data-plane services.
 	KV          service.KVServicer
@@ -577,6 +582,12 @@ type Node struct {
 	// subscribes its trust pool's Invalidate, so the next handshake sees the
 	// change instead of waiting out the pool's cache.
 	ClientTrustChanges *trustanchor.Changes
+
+	// clientTrust is the trust pool WireTrustAnchors wired, which
+	// TenantOnboarding rebuilds before answering a create so this node's
+	// next handshake admits the admin certificate the answer carries. Nil
+	// until wired; a node with no pool has no client trust to rebuild.
+	clientTrust atomic.Pointer[clienttrust.Pool]
 
 	// CertTargets is the certificate target guard every verb that binds a key
 	// applies: certs:issue and certs:enroll through CertEnrollment (internally,
@@ -1679,6 +1690,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
+		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
 	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.

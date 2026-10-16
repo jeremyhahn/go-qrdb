@@ -1459,6 +1459,110 @@ func TestPool_Refresh_SetDuringFlightWins(t *testing.T) {
 	}
 }
 
+// steppedCertProvider hands every CACertPEMs call to the test, which answers
+// it, so a test decides what each rebuild reads and when its read returns.
+type steppedCertProvider struct {
+	*fakeCertProvider
+	reads chan chan [][]byte
+}
+
+func (s *steppedCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) {
+	reply := make(chan [][]byte)
+	select {
+	case s.reads <- reply:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case pems := <-reply:
+		return pems, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestPool_Refresh_PublishesARebuildThatBeganAfterTheCall pins what a
+// caller of Refresh relies on (a tenant create answering with a certificate
+// its own CA has just signed): when Refresh returns, the snapshot handshakes
+// load was built after the call began. An earlier rebuild that read the
+// store before the CA existed and lands first must not leave the caller's
+// handshake without the CA. Refresh used to discard its own rebuild on
+// losing that swap and return nil, so the next handshake was refused with
+// "certificate signed by unknown authority" (run 53320).
+func TestPool_Refresh_PublishesARebuildThatBeganAfterTheCall(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	keyAPool := x509.NewCertPool()
+	keyAPool.AddCert(keyACert)
+	cfg := baseConfig(t, keyAPool)
+
+	keyBPEM, keyBCert := genCAPEM(t)
+	prov := &steppedCertProvider{fakeCertProvider: &fakeCertProvider{}, reads: make(chan chan [][]byte)}
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(prov)
+
+	// An earlier rebuild is inside its store read when the CA comes into use.
+	earlierDone := make(chan error, 1)
+	go func() { earlierDone <- pool.Refresh(context.Background()) }()
+	earlier := <-prov.reads
+
+	// The caller's Refresh begins after the CA is in use, so its read sees it.
+	laterDone := make(chan error, 1)
+	go func() { laterDone <- pool.Refresh(context.Background()) }()
+	later := <-prov.reads
+
+	// The earlier rebuild lands first, with what it read before the CA...
+	earlier <- nil
+	if err := <-earlierDone; err != nil {
+		t.Fatalf("earlier Refresh: %v", err)
+	}
+	// ... so the caller's rebuild loses the swap. Every read it makes from
+	// here on sees the CA.
+	later <- [][]byte{keyBPEM}
+	for {
+		select {
+		case reply := <-prov.reads:
+			reply <- [][]byte{keyBPEM}
+			continue
+		case err := <-laterDone:
+			if err != nil {
+				t.Fatalf("Refresh: %v", err)
+			}
+		}
+		break
+	}
+
+	assertTrustedByConnection(t, getConfigForClient(t, cfg), keyBCert)
+}
+
+// TestPool_Refresh_SupersededUntilItsBoundRunsOut proves a Refresh whose
+// rebuild a concurrent change superseded, and whose bound then ran out,
+// reports that nothing it built was published rather than returning nil.
+func TestPool_Refresh_SupersededUntilItsBoundRunsOut(t *testing.T) {
+	cfg := baseConfig(t, x509.NewCertPool())
+	prov := &steppedCertProvider{fakeCertProvider: &fakeCertProvider{}, reads: make(chan chan [][]byte)}
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(prov)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- pool.Refresh(ctx) }()
+
+	// The rebuild is inside its read when a change lands, and its bound runs
+	// out before the read is ever answered.
+	<-prov.reads
+	pool.SetKeyBProvider(prov)
+	cancel()
+
+	err := <-done
+	var superseded *RefreshSupersededError
+	if !errors.As(err, &superseded) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Refresh error = %v, want *RefreshSupersededError wrapping context.Canceled", err)
+	}
+}
+
 // TestPool_Reseal_DropsKeyBTrust is go-qrdb#591's review (blocker 2) red/
 // green proof: docs/certificate-authority/architecture.md promises that a
 // runtime reseal makes the dynamic trust pool drop Key B at the next
