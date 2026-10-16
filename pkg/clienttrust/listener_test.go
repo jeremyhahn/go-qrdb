@@ -17,6 +17,8 @@ package clienttrust
 import (
 	"crypto/tls"
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 )
 
@@ -74,8 +76,11 @@ func TestReassertListenerTLS_DynamicHook_ReassertsOnTheHookResult(t *testing.T) 
 	if err != nil {
 		t.Fatalf("wrapped GetConfigForClient: %v", err)
 	}
-	if got != keyBPool {
-		t.Fatal("expected the wrapped hook to return the SAME config object the dynamic hook produced")
+	if got == keyBPool {
+		t.Fatal("the wrapped hook returned the dynamic hook's own config: reasserting on it writes into a config other listeners serve (go-qrdb#741)")
+	}
+	if keyBPool.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("the dynamic hook's own config was mutated: MinVersion = %v, want TLS 1.2 untouched", keyBPool.MinVersion)
 	}
 	if got.MinVersion != tls.VersionTLS13 {
 		t.Fatalf("the config returned by the dynamic hook was NOT reasserted: MinVersion = %v, want TLS 1.3 -- this is the TLS 1.2 downgrade go-qrdb#560 review B2-3 measured", got.MinVersion)
@@ -112,5 +117,42 @@ func TestReassertListenerTLS_WrappedHookNilConfigPassesThrough(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("expected nil config to pass through unchanged, got %+v", got)
+	}
+}
+
+// TestReassertListenerTLS_ListenersSharingOneHookKeepTheirOwnOverride is the
+// composition an embedded node runs (go-qrdb#741): REST and QUIC wrap one
+// shared config whose hook -- Pool.Wire's, while it grants no widening --
+// returns the SAME config to both. Each listener must get its own override
+// and the shared config must stay as the composer built it. Run under
+// -race: the two listeners' handshakes run concurrently.
+func TestReassertListenerTLS_ListenersSharingOneHookKeepTheirOwnOverride(t *testing.T) {
+	httpProtos := []string{"h2", "http/1.1"}
+	shared := &tls.Config{NextProtos: slices.Clone(httpProtos)}
+	New().Wire(shared)
+
+	rest := ReassertListenerTLS(shared, func(c *tls.Config) { c.MinVersion = tls.VersionTLS13 })
+	quic := ReassertListenerTLS(shared, func(c *tls.Config) { c.NextProtos = []string{"qrdb-quic/3"} })
+
+	const handshakes = 8
+	restGot := make([]*tls.Config, handshakes)
+	quicGot := make([]*tls.Config, handshakes)
+	var wg sync.WaitGroup
+	for i := range handshakes {
+		wg.Go(func() { restGot[i], _ = rest.GetConfigForClient(&tls.ClientHelloInfo{}) })
+		wg.Go(func() { quicGot[i], _ = quic.GetConfigForClient(&tls.ClientHelloInfo{}) })
+	}
+	wg.Wait()
+
+	for i := range handshakes {
+		if got := restGot[i]; got.MinVersion != tls.VersionTLS13 || !slices.Equal(got.NextProtos, httpProtos) {
+			t.Fatalf("REST handshake %d: MinVersion %v, NextProtos %v; want TLS 1.3 and %v", i, got.MinVersion, got.NextProtos, httpProtos)
+		}
+		if got := quicGot[i]; !slices.Equal(got.NextProtos, []string{"qrdb-quic/3"}) {
+			t.Fatalf("QUIC handshake %d: NextProtos %v, want [qrdb-quic/3]", i, got.NextProtos)
+		}
+	}
+	if shared.MinVersion != 0 || !slices.Equal(shared.NextProtos, httpProtos) {
+		t.Fatalf("shared config mutated: MinVersion %v, NextProtos %v", shared.MinVersion, shared.NextProtos)
 	}
 }

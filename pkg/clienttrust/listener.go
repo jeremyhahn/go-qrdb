@@ -31,6 +31,13 @@ import "crypto/tls"
 // downgrade on REST/gRPC/Unix/MCP and an ALPN mismatch on QUIC (go-qrdb#560
 // review, B2-3).
 //
+// The override is applied to a clone of what the hook returns, never to the
+// returned config itself: Pool.Wire's hook hands back the shared config --
+// or a composer's own per-connection config -- unchanged whenever no
+// widening applies, and every listener sharing it would otherwise race to
+// write its own tuning into it, the last writer's ALPN or floor leaking
+// onto every other listener's connections (go-qrdb#741).
+//
 // Every WithTLS that clones a *tls.Config already carrying a dynamic hook
 // must call this instead of cloning and mutating directly.
 func ReassertListenerTLS(base *tls.Config, apply func(*tls.Config)) *tls.Config {
@@ -42,8 +49,9 @@ func ReassertListenerTLS(base *tls.Config, apply func(*tls.Config)) *tls.Config 
 			if err != nil || got == nil {
 				return got, err
 			}
-			apply(got)
-			return got, nil
+			own := got.Clone()
+			apply(own)
+			return own, nil
 		}
 	}
 	return clone

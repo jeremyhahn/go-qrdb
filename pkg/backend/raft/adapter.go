@@ -69,7 +69,8 @@ type HostAdapter struct {
 	inner QuicraftHost
 	gate  *featuregate.Gate
 	// leaderWait bounds how long a request holds while this node knows no
-	// leader for its shard (see throughElection).
+	// leader for its shard, and a read while the leader has not yet committed
+	// in its term (see throughElection and readThroughLeaderChange).
 	leaderWait time.Duration
 }
 
@@ -202,8 +203,8 @@ func (a *HostAdapter) StaleRead(ctx context.Context, shardID uint64, query inter
 
 // SyncRead performs a linearizable read against the state machine, holding
 // through a moment in which this node knows no leader to confirm the read
-// index with, and reissuing a read a leadership change stranded (see
-// readThroughLeaderChange).
+// index with or the leader has not yet committed in its term, and reissuing
+// a read a leadership change stranded (see readThroughLeaderChange).
 func (a *HostAdapter) SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
 	return readThroughLeaderChange(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
 		return a.inner.SyncRead(ctx, shardID, query)
@@ -215,8 +216,9 @@ func (a *HostAdapter) SyncRead(ctx context.Context, shardID uint64, query interf
 // follower) to serve reads without a ReadIndex round-trip to the leader,
 // providing stronger guarantees than StaleRead with lower latency than
 // SyncRead on followers. Like SyncRead it holds through a moment in which
-// this node knows no leader and reissues a read a leadership change stranded
-// (see readThroughLeaderChange).
+// this node knows no leader or the leader has not yet committed in its term,
+// and reissues a read a leadership change stranded (see
+// readThroughLeaderChange).
 func (a *HostAdapter) FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
 	return readThroughLeaderChange(ctx, a.inner, shardID, a.leaderWait, func() (interface{}, error) {
 		return a.inner.FollowerRead(ctx, shardID, query)
@@ -276,11 +278,14 @@ func (a *HostAdapter) GetShardRaftState(shardID uint64) (configChangeIndex uint6
 
 // SyncGetShardMembership returns the shard's committed membership through
 // inner, so a test double answers it too. The read confirms a read index
-// with the leader, so like SyncRead it holds through a moment in which this
-// node knows no leader -- the election a membership change that removed the
-// leader starts (see throughElection).
+// with the leader, so it is held exactly as SyncRead is: through a moment in
+// which this node knows no leader -- the election a membership change that
+// removed the leader starts -- through the new leader's first commit in its
+// term, and reissued when a leadership change strands it (see
+// readThroughLeaderChange). An admin write resolving a member's identity
+// reads it, and must not fail its caller during a normal election.
 func (a *HostAdapter) SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error) {
-	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (*quicraft.Membership, error) {
+	return readThroughLeaderChange(ctx, a.inner, shardID, a.leaderWait, func() (*quicraft.Membership, error) {
 		return a.inner.SyncGetShardMembership(ctx, shardID)
 	})
 }

@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reads wait out a new leader's first commit** (go-qrdb#668). A leader
+  elected a moment ago refuses a ReadIndex with `quicraft.ErrReadIndexNotReady`
+  until its no-op commits in its term; the Raft host adapter now holds a
+  linearizable, follower or committed-membership read (`SyncRead`,
+  `FollowerRead`, `SyncGetShardMembership`) through that refusal within its
+  10 s leader-wait bound and the caller's deadline, as etcd holds a
+  linearizable read through an election. An admin `member add` /
+  `add-observer` right after a membership change that triggered an election
+  no longer fails its member-identity read `UNAVAILABLE`. At the bound the
+  read fails with `*raft.LeaderWaitError` wrapping the sentinel, still
+  `UNAVAILABLE` / REST 503. Proposals are not held for it.
+
 ## [0.49.0-alpha] - 2026-10-15
 
 ### Added

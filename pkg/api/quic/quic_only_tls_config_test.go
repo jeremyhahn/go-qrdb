@@ -60,8 +60,11 @@ func TestQuicOnlyTLSConfig_WrapsDynamicHookAndReassertsALPN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrapped GetConfigForClient: %v", err)
 	}
-	if got != keyBPool {
-		t.Fatal("expected the wrapped hook to return the SAME config the dynamic hook produced (not a fresh copy)")
+	if got == keyBPool {
+		t.Fatal("the wrapped hook returned the dynamic hook's own config: re-pinning its ALPN writes into a config other listeners serve (go-qrdb#741)")
+	}
+	if keyBPool.NextProtos != nil {
+		t.Fatalf("the dynamic hook's own config was mutated: NextProtos = %v", keyBPool.NextProtos)
 	}
 	if len(got.NextProtos) != 1 || got.NextProtos[0] != wire.ProtocolV3 {
 		t.Fatalf("the config returned by the dynamic hook must have its ALPN re-pinned to %s, got %v",

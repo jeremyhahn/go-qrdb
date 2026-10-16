@@ -46,9 +46,11 @@ type leaderReporter interface {
 }
 
 // LeaderWaitError is returned when go-quicraft refused a request because this
-// node knew no leader for ShardID, and it still knew none after Waited. Err is
-// the last refusal, a *quicraft.NotLeaderError, so a caller that classifies
-// the not-leader condition with errors.As still finds it.
+// node knew no leader for ShardID, or, for a read, because the leader had not
+// yet committed an entry in its term, and it was still refused after Waited.
+// Err is the last refusal, a *quicraft.NotLeaderError or
+// quicraft.ErrReadIndexNotReady, so a caller that classifies the condition
+// with errors.As or errors.Is still finds it.
 type LeaderWaitError struct {
 	ShardID uint64
 	Waited  time.Duration
@@ -57,14 +59,19 @@ type LeaderWaitError struct {
 
 // Error implements error.
 func (e *LeaderWaitError) Error() string {
-	state := ": no leader known after waiting "
-	if !leaderUnknown(e.Err) {
+	var state string
+	switch {
+	case leaderUnknown(e.Err):
+		state = ": no leader known after waiting "
+	case firstCommitPending(e.Err):
+		state = ": leader had not committed in its term after waiting "
+	default:
 		state = ": still refused as not leader after waiting "
 	}
 	return "raft: shard " + strconv.FormatUint(e.ShardID, 10) + state + e.Waited.String() + ": " + e.Err.Error()
 }
 
-// Unwrap returns the last not-leader refusal.
+// Unwrap returns the last refusal.
 func (e *LeaderWaitError) Unwrap() error { return e.Err }
 
 // leaderUnknown reports whether err is go-quicraft's refusal of a request on
@@ -104,16 +111,38 @@ func throughElection[T any](ctx context.Context, h leaderReporter, shardID uint6
 // caller to forward: a caller with nowhere to forward it, a SQL session in
 // the middle of a transaction, failed the statement instead.
 //
+// A read is also held while the leader has not yet committed an entry in its
+// term: go-quicraft refuses its ReadIndex with quicraft.ErrReadIndexNotReady,
+// on the leader and on a follower that forwarded it, from the moment of the
+// election until the leader's no-op commits, which a healthy shard does within
+// a heartbeat. That is the same election seen one step later, and a
+// linearizable read waits it out, as etcd's does, instead of failing the
+// caller during a normal leadership change (go-qrdb#668).
+//
 // A proposal is never reissued this way. A stranded proposal may already be
 // in the old leader's log and commit there.
 func readThroughLeaderChange[T any](ctx context.Context, h leaderReporter, shardID uint64, timeout time.Duration, op func() (T, error)) (T, error) {
-	return holdWhileRefused(ctx, h, shardID, timeout, notLeader, op)
+	return holdWhileRefused(ctx, h, shardID, timeout, readRefused, op)
+}
+
+// readRefused reports whether err is a refusal readThroughLeaderChange
+// reissues a read through: any not-leader refusal, or a leader whose first
+// commit in its term is still pending.
+func readRefused(err error) bool {
+	return notLeader(err) || firstCommitPending(err)
 }
 
 // notLeader reports whether err is any go-quicraft not-leader refusal.
 func notLeader(err error) bool {
 	var nle *quicraft.NotLeaderError
 	return errors.As(err, &nle)
+}
+
+// firstCommitPending reports whether err is go-quicraft's refusal of a
+// ReadIndex because the shard's leader has not yet committed an entry in its
+// term.
+func firstCommitPending(err error) bool {
+	return errors.Is(err, quicraft.ErrReadIndexNotReady)
 }
 
 // holdWhileRefused runs op and, while refused reports its error, waits for a

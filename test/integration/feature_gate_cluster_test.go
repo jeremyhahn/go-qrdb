@@ -18,8 +18,10 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +30,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
 // gatedDatabase is a database every node provisions from its configuration,
@@ -104,8 +110,8 @@ func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 				time.Sleep(200 * time.Millisecond)
 			}
 			for i, l := range logs {
-				if l.Contains("cannot run in this cluster") || l.Contains("failed to register self") {
-					t.Fatalf("node %d refused or failed its advertisement", i+1)
+				if reason, failed := advertisementFailed(l.String()); failed {
+					t.Fatalf("node %d refused or failed its advertisement: %s", i+1, reason)
 				}
 			}
 
@@ -151,6 +157,91 @@ func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 			}
 		})
 	}
+}
+
+// advertisementFailed reports the line of a node's log that shows it refused
+// to run in the cluster or gave up advertising itself. A registration whose
+// attempt hit its bound is not one: the start retries it, and its progress
+// line names the attempt's error while the node goes on to register.
+func advertisementFailed(log string) (string, bool) {
+	refusal := (&featuregate.UnsupportedFeatureError{Feature: featuregate.GuardedWrites}).Error()
+	for line := range strings.Lines(log) {
+		switch {
+		case strings.Contains(line, refusal), strings.Contains(line, "cannot run in this cluster"):
+			return line, true
+		case strings.Contains(line, `msg="startup read did not succeed before its deadline"`) &&
+			strings.Contains(line, `op="feature gate start"`):
+			return line, true
+		}
+	}
+	return "", false
+}
+
+// TestFeatureGateLog_RetriedRegistrationIsNotAFailure feeds
+// advertisementFailed the lines qrdbd's feature-gate start writes, produced by
+// the startup read it runs under: a registration whose attempt hit its bound
+// is retried and reported, and only a refusal or the deadline fails the boot.
+func TestFeatureGateLog_RetriedRegistrationIsNotAFailure(t *testing.T) {
+	registration := func(succeedAfter int, log *nodeLog) func(context.Context) (struct{}, error) {
+		attempts := 0
+		return func(actx context.Context) (struct{}, error) {
+			attempts++
+			if attempts > succeedAfter {
+				// Succeed only once the progress line has reported the
+				// retried failure, as a node's log shows it.
+				for !log.Contains("failed to register self") {
+					select {
+					case <-actx.Done():
+						return struct{}{}, actx.Err()
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+				return struct{}{}, nil
+			}
+			<-actx.Done()
+			return struct{}{}, &cluster.MembershipCauseError{Reason: "failed to register self", Cause: actx.Err()}
+		}
+	}
+	read := func(budget time.Duration, log *nodeLog) server.StartupRead {
+		return server.StartupRead{
+			Op:             "feature gate start",
+			Budget:         budget,
+			AttemptTimeout: 20 * time.Millisecond,
+			Delay:          time.Millisecond,
+			ReportInterval: 10 * time.Millisecond,
+			Logger:         slog.New(slog.NewTextHandler(log, nil)),
+		}
+	}
+
+	t.Run("retried registration", func(t *testing.T) {
+		log := &nodeLog{}
+		if _, err := server.RunStartupRead(context.Background(), read(time.Minute, log), registration(1, log)); err != nil {
+			t.Fatalf("registration: %v", err)
+		}
+		if !log.Contains("failed to register self") {
+			t.Fatalf("the retried attempt was not reported:\n%s", log)
+		}
+		if reason, failed := advertisementFailed(log.String()); failed {
+			t.Fatalf("a registration retried to success read as a failure: %s", reason)
+		}
+	})
+	t.Run("registration that gave up", func(t *testing.T) {
+		log := &nodeLog{}
+		if _, err := server.RunStartupRead(context.Background(), read(50*time.Millisecond, log), registration(1<<30, log)); err == nil {
+			t.Fatal("a registration that never succeeded returned no error")
+		}
+		if _, failed := advertisementFailed(log.String()); !failed {
+			t.Fatalf("a registration that gave up did not read as a failure:\n%s", log)
+		}
+	})
+	t.Run("refusal", func(t *testing.T) {
+		refusal := (&featuregate.UnsupportedFeatureError{Feature: featuregate.GuardedWrites}).Error()
+		// qrdbd's main prints the error that ended the boot to stderr.
+		line := refusal + "\n"
+		if _, failed := advertisementFailed(line); !failed {
+			t.Fatalf("a refusal did not read as a failure: %s", line)
+		}
+	})
 }
 
 // waitStatus polls do until it returns want or the deadline passes.

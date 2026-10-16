@@ -840,7 +840,11 @@ cadence is `DefaultMembershipPollInterval`.
   membership read that resolves a new member's identity is a ReadIndex too,
   and holds the same way: a membership change that removed the leader starts
   an election, and the next `member add` or `add-observer` waits it out
-  instead of failing to read the membership. The refusal comes
+  instead of failing to read the membership. A newly elected leader also
+  refuses a ReadIndex until its first entry commits in its term
+  (`quicraft.ErrReadIndexNotReady`); a read — linearizable, follower or
+  membership — waits for that commit too, as etcd holds a linearizable read
+  through an election, while a proposal is not held for it. The refusal comes
   before anything is proposed, so the retry cannot apply a command twice.
   The hold is bounded by 10 seconds and by the caller's deadline; at the
   bound the request fails with `*raft.LeaderWaitError`, which wraps the
