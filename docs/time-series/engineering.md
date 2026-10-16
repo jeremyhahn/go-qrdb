@@ -5,7 +5,7 @@
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
+> are approved and not implemented. OD-n refers to that document's ruled decisions.
 
 > **Build-tag gated: `qrdb_ts`** (`WITH_QRDB_TS=1`). Without it the CLI verb
 > group and transport handlers are compiled out and `pkg/capabilities` does not

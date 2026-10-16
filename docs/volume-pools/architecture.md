@@ -1,10 +1,11 @@
 # Volume Pools — Architecture
 
-> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
-> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first. Decisions
+> D1-D10 are ruled; the Phase 1 build is in progress.
 >
 > This folder is the requirements contract for named volume pools. Every
-> decision below is ruled; see [Decisions](#decisions-ruled-2026-10-04).
+> decision below is ruled; see [Decisions](#decisions-ruled).
 > Tenant moves (decision D5) are **Phase 2** -- everything else in this
 > folder is Phase 1. An identifier marked *(new)* did not exist in the tree
 > when this was last verified; check the code before assuming it still
@@ -246,7 +247,7 @@ not built now.
 Every node that later serves the tenant joins the assignment's `path` onto its
 own `fast` mount, after checking that the result is strictly inside the mount.
 
-**Boot (decision D10, ruled 2026-10-06).** Each node opens every pool its
+**Boot (decision D10).** Each node opens every pool its
 configuration maps, through that pool's provider, before it restores
 tenants. Opening a `Lockable` volume maps the device without unlocking it --
 that only happens on unseal, see "Encrypted volumes and the cluster seal"
@@ -429,9 +430,9 @@ time of the largest serving node.
   path, or a slot index from the interim fix, is refused and re-created, under
   the standing no-backward-compatibility ruling. See decision D9.
 
-## Decisions (ruled 2026-10-04)
+## Decisions (ruled)
 
-Every decision below was ruled by the owner on 2026-10-04. D1-D5, D7, D8 and
+Every decision below is ruled. D1-D5, D7, D8 and
 D9 are the recommendation each item already gave, approved as written. D6 is
 replaced by the design in
 ["Encrypted volumes and the cluster seal"](#encrypted-volumes-and-the-cluster-seal-decision-d6)
@@ -481,7 +482,7 @@ above, which this entry only summarizes.
   them like path records** -- the tenant is deleted and re-created --
   **per the no-backward-compatibility ruling.** Approved as written.
 - **D10. Boot behavior when a volume or volume pool cannot be opened
-  (ruled 2026-10-06): fail loudly by default, with an explicit opt-in to
+  (ruled): fail loudly by default, with an explicit opt-in to
   the old degraded-continue behavior.** Verbatim: "volumes that are
   inaccessible at boot should fail loudly. we should offer a flag that
   allows the admin to ignore the error and continue starting the

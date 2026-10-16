@@ -16,11 +16,12 @@ limitations under the License.
 
 # Cluster Verification — Engineering
 
-> **Status: DRAFT — requirements for new work; build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first. The build is
+> in progress: this folder is the requirement it builds against.
 >
 > The design is [architecture.md](architecture.md), whose
-> [Owner decisions](architecture.md#owner-decisions) settle the checker, the
+> [Decisions](architecture.md#decisions) settle the checker, the
 > container, the seal types, the soak length and the read mode.
 >
 > Corrected 2026-10-12, when the soak landed, to the code as built: the

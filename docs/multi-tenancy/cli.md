@@ -343,8 +343,7 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation — RULED
 
-> **Status: RULED — partially implemented** (owner rulings 2026-10-01 and
-> 2026-10-02). Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
+> **Status: ruled — partially implemented.** Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 >
 > **Correction (2026-10-05):** `tenant create --admin-username`/`--admin-csr`
 > and `barrier-init` restricted to the bound admin already shipped — see the

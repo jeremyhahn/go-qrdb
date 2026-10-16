@@ -828,3 +828,7 @@ objstore`, behind the existing cluster feature gate.
 Bucket-native fast backup/restore (OS-7's sibling: using Pebble's live-object
 set and ref metadata instead of a full logical scan). No acceptance criteria
 yet — explicitly future work, not blocking phases 1–3.
+
+## Companion documents
+
+- [../01-architecture.md](../01-architecture.md) — the system architecture overview, including the storage layer.

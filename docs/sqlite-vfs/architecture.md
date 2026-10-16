@@ -1,6 +1,8 @@
-# SQLite VFS Backend (Future Enhancement)
+# SQLite VFS Backend — Architecture
 
-> **Status: PROPOSED — not scheduled, not implemented.** · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first. This is a
+> future feature: not scheduled, not implemented.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -18,20 +20,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-**Status: PROPOSED — not scheduled, not implemented.**
-
-This document records the design for making qrdb a **drop-in storage backend
+This document is the design for making qrdb a **drop-in storage backend
 for applications that already use SQLite**: the application keeps running the
 stock SQLite engine, with its own schema, DDL, triggers, and query plans, and
 qrdb replaces the local file underneath it with a replicated, encrypted,
 multi-tenant page store.
 
-## History and motivation
+## Problem
 
-qrdb previously shipped `cmd/qrdb-sqlite`, a virtual-table gateway that
-exposed qrdb's KV, entity, collection, timeseries and vector planes as seven
-SQLite virtual tables behind an interactive shell. It was removed on
-2026-08-17 because it solved the inverse of the intended problem:
+A virtual-table gateway that exposes qrdb's KV, entity, collection,
+timeseries and vector planes as SQLite virtual tables behind an interactive
+shell is not this feature, and qrdb does not ship one: it solves the inverse of the intended problem:
 
 - The gateway let a person run SQLite *syntax* **over** qrdb data.
 - The requirement was to run qrdb **under** existing SQLite *applications* —

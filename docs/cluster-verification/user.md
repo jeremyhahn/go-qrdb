@@ -16,8 +16,9 @@ limitations under the License.
 
 # Cluster Verification — User Guide
 
-> **Status: DRAFT — requirements for new work; build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first. The build is
+> in progress: this folder is the requirement it builds against.
 >
 > Updated 2026-10-14: the list of ports `qrdbd` listens on moved here from
 > the clustering guide, as the pinned port set a test now checks. Corrected

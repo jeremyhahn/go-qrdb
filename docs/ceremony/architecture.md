@@ -247,3 +247,7 @@ issuance and binding; see
 - **No share recovery.** A lost envelope is replaced by a rekey.
 - **No hardware factors or threshold ceremony of its own.**
 - **No `qrdb ceremony init` verb.** The root `qrdb init` is the entry point.
+
+## Companion documents
+
+- [../ceremony-sdk.md](../ceremony-sdk.md) — the ceremony from the SDK side.

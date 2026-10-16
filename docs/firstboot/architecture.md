@@ -27,7 +27,7 @@ Orchestration entry points live in `pkg/bootstrap`:
 System-level admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thumbprint binding); there are no invite tokens at the system level. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
 
 - **System bootstrap** — system barrier + system tenant + system admin + admin-mTLS.
-- **Provision tenant** — minimal control-plane tenant record + tenant-admin enrollment per `AdminEnrollmentMode` (no tenant barrier key held by the system admin): `cert` (default) enrolls the tenant-admin cert during provisioning; `deferred` creates the tenant admin PENDING with no credential bound, returning the user + role ids so the composing host (go-quicbaas) can attach a single-use invitation (`pkg/invite` `TenantInviteStore`) whose redemption binds the admin's first auth factor and activates the account (owner ruling 2026-09-01, company doc 08 §"Admin enrollment").
+- **Provision tenant** — minimal control-plane tenant record + tenant-admin enrollment per `AdminEnrollmentMode` (no tenant barrier key held by the system admin): `cert` (default) enrolls the tenant-admin cert during provisioning; `deferred` creates the tenant admin PENDING with no credential bound, returning the user + role ids so the composing host (go-quicbaas) can attach a single-use invitation (`pkg/invite` `TenantInviteStore`) whose redemption binds the admin's first auth factor and activates the account (company doc 08 §"Admin enrollment").
 - **Initialize tenant barrier** — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
 
 
@@ -520,3 +520,7 @@ performs initialization.
 - **No role customization at bootstrap.** The six built-in roles are fixed;
   additional roles are created afterwards through
   [../identity-rbac/](../identity-rbac/).
+
+## Companion documents
+
+- [../bootstrap.md](../bootstrap.md) — the bootstrap sequence and deterministic role initialization.

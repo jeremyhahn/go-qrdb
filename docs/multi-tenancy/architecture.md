@@ -794,8 +794,7 @@ committed meanwhile is kept rather than refused.
 
 ## Strict tenant isolation — design
 
-> **Status: RULED — partially implemented.** The owner ruled the design
-> decisions on 2026-10-01 and S4 on 2026-10-02; they are listed at the end
+> **Status: ruled — partially implemented.** The design decisions are listed at the end
 > under [Rulings](#rulings). It is the requirements contract for the work
 > that builds it.
 >
@@ -1110,8 +1109,8 @@ configured. Without a pool, tenant creation fails with the existing
 > owner decision is still needed on whether non-strict dedicated tenants keep
 > a shared key permanently (the table's last row) or also get a home store.
 
-> **Decided (owner, 2026-10-08):**
-> [../decisions/tenant-barrier-per-node-init.md](../decisions/tenant-barrier-per-node-init.md).
+> **Decided:**
+> [../barrier-seal/architecture.md](../barrier-seal/architecture.md#per-node-init-design).
 > The table below is unchanged until the work packages that replace it land.
 >
 > - Init is node-local where no client credential is needed, and fanned out by
@@ -1242,7 +1241,7 @@ records are removed.
 
 A node outside a tenant's serving set holds none of the tenant's records and
 none of its keys, by design. It cannot authenticate the tenant's users and must
-not try. The owner ruled (S6) that it relays the client's **still-encrypted**
+not try. It relays (S6) the client's **still-encrypted**
 connection to a serving node. It never redirects, and it never forwards an
 on-behalf assertion.
 
@@ -1298,8 +1297,8 @@ A self-managed tenant's identity lives inside the store that is sealed. The
 credential that opens the store therefore cannot be authorized by anything
 inside it. The design breaks the cycle in three places.
 
-> **Decided (owner, 2026-10-08):**
-> [../decisions/tenant-barrier-per-node-init.md](../decisions/tenant-barrier-per-node-init.md).
+> **Decided:**
+> [../barrier-seal/architecture.md](../barrier-seal/architecture.md#per-node-init-design).
 > The text below is unchanged until the work packages that replace it land.
 > The joiner's verifier over HPKE from a serving peer is decided, and a
 > platform-sealed key stays the tenant's choice under either policy. The
@@ -1531,7 +1530,7 @@ design depends on that record, and constrains it:
   inside it.
 - **Its unseal model must be per node.**
   - Option D1-B there (the unsealing node delivers the root-key context to the
-    other replicas) moves a key between nodes. The owner rule forbids that,
+    other replicas) moves a key between nodes. The rules forbid that,
     and under this design there is no common root key to deliver.
   - "Unseal the cluster" becomes one operator action through **client
     fan-out** instead: the CLI and SDK present the credential, or each
@@ -1625,7 +1624,7 @@ the init statement is written through the existing guarded write.
 
 ### Rulings
 
-Owner rulings of 2026-10-01 and 2026-10-02. **FINAL.**
+**FINAL.**
 
 | # | Question | Ruling |
 |---|---|---|
@@ -1718,8 +1717,7 @@ place of a CSR (phase 3).
 
 - **No self-service registration store.** The platform-wide registration
   policy (`iam.self_service_registration`) is held by the composing host
-  (go-quicbaas) — one canonical record for the whole stack (owner ruling
-  2026-09-01, company doc 08 §"Registration model"). qrdb contributes only
+  (go-quicbaas) — one canonical record for the whole stack (company doc 08 §"Registration model"). qrdb contributes only
   the gating permission vocabulary: `registration_config:read|update` and
   `tenants:approve` are reserved cross-scope permissions granted to
   Admin@system, gating the host's registration-config and pending-tenant

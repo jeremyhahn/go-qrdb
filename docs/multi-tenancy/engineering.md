@@ -831,7 +831,7 @@ IDENTITY's tenant, never the request's target: the role store refuses a role
 outside the context tenant, so a `system` operator's first decision against
 another tenant used to fail whenever the permission cache was cold.
 
-`tenants:delete` stays `ScopeSelf` (owner ruling 2026-09-29): a tenant's Admin
+`tenants:delete` stays `ScopeSelf`: a tenant's Admin
 may delete its own tenant.
 
 The list probe (`tenants:list:cross`) is a capability probe, not an access
@@ -1129,8 +1129,7 @@ provisioning, quota and entitlement changes are audited through
 
 ## Strict isolation — engineering contract (RULED)
 
-> **Status: RULED — partially implemented.** The owner ruled the design on
-> 2026-10-01, and S4 on 2026-10-02. Design and rulings:
+> **Status: ruled — partially implemented.** Design and rulings:
 > [architecture.md](architecture.md#strict-tenant-isolation--design). This
 > section is what an implementation must satisfy, and the
 > [implementation plan](#implementation-plan) it is built in. File and line
@@ -1198,7 +1197,7 @@ Store key:
 
 ### Defects found by the inventory (independent of the policy)
 
-These break rules that are already owner rulings ("no cross-tenant database
+These break rules that are already ruled ("no cross-tenant database
 access for anyone"; "role bindings name the holder's own tenant"). They are fixed
 whatever the isolation policy: items 1, 3, 4 and 5 in phase 1 of the
 [implementation plan](#implementation-plan), item 6 in phase 2, and item 2 in
@@ -1457,9 +1456,9 @@ Every row goes into `pkg/api/errclass` once. No transport maps them itself.
 Cluster-wide behaviour changes ride the `strict-isolation` feature gate from
 phase 5 on.
 
-> **Decided (owner, 2026-10-08):** phase 7's single row is replaced by the
+> **Decided:** phase 7's single row is replaced by the
 > work packages in
-> [../decisions/tenant-barrier-per-node-init.md](../decisions/tenant-barrier-per-node-init.md#work-packages).
+> [../barrier-seal/architecture.md](../barrier-seal/architecture.md#work-packages).
 >
 > - **Isolated tenants, PN-1 to PN-10.** Phase 7's own scope, through one
 >   `BarrierKeyProvider` seam and a signed init statement.

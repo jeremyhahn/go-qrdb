@@ -1,7 +1,8 @@
 # Volume Pools — API
 
-> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
-> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first. Decisions
+> D1-D10 are ruled; the Phase 1 build is in progress.
 >
 > Names follow the existing tenant and database surfaces; they are the
 > contract the implementation builds to. The tenant-move rows (`TenantMove`,

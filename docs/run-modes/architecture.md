@@ -95,8 +95,7 @@ watches and locks are exactly as available as the process. Watch history
 replay is bounded by the store's own revision index, as in raft mode, and a
 watch does not survive a restart in either mode.
 
-**Transactions** have been served in both modes since the owner ruling of
-2026-08-23: consensus is what makes a swap linearizable across *replicas*, and
+**Transactions** are served in both modes: consensus is what makes a swap linearizable across *replicas*, and
 a standalone node is engine-direct, single-process and has none, so its
 compare-and-swap is already linearizable. The etcd-style `Txn` endpoint is
 still refused on a standalone node, as part of etcd compatibility.
@@ -283,3 +282,8 @@ Reaching zero is a package split, one feature at a time. The splits so far:
   raft mode; there is no half-implementation over `LocalBackend`.
 - **No runtime mode switching.** The mode is fixed at composition; changing it
   is a restart.
+
+## Companion documents
+
+- [../run-modes.md](../run-modes.md) — the run-modes requirements statement.
+- [../embedding.md](../embedding.md) — embedding qrdb in a Go program.

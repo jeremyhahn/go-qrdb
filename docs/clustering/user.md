@@ -135,8 +135,7 @@ qrdb admin join-token mint node-7 --ttl 1h
 Copy the printed token into the joining node's `--bootstrap-join-token-file`
 (it is shown exactly once — there is no way to retrieve it again, only to
 mint a fresh one). Minting requires permission `cluster:join_token`, held by
-`Owner` and by the cluster `Admin` role by default (owner ruling,
-2026-10-06) — only the Admin grant survives strict separation of duties,
+`Owner` and by the cluster `Admin` role by default — only the Admin grant survives strict separation of duties,
 which is always on in a FIPS build and voids `Owner`; see
 [../seal/fips140-mode.md](../seal/fips140-mode.md#strict-separation-of-duties-and-clusterjoin_token-under-fips).
 

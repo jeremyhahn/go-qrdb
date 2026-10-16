@@ -285,7 +285,7 @@ not implemented**.
 
 ## Strict isolation — RULED
 
-> **Status: RULED — partially implemented** (owner rulings 2026-10-01).
+> **Status: ruled — partially implemented.**
 > Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 > Correction (2026-10-05): creating a tenant with its first admin, and
 > restricting barrier init to that admin's certificate, already shipped for

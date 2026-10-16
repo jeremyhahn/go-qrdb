@@ -4,7 +4,7 @@
 > Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the multi-model database program in
-> [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
+> [architecture.md](architecture.md); they are approved and not
 > implemented. OD-n refers to that document's ruled decisions.
 
 Command group: `qrdb database` (alias `qrdb db`) — create, inspect, list, drop

@@ -1,12 +1,13 @@
 # Volume Pools — Engineering
 
-> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
-> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first. Decisions
+> D1-D10 are ruled; the Phase 1 build is in progress.
 >
 > Identifiers marked *(new)* did not exist in the tree when this was last
 > verified; this document is the contract they are built to. The design
 > choices it assumes are the decisions ruled in
-> [architecture.md](architecture.md#decisions-ruled-2026-10-04). Tenant moves
+> [architecture.md](architecture.md#decisions-ruled). Tenant moves
 > (decision D5, the `MoveTenant` / `GetMove` surface and the move journal) are
 > **Phase 2** -- everything else here is Phase 1.
 
@@ -48,7 +49,7 @@ type Volume interface {
 
 // Lockable is implemented by a Volume whose provider can lock and unlock the
 // underlying device in step with the node's system barrier (decision D6,
-// ruled 2026-10-04: see architecture.md's "Encrypted volumes and the cluster
+// ruled: see architecture.md's "Encrypted volumes and the cluster
 // seal"). The "dir" provider does not implement it.
 type Lockable interface {
 	// Unlock makes the volume's data readable, given the key the caller

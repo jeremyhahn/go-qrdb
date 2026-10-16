@@ -64,7 +64,7 @@ tenant, and these rules are what keep a tenant's Admin inside its own tenant.
 - **Get, update and delete are authorized against the tenant they name.** A
   tenant's Admin may read, rename and delete its own tenant and no other; the
   platform operator may act on any tenant. Deleting its own tenant is
-  deliberately within a tenant Admin's reach (owner ruling 2026-09-29):
+  deliberately within a tenant Admin's reach:
   `tenants:delete` stays self-scoped.
 - **Update carries only what a tenant may edit on itself.** `tenants:update`
   covers the display name. A request that carries `isolation_type` needs
@@ -437,8 +437,7 @@ leaks to a caller with no access to the tier.
 
 ## Strict isolation — RULED
 
-> **Status: RULED — partially implemented** (owner rulings 2026-10-01 and
-> 2026-10-02). Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
+> **Status: ruled — partially implemented.** Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 > Plan: [engineering.md](engineering.md#implementation-plan). Every row below
 > ships on REST, gRPC, Unix, QUIC, MCP and embedded together, in one change, or
 > not at all.

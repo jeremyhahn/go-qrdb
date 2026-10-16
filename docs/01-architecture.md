@@ -505,8 +505,7 @@ and `node.EnableEncryption()`.
      ordinary `Put` or `Delete` can be reported as succeeding while the value
      is absent after a restart; its contract is "your write is queued".
 
-     The **guarded** verbs are exempt, by the owner ruling of 2026-08-23 on
-     **go-qrdb#94**. `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete`
+     The **guarded** verbs are exempt. `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete`
      persist SYNCHRONOUSLY on the apply path and RETURN a storage failure
      instead of logging it, because "did I win this claim?" and "is my write
      queued?" are different promises and only the first is worth a disk wait. A
@@ -522,8 +521,7 @@ and `node.EnableEncryption()`.
      returning it.
 
      **`Backend` now carries the durable pair itself** — `PutDurable` and
-     `DeleteDurable`, alongside the asynchronous `Put` and `Delete` (owner
-     ruling 2026-09-03, **go-qrdb#216**). The three guarded verbs write through
+     `DeleteDurable`, alongside the asynchronous `Put` and `Delete`. The three guarded verbs write through
      the durable pair; `Put`, `Delete` and the batch verbs keep the
      asynchronous one. Every implementation must answer: the four in-memory
      backends and `DiskBackend` satisfy it by delegating, since their writes

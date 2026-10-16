@@ -272,3 +272,8 @@ entry while its peers applied it.
   [../transactions/](../transactions/).
 - **No hardware key custody.** The barrier defines the seam; hardware arrives by
   composition from go-xkms through go-quicbaas.
+
+## Companion documents
+
+- [../01-architecture.md](../01-architecture.md) — the system architecture overview: layers, request path, state machines.
+- [../05-consistency.md](../05-consistency.md) — consistency levels, linearizable and lease reads, routing.

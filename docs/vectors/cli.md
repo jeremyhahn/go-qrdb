@@ -4,7 +4,7 @@
 > Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" notes describe the vector half of the multi-model database program
-> ([architecture.md](architecture.md)); they are approved by the owner on 2026-09-30 and not
+> ([architecture.md](architecture.md)); they are approved and not
 > implemented. OD-n refers to the ruled decisions in
 > [../databases/architecture.md](../databases/architecture.md).
 

@@ -1,7 +1,8 @@
 # Volume Pools — CLI
 
-> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
-> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first. Decisions
+> D1-D10 are ruled; the Phase 1 build is in progress.
 >
 > Each verb below gets a `CommandDefinition` and runs on every transport
 > through the root `--transport` flag, documented in
@@ -11,7 +12,7 @@
 
 Command group: `qrdb volume-pool`. This is a qrdb-owned control-plane group,
 like `cluster` and `rebalance`. Decision D7 in
-[architecture.md](architecture.md#decisions-ruled-2026-10-04) rules that it
+[architecture.md](architecture.md#decisions-ruled) rules that it
 joins the locked CLI surface; making that addition is a handbook change
 outside this repository and is tracked there, not here. The tenant verbs
 that touch pools, `tenant create --pool` and `tenant move`, are in the
@@ -176,7 +177,7 @@ qrdb tenant move-status acme
 These now print `Pool:` instead of `DataRoot:`, and `Refused:` with the refusal
 code and message when the answering node will not serve the tenant.
 
-## `qrdbd start --allow-degraded-volume-boot` (decision D10, ruled 2026-10-06)
+## `qrdbd start --allow-degraded-volume-boot` (decision D10)
 
 This is the daemon's own flag, `cmd/qrdbd`, not the `qrdb` client -- it
 controls what happens when this node's `storage.volume_pools` names a pool

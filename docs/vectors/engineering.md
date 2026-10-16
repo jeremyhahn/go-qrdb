@@ -5,7 +5,7 @@
 >
 > Sections headed **Target** are the vector half of the multi-model database
 > program — see [architecture.md](architecture.md) and
-> [../databases/engineering.md](../databases/engineering.md). They are approved by the owner on 2026-09-30 and not implemented. OD-n refers to the ruled decisions in
+> [../databases/engineering.md](../databases/engineering.md). They are approved and not implemented. OD-n refers to the ruled decisions in
 > [../databases/architecture.md](../databases/architecture.md).
 
 > **Build-tag gated: `qrdb_vector`** (`WITH_QRDB_VECTOR=1`). GPU paths add

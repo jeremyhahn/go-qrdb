@@ -139,7 +139,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | lease-reads | in progress | Lease reads are documented as linearizable under the 1 % clock-rate bound, not as a stale-read window. | #678, [key-value/](key-value/) |
 | auth-factor-claim | in progress | A conditional factor-add, one-time-claim primitive; a hard delete or rollback reinstate, so a rolled-back add frees its SPKI and credential indexes. | #655, #684, [auth-factors/](auth-factors/) |
 | protected-memory | in progress | Scoped borrow, liveness, constant-time `Equal` and a live empty value, re-exported from `sdk/go`; `RetrieveCredential`'s return type and secret-bearing DTOs; protected key material across the `EncryptionBarrier`; unseal shares out of ordinary heap memory; a zeroizable secret-bytes entity field. | #650, #22, #145, #79, #633, [barrier-seal/](barrier-seal/), [credentials/](credentials/) |
-| fips-140-3 | in progress | The nightly FIPS 140-3 job is green and measured, its placement pending decision; clusterenroll adopts go-truststrap's P-256 handshake to clear the X25519 blocker. | #618, #608, #20, #118, [seal/fips140-mode.md](seal/fips140-mode.md), [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md) |
+| fips-140-3 | in progress | The nightly FIPS 140-3 job is green and measured, its placement pending decision; clusterenroll adopts go-truststrap's P-256 handshake to clear the X25519 blocker. | #618, #608, #20, #118, [seal/fips140-mode.md](seal/fips140-mode.md), [clustering/architecture.md](clustering/architecture.md#member-side-csr-join-key-a-cluster-ca) |
 | documentation | in progress | ROADMAP.md lists every milestone and names the folder behind each item; document banners; a spec-review scrub of docs/ for the release candidate; where the agent spec lives. | #657, #658, #635, #634, [README.md](README.md) |
 | file-backend-encryption | in progress | The file backend encrypts data at rest under the node barrier, as pebble does. | #630, [storage-engines/](storage-engines/) |
 | embedder-seams | in progress | `sdk/go` exposes the seams embedders need: cakey, cert-key factory, volume keys, DAO-from-factory, permission proto, SPIFFE. | #626, [release/extension-seams.md](release/extension-seams.md) |
@@ -159,7 +159,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | multi-model-databases | future | A database is an independently configured multi-model container inside a tenant, with one storage choice that every engine it serves is built over. | [databases/](databases/), [vectors/](vectors/), [time-series/](time-series/) |
 | object-storage-lsm | future | The object-storage LSM segment layout, proposed and pending decision. | [storage-engines/](storage-engines/) |
 | volume-pool-tenant-moves | future | Tenant moves between volume pools, in phase 2. | [volume-pools/](volume-pools/) |
-| sqlite-vfs | future | go-qrdb as a SQLite storage backend through a VFS. | [future/sqlite-vfs.md](future/sqlite-vfs.md) |
+| sqlite-vfs | future | go-qrdb as a SQLite storage backend through a VFS. | [sqlite-vfs/](sqlite-vfs/) |
 
 ## Interfaces
 

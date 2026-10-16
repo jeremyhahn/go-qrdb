@@ -73,10 +73,11 @@ the code, the document is wrong and gets fixed — never the reverse.
 |---|---|
 | [databases](databases/) | multi-database lifecycle, per-database protocol, raft and barrier config |
 | [storage-engines](storage-engines/) | the `Engine` interface, file/memory/pebble/namespace, volume pools; object-storage LSM target design *(ruled, not yet implemented)* |
-| [volume-pools](volume-pools/) | *(proposed, awaiting sign-off)* named volume pools: per-node mounts, tenant placement, entitlements and capacity, management, the `VolumeProvider` seam |
+| [volume-pools](volume-pools/) | *(ruled; Phase 1 build in progress)* named volume pools: per-node mounts, tenant placement, entitlements and capacity, management, the `VolumeProvider` seam |
+| [sqlite-vfs](sqlite-vfs/) | *(future, not implemented)* qrdb as a drop-in SQLite storage backend through a custom VFS; design only, in `architecture.md` |
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
-| [cluster-verification](cluster-verification/) | *(draft, build in progress)* what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
+| [cluster-verification](cluster-verification/) | *(build in progress)* what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [capabilities](capabilities/) | the effective runtime feature profile: build tags, run mode and configuration |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
@@ -115,18 +116,10 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 47 currently-implemented features have a `docs/<feature>/` folder with all
-five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
-[coordination](coordination/) added 2026-09-10;
-[attested-caller](attested-caller/) added 2026-09-25;
-[row-locking](row-locking/) added 2026-09-30; [tenant-dek](tenant-dek/) added
-2026-10-01; [typescript-sdk](typescript-sdk/) and
-[capabilities](capabilities/) added 2026-10-06). The portfolio view is derived,
-not maintained — count `docs/*/architecture.md`.
-
-The count read 34 while the tree held 35 folders: [guarded-swap](guarded-swap/)
-had a complete folder and no row in the tables above. The row is now there, so
-the tables and the derived count agree again.
+**Every currently-implemented feature has a `docs/<feature>/` folder with all
+five files.** The portfolio view is derived, not maintained — count
+`docs/*/architecture.md`. A future feature's folder may hold only its
+`architecture.md` design ([sqlite-vfs](sqlite-vfs/)).
 
 Some legacy documents survive **as companions**, not as duplicates: they carry
 deeper reference material the five-file layout points at rather than restates.
@@ -156,8 +149,6 @@ They are listed below and are linked from the feature folder that owns them.
 | [credentials/secret-resolution.md](credentials/secret-resolution.md) | [credentials](credentials/) |
 | [gui/README.md](gui/README.md) | [desktop-gui](desktop-gui/) |
 | [release/extension-seams.md](release/extension-seams.md) | [release](release/), [key-wrapping](key-wrapping/), [tenant-dek](tenant-dek/) — every composition seam an upstream composer can fill, its option, and the open gaps |
-| [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md) | open questions |
-| [future/sqlite-vfs.md](future/sqlite-vfs.md) | future enhancement — proposed, **not implemented**: qrdb as a drop-in SQLite storage backend via a custom VFS |
 
 ## Testing
 

@@ -177,10 +177,8 @@ replica on that host is automatic.
 
 ## Member-side CSR join (Key A, cluster CA)
 
-This replaces `docs/clusterenroll-noise-gap.md`'s unresolved options with an
-owner ruling: the cluster CA private key (Key A) is **never** distributed to
-a joiner, on any transport — that part of the prior ruling stands — but a
-joiner can still get a leaf certificate without it, because Key A is now
+The cluster CA private key (Key A) is **never** distributed to a joiner, on
+any transport, but a joiner can still get a leaf certificate without it, because Key A is now
 reachable (barrier-encrypted, replicated — see
 [../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey))
 from **any** admitted, unsealed member, not only the first node.
@@ -259,7 +257,7 @@ An admin mints a token through `POST /v1/cluster/join-tokens` (REST) or the
 continues to compile unchanged; a caller type-asserts for the capability.
 Permission `cluster:join_token` is `ScopeCross`: minting a token admits a
 node to the whole cluster, not to one tenant, so it is granted only to the
-cluster **Admin** built-in role (owner ruling, 2026-10-06 — mirroring
+cluster **Admin** built-in role (mirroring
 `clusterAdminPermissions`'s own platform-only precedent) and, through
 `permission.All()` rather than a role grant, `Owner`. Only the Admin grant
 survives strict separation of duties, which is always on in a FIPS build and
@@ -460,12 +458,11 @@ states (`clusterenroll.identityState`): **absent**, a live **reservation**
   confused or tampered client, or a relay that altered one copy of the
   claimed identity but not the other, before either reaches the token.
 
-### Why this does not reopen the shared-CA-key defect
+### The CA key never crosses the wire
 
-`docs/clusterenroll-noise-gap.md` described a transport that silently
-stripped the CA **key** out of a bundle meant to carry it. That mode is
-retired, not repaired: Key A's private half is never serialized onto the
-wire in any direction, by either side, in this design. What crosses the
+There is no shared-CA-key enrollment mode, on any transport: Key A's private
+half is never serialized onto the wire in any direction, by either side, in
+this design. What crosses the
 wire is a certificate (anchor, step 1) and a CSR/leaf pair (steps 2–4),
 exactly the two artifact types trust-bootstrap already treats as public.
 
@@ -473,8 +470,7 @@ exactly the two artifact types trust-bootstrap already treats as public.
 
 `clusterenroll.RoleFile` (`enrollment-role`) is **not** removed. It was
 never purely a function of CA key custody: `StartAdvertiser` has only ever
-served the CA **certificate** (never the key, even before this change — see
-`docs/clusterenroll-noise-gap.md`), so every member already caches `ca.pem`
+served the CA **certificate** (never the key), so every member already caches `ca.pem`
 locally today regardless of where Key A's private half lives. The role file
 still encodes `RoleSingleNode` (no Raft peers at all, unrelated to key
 location) and still decides whether `clusterenroll.Resolve`/`ResolveCA`
@@ -485,7 +481,7 @@ used to leave open, and the next section makes it.
 
 ## Every admitted, unsealed member serves the anchor
 
-**Owner ruling (2026-10-06).** Pinning the anchor-serving role to the one
+Pinning the anchor-serving role to the one
 node that happened to generate the cluster CA was a single point of
 failure: `cmd/qrdbd` registered `/v1/ca/bootstrap` and ran the Noise
 anchor advertiser only where `clusterenroll.Resolve`'s first-node path (or
@@ -863,7 +859,7 @@ already running. A diagnostic must never be what starts a tenant.
   so it runs on the leader -- but a follower forwards the identical request
   rather than answering with its own refusal, the same node-parity contract
   `member add`/`add-observer`/`promote`/`remove` and `rebalance execute`
-  honor (owner ruling 2026-10-06: "all the nodes are equal..."). Every
+  honor: every node is equal. Every
   transport forwards a leader-only refusal -- `*service.NotLeaderError`, or
   ceremony-initialize's `*service.AdminCredentialNotLeaderError` -- through
   that transport's own leader-forwarding path
@@ -933,3 +929,8 @@ already running. A diagnostic must never be what starts a tenant.
 - **No cross-cluster federation.**
 - **No automatic divergence repair.** `admin state-hash` reports divergence;
   replacing a diverged replica's data is an operator decision.
+
+## Companion documents
+
+- [../deployment-multi-node-raft.md](../deployment-multi-node-raft.md) — deploying a multi-node Raft cluster.
+- [../embedding.md](../embedding.md) — embedding qrdb in a Go program.

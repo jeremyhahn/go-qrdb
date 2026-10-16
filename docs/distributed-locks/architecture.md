@@ -190,3 +190,7 @@ capability error rather than serving a lock nothing could expire.
   acquirer retries on release, it does not hold a position in a queue.
 - **No deadlock detection.** Ordering lock acquisition consistently is the
   caller's responsibility.
+
+## Companion documents
+
+- [../18-distributed-locking.md](../18-distributed-locking.md) — the distributed-locking reference in detail.

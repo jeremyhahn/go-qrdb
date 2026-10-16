@@ -16,37 +16,14 @@ limitations under the License.
 
 # Cluster Verification — Architecture
 
-> **Status: DRAFT — requirements for new work; build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first. The build is
+> in progress: this folder is the requirement it builds against.
 >
-> This folder is the requirements contract for the cluster proof harness. The
-> owner decided its five open questions on 2026-10-12; they are recorded in
-> [Owner decisions](#owner-decisions).
+> This folder is the requirements contract for the cluster proof harness. Its
+> design decisions are in [Decisions](#decisions).
 > One question the seal-type decision raised is still open: how a joined
 > node enrolls Shamir share holders ([Seal types](#seal-types)).
->
-> Corrected 2026-10-12, when the soak landed: the ledger is a check over the
-> history, not a second record the clients write; the history holds one
-> record per operation and the nemesis keeps its own event log, joined with
-> it on one clock; E1 is decided on the final read through the client
-> surface, because per-replica state is E3's question; E3 had no replica
-> state source and reported unavailable; the in-CI fault tests were not
-> built yet.
->
-> Corrected 2026-10-12, when the replica-state read landed in clustering: E3
-> is decided on every node's own report of its replicas
-> ([api.md](api.md#replica-state-comparison)).
->
-> Updated 2026-10-12 for container mode: the harness brings the cluster up
-> from the release image and checks the bring-up as BOOT-01
-> ([Bring-up: BOOT-01](#bring-up-boot-01)). It is built and unit-tested; it
-> has not yet run against a container runtime.
->
-> Corrected 2026-10-12, when the seal types were ruled: the proof runs under
-> every seal type the release ships, named by the run rather than declared in
-> the targets file ([Seal types](#seal-types)); the seal-type decision is no
-> longer pending; the in-CI SIGKILL test runs once per seal type a
-> three-node cluster can be initialized under.
 
 Covers what "Raft clustering and storage proven" means for go-qrdb and the
 harness that proves it: the gate, the exit criteria, the workload and its
@@ -300,9 +277,9 @@ the harness, and a check of it needs no cluster.
 | A long-running test inside `make integration-test` | a soak takes hours and needs real fault injection on real hosts; the CI suite carries the short SIGKILL and partition tests instead, and the soak runs on demand |
 | Declare the failover, recovery and soak bounds up front | a number chosen before it is measured is either too loose to mean anything or too tight to pass; it is measured first and ratified second |
 
-## Owner decisions
+## Decisions
 
-The owner decided these on 2026-10-12. Each still sits behind a seam, so a
+Each decision sits behind a seam, so a
 later change is a configuration or a single implementation, not a redesign.
 
 | Decision | Decided | Seam |

@@ -281,7 +281,7 @@ Build tags currently registering capabilities: `qrdb_sql`, `qrdb_mysql`,
 **Served** — the whole per-database data plane:
 
 - KV (get/put/delete/range/scan), batch, secondary indexes
-- Transactions / compare-and-swap (owner ruling 2026-08-23)
+- Transactions / compare-and-swap
 - MVCC revisions and `at-revision` reads, watch, lease, lock
 - Collections and entity CRUD
 - Database management (create/list/delete; engines kv, timeseries, vector)
@@ -496,7 +496,7 @@ and transaction services over `LocalBackend`. Under this requirement **MVCC and
 lease** become raft-mode-only everywhere; standalone compositions stop building
 them. Downstream consumers were notified on their own repositories.
 
-**Transactions did not become raft-only** (owner ruling 2026-08-23), and this
+**Transactions did not become raft-only**, and this
 notice said they did — corrected to match the shipped composition. Standalone
 still serves the transaction / compare-and-swap family on every transport,
 in-process and on the wire; `pkg/server/standalone_gate.go` passes

@@ -5,8 +5,8 @@
 >
 > Sections headed **Target** are the requirements contract for the multi-model
 > database program described in [architecture.md](architecture.md). They are
-> approved by the owner on 2026-09-30 and are not implemented. Every other section describes
-> the shipped code. The owner ruled every decision OD-1 to OD-16 on 2026-09-30;
+> approved and are not implemented. Every other section describes
+> the shipped code. Every decision OD-1 to OD-16 is ruled;
 > they are listed at the end of architecture.md.
 
 ## Exported surface
@@ -1148,7 +1148,7 @@ database resolution instead (Lane 2A), the same way `meta.json` does today.
 - `DatabaseMeta` and `DatabaseConfig` lose `Engine`; `database.EngineType`,
   its constants and `database.InvalidEngineError` are deleted.
 - **Corrected against the original plan above: no migrate-on-open.** The
-  no-backward-compat ruling of 2026-10-02 superseded OD-11's "rewrite in
+  no-backward-compat rule superseded OD-11's "rewrite in
   place" premise for metadata the same way it superseded OD-11 itself (below):
   old systems are obsolete and ship no migration code. `readMeta` decodes
   `meta.json` strictly (`json.Decoder.DisallowUnknownFields`); a file still
@@ -1270,7 +1270,7 @@ the SQL driver DSN, `pkg/sql/provider` engine tables (OD-12, OD-13).
 - Acceptance: a create carrying `engine` behaves per OD-13 on all six
   transports; an old `meta.json` with `engine` is refused as
   `*database.LegacyMetadataError` and the database must be recreated — the
-  no-backward-compat ruling of 2026-10-02 supersedes OD-11's rewrite-on-open
+  no-backward-compat rule supersedes OD-11's rewrite-on-open
   premise, so this replaces the "opens and is rewritten" criterion originally
   written here; the database parity suite passes with no `engine` in any
   fixture; the proto field is reserved.

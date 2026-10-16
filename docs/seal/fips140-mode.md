@@ -47,8 +47,8 @@ level at run time, and the level is `only`, not `on`:
 
 `on` cannot fail on the thing the job exists to catch: a regulated path can use
 prohibited cryptography and the job still reports green. `only` is the setting a
-FedRAMP / PCI DSS v4 / HIPAA gate has to run. Ratified by the owner 2026-08-17
-(handbook `software/conventions/configuration.md` §5).
+FedRAMP / PCI DSS v4 / HIPAA gate has to run (handbook
+`software/conventions/configuration.md` §5).
 
 The job scope is deliberately identical to the ordinary gate — the same
 `make test` **and `make test-sdk`** targets with the same build tags. A FIPS job
@@ -399,8 +399,7 @@ happened because this lane ran both modules by hand, the same gap
 
 ### Strict separation of duties and `cluster:join_token` under FIPS
 
-**Fixed 2026-10-06 (owner ruling); the gap below is history, not the current
-state.** `permission.ClusterJoinToken` is `ScopeCross` and, by design
+**Fixed; the gap below is history, not the current state.** `permission.ClusterJoinToken` is `ScopeCross` and, by design
 (`pkg/permission/cluster_join_token_scope.go`), was carried by **no built-in
 role** -- only the `owner` role, which holds every permission through
 `permission.All()` rather than a role grant, minted a join token by default.

@@ -3,7 +3,7 @@
 > **Status: OPEN — awaiting owner ruling** · Last verified: 2026-10-13
 > Nothing is broken; this records a which-one-is-canonical question.
 
-**Status:** open decision, measured 2026-08-16. Nothing is broken; the two
+**Status:** open decision. Nothing is broken; the two
 implementations return the same rows. This is a "which one is canonical"
 question, not a bug report.
 
@@ -29,7 +29,7 @@ the constructed database and intercepts the lookup. So the stated constraint
 does not actually rule out the dialect-scoped approach — A is a working
 counter-example to it.
 
-## What was measured (2026-08-16)
+## What was measured
 
 `infoschema.Register()` and its import were removed from `pgsql/server.go`,
 leaving only path A:
@@ -44,7 +44,7 @@ With the registration removed, `pkg/sql/infoschema` has **no remaining
 importer anywhere** in `pkg/`, `sdk/`, `cmd/` or `test/`.
 
 The change was then **reverted**: which implementation is canonical is an
-architecture decision, and path B was added on 2026-08-15 by concurrent work
+architecture decision, and path B was added by concurrent work
 whose intent is not recorded anywhere but its own doc comment.
 
 ## The decision

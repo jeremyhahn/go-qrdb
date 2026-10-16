@@ -265,8 +265,7 @@ holds no data for it.
   (`service.CeremonyServiceWithLeaderGate`, see
   [../clustering/architecture.md](../clustering/architecture.md)) -- so a
   follower forwards it to the leader instead of answering 503 for a request
-  the leader would have served (node parity, owner ruling 2026-10-06: "all
-  the nodes are equal..."). The same ruling extends this past REST, and to
+  the leader would have served (node parity: every node is equal). Node parity extends this past REST, and to
   every leader-only refusal rather than the ceremony's alone: on gRPC, QUIC
   and MCP, any unary call or tool a follower refuses with
   `*service.NotLeaderError` -- a membership change (`admin member add`,

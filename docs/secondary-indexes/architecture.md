@@ -456,3 +456,9 @@ plaintext barrier it is stored in plaintext like everything else. See
   [../full-text-search/](../full-text-search/).
 - **No eventual consistency.** Indexes update atomically with the entity, and
   that is a deliberate write-amplification cost.
+
+## Companion documents
+
+- [../08-secondary-indexes.md](../08-secondary-indexes.md) — index types, creation and management in detail.
+- [../16-query-planner.md](../16-query-planner.md) — the query planner and its fluent API.
+- [../17-entity-sql-bridge.md](../17-entity-sql-bridge.md) — the entity-to-SQL bridge.

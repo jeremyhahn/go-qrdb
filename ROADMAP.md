@@ -116,7 +116,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision
 - **volume-pool-tenant-moves** — tenant moves between volume pools, in phase 2 — [docs/volume-pools/](docs/volume-pools/) — open
-- **sqlite-vfs** — go-qrdb as a SQLite backend through a VFS — [docs/future/sqlite-vfs.md](docs/future/sqlite-vfs.md) — open
+- **sqlite-vfs** — go-qrdb as a SQLite backend through a VFS — [docs/sqlite-vfs/](docs/sqlite-vfs/) — open
 
 ## Dependencies
 

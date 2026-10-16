@@ -5,7 +5,7 @@
 >
 > "Target design" sections are the vector half of the multi-model database
 > program in [../databases/architecture.md](../databases/architecture.md). They
-> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
+> are approved and not implemented. OD-n refers to that document's ruled decisions.
 
 > **Build-tag gated.** Available only in builds carrying `qrdb_vector`
 > (`WITH_QRDB_VECTOR=1`). GPU acceleration adds the `gpu` tag.
@@ -275,3 +275,7 @@ not from a vector-specific shard. The `shard_id` field is removed (OD-14).
   means creating a new namespace and re-upserting.
 - **No cross-namespace search.** A search targets exactly one namespace.
 - **No cross-database search.** A namespace belongs to one database (target).
+
+## Companion documents
+
+- [../15-vectors.md](../15-vectors.md) — the vector reference in detail.

@@ -42,8 +42,7 @@ most deployments use.
 
 ## Shape chosen
 
-Two halves, decided by the owner on 2026-09-25 ("derive from limit + ship
-caps"):
+Two halves: derive from the limit, and ship caps.
 
 1. **The binary adapts to the host.** An unconfigured budget is derived from
    the discovered `RLIMIT_MEMLOCK`: the smaller of 64 MiB and the limit less
@@ -189,7 +188,7 @@ falls back to the heartbeat quorum round. [user.md](user.md#keep-replica-clocks-
 states the operator requirement; [../05-consistency.md](../05-consistency.md#3-leaseread)
 the read guarantee.
 
-## Build and CI dev-cache passthrough (2026-10-06)
+## Build and CI dev-cache passthrough
 
 `.devcontainer/Dockerfile`, `.devcontainer/docker-compose.yml` and
 `.github/workflows/ci.yml` take the fleet's `DEVCACHE_*` variables

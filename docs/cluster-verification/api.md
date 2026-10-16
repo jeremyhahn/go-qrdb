@@ -16,8 +16,9 @@ limitations under the License.
 
 # Cluster Verification — API
 
-> **Status: DRAFT — requirements for new work; build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
+> Conflicts with this document are defects. Fix them here first. The build is
+> in progress: this folder is the requirement it builds against.
 >
 > Corrected 2026-10-12, when the soak landed: `cas` is the KV guarded
 > compare-and-swap, not a transaction; the harness does not call Health —

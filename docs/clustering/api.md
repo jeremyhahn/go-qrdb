@@ -381,8 +381,7 @@ the cluster CA it signs with is available only once the barrier is unsealed.
 
 Mints a single-use, identity-bound join token for an admin to hand to a
 joining node. Requires permission `cluster:join_token` (`ScopeCross`,
-platform-only — held by `Owner` and by the cluster `Admin` role, owner
-ruling 2026-10-06; only the Admin grant survives strict separation of
+platform-only — held by `Owner` and by the cluster `Admin` role; only the Admin grant survives strict separation of
 duties, see [../seal/fips140-mode.md](../seal/fips140-mode.md#strict-separation-of-duties-and-clusterjoin_token-under-fips)). Available whenever
 an admin service is configured; reports `501` when member-side CSR join
 itself is not configured on this node (no join-token store bound).

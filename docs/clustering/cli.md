@@ -427,7 +427,7 @@ past its expiry, is refused identically to an unknown token (no
 token-validity oracle). Copy it into the joining node's
 `--bootstrap-join-token-file` (or `--bootstrap-join-token-env`). Minting
 requires permission `cluster:join_token` (`ScopeCross`, platform-only: held
-by `Owner` and by the cluster `Admin` role — owner ruling, 2026-10-06, the
+by `Owner` and by the cluster `Admin` role, the
 grant that keeps this reachable under strict separation of duties, which
 voids `Owner`) — see
 [api.md](api.md#post-v1clusterjoin-tokens). The verb is implemented on all

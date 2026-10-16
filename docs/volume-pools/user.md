@@ -1,7 +1,8 @@
 # Volume Pools — User Guide
 
-> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
-> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first. Decisions
+> D1-D10 are ruled; the Phase 1 build is in progress.
 >
 > Moving a tenant between pools (`qrdb tenant move`) is **Phase 2** (decision
 > D5) and not available in this build; everything else below is Phase 1.

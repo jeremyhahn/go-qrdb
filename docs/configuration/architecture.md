@@ -33,7 +33,7 @@ it is deliberately left as it stands.
 
 ### Infrastructure values are never literals
 
-**Owner ruling, 2026-08-26** (`software/conventions/configuration.md` §3): bind
+Per the handbook's `software/conventions/configuration.md` §3, bind
 hosts, ports and advertised/peer addresses come from the config path above. A
 literal in non-test code is a defect **unless it is the defaults-layer value
 that path overrides** — `config.DefaultServerHost` is such a value, and it is
@@ -86,8 +86,7 @@ All three implement `error`; `LoadError` also implements `Unwrap()` for
 
 ### Unknown keys are refused, not dropped
 
-**Owner ruling, 2026-10-03**: a config carrying a stale or
-misspelled key must fail to load, naming the key. Precedence was already
+A config carrying a stale or misspelled key must fail to load, naming the key. Precedence was already
 **build tag > run mode > config** for *values* config asks for beyond what the
 mode or binary allow (see "Alternatives rejected" below); this closes the
 matching gap for *keys* the schema never defined in the first place, which
