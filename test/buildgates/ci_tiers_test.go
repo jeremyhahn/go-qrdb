@@ -29,8 +29,8 @@ package buildgates
 //     fails the gate there or, if retagged, stops gating pull requests;
 //   - a job missing from the gate's needs or check lines (fail-open);
 //   - a PR-tier job that needs a full-tier one, and so skips with it;
-//   - a pull_request trigger without `labeled`, so adding `ci:full` starts
-//     nothing;
+//   - a pull_request trigger with `labeled`, so every label change starts a
+//     run that cancels the PR's run in progress (#853);
 //   - a pull_request workflow without the ref-keyed cancel-in-progress group
 //     (devops.md §9b), or any workflow regaining a `schedule:` (owner ruling
 //     2026-10-11: no workflow runs on a cron).
@@ -91,8 +91,10 @@ func fullTierJob(name string) bool {
 }
 
 // prTriggerTypes are the pull_request activity types ci.yml must declare.
-// `labeled` is the one that makes adding `ci:full` start a full-tier run.
-var prTriggerTypes = []string{"opened", "synchronize", "reopened", "labeled"}
+// `labeled` is deliberately absent (#853): Gitea maps every label change to it,
+// so each `task:*` or `code-review` change started a run that cancelled the
+// PR's run in progress.
+var prTriggerTypes = []string{"opened", "synchronize", "reopened"}
 
 // checkLine matches one call of ci-gate's check function:
 // `check <job> "$RESULT_X" <tier>`.
@@ -224,8 +226,12 @@ func ciTierProblems(wf ciWorkflow) []string {
 	for _, want := range prTriggerTypes {
 		if !slices.Contains(types, want) {
 			problems = append(problems, "ci.yml's pull_request trigger does not list type "+want+
-				" (has "+strings.Join(types, ",")+"): adding `ci:full` would not start a full-tier run")
+				" (has "+strings.Join(types, ",")+")")
 		}
+	}
+	if slices.Contains(types, "labeled") {
+		problems = append(problems, "ci.yml's pull_request trigger lists type labeled (has "+
+			strings.Join(types, ",")+"): every label change would start a run that cancels the PR's run in progress (#853)")
 	}
 
 	run, env, ok := gateScript(wf)
@@ -364,7 +370,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 jobs:
   build:
@@ -402,7 +408,8 @@ func TestCITierProblems_CanFail(t *testing.T) {
 		return strings.Replace(tierFixture, old, new, 1)
 	}
 	cases := map[string]string{
-		"pull_request without labeled": replace("reopened, labeled]", "reopened]"),
+		"pull_request with labeled":     replace("synchronize, reopened]", "synchronize, reopened, labeled]"),
+		"pull_request without reopened": replace("synchronize, reopened]", "synchronize]"),
 		"full job with a different if": replace("    if: "+fullTierIf+"\n    needs: [build]",
 			"    if: github.event_name == 'push'\n    needs: [build]"),
 		"full job with no if":       replace("    if: "+fullTierIf+"\n    needs: [build]", "    needs: [build]"),

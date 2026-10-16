@@ -4,3 +4,5 @@ self-hosted-runner:
   labels:
     # .github/workflows/batch.yml: the batch runners, used by nothing else.
     - batch
+    # .github/workflows/ci.yml: the reserved 1-CPU runners of the CI Gate job.
+    - ci-gate

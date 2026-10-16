@@ -237,7 +237,7 @@ const featureJobFixture = `on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
 jobs:
   integration-features:
     name: Integration (${{ matrix.feature }})
@@ -297,7 +297,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "teardown of another leg", old: "run: make integration-down-${{ matrix.feature }}", new: "run: make integration-down"},
 		{name: "tests made conditional", old: "      - name: Integration tests (${{ matrix.feature }})\n", new: "      - name: Integration tests (${{ matrix.feature }})\n        if: always()\n"},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
-		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened, labeled]\n", new: ""},
+		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
 		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},
 	}
 	for _, tc := range cases {

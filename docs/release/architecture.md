@@ -140,8 +140,11 @@ always runs the full tier. CI runs in two tiers:
 `ci-gate` is the one required check in both. It fails on any result other
 than `success`, with one exception: a job tagged `full` that was skipped
 because the run did not select the full tier. In a full-tier run a skipped
-job fails it as before. The `labeled` pull-request trigger is what lets
-adding `ci:full` start a full-tier run on the same head.
+job fails it as before. The pull-request trigger has no `labeled` type
+(Gitea maps every label change to it, so each one started a run that
+cancelled the PR's run in progress), so adding `ci:full` starts nothing by
+itself: it takes effect on the PR's next push, an update-branch, or a
+`workflow_dispatch`.
 
 No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together

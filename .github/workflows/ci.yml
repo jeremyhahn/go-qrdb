@@ -34,10 +34,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # `labeled` so that adding `ci:full` starts a full-tier run. Any other
-    # label also starts a run, which re-runs the PR tier on the same commit
-    # and supersedes the run in flight on this ref.
-    types: [opened, synchronize, reopened, labeled]
+    # No `labeled` (#853). Gitea 1.27.1 sends every label add AND remove as
+    # `label_updated`, and its matcher maps that to `labeled` whichever label
+    # moved, with no `github.event.label` in the payload. Each `task:*` or
+    # `code-review` change then started a run that the `concurrency` block let
+    # cancel the PR's run in progress, and a run whose jobs an `if:` skips
+    # would post `skipped` over the real run's `CI / *` contexts, CI Gate
+    # included. An action outside `types` matches nothing: no run, no status.
+    # The cost: adding `ci:full` waits for the PR's next push or update-branch.
+    # An added `ci:full` also takes effect through `workflow_dispatch`.
+    types: [opened, synchronize, reopened]
   workflow_dispatch:                    # manual rerun — Gitea has no rerun API
 
 # Supersession control (#352). A newer head on the same ref cancels the older
@@ -1098,7 +1104,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    runs-on: ubuntu-latest
+    runs-on: ci-gate
     if: always()
     # devops.md §1: one gate for branch protection to require, with every job
     # listed explicitly. `join(needs.*.result)` is a GitHub extension that
