@@ -81,6 +81,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **lease-reads** — lease reads documented as linearizable under the 1 % clock-rate bound — [#678](../../issues/678), PR [#681](../../pulls/681) — in review
 - **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — in review
 - **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — in review
+- **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — in progress
 
 ## Next
 
@@ -97,6 +98,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — open
 - **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — open
+- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — planned
 
 ## Future
 
