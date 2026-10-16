@@ -59,7 +59,7 @@ func TestCLI_BatchImport_CSV(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
@@ -148,7 +148,7 @@ func TestCLI_BatchImport_CSV_Unix(t *testing.T) {
 	}
 	waitForFile(t, node.caPath, 30*time.Second)
 
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 
@@ -188,7 +188,7 @@ func TestCLI_BatchImport_Stdin(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import-stdin] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
@@ -218,7 +218,7 @@ func TestCLI_BatchImportFormats_ListsSupportedFormats(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import-formats] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)

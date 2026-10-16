@@ -57,7 +57,7 @@ func TestWithSealedWindowProbe_AllowlistPasses(t *testing.T) {
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithSealedWindowProbe(probe))
 
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)
+	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal", nil)
 	srv.server.Handler.ServeHTTP(rr, r)
 
 	// The path is allowlisted, so the sealed-window middleware passes

@@ -20,9 +20,11 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -340,6 +342,102 @@ func TestBarrierService_BarrierStatus_NonShamir_ZeroFields(t *testing.T) {
 	if status.ShamirTotal != 0 {
 		t.Errorf("ShamirTotal = %d, want 0 for non-shamir barrier", status.ShamirTotal)
 	}
+}
+
+// countingGetBackend counts the reads a barrier makes of its store.
+type countingGetBackend struct {
+	seal.StorageBackend
+	gets atomic.Int64
+}
+
+func (c *countingGetBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	c.gets.Add(1)
+	return c.StorageBackend.Get(ctx, key)
+}
+
+// TestBarrierService_BarrierStatus_SealedAnswersOnlyTheFlag: a sealed
+// barrier's status is the sealed flag and whether it is initialized, read from
+// memory with no store read once the barrier has read its metadata at boot. No
+// strategy, share counts, timestamp or cluster seal state goes with it, before
+// the first boot or after it; unsealed, the full status says initialized too.
+func TestBarrierService_BarrierStatus_SealedAnswersOnlyTheFlag(t *testing.T) {
+	ctx := context.Background()
+	base := seal.NewMemoryBackend()
+	sw, err := seal.NewSoftwareStrategy(ctx, []byte("test-master-key-32bytes!abcdefgh"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	config := seal.BarrierConfig{RootKeyPath: "root-key", PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase}}
+	boot := func(t *testing.T) (*seal.StorageBarrier, *countingGetBackend) {
+		t.Helper()
+		counted := &countingGetBackend{StorageBackend: base}
+		b, err := seal.NewStorageBarrier(testLogger(), counted, config, sw)
+		if err != nil {
+			t.Fatalf("NewStorageBarrier: %v", err)
+		}
+		t.Cleanup(func() { _ = b.Close() })
+		if _, err := b.Initialized(ctx); err != nil {
+			t.Fatalf("Initialized: %v", err)
+		}
+		counted.gets.Store(0)
+		return b, counted
+	}
+	sealedOnly := func(t *testing.T, b *seal.StorageBarrier, counted *countingGetBackend, wantInitialized bool) {
+		t.Helper()
+		got, err := NewBarrierService(b).BarrierStatus(ctx)
+		if err != nil {
+			t.Fatalf("BarrierStatus: %v", err)
+		}
+		want := BarrierStatusInfo{Sealed: true, Initialized: wantInitialized, ClusterSeal: &clusterseal.Report{}}
+		if got.ClusterSeal == nil || *got.ClusterSeal != *want.ClusterSeal {
+			t.Errorf("ClusterSeal = %+v, want an empty report", got.ClusterSeal)
+		}
+		got.ClusterSeal, want.ClusterSeal = nil, nil
+		if *got != want {
+			t.Errorf("BarrierStatus = %+v, want %+v", *got, want)
+		}
+		if n := counted.gets.Load(); n != 0 {
+			t.Errorf("BarrierStatus read the store %d times, want 0", n)
+		}
+	}
+
+	t.Run("awaiting first boot", func(t *testing.T) {
+		b, counted := boot(t)
+		sealedOnly(t, b, counted, false)
+	})
+
+	b, _ := boot(t)
+	if err := b.Initialize(ctx, seal.MustCredentials(ctx, []byte("my-secret"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	unsealed, err := NewBarrierService(b).BarrierStatus(ctx)
+	if err != nil {
+		t.Fatalf("BarrierStatus unsealed: %v", err)
+	}
+	if unsealed.Sealed || !unsealed.Initialized || unsealed.Strategy != string(seal.StrategyPassphrase) {
+		t.Errorf("unsealed BarrierStatus = %+v, want unsealed, initialized, passphrase", *unsealed)
+	}
+
+	t.Run("initialized and restarted sealed", func(t *testing.T) {
+		restarted, counted := boot(t)
+		sealedOnly(t, restarted, counted, true)
+	})
+
+	t.Run("never read its metadata", func(t *testing.T) {
+		counted := &countingGetBackend{StorageBackend: base}
+		cold, err := seal.NewStorageBarrier(testLogger(), counted, config, sw)
+		if err != nil {
+			t.Fatalf("NewStorageBarrier: %v", err)
+		}
+		t.Cleanup(func() { _ = cold.Close() })
+		got, err := NewBarrierService(cold).BarrierStatus(ctx)
+		if err != nil || !got.Sealed || !got.Initialized {
+			t.Fatalf("BarrierStatus on a barrier that has not read its metadata = (%+v, %v), want sealed and initialized", got, err)
+		}
+		if _, known := cold.InitializedCached(); !known {
+			t.Error("the barrier did not remember the read")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

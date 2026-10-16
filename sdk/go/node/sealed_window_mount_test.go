@@ -182,8 +182,8 @@ func officerCSR(t *testing.T, cn string) string {
 }
 
 // TestSealedWindowMount_RESTServesTheSealedSurface: holder registration (the
-// 404 a host-built listener used to answer), barrier status and a holder's
-// claim reach qrdb's handlers through the host's mux; a verb off the
+// 404 a host-built listener used to answer), the pre-init barrier status and a
+// holder's claim reach qrdb's handlers through the host's mux; a verb off the
 // allowlist and GET /health answer the sealed envelope; the host's own route
 // is untouched.
 func TestSealedWindowMount_RESTServesTheSealedSurface(t *testing.T) {
@@ -203,9 +203,19 @@ func TestSealedWindowMount_RESTServesTheSealedSurface(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, code, "claim begin: %s", body)
 	require.NotContains(t, string(body), `"code":"SEALED"`)
 
+	// Before initialization barrier status is the one pre-init answer: sealed,
+	// and no initialized_at.
 	code, body = h.do(t, http.MethodGet, "/v1/barrier/status", nil)
-	require.Equal(t, http.StatusOK, code, "barrier status: %s", body)
+	require.Equal(t, http.StatusOK, code, "GET /v1/barrier/status before init: %s", body)
+	var st struct {
+		Sealed        bool   `json:"sealed"`
+		InitializedAt string `json:"initialized_at"`
+	}
+	require.NoError(t, json.Unmarshal(body, &st))
+	require.True(t, st.Sealed)
+	require.Empty(t, st.InitializedAt)
 
+	// Nothing else answers: no health, no listing; the refusal is the answer.
 	for _, path := range []string{"/v1/barrier/officers", "/health"} {
 		code, body = h.do(t, http.MethodGet, path, nil)
 		require.Equal(t, http.StatusServiceUnavailable, code, "GET %s while sealed: %s", path, body)
@@ -219,8 +229,8 @@ func TestSealedWindowMount_RESTServesTheSealedSurface(t *testing.T) {
 
 // TestSealedWindowMount_MCPToolsAreTheSealedAllowlist: the exported tool set
 // is the sealed allowlist the services can serve -- officer registration and
-// health included, nothing off the allowlist -- and each tool answers through
-// qrdb's gate and handlers on the host's MCP server.
+// the pre-init barrier status included, nothing off the allowlist -- and each
+// tool answers through qrdb's gate and handlers on the host's MCP server.
 func TestSealedWindowMount_MCPToolsAreTheSealedAllowlist(t *testing.T) {
 	h := newSealedHost(t, "shamir")
 
@@ -230,8 +240,13 @@ func TestSealedWindowMount_MCPToolsAreTheSealedAllowlist(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"qrdb_barrier_officer_register", "qrdb_barrier_status", "qrdb_barrier_unseal", "qrdb_health", "qrdb_ceremony_status", "host_own"} {
+	for _, want := range []string{"qrdb_barrier_officer_register", "qrdb_barrier_unseal", "qrdb_barrier_status", "host_own"} {
 		require.True(t, names[want], "tool %s missing from the host's server", want)
+	}
+	// A sealed node answers no health and no ceremony status: they are not on
+	// the allowlist, so the host is handed neither.
+	for _, refused := range []string{"qrdb_health", "qrdb_ceremony_status"} {
+		require.False(t, names[refused], "tool %s exported to the host while sealed", refused)
 	}
 	for name := range names {
 		if name == "host_own" {
@@ -244,10 +259,6 @@ func TestSealedWindowMount_MCPToolsAreTheSealedAllowlist(t *testing.T) {
 	res := h.call(t, "qrdb_barrier_officer_register", map[string]any{"username": "off1", "csr_pem": officerCSR(t, "off1")})
 	require.False(t, res.IsError, "officer register: %s", resultText(res))
 	require.Contains(t, resultText(res), "BEGIN CERTIFICATE")
-
-	res = h.call(t, "qrdb_health", nil)
-	require.False(t, res.IsError, "health: %s", resultText(res))
-	require.Contains(t, resultText(res), `"sealed"`)
 }
 
 // TestSealedWindowMount_UnsealClosesEveryMountedTransport: the shared probe
@@ -257,8 +268,9 @@ func TestSealedWindowMount_MCPToolsAreTheSealedAllowlist(t *testing.T) {
 func TestSealedWindowMount_UnsealClosesEveryMountedTransport(t *testing.T) {
 	h := newSealedHost(t, "passphrase")
 
-	code, _ := h.do(t, http.MethodGet, "/v1/barrier/status", nil)
-	require.Equal(t, http.StatusOK, code)
+	code, body := h.do(t, http.MethodGet, "/v1/barrier/status", nil)
+	require.Equal(t, http.StatusOK, code, "REST while sealed and uninitialized: %s", body)
+	require.Contains(t, string(body), `"sealed":true`)
 
 	creds := seal.MustCredentials(context.Background(), []byte("mount-passphrase"))
 	if err := h.node.barrier.Load().Initialize(context.Background(), creds); err != nil && !errors.Is(err, seal.ErrAlreadyInitialized) {
@@ -266,10 +278,10 @@ func TestSealedWindowMount_UnsealClosesEveryMountedTransport(t *testing.T) {
 	}
 	require.False(t, h.node.barrier.Load().IsSealed())
 
-	code, body := h.do(t, http.MethodGet, "/v1/barrier/status", nil)
+	code, body = h.do(t, http.MethodGet, "/v1/barrier/status", nil)
 	require.Equal(t, http.StatusServiceUnavailable, code, "REST after unseal: %s", body)
 	require.Contains(t, string(body), "SEALED_WINDOW_CLOSED")
 
-	res := h.call(t, "qrdb_barrier_status", nil)
+	res := h.call(t, "qrdb_barrier_unseal", nil)
 	require.True(t, res.IsError, "MCP after unseal answered: %s", resultText(res))
 }

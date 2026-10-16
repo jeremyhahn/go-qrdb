@@ -1,12 +1,29 @@
 # Sealed-window endpoint allowlist
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-14
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
-While the storage barrier is sealed, the daemon serves only the
-endpoints required to drive unseal. Every other request returns
-`503 Service Unavailable` (REST) or `codes.Unavailable` (gRPC) with
-the documented sealed envelope.
+While the storage barrier is sealed, the daemon serves the unseal call, the
+first-boot ceremony and one status answer, and nothing else. Every other
+request -- health, node status and ceremony status included -- is refused with
+the typed sealed refusal ([Response envelope](#response-envelope)):
+`503 Service Unavailable` with `{"code":"SEALED"}` on REST, `codes.Unavailable`
+with an `ErrorInfo` of domain `qrdb.v1` and reason `SEALED` on gRPC and Unix,
+and the equivalent on QUIC, MCP and the embedded transport. Unseal progress
+travels in the unseal call's own response.
+
+The status answer is barrier status, and a sealed node's answer carries two
+facts: `sealed: true` and `initialized`. It is served before the first boot
+and after it, with no store read and no secret, so a client tells a node that
+needs initialization (`initialized: false`) from an initialized sealed one
+(`initialized: true`). The flag is read once while the node starts and cached
+by the barrier (`seal.StorageBarrier.InitializedCached`), and initialization
+sets it. A node held or cut off by a cluster seal, whose own barrier is
+unsealed, refuses barrier status like every other call: operators read the
+seal record from a serving node.
+
+A client certificate authenticates the unseal caller at the TLS handshake,
+with no store lookup, and grants nothing past the seal.
 
 ## Activation
 
@@ -39,21 +56,37 @@ listener**, which has no authentication middleware (see
 [Auth model](#auth-model-during-the-sealed-window)). Each one is therefore
 justified as an anonymous verb, and belongs to one of these classes:
 
-- **Liveness**: `health`, `status`, `barrier-status`.
-- **Credential possession**, the Vault model, where holding the unseal
-  credential is the authorization: `barrier-unseal`.
-- **First-boot trust on first use**: `barrier-initialize`,
+- **The unseal call.** Credential possession, the Vault model, where holding
+  the unseal credential is the authorization: `barrier-unseal`. The holder
+  quorum, where the holder's factor proof against the roster the wrapped key
+  is sealed under is the credential: `quorum-begin`/`quorum-submit`. The
+  quorum service refuses every operation but unseal and recover while the
+  barrier is sealed, and a submission reports the unseal's progress in its own
+  response. The share claims that hand a holder the share it then submits:
+  `share-claim-begin`/`-complete` and `recovery-share-claim-begin`/`-complete`
+  (the holder's enrolled certificate). A barrier migrated to Shamir comes back
+  sealed, and its holders claim their envelopes from the sealed node.
+- **First boot**, trust on first use: `barrier-initialize`,
   `shamir-initialize`, `ceremony-initialize`, `officer-register`,
-  `recovery-officer-register`. Registration is admitted only while the
-  enrolment ceremony is pre-operational (`PreOperationalOnly`).
-- **Handshakes whose binding authorization the handler enforces**:
-  `share-claim-begin`/`-complete` and
-  `recovery-share-claim-begin`/`-complete` (the holder's enrolled
-  certificate), `quorum-begin`/`quorum-submit` (the holder's factor proof
-  against the roster the wrapped key is sealed under; every quorum operation
-  -- unseal, seal, root-token, rekey completion, recover -- is a submission,
-  so these are how a sealed node is unsealed), and `ceremony-sign-csr` (SO
-  PIN). `ceremony-status` reports the ceremony state.
+  `recovery-officer-register` and `ceremony-sign-csr` (SO PIN). These are
+  `PreOperationalOnly`: they are served only while enrollment is open, on the
+  regular listener as well as the boot-time one, and refused with the sealed
+  refusal like any other call once it closes. An initialized barrier refuses
+  the initialize verbs anyway, so a sealed node that holds a key never serves
+  them.
+- **The initialized flag**: `barrier-status`. It is `ListenerOnly`: served on
+  the sealed-window path, and so while the node's own barrier is sealed, before
+  the first boot and after it, and refused on the regular gate. A sealed
+  barrier's answer is `sealed: true` and `initialized` and nothing else -- no
+  strategy, share counts, timestamps or cluster seal state -- so it carries no
+  secret and needs no store read. The regular gate refuses it on a node held or
+  cut off by a cluster seal, whose barrier is unsealed; an unsealed, serving
+  node answers the full status through its authenticated routes.
+
+There is no liveness class. `health`, `status` and `ceremony-status` are
+refused while sealed. `ceremony-status` stays in `sealedwindow.Table` only for
+the awaiting-admin-credential gate, a state of an unsealed node, and is not on
+the sealed surface (`sealedwindow.Verbs`).
 
 **One verb is allowlisted on the regular listener only**:
 `barrier-cluster-unseal` (`POST /v1/barrier/cluster-unseal`), which clears a
@@ -65,7 +98,11 @@ verb must pass the gate there; it is still authenticated and authorized by
 listener's allowlist is derived without it, so it is never anonymous. The
 regular listener's gate also closes, beyond a sealed barrier, while the node
 is held by a cluster seal, has no fresh lease on the seal records, or has not
-read them since it started.
+read them since it started. The verb is served only while the node's own
+barrier is unsealed: with it sealed, the regular listener serves the boot-time
+listener's path and refuses the verb with the sealed `503` like every other
+`AuthenticatedOnly` verb (see
+[Auth model](#auth-model-during-the-sealed-window)).
 
 The full per-transport names are in `sealedwindow.Table`.
 
@@ -112,12 +149,13 @@ shared, on all transports together. So an unsealing request waits for the
 requests already in flight, none starts while it runs, and every request
 admitted after it sees the barrier unsealed and is refused.
 
-### Officer enrollment closes (`PreOperationalOnly`)
+### Enrollment closes (`PreOperationalOnly`)
 
-`officer-register` and `recovery-officer-register` are the two
-`PreOperationalOnly` verbs. Registration CA-signs any CSR it is given and
-assigns a share index, so it is anonymous on the boot-time listener only while
-the enrollment ceremony can still use a new officer. The listener asks
+The first-boot verbs are `PreOperationalOnly`: `barrier-initialize`,
+`shamir-initialize`, `ceremony-initialize`, `ceremony-sign-csr`,
+`officer-register` and `recovery-officer-register`. Registration CA-signs any
+CSR it is given and assigns a share index, so it is anonymous only while the
+enrollment ceremony can still use a new officer. The listener asks
 `ceremony.CeremonyService.EnrollmentOpen` on every request, and enrollment
 closes as soon as any of these is true:
 
@@ -132,16 +170,21 @@ closes as soon as any of these is true:
   officers) runs on the authenticated listener. This also covers a node whose
   ceremony completed before the record existed.
 
-It fails closed: an unreadable record, or a listener with no ceremony
-service, counts as closed. The reads run under the request's context and a
-2-second deadline (`enrollmentProbeTimeout`), so a seal store that stops
-answering costs a refusal, not a request that holds the listener's
-admission indefinitely. Once enrollment is closed the listener answers
-registration with `403` and `{"code":"ENROLLMENT_CLOSED"}` on REST,
-`PERMISSION_DENIED` on gRPC and Unix, `StatusPermissionDenied` on QUIC and
-`PERMISSION_DENIED` on MCP. There is no `Retry-After`, because waiting does
-not reopen enrollment. A regular listener never applies this rule: its
-authentication and the route's `seal:officer_register` permission decide.
+A listener with no ceremony service reads enrollment from the barrier alone:
+it is open exactly while the barrier is uninitialized. It fails closed: an
+unreadable record or barrier counts as closed. The reads run under the
+request's context and a 2-second deadline (`enrollmentProbeTimeout`), so a
+seal store that stops answering costs a refusal, not a request that holds the
+listener's admission indefinitely. Once enrollment is closed a sealed node
+refuses the first-boot verbs with the same typed sealed refusal it sends every
+other call outside the unseal call (`sealedwindow.RefuseSealed`). A regular
+listener applies this rule while the node barrier is sealed, because it then
+serves through the boot-time listener's path (see
+[Auth model](#auth-model-during-the-sealed-window)); once the barrier is
+unsealed its authentication and the route's permission decide. The embedded
+transport exists only once the node has unsealed, so its barrier is
+initialized and enrollment closed: while sealed it refuses the first-boot
+verbs.
 
 The ceremony enforces the same rule itself. `RegisterOfficer` and
 `RegisterRecoveryOfficer` refuse with `ceremony.ErrEnrollmentClosed` when the
@@ -202,7 +245,9 @@ The boot-time sealed-window listener does not start either protocol.
 
 ## Response envelope
 
-REST returns:
+Every call a sealed node does not serve gets one typed refusal, the same on
+every transport (`sealedwindow.RefuseSealed`; constants
+`sealedwindow.ErrorDomain`, `ReasonSealed`, `SealedMessage`). REST returns:
 
 ```http
 HTTP/1.1 503 Service Unavailable
@@ -212,7 +257,19 @@ Retry-After: 5
 {"error":"barrier sealed","code":"SEALED"}
 ```
 
-gRPC returns `codes.Unavailable` with message `"barrier sealed"`.
+| Transport | Refusal |
+|---|---|
+| REST | `503`, body `{"error":"barrier sealed","code":"SEALED"}` |
+| gRPC and Unix | `codes.Unavailable`, message `barrier sealed`, detail `ErrorInfo{Domain: "qrdb.v1", Reason: "SEALED"}` |
+| QUIC | `StatusUnavailable`, message `barrier sealed`, `wire.ErrorInfo{Domain: "qrdb.v1", Reason: "SEALED"}` |
+| MCP | `UNAVAILABLE`, message `barrier sealed`, reason `SEALED` |
+| Embedded | `*embedded.BarrierSealedError` (unwraps to `seal.ErrSealed`) |
+
+The Go SDK decodes each of these into `*transport.BarrierSealedError`, tested
+with `transport.IsBarrierSealed`; the CLI prints `transport: barrier sealed`.
+Every SDK transport's `Connect`, and REST's reachability probe, count the
+refusal as reachable: the node is up and sealed. `Healthy` stays false.
+Readiness waits (`qrdbdharness.IsSealedRefusal`) read it the same way.
 
 A node whose barrier is unsealed but which cannot confirm the cluster seal
 state — cut off from the seal records, or not yet having read them — is not
@@ -240,18 +297,49 @@ retries, and the regular listener answers once the boot completes.
 
 ## Auth model during the sealed window
 
-There are two listeners, and they differ in exactly one respect.
+There are two listeners, and while the node barrier is sealed they serve the
+same thing: a node whose barrier was re-sealed behaves exactly like a node
+that booted sealed.
 
-**The regular listener** is the one the node serves once it has booted.
-When its barrier is re-sealed, its gate refuses non-allowlisted requests.
-Every transport runs both the gate and authentication. On REST the chain, from
-the outside in, is `canonical path → CORS → scope → sealed-window → auth →
-SO dual factor → router`, and on gRPC and Unix the sealed-window
-interceptor runs after the auth interceptor. **An allowlisted request is
-therefore still authenticated and authorized** by the route's permission
-on this listener. Nothing on it is anonymous because it is allowlisted.
-After unseal the gate passes everything to authentication. On re-seal
-(`/v1/barrier/seal` with `seal:seal`) it engages again.
+**The regular listener** is the one the node serves once it has booted. It
+samples the node barrier on every request and picks one of two paths:
+
+- **Node barrier sealed** (a re-seal, `/v1/barrier/seal` with `seal:seal`, or
+  a quorum seal): the request takes the boot-time listener's path -- the same
+  gate over the same router, built by the same code, with no authentication,
+  no SO dual factor and no replica forwarding. The unseal call is served
+  anonymously, barrier status answers the initialized flag, the first-boot verbs
+  are served only while enrollment is open, and everything else -- `AuthenticatedOnly` verbs included -- is refused with the
+  typed sealed refusal. No request reaches the user store, which the sealed
+  barrier cannot read: go-quicraft refuses every read through a sealed barrier
+  by design. The listener's TLS configuration does not change, so a client
+  certificate is still required at the handshake wherever the listener
+  requires one; it authenticates the unseal caller and grants nothing past
+  the seal.
+- **Node barrier unsealed**: the regular chain. On REST it runs, from the
+  outside in, `canonical path → CORS → scope → sealed-window → auth → SO dual
+  factor → router`; on gRPC and Unix the sealed-window interceptor runs after
+  the auth interceptor. The gate here closes only for the cluster-wide reasons
+  above -- a cluster seal holding the node, no fresh lease on the seal
+  records, or no read of them since start -- and **an allowlisted request is
+  still authenticated and authorized** by the route's permission. That is the
+  path `barrier-cluster-unseal` takes on a node the cluster holds.
+
+The dispatch keys on the node barrier alone, not on the cluster seal: a node
+held by a cluster seal whose own barrier is unsealed can still read its user
+store, so it stays on the authenticated path. A request admitted on the
+sealed path while an unseal completes is refused by the listener gate's own
+re-sample (`sealed-window listener closed: barrier unsealed`) and retried on
+the regular path. Every listener of one node shares one admission
+(`server.NewSealedWindowListenerProbe`), so an unseal waits for requests
+already admitted anonymously on any of them.
+
+Two surfaces stay on the regular path while sealed. MCP's enrollment endpoint
+(`EnrollPath`) is public by design and is served as on an unsealed node; the
+invitation it redeems lives behind the barrier, so it fails with the typed
+sealed error. The embedded transport has no listener; a call through it while
+the barrier is sealed returns the typed sealed error, never an internal error
+or a user-store failure.
 
 **The boot-time sealed-window listener** (`server.ServeSealedWindow`, see
 [below](#pre-host-listener-boot-time-sealed-window)) has **no
@@ -421,13 +509,15 @@ mux.Handle("/health", sealed)
 mcpServer.AddTools(sdk.SealedWindowMCPTools(barrierSvc, ceremonySvc, credentialSvc, probe)...)
 ```
 
-- **The whole allowlist.** Barrier status, initialize and unseal, Shamir and
-  recovery unseal, officer registration, officer and recovery share claims,
-  claim status, the ceremony verbs and the root token. The MCP set is exactly
-  the allowlisted tools the given services can serve.
-- **Health.** On REST, `GET /health` answers the sealed envelope, 503
-  `{"code":"SEALED"}`. The `qrdb_health` tool answers a health status of
-  `sealed`, as the gRPC `Health` RPC does.
+- **The whole allowlist.** The unseal call -- passphrase unseal, the holder
+  quorum, officer and recovery share claims -- barrier status, and the
+  first-boot verbs while enrollment is open. The MCP set is exactly the allowlisted tools the given
+  services can serve.
+- **One status answer, no health.** Barrier status answers `sealed: true` and
+  the `initialized` flag, on REST, MCP and gRPC alike. On REST, `GET /health`
+  and ceremony status answer the sealed envelope, 503 `{"code":"SEALED"}`. The
+  MCP set carries no health or node status tool, and the gRPC `Health` RPC is
+  refused with the typed `Unavailable`.
 - **One probe for every transport.** Build it once and pass it to the REST
   handler, the MCP tools and the gRPC listener interceptors
   (`sdk.SealedWindowListenerUnaryInterceptor` and
@@ -436,7 +526,8 @@ mcpServer.AddTools(sdk.SealedWindowMCPTools(barrierSvc, ceremonySvc, credentialS
   admitted on any transport. No request admitted afterwards runs anonymously
   against the unsealed barrier.
 - **The gate travels with the handlers.** It allowlists anonymously while
-  sealed and closes officer enrollment once the ceremony is operational. Once
+  sealed and closes enrollment once the ceremony is operational or the
+  barrier initialized. Once
   the barrier is unsealed, every mounted route and tool refuses: REST with 503
   `SEALED_WINDOW_CLOSED`, MCP with `UNAVAILABLE`.
 - **The CA for officer CSRs comes from the ceremony core.** It is set with

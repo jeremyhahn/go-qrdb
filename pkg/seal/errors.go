@@ -19,6 +19,13 @@ var (
 	// ErrSealed is returned when an operation is attempted on a sealed barrier.
 	ErrSealed = errors.New("qrdb/seal: barrier is sealed")
 
+	// ErrBarrierSealed is go-quicraft's sentinel for a data-path read or
+	// write that met its sealed EpochBarrier. A node re-sealed at runtime
+	// returns it from every store read, including the user and role lookups
+	// authentication depends on, until UnsealedC fires. It is a distinct
+	// value from ErrSealed, so every classifier names both.
+	ErrBarrierSealed = quicraftseal.ErrBarrierSealed
+
 	// ErrAlreadyUnsealed is returned when attempting to unseal a barrier that
 	// is already in the unsealed state.
 	ErrAlreadyUnsealed = errors.New("qrdb/seal: barrier is already unsealed")

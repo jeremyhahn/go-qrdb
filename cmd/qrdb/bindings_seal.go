@@ -117,9 +117,11 @@ func (b *SealBinding) InitializeShamir(threshold, totalShares int, policy string
 	}, nil
 }
 
-// Unseal unseals a passphrase barrier with its master passphrase. A Shamir
-// barrier is refused with ShamirHolderUnsealError: its shares are submitted
-// one authenticated holder at a time through OfficerBinding.SubmitShare.
+// Unseal unseals a passphrase barrier with its master passphrase. It asks
+// nothing first: a sealed node answers the unseal call and nothing else. The
+// server refuses a Shamir barrier itself (seal.ErrShamirUnsealRequiresQuorum):
+// its shares are submitted one authenticated holder at a time through
+// OfficerBinding.SubmitShare.
 func (b *SealBinding) Unseal(secret string) (*UnsealProgress, error) {
 	b.logger.Debug("Unseal called")
 	cl, err := b.conn.loadClient()
@@ -128,20 +130,9 @@ func (b *SealBinding) Unseal(secret string) (*UnsealProgress, error) {
 		return nil, err
 	}
 
-	ctx := context.Background()
-	status, err := cl.Barrier().BarrierStatus(ctx)
-	if err != nil {
-		b.logger.Error("Unseal failed", "error", err)
-		return nil, err
-	}
-
-	if status.Strategy == "shamir" {
-		return nil, &ShamirHolderUnsealError{}
-	}
-
 	unsealReq := &transport.BarrierUnsealRequest{Secret: secretBytes(secret)}
 	defer secure.Wipe(unsealReq.Secret)
-	if err := cl.Barrier().BarrierUnseal(ctx, unsealReq); err != nil {
+	if err := cl.Barrier().BarrierUnseal(context.Background(), unsealReq); err != nil {
 		b.logger.Error("Unseal failed", "error", err)
 		return nil, err
 	}
@@ -232,11 +223,18 @@ func (b *SealBinding) EnableEncryption(req *transport.BarrierEnableEncryptionReq
 	return &EnableEncryptionResult{Status: resp.Status, Scope: resp.Scope}, nil
 }
 
-// Status returns the current seal state of the barrier. Initialized is
-// derived from the barrier's initialization timestamp; for Shamir
-// barriers SharesRequired/SharesTotal carry the configured M-of-N
+// Status returns the current seal state of the barrier. Initialized is the
+// node's own initialized flag, which a sealed node serves on its sealed
+// surface, so a node awaiting its first boot reads as needing init; for
+// Shamir barriers SharesRequired/SharesTotal carry the configured M-of-N
 // quorum. SharesProvided is not tracked across status calls — quorum
 // progress is reported per-submission by Unseal.
+//
+// A sealed node reports nothing beyond Sealed and Initialized until unseal.
+// A node the cluster seal holds or cuts off refuses the call with
+// *transport.BarrierSealedError, and that refusal is the answer: its own
+// barrier is initialized, and it serves nothing until the cluster releases
+// it.
 func (b *SealBinding) Status() (*SealStatus, error) {
 	b.logger.Debug("Status called")
 	cl, err := b.conn.loadClient()
@@ -245,6 +243,10 @@ func (b *SealBinding) Status() (*SealStatus, error) {
 		return nil, err
 	}
 	resp, err := cl.Barrier().BarrierStatus(context.Background())
+	if transport.IsBarrierSealed(err) {
+		b.logger.Debug("Status completed: the cluster seal holds the node, so it is initialized and serves nothing")
+		return &SealStatus{Sealed: true, Initialized: true}, nil
+	}
 	if err != nil {
 		b.logger.Error("Status failed", "error", err)
 		return nil, err
@@ -252,7 +254,7 @@ func (b *SealBinding) Status() (*SealStatus, error) {
 
 	status := &SealStatus{
 		Sealed:         resp.Sealed,
-		Initialized:    resp.InitializedAt != "",
+		Initialized:    resp.Initialized,
 		Strategy:       resp.Strategy,
 		SharesRequired: resp.ShamirThreshold,
 		SharesTotal:    resp.ShamirTotal,

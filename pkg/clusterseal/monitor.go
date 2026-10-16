@@ -49,6 +49,10 @@ type KV interface {
 	Put(ctx context.Context, key string, value []byte) error
 	// Scan returns every key and value under prefix.
 	Scan(ctx context.Context, prefix string) (map[string][]byte, error)
+	// ScanStale returns every key and value under prefix from this node's
+	// own copy of the store, without asking a quorum: what it returns has
+	// committed, but may not yet include the latest writes.
+	ScanStale(ctx context.Context, prefix string) (map[string][]byte, error)
 }
 
 // Enforcer seals one barrier on this node with this node's own key, and
@@ -590,38 +594,51 @@ var sealEnds = map[Kind]sealEnd{
 }
 
 // awaitAcks writes this node's acknowledgement of epoch and waits until every
-// system-shard member has acknowledged it, or until AckTimeout.
+// system-shard member has acknowledged it, or until AckTimeout -- a bound on
+// the whole wait, the write and every read included.
+//
+// The wait reads the acknowledgements from this node's own copy of the store
+// (KV.ScanStale), never through a quorum. The nodes that see every
+// acknowledgement first pause their shards and leave the system shard, so
+// the last node to look can find no quorum left to answer it; a quorum read
+// would then hold it until its caller gave up. Acknowledgements only grow,
+// so a local copy that shows them all proves they committed: the local read
+// can be late, never wrong.
 func (m *Monitor) awaitAcks(ctx context.Context, epoch uint64) {
+	clock := m.cfg.Clock
+	deadline := clock.Now().Add(m.cfg.AckTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.cfg.AckTimeout)
+	defer cancel()
 	if err := m.cfg.KV.Put(ctx, ackKey(m.cfg.Self), []byte(strconv.FormatUint(epoch, 10))); err != nil {
 		m.logger.Warn("cluster seal: could not acknowledge the node seal", slog.Any("error", &AckError{Err: err}))
 	}
-	clock := m.cfg.Clock
-	deadline := clock.Now().Add(m.cfg.AckTimeout)
 	step := m.cfg.PollInterval / 4
 	for {
 		if m.allAcked(ctx, epoch) {
 			return
 		}
 		remaining := deadline.Sub(clock.Now())
-		if remaining <= 0 {
+		if remaining <= 0 || ctx.Err() != nil {
 			m.logger.Warn("cluster seal: not every node acknowledged the node seal; wiping the key",
 				slog.Uint64("epoch", epoch), slog.Duration("timeout", m.cfg.AckTimeout))
 			return
 		}
 		select {
 		case <-ctx.Done():
-			return
 		case <-clock.After(min(step, remaining)):
 		}
 	}
 }
 
+// allAcked reports whether this node's copy of the store holds an
+// acknowledgement of epoch, or a later one, from every other system-shard
+// member.
 func (m *Monitor) allAcked(ctx context.Context, epoch uint64) bool {
 	members, err := m.cfg.Members(ctx)
 	if err != nil {
 		return false
 	}
-	acks, err := m.cfg.KV.Scan(ctx, AcksPrefix)
+	acks, err := m.cfg.KV.ScanStale(ctx, AcksPrefix)
 	if err != nil {
 		return false
 	}

@@ -270,17 +270,6 @@ type HealthStatus struct {
 	DiagnosticsDropped uint64
 }
 
-// HealthStatusSealed is the canonical HealthStatus.Status verdict reported
-// by the gRPC, native QUIC, and Unix (grpc-over-UDS) Health handlers while
-// the daemon is in the pre-host sealed window -- i.e. before AdminServicer
-// exists (see cmd/qrdbd/seal_subsystem.go's awaitUnseal and
-// pkg/server.ServeSealedWindow). Health is on the sealed-window allowlist
-// (pkg/api/sealedwindow.Table VerbHealth) on every transport, so those
-// handlers report this verdict directly instead of erroring, letting SDK
-// Connect() (which requires a successful Health RPC) treat a reachable,
-// correctly-sealed daemon as connected rather than unreachable.
-const HealthStatusSealed = "sealed"
-
 // StatusInfo provides detailed host and shard status information.
 type StatusInfo struct {
 	// NodeID is the unique host identifier.

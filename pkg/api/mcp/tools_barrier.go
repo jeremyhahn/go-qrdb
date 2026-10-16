@@ -355,6 +355,7 @@ func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 
 		resp := map[string]any{
 			"sealed":          status.Sealed,
+			"initialized":     status.Initialized,
 			"strategy":        status.Strategy,
 			"hardware_backed": status.HardwareBacked,
 		}

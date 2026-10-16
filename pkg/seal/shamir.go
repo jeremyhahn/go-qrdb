@@ -138,6 +138,7 @@ func (b *StorageBarrier) rollbackInitialization(ctx context.Context) error {
 	if err := b.base.Delete(ctx, b.metadataPath()); err != nil && !isSecretNotFound(err) {
 		return err
 	}
+	b.uninitializedRead.Store(true)
 	emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
 		"deny", map[string]string{"strategy": string(StrategyShamir), "rolled_back": "true"})
 	return nil

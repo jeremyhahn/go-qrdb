@@ -34,12 +34,12 @@ type sealedWindowProbe interface {
 }
 
 // SealedWindowAllowlist is the set of MCP tool names that remain
-// operative while the barrier is sealed. Tools not in this list are
-// rejected with a tool-result error while the probe reports sealed. The
+// operative while the barrier is sealed. Tools not in this list --
+// qrdb_health and qrdb_status included -- are refused with CodeUnavailable
+// and reason sealedwindow.ReasonSealed while the probe reports sealed. The
 // list is derived from the canonical transport-neutral verb table in
-// pkg/api/sealedwindow so it cannot drift from the other transports:
-// every qrdb_barrier_* and qrdb_ceremony_* unseal-flow tool, plus
-// qrdb_health/qrdb_status for liveness probes.
+// pkg/api/sealedwindow so it cannot drift from the other transports: the
+// unseal call and the first-boot verbs.
 var SealedWindowAllowlist = sealedwindow.MCPAllowlist()
 
 // sealedWindowMiddleware returns an mcp-go tool-handler middleware that
@@ -61,6 +61,7 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			}
 			_, allowlisted := SealedWindowAllowlist[name]
 			_, authOnly := sealedWindowAuthenticatedOnly[name]
+			_, listenerOnly := sealedWindowListenerOnly[name]
 			sealed, unconfirmed := sealedwindow.Sample(s.sealedWindowProbe)
 			decision := sealedwindow.Request{
 				Sealed:            sealed,
@@ -68,10 +69,11 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 				Allowlisted:       allowlisted,
 				Listener:          s.sealedWindowListener != nil,
 				AuthenticatedOnly: authOnly,
+				ListenerOnly:      listenerOnly,
 			}
-			if _, preOp := sealedWindowPreOperationalOnly[name]; preOp && decision.Listener && decision.Sealed && decision.Allowlisted {
+			if _, preOp := sealedWindowPreOperationalOnly[name]; preOp && decision.Sealed && decision.Allowlisted {
 				decision.PreOperationalOnly = true
-				decision.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen(ctx)
+				decision.EnrollmentOpen = s.sealedWindowListener != nil && s.sealedWindowListener.EnrollmentOpen(ctx)
 			}
 			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(decision)]
 			if !refused {
@@ -85,14 +87,8 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			// the same gate. A sealed barrier is a node that will serve this
 			// tool later, and a client that can read that from the code
 			// retries instead of reporting a failure its operator then has to
-			// diagnose from prose (go-qrdb#438). A closed enrollment is
-			// CodePermissionDenied: retrying will not help. A refusal that
-			// carries a typed error is classified like any service error, so
-			// its envelope names the reason (SEAL_STATE_UNCONFIRMED).
-			if refusal.err != nil {
-				return classifiedToolError(name, refusal.err), nil
-			}
-			return toolErrorResult(name, refusal.code, refusal.msg), nil
+			// diagnose from prose (go-qrdb#438).
+			return refusal.result(name), nil
 		}
 	}
 }
@@ -101,30 +97,51 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 // verbs (cluster unseal), never served anonymously.
 var sealedWindowAuthenticatedOnly = sealedwindow.MCPAuthenticatedOnly()
 
+// sealedWindowListenerOnly holds the MCP tools of the ListenerOnly verbs
+// (barrier status), never served by a sealed regular listener.
+var sealedWindowListenerOnly = sealedwindow.MCPListenerOnly()
+
 // sealedWindowTransition holds the MCP tools of the Transition verbs
 // (initialize and unseal), which run alone on the boot-time listener.
 var sealedWindowTransition = sealedwindow.MCPTransition()
 
 // sealedWindowPreOperationalOnly holds the MCP tools of the
-// PreOperationalOnly verbs (officer and recovery-officer registration).
+// PreOperationalOnly verbs: the first-boot verbs a sealed node serves only
+// while enrollment is open.
 var sealedWindowPreOperationalOnly = sealedwindow.MCPPreOperationalOnly()
 
 // sealedWindowRefusal is how the MCP gate answers one refusing Decision.
 type sealedWindowRefusal struct {
 	code wire.Code
 	msg  string
+	// reason is the envelope's structured reason; the sealed refusal
+	// carries sealedwindow.ReasonSealed so a client reads "up and sealed"
+	// from it.
+	reason string
 	// err, when set, is the typed error the refusal reports; it wins over
-	// code and msg.
+	// code, msg and reason, and is classified like any service error, so its
+	// envelope names its own reason (SEAL_STATE_UNCONFIRMED).
 	err error
 }
 
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its tool
 // error. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
-	sealedwindow.RefuseSealed:           {code: wire.CodeUnavailable, msg: "barrier sealed"},
-	sealedwindow.RefuseUnconfirmed:      {err: &clusterseal.SealStateUnconfirmedError{}},
-	sealedwindow.RefuseClosed:           {code: wire.CodeUnavailable, msg: sealedwindow.ClosedMessage},
-	sealedwindow.RefuseEnrollmentClosed: {code: wire.CodePermissionDenied, msg: sealedwindow.EnrollmentClosedMessage},
+	sealedwindow.RefuseSealed:      {code: wire.CodeUnavailable, msg: sealedwindow.SealedMessage, reason: sealedwindow.ReasonSealed},
+	sealedwindow.RefuseUnconfirmed: {err: &clusterseal.SealStateUnconfirmedError{}},
+	sealedwindow.RefuseClosed:      {code: wire.CodeUnavailable, msg: sealedwindow.ClosedMessage},
+}
+
+// result renders the refusal as tool's error result.
+func (r sealedWindowRefusal) result(tool string) *mcpgo.CallToolResult {
+	if r.err != nil {
+		return classifiedToolError(tool, r.err)
+	}
+	res := toolErrorResult(tool, r.code, r.msg)
+	if env, ok := res.StructuredContent.(*wire.ErrorEnvelope); ok && r.reason != "" {
+		env.Error.Reason = r.reason
+	}
+	return res
 }
 
 // sealedWindowSealed samples the probe. A nil probe reads as unsealed,
@@ -146,5 +163,21 @@ func (s *Server) sealedWindowClosedHandler(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// sealedWindowDispatchHandler sends each request to sealed, the boot-time
+// sealed-window listener's endpoint, while probe reports the node barrier
+// sealed, and to regular otherwise. A re-sealed regular listener thereby
+// answers exactly as a node that booted sealed does: the allowlisted calls
+// anonymously, with no user-store lookup, and everything else with the
+// sealed refusal.
+func sealedWindowDispatchHandler(probe sealedwindow.ListenerProbe, sealed, regular http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if probe.IsSealed() {
+			sealed.ServeHTTP(w, r)
+			return
+		}
+		regular.ServeHTTP(w, r)
 	})
 }

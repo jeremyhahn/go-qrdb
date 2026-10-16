@@ -132,9 +132,12 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
-	// sealedListener is the boot-time sealed-window listener's probe, built
-	// once in New so its Admission is shared by all of the listener's
-	// transports. Nil on any other server.
+	// sealedListener is the sealed-window listener probe over the bare node
+	// barrier, built once in New so its Admission is shared by all of the
+	// server's transports. The boot-time listener gates every request with
+	// it; a regular listener dispatches on it, serving a request through the
+	// boot-time listener's path while the barrier is sealed. Nil when no
+	// sealed-window probe is configured.
 	sealedListener sealedwindow.ListenerProbe
 
 	// forwardingUntrusted logs, once, that replica forwarding was asked for
@@ -648,40 +651,72 @@ func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
 
 // sealedWindowListenerProbe is a sealed-window listener's probe: the
 // barrier's sealed state, one Admission shared by every transport that serves
-// the window, and whether officer enrollment is still open to an
-// unauthenticated caller, read from the ceremony core the window serves
-// (ceremony.CeremonyService.EnrollmentOpen). With no ceremony core there is
-// no enrollment to keep open, so it reports closed.
+// the window, and whether enrollment -- the first-boot verbs -- is still open
+// to an unauthenticated caller, read from the ceremony core the window serves
+// (ceremony.CeremonyService.EnrollmentOpen). With no ceremony core,
+// enrollment is open exactly while the barrier is uninitialized
+// (barrierInitializedProbe); a probe that cannot say reports closed.
 type sealedWindowListenerProbe struct {
 	SealedWindowProbe
 	*sealedwindow.Admission
 	ceremony *ceremony.CeremonyService
 }
 
+// barrierInitializedProbe is the part of *seal.StorageBarrier the
+// sealed-window probe reads when no ceremony core decides enrollment.
+type barrierInitializedProbe interface {
+	Initialized(ctx context.Context) (bool, error)
+}
+
+// enrollmentProbeTimeout bounds the barrier read behind EnrollmentOpen, as
+// ceremony.CeremonyService.EnrollmentOpen bounds its own.
+const enrollmentProbeTimeout = 2 * time.Second
+
 // EnrollmentOpen implements sealedwindow.ListenerProbe under the request's
-// context; ceremony.CeremonyService.EnrollmentOpen bounds the read further
-// and fails closed.
+// context. Every read is bounded and fails closed.
 func (p sealedWindowListenerProbe) EnrollmentOpen(ctx context.Context) bool {
-	return p.ceremony != nil && p.ceremony.EnrollmentOpen(ctx)
+	if p.ceremony != nil {
+		return p.ceremony.EnrollmentOpen(ctx)
+	}
+	barrier, ok := p.SealedWindowProbe.(barrierInitializedProbe)
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
+	defer cancel()
+	initialized, err := barrier.Initialized(ctx)
+	return err == nil && !initialized
 }
 
 var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
 
 // NewSealedWindowListenerProbe returns the probe that gates a sealed-window
 // surface: sealed reports the barrier's state, and ceremonySvc (which may be
-// nil) decides whether anonymous officer enrollment is still open.
+// nil, in which case sealed's Initialized does) decides whether anonymous
+// enrollment is still open.
 //
 // Build ONE per sealed window and pass it to every transport that serves the
 // window -- the REST handler (rest.NewSealedWindowHandler), the MCP tool set
 // (mcp.SealedWindowTools) and the gRPC listener interceptors -- so they share
 // one Admission: a request that unseals the barrier then waits for requests
 // already admitted on any transport, and none admitted after it runs
-// anonymously against the unsealed barrier. qrdb's own boot-time listener
-// builds its probe here too. A nil sealed probe yields a probe that refuses
-// everything.
+// anonymously against the unsealed barrier. qrdb builds its own probe here
+// too, once per node: its boot-time listener gates on it, and its regular
+// listeners dispatch on it, serving the sealed window while the node barrier
+// is sealed. A nil sealed probe yields a probe that refuses everything.
+//
+// Building the probe reads sealed's Initialized once, bounded, so the barrier
+// remembers it and the window's barrier status answers its initialized flag
+// from memory (seal.StorageBarrier.InitializedCached). A read that fails is
+// retried by the first status request.
 func NewSealedWindowListenerProbe(sealed SealedWindowProbe, ceremonySvc service.CeremonyServicer) sealedwindow.ListenerProbe {
 	if sealed == nil {
 		return sealedwindow.OrFailClosed(nil)
+	}
+	if barrier, ok := sealed.(barrierInitializedProbe); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), enrollmentProbeTimeout)
+		_, _ = barrier.Initialized(ctx)
+		cancel()
 	}
 	p := sealedWindowListenerProbe{SealedWindowProbe: sealed, Admission: &sealedwindow.Admission{}}
 	if ceremonySvc != nil {
@@ -692,7 +727,7 @@ func NewSealedWindowListenerProbe(sealed SealedWindowProbe, ceremonySvc service.
 	return p
 }
 
-// listenerProbe returns the boot-time sealed-window listener's probe.
+// listenerProbe returns the node's sealed-window listener probe.
 func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
 	return s.sealedListener
 }
@@ -1343,6 +1378,13 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	for _, opt := range opts {
 		opt(&s.opts)
 	}
+	// The listener probe keys on the bare node barrier, so it is built before
+	// applyClusterSeal folds the cluster seal into sealedWindowProbe: a node
+	// the cluster holds while its own barrier is unsealed stays on the
+	// authenticated path, where barrier-cluster-unseal is served.
+	if s.opts.sealedWindowProbe != nil || s.opts.sealedWindowListener {
+		s.sealedListener = NewSealedWindowListenerProbe(s.opts.sealedWindowProbe, s.opts.ceremonySvc)
+	}
 	s.opts.applyClusterSeal()
 
 	// Option-based kvSvc/adminSvc override the positional parameters, allowing
@@ -1352,10 +1394,6 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	}
 	if s.opts.adminSvc != nil {
 		s.adminSvc = s.opts.adminSvc
-	}
-
-	if s.opts.sealedWindowListener {
-		s.sealedListener = NewSealedWindowListenerProbe(s.opts.sealedWindowProbe, s.opts.ceremonySvc)
 	}
 
 	s.wireStoreResolver()
@@ -1938,7 +1976,8 @@ func (s *Server) startREST() error {
 	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
 		// The boot-time listener's gate is installed by
 		// rest.NewSealedWindowServer below.
-		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe),
+			rest.WithSealedWindowDispatch(s.listenerProbe()))
 	}
 	if s.opts.awaitingAdminCredentialProbe != nil {
 		restOpts = append(restOpts, rest.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))
@@ -2227,7 +2266,8 @@ func (s *Server) startGRPC() error {
 		if s.opts.sealedWindowListener {
 			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowListener(s.listenerProbe()))
 		} else {
-			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe),
+				grpcapi.WithSealedWindowDispatch(s.listenerProbe()))
 		}
 	}
 	if s.opts.awaitingAdminCredentialProbe != nil {
@@ -2392,7 +2432,8 @@ func (s *Server) startQUIC() error {
 		if s.opts.sealedWindowListener {
 			quicOpts = append(quicOpts, quicapi.WithSealedWindowListener(s.listenerProbe()))
 		} else {
-			quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+			quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe),
+				quicapi.WithSealedWindowDispatch(s.listenerProbe()))
 		}
 	}
 	if s.opts.awaitingAdminCredentialProbe != nil {
@@ -2550,7 +2591,8 @@ func (s *Server) startUnix() error {
 		if s.opts.sealedWindowListener {
 			unixOpts = append(unixOpts, unixapi.WithSealedWindowListener(s.listenerProbe()))
 		} else {
-			unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+			unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe),
+				unixapi.WithSealedWindowDispatch(s.listenerProbe()))
 		}
 	}
 	if s.opts.awaitingAdminCredentialProbe != nil {
@@ -2727,7 +2769,8 @@ func (s *Server) startMCP() error {
 	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
 		// The boot-time listener's gate is installed by
 		// mcpapi.NewSealedWindowServer below.
-		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe),
+			mcpapi.WithSealedWindowDispatch(s.listenerProbe()))
 	}
 	if s.opts.awaitingAdminCredentialProbe != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))

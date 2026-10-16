@@ -163,11 +163,12 @@ var NewSealedWindowListenerProbe = qrdbserver.NewSealedWindowListenerProbe
 
 // NewSealedWindowHandler returns qrdb's sealed REST surface as an
 // http.Handler for a host to mount on its own listener (HTTP/3 included):
-// the whole sealed allowlist -- barrier status, initialize and unseal,
-// Shamir and recovery unseal, officer registration and share claims, the
-// ceremony verbs, the root token -- served anonymously while the barrier is
-// sealed and behind qrdb's sealed gate, GET /health answering the sealed
-// envelope, and everything refused once the barrier is unsealed. It is the
+// the sealed surface -- initialize and unseal, Shamir initialization,
+// officer registration and share claims, the unseal quorum, the first-boot
+// ceremony verbs -- served anonymously while the barrier is sealed, every
+// other route (GET /health and barrier status included) answering the typed
+// sealed refusal (503, code SEALED), and everything refused once the barrier
+// is unsealed. It is the
 // handler qrdb's own sealed listener serves, so a host mounts it instead of
 // copying sealed-window handlers. Any service may be nil; its routes then
 // answer as they do on a server without it. Build probe with
@@ -177,7 +178,8 @@ func NewSealedWindowHandler(barrier BarrierServicer, ceremony ServiceCeremonySer
 }
 
 // SealedWindowMCPTools returns qrdb's sealed MCP tools -- every tool on the
-// sealed allowlist the services can serve, qrdb_health included -- for a
+// sealed allowlist the services can serve, which has no health or status
+// tool because a sealed node answers the unseal call and nothing else -- for a
 // host to add to its own MCP server with AddTools. Each handler carries the
 // sealed gate and qrdb's error coding, so the tools answer exactly as on
 // qrdb's own sealed listener. Pass the same probe as NewSealedWindowHandler.

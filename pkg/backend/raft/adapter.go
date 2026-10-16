@@ -275,9 +275,14 @@ func (a *HostAdapter) GetShardRaftState(shardID uint64) (configChangeIndex uint6
 }
 
 // SyncGetShardMembership returns the shard's committed membership through
-// inner, so a test double answers it too.
+// inner, so a test double answers it too. The read confirms a read index
+// with the leader, so like SyncRead it holds through a moment in which this
+// node knows no leader -- the election a membership change that removed the
+// leader starts (see throughElection).
 func (a *HostAdapter) SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error) {
-	return a.inner.SyncGetShardMembership(ctx, shardID)
+	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (*quicraft.Membership, error) {
+		return a.inner.SyncGetShardMembership(ctx, shardID)
+	})
 }
 
 // NodeIdentity returns the host's own Raft member identity, or "" when no

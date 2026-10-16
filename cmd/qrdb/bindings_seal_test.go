@@ -260,37 +260,24 @@ func TestSealBinding_Unseal_PassphraseRoute(t *testing.T) {
 }
 
 // TestSealBinding_Unseal_ShamirRefused proves a Shamir barrier is never
-// unsealed from a single credential through the desktop binding: its shares
-// go one authenticated holder at a time through OfficerBinding.SubmitShare,
-// and the credential is not passed to the service at all.
+// unsealed from a single credential through the desktop binding: the server
+// refuses it (its shares go one authenticated holder at a time through
+// OfficerBinding.SubmitShare), and the binding asks for no status first,
+// because a sealed node answers the unseal call and nothing else.
 func TestSealBinding_Unseal_ShamirRefused(t *testing.T) {
 	svc := &mockBarrierService{
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
-			return &service.BarrierStatusInfo{Sealed: true, Strategy: "shamir"}, nil
+			t.Error("Unseal asked for barrier status; a sealed node refuses it")
+			return nil, seal.ErrSealed
 		},
 		unsealFn: func(_ context.Context, _ []byte) error {
-			t.Error("a Shamir barrier must not be handed a single credential")
-			return nil
+			return seal.ErrShamirUnsealRequiresQuorum
 		},
 	}
 	b := newSealTestBinding(t, svc)
 
-	var refused *ShamirHolderUnsealError
-	if _, err := b.Unseal("a-share"); !errors.As(err, &refused) {
-		t.Fatalf("Unseal on a shamir barrier = %v, want ShamirHolderUnsealError", err)
-	}
-}
-
-func TestSealBinding_Unseal_StatusError(t *testing.T) {
-	svc := &mockBarrierService{
-		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
-			return nil, errBarrierTest
-		},
-	}
-	b := newSealTestBinding(t, svc)
-
-	if _, err := b.Unseal("share"); !errors.Is(err, errBarrierTest) {
-		t.Fatalf("expected status error propagated, got %v", err)
+	if _, err := b.Unseal("a-share"); !errors.Is(err, seal.ErrShamirUnsealRequiresQuorum) {
+		t.Fatalf("Unseal on a shamir barrier = %v, want seal.ErrShamirUnsealRequiresQuorum", err)
 	}
 }
 
@@ -408,6 +395,7 @@ func TestSealBinding_Status_ShamirMapping(t *testing.T) {
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
 			return &service.BarrierStatusInfo{
 				Sealed:          true,
+				Initialized:     true,
 				Strategy:        "shamir",
 				InitializedAt:   time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
 				ShamirThreshold: 2,
@@ -425,7 +413,7 @@ func TestSealBinding_Status_ShamirMapping(t *testing.T) {
 		t.Error("expected Sealed=true")
 	}
 	if !status.Initialized {
-		t.Error("expected Initialized=true for non-zero InitializedAt")
+		t.Error("expected Initialized=true from the served flag")
 	}
 	if status.Strategy != "shamir" {
 		t.Errorf("expected strategy shamir, got %q", status.Strategy)
@@ -448,7 +436,7 @@ func TestSealBinding_Status_Uninitialized(t *testing.T) {
 		t.Fatalf("Status: %v", err)
 	}
 	if status.Initialized {
-		t.Error("expected Initialized=false for zero InitializedAt")
+		t.Error("expected Initialized=false when the node serves it unset")
 	}
 	if status.SharesRequired != 0 || status.SharesTotal != 0 {
 		t.Errorf("expected zero share counts for passphrase strategy, got %d/%d",
@@ -466,6 +454,69 @@ func TestSealBinding_Status_ServiceError(t *testing.T) {
 
 	if _, err := b.Status(); !errors.Is(err, errBarrierTest) {
 		t.Fatalf("expected status error propagated, got %v", err)
+	}
+}
+
+// TestSealBinding_Status_SealedRefusalIsInitializedAndSealed pins the GUI's
+// reading of a node the cluster seal holds or cuts off: such a node refuses
+// barrier status, and its own barrier is initialized, so the refusal reads as
+// initialized and sealed, never as an error the GUI would report as a failed
+// connection.
+func TestSealBinding_Status_SealedRefusalIsInitializedAndSealed(t *testing.T) {
+	svc := &mockBarrierService{
+		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
+			return nil, &transport.BarrierSealedError{Message: "barrier sealed"}
+		},
+	}
+	b := newSealTestBinding(t, svc)
+
+	status, err := b.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	want := SealStatus{Sealed: true, Initialized: true}
+	if *status != want {
+		t.Fatalf("Status = %+v, want %+v", *status, want)
+	}
+}
+
+// TestSealBinding_Status_SealedInitializedAnswer pins the GUI's "needs init"
+// check on a sealed node that is already initialized: its sealed surface
+// answers with the initialized flag and nothing else -- no strategy, no
+// initialization time -- and the GUI must not offer to initialize it.
+func TestSealBinding_Status_SealedInitializedAnswer(t *testing.T) {
+	svc := &mockBarrierService{
+		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{Sealed: true, Initialized: true}, nil
+		},
+	}
+	b := newSealTestBinding(t, svc)
+
+	status, err := b.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.Initialized || !status.Sealed {
+		t.Fatalf("Status = %+v, want sealed and initialized", *status)
+	}
+}
+
+// TestSealBinding_Status_PreInitAnswerNeedsInit is the other half: a node
+// waiting for its first boot answers, uninitialized.
+func TestSealBinding_Status_PreInitAnswerNeedsInit(t *testing.T) {
+	svc := &mockBarrierService{
+		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{Sealed: true, Strategy: "shamir", ShamirThreshold: 2, ShamirTotal: 3}, nil
+		},
+	}
+	b := newSealTestBinding(t, svc)
+
+	status, err := b.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Initialized || !status.Sealed {
+		t.Fatalf("Status = %+v, want sealed and uninitialized", *status)
 	}
 }
 
@@ -583,7 +634,7 @@ func TestSealBinding_ClusterUnseal_Errors(t *testing.T) {
 func TestSealBinding_Status_CarriesTheClusterSeal(t *testing.T) {
 	b := newSealTestBinding(t, &mockBarrierService{
 		statusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
-			return &service.BarrierStatusInfo{Strategy: "passphrase", InitializedAt: time.Now(),
+			return &service.BarrierStatusInfo{Strategy: "passphrase", Initialized: true, InitializedAt: time.Now(),
 				ClusterSeal: &clusterseal.Report{Active: true, Sealed: true, Epoch: 3, Local: clusterseal.LocalHeld}}, nil
 		},
 	})

@@ -1,6 +1,6 @@
 # Barrier and Seal — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 The barrier is the at-rest encryption boundary. Everything persistent passes
 through it, and when it is sealed the data path refuses every read and write.
@@ -260,7 +260,26 @@ quorum's completion, and a cluster seal record for the node barrier applied by e
 monitor -- goes through one whole-node seal (`service.SealWholeNode`, the
 same seal shutdown performs): every database barrier, then every tenant
 barrier, then the node barrier, so no database or tenant root key or DEK stays
-in memory while the node reports sealed. Every
+in memory while the node reports sealed.
+
+**Before any key goes, every Raft shard the node hosts is paused** -- the
+system shard and every tenant shard, on the node's own Raft host and on each
+volume tenant's host (go-quicraft's `Host.PauseShard`), all at once, and the
+keys are wiped only once every pause has returned. A paused shard stays
+loaded: nothing is shut down, its log, state machine and membership are kept,
+and a leader hands its leadership to a peer first. It refuses every proposal,
+read and session call with `ErrShardPaused`, which every transport answers as
+retryable unavailability (`503` on REST, `UNAVAILABLE` on gRPC, and the
+unavailable status on QUIC, MCP and the unix socket); it discards inbound Raft messages, applies
+nothing and takes no snapshot. A pause returns only when none of the shard's
+log, apply or snapshot work is in flight, so no write racing the seal reaches
+the Raft log once the keys are gone. No shard starts on the node from the
+pause until the resume: a tenant database shard or volume tenant host that the
+reconciler or a request would bring up in that window is refused as sealed,
+and a start already under way when the seal arrives finishes first, so the
+pause finds its shard. A pause that fails is reported, and the
+keys are wiped regardless. Shutdown and a failed boot wipe without pausing:
+the host is closing anyway. Every
 open stream ends with the node's sealed refusal, through the stream registry,
 exactly as a tenant seal ends that tenant's. Sealing the node barrier alone, as
 before, left every unsealed tenant's keys in memory behind a gate that only
@@ -285,10 +304,27 @@ whose cluster seal record is sealed or cannot be read. The re-unseal runs on a
 context detached from the unseal request; a tenant that fails to come back
 stays sealed, is retried at the next node unseal, and its own unseal recovers
 it at any time. A **self-managed** tenant stays sealed until its own admin
-unseals it with the tenant's credential. The operator impact: after a
+unseals it with the tenant's credential.
+
+**The shards resume after the keys.** Once the node barrier is unsealed and
+its system-managed tenants are back -- the same `OnUnsealed` observers, on
+every unseal path -- every shard the seal paused resumes (`Host.ResumeShard`):
+it rejoins as a follower and applies, in log order, what it held while paused.
+A tenant whose barrier is still sealed has its shards and volume host closed
+instead of resumed, as a tenant seal does, and they are rebuilt on first use
+once the tenant is unsealed. The resume is driven by the node's own key
+coming back, not by the cluster record, so a sealed system shard cannot wait
+on itself: once a quorum of nodes has unsealed, the system shard elects a
+leader and `cluster-unseal` can write the clear record. The operator impact: after a
 node seal, the platform operator's unseal restores the node and its
 system-managed tenants; every self-managed tenant on the node stays down until
 its own admin acts, exactly as after a restart.
+
+When an encryption migration replaces the node barrier with a keyed one, every
+observer of the old barrier moves to the new one, in the order it was
+registered: the system-managed tenant re-unseal, the shard resume and the
+volume lock and unlock all follow the barrier that now guards the node, and
+the old barrier keeps none.
 
 ## Transparent at-rest encryption
 
@@ -427,7 +463,10 @@ in this order:
 3. **Stop the barrier's shards.** A tenant seal closes the tenant's dedicated
    Raft shards and its volume host on this node (closed, not purged), so no
    apply ever runs against a sealed barrier. They are rebuilt on first use
-   once the tenant is unsealed again.
+   once the tenant is unsealed again. A node seal pauses every shard the node
+   hosts instead, the system shard included -- paused and loaded, not closed
+   -- and resumes them once the node barrier is unsealed (see *Sealing the
+   node barrier seals the whole node*).
 4. **Wipe the key.** The barrier is sealed, which destroys its key in memory.
 
 A **node-barrier** seal also wipes every tenant and database key held on that
@@ -455,10 +494,19 @@ or when the acknowledgement timeout (default 5 s) runs out — whichever comes
 first. Requests are refused throughout the wait; only the moment the key
 leaves memory is held back.
 
-go-quicraft marks a shard failed shortly after a log write fails against a
-sealed barrier, so a node whose node barrier has been sealed while running
-does not rejoin the system shard by being unsealed in place. **It is
-restarted, and unsealed at boot as usual** (see *Restart* below).
+The timeout bounds the whole wait, the node's own acknowledgement write
+included, and the node reads the acknowledgements from its own copy of the
+system shard rather than through a quorum. The nodes that see every
+acknowledgement first pause their shards, so the last node to look may find
+no quorum left to answer a quorum read. Acknowledgements are only ever added,
+so a local copy that holds all of them proves they committed: the local read
+can be late, never wrong.
+
+Its shards are paused before the wipe, so no log write ever runs against the
+sealed barrier, and **a node whose node barrier was sealed while running is
+unsealed in place**: the unseal restores its keys, then resumes its shards,
+and it rejoins the system shard. Restarting it and unsealing at boot works as
+well (see *Restart* below).
 
 ### Unseal stays per node
 
@@ -479,7 +527,10 @@ itself.**
 - **Node barrier.** A node whose node barrier is sealed in the cluster
   record comes back from its restart and boot-time unseal **held**: its key is
   in memory and its Raft log runs, so the cluster can form a quorum, but it
-  refuses every request except the sealed-window allowlist. `qrdb barrier
+  refuses every request except the sealed-window allowlist -- the unseal call
+  and `cluster-unseal` -- with the typed sealed refusal. Status is refused
+  too: a held node answers no `barrier status`, and the record's state is
+  read from a node that serves. `qrdb barrier
   cluster-unseal` — the platform operator, on any node that has unsealed
   itself — writes the clear record, and every held node then serves. A held
   node does not seal itself again for the epoch it is held at; only a newer
@@ -517,6 +568,12 @@ record is sealed is sealed on this node — including a system-managed tenant
 that auto-unsealed at boot — and the node barrier, if its record is sealed,
 comes up held as described above. The tenant shard reconciler does not start
 a tenant's shards while the tenant's record is sealed.
+
+A pause is not persisted: a restarted node starts with every shard unpaused.
+A node whose barrier is sealed at boot opens its Raft log only after the
+boot-time unseal, so it writes no barrier-encrypted log record while sealed;
+until then it serves barrier status and the unseal through the sealed-window
+listener.
 
 ### Rollout — the `cluster-seal` feature
 
@@ -849,8 +906,10 @@ as the barriers it serves, a standalone node with every tenant barrier.
 
 - **Sealed means refused, not degraded.** Once sealed, the data path returns
   `ErrBarrierSealed` for every read and write until unsealed.
-- **Only an allowlisted set of endpoints is reachable while sealed** — see
-  [seal/sealed-window.md](../seal/sealed-window.md).
+- **Only an allowlisted set of endpoints is reachable while sealed**, and
+  anonymously, on every listener: a re-sealed node serves exactly what a node
+  that booted sealed serves, and never reads the user store behind its sealed
+  barrier — see [seal/sealed-window.md](../seal/sealed-window.md).
 - **The `none` strategy stores plaintext.** It is for development, test
   fixtures, and deployments where the device already provides authenticated
   full-disk encryption. The go-xkms `--require-encryption` compliance gate

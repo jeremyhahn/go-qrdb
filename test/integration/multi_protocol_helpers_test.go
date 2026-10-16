@@ -489,7 +489,7 @@ func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
 	// REST, regardless of which transports the fully-booted host will
 	// later serve. `qrdb init` is the only system bootstrap (go-qrdb#548):
 	// one call brings the barrier up and issues the admin credential.
-	pollUntilCLISucceeds(t, cli, noAuthArgs, 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, noAuthArgs, 30*time.Second)
 	bootAdminIdentityVia(t, cli, noAuthArgs, "SOPIN-selfissued-1", "USERPIN-selfissued-1",
 		adminCertPath, adminKeyPath, "", "--barrier-strategy", "none")
 

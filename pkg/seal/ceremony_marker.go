@@ -58,7 +58,8 @@ func (b *StorageBarrier) CeremonyOperational(ctx context.Context) (bool, error) 
 // persisted metadata when this process has not initialized it itself, so it
 // answers correctly on a sealed barrier after a restart. Unlike Status, which
 // reports a metadata read failure as "never initialized", it returns the
-// error, so a caller gating on the answer can fail closed.
+// error, so a caller gating on the answer can fail closed. A successful read
+// is remembered for InitializedCached.
 func (b *StorageBarrier) Initialized(ctx context.Context) (bool, error) {
 	if v := b.initializedAt.Load(); v != nil {
 		if t, ok := v.(time.Time); ok && !t.IsZero() {
@@ -69,5 +70,26 @@ func (b *StorageBarrier) Initialized(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return !t.IsZero(), nil
+	if t.IsZero() {
+		b.uninitializedRead.Store(true)
+		return false, nil
+	}
+	b.initializedAt.Store(t)
+	return true, nil
+}
+
+// InitializedCached reports whether the barrier is initialized from memory
+// alone, never reading the store, and whether it knows: known once this
+// process has initialized the barrier, or has read its metadata through
+// Initialized or Status. It is the answer a sealed node gives on its sealed
+// surface (service.BarrierService.BarrierStatus), so a composer that serves
+// that surface reads Initialized once at boot
+// (server.NewSealedWindowListenerProbe does).
+func (b *StorageBarrier) InitializedCached() (initialized, known bool) {
+	if v := b.initializedAt.Load(); v != nil {
+		if t, ok := v.(time.Time); ok && !t.IsZero() {
+			return true, true
+		}
+	}
+	return false, b.uninitializedRead.Load()
 }

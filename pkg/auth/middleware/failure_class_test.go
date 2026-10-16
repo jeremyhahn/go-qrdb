@@ -148,6 +148,18 @@ var classCases = []struct {
 		err:   &rbac.ResolveError{Err: seal.ErrSealed},
 		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
+	{
+		// A node re-sealed at runtime: go-quicraft refuses the role read
+		// with its own sentinel, which is not seal.ErrSealed.
+		name:  "rbac.ResolveError -- the node barrier re-sealed under the role read",
+		err:   &rbac.ResolveError{Err: &role.StoreError{Op: "get", Detail: "primary lookup", Err: seal.ErrBarrierSealed}},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		name:  "BarrierSealedError -- the node barrier re-sealed under the user lookup",
+		err:   &BarrierSealedError{Err: seal.ErrBarrierSealed},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
 }
 
 // fakeTransientCauseError is a minimal error implementing the same ReadTransient()

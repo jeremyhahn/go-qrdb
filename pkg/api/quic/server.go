@@ -108,6 +108,10 @@ type Server struct {
 	// sealedWindowListener is the boot-time sealed-window listener's probe,
 	// and selects that listener's gate. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
+	// sealedWindowDispatch, on a regular listener, sends every request that
+	// arrives while it reports the node barrier sealed down the boot-time
+	// listener's path. Nil installs no dispatch.
+	sealedWindowDispatch sealedwindow.ListenerProbe
 
 	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
 	// gate (go-qrdb#548 review item 3). See WithAwaitingAdminCredentialProbe.
@@ -457,10 +461,9 @@ type sealedWindowProbe interface {
 }
 
 // WithSealedWindowProbe installs the sealed-window gate on the native QUIC
-// transport. While probe.IsSealed() returns true, every method whose
-// leading dot-separated component is not "barrier" or "ceremony" (plus
-// admin.Health / admin.Status) is rejected with wire.StatusUnavailable,
-// mirroring SealedWindowAllowlist on the gRPC/REST servers.
+// transport. While probe.IsSealed() returns true, every method not on
+// SealedWindowAllowlist is rejected with wire.StatusUnavailable carrying the
+// SEALED ErrorInfo, mirroring the gRPC/REST servers.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
@@ -480,6 +483,22 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
 		s.sealedWindowListener = probe
+	}
+}
+
+// WithSealedWindowDispatch makes a regular listener behave, while probe
+// reports the node barrier sealed, exactly as the boot-time sealed-window
+// listener does: such a request skips the awaiting-admin-credential gate,
+// authentication (and so any user-store lookup), the SO gate and replica
+// forwarding, and passes the gate WithSealedWindowListener installs -- the
+// allowlist, anonymously, and wire.StatusUnavailable for everything else.
+// Requests that arrive while it reports the barrier unsealed take the regular
+// path unchanged. Build probe with server.NewSealedWindowListenerProbe over
+// the bare node barrier, not the cluster-seal probe: a node a cluster seal
+// holds keeps its barrier unsealed and its authenticated cluster-unseal verb.
+func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowDispatch = probe
 	}
 }
 
@@ -1074,7 +1093,17 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// method past the gate by wrapping it in an OnBehalf envelope, and it
 	// cannot be made to skip real authentication via this gate unless the
 	// forwarded method is itself genuinely allowlisted.
-	awaiting := s.awaitingAdminCredentialProbe != nil && s.awaitingAdminCredentialProbe.AwaitingAdminCredential()
+	//
+	// A request that arrives while the node barrier is sealed takes the
+	// boot-time sealed-window listener's path instead (see
+	// WithSealedWindowDispatch): none of the gates above its own, and no
+	// forwarding.
+	sealedPath := s.sealedWindowDispatch != nil && s.sealedWindowDispatch.IsSealed()
+	gateProbe, gateListener := s.sealedWindowProbe, s.sealedWindowListener
+	if sealedPath {
+		gateProbe, gateListener = s.sealedWindowDispatch, s.sealedWindowDispatch
+	}
+	awaiting := !sealedPath && s.awaitingAdminCredentialProbe != nil && s.awaitingAdminCredentialProbe.AwaitingAdminCredential()
 	if awaiting && !awaitingAdminCredentialAllowed(method) {
 		st, body := errorFrame(wire.StatusUnavailable, &authmw.AwaitingAdminCredentialError{})
 		_ = s.writeResponse(stream, requestID, st, body)
@@ -1088,7 +1117,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		// the authority -- exactly as REST's RESTRoutePublic and gRPC's
 		// RegisterPublicGRPCMethods already skip auth for their own public
 		// routes.
-		if s.authMW != nil && !s.methodPerms.IsPublic(method) {
+		if !sealedPath && s.authMW != nil && !s.methodPerms.IsPublic(method) {
 			if onBehalf != nil {
 				ctx, err = s.authenticateOnBehalf(ctx, conn, method, payload, onBehalf)
 			} else {
@@ -1118,7 +1147,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		// there is a gate, auth middleware or not: with nothing to authenticate
 		// the caller there is no SO to admit, so it fails closed rather than
 		// being skipped.
-		if s.soGate != nil {
+		if !sealedPath && s.soGate != nil {
 			if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
 				soStatus, body := errorFrame(authzStatus(soErr), soErr)
 				_ = s.writeResponse(stream, requestID, soStatus, body)
@@ -1128,23 +1157,23 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		}
 
 		// Sealed-window gate: while the barrier is sealed, every method not on
-		// SealedWindowAllowlist is rejected so operators can still drive the
-		// unseal flow (barrier.*/ceremony.*) and liveness probes (admin.Health,
-		// admin.Status) over the native QUIC transport. On the boot-time
+		// SealedWindowAllowlist -- registered or not -- is refused with the
+		// typed sealed Unavailable, so a sealed node serves the unseal call
+		// and nothing else over the native QUIC transport. On the boot-time
 		// sealed-window listener every method is rejected once the barrier is
 		// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
-		if s.sealedWindowListener != nil {
+		if gateListener != nil {
 			// Held until this request completes; see sealedwindow.Admission.
 			_, transition := sealedWindowTransition[method]
-			defer s.sealedWindowListener.Admit(transition)()
+			defer gateListener.Admit(transition)()
 		}
-		if refusal, refused := s.sealedWindowRefusal(ctx, method); refused {
+		if refusal, refused := sealedWindowGateRefusal(ctx, method, gateProbe, gateListener); refused {
 			st, body := errorFrameBody(refusal.status, refusal.payload)
 			_ = s.writeResponse(stream, requestID, st, body)
 			s.logRequest(method, requestID, st, start)
 			return
 		}
-		if s.sealedWindowListener != nil {
+		if gateListener != nil {
 			ctx = sealedwindow.WithAnonymous(ctx)
 		}
 	}
@@ -1169,7 +1198,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 
 	resp, handlerErr := handler(ctx, payload)
 	if handlerErr != nil {
-		if s.forwarder != nil && onBehalf == nil {
+		if s.forwarder != nil && onBehalf == nil && !sealedPath {
 			if refusal, ok := errors.AsType[*placement.NotAReplicaError](handlerErr); ok {
 				if st, body, forwarded := s.forwarder.Forward(ctx, auth.IdentityFromContext(ctx), method, database, payload, refusal); forwarded {
 					_ = s.writeResponse(stream, requestID, st, body)

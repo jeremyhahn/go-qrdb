@@ -122,6 +122,10 @@ type Server struct {
 	// sealedWindowListener is the boot-time sealed-window listener's probe,
 	// and selects that listener's interceptors. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
+	// sealedWindowDispatch, on a regular socket, sends every call that
+	// arrives while it reports the node barrier sealed down the boot-time
+	// listener's chain. Nil installs no dispatch.
+	sealedWindowDispatch sealedwindow.ListenerProbe
 
 	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
 	// gate (go-qrdb#548 review item 3). See the TCP gRPC server's
@@ -341,6 +345,17 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
 		s.sealedWindowListener = probe
+	}
+}
+
+// WithSealedWindowDispatch makes a regular socket behave, while probe
+// reports the node barrier sealed, exactly as the boot-time sealed-window
+// listener does, as the TCP gRPC server's WithSealedWindowDispatch does:
+// such a call runs the chain WithSealedWindowListener builds instead of the
+// socket's own.
+func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowDispatch = probe
 	}
 }
 
@@ -623,75 +638,10 @@ func (s *Server) Start() error {
 		}
 	}
 
-	// Build the interceptor chains with the SAME ordering as the TCP gRPC
-	// server (pkg/api/grpc/server.go Start): recovery, then logging, then
-	// the database-scope interceptor, then — when configured — the auth
-	// middleware. Unix previously omitted the auth middleware entirely,
-	// letting RBAC-gated RPCs bypass authorization on this transport; it
-	// is now applied identically to TCP gRPC.
-	unaryInterceptors := []grpc.UnaryServerInterceptor{
-		// Unconditional (go-qrdb#560 review C): see pkg/api/grpc/server.go's
-		// identical entry -- a node with no AuthMiddleware still runs the SO
-		// PIN gate on ceremony-initialize's admin-credential retry.
-		authmw.RemoteAddrUnaryInterceptor,
-		recoveryInterceptor,
-		loggingInterceptor,
-		grpcpkg.DatabaseScopeUnaryInterceptor,
-	}
-	if s.authMW != nil {
-		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
-	}
-	// The SO gate installs whenever there is one, auth middleware or not:
-	// with nothing to authenticate the caller there is no SO to admit, so it
-	// fails closed rather than being skipped.
-	if s.soGate != nil {
-		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
-	}
-	var sealedUnary grpc.UnaryServerInterceptor
-	var sealedStream grpc.StreamServerInterceptor
-	switch {
-	case s.sealedWindowListener != nil:
-		sealedUnary = grpcpkg.SealedWindowListenerUnaryInterceptor(s.sealedWindowListener, nil)
-		sealedStream = grpcpkg.SealedWindowListenerStreamInterceptor(s.sealedWindowListener, nil)
-	case s.sealedWindowProbe != nil:
-		sealedUnary = grpcpkg.SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil)
-		sealedStream = grpcpkg.SealedWindowStreamInterceptor(s.sealedWindowProbe, nil)
-	}
-	if sealedUnary != nil {
-		unaryInterceptors = append(unaryInterceptors, sealedUnary)
-	}
-	// Replica forwarding sits innermost, as on TCP gRPC: the caller is
-	// authenticated and admitted here before a refusal is forwarded.
 	if s.replicaForwarding != nil {
 		s.forwarder = grpcpkg.NewReplicaForwarder(*s.replicaForwarding, s.tls)
-		unaryInterceptors = append(unaryInterceptors, s.forwarder.UnaryInterceptor())
 	}
-	streamInterceptors := []grpc.StreamServerInterceptor{
-		streamRecoveryInterceptor,
-		streamLoggingInterceptor,
-		grpcpkg.DatabaseScopeStreamInterceptor,
-	}
-	if s.authMW != nil {
-		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
-	}
-	if s.soGate != nil {
-		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
-	}
-	if sealedStream != nil {
-		streamInterceptors = append(streamInterceptors, sealedStream)
-	}
-
-	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) is
-	// composed exactly as the TCP gRPC server composes it: wrapping the
-	// chain's own combined form, not appended as a chain member, since it
-	// must be able to skip the whole chain -- auth included -- for the two
-	// methods it allows.
-	unaryChain := grpcpkg.ChainUnaryServerInterceptors(unaryInterceptors...)
-	streamChain := grpcpkg.ChainStreamServerInterceptors(streamInterceptors...)
-	if s.awaitingAdminCredentialProbe != nil {
-		unaryChain = grpcpkg.AwaitingAdminCredentialUnaryInterceptor(s.awaitingAdminCredentialProbe, grpcpkg.AwaitingAdminCredentialAllowlist, unaryChain)
-		streamChain = grpcpkg.AwaitingAdminCredentialStreamInterceptor(s.awaitingAdminCredentialProbe, grpcpkg.AwaitingAdminCredentialAllowlist, streamChain)
-	}
+	unaryChain, streamChain := s.admissionChains()
 	maxStreams := s.maxConcurrentStreams
 	if maxStreams == 0 {
 		maxStreams = grpcpkg.DefaultMaxConcurrentStreams
@@ -900,6 +850,108 @@ func (s *Server) Start() error {
 	}()
 
 	return nil
+}
+
+// admissionPath is one path a call takes through the socket's interceptors,
+// as on TCP gRPC: the authentication, SO gate, sealed-window gate and replica
+// forwarder it passes. A nil field installs nothing; listener, when set,
+// selects the boot-time sealed-window listener's gate over probe's.
+// admissionChains composes the server's unary and stream interceptors.
+func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+	unaryChain, streamChain := s.interceptorChains(admissionPath{
+		authMW:    s.authMW,
+		soGate:    s.soGate,
+		probe:     s.sealedWindowProbe,
+		listener:  s.sealedWindowListener,
+		forwarder: s.forwarder,
+	})
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) is
+	// composed exactly as the TCP gRPC server composes it: wrapping the
+	// chain's own combined form, not appended as a chain member, since it
+	// must be able to skip the whole chain -- auth included -- for the two
+	// methods it allows.
+	if s.awaitingAdminCredentialProbe != nil {
+		unaryChain = grpcpkg.AwaitingAdminCredentialUnaryInterceptor(s.awaitingAdminCredentialProbe, grpcpkg.AwaitingAdminCredentialAllowlist, unaryChain)
+		streamChain = grpcpkg.AwaitingAdminCredentialStreamInterceptor(s.awaitingAdminCredentialProbe, grpcpkg.AwaitingAdminCredentialAllowlist, streamChain)
+	}
+	// A call that arrives while the node barrier is sealed takes the
+	// boot-time sealed-window listener's chain instead, exactly as on TCP
+	// gRPC (see grpcpkg.WithSealedWindowDispatch).
+	if s.sealedWindowDispatch != nil {
+		sealedUnary, sealedStream := s.interceptorChains(admissionPath{listener: s.sealedWindowDispatch})
+		unaryChain = grpcpkg.SealedWindowDispatchUnaryInterceptor(s.sealedWindowDispatch, sealedUnary, unaryChain)
+		streamChain = grpcpkg.SealedWindowDispatchStreamInterceptor(s.sealedWindowDispatch, sealedStream, streamChain)
+	}
+	return unaryChain, streamChain
+}
+
+type admissionPath struct {
+	authMW    *authmw.AuthMiddleware
+	soGate    *authmw.SOGate
+	probe     sealedWindowProbe
+	listener  sealedwindow.ListenerProbe
+	forwarder *grpcpkg.ReplicaForwarder
+}
+
+// interceptorChains builds the combined unary and stream interceptors of p
+// with the SAME ordering as the TCP gRPC server (pkg/api/grpc/server.go
+// interceptorChains): recovery, then logging, then the database-scope
+// interceptor, then -- when configured -- the auth middleware, the SO gate,
+// the sealed-window gate and the replica forwarder. Unix previously omitted
+// the auth middleware entirely, letting RBAC-gated RPCs bypass authorization
+// on this transport; it is now applied identically to TCP gRPC.
+func (s *Server) interceptorChains(p admissionPath) (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		// Unconditional (go-qrdb#560 review C): see pkg/api/grpc/server.go's
+		// identical entry -- a node with no AuthMiddleware still runs the SO
+		// PIN gate on ceremony-initialize's admin-credential retry.
+		authmw.RemoteAddrUnaryInterceptor,
+		recoveryInterceptor,
+		loggingInterceptor,
+		grpcpkg.DatabaseScopeUnaryInterceptor,
+	}
+	if p.authMW != nil {
+		unaryInterceptors = append(unaryInterceptors, p.authMW.UnaryInterceptor())
+	}
+	// The SO gate installs whenever there is one, auth middleware or not:
+	// with nothing to authenticate the caller there is no SO to admit, so it
+	// fails closed rather than being skipped.
+	if p.soGate != nil {
+		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(p.soGate))
+	}
+	var sealedUnary grpc.UnaryServerInterceptor
+	var sealedStream grpc.StreamServerInterceptor
+	switch {
+	case p.listener != nil:
+		sealedUnary = grpcpkg.SealedWindowListenerUnaryInterceptor(p.listener, nil)
+		sealedStream = grpcpkg.SealedWindowListenerStreamInterceptor(p.listener, nil)
+	case p.probe != nil:
+		sealedUnary = grpcpkg.SealedWindowUnaryInterceptor(p.probe, nil)
+		sealedStream = grpcpkg.SealedWindowStreamInterceptor(p.probe, nil)
+	}
+	if sealedUnary != nil {
+		unaryInterceptors = append(unaryInterceptors, sealedUnary)
+	}
+	// Replica forwarding sits innermost, as on TCP gRPC: the caller is
+	// authenticated and admitted here before a refusal is forwarded.
+	if p.forwarder != nil {
+		unaryInterceptors = append(unaryInterceptors, p.forwarder.UnaryInterceptor())
+	}
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		streamRecoveryInterceptor,
+		streamLoggingInterceptor,
+		grpcpkg.DatabaseScopeStreamInterceptor,
+	}
+	if p.authMW != nil {
+		streamInterceptors = append(streamInterceptors, p.authMW.StreamInterceptor())
+	}
+	if p.soGate != nil {
+		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(p.soGate))
+	}
+	if sealedStream != nil {
+		streamInterceptors = append(streamInterceptors, sealedStream)
+	}
+	return grpcpkg.ChainUnaryServerInterceptors(unaryInterceptors...), grpcpkg.ChainStreamServerInterceptors(streamInterceptors...)
 }
 
 // Stop gracefully shuts down the gRPC server, allowing in-flight RPCs

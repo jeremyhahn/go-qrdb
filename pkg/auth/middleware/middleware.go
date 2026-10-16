@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -541,6 +542,13 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				identity.Metadata[tenantIAMSealedMetadataKey] = "true"
 				ctx = auth.WithIdentity(ctx, identity)
 				return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
+			}
+			// The node barrier is sealed: go-quicraft refuses every store
+			// read on a node re-sealed at runtime, and qrdb's own sentinel
+			// reports one that sealed between resolve and read. That is the
+			// sealed state, answered as such, not a store outage.
+			if errors.Is(err, seal.ErrBarrierSealed) || errors.Is(err, seal.ErrSealed) {
+				return ctx, nil, &BarrierSealedError{Err: err}
 			}
 			// If user not found, proceed with base identity (no enrichment) --
 			// unless the binding posture is "required", under which a

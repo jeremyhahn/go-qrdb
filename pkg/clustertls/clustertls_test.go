@@ -843,3 +843,72 @@ func TestPersistCA_WriteError(t *testing.T) {
 		t.Errorf("expected *clustertls.WriteError, got %T: %v", err, err)
 	}
 }
+
+// blockFile puts a non-empty directory at dataDir/name, so writing a file
+// there fails.
+func blockFile(t *testing.T, dataDir, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dataDir, name, "occupied"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPersistMaterial_WritesCAPEMLast: ca.pem marks the set complete. A write
+// that fails before it leaves no ca.pem, and the CA key is already on disk
+// when ca.pem is written.
+func TestPersistMaterial_WritesCAPEMLast(t *testing.T) {
+	t.Parallel()
+
+	m := &clustertls.Material{
+		CACertPEM: []byte("ca"),
+		CertPEM:   []byte("cert"),
+		KeyPEM:    []byte("key"),
+		CAKeyPEM:  []byte("ca-key"),
+	}
+	for _, earlier := range []string{"ca-key.pem", "node-key.pem", "node-cert.pem"} {
+		dir := t.TempDir()
+		blockFile(t, dir, earlier)
+		if err := clustertls.PersistMaterial(m, dir); err == nil {
+			t.Fatalf("%s blocked: expected a write error", earlier)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "ca.pem")); !os.IsNotExist(err) {
+			t.Errorf("%s blocked: ca.pem written before it (stat err = %v)", earlier, err)
+		}
+	}
+
+	dir := t.TempDir()
+	blockFile(t, dir, "ca.pem")
+	if err := clustertls.PersistMaterial(m, dir); err == nil {
+		t.Fatal("ca.pem blocked: expected a write error")
+	}
+	for _, f := range []string{"ca-key.pem", "node-key.pem", "node-cert.pem"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("ca.pem blocked: %s not written before it: %v", f, err)
+		}
+	}
+}
+
+// TestPersistCA_WritesCAPEMLast: PersistCA writes the key before ca.pem, so a
+// reader that sees ca.pem sees the key, and a failed key write leaves no
+// ca.pem.
+func TestPersistCA_WritesCAPEMLast(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	blockFile(t, dir, "ca-key.pem")
+	if err := clustertls.PersistCA([]byte("cert"), []byte("key"), dir); err == nil {
+		t.Fatal("ca-key.pem blocked: expected a write error")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); !os.IsNotExist(err) {
+		t.Errorf("ca-key.pem blocked: ca.pem written before it (stat err = %v)", err)
+	}
+
+	dir = t.TempDir()
+	blockFile(t, dir, "ca.pem")
+	if err := clustertls.PersistCA([]byte("cert"), []byte("key"), dir); err == nil {
+		t.Fatal("ca.pem blocked: expected a write error")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "ca-key.pem")); err != nil || string(got) != "key" {
+		t.Errorf("ca.pem blocked: ca-key.pem = %q, %v; want it written first", got, err)
+	}
+}

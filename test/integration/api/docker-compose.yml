@@ -156,14 +156,16 @@ services:
           sleep 1
         done
         [ -s /data/raft/ca.pem ] || fail "no CA certificate at /data/raft/ca.pem"
-        # The sealed-window listener answers GET /v1/barrier/status (on its
-        # allowlist) with no client certificate. The public /health endpoint
-        # cannot be used here: it stays 503 until the barrier is unsealed, and
-        # bootstrapping is what unseals it.
+        # A sealed node serves only the unseal call: the sealed-window
+        # listener refuses barrier status with the typed sealed refusal
+        # ("transport: barrier sealed"), and that refusal is the proof it is
+        # up. The public /health endpoint cannot be used here: it is refused
+        # until the barrier is unsealed, and bootstrapping is what unseals it.
         echo "Waiting for sealed-window admin listener..."
         READY=""
         for i in $$(seq 1 60); do
-          if $$QRDB barrier status > /dev/null 2>&1; then READY=1; break; fi
+          OUT=$$($$QRDB barrier status 2>&1) && { READY=1; break; }
+          case "$$OUT" in *"transport: barrier sealed"*) READY=1; break ;; esac
           sleep 1
         done
         [ -n "$$READY" ] || fail "sealed-window admin listener never answered"
@@ -295,7 +297,8 @@ services:
         echo "Waiting for sealed-window admin listener..."
         READY=""
         for i in $$(seq 1 60); do
-          if $$QRDB barrier status > /dev/null 2>&1; then READY=1; break; fi
+          OUT=$$($$QRDB barrier status 2>&1) && { READY=1; break; }
+          case "$$OUT" in *"transport: barrier sealed"*) READY=1; break ;; esac
           sleep 1
         done
         [ -n "$$READY" ] || fail "sealed-window admin listener never answered"

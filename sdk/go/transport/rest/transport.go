@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -166,12 +167,11 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	// Verify connectivity with a reachability probe. We accept the server as
 	// connectable when /health returns 200 (healthy) OR 503 (sealed /
-	// not-ready). A sealed barrier returns 503, yet the server is up and the
-	// allowlisted barrier/seal endpoints (status, unseal, shamir/*) MUST be
-	// reachable so an operator can drive unseal over REST — gating Connect on
-	// 200 alone would make the CLI unable to talk to a sealed node at all.
-	// Other statuses (e.g. 500) and transport errors are treated as
-	// unreachable.
+	// not-ready). A sealed node refuses /health with 503, yet it is up and
+	// serves the unseal call, which an operator MUST be able to reach over
+	// REST — gating Connect on 200 alone would make the CLI unable to unseal
+	// a node at all. Other statuses (e.g. 500) and transport errors are
+	// treated as unreachable.
 	if !t.reachable(ctx) {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -1045,6 +1045,11 @@ func (t *Transport) decodeErrorResponse(method string, resp *http.Response) erro
 		msg = errResp.Error
 	} else if msg = strings.TrimSpace(string(body)); msg == "" {
 		msg = resp.Status
+	}
+	// A 503 alone also means a node that is not ready; the SEALED code is what
+	// makes it the sealed node's refusal.
+	if resp.StatusCode == http.StatusServiceUnavailable && errResp.Code == sealedwindow.ReasonSealed {
+		return &transport.BarrierSealedError{Message: msg}
 	}
 
 	return &transport.RequestError{

@@ -17,6 +17,7 @@ package grpc
 import (
 	"context"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,15 +36,15 @@ type sealedWindowProbe interface {
 }
 
 // SealedWindowAllowlist is the set of QRDBService methods that remain
-// operative while the barrier is sealed. Each entry is a fully-qualified
-// gRPC method path ("/qrdb.v1.QRDBService/Health"), matched case-sensitively
-// against info.FullMethod in full. Methods not in this list return
-// codes.Unavailable while the barrier is sealed.
+// operative while the barrier is sealed: the unseal call and the first-boot
+// verbs. Each entry is a fully-qualified gRPC method path
+// ("/qrdb.v1.QRDBService/BarrierUnseal"), matched case-sensitively against
+// info.FullMethod in full. Methods not in this list -- Health and Status
+// included -- return SealedError while the barrier is sealed.
 //
 // The list is derived from the canonical transport-neutral verb table in
-// pkg/api/sealedwindow so it cannot drift from the other transports (every
-// Barrier* and Ceremony* unseal-flow method, plus Health and Status for
-// liveness probes) and is qualified with the QRDBService service name taken
+// pkg/api/sealedwindow so it cannot drift from the other transports and is
+// qualified with the QRDBService service name taken
 // from the generated ServiceDesc. Matching on the full service-qualified path
 // — rather than the bare method tail — means a same-named method on any OTHER
 // co-registered gRPC service (e.g. "/qrdb.v1.TenantBarrierService/Status") is
@@ -51,9 +52,10 @@ type sealedWindowProbe interface {
 var SealedWindowAllowlist = sealedwindow.GRPCFullMethodAllowlist(pb.QRDBService_ServiceDesc.ServiceName)
 
 // SealedWindowUnaryInterceptor returns a grpc.UnaryServerInterceptor
-// that rejects every method NOT on the allowlist with
-// codes.Unavailable + message "barrier sealed" while the supplied
-// barrier is sealed. Once the barrier is unsealed the interceptor
+// that rejects every method NOT on the allowlist with SealedError while
+// the supplied barrier is sealed. It has no enrollment probe, so it refuses
+// the first-boot verbs too: in qrdb it sees only a cluster-held node, whose
+// barrier is initialized. Once the barrier is unsealed the interceptor
 // becomes a passthrough; on re-seal it engages again. The same
 // interceptor instance is safe to keep installed across the
 // lifetime of the process. It is the gate of a regular listener, whose
@@ -61,7 +63,7 @@ var SealedWindowAllowlist = sealedwindow.GRPCFullMethodAllowlist(pb.QRDBService_
 //
 // allowlist may be nil, in which case SealedWindowAllowlist is
 // used. Entries are fully-qualified gRPC method paths
-// ("/qrdb.v1.QRDBService/Health") matched in full against info.FullMethod.
+// ("/qrdb.v1.QRDBService/BarrierUnseal") matched in full against info.FullMethod.
 func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.UnaryServerInterceptor {
 	return sealedWindowUnary(barrier, allowlist, nil)
 }
@@ -72,8 +74,8 @@ func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string)
 // the barrier is unsealed it refuses EVERY method with codes.Unavailable:
 // that listener runs without authentication, so it must not serve anything
 // against an unsealed barrier, even in the moment before it is stopped.
-// While sealed it also refuses officer and recovery-officer registration with
-// codes.PermissionDenied once probe.EnrollmentOpen reports enrollment closed.
+// While sealed it serves the first-boot verbs only while probe.EnrollmentOpen
+// reports enrollment open, and refuses them with SealedError otherwise.
 // The probe is sampled on every call; a nil probe refuses every call.
 func SealedWindowListenerUnaryInterceptor(probe sealedwindow.ListenerProbe, allowlist []string) grpc.UnaryServerInterceptor {
 	probe = sealedwindow.OrFailClosed(probe)
@@ -94,6 +96,33 @@ func SealedWindowStreamInterceptor(barrier sealedWindowProbe, allowlist []string
 func SealedWindowListenerStreamInterceptor(probe sealedwindow.ListenerProbe, allowlist []string) grpc.StreamServerInterceptor {
 	probe = sealedwindow.OrFailClosed(probe)
 	return sealedWindowStream(probe, allowlist, probe)
+}
+
+// SealedWindowDispatchUnaryInterceptor returns the unary interceptor of a
+// regular listener that a re-sealed node shares with the boot-time
+// sealed-window listener: a call that arrives while probe reports the barrier
+// sealed runs sealed, the boot-time listener's chain, and every other call
+// runs regular, the listener's own. The gate inside sealed samples probe
+// again, so a call dispatched just before an unseal is refused rather than
+// served anonymously against the unsealed barrier.
+func SealedWindowDispatchUnaryInterceptor(probe sealedwindow.ListenerProbe, sealed, regular grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if probe.IsSealed() {
+			return sealed(ctx, req, info, handler)
+		}
+		return regular(ctx, req, info, handler)
+	}
+}
+
+// SealedWindowDispatchStreamInterceptor returns the streaming-RPC sibling of
+// SealedWindowDispatchUnaryInterceptor.
+func SealedWindowDispatchStreamInterceptor(probe sealedwindow.ListenerProbe, sealed, regular grpc.StreamServerInterceptor) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if probe.IsSealed() {
+			return sealed(srv, ss, info, handler)
+		}
+		return regular(srv, ss, info, handler)
+	}
 }
 
 // sealedWindowUnary applies sealedwindow.Decide to every unary call. listener
@@ -166,10 +195,22 @@ func sealedWindowAllowSet(allowlist []string) map[string]struct{} {
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its
 // status. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]error{
-	sealedwindow.RefuseSealed:           status.Error(codes.Unavailable, "barrier sealed"),
-	sealedwindow.RefuseUnconfirmed:      mapServiceError(&clusterseal.SealStateUnconfirmedError{}),
-	sealedwindow.RefuseClosed:           status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
-	sealedwindow.RefuseEnrollmentClosed: status.Error(codes.PermissionDenied, sealedwindow.EnrollmentClosedMessage),
+	sealedwindow.RefuseSealed:      SealedError(),
+	sealedwindow.RefuseUnconfirmed: mapServiceError(&clusterseal.SealStateUnconfirmedError{}),
+	sealedwindow.RefuseClosed:      status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
+}
+
+// SealedError returns the sealed refusal a sealed node answers every call
+// but the unseal call with: codes.Unavailable carrying a google.rpc.ErrorInfo
+// (domain sealedwindow.ErrorDomain, reason sealedwindow.ReasonSealed), so a
+// client tells "up and sealed" apart from any other Unavailable without
+// parsing the message.
+func SealedError() error {
+	st := status.New(codes.Unavailable, sealedwindow.SealedMessage)
+	// WithDetails fails only for an OK status or a detail that cannot be
+	// marshalled, and this is neither.
+	detailed, _ := st.WithDetails(&errdetails.ErrorInfo{Domain: sealedwindow.ErrorDomain, Reason: sealedwindow.ReasonSealed})
+	return detailed.Err()
 }
 
 // sealedWindowTransition holds the QRDBService methods of the Transition
@@ -177,12 +218,17 @@ var sealedWindowRefusals = map[sealedwindow.Decision]error{
 var sealedWindowTransition = sealedwindow.GRPCFullMethodTransition(pb.QRDBService_ServiceDesc.ServiceName)
 
 // sealedWindowPreOperationalOnly holds the QRDBService methods of the
-// PreOperationalOnly verbs (officer and recovery-officer registration).
+// PreOperationalOnly verbs: the first-boot verbs a sealed node serves only
+// while enrollment is open.
 var sealedWindowPreOperationalOnly = sealedwindow.GRPCFullMethodPreOperationalOnly(pb.QRDBService_ServiceDesc.ServiceName)
 
 // sealedWindowAuthenticatedOnly holds the QRDBService methods of the
 // AuthenticatedOnly verbs (cluster unseal), never served anonymously.
 var sealedWindowAuthenticatedOnly = sealedwindow.GRPCFullMethodAuthenticatedOnly(pb.QRDBService_ServiceDesc.ServiceName)
+
+// sealedWindowListenerOnly holds the QRDBService methods of the ListenerOnly
+// verbs (barrier status), never served by a sealed regular listener.
+var sealedWindowListenerOnly = sealedwindow.GRPCFullMethodListenerOnly(pb.QRDBService_ServiceDesc.ServiceName)
 
 // sealedWindowAdmit returns nil when the gate admits fullMethod, and the
 // refusal status otherwise.
@@ -194,16 +240,17 @@ func sealedWindowAdmit(ctx context.Context, barrier sealedWindowProbe, fullMetho
 		Allowlisted:       methodAllowed(fullMethod, allowSet),
 		Listener:          listener != nil,
 		AuthenticatedOnly: methodAllowed(fullMethod, sealedWindowAuthenticatedOnly),
+		ListenerOnly:      methodAllowed(fullMethod, sealedWindowListenerOnly),
 	}
-	if req.Listener && req.Sealed && req.Allowlisted && methodAllowed(fullMethod, sealedWindowPreOperationalOnly) {
+	if req.Sealed && req.Allowlisted && methodAllowed(fullMethod, sealedWindowPreOperationalOnly) {
 		req.PreOperationalOnly = true
-		req.EnrollmentOpen = listener.EnrollmentOpen(ctx)
+		req.EnrollmentOpen = listener != nil && listener.EnrollmentOpen(ctx)
 	}
 	return sealedWindowRefusals[sealedwindow.Decide(req)]
 }
 
 // methodAllowed checks whether the fully-qualified info.FullMethod
-// ("/qrdb.v1.QRDBService/Health") is in the allowlist. The comparison is on
+// ("/qrdb.v1.QRDBService/BarrierUnseal") is in the allowlist. The comparison is on
 // the FULL service-qualified path, not the bare method tail, so a same-named
 // method on a different co-registered gRPC service is not admitted.
 func methodAllowed(fullMethod string, allowSet map[string]struct{}) bool {

@@ -144,6 +144,7 @@ func renderBarrierStatus(resp *transport.BarrierStatusResponse) error {
 		return printYAML(resp)
 	default:
 		_, _ = fmt.Fprintf(outputWriter, "Sealed:          %t\n", resp.Sealed)
+		_, _ = fmt.Fprintf(outputWriter, "Initialized:     %t\n", resp.Initialized)
 		_, _ = fmt.Fprintf(outputWriter, "Strategy:        %s\n", resp.Strategy)
 		_, _ = fmt.Fprintf(outputWriter, "HardwareBacked:  %t\n", resp.HardwareBacked)
 		_, _ = fmt.Fprintf(outputWriter, "InitializedAt:   %s\n", resp.InitializedAt)

@@ -33,11 +33,13 @@ require (
 	github.com/jeremyhahn/go-enclave v0.8.0-alpha
 	github.com/jeremyhahn/go-objstore v0.4.0-alpha
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.49.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.20.0
+	// go-quicraft: the newest tag (#659), the planned 0.21.0-rc.3 cut as an
+	// alpha. It carries the sealed-shard hold (go-quicraft#296).
+	github.com/jeremyhahn/go-quicraft v0.22.0-alpha
 	github.com/jeremyhahn/go-truststrap v0.6.0-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
-	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.63.0
 	github.com/spf13/cobra v1.10.2
@@ -51,11 +53,11 @@ require (
 	go.etcd.io/etcd/api/v3 v3.7.2
 	go.etcd.io/etcd/client/v3 v3.7.2
 	go.mongodb.org/mongo-driver v1.17.10
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.60.0
-	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.46.0
+	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	golang.org/x/tools v0.51.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260810153831-ec0a7760b754
 	google.golang.org/grpc v1.83.2
@@ -163,7 +165,7 @@ require (
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -234,7 +236,7 @@ require (
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/api v0.293.0 // indirect
 	google.golang.org/genproto v0.0.0-20260810153831-ec0a7760b754 // indirect

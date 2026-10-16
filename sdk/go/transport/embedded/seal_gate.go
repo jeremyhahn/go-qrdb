@@ -82,13 +82,24 @@ var ungatedLifecycleMethods = map[string]struct{}{
 // derived once from the canonical table every transport derives from.
 var embeddedAllowlist = sealedwindow.EmbeddedAllowlist()
 
+// embeddedPreOperationalOnly holds this transport's first-boot verbs. The
+// embedded transport exists only once the node has unsealed, so its barrier
+// is initialized and enrollment closed: while sealed it refuses them.
+var embeddedPreOperationalOnly = sealedwindow.EmbeddedPreOperationalOnly()
+
+// embeddedListenerOnly holds this transport's ListenerOnly verbs (barrier
+// status). Only the boot-time sealed-window listener serves them while
+// sealed, and the embedded transport is always the regular side of the gate.
+var embeddedListenerOnly = sealedwindow.EmbeddedListenerOnly()
+
 // awaitingAdminCredentialAllowlist is the awaiting-admin-credential
 // allowlist for this transport (ceremony status and ceremony-initialize),
 // derived from the same canonical table.
 var awaitingAdminCredentialAllowlist = sealedwindow.EmbeddedAwaitingAdminCredential()
 
 // gate refuses method while the seal probe is closed, unless the method is
-// on the sealed-window allowlist, and separately refuses it while the node
+// the unseal call (the only allowlisted method a sealed, initialized node
+// serves), and separately refuses it while the node
 // is awaiting admin credential (go-qrdb#548 review item 3) unless the
 // method is one of the two that state still serves. It runs first in every
 // request method, so a refused request reads none of its arguments. The
@@ -105,8 +116,16 @@ func (t *Transport) gate(method string) error {
 		return nil
 	}
 	_, allowlisted := embeddedAllowlist[method]
+	_, preOp := embeddedPreOperationalOnly[method]
+	_, listenerOnly := embeddedListenerOnly[method]
 	sealed, unconfirmed := sealedwindow.Sample(t.sealProbe)
-	decision := sealedwindow.Decide(sealedwindow.Request{Sealed: sealed, Unconfirmed: unconfirmed, Allowlisted: allowlisted})
+	decision := sealedwindow.Decide(sealedwindow.Request{
+		Sealed:             sealed,
+		Unconfirmed:        unconfirmed,
+		Allowlisted:        allowlisted,
+		PreOperationalOnly: preOp,
+		ListenerOnly:       listenerOnly,
+	})
 	if decision == sealedwindow.Serve {
 		return nil
 	}

@@ -107,8 +107,11 @@ func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare f
 	retry := time.NewTicker(20 * time.Millisecond)
 	defer retry.Stop()
 	for {
-		code, _, err := f.do(ctx, http.MethodGet, "/v1/barrier/status", nil)
-		if err == nil && code == http.StatusOK {
+		// A sealed node answers nothing but unseal and, before it is
+		// initialized, barrier status, so "up and sealed" is the typed sealed
+		// refusal on a route off the allowlist in every barrier state.
+		code, body, err := f.do(ctx, http.MethodGet, "/health", nil)
+		if err == nil && code == http.StatusServiceUnavailable && strings.Contains(body, `"code":"SEALED"`) {
 			return f
 		}
 		select {
@@ -197,8 +200,8 @@ func TestSealedWindow_OfficerEnrollmentClosedAfterInitialization(t *testing.T) {
 	if strings.Contains(out, "BEGIN CERTIFICATE") {
 		t.Fatalf("an anonymous caller enrolled an officer after initialization and was issued a CA-signed certificate (status %d)", code)
 	}
-	if code != http.StatusForbidden || !strings.Contains(out, `"ENROLLMENT_CLOSED"`) {
-		t.Fatalf("anonymous officer registration after initialization: status %d, body %s; want 403 ENROLLMENT_CLOSED", code, out)
+	if code != http.StatusServiceUnavailable || !strings.Contains(out, `"code":"SEALED"`) {
+		t.Fatalf("anonymous officer registration after initialization: status %d, body %s; want 503 SEALED", code, out)
 	}
 }
 
@@ -213,8 +216,8 @@ func TestSealedWindow_OfficerEnrollmentClosedByOperationalMarker(t *testing.T) {
 	})
 
 	code, out := f.registerAnonymously(t, "mallory")
-	if code != http.StatusForbidden || !strings.Contains(out, `"ENROLLMENT_CLOSED"`) {
-		t.Fatalf("anonymous officer registration with the operational marker set: status %d, body %s; want 403 ENROLLMENT_CLOSED", code, out)
+	if code != http.StatusServiceUnavailable || !strings.Contains(out, `"code":"SEALED"`) {
+		t.Fatalf("anonymous officer registration with the operational marker set: status %d, body %s; want 503 SEALED", code, out)
 	}
 }
 
@@ -273,8 +276,8 @@ func TestSealedWindow_EnrollmentProbeIsBounded(t *testing.T) {
 	}()
 	select {
 	case r := <-done:
-		if r.code != http.StatusForbidden || !strings.Contains(r.out, `"ENROLLMENT_CLOSED"`) {
-			t.Fatalf("registration with an unreadable marker: status %d, body %s; want 403 ENROLLMENT_CLOSED (fail closed)", r.code, r.out)
+		if r.code != http.StatusServiceUnavailable || !strings.Contains(r.out, `"code":"SEALED"`) {
+			t.Fatalf("registration with an unreadable marker: status %d, body %s; want 503 SEALED (fail closed)", r.code, r.out)
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("the enrollment probe never returned: it is not bounded")

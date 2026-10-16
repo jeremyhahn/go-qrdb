@@ -153,6 +153,12 @@ type Server struct {
 	// and selects that listener's gate. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
 
+	// sealedWindowDispatch, on a regular listener, sends every MCP endpoint
+	// request that arrives while it reports the node barrier sealed to
+	// sealedPath, the boot-time listener's server. Nil installs no dispatch.
+	sealedWindowDispatch sealedwindow.ListenerProbe
+	sealedPath           *Server
+
 	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
 	// gate (go-qrdb#548 review item 3). See WithAwaitingAdminCredentialProbe.
 	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
@@ -609,6 +615,23 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithSealedWindowDispatch makes a regular listener's MCP endpoint behave,
+// while probe reports the node barrier sealed, exactly as the boot-time
+// sealed-window listener's does: each such request is served by the server
+// NewSealedWindowServer builds over this server's barrier, ceremony and
+// credential services -- the sealed tools behind the listener gate, with no
+// authentication and so no user-store lookup, and CodeUnavailable for every
+// other tool -- instead of by this server. Requests that arrive while it
+// reports the barrier unsealed are served here unchanged. Build probe with
+// server.NewSealedWindowListenerProbe over the bare node barrier, not the
+// cluster-seal probe: a node a cluster seal holds keeps its barrier unsealed
+// and its authenticated cluster-unseal tool.
+func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowDispatch = probe
+	}
+}
+
 // WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
 // gate (go-qrdb#548 review item 3): while probe reports awaiting, only the
 // ceremony status and ceremony-initialize tools are served -- admitted with
@@ -664,6 +687,15 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.sealedWindowDispatch != nil {
+		s.sealedPath = NewSealedWindowServer(s.addr, s.barrierSvc, s.ceremonySvc, s.credentialSvc, s.sealedWindowDispatch, func(sealed *Server) {
+			// What the sealed tools themselves read, as this server's
+			// barrier and ceremony tools do.
+			sealed.pinBackend = s.pinBackend
+			sealed.encMigrator = s.encMigrator
+			sealed.ceremonyCA = s.ceremonyCA
+		})
 	}
 
 	// Create the underlying MCP server with tool capabilities. When auth is
@@ -731,10 +763,6 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.adminSvc != nil {
 		s.addTools(adminTools(s.adminSvc)...)
-	} else if s.sealedWindowProbe != nil {
-		// A sealed window has no admin service, but health is on its
-		// allowlist: answer "sealed", as the gRPC Health RPC does.
-		s.addTools(sealedHealthTool())
 	}
 
 	// The raft-only families (MVCC, watch, lease, lock) are registered
@@ -877,6 +905,16 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 			}
 		}
 	}
+	// A sealed node answers the unseal call and nothing else: every built-in
+	// tool a listener does not serve is registered as the typed sealed
+	// refusal, and a dispatching server adds its own tools, modules' included,
+	// to its sealed path, so no tool name reaches "tool not found" there.
+	if s.sealedWindowListener != nil {
+		s.refuseUnserved(builtinToolCatalogue())
+	}
+	if s.sealedPath != nil {
+		s.sealedPath.refuseUnserved(s.servedTools())
+	}
 	// Public tools are declared last, once every tool carries its
 	// permission, so a declared tool that reaches data is refused.
 	s.publicToolsErr = s.registerPublicTools()
@@ -940,43 +978,8 @@ func (s *Server) Start() error {
 	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
 
-	// Create the Streamable HTTP handler from the MCP server. The HTTP
-	// context func is installed UNCONDITIONALLY (go-qrdb#560 review C):
-	// authHTTPContext's remote-address injection must run even with NO
-	// AuthMiddleware and NO SO gate configured, because a node with auth
-	// entirely disabled still runs the SO PIN gate on ceremony-initialize's
-	// admin-credential retry, which needs a per-source identity for
-	// auth.CallerPrincipal's lockout regardless of whether anything else
-	// here authenticates the caller. authHTTPContext itself remains a
-	// no-op for authentication purposes when s.authMW is nil (its own
-	// early return), so this adds no behavior beyond that injection.
-	streamOpts := []mcpserver.StreamableHTTPOption{mcpserver.WithHTTPContextFunc(s.authHTTPContext)}
-	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
-
-	// The MCP endpoint handler, from the outside in:
-	//
-	//   - the boot-time sealed-window listener's gate, when this is one;
-	//   - authentication, whenever it is configured: an unauthenticated
-	//     request is answered 401 (with WWW-Authenticate when a bearer
-	//     challenge is configured) BEFORE mcp-go reads anything, so not even
-	//     initialize or tools/list is answered anonymously -- unless a module
-	//     declares public tools, when exactly those calls, the initialize
-	//     handshake and a tools/list filtered to them are. A request that
-	//     authenticates proceeds with its identity bound into the request
-	//     context, where authHTTPContext reuses it;
-	//   - the request-body bound, on every request: 1 MiB when the caller is
-	//     anonymous (no authentication, or the sealed-window listener), the
-	//     batch-import bound otherwise.
-	mcpHandler := boundedBodyHandler(s.requestBodyLimit(), streamHandler)
-	if s.authMW != nil {
-		mcpHandler = s.authenticateHandler(mcpHandler)
-	}
-	if s.sealedWindowListener != nil {
-		mcpHandler = s.sealedWindowClosedHandler(mcpHandler)
-	}
-
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp", s.endpoint())
 	if s.enrollSrv != nil {
 		// PUBLIC by design (EnrollPath): an invited user holds no credential
 		// yet. One tool, the anonymous body bound, and the sealed-window gate
@@ -1019,6 +1022,55 @@ func (s *Server) Start() error {
 	}()
 
 	return nil
+}
+
+// endpoint is the /mcp handler. While the node barrier is sealed it is the
+// boot-time sealed-window listener's (see WithSealedWindowDispatch).
+func (s *Server) endpoint() http.Handler {
+	regular := s.endpointHandler()
+	if s.sealedPath == nil {
+		return regular
+	}
+	return sealedWindowDispatchHandler(s.sealedWindowDispatch, s.sealedPath.endpointHandler(), regular)
+}
+
+// endpointHandler builds the handler for the MCP endpoint.
+func (s *Server) endpointHandler() http.Handler {
+	// Create the Streamable HTTP handler from the MCP server. The HTTP
+	// context func is installed UNCONDITIONALLY (go-qrdb#560 review C):
+	// authHTTPContext's remote-address injection must run even with NO
+	// AuthMiddleware and NO SO gate configured, because a node with auth
+	// entirely disabled still runs the SO PIN gate on ceremony-initialize's
+	// admin-credential retry, which needs a per-source identity for
+	// auth.CallerPrincipal's lockout regardless of whether anything else
+	// here authenticates the caller. authHTTPContext itself remains a
+	// no-op for authentication purposes when s.authMW is nil (its own
+	// early return), so this adds no behavior beyond that injection.
+	streamOpts := []mcpserver.StreamableHTTPOption{mcpserver.WithHTTPContextFunc(s.authHTTPContext)}
+	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
+
+	// The MCP endpoint handler, from the outside in:
+	//
+	//   - the boot-time sealed-window listener's gate, when this is one;
+	//   - authentication, whenever it is configured: an unauthenticated
+	//     request is answered 401 (with WWW-Authenticate when a bearer
+	//     challenge is configured) BEFORE mcp-go reads anything, so not even
+	//     initialize or tools/list is answered anonymously -- unless a module
+	//     declares public tools, when exactly those calls, the initialize
+	//     handshake and a tools/list filtered to them are. A request that
+	//     authenticates proceeds with its identity bound into the request
+	//     context, where authHTTPContext reuses it;
+	//   - the request-body bound, on every request: 1 MiB when the caller is
+	//     anonymous (no authentication, or the sealed-window listener), the
+	//     batch-import bound otherwise.
+	mcpHandler := boundedBodyHandler(s.requestBodyLimit(), streamHandler)
+	if s.authMW != nil {
+		mcpHandler = s.authenticateHandler(mcpHandler)
+	}
+	if s.sealedWindowListener != nil {
+		mcpHandler = s.sealedWindowClosedHandler(mcpHandler)
+	}
+	return mcpHandler
 }
 
 // Stop gracefully shuts down the MCP server.

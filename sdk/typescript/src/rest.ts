@@ -2040,6 +2040,8 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 interface BarrierStatusResponse {
                     readonly sealed: boolean;
+                    // A sealed node answers this and sealed, nothing else.
+                    readonly initialized: boolean;
                     readonly strategy: string;
                     readonly hardwareBacked: boolean;
                     readonly initializedAt?: string;
@@ -2054,7 +2056,7 @@ export class RestClient implements Client {
                     );
                     return {
                         sealed: resp.sealed,
-                        initialized: resp.initializedAt !== undefined && resp.initializedAt !== '',
+                        initialized: resp.initialized === true,
                         strategy: resp.strategy ?? '',
                         // For Shamir the server reports the M-of-N scheme; other
                         // strategies have no shares. Quorum progress belongs to

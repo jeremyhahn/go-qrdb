@@ -20,24 +20,17 @@
 // other CLI-selectable transports, looping protocol tables exactly as
 // drain_test.go's TestAdminDrain_PerProtocol does.
 //
-// FIXED transport gap: of the five CLI-selectable transports, gRPC, native
-// QUIC, and Unix (grpc-over-UDS) used to be unable to reach a daemon's
-// PRE-HOST SEALED-WINDOW listener at all (i.e. could not drive `barrier
-// init`/`init-shamir` from a cold, uninitialized barrier), because their SDK
-// Connect() implementations (sdk/go/transport/{grpc,quic,unix}/transport.go)
-// require a successful Health RPC before returning, and the gRPC/QUIC Health
-// handlers (pkg/api/grpc/service.go, pkg/api/quic/handlers_admin.go)
-// unconditionally delegated to adminSvc, which is nil throughout the
-// pre-host sealed window (cmd/qrdbd/seal_subsystem.go's awaitUnseal never
-// constructs an admin service -- that is the entire reason the sealed-window
-// listener exists). The fix: those Health handlers now report the
-// documented service.HealthStatusSealed ("sealed") verdict directly instead
-// of erroring when adminSvc is nil, which the client-side "no error +
-// non-empty status" success check already treats as a live connection. See
-// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols below for
-// the proof. coldSealedWindowProtocols is therefore now the full
-// multiProtocols set -- every lifecycle test in this file that starts from a
-// cold sealed barrier exercises all five transports.
+// Every CLI-selectable transport reaches a daemon's PRE-HOST SEALED-WINDOW
+// listener from a cold, uninitialized barrier. A sealed node serves the
+// unseal call and nothing else, so its health call answers the typed sealed
+// refusal (Unavailable with reason SEALED); each SDK transport's Connect
+// (sdk/go/transport/{grpc,quic,unix,rest,mcp}/transport.go) counts that
+// refusal as "up and sealed" rather than unreachable. A genuinely unreachable
+// daemon still fails Connect. See
+// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols below for the
+// proof. coldSealedWindowProtocols is therefore the full multiProtocols set
+// -- every lifecycle test in this file that starts from a cold sealed barrier
+// exercises all five transports.
 //
 // Why a dedicated per-protocol fixture instead of reusing
 // multi_protocol_helpers_test.go's startMultiProtocolNode: that fixture
@@ -79,9 +72,10 @@ import (
 
 // coldSealedWindowProtocols is the set of CLI-selectable transports able to
 // reach a daemon's pre-host sealed-window listener from a cold, uninitialized
-// barrier: as of the sealed-window Health fix (see this file's package
-// comment and TestBarrierPermutations_SealedWindowConnectivity_AllProtocols),
-// that is all five -- REST, gRPC, native QUIC, MCP, and Unix (grpc-over-UDS).
+// barrier: every transport's Connect counts the typed sealed refusal as
+// reachable (see this file's package comment and
+// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols), so that is
+// all five -- REST, gRPC, native QUIC, MCP, and Unix (grpc-over-UDS).
 // It remains a distinct variable (rather than every call site using
 // multiProtocols directly) purely for the descriptive name: every lifecycle
 // test in this file that must start from a cold sealed barrier loops over
@@ -534,32 +528,15 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 //
 // Root cause and fix (verified by reading source, not assumed):
 //
-//  1. The gRPC and Unix SDK transports' Connect() (sdk/go/transport/grpc/
-//     transport.go's connectHealthy, reused verbatim by
-//     sdk/go/transport/unix/transport.go) and the native QUIC SDK
-//     transport's Connect() (sdk/go/transport/quic/transport.go) all
-//     require a successful Health RPC before Connect returns nil -- but
-//     that check was already lenient (no error AND a non-empty Status
-//     string), never requiring Status=="ok" specifically.
-//  2. The gRPC Health RPC handler (pkg/api/grpc/service.go's
-//     qrdbServiceServer.Health) and the QUIC admin.Health handler
-//     (pkg/api/quic/handlers_admin.go's handleHealth) used to
-//     unconditionally delegate to s.adminSvc, which is nil throughout the
-//     pre-host sealed window -- cmd/qrdbd/seal_subsystem.go's awaitUnseal
-//     only wires WithBarrierService/WithCeremonyService/
-//     WithCredentialService/WithBarrierRegistry into the sealed-window
-//     server, never WithAdminService (the admin/KV/data-plane services do
-//     not exist yet -- that is the entire reason the sealed-window
-//     listener exists), so both handlers ALWAYS errored during the sealed
-//     window, failing Connect()'s health probe.
-//  3. The fix: both Health handlers now report the documented
-//     service.HealthStatusSealed ("sealed") verdict directly -- with a nil
-//     error -- when adminSvc is nil, instead of erroring. Connect()'s
-//     existing "no error + non-empty status" check already treats that as
-//     a live connection, so no SDK-side change was needed: a genuinely
-//     unreachable daemon (nothing listening, TLS/handshake failure, etc.)
-//     still fails Connect() exactly as before; only a reachable,
-//     correctly-sealed daemon is now recognized as connected.
+//  1. Every SDK transport's Connect() probes the node's health call before
+//     returning nil.
+//  2. A sealed node serves the unseal call and nothing else: the health
+//     call, and `barrier status` with it, get the typed sealed refusal
+//     (Unavailable with reason SEALED on every transport).
+//  3. Connect() counts that refusal as a live, sealed node, and the CLI
+//     reports `barrier status` as the refusal, which barrierStatus reads as
+//     Sealed. A genuinely unreachable daemon (nothing listening,
+//     TLS/handshake failure, etc.) still fails Connect().
 func TestBarrierPermutations_SealedWindowConnectivity_AllProtocols(t *testing.T) {
 	for _, proto := range multiProtocols {
 		t.Run(proto.name, func(t *testing.T) {
@@ -604,6 +581,64 @@ func TestBarrierPermutations_SealedWindowConnectivity_AllProtocols(t *testing.T)
 			if status.Sealed {
 				t.Fatalf("[%s] expected barrier to be unsealed after 'barrier unseal'", proto.name)
 			}
+		})
+	}
+}
+
+// TestBarrierPermutations_PreInitStatus_PerProtocol pins the initialized flag
+// a sealed node serves on its sealed surface, over every transport: before
+// its first boot barrier status answers sealed and uninitialized, and once
+// the barrier is initialized and sealed it answers sealed and initialized,
+// with nothing more in either answer. Ceremony status, which is not that
+// answer, gets the typed sealed refusal. Both the JSON and the text output
+// are asserted, because the text is what an operator reads.
+func TestBarrierPermutations_PreInitStatus_PerProtocol(t *testing.T) {
+	for _, proto := range coldSealedWindowProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			node := startFreshSealedNode(t, "passphrase", 0, 0)
+			noAuth := node.noAuthFlagsFor(proto)
+			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
+
+			assertSealedStatus := func(stage string, flags []string, initialized bool) {
+				t.Helper()
+				stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "--output", "json", "barrier", "status")...)
+				if err != nil {
+					t.Fatalf("[%s] barrier status (%s): %v\nstderr: %s", proto.name, stage, err, stderr)
+				}
+				var got transport.BarrierStatusResponse
+				decodeJSON(t, stdout, &got)
+				want := transport.BarrierStatusResponse{Sealed: true, Initialized: initialized}
+				if got.Sealed != want.Sealed || got.Initialized != want.Initialized || got.Strategy != "" || got.InitializedAt != "" {
+					t.Fatalf("[%s] barrier status (%s) = %+v, want only sealed=true initialized=%t", proto.name, stage, got, initialized)
+				}
+				stdout, stderr, err = runCLISplit(t, node.cli, append(append([]string{}, flags...), "barrier", "status")...)
+				if err != nil {
+					t.Fatalf("[%s] barrier status (%s, text): %v\nstderr: %s", proto.name, stage, err, stderr)
+				}
+				for _, line := range []string{"Sealed:          true", fmt.Sprintf("Initialized:     %t", initialized)} {
+					if !strings.Contains(stdout, line) {
+						t.Fatalf("[%s] barrier status (%s, text) lacks %q\nstdout: %s", proto.name, stage, line, stdout)
+					}
+				}
+			}
+
+			assertSealedStatus("pre-init", noAuth, false)
+
+			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, noAuth...), "--output", "json", "ceremony", "status")...)
+			if err == nil || !cliSealedRefusal(stdout+stderr) {
+				t.Fatalf("[%s] ceremony status (pre-init): err = %v, want the sealed refusal\nstdout: %s\nstderr: %s", proto.name, err, stdout, stderr)
+			}
+
+			passphrase := "pre-init-status-" + proto.name
+			node.initSystem(t, proto, "--barrier-strategy", "passphrase", "--passphrase", passphrase)
+			node.waitForFullBoot(t)
+			flags := node.flagsFor(proto)
+			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
+				t.Fatalf("[%s] barrier seal: %v\nstderr: %s", proto.name, err, stderr)
+			}
+
+			assertSealedStatus("initialized, sealed", flags, true)
+			assertSealedStatus("initialized, sealed, anonymous", noAuth, true)
 		})
 	}
 }

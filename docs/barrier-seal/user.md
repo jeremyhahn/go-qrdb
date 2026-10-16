@@ -1,6 +1,6 @@
 # Barrier and Seal — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 The barrier is what encrypts your data at rest. Sealed, the database refuses
 every read and write. Unsealed, everything works and the encryption is
@@ -9,8 +9,16 @@ invisible.
 ## Prerequisites
 
 A reachable server, client certificates, and the `seal:*` permissions for what
-you do. `barrier status` is read-only and safe to call against a sealed
-barrier — it is where you start when something is refusing requests.
+you do. `barrier status` is read-only and is where you start when something is
+refusing requests. A sealed node answers it with two facts, sealed and
+whether it is initialized: `initialized: false` means the node is waiting for
+its first boot and needs `qrdb init`; `initialized: true` means it is
+initialized and needs unsealing. A node held by a cluster seal answers
+`transport: barrier sealed` instead -- and that answer is the status: the node
+is up, and held. A node cut off from the seal records answers `this node
+cannot confirm the cluster seal state; retry` (`SEAL_STATE_UNCONFIRMED`): its
+barrier is not sealed, and it serves again once it reads the records. Read the
+seal record from a node that serves.
 
 ## Choosing a strategy
 
@@ -243,10 +251,12 @@ peers are unsealed to form a quorum.
 
 - *A tenant or database:* unseal it on each node that serves it. The first
   unseal also clears the cluster record.
-- *The node barrier:* restart each node and unseal it at boot as usual. Each
-  comes back **held** — keys loaded, Raft running, requests refused as sealed —
-  once it has read the seal records; in the moment before that it refuses them
-  as `SEAL_STATE_UNCONFIRMED`, which a client retries. It stays held until you
+- *The node barrier:* unseal each node where it runs -- or restart it and
+  unseal it at boot as usual. A sealed node keeps its Raft shards loaded but
+  paused, and its unseal resumes them. Each comes back **held** — keys loaded,
+  Raft running, requests refused as sealed — once it has read the seal
+  records; in the moment before that it refuses them as
+  `SEAL_STATE_UNCONFIRMED`, which a client retries. It stays held until you
   clear the record once, from any unsealed node:
 
   ```bash
@@ -290,8 +300,16 @@ nodes. What you see today:
 ## Troubleshooting
 
 **Everything returns "unavailable" or "barrier sealed".** The barrier is
-sealed. `qrdb barrier status` works even then — it will tell you the strategy,
-and therefore how to unseal.
+sealed, or the node is held by a cluster seal or cut off from the seal
+records. A sealed node serves only the unseal call and `barrier status`, which
+says sealed and whether the node is initialized: health and `ceremony status`
+answer `barrier sealed` too, and a held or cut-off node refuses
+`barrier status` as well. Unseal with the
+strategy you initialized with: `qrdb barrier unseal --passphrase` for a
+passphrase barrier, or `qrdb barrier quorum submit` from M holders for a
+Shamir one (a passphrase unseal of a Shamir barrier is refused with an error
+that says so). On a node held by a cluster seal, `qrdb barrier cluster-unseal`
+clears the record.
 
 **"no strategy specified".** More than one strategy is registered (typically
 because hardware strategies were composed in) and the server will not guess.
@@ -333,11 +351,16 @@ to that node and unseal it there. Nothing unseals a node from its peers.
 (An earlier version of this page said nodes exchange shares between
 themselves; no deployment does.)
 
-**Every request on a node says "barrier sealed", but it is unsealed.** Look at
-`qrdb barrier status --output json`, field `cluster_seal.local`. `held` means
-the cluster seal is still recorded: clear it with `qrdb barrier cluster-unseal`.
-`cut_off` or `unconfirmed` means the node cannot read the seal records — check
-its connectivity to the rest of the cluster; it resumes by itself.
+**Every request on a node says "barrier sealed", but it is unsealed.** The
+cluster seal holds it, and it refuses `barrier status` too. Run
+`qrdb barrier status --output json` against a node that serves: `cluster_seal`
+shows the seal still recorded. Clear it with `qrdb barrier cluster-unseal`.
+
+**Every request on a node says "cannot confirm the cluster seal state".** The
+node is cut off from the seal records (`SEAL_STATE_UNCONFIRMED`), for example
+while the system shard has no leader. Its barrier is not sealed and it keeps its
+key; it refuses everything but the unseal call, `barrier status` included.
+Check its connectivity to the rest of the cluster; it resumes by itself.
 
 **You sealed a tenant and it is still answering on one node.** That node has
 not activated cluster sealing yet (`cluster_seal.active: false`): it is running

@@ -311,7 +311,9 @@ func (t *Transport) Close() error {
 	return nil
 }
 
-// Healthy returns true if the MCP server responds to a health check tool.
+// Healthy returns true if the MCP server responds to a health check tool. A
+// sealed node refuses the health tool with a *transport.BarrierSealedError;
+// it answered, so it counts as healthy — it serves the unseal call.
 func (t *Transport) Healthy(ctx context.Context) bool {
 	if t.closed.Load() || t.client == nil {
 		return false
@@ -319,7 +321,7 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 
 	result, err := t.callTool(ctx, "qrdb_health", nil)
 	if err != nil {
-		return false
+		return transport.IsBarrierSealed(err)
 	}
 
 	return result != ""

@@ -125,23 +125,10 @@ func (s *Server) buildHandlers() {
 	s.handleIf(kvOn, "kv.CompareAndDelete", permission.KVDelete, s.handleKVCompareAndDelete)
 	s.handleIf(kvOn, "kv.CompareAndSwap", permission.KVPut, s.handleKVCompareAndSwap)
 
-	// admin.Health is registered unconditionally: it is on the sealed-window
-	// allowlist (pkg/api/sealedwindow.Table VerbHealth) and reachable BEFORE
-	// adminSvc exists (adminSvc is nil throughout the pre-host sealed
-	// window -- see handleHealth's doc comment), so it must be present in
-	// the dispatch map even then. handleHealth itself reports the "sealed"
-	// verdict when s.adminSvc is nil rather than erroring; gating its
-	// registration on s.adminSvc != nil like the other admin handlers below
-	// would make every request for it fall through to the dispatch loop's
-	// StatusUnimplemented default before handleHealth's nil-safe logic ever
-	// runs, defeating that fix and leaving sdk/go/transport/quic's Connect()
-	// (which requires a successful Health RPC) unable to reach a
-	// correctly-sealed, perfectly healthy daemon.
-	s.handle("admin.Health", permission.AdminHealth, s.handleHealth)
-
-	// The remaining admin handlers are registered only when an admin
-	// service is provided.
+	// The admin handlers are registered only when an admin service is
+	// provided.
 	adminOn := s.adminSvc != nil
+	s.handleIf(adminOn, "admin.Health", permission.AdminHealth, s.handleHealth)
 	s.handleIf(adminOn, "admin.Status", permission.AdminStatus, s.handleStatus)
 	s.handleIf(adminOn, "admin.Peers", permission.AdminPeers, s.handlePeers)
 	s.handleIf(adminOn, "admin.AddMember", permission.AdminAddMember, s.handleAddMember)

@@ -113,7 +113,7 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Dependencies
 
-- Up: go-quicraft v0.20.0, needed v0.22.0-alpha ([#659](../../issues/659)) — Raft consensus, QUIC Raft transport, `EpochBarrier` and the L1 strategies — clustering, barrier-seal, sealed-mode-serving.
+- Up: go-quicraft v0.22.0-alpha ([#659](../../issues/659)) — Raft consensus, QUIC Raft transport, `EpochBarrier` and the L1 strategies — clustering, barrier-seal, sealed-mode-serving.
 - Up: go-enclave v0.8.0-alpha — protected-memory primitives under `pkg/secure` — credentials, barrier-seal, protected-memory.
 - Up: go-objstore v0.4.0-alpha — the go-objstore storage backend and backup destinations — storage-engines, backup-restore.
 - Up: go-truststrap v0.6.0-alpha — the cluster-enrollment bootstrap; the P-256 handshake ([#118](../../issues/118)) — clustering, fips-140-3.

@@ -158,6 +158,28 @@ func TestWaitForNodeHostTimesOut(t *testing.T) {
 	}
 }
 
+// TestWaitForNodeHostIgnoresEmptyHostID pins that a host.id which exists but
+// holds no id yet does not count as the host being up: go-quicraft writes it
+// with os.WriteFile, which creates the file before it writes the id, so a
+// poll in between sees an empty file.
+func TestWaitForNodeHostIgnoresEmptyHostID(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "nodehost"), dirMode); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "nodehost", "host.id"), nil, fileMode); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	err := WaitForNodeHost(dataDir, shortTimeout)
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("err = %v, want *TimeoutError for an empty host.id", err)
+	}
+	if !errors.Is(err, errEmptyFile) {
+		t.Errorf("err = %v, want it to unwrap to errEmptyFile", err)
+	}
+}
+
 func TestWaitForHTTPOK(t *testing.T) {
 	var requests atomic.Int32
 	srv, pool := newTLSServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -213,6 +235,53 @@ func TestWaitForHTTPOKTimesOutWhenUnreachable(t *testing.T) {
 	}
 	if !strings.Contains(probeErr.Reason, "request failed") {
 		t.Errorf("Reason = %q, want a request failure", probeErr.Reason)
+	}
+}
+
+func TestWaitForHTTPUpAcceptsOKAndTheSealedRefusal(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"ok": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+		"sealed": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"barrier sealed","code":"SEALED"}`))
+		},
+	} {
+		srv, pool := newTLSServer(t, handler)
+		if err := WaitForHTTPUp(srv.URL+"/health", pool, nil, 10*time.Second); err != nil {
+			t.Errorf("%s: WaitForHTTPUp: %v", name, err)
+		}
+	}
+}
+
+func TestWaitForHTTPUpTimesOutOnAnUntypedUnavailable(t *testing.T) {
+	srv, pool := newTLSServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"starting"}`))
+	})
+
+	err := WaitForHTTPUp(srv.URL+"/health", pool, nil, shortTimeout)
+	var probeErr *ProbeError
+	if !errors.As(err, &probeErr) || probeErr.Status != http.StatusServiceUnavailable {
+		t.Fatalf("err = %v, want a timeout wrapping the 503 probe", err)
+	}
+}
+
+func TestIsSealedRefusal(t *testing.T) {
+	sealed := []byte(`{"error":"barrier sealed","code":"SEALED"}`)
+	if !IsSealedRefusal(http.StatusServiceUnavailable, sealed) {
+		t.Fatal("the sealed refusal is not recognised")
+	}
+	for name, c := range map[string]struct {
+		status int
+		body   []byte
+	}{
+		"other status": {http.StatusInternalServerError, sealed},
+		"no code":      {http.StatusServiceUnavailable, []byte(`{"error":"starting"}`)},
+		"not json":     {http.StatusServiceUnavailable, []byte("SEALED")},
+	} {
+		if IsSealedRefusal(c.status, c.body) {
+			t.Errorf("%s: recognised as sealed", name)
+		}
 	}
 }
 

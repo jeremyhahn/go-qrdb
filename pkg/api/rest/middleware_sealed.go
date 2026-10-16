@@ -39,9 +39,11 @@ type sealedWindowProbe interface {
 // callers can compose with project-specific extensions if they ever need to.
 var SealedWindowAllowlist = sealedwindow.RESTAllowlist()
 
-// sealedResponseBody is the JSON envelope returned to clients while
-// the barrier is sealed and they hit a non-allowlist endpoint.
-const sealedResponseBody = `{"error":"barrier sealed","code":"SEALED"}`
+// sealedResponseBody is the JSON envelope returned to clients while the
+// barrier is sealed and they call anything but the unseal call. Its code is
+// the sealed refusal's structured reason, in the field a replica refusal
+// carries its own (errorResponse.Code).
+const sealedResponseBody = `{"error":"` + sealedwindow.SealedMessage + `","code":"` + sealedwindow.ReasonSealed + `"}`
 
 // unconfirmedResponseBody is the envelope returned while the barrier is
 // unsealed but this node cannot confirm the cluster seal state -- its lease on
@@ -53,22 +55,22 @@ const unconfirmedResponseBody = `{"error":"clusterseal: this node cannot confirm
 // listener returns for every request once the barrier is unsealed.
 const closedResponseBody = `{"error":"` + sealedwindow.ClosedMessage + `","code":"SEALED_WINDOW_CLOSED"}`
 
-// enrollmentClosedResponseBody is the JSON envelope the boot-time
-// sealed-window listener returns for an anonymous officer registration once
-// enrollment has closed.
-const enrollmentClosedResponseBody = `{"error":"` + sealedwindow.EnrollmentClosedMessage + `","code":"ENROLLMENT_CLOSED"}`
-
 // sealedWindowTransition holds the REST entries of the Transition verbs
 // (initialize and unseal), which run alone on the boot-time listener.
 var sealedWindowTransition = sealedwindow.RESTTransition()
 
 // sealedWindowPreOperationalOnly holds the REST entries of the
-// PreOperationalOnly verbs (officer and recovery-officer registration).
+// PreOperationalOnly verbs: the first-boot verbs a sealed node serves only
+// while enrollment is open.
 var sealedWindowPreOperationalOnly = sealedwindow.RESTPreOperationalOnly()
 
 // sealedWindowAuthenticatedOnly holds the REST entries of the
 // AuthenticatedOnly verbs (cluster unseal), never served anonymously.
 var sealedWindowAuthenticatedOnly = sealedwindow.RESTAuthenticatedOnly()
+
+// sealedWindowListenerOnly holds the REST entries of the ListenerOnly verbs
+// (barrier status), never served by a sealed regular listener.
+var sealedWindowListenerOnly = sealedwindow.RESTListenerOnly()
 
 // sealedWindowRefusal is how the REST gate answers one refusing Decision.
 type sealedWindowRefusal struct {
@@ -80,15 +82,17 @@ type sealedWindowRefusal struct {
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its
 // response. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
-	sealedwindow.RefuseSealed:           {status: http.StatusServiceUnavailable, body: sealedResponseBody, retryAfter: true},
-	sealedwindow.RefuseUnconfirmed:      {status: http.StatusServiceUnavailable, body: unconfirmedResponseBody, retryAfter: true},
-	sealedwindow.RefuseClosed:           {status: http.StatusServiceUnavailable, body: closedResponseBody, retryAfter: true},
-	sealedwindow.RefuseEnrollmentClosed: {status: http.StatusForbidden, body: enrollmentClosedResponseBody},
+	sealedwindow.RefuseSealed:      {status: http.StatusServiceUnavailable, body: sealedResponseBody, retryAfter: true},
+	sealedwindow.RefuseUnconfirmed: {status: http.StatusServiceUnavailable, body: unconfirmedResponseBody, retryAfter: true},
+	sealedwindow.RefuseClosed:      {status: http.StatusServiceUnavailable, body: closedResponseBody, retryAfter: true},
 }
 
 // SealedWindowMiddleware returns an http middleware that 503s every
 // request not on the allowlist while the supplied barrier is
-// sealed. Once the barrier is unsealed the middleware becomes a
+// sealed. It has no enrollment probe, so it refuses the first-boot verbs
+// too: in qrdb it sees only a cluster-held node, whose barrier is unsealed
+// and initialized, because a bare sealed barrier is dispatched to the
+// sealed-window chain (sealedWindowDispatch). Once the barrier is unsealed the middleware becomes a
 // passthrough; on re-seal it engages again. The same middleware
 // instance is safe to keep installed across the lifetime of the
 // process. It is the gate of a regular listener, whose own
@@ -107,13 +111,33 @@ func SealedWindowMiddleware(barrier sealedWindowProbe, allowlist []string) func(
 // allowlist, exactly as SealedWindowMiddleware does. Once the barrier is
 // unsealed it refuses EVERY request with 503: that listener runs without
 // authentication, so it must not serve anything against an unsealed
-// barrier, even in the moment before it is stopped. While sealed it also
-// refuses officer and recovery-officer registration with 403
-// ENROLLMENT_CLOSED once probe.EnrollmentOpen reports enrollment closed. The
-// probe is sampled on every request; a nil probe refuses every request.
+// barrier, even in the moment before it is stopped. While sealed it serves
+// the first-boot verbs only while probe.EnrollmentOpen reports enrollment
+// open, and refuses them as sealed otherwise. The probe is sampled on every
+// request; a nil probe refuses every request.
 func SealedWindowListenerMiddleware(probe sealedwindow.ListenerProbe, allowlist []string) func(http.Handler) http.Handler {
 	probe = sealedwindow.OrFailClosed(probe)
 	return sealedWindowGate(probe, allowlist, probe)
+}
+
+// sealedWindowDispatch returns the middleware a re-sealed node's regular
+// listener shares with the boot-time sealed-window listener: a request that
+// arrives while probe reports the barrier sealed is served by router behind
+// SealedWindowListenerMiddleware, and every other request by the wrapped
+// regular chain. That gate samples probe again, so a request dispatched just
+// before an unseal is refused rather than served anonymously against the
+// unsealed barrier.
+func sealedWindowDispatch(probe sealedwindow.ListenerProbe, router http.Handler) func(http.Handler) http.Handler {
+	sealed := SealedWindowListenerMiddleware(probe, nil)(router)
+	return func(regular http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if probe.IsSealed() {
+				sealed.ServeHTTP(w, r)
+				return
+			}
+			regular.ServeHTTP(w, r)
+		})
+	}
 }
 
 // sealedWindowGate applies sealedwindow.Decide to every request. listener is
@@ -136,10 +160,11 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 				Allowlisted:       requestInAllowlist(r, allowlist),
 				Listener:          listener != nil,
 				AuthenticatedOnly: requestInAllowlist(r, sealedWindowAuthenticatedOnly),
+				ListenerOnly:      requestInAllowlist(r, sealedWindowListenerOnly),
 			}
-			if req.Listener && req.Sealed && req.Allowlisted && requestInAllowlist(r, sealedWindowPreOperationalOnly) {
+			if req.Sealed && req.Allowlisted && requestInAllowlist(r, sealedWindowPreOperationalOnly) {
 				req.PreOperationalOnly = true
-				req.EnrollmentOpen = listener.EnrollmentOpen(r.Context())
+				req.EnrollmentOpen = listener != nil && listener.EnrollmentOpen(r.Context())
 			}
 			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
 			if !refused {

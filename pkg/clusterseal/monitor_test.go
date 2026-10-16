@@ -583,6 +583,61 @@ func TestNodeSealAckWaitIsBounded(t *testing.T) {
 	}
 }
 
+// TestNodeSealAckWaitReadsTheLocalCopy is the last node to see every
+// acknowledgement: its peers have already paused and left the system shard,
+// so a quorum read can no longer answer it. The wait must read its own copy,
+// which already holds every acknowledgement, and wipe without waiting out the
+// ack timeout.
+func TestNodeSealAckWaitReadsTheLocalCopy(t *testing.T) {
+	h := newHarness(t)
+	h.poll(t)
+	h.kv.set(ackKey(peerB), []byte("1"))
+	h.kv.set(ackKey(peerC), []byte("1"))
+	h.kv.onScan = func() { t.Error("the ack wait asked a quorum that the peers' pause removed") }
+	start := h.clock.Now()
+	if _, err := h.m.Seal(context.Background(), NodeBarrier(), ops); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if waited := h.clock.Now().Sub(start); waited >= h.m.cfg.AckTimeout {
+		t.Fatalf("waited %v with every ack in the local copy", waited)
+	}
+	if h.kv.staleScans == 0 {
+		t.Fatal("the ack wait never read the local copy")
+	}
+	if got := h.enf.callList(); !reflect.DeepEqual(got, []string{"node"}) {
+		t.Fatalf("enforcement = %v", got)
+	}
+}
+
+// TestNodeSealAckWaitBoundsTheAckWrite is a node whose own acknowledgement
+// cannot commit: the write blocks as it does without a quorum. AckTimeout
+// bounds the whole wait, the write included, so the key is still wiped.
+func TestNodeSealAckWaitBoundsTheAckWrite(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.AckTimeout = 50 * time.Millisecond })
+	h.poll(t)
+	h.kv.set(ackKey(peerB), []byte("1"))
+	h.kv.set(ackKey(peerC), []byte("1"))
+	h.kv.mu.Lock()
+	h.kv.blockPut = true
+	h.kv.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.m.Seal(context.Background(), NodeBarrier(), ops)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ack wait is not bounded: a blocked acknowledgement write held it")
+	}
+	if got := h.enf.callList(); !reflect.DeepEqual(got, []string{"node"}) {
+		t.Fatalf("enforcement = %v: the key must be wiped after the timeout", got)
+	}
+}
+
 func TestNodeSealAckFromOlderEpochDoesNotCount(t *testing.T) {
 	h := newHarness(t)
 	h.putRecord(t, Record{Barrier: NodeBarrier(), Epoch: 2, Sealed: false})

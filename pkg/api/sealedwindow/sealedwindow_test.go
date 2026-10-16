@@ -16,6 +16,7 @@ package sealedwindow_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,11 +25,24 @@ import (
 )
 
 // TestTableCoversEveryVerb verifies that every canonical verb has a Table
-// entry with at least one transport name, and that Table has no entries
-// missing from Verbs (the ordered derivation list).
+// entry with at least one transport name, and that the one Table entry
+// missing from Verbs (the sealed surface) is ceremony status, which only the
+// awaiting-admin-credential gate of an unsealed node serves.
 func TestTableCoversEveryVerb(t *testing.T) {
-	if len(sealedwindow.Verbs) != len(sealedwindow.Table) {
-		t.Fatalf("Verbs (%d) and Table (%d) disagree", len(sealedwindow.Verbs), len(sealedwindow.Table))
+	inVerbs := make(map[sealedwindow.Verb]bool, len(sealedwindow.Verbs))
+	for _, v := range sealedwindow.Verbs {
+		inVerbs[v] = true
+	}
+	for v := range sealedwindow.Table {
+		if !inVerbs[v] && v != sealedwindow.VerbCeremonyStatus {
+			t.Errorf("Table verb %q is missing from Verbs", v)
+		}
+	}
+	if inVerbs[sealedwindow.VerbCeremonyStatus] {
+		t.Error("ceremony status must not be on the sealed surface")
+	}
+	if len(sealedwindow.Table) != len(sealedwindow.Verbs)+1 {
+		t.Fatalf("Table (%d) must be Verbs (%d) plus ceremony status", len(sealedwindow.Table), len(sealedwindow.Verbs))
 	}
 	for _, v := range sealedwindow.Verbs {
 		names, ok := sealedwindow.Table[v]
@@ -67,7 +81,6 @@ func TestRESTAllowlistContents(t *testing.T) {
 	}
 
 	want := []string{
-		"/status",
 		"/v1/barrier/status",
 		"/v1/barrier/initialize",
 		"/v1/barrier/unseal",
@@ -81,7 +94,6 @@ func TestRESTAllowlistContents(t *testing.T) {
 		"/v1/barrier/quorum/begin",
 		"/v1/barrier/quorum/submit",
 		"/v1/ceremony/initialize",
-		"/v1/ceremony/status",
 		"/v1/ceremony/sign-csr",
 		"/v1/barrier/cluster-unseal",
 		"/v1/cluster/",
@@ -109,22 +121,21 @@ func TestGRPCAllowlistContents(t *testing.T) {
 		set[m] = struct{}{}
 	}
 	for _, m := range []string{
-		"Health", "Status",
 		"BarrierStatus", "BarrierInitialize", "BarrierUnseal",
 		"BarrierShamirInitialize",
 		"BarrierOfficerRegister",
 		"BarrierShareClaimBegin", "BarrierShareClaimComplete",
 		"BarrierRecoveryOfficerRegister", "BarrierRecoveryShareClaimBegin", "BarrierRecoveryShareClaimComplete",
 		"BarrierQuorumBegin", "BarrierQuorumSubmit",
-		"CeremonyInitialize", "CeremonyStatus", "CeremonySignCSR",
+		"CeremonyInitialize", "CeremonySignCSR",
 		"BarrierClusterUnseal",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("gRPC allowlist missing %q", m)
 		}
 	}
-	if len(list) != 18 {
-		t.Errorf("gRPC allowlist has %d entries, want 18: %v", len(list), list)
+	if len(list) != 15 {
+		t.Errorf("gRPC allowlist has %d entries, want 15: %v", len(list), list)
 	}
 }
 
@@ -150,13 +161,13 @@ func TestGRPCFullMethodAllowlist(t *testing.T) {
 		}
 		set[m] = struct{}{}
 	}
-	// Health/Status must be present as fully-qualified QRDBService methods and
-	// NOT as a bare tail that would collide with another service.
-	if _, ok := set["/qrdb.v1.QRDBService/Health"]; !ok {
-		t.Error("full allowlist missing /qrdb.v1.QRDBService/Health")
+	// The unseal call must be present as a fully-qualified QRDBService method
+	// and NOT as a bare tail that would collide with another service.
+	if _, ok := set["/qrdb.v1.QRDBService/BarrierUnseal"]; !ok {
+		t.Error("full allowlist missing /qrdb.v1.QRDBService/BarrierUnseal")
 	}
-	if _, ok := set["Health"]; ok {
-		t.Error("full allowlist must not contain bare tail Health")
+	if _, ok := set["BarrierUnseal"]; ok {
+		t.Error("full allowlist must not contain bare tail BarrierUnseal")
 	}
 }
 
@@ -164,22 +175,21 @@ func TestGRPCFullMethodAllowlist(t *testing.T) {
 func TestQUICAllowlistContents(t *testing.T) {
 	set := sealedwindow.QUICAllowlist()
 	for _, m := range []string{
-		"admin.Health", "admin.Status",
 		"barrier.Status", "barrier.Initialize", "barrier.Unseal",
 		"barrier.ShamirInitialize",
 		"barrier.OfficerRegister",
 		"barrier.ShareClaimBegin", "barrier.ShareClaimComplete",
 		"barrier.RecoveryOfficerRegister", "barrier.RecoveryShareClaimBegin", "barrier.RecoveryShareClaimComplete",
 		"barrier.QuorumBegin", "barrier.QuorumSubmit",
-		"ceremony.Initialize", "ceremony.Status", "ceremony.SignCSR",
+		"ceremony.Initialize", "ceremony.SignCSR",
 		"barrier.ClusterUnseal",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("QUIC allowlist missing %q", m)
 		}
 	}
-	if len(set) != 18 {
-		t.Errorf("QUIC allowlist has %d entries, want 18", len(set))
+	if len(set) != 15 {
+		t.Errorf("QUIC allowlist has %d entries, want 15", len(set))
 	}
 }
 
@@ -188,7 +198,6 @@ func TestQUICAllowlistContents(t *testing.T) {
 func TestMCPAllowlistContents(t *testing.T) {
 	set := sealedwindow.MCPAllowlist()
 	for _, m := range []string{
-		"qrdb_health", "qrdb_status",
 		"qrdb_barrier_status", "qrdb_barrier_initialize", "qrdb_barrier_unseal",
 		"qrdb_barrier_shamir_initialize",
 		"qrdb_barrier_officer_register",
@@ -196,15 +205,15 @@ func TestMCPAllowlistContents(t *testing.T) {
 		"qrdb_barrier_recovery_officer_register",
 		"qrdb_barrier_recovery_share_claim_begin", "qrdb_barrier_recovery_share_claim_complete",
 		"qrdb_barrier_quorum_begin", "qrdb_barrier_quorum_submit",
-		"qrdb_ceremony_initialize", "qrdb_ceremony_status", "qrdb_ceremony_sign_csr",
+		"qrdb_ceremony_initialize", "qrdb_ceremony_sign_csr",
 		"qrdb_barrier_cluster_unseal",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("MCP allowlist missing %q", m)
 		}
 	}
-	if len(set) != 18 {
-		t.Errorf("MCP allowlist has %d entries, want 18", len(set))
+	if len(set) != 15 {
+		t.Errorf("MCP allowlist has %d entries, want 15", len(set))
 	}
 	// shamir-verify has no MCP tool.
 	for _, m := range []string{"qrdb_barrier_shamir_verify"} {
@@ -229,6 +238,12 @@ func TestDeliberateExclusions(t *testing.T) {
 		"/v1/barrier/enable-encryption",
 		"/v1/ceremony/enroll-custodian",
 		"/v1/ceremony/revoke-custodian",
+		// A sealed node answers no status question but barrier status, its
+		// one "initialized" flag, pinned by
+		// TestBarrierStatusIsTheSealedInitializedFlag.
+		"/health",
+		"/status",
+		"/v1/ceremony/status",
 	} {
 		if _, ok := restSet[p]; ok {
 			t.Errorf("REST allowlist must not contain %q", p)
@@ -270,6 +285,7 @@ func TestDeliberateExclusions(t *testing.T) {
 		"BarrierSeal", "BarrierShamirSealVote", "BarrierEnableEncryption", "Seal", "ShamirSealVote",
 		"BarrierOfficerList", "BarrierRecoveryDelete", "BarrierRecoveryGenerate", "BarrierRecoveryStatus",
 		"BarrierRekey", "BarrierRekeyStart", "BarrierOfficerRevoke", "CeremonyEnrollExternalOfficer",
+		"Health", "Status", "CeremonyStatus",
 	} {
 		if _, ok := grpcSet[m]; ok {
 			t.Errorf("gRPC allowlist must not contain %q", m)
@@ -282,6 +298,7 @@ func TestDeliberateExclusions(t *testing.T) {
 		"barrier.ShamirListShares", "barrier.ShamirDeleteShare", "barrier.ShamirDeleteAllShares",
 		"barrier.OfficerList", "barrier.RecoveryDelete", "barrier.RecoveryGenerate", "barrier.RecoveryStatus",
 		"barrier.Rekey", "barrier.RekeyStart", "barrier.OfficerRevoke", "barrier.ShamirVerify",
+		"admin.Health", "admin.Status", "ceremony.Status",
 	} {
 		if _, ok := quicSet[m]; ok {
 			t.Errorf("QUIC allowlist must not contain %q", m)
@@ -293,6 +310,7 @@ func TestDeliberateExclusions(t *testing.T) {
 		"qrdb_barrier_seal", "qrdb_barrier_shamir_seal_vote", "qrdb_barrier_enable_encryption",
 		"qrdb_barrier_officer_list", "qrdb_barrier_recovery_delete", "qrdb_barrier_recovery_generate",
 		"qrdb_barrier_recovery_status", "qrdb_barrier_rekey", "qrdb_barrier_rekey_start", "qrdb_barrier_officer_revoke",
+		"qrdb_health", "qrdb_status", "qrdb_ceremony_status",
 	} {
 		if _, ok := mcpSet[m]; ok {
 			t.Errorf("MCP allowlist must not contain %q", m)
@@ -368,16 +386,19 @@ func TestDecide(t *testing.T) {
 		{R{Sealed: true}, sealedwindow.RefuseSealed},
 		{R{Allowlisted: true}, sealedwindow.Serve},
 		{R{}, sealedwindow.Serve},
-		// The regular listener leaves officer registration to its own
-		// authentication, whatever the enrollment state.
-		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true}, sealedwindow.Serve},
+		// A first-boot verb is part of the sealed surface only while
+		// enrollment is open, on either listener: once the node is
+		// initialized, a sealed node serves the unseal call and nothing else.
+		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true}, sealedwindow.RefuseSealed},
+		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, EnrollmentOpen: true}, sealedwindow.Serve},
+		{R{Allowlisted: true, PreOperationalOnly: true}, sealedwindow.Serve},
 		// Boot-time listener.
 		{R{Sealed: true, Allowlisted: true, Listener: true}, sealedwindow.Serve},
 		{R{Sealed: true, Listener: true}, sealedwindow.RefuseSealed},
 		{R{Allowlisted: true, Listener: true}, sealedwindow.RefuseClosed},
 		{R{Listener: true}, sealedwindow.RefuseClosed},
 		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true, EnrollmentOpen: true}, sealedwindow.Serve},
-		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true}, sealedwindow.RefuseEnrollmentClosed},
+		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true}, sealedwindow.RefuseSealed},
 		{R{Allowlisted: true, PreOperationalOnly: true, Listener: true, EnrollmentOpen: true}, sealedwindow.RefuseClosed},
 		// An AuthenticatedOnly verb (cluster unseal) passes the regular
 		// listener's gate while sealed -- its authentication still decides --
@@ -385,11 +406,24 @@ func TestDecide(t *testing.T) {
 		{R{Sealed: true, Allowlisted: true, AuthenticatedOnly: true}, sealedwindow.Serve},
 		{R{Sealed: true, Allowlisted: true, AuthenticatedOnly: true, Listener: true}, sealedwindow.RefuseSealed},
 		{R{Allowlisted: true, AuthenticatedOnly: true, Listener: true}, sealedwindow.RefuseClosed},
+		// A ListenerOnly verb (barrier status) is its mirror: the boot-time
+		// listener serves it anonymously while sealed, and the regular
+		// listener, open while sealed only on a node the cluster holds or
+		// cuts off, refuses it; unsealed, the regular listener serves it as
+		// any call.
+		{R{Sealed: true, Allowlisted: true, ListenerOnly: true, Listener: true}, sealedwindow.Serve},
+		{R{Sealed: true, Allowlisted: true, ListenerOnly: true}, sealedwindow.RefuseSealed},
+		{R{Allowlisted: true, ListenerOnly: true}, sealedwindow.Serve},
+		{R{Allowlisted: true, ListenerOnly: true, Listener: true}, sealedwindow.RefuseClosed},
 		// A node that cannot confirm the cluster seal state is refused as
-		// unconfirmed, never as sealed, and still serves the allowlist.
+		// unconfirmed, never as sealed, and still serves the unseal call. Like
+		// a held node it answers no status question: barrier status is
+		// refused, as unconfirmed.
 		{R{Sealed: true, Unconfirmed: true}, sealedwindow.RefuseUnconfirmed},
 		{R{Sealed: true, Unconfirmed: true, Allowlisted: true}, sealedwindow.Serve},
 		{R{Sealed: true, Unconfirmed: true, Allowlisted: true, AuthenticatedOnly: true}, sealedwindow.Serve},
+		{R{Sealed: true, Unconfirmed: true, Allowlisted: true, ListenerOnly: true}, sealedwindow.RefuseUnconfirmed},
+		{R{Sealed: true, Unconfirmed: true, Allowlisted: true, PreOperationalOnly: true}, sealedwindow.RefuseUnconfirmed},
 	}
 	for _, c := range cases {
 		if got := sealedwindow.Decide(c.req); got != c.want {
@@ -435,13 +469,17 @@ func TestSample(t *testing.T) {
 }
 
 // TestPreOperationalOnlyDerivations: every transport's derivation names
-// exactly the officer, recovery-officer registration, and sign-csr verbs
-// (go-qrdb#548: sign-csr joined the set so a node restarted sealed after the
-// ceremony already completed cannot mint a holder certificate through the
-// boot-time sealed-window listener either).
+// exactly the first-boot verbs -- barrier, Shamir and ceremony initialize,
+// officer and recovery-officer registration, and sign-csr -- the ones a
+// sealed node serves only while enrollment is open (go-qrdb#548 brought
+// sign-csr in; the owner's sealed-node rule brought the initializers in).
 func TestPreOperationalOnlyDerivations(t *testing.T) {
 	rest := sealedwindow.RESTPreOperationalOnly()
-	wantREST := []string{"POST /v1/barrier/officers", "POST /v1/barrier/recovery/officers", "/v1/ceremony/sign-csr"}
+	wantREST := []string{
+		"/v1/barrier/initialize", "/v1/barrier/shamir/initialize",
+		"POST /v1/barrier/officers", "POST /v1/barrier/recovery/officers",
+		"/v1/ceremony/initialize", "/v1/ceremony/sign-csr",
+	}
 	if len(rest) != len(wantREST) {
 		t.Fatalf("RESTPreOperationalOnly = %v, want %v", rest, wantREST)
 	}
@@ -451,29 +489,59 @@ func TestPreOperationalOnlyDerivations(t *testing.T) {
 		}
 	}
 	grpc := sealedwindow.GRPCFullMethodPreOperationalOnly("qrdb.v1.QRDBService")
-	for _, m := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister", "/qrdb.v1.QRDBService/CeremonySignCSR"} {
+	for _, m := range []string{
+		"/qrdb.v1.QRDBService/BarrierInitialize", "/qrdb.v1.QRDBService/BarrierShamirInitialize",
+		"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister",
+		"/qrdb.v1.QRDBService/CeremonyInitialize", "/qrdb.v1.QRDBService/CeremonySignCSR",
+	} {
 		if _, ok := grpc[m]; !ok {
 			t.Errorf("GRPCFullMethodPreOperationalOnly missing %s", m)
 		}
 	}
-	quic := sealedwindow.QUICPreOperationalOnly()
-	mcp := sealedwindow.MCPPreOperationalOnly()
-	for set, names := range map[string][]string{
-		"quic": {"barrier.OfficerRegister", "barrier.RecoveryOfficerRegister", "ceremony.SignCSR"},
-		"mcp":  {"qrdb_barrier_officer_register", "qrdb_barrier_recovery_officer_register", "qrdb_ceremony_sign_csr"},
+	for set, c := range map[string]struct {
+		got   map[string]struct{}
+		names []string
+	}{
+		"quic": {sealedwindow.QUICPreOperationalOnly(), []string{
+			"barrier.Initialize", "barrier.ShamirInitialize", "barrier.OfficerRegister",
+			"barrier.RecoveryOfficerRegister", "ceremony.Initialize", "ceremony.SignCSR",
+		}},
+		"mcp": {sealedwindow.MCPPreOperationalOnly(), []string{
+			"qrdb_barrier_initialize", "qrdb_barrier_shamir_initialize", "qrdb_barrier_officer_register",
+			"qrdb_barrier_recovery_officer_register", "qrdb_ceremony_initialize", "qrdb_ceremony_sign_csr",
+		}},
+		"embedded": {sealedwindow.EmbeddedPreOperationalOnly(), []string{
+			"BarrierInitialize", "BarrierInitializeShamir", "OfficerRegister",
+			"RecoveryOfficerRegister", "CeremonyInitialize", "CeremonySignCSR",
+		}},
 	} {
-		got := map[string]map[string]struct{}{"quic": quic, "mcp": mcp}[set]
-		if len(got) != len(names) {
-			t.Errorf("%s derivation has %d entries, want %d", set, len(got), len(names))
+		if len(c.got) != len(c.names) {
+			t.Errorf("%s derivation has %d entries, want %d", set, len(c.got), len(c.names))
 		}
-		for _, n := range names {
-			if _, ok := got[n]; !ok {
+		for _, n := range c.names {
+			if _, ok := c.got[n]; !ok {
 				t.Errorf("%s derivation missing %s", set, n)
 			}
 		}
 	}
-	if len(grpc) != 3 {
-		t.Errorf("GRPCFullMethodPreOperationalOnly has %d entries, want 3", len(grpc))
+	if len(grpc) != 6 {
+		t.Errorf("GRPCFullMethodPreOperationalOnly has %d entries, want 6", len(grpc))
+	}
+}
+
+// TestSealedRefusalIdentity: the sealed refusal's structured reason shares
+// its domain with the replica-forwarding refusals (pkg/replicaforward), so one
+// client decoder reads both, and its message and reason are the ones every
+// transport sends.
+func TestSealedRefusalIdentity(t *testing.T) {
+	if sealedwindow.ErrorDomain != "qrdb.v1" {
+		t.Errorf("ErrorDomain = %q, want qrdb.v1", sealedwindow.ErrorDomain)
+	}
+	if sealedwindow.ReasonSealed != "SEALED" {
+		t.Errorf("ReasonSealed = %q, want SEALED", sealedwindow.ReasonSealed)
+	}
+	if sealedwindow.SealedMessage != "barrier sealed" {
+		t.Errorf("SealedMessage = %q, want %q", sealedwindow.SealedMessage, "barrier sealed")
 	}
 }
 
@@ -491,24 +559,25 @@ func TestOrFailClosed(t *testing.T) {
 	}
 }
 
-// TestPreOperationalOnlyFlags locks the exact set of verbs whose sealed-window
-// authentication exemption is gated on a pre-operational ceremony. The
-// holder registration verbs are flagged because RegisterOfficer has the CA
-// issue a holder certificate for any caller-supplied CSR with no
-// service-layer auth: an exemption surviving ceremony completion would let an
-// unauthenticated caller enrol a holder during any restart-while-sealed.
-// sign-csr joined them (go-qrdb#548) for the identical reason: it mints a
-// holder certificate from any caller-supplied CSR plus the SO PIN alone, and
-// CeremonyService.SignCSRInit itself now refuses once operational too, so
-// the two gates close the same hole from both sides.
+// TestPreOperationalOnlyFlags locks the exact set of verbs a sealed node
+// serves only while enrollment is open. The holder registration verbs are
+// flagged because RegisterOfficer has the CA issue a holder certificate for
+// any caller-supplied CSR with no service-layer auth: an exemption surviving
+// ceremony completion would let an unauthenticated caller enrol a holder
+// during any restart-while-sealed. sign-csr joined them (go-qrdb#548) for the
+// identical reason. The three initializers are first boot and nothing else:
+// an initialized node that is sealed serves the unseal call and nothing else.
 //
 // Flagging a NEW verb here is a security-posture change reviewed as such;
-// UN-flagging officer, recovery-officer, or sign-csr reopens a
-// post-operational enrollment hole and must never happen.
+// UN-flagging any of them reopens a post-operational hole and must never
+// happen.
 func TestPreOperationalOnlyFlags(t *testing.T) {
 	want := map[sealedwindow.Verb]bool{
+		sealedwindow.VerbBarrierInitialize:       true,
+		sealedwindow.VerbShamirInitialize:        true,
 		sealedwindow.VerbOfficerRegister:         true,
 		sealedwindow.VerbRecoveryOfficerRegister: true,
+		sealedwindow.VerbCeremonyInitialize:      true,
 		sealedwindow.VerbCeremonySignCSR:         true,
 	}
 
@@ -526,18 +595,67 @@ func TestPreOperationalOnlyFlags(t *testing.T) {
 		}
 	}
 
-	// The unseal path must stay state-independent: a daemon restarted after
+	// The unseal call must stay state-independent: a daemon restarted after
 	// a completed ceremony is operational AND sealed, and these verbs are
 	// the only way back to a usable data plane.
 	for _, v := range []sealedwindow.Verb{
 		sealedwindow.VerbBarrierUnseal,
 		sealedwindow.VerbQuorumBegin,
 		sealedwindow.VerbQuorumSubmit,
-		sealedwindow.VerbBarrierStatus,
+		sealedwindow.VerbShareClaimBegin,
+		sealedwindow.VerbShareClaimComplete,
 	} {
 		if sealedwindow.PreOperationalOnly(v) {
 			t.Errorf("unseal-flow verb %q must not be PreOperationalOnly", v)
 		}
+	}
+}
+
+// TestBarrierStatusIsTheSealedInitializedFlag pins barrier status as the one
+// status call a sealed node answers, before its first boot and after it: the
+// boot-time listener serves it whether or not enrollment is open, so a client
+// can tell a node that needs init from one that needs unsealing. It is
+// ListenerOnly: a node the cluster holds or cuts off while its own barrier is
+// unsealed is on the regular gate, which refuses it, and so does the embedded
+// transport, which is always that side. It is a read, so it never runs as a
+// Transition.
+func TestBarrierStatusIsTheSealedInitializedFlag(t *testing.T) {
+	names := sealedwindow.Table[sealedwindow.VerbBarrierStatus]
+	if !names.ListenerOnly || names.PreOperationalOnly || names.Transition || names.AuthenticatedOnly {
+		t.Fatalf("Table[VerbBarrierStatus] = %+v, want ListenerOnly only", names)
+	}
+
+	tests := []struct {
+		name           string
+		listener       bool
+		enrollmentOpen bool
+		want           sealedwindow.Decision
+	}{
+		{name: "listener, awaiting first boot", listener: true, enrollmentOpen: true, want: sealedwindow.Serve},
+		{name: "listener, initialized", listener: true, enrollmentOpen: false, want: sealedwindow.Serve},
+		{name: "regular gate, held by the cluster", listener: false, enrollmentOpen: false, want: sealedwindow.RefuseSealed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sealedwindow.Decide(sealedwindow.Request{
+				Sealed:         true,
+				Allowlisted:    true,
+				ListenerOnly:   names.ListenerOnly,
+				Listener:       tt.listener,
+				EnrollmentOpen: tt.enrollmentOpen,
+			})
+			if got != tt.want {
+				t.Errorf("Decide = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// Barrier status is the only status call on the sealed surface.
+	if slices.Contains(sealedwindow.Verbs, sealedwindow.VerbCeremonyStatus) {
+		t.Errorf("Verbs contains %q: barrier status is the one status answer", sealedwindow.VerbCeremonyStatus)
+	}
+	if !slices.Contains(sealedwindow.Verbs, sealedwindow.VerbBarrierStatus) {
+		t.Errorf("Verbs is missing %q", sealedwindow.VerbBarrierStatus)
 	}
 }
 
@@ -693,16 +811,16 @@ func TestAdmission(t *testing.T) {
 func TestRESTAllowlistDeduplicatesExtra(t *testing.T) {
 	saved := sealedwindow.RESTExtra
 	t.Cleanup(func() { sealedwindow.RESTExtra = saved })
-	sealedwindow.RESTExtra = append(append([]string(nil), saved...), "/v1/barrier/status")
+	sealedwindow.RESTExtra = append(append([]string(nil), saved...), "/v1/barrier/unseal")
 
 	n := 0
 	for _, p := range sealedwindow.RESTAllowlist() {
-		if p == "/v1/barrier/status" {
+		if p == "/v1/barrier/unseal" {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Fatalf("/v1/barrier/status appears %d times, want once", n)
+		t.Fatalf("/v1/barrier/unseal appears %d times, want once", n)
 	}
 }
 
@@ -734,6 +852,40 @@ func TestAuthenticatedOnlyDerivations(t *testing.T) {
 	for _, v := range sealedwindow.Verbs {
 		if n := sealedwindow.Table[v]; n.AuthenticatedOnly && n.Transition {
 			t.Errorf("%s is both AuthenticatedOnly and Transition: a Transition verb runs on the boot-time listener", v)
+		}
+	}
+}
+
+// TestListenerOnlyDerivations: every transport's derivation names exactly
+// barrier status, and no ListenerOnly verb is also AuthenticatedOnly, which
+// would leave it served nowhere while sealed.
+func TestListenerOnlyDerivations(t *testing.T) {
+	rest := sealedwindow.RESTListenerOnly()
+	if len(rest) != 1 || rest[0] != "/v1/barrier/status" {
+		t.Errorf("RESTListenerOnly = %v", rest)
+	}
+	grpc := sealedwindow.GRPCFullMethodListenerOnly("qrdb.v1.QRDBService")
+	if _, ok := grpc["/qrdb.v1.QRDBService/BarrierStatus"]; !ok || len(grpc) != 1 {
+		t.Errorf("GRPCFullMethodListenerOnly = %v", grpc)
+	}
+	if q := sealedwindow.QUICListenerOnly(); len(q) != 1 {
+		t.Errorf("QUICListenerOnly = %v", q)
+	} else if _, ok := q["barrier.Status"]; !ok {
+		t.Errorf("QUICListenerOnly = %v", q)
+	}
+	if m := sealedwindow.MCPListenerOnly(); len(m) != 1 {
+		t.Errorf("MCPListenerOnly = %v", m)
+	} else if _, ok := m["qrdb_barrier_status"]; !ok {
+		t.Errorf("MCPListenerOnly = %v", m)
+	}
+	if e := sealedwindow.EmbeddedListenerOnly(); len(e) != 1 {
+		t.Errorf("EmbeddedListenerOnly = %v", e)
+	} else if _, ok := e["BarrierStatus"]; !ok {
+		t.Errorf("EmbeddedListenerOnly = %v", e)
+	}
+	for _, v := range sealedwindow.Verbs {
+		if n := sealedwindow.Table[v]; n.ListenerOnly && n.AuthenticatedOnly {
+			t.Errorf("%s is both ListenerOnly and AuthenticatedOnly: no sealed gate would serve it", v)
 		}
 	}
 }

@@ -75,7 +75,13 @@ type BarrierUnsealRequest struct {
 // barrier. ShamirThreshold and ShamirTotal carry the configured M-of-N
 // quorum when the barrier uses the Shamir strategy and are zero otherwise.
 type BarrierStatusResponse struct {
-	Sealed          bool   `json:"sealed"`
+	Sealed bool `json:"sealed"`
+
+	// Initialized is true once the barrier has been initialized. A sealed
+	// node reports only Sealed and Initialized; every other field is empty
+	// until it is unsealed.
+	Initialized bool `json:"initialized"`
+
 	Strategy        string `json:"strategy"`
 	HardwareBacked  bool   `json:"hardware_backed"`
 	InitializedAt   string `json:"initialized_at,omitempty"`

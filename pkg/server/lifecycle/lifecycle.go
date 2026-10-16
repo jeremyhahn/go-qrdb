@@ -432,6 +432,12 @@ type Infra struct {
 	// exist. Nil, or an unset Deferred, seals this node only.
 	ClusterSealer clusterseal.Sealer
 
+	// ShardPauser pauses every Raft shard the node hosts before a node seal
+	// wipes a key, and resumes them once the node barrier is unsealed
+	// (server.NewShardPauser). A raft composer passes one built over its
+	// host; nil -- a standalone node -- pauses nothing.
+	ShardPauser service.ShardPauser
+
 	// AuthMethodVocabulary, when non-nil, is the permitted-method vocabulary of
 	// THIS node's auth chain (usually middleware.AuthMethodVocabulary's
 	// IsAuthMethod, bound once the node's middleware is built). Every user
@@ -1876,6 +1882,10 @@ func barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
 	}
 	if infra.DatabaseManager != nil {
 		opts = append(opts, service.WithBarrierDatabases(infra.DatabaseManager))
+	}
+	// It pauses every Raft shard the node hosts before any key goes.
+	if infra.ShardPauser != nil {
+		opts = append(opts, service.WithShardPauser(infra.ShardPauser))
 	}
 	return opts
 }

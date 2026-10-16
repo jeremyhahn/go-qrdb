@@ -38,7 +38,7 @@ func TestCLI_SqlQuery_KVRoundTrip(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
@@ -99,7 +99,7 @@ func TestCLI_SqlQuery_EmptyDatabase(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query-empty] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
@@ -132,7 +132,7 @@ func TestCLI_SqlQuery_MissingQueryFails(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query-missing] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)

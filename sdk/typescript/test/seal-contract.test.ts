@@ -23,7 +23,8 @@
  *   - unseal() posts the credential to /v1/barrier/unseal {secret}; a Shamir
  *     barrier opens through a holder quorum, never through this client.
  *   - status() maps the server's shamir_threshold/shamir_total into the share
- *     counts and derives initialized from initialized_at.
+ *     counts and reads initialized from the server's initialized flag, the
+ *     one fact a sealed node reports besides sealed.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -210,7 +211,7 @@ describe('seal client – unseal', () => {
 describe('seal client – status mapping', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('maps shamir_threshold/shamir_total into share counts and derives initialized', async () => {
+    it('maps shamir_threshold/shamir_total into share counts and reads initialized', async () => {
         const client = await connectedClient();
         installRouter({
             'GET /v1/barrier/status': {
@@ -218,6 +219,7 @@ describe('seal client – status mapping', () => {
                     sealed: false,
                     strategy: 'shamir',
                     hardware_backed: false,
+                    initialized: true,
                     initialized_at: '2026-06-06T00:00:00Z',
                     shamir_threshold: 2,
                     shamir_total: 3,
@@ -233,15 +235,26 @@ describe('seal client – status mapping', () => {
         expect(status.sharesTotal).toBe(3);
     });
 
-    it('reports uninitialized for a pre-init barrier (empty strategy, no initialized_at)', async () => {
+    it('reports uninitialized for a pre-init sealed node', async () => {
         const client = await connectedClient();
         installRouter({
-            'GET /v1/barrier/status': { body: { sealed: true, strategy: '', hardware_backed: false } },
+            'GET /v1/barrier/status': { body: { sealed: true, initialized: false, strategy: '', hardware_backed: false } },
         });
 
         const status = await client.seal.status();
         expect(status.initialized).toBe(false);
         expect(status.strategy).toBe('');
+        expect(status.sealed).toBe(true);
+    });
+
+    it('reports initialized for a sealed node whose answer carries no initialized_at', async () => {
+        const client = await connectedClient();
+        installRouter({
+            'GET /v1/barrier/status': { body: { sealed: true, initialized: true, strategy: '', hardware_backed: false } },
+        });
+
+        const status = await client.seal.status();
+        expect(status.initialized).toBe(true);
         expect(status.sealed).toBe(true);
     });
 

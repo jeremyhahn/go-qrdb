@@ -17088,7 +17088,11 @@ type BarrierStatusResponse struct {
 	ShamirThreshold int32                  `protobuf:"varint,5,opt,name=shamir_threshold,json=shamirThreshold,proto3" json:"shamir_threshold,omitempty"`
 	ShamirTotal     int32                  `protobuf:"varint,6,opt,name=shamir_total,json=shamirTotal,proto3" json:"shamir_total,omitempty"`
 	// cluster_seal is the node barrier's cluster seal state.
-	ClusterSeal   *ClusterSealState `protobuf:"bytes,7,opt,name=cluster_seal,json=clusterSeal,proto3" json:"cluster_seal,omitempty"`
+	ClusterSeal *ClusterSealState `protobuf:"bytes,7,opt,name=cluster_seal,json=clusterSeal,proto3" json:"cluster_seal,omitempty"`
+	// initialized is true once the barrier has been initialized. A sealed
+	// node reports only sealed and initialized; every other field is empty
+	// until it is unsealed.
+	Initialized   bool `protobuf:"varint,8,opt,name=initialized,proto3" json:"initialized,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -17170,6 +17174,13 @@ func (x *BarrierStatusResponse) GetClusterSeal() *ClusterSealState {
 		return x.ClusterSeal
 	}
 	return nil
+}
+
+func (x *BarrierStatusResponse) GetInitialized() bool {
+	if x != nil {
+		return x.Initialized
+	}
+	return false
 }
 
 // ClusterSealState is one barrier's cluster seal state as the receiving node
@@ -31730,7 +31741,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x06so_pin\x18\x02 \x01(\tR\x05soPin\x12\x19\n" +
 	"\buser_pin\x18\x03 \x01(\tR\auserPin\".\n" +
 	"\x14BarrierUnsealRequest\x12\x16\n" +
-	"\x06secret\x18\x01 \x01(\fR\x06secret\"\xa7\x02\n" +
+	"\x06secret\x18\x01 \x01(\fR\x06secret\"\xc9\x02\n" +
 	"\x15BarrierStatusResponse\x12\x16\n" +
 	"\x06sealed\x18\x01 \x01(\bR\x06sealed\x12\x1a\n" +
 	"\bstrategy\x18\x02 \x01(\tR\bstrategy\x12'\n" +
@@ -31738,7 +31749,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x0einitialized_at\x18\x04 \x01(\tR\rinitializedAt\x12)\n" +
 	"\x10shamir_threshold\x18\x05 \x01(\x05R\x0fshamirThreshold\x12!\n" +
 	"\fshamir_total\x18\x06 \x01(\x05R\vshamirTotal\x12<\n" +
-	"\fcluster_seal\x18\a \x01(\v2\x19.qrdb.v1.ClusterSealStateR\vclusterSeal\"\xdb\x01\n" +
+	"\fcluster_seal\x18\a \x01(\v2\x19.qrdb.v1.ClusterSealStateR\vclusterSeal\x12 \n" +
+	"\vinitialized\x18\b \x01(\bR\vinitialized\"\xdb\x01\n" +
 	"\x10ClusterSealState\x12\x16\n" +
 	"\x06active\x18\x01 \x01(\bR\x06active\x12\x16\n" +
 	"\x06sealed\x18\x02 \x01(\bR\x06sealed\x12\x14\n" +

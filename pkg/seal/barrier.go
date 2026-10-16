@@ -175,6 +175,11 @@ type StorageBarrier struct {
 	// stores time.Time. Zero value means "never initialized".
 	initializedAt atomic.Value
 
+	// uninitializedRead is set when a read of the persisted metadata found
+	// the barrier never initialized, so InitializedCached can say "not
+	// initialized" from memory; a non-zero initializedAt overrides it.
+	uninitializedRead atomic.Bool
+
 	// rolledBack is set once an initialization has failed and been rolled
 	// back. The epoch barrier cannot return to uninitialized within the
 	// process, so every later initialization answers ErrRestartRequired.
@@ -782,7 +787,9 @@ func (b *StorageBarrier) initializedAtOrPersisted() time.Time {
 			slog.String("error", err.Error()))
 		return time.Time{}
 	}
-	if !persisted.IsZero() {
+	if persisted.IsZero() {
+		b.uninitializedRead.Store(true)
+	} else {
 		b.initializedAt.Store(persisted)
 	}
 	return persisted
@@ -1463,4 +1470,28 @@ func (b *StorageBarrier) notifySealing(ctx context.Context) error {
 		}
 	}
 	return joined
+}
+
+// moveObserversTo hands every OnUnsealed and OnSealing observer registered on
+// b to next, ahead of any next already holds, and leaves b with none. The
+// barrier registry calls it when it replaces the system barrier, so whatever
+// was told about the old barrier's seal and unseal (the registry's own
+// system-managed tenant unseal, the shard pauser's resume, the volume
+// lifecycle's lock and unlock) follows the barrier that now guards the node.
+func (b *StorageBarrier) moveObserversTo(next *StorageBarrier) {
+	b.unsealedMu.Lock()
+	unsealed := b.unsealedObservers
+	b.unsealedObservers = nil
+	b.unsealedMu.Unlock()
+	next.unsealedMu.Lock()
+	next.unsealedObservers = append(unsealed, next.unsealedObservers...)
+	next.unsealedMu.Unlock()
+
+	b.sealingMu.Lock()
+	sealing := b.sealingObservers
+	b.sealingObservers = nil
+	b.sealingMu.Unlock()
+	next.sealingMu.Lock()
+	next.sealingObservers = append(sealing, next.sealingObservers...)
+	next.sealingMu.Unlock()
 }

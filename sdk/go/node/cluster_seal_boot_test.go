@@ -147,11 +147,27 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 		}
 	}
 	// Once a node has read the record it is held, which is sealed and never
-	// unconfirmed.
+	// unconfirmed; until then it refuses as SEAL_STATE_UNCONFIRMED. A held
+	// node answers nothing but the unseal call and the cluster unseal: its
+	// status is the same sealed refusal, which is all "held" looks like from
+	// the node itself.
 	for i, n := range restarted {
-		waitClusterSeal(n, "held", func(cs *transport.ClusterSeal) bool { return cs.Local == "held" })
-		if _, err := n.Client().KV().Get(ctx, "any"); !errors.Is(err, seal.ErrSealed) || sealStateUnconfirmed(err) {
-			t.Fatalf("node %d held under a sealed node record: err = %v, want the sealed refusal", replicas[i].id, err)
+		for {
+			_, err := n.Client().KV().Get(ctx, "any")
+			if errors.Is(err, seal.ErrSealed) && !sealStateUnconfirmed(err) {
+				break
+			}
+			if !sealStateUnconfirmed(err) {
+				t.Fatalf("node %d under a sealed node record: err = %v, want the sealed or the seal-state-unconfirmed refusal", replicas[i].id, err)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("node %d never read the sealed node record: last err = %v", replicas[i].id, err)
+			case <-time.After(clusterPollInterval):
+			}
+		}
+		if _, err := n.Client().Barrier().BarrierStatus(ctx); !transport.IsBarrierSealed(err) {
+			t.Fatalf("node %d's barrier status while held: err = %v, want the sealed refusal", replicas[i].id, err)
 		}
 	}
 	// A clear unseals nothing and a refused one changes nothing, so it is
@@ -205,10 +221,12 @@ func sealStateUnconfirmed(err error) bool {
 func sealRecordedOrSettled(ctx context.Context, t *testing.T, nodes []*Node, replicas []formationReplica) bool {
 	t.Helper()
 	for {
-		st, err := nodes[0].Client().Barrier().BarrierStatus(ctx)
-		if err == nil && st.ClusterSeal != nil && st.ClusterSeal.Sealed {
+		// A sealed node answers no status, so the record reads as this
+		// node's barrier having sealed itself on reading it.
+		if nodes[0].IsSealed() {
 			return true
 		}
+		var err error
 		if leaderAmong(t, nodes, replicas) {
 			err = nodes[0].Client().KV().Put(ctx, "seal-retry-probe", []byte("v"))
 			if err == nil {

@@ -18,11 +18,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 const (
@@ -99,11 +102,31 @@ func WaitForFile(path string, timeout time.Duration) error {
 	}
 }
 
+// errEmptyFile reports a file that exists but holds no bytes yet.
+var errEmptyFile = errors.New("file is empty")
+
 // WaitForNodeHost polls for the host.id file qrdbd writes under dataDir, which
 // is the first evidence that the Raft node host came up. It is the cheapest
-// possible liveness signal and needs no TLS material.
+// possible liveness signal and needs no TLS material. The file counts only once
+// it holds the id: go-quicraft writes it with os.WriteFile, which creates the
+// file before it writes the id, so a bare existence check can see it empty.
 func WaitForNodeHost(dataDir string, timeout time.Duration) error {
-	return WaitForFile(filepath.Join(dataDir, filepath.FromSlash(hostIDPath)), timeout)
+	path := filepath.Join(dataDir, filepath.FromSlash(hostIDPath))
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		info, err := os.Stat(path)
+		if err == nil && info.Size() > 0 {
+			return nil
+		}
+		if err == nil {
+			err = errEmptyFile
+		}
+		lastErr = err
+		if !sleepUntil(deadline, pollInterval) {
+			return &TimeoutError{Op: "WaitForNodeHost", Target: path, Timeout: timeout, LastErr: lastErr}
+		}
+	}
 }
 
 // WaitForHTTPOK polls url until it answers 200, optionally presenting cert.
@@ -124,6 +147,26 @@ func WaitForHTTPOK(url string, pool *x509.CertPool, cert *tls.Certificate, timeo
 		}
 		if !sleepUntil(deadline, pollInterval) {
 			return &TimeoutError{Op: "WaitForHTTPOK", Target: url, Timeout: timeout, LastErr: lastErr, StackDumped: dumpStacks(url)}
+		}
+	}
+}
+
+// WaitForHTTPUp polls url until the node answers it with a 200 or with the
+// typed sealed refusal (503, code SEALED), or timeout elapses. A sealed node
+// serves the unseal call and nothing else, so the sealed refusal on any other
+// route is how it says it is up and sealed; a 503 without the SEALED code (a
+// node still starting) keeps the wait going.
+func WaitForHTTPUp(url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	client := HTTPSClient(pool, cert, probeTimeout)
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		lastErr = probeUp(client, url)
+		if lastErr == nil {
+			return nil
+		}
+		if !sleepUntil(deadline, pollInterval) {
+			return &TimeoutError{Op: "WaitForHTTPUp", Target: url, Timeout: timeout, LastErr: lastErr}
 		}
 	}
 }
@@ -170,6 +213,32 @@ func probeOK(client *http.Client, url string) error {
 		return &ProbeError{Reason: "unexpected status", Status: resp.StatusCode, Body: string(body)}
 	}
 	return nil
+}
+
+// probeUp returns nil when url answers 200 or the typed sealed refusal.
+func probeUp(client *http.Client, url string) error {
+	resp, err := client.Get(url)
+	if err != nil {
+		return &ProbeError{Reason: "request failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyLimit))
+	if resp.StatusCode == http.StatusOK || IsSealedRefusal(resp.StatusCode, body) {
+		return nil
+	}
+	return &ProbeError{Reason: "unexpected status", Status: resp.StatusCode, Body: string(body)}
+}
+
+// IsSealedRefusal reports whether an HTTP answer is a sealed node's typed
+// refusal: 503 with the SEALED code.
+func IsSealedRefusal(status int, body []byte) bool {
+	if status != http.StatusServiceUnavailable {
+		return false
+	}
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(body, &refusal) == nil && refusal.Code == sealedwindow.ReasonSealed
 }
 
 // statusResponse is the subset of qrdbd's /status payload the harness reads.

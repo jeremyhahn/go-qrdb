@@ -47,6 +47,7 @@ const LOAD_TIMEOUT = 10_000;
 const webState: WebMockState = {
   sealStatus: {
     sealed: false,
+    initialized: true,
     strategy: "none",
     hardware_backed: false,
     initialized_at: "2026-01-01T00:00:00Z",

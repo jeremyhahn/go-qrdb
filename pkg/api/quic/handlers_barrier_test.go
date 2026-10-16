@@ -275,6 +275,30 @@ func TestHandleBarrierStatus_Success(t *testing.T) {
 	}
 }
 
+// TestHandleBarrierStatus_Uninitialized is the pre-init answer: a barrier
+// never initialized carries an empty InitializedAt, as on every other
+// transport, so a client can tell a node waiting for its first boot.
+func TestHandleBarrierStatus_Uninitialized(t *testing.T) {
+	barrierSvc := &mockBarrierService{
+		barrierStatusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{Sealed: true, Strategy: "passphrase"}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
+
+	resp, err := srv.handleBarrierStatus(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var statusResp pb.BarrierStatusResponse
+	if err := proto.Unmarshal(resp, &statusResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !statusResp.GetSealed() || statusResp.GetInitializedAt() != "" {
+		t.Fatalf("status = %+v, want sealed with no InitializedAt", &statusResp)
+	}
+}
+
 func TestHandleBarrierStatus_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "status error"}
 	barrierSvc := &mockBarrierService{

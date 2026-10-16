@@ -39,10 +39,11 @@ const LOAD_TIMEOUT = 10_000;
 // Mock state: server with no barrier configured
 // ---------------------------------------------------------------------------
 
-/** Simulates a qrdbd node with no seal barrier — initialized_at is absent. */
+/** Simulates a qrdbd node with no seal barrier — not initialized, initialized_at absent. */
 const noBarrierState: WebMockState = {
   sealStatus: {
     sealed: false,
+    initialized: false,
     strategy: "none",
     hardware_backed: false,
   },

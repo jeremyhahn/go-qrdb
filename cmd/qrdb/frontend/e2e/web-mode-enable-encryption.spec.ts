@@ -28,10 +28,11 @@ import type { Page } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
 
-/** Committed "none" barrier: initialized (initialized_at set) but unencrypted. */
+/** Committed "none" barrier: initialized (the initialized flag set) but unencrypted. */
 const committedNoneState: WebMockState = {
   sealStatus: {
     sealed: false,
+    initialized: true,
     strategy: "none",
     hardware_backed: false,
     initialized_at: "2026-01-01T00:00:00Z",
@@ -70,6 +71,7 @@ test.describe("Web mode - enable encryption wizard", () => {
         contentType: "application/json",
         body: JSON.stringify({
           sealed,
+          initialized: true,
           strategy,
           hardware_backed: false,
           initialized_at: "2026-01-01T00:00:00Z",

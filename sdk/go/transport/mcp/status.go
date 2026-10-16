@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -93,6 +94,11 @@ var toolCodePrefixes = map[wire.Code]string{
 // generic failure this client would have reported anyway and never to a
 // misclassification.
 func mapToolError(tool string, payload *wire.ErrorPayload) error {
+	// Unavailable alone also means a draining node; the SEALED reason is what
+	// makes it the sealed node's refusal.
+	if payload.Code == wire.CodeUnavailable && payload.Reason == sealedwindow.ReasonSealed {
+		return &transport.BarrierSealedError{Message: payload.Message}
+	}
 	if build, ok := typedToolErrors[payload.Code]; ok {
 		return build(payload.Message)
 	}

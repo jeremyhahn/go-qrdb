@@ -48,6 +48,25 @@ func newProbe(sealed bool) *fakeSealProbe {
 	return p
 }
 
+// assertSealedRefusal fails unless err is the sealed refusal: Unavailable
+// with the sealed message and a google.rpc.ErrorInfo in the qrdb domain with
+// reason SEALED, which is what lets a client tell it from a draining node.
+func assertSealedRefusal(t *testing.T, what string, err error) {
+	t.Helper()
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unavailable || st.Message() != sealedwindow.SealedMessage {
+		t.Errorf("%s: %v, want Unavailable %q", what, err, sealedwindow.SealedMessage)
+		return
+	}
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok &&
+			info.GetDomain() == sealedwindow.ErrorDomain && info.GetReason() == sealedwindow.ReasonSealed {
+			return
+		}
+	}
+	t.Errorf("%s: %v carries no ErrorInfo{%s, %s}", what, err, sealedwindow.ErrorDomain, sealedwindow.ReasonSealed)
+}
+
 var dummyHandler grpc.UnaryHandler = func(ctx context.Context, req any) (any, error) {
 	return "ok", nil
 }
@@ -121,42 +140,62 @@ func (p stateProbe) SealState() (sealed, unconfirmed bool) { return p.sealed, p.
 var _ sealedwindow.StateProbe = stateProbe{}
 
 func TestSealedWindow_Unary_UnconfirmedIsNotSealed(t *testing.T) {
-	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/KVGet"}
-	_, err := SealedWindowUnaryInterceptor(stateProbe{sealed: true, unconfirmed: true}, nil)(context.Background(), nil, info, dummyHandler)
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.Unavailable {
-		t.Fatalf("err = %v, want Unavailable", err)
-	}
-	if want := (&clusterseal.SealStateUnconfirmedError{}).Error(); st.Message() != want {
-		t.Errorf("message = %q, want %q", st.Message(), want)
-	}
-	var reason, domain string
-	for _, d := range st.Details() {
-		if ei, isInfo := d.(*errdetails.ErrorInfo); isInfo {
-			reason, domain = ei.GetReason(), ei.GetDomain()
+	// An unconfirmed node is not sealed, so it refuses as unconfirmed; like a
+	// held node it answers no status question, barrier status included.
+	for _, method := range []string{"/qrdb.v1.QRDBService/KVGet", "/qrdb.v1.QRDBService/BarrierStatus"} {
+		info := &grpc.UnaryServerInfo{FullMethod: method}
+		_, err := SealedWindowUnaryInterceptor(stateProbe{sealed: true, unconfirmed: true}, nil)(context.Background(), nil, info, dummyHandler)
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.Unavailable {
+			t.Fatalf("%s: err = %v, want Unavailable", method, err)
+		}
+		if want := (&clusterseal.SealStateUnconfirmedError{}).Error(); st.Message() != want {
+			t.Errorf("%s: message = %q, want %q", method, st.Message(), want)
+		}
+		var reason, domain string
+		for _, d := range st.Details() {
+			if ei, isInfo := d.(*errdetails.ErrorInfo); isInfo {
+				reason, domain = ei.GetReason(), ei.GetDomain()
+			}
+		}
+		if reason != replicaforward.ReasonSealStateUnconfirmed || domain != replicaforward.ErrorDomain {
+			t.Errorf("%s: ErrorInfo = %s/%s, want %s/%s", method, domain, reason, replicaforward.ErrorDomain, replicaforward.ReasonSealStateUnconfirmed)
 		}
 	}
-	if reason != replicaforward.ReasonSealStateUnconfirmed || domain != replicaforward.ErrorDomain {
-		t.Errorf("ErrorInfo = %s/%s, want %s/%s", domain, reason, replicaforward.ErrorDomain, replicaforward.ReasonSealStateUnconfirmed)
-	}
 
-	allowed := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Status"}
+	// It still serves the unseal call.
+	allowed := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"}
 	if _, err := SealedWindowUnaryInterceptor(stateProbe{sealed: true, unconfirmed: true}, nil)(context.Background(), nil, allowed, dummyHandler); err != nil {
-		t.Errorf("allowlisted Status on an unconfirmed node: %v, want nil", err)
+		t.Errorf("unseal on an unconfirmed node: %v, want nil", err)
 	}
 }
 
 func TestSealedWindow_Unary_SealedAllowlistPasses(t *testing.T) {
-	intercept := SealedWindowUnaryInterceptor(newProbe(true), nil)
+	// Enrollment open: the first-boot verbs are on the surface only until
+	// the ceremony closes it, and only the listener's gate has an
+	// enrollment probe to tell (see
+	// TestSealedWindowListener_OfficerRegistrationFollowsEnrollment).
+	probe := newProbe(true)
+	probe.enrollment.Store(true)
+	listener := SealedWindowListenerUnaryInterceptor(probe, nil)
+	regular := SealedWindowUnaryInterceptor(probe, nil)
 	for _, full := range SealedWindowAllowlist {
 		t.Run(full, func(t *testing.T) {
-			res, err := intercept(context.Background(), nil,
-				&grpc.UnaryServerInfo{FullMethod: full}, dummyHandler)
-			if err != nil {
-				t.Errorf("err = %v, want nil", err)
+			info := &grpc.UnaryServerInfo{FullMethod: full}
+			if _, authOnly := sealedWindowAuthenticatedOnly[full]; !authOnly {
+				res, err := listener(context.Background(), nil, info, dummyHandler)
+				if err != nil || res != "ok" {
+					t.Errorf("listener: res = %v, err = %v, want ok", res, err)
+				}
 			}
-			if res != "ok" {
-				t.Errorf("res = %v, want ok", res)
+			res, err := regular(context.Background(), nil, info, dummyHandler)
+			_, firstBoot := sealedWindowPreOperationalOnly[full]
+			if _, listenerOnly := sealedWindowListenerOnly[full]; firstBoot || listenerOnly {
+				assertSealedRefusal(t, "regular "+full, err)
+				return
+			}
+			if err != nil || res != "ok" {
+				t.Errorf("regular: res = %v, err = %v, want ok", res, err)
 			}
 		})
 	}
@@ -178,24 +217,58 @@ func TestSealedWindow_Unary_SameTailOtherServiceRejected(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			_, err := intercept(context.Background(), nil,
 				&grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
-			if err == nil {
-				t.Fatalf("expected %s to be rejected while sealed", method)
-			}
-			st, ok := status.FromError(err)
-			if !ok {
-				t.Fatalf("err is not a status: %v", err)
-			}
-			if st.Code() != codes.Unavailable {
-				t.Errorf("code = %v, want Unavailable", st.Code())
-			}
+			assertSealedRefusal(t, method, err)
 		})
 	}
 
-	// The real QRDBService/Status still passes while sealed.
+	// The real QRDBService/BarrierUnseal still passes while sealed.
 	if _, err := intercept(context.Background(), nil,
-		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Status"},
+		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"},
 		dummyHandler); err != nil {
-		t.Errorf("QRDBService/Status err = %v, want nil", err)
+		t.Errorf("QRDBService/BarrierUnseal err = %v, want nil", err)
+	}
+}
+
+// TestSealedWindow_Unary_StatusAndHealthRefused: a sealed node serves the
+// unseal call and nothing else. Health, node status and barrier status are
+// refused with the typed sealed refusal like every other call; unseal
+// progress travels in the unseal call's own response.
+func TestSealedWindow_Unary_StatusAndHealthRefused(t *testing.T) {
+	gates := map[string]grpc.UnaryServerInterceptor{
+		"regular":  SealedWindowUnaryInterceptor(newProbe(true), nil),
+		"listener": SealedWindowListenerUnaryInterceptor(newProbe(true), nil),
+	}
+	for gate, intercept := range gates {
+		for _, method := range []string{
+			"/qrdb.v1.QRDBService/Health",
+			"/qrdb.v1.QRDBService/Status",
+			"/qrdb.v1.QRDBService/Get",
+		} {
+			_, err := intercept(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
+			assertSealedRefusal(t, gate+" "+method, err)
+		}
+		if _, err := intercept(context.Background(), nil,
+			&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"}, dummyHandler); err != nil {
+			t.Errorf("%s BarrierUnseal: %v, want served", gate, err)
+		}
+	}
+}
+
+// TestSealedWindow_Unary_BarrierStatusOnlyOnTheListener: barrier status is
+// the initialized flag a sealed node serves, so the sealed window's listener
+// serves it, initialized or not; a regular listener refuses it while sealed,
+// which is how a held or cut-off node, its own barrier unsealed, answers.
+func TestSealedWindow_Unary_BarrierStatusOnlyOnTheListener(t *testing.T) {
+	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}
+	for _, enrollment := range []bool{false, true} {
+		probe := newProbe(true)
+		probe.enrollment.Store(enrollment)
+		res, err := SealedWindowListenerUnaryInterceptor(probe, nil)(context.Background(), nil, info, dummyHandler)
+		if err != nil || res != "ok" {
+			t.Errorf("listener, enrollment open %v: res = %v, err = %v, want ok", enrollment, res, err)
+		}
+		_, err = SealedWindowUnaryInterceptor(probe, nil)(context.Background(), nil, info, dummyHandler)
+		assertSealedRefusal(t, "regular BarrierStatus", err)
 	}
 }
 
@@ -269,10 +342,15 @@ func TestSealedWindow_Stream_SealedNonAllowlistRejected(t *testing.T) {
 func TestSealedWindow_Stream_SealedAllowlistPasses(t *testing.T) {
 	intercept := SealedWindowStreamInterceptor(newProbe(true), nil)
 	if err := intercept(nil, &fakeServerStream{},
-		&grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/CeremonyStatus"},
+		&grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"},
 		dummyStreamHandler); err != nil {
 		t.Errorf("allowlist stream err = %v, want nil", err)
 	}
+	// Ceremony status is a status answer, which a sealed node does not give.
+	err := intercept(nil, &fakeServerStream{},
+		&grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/CeremonyStatus"},
+		dummyStreamHandler)
+	assertSealedRefusal(t, "CeremonyStatus stream", err)
 }
 
 func TestMethodAllowed_FullMatch(t *testing.T) {
@@ -353,25 +431,25 @@ func TestWithSealedWindowListener_SelectsListenerGate(t *testing.T) {
 	}
 }
 
-// TestSealedWindowListener_OfficerRegistrationFollowsEnrollment: the
-// listener's interceptor refuses officer registration with PermissionDenied
-// once enrollment has closed, and admits it while open.
+// TestSealedWindowListener_OfficerRegistrationFollowsEnrollment: both gates
+// refuse officer registration with the sealed refusal once enrollment has
+// closed, and admit it while open. A sealed node serves only the unseal call;
+// enrollment is the pre-operational exception and nothing past it.
 func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T) {
 	probe := newProbe(true)
-	unary := SealedWindowListenerUnaryInterceptor(probe, nil)
-	for _, method := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"} {
-		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
-		st, _ := status.FromError(err)
-		if st.Code() != codes.PermissionDenied || st.Message() != sealedwindow.EnrollmentClosedMessage {
-			t.Errorf("%s, enrollment closed: %v, want PermissionDenied", method, err)
+	gates := map[string]grpc.UnaryServerInterceptor{
+		"listener": SealedWindowListenerUnaryInterceptor(probe, nil),
+		"regular":  SealedWindowUnaryInterceptor(probe, nil),
+	}
+	for gate, unary := range gates {
+		for _, method := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"} {
+			_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
+			assertSealedRefusal(t, gate+" "+method+", enrollment closed", err)
 		}
 	}
+	unary := gates["listener"]
 	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}, dummyHandler); err != nil {
 		t.Errorf("a claim with enrollment closed: %v", err)
-	}
-	if _, err := SealedWindowUnaryInterceptor(probe, nil)(context.Background(), nil,
-		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerRegister"}, dummyHandler); err != nil {
-		t.Errorf("regular gate: %v (authentication decides)", err)
 	}
 	probe.enrollment.Store(true)
 	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerRegister"}, dummyHandler); err != nil {
@@ -384,7 +462,7 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 // not.
 func TestSealedWindowListener_MarksCallsAnonymous(t *testing.T) {
 	probe := newProbe(true)
-	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}
+	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"}
 	var anonymous bool
 	handler := func(ctx context.Context, _ any) (any, error) {
 		anonymous = sealedwindow.Anonymous(ctx)
@@ -401,7 +479,7 @@ func TestSealedWindowListener_MarksCallsAnonymous(t *testing.T) {
 		anonymous = sealedwindow.Anonymous(ss.Context())
 		return nil
 	}
-	sinfo := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}
+	sinfo := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"}
 	if err := SealedWindowListenerStreamInterceptor(probe, nil)(nil, stream, sinfo, streamHandler); err != nil || !anonymous {
 		t.Errorf("listener stream: anonymous=%v err=%v", anonymous, err)
 	}
@@ -436,7 +514,7 @@ func TestSealedWindowListener_NoCallInFlightAcrossUnseal(t *testing.T) {
 	}
 	slowDone := make(chan error, 1)
 	go func() {
-		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}, slow)
+		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}, slow)
 		slowDone <- err
 	}()
 	<-entered

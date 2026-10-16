@@ -24,12 +24,11 @@ import (
 
 // SealedWindowAllowlist is the set of native QUIC method names that
 // remain operative while the barrier is sealed. Methods not in this
-// list are rejected with wire.StatusUnavailable while s.sealedWindowProbe
-// reports sealed. The list is derived from the canonical
-// transport-neutral verb table in pkg/api/sealedwindow so it cannot
-// drift from the other transports: every barrier.* and ceremony.*
-// unseal-flow method, plus admin.Health/admin.Status for liveness
-// probes.
+// list -- admin.Health and admin.Status included -- are refused with
+// wire.StatusUnavailable and reason sealedwindow.ReasonSealed while
+// s.sealedWindowProbe reports sealed. The list is derived from the canonical
+// transport-neutral verb table in pkg/api/sealedwindow so it cannot drift
+// from the other transports: the unseal call and the first-boot verbs.
 var SealedWindowAllowlist = sealedwindow.QUICAllowlist()
 
 // sealedWindowAllowed reports whether method remains reachable while the
@@ -44,47 +43,63 @@ func sealedWindowAllowed(method string) bool {
 var sealedWindowTransition = sealedwindow.QUICTransition()
 
 // sealedWindowPreOperationalOnly holds the native QUIC methods of the
-// PreOperationalOnly verbs (officer and recovery-officer registration).
+// PreOperationalOnly verbs: the first-boot verbs a sealed node serves only
+// while enrollment is open.
 var sealedWindowPreOperationalOnly = sealedwindow.QUICPreOperationalOnly()
 
 // sealedWindowAuthenticatedOnly holds the native QUIC methods of the
 // AuthenticatedOnly verbs (cluster unseal), never served anonymously.
 var sealedWindowAuthenticatedOnly = sealedwindow.QUICAuthenticatedOnly()
 
+// sealedWindowListenerOnly holds the native QUIC methods of the ListenerOnly
+// verbs (barrier status), never served by a sealed regular listener.
+var sealedWindowListenerOnly = sealedwindow.QUICListenerOnly()
+
 // sealedWindowRefusal is how the QUIC gate answers one refusing Decision.
 type sealedWindowRefusal struct {
-	status  uint16
+	status uint16
+	// payload is the error frame's body. The sealed refusal's info carries
+	// sealedwindow.ReasonSealed so a client reads "up and sealed" from it,
+	// and the unconfirmed refusal's carries SEAL_STATE_UNCONFIRMED.
 	payload wire.ErrorPayload
 }
 
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its
 // response. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
-	sealedwindow.RefuseSealed:           {status: wire.StatusUnavailable, payload: wire.ErrorPayload{Message: "barrier sealed"}},
-	sealedwindow.RefuseUnconfirmed:      {status: wire.StatusUnavailable, payload: errorPayloadOf(&clusterseal.SealStateUnconfirmedError{})},
-	sealedwindow.RefuseClosed:           {status: wire.StatusUnavailable, payload: wire.ErrorPayload{Message: sealedwindow.ClosedMessage}},
-	sealedwindow.RefuseEnrollmentClosed: {status: wire.StatusPermissionDenied, payload: wire.ErrorPayload{Message: sealedwindow.EnrollmentClosedMessage}},
+	sealedwindow.RefuseSealed: {
+		status: wire.StatusUnavailable,
+		payload: wire.ErrorPayload{
+			Message: sealedwindow.SealedMessage,
+			Info:    &wire.ErrorInfo{Domain: sealedwindow.ErrorDomain, Reason: sealedwindow.ReasonSealed},
+		},
+	},
+	sealedwindow.RefuseUnconfirmed: {status: wire.StatusUnavailable, payload: errorPayloadOf(&clusterseal.SealStateUnconfirmedError{})},
+	sealedwindow.RefuseClosed:      {status: wire.StatusUnavailable, payload: wire.ErrorPayload{Message: sealedwindow.ClosedMessage}},
 }
 
-// sealedWindowRefusal applies the sealed-window gate to method. It reports
-// the refusal and true when the gate refuses the request, and false when it
-// admits it or no gate is installed.
-func (s *Server) sealedWindowRefusal(ctx context.Context, method string) (sealedWindowRefusal, bool) {
-	if s.sealedWindowProbe == nil {
+// sealedWindowGateRefusal applies the sealed-window gate of probe to method:
+// a regular listener's when listener is nil, and the boot-time sealed-window
+// listener's otherwise. It reports the refusal and true when the gate refuses
+// the request, and false when it admits it or probe is nil.
+func sealedWindowGateRefusal(ctx context.Context, method string, probe sealedWindowProbe, listener sealedwindow.ListenerProbe) (sealedWindowRefusal, bool) {
+	if probe == nil {
 		return sealedWindowRefusal{}, false
 	}
 	_, authOnly := sealedWindowAuthenticatedOnly[method]
-	sealed, unconfirmed := sealedwindow.Sample(s.sealedWindowProbe)
+	_, listenerOnly := sealedWindowListenerOnly[method]
+	sealed, unconfirmed := sealedwindow.Sample(probe)
 	req := sealedwindow.Request{
 		Sealed:            sealed,
 		Unconfirmed:       unconfirmed,
 		Allowlisted:       sealedWindowAllowed(method),
-		Listener:          s.sealedWindowListener != nil,
+		Listener:          listener != nil,
 		AuthenticatedOnly: authOnly,
+		ListenerOnly:      listenerOnly,
 	}
-	if _, preOp := sealedWindowPreOperationalOnly[method]; preOp && req.Listener && req.Sealed && req.Allowlisted {
+	if _, preOp := sealedWindowPreOperationalOnly[method]; preOp && req.Sealed && req.Allowlisted {
 		req.PreOperationalOnly = true
-		req.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen(ctx)
+		req.EnrollmentOpen = listener != nil && listener.EnrollmentOpen(ctx)
 	}
 	refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
 	return refusal, refused

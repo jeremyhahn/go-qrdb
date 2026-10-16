@@ -30,25 +30,23 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// TestHandleHealthReportsSealedWithoutAnAdminService covers the nil-service
-// guard. Health is on the sealed-window allowlist, so it is reachable BEFORE
-// the admin service exists -- returning an error there would make a sealed
-// node look unreachable to a load balancer instead of merely sealed, and a
-// nil dereference would crash it outright.
-func TestHandleHealthReportsSealedWithoutAnAdminService(t *testing.T) {
+// TestHandleHealthRefusesWithoutAnAdminService covers the nil-service guard.
+// A sealed node never reaches the handler -- the sealed-window gate refuses
+// health first -- so a missing admin service is a wiring fault, refused with
+// a typed error rather than a nil dereference or an invented answer.
+func TestHandleHealthRefusesWithoutAnAdminService(t *testing.T) {
 	s := &Server{}
 
 	raw, err := s.handleHealth(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("handleHealth: %v", err)
+	var want *ServiceNotConfiguredError
+	if !errors.As(err, &want) {
+		t.Fatalf("error = %v (%T), want *ServiceNotConfiguredError", err, err)
 	}
-
-	var resp pb.HealthResponse
-	if err := proto.Unmarshal(raw, &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if want.Service != "admin" {
+		t.Errorf("Service = %q, want %q", want.Service, "admin")
 	}
-	if resp.Status != service.HealthStatusSealed {
-		t.Fatalf("Status = %q, want %q", resp.Status, service.HealthStatusSealed)
+	if raw != nil {
+		t.Error("a refused health call must return no payload")
 	}
 }
 
@@ -98,9 +96,8 @@ func TestHandleHealthPropagatesAServiceFailure(t *testing.T) {
 	}
 }
 
-// TestHandleStatusRefusesWithoutAnAdminService covers Status's nil guard.
-// Unlike Health, Status has no meaningful sealed-window answer, so it fails
-// closed with a typed error rather than inventing one.
+// TestHandleStatusRefusesWithoutAnAdminService covers Status's nil guard,
+// which fails closed with a typed error exactly as Health's does.
 func TestHandleStatusRefusesWithoutAnAdminService(t *testing.T) {
 	s := &Server{}
 

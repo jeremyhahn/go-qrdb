@@ -127,7 +127,8 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 		return resp.StatusCode, nil
 	}
 
-	// Wait for the listener, over the anonymous sealed-window status verb.
+	// Wait for the listener: a sealed node answers barrier status with its
+	// initialized flag, so it is up once a status request is served.
 	retry := time.NewTicker(20 * time.Millisecond)
 	defer retry.Stop()
 	for {

@@ -209,12 +209,11 @@ func (n *selfGenCANode) bootAdmin(t *testing.T, cli, soPin, userPin string, extr
 }
 
 // restArgsNoAuth returns qrdb CLI connection flags for the REST transport
-// presenting no client certificate. This is the only combination that can
-// reach the pre-host sealed-window listener: the gRPC and unix transports
-// both probe a Health RPC on Connect() that the sealed-window listener
-// does not implement (see the package doc comment, bug 1), and REST's
+// presenting no client certificate, the flags these flows drive the pre-host
+// sealed-window listener with. The listener refuses every call but unseal
+// with the typed sealed refusal, its health call included, and REST's
 // reachability probe (sdk/go/transport/rest/transport.go Transport.reachable)
-// accepts both 200 and 503 from the always-public GET /health endpoint.
+// counts that refusal as "up and sealed".
 func (n *selfGenCANode) restArgsNoAuth() []string {
 	return []string{
 		"--server", fmt.Sprintf("https://127.0.0.1:%d", n.adminPort),
@@ -255,15 +254,36 @@ func (n *selfGenCANode) unixArgsAdmin(unixSocket string) []string {
 	}
 }
 
+// pollUntilSealedListenerUp repeatedly runs `qrdb <connArgs> barrier status
+// --output json` until the node answers or the timeout elapses, and is how a
+// test detects that the sealed-window listener has come up (no TCP/TLS-level
+// readiness signal is otherwise available to a test running outside the
+// daemon process). A sealed node answers barrier status with its initialized
+// flag, so any status counts, as does the typed sealed refusal of a node the
+// cluster seal holds.
+func pollUntilSealedListenerUp(t *testing.T, cli string, connArgs []string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastOut string
+	var lastErr error
+	for time.Now().Before(deadline) {
+		out, err := runQRDB(t, cli, connArgs, "barrier", "status", "--output", "json")
+		if err == nil || cliSealedRefusal(out) {
+			return
+		}
+		lastOut, lastErr = out, err
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %v waiting for the sealed-window listener: %v\noutput: %s", timeout, lastErr, lastOut)
+}
+
 // pollUntilCLISucceeds repeatedly runs `qrdb <connArgs> barrier status
-// --output json` until it exits zero or the timeout elapses. It is used
-// both to detect that the sealed-window listener has come up (no
-// TCP/TLS-level readiness signal is otherwise available to a test running
-// outside the daemon process) and, separately, to detect that the full
-// post-boot server is answering authenticated requests (the admin
+// --output json` until it reports an unsealed barrier or the timeout elapses.
+// It detects that the full post-boot server is answering requests (the admin
 // identity is not usable until Raft has elected a leader and replicated
 // the bootstrap admin user -- typically a few seconds after
-// waitForHealthy's host.id file appears).
+// waitForHealthy's host.id file appears). A zero exit alone is not enough:
+// the sealed-window listener answers status too, with sealed set.
 func pollUntilCLISucceeds(t *testing.T, cli string, connArgs []string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -271,7 +291,8 @@ func pollUntilCLISucceeds(t *testing.T, cli string, connArgs []string, timeout t
 	var lastErr error
 	for time.Now().Before(deadline) {
 		out, err := runQRDB(t, cli, connArgs, "barrier", "status", "--output", "json")
-		if err == nil {
+		var status cliBarrierStatusJSON
+		if err == nil && json.Unmarshal([]byte(out), &status) == nil && !status.Sealed {
 			return
 		}
 		lastOut, lastErr = out, err
@@ -433,7 +454,7 @@ func TestCLI_Init_PassphraseHappyPath(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[init-happy] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	out := node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	var initResp struct {
@@ -493,7 +514,7 @@ func TestCLI_Init_ShamirFlags_RequiresOfficers(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[init-shamir-flags] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	// No admin identity is needed: ceremony-initialize runs against the
 	// sealed-window listener, before any barrier unseal, and this test
@@ -512,16 +533,20 @@ func TestCLI_Init_ShamirFlags_RequiresOfficers(t *testing.T) {
 
 	// The ceremony must not be left half-initialized: Initialize's own
 	// validateConfig failure must leave the state machine at
-	// awaiting_init, not silently advance it.
-	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "ceremony", "status", "--output", "json")
+	// awaiting_init, not silently advance it. The node's pre-init answer
+	// still reports the barrier uninitialized, and the same node still
+	// takes its first boot, which ceremony-initialize refuses past
+	// awaiting_init.
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "status", "--output", "json")
 	if err != nil {
-		t.Fatalf("ceremony status after the failed shamir attempt: %v\noutput: %s", err, out)
+		t.Fatalf("barrier status after the refused init: %v\noutput: %s", err, out)
 	}
-	var status ceremonyStatusJSON
+	var status transport.BarrierStatusResponse
 	decodeJSON(t, out, &status)
-	if status.State != "awaiting_init" {
-		t.Errorf("expected state awaiting_init after the failed init attempt, got: %q", status.State)
+	if status.Initialized || !status.Sealed {
+		t.Fatalf("barrier status after the refused init = %+v, want sealed and uninitialized", status)
 	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 }
 
 // TestCLI_Init_ShamirWithOfficers_EndToEnd is the SUCCESS case companion to
@@ -540,7 +565,7 @@ func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 3\n",
 		"[init-shamir-officers] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	type initHolder struct {
 		username, role, keyPath, certPath, envelope string
@@ -619,12 +644,25 @@ func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 			}
 		}
 		out, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "status", "--output", "json")
+		// A sealed node answers status with its initialized flag and
+		// nothing else.
+		if op == "seal" {
+			if err != nil {
+				t.Fatalf("barrier status after the seal quorum: %v\noutput: %s", err, out)
+			}
+			var sealed transport.BarrierStatusResponse
+			decodeJSON(t, out, &sealed)
+			if !sealed.Sealed || !sealed.Initialized || sealed.Strategy != "" {
+				t.Fatalf("barrier status after the seal quorum = %+v, want sealed, initialized and nothing more", sealed)
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("barrier status after %s: %v\noutput: %s", op, err, out)
 		}
 		var bs transport.BarrierStatusResponse
 		decodeJSON(t, out, &bs)
-		if bs.Sealed != (op == "seal") {
+		if bs.Sealed {
 			t.Fatalf("after the %s quorum: sealed = %v", op, bs.Sealed)
 		}
 	}
@@ -647,7 +685,7 @@ func TestCLI_Init_LocalFlagValidation(t *testing.T) {
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[init-validate] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	tests := []struct {
 		name    string
@@ -702,10 +740,10 @@ func TestCLI_Init_LocalFlagValidation(t *testing.T) {
 // equal --total -- see pkg/ceremony/ceremony_officer.go
 // sealSharesToOfficers) works over BOTH the REST and gRPC transports.
 //
-// gRPC parity is deliberate and load-bearing: the sealed-window listener's
-// Health RPC answers HealthStatusSealed when no admin service is wired
-// (pkg/api/grpc/service.go Health), so the Go gRPC transport's mandatory
-// Connect()-time health check passes pre-boot instead of locking gRPC out of
+// gRPC parity is deliberate and load-bearing: the sealed-window listener
+// refuses the Health RPC with the typed sealed refusal, which the Go gRPC
+// transport's mandatory Connect()-time health check counts as a reachable,
+// sealed node, so it passes pre-boot instead of locking gRPC out of
 // the one window officer enrollment is allowed in. The REST leg additionally
 // pins the csr_pem wire contract (a plain PEM string).
 func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
@@ -715,13 +753,13 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 3\n",
 		"[officer-csr-bug] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	csrPEM, _ := generateCeremonyCSR(t, "off1")
 	csrPath := writeTempFile(t, "off1.csr", csrPEM)
 
-	// gRPC reaches the sealed-window listener (Health answers "sealed"
-	// rather than erroring) and registers the first officer. No client
+	// gRPC reaches the sealed-window listener (Connect counts the typed
+	// sealed refusal of Health as reachable) and registers the first officer. No client
 	// certificate is presented: the sealed-window listener runs without
 	// authentication (see the officer-list assertion below), and this test
 	// never boots far enough for an admin identity to exist.
@@ -781,7 +819,7 @@ func TestCLI_BarrierInitShamir_RefusedOnSystemBarrier(t *testing.T) {
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 3\n",
 		"[init-shamir-refused] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init-shamir",
 		"--threshold", "2", "--total", "3")
@@ -912,7 +950,7 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 	}
 	waitForFile(t, node.caPath, 30*time.Second)
 
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 	// "qrdb init" is the only system bootstrap (go-qrdb#548): it brings the
 	// system barrier up itself (strategy "none" here), so no separate
 	// barrier-init call precedes it.
@@ -994,7 +1032,8 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 // TestCLI_Ceremony_StatusAndSubcommands drives the `ceremony` subcommands
 // against a real node and asserts on the server's actual response:
 //
-//   - `ceremony status`: awaiting_init before `qrdb init`, enrolling after an
+//   - `ceremony status`: the typed sealed refusal before `qrdb init` (a sealed
+//     node serves only the unseal call), enrolling after an
 //     M-of-N init, operational once every holder has claimed.
 //   - `ceremony sign-csr`: issues holder certificates only while the ceremony
 //     is enrolling. It succeeds with the correct --so-pin (the one supplied to
@@ -1007,17 +1046,34 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 2\n",
 		"[ceremony] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "ceremony", "status", "--output", "json")
+	// Before init a sealed node gives one answer beyond unseal: barrier
+	// status, reporting the barrier uninitialized. Ceremony status is not
+	// that answer and gets the typed sealed refusal, not a state.
+	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "status", "--output", "json")
 	if err != nil {
-		t.Fatalf("ceremony status (pre-init): %v\noutput: %s", err, out)
+		t.Fatalf("barrier status (pre-init): %v\noutput: %s", err, out)
+	}
+	var preInit transport.BarrierStatusResponse
+	decodeJSON(t, out, &preInit)
+	if preInit.Initialized || !preInit.Sealed {
+		t.Fatalf("barrier status (pre-init) = %+v, want sealed and uninitialized", preInit)
+	}
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "status")
+	if err != nil {
+		t.Fatalf("barrier status (pre-init, text): %v\noutput: %s", err, out)
+	}
+	for _, want := range []string{"Sealed:          true", "Initialized:     false"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("barrier status (pre-init, text) lacks %q\noutput: %s", want, out)
+		}
+	}
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "ceremony", "status", "--output", "json")
+	if err == nil || !cliSealedRefusal(out) {
+		t.Fatalf("ceremony status (pre-init): err = %v, want the sealed refusal\noutput: %s", err, out)
 	}
 	var status ceremonyStatusJSON
-	decodeJSON(t, out, &status)
-	if status.State != "awaiting_init" {
-		t.Errorf("ceremony status pre-init: state = %q, want %q", status.State, "awaiting_init")
-	}
 
 	// An M-of-N `qrdb init` enrols the two officers and leaves the ceremony
 	// enrolling until both have claimed their envelopes.
@@ -1180,8 +1236,9 @@ func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 // TestCLI_BarrierOfficerRegister_SealedWindow (REST and gRPC only) to every
 // CLI-selectable transport: the pre-host sealed-window listener accepts
 // `barrier officer register` identically over REST, gRPC, QUIC, MCP, and
-// Unix, since the sealed-window Health fix (see this package's and
-// barrier_permutations_cli_test.go's doc comments) made all five reachable
+// Unix: every transport's Connect counts the typed sealed refusal as
+// reachable (see barrier_permutations_cli_test.go's doc comment), so all five
+// are reachable
 // from a cold, uninitialized barrier.
 func TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol(t *testing.T) {
 	for _, proto := range coldSealedWindowProtocols {

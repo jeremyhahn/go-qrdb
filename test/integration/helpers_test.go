@@ -178,10 +178,9 @@ func (ca *testCA) boundAdminCert(t *testing.T, dataDir string) (certPath, keyPat
 
 // noAuthConnArgs returns qrdb CLI connection flags reaching the node at
 // adminPort with no client certificate presented -- the only combination
-// that can reach the pre-host sealed-window listener (gRPC and Unix both
-// probe a Health RPC on Connect() the sealed-window listener does not
-// implement; REST's reachability probe accepts the always-public GET
-// /health's 200 or 503). It is also valid against a fully-booted node: an
+// that can reach the pre-host sealed-window listener (every transport's
+// reachability probe counts the typed sealed refusal of its health call as
+// "up and sealed"). It is also valid against a fully-booted node: an
 // unauthenticated request to an endpoint that requires none (ceremony
 // status/initialize) succeeds there too.
 func noAuthConnArgs(caCertPath string, adminPort int) []string {
@@ -2428,8 +2427,10 @@ tenant:
 }
 
 // waitForBarrierStatusReachable polls GET /v1/barrier/status on the given
-// admin port until a 200 is received, indicating the sealed-window server is
-// up and accepting requests. Uses mtlsHTTPClient because the server requires
+// admin port until it answers 200 (unsealed, or sealed with its initialized
+// flag) or the typed sealed refusal (503, code SEALED) of a node the cluster
+// seal holds, either of which means the server is up and accepting
+// requests. Uses mtlsHTTPClient because the server requires
 // a client certificate for TLS even during the sealed-window phase.
 func waitForBarrierStatusReachable(t *testing.T, ca *testCA, port int, timeout time.Duration) {
 	t.Helper()
@@ -2440,8 +2441,9 @@ func waitForBarrierStatusReachable(t *testing.T, ca *testCA, port int, timeout t
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(rawURL)
 		if err == nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			if resp.StatusCode == http.StatusOK || qrdbdharness.IsSealedRefusal(resp.StatusCode, body) {
 				return
 			}
 		}

@@ -112,15 +112,7 @@ func (s *Server) handleBarrierStatus(ctx context.Context, _ []byte) ([]byte, err
 		return nil, err
 	}
 
-	resp, err := proto.Marshal(&pb.BarrierStatusResponse{
-		Sealed:          info.Sealed,
-		Strategy:        info.Strategy,
-		HardwareBacked:  info.HardwareBacked,
-		InitializedAt:   info.InitializedAt.Format(time.RFC3339Nano),
-		ShamirThreshold: int32(info.ShamirThreshold),
-		ShamirTotal:     int32(info.ShamirTotal),
-		ClusterSeal:     grpcapi.ClusterSealToProto(info.ClusterSeal),
-	})
+	resp, err := proto.Marshal(grpcapi.BarrierStatusToProto(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

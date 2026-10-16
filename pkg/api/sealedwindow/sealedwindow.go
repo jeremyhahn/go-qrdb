@@ -15,6 +15,30 @@
 // Package sealedwindow defines the canonical, transport-neutral set of
 // operations that remain reachable while the storage barrier is sealed.
 //
+// A sealed node serves the unseal call, and answers one status question:
+// whether it is initialized. The unseal call is the path that submits unseal
+// material: a passphrase unseal, a holder quorum's factor challenge and share
+// submission, the share claim that hands a holder the share it submits, and
+// -- on an authenticated listener only -- the clearing of a cluster-wide
+// seal. Every other call, health and every other status call included, is
+// refused with the typed sealed refusal (see ReasonSealed); unseal progress
+// travels in the unseal call's own response.
+//
+// Barrier status is the status question. On the boot-time sealed-window
+// listener it reports the barrier sealed and whether it is initialized, and
+// nothing else: no strategy, no share counts, no cluster seal state, nothing
+// read from the store. It is how a client tells a node that needs its first
+// boot from one that needs unsealing. It is ListenerOnly: a node the cluster
+// holds or cuts off while its own barrier is unsealed gates on the regular,
+// authenticated listener, which refuses it, so an operator reads the seal
+// record from a serving node.
+//
+// A node whose barrier has never been initialized has no key to seal, and
+// it also reports sealed: its first-boot verbs -- initialize, the
+// enrollment ceremony's holder registration and certificate signing -- are
+// PreOperationalOnly, served only while enrollment is still open, and
+// refused like every other call once the barrier is initialized.
+//
 // Every protocol transport (REST, gRPC, native QUIC, MCP, and the
 // in-process embedded transport) derives its
 // sealed-window allowlist from the single Table in this package, so the
@@ -24,26 +48,27 @@
 //
 // Deliberate exclusions (never allowlisted on any transport):
 //
+//   - health, node status and ceremony status. A sealed node answers no
+//     status question but barrier status: a caller that reaches it and is
+//     refused with the typed sealed refusal has learned it is up and
+//     sealed, which is everything a sealed node can truthfully say.
 //   - barrier seal -- sealing is only meaningful while the barrier is
 //     unsealed (see docs/seal/sealed-window.md). A holder quorum voting to
-//     seal submits through the quorum verbs, whose service refuses the seal
-//     op on a sealed barrier.
+//     seal submits through the quorum verbs, whose service refuses every
+//     op but unseal and recovery on a sealed barrier.
 //   - barrier enable-encryption -- the migration requires an unsealed
 //     data plane.
 //   - holder list, recovery-key generate / delete / status, rekey start and
 //     holder revocation. Every verb that reaches the boot-time sealed-window
 //     listener does so WITHOUT authentication, because that listener has no
-//     identity plane to authenticate against. Rekey, revocation and the
-//     three recovery-key verbs refuse while the barrier is sealed
-//     (seal.ErrSealed), so allowlisting them bought nothing but an anonymous
-//     destructive surface. The holder list is served post-unseal to
-//     authenticated callers.
+//     identity plane to authenticate against.
 //
 // Every entry in Table is therefore an ANONYMOUS verb on that listener and
-// must be justified as one: liveness, credential possession (unseal),
-// first-boot trust-on-first-use (initialize, holder registration), or a
-// handshake whose binding authorization the handler enforces (the envelope
-// claims, the holder quorum's factor proof, and ceremony-sign-csr's SO PIN).
+// must be justified as one: a flag that carries no secret (barrier status),
+// credential possession (unseal), first-boot trust-on-first-use (initialize,
+// holder registration), or a handshake whose binding authorization the
+// handler enforces (the envelope claims, the holder quorum's factor proof,
+// and ceremony-sign-csr's SO PIN).
 package sealedwindow
 
 import (
@@ -55,13 +80,10 @@ import (
 // Verb is a transport-neutral identifier for one sealed-window operation.
 type Verb string
 
-// Canonical sealed-window verbs. The set is the union of every operation
-// any transport historically allowlisted, minus the deliberate exclusions
-// documented in the package comment.
+// Canonical sealed-window verbs: the unseal call, the first-boot verbs, and
+// ceremony status, which no sealed node serves but the awaiting-admin-
+// credential gate does (see AwaitingAdminCredentialVerbs).
 const (
-	VerbHealth Verb = "health"
-	VerbStatus Verb = "status"
-
 	VerbBarrierStatus     Verb = "barrier-status"
 	VerbBarrierInitialize Verb = "barrier-initialize"
 	VerbBarrierUnseal     Verb = "barrier-unseal"
@@ -108,23 +130,26 @@ type Names struct {
 	// "BarrierUnseal"). The embedded transport has no boot-time listener:
 	// it is always the regular, authenticated side of the gate.
 	Embedded string
-	// PreOperationalOnly marks a verb whose sealed-window AUTHENTICATION
-	// exemption additionally requires the init ceremony to still be
-	// pre-operational. It is the state-gate axis of this table, mirroring
-	// go-quicbaas/pkg/api/sealedwindow's field of the same name so the two
-	// canonical tables diff mechanically.
+	// PreOperationalOnly marks a first-boot verb: one a sealed node serves
+	// only while officer enrollment is still open -- the barrier has never
+	// been initialized and the ceremony has not reached operational (see
+	// ceremony.CeremonyService.EnrollmentOpen). Once the barrier is
+	// initialized a sealed node holds a key it can only be unsealed with,
+	// and a first-boot verb is refused like every other call that is not
+	// the unseal call. It mirrors go-quicbaas/pkg/api/sealedwindow's field
+	// of the same name so the two canonical tables diff mechanically.
 	//
-	// It is set for the holder registration verbs: RegisterOfficer
-	// (pkg/ceremony) has the CA issue a holder certificate for any
-	// caller-supplied CSR with no service-layer authentication, so an
-	// exemption that survives ceremony completion would let an
-	// unauthenticated caller enrol a holder during any restart-while-sealed. Officer enrollment belongs to the enrollment
-	// ceremony; once the ceremony is operational the exemption must lapse.
+	// It is set for initialize, the holder registration verbs and
+	// sign-csr. RegisterOfficer (pkg/ceremony) has the CA issue a holder
+	// certificate for any caller-supplied CSR with no service-layer
+	// authentication, so an exemption that survived the first boot would
+	// let an unauthenticated caller enrol a holder during any
+	// restart-while-sealed.
 	//
-	// The barrier / unseal verbs are deliberately NOT marked: a daemon
-	// restarted after a completed ceremony is operational AND sealed, and
-	// unseal must remain reachable without a token because a sealed IAM
-	// plane cannot validate one.
+	// The unseal verbs are deliberately NOT marked: a daemon restarted after
+	// a completed ceremony is operational AND sealed, and unseal must remain
+	// reachable without a token because a sealed IAM plane cannot validate
+	// one.
 	PreOperationalOnly bool
 
 	// Transition marks a verb that can move the barrier out of the sealed
@@ -143,21 +168,29 @@ type Names struct {
 	// allowlist, and clearing the seal is an authorized platform act, not a
 	// credential-possession one.
 	AuthenticatedOnly bool
+
+	// ListenerOnly is AuthenticatedOnly's mirror: a verb the boot-time
+	// sealed-window listener serves while the node barrier is sealed, and
+	// the regular listener refuses while its gate is closed. That gate is
+	// closed with the node barrier unsealed only when a cluster seal holds
+	// the node, cuts it off or is not yet confirmed, and such a node answers
+	// no status question; an operator reads the seal record from a serving
+	// node. Barrier status is the one.
+	ListenerOnly bool
 }
 
-// PreOperationalOnly reports whether verb v's sealed-window authentication
-// exemption is gated on a pre-operational ceremony. Consumers deriving an
+// PreOperationalOnly reports whether verb v is a first-boot verb, served by
+// a sealed node only while enrollment is open. Consumers deriving an
 // authentication bypass from this table MUST drop the verb from any
-// state-independent exemption set and fail closed when the ceremony state
+// state-independent exemption set and fail closed when the enrollment state
 // cannot be determined.
 func PreOperationalOnly(v Verb) bool {
 	return Table[v].PreOperationalOnly
 }
 
-// Verbs is the canonical verb list in stable derivation order.
+// Verbs is the sealed surface in stable derivation order: every Table verb a
+// sealed node serves. VerbCeremonyStatus is in Table and not here.
 var Verbs = []Verb{
-	VerbHealth,
-	VerbStatus,
 	VerbBarrierStatus,
 	VerbBarrierInitialize,
 	VerbBarrierUnseal,
@@ -171,7 +204,6 @@ var Verbs = []Verb{
 	VerbQuorumBegin,
 	VerbQuorumSubmit,
 	VerbCeremonyInitialize,
-	VerbCeremonyStatus,
 	VerbCeremonySignCSR,
 	VerbBarrierClusterUnseal,
 }
@@ -179,30 +211,30 @@ var Verbs = []Verb{
 // Table maps every canonical verb to its per-transport names. This is the
 // single source of truth for the sealed-window allowlists.
 var Table = map[Verb]Names{
-	// Health is deliberately NOT REST-allowlisted: while the barrier is
-	// sealed, GET /health must return the sealed-window 503 envelope
-	// ({"error":"barrier sealed","code":"SEALED"}) rather than passing
-	// through to the admin health handler. In sealed-window boot mode the
-	// server has no admin service, so a pass-through would 404; short-
-	// circuiting it in the middleware yields the documented sealed status.
-	// The gRPC/QUIC/MCP health surfaces remain allowlisted as before.
-	VerbHealth: {GRPC: "Health", QUIC: "admin.Health", MCP: "qrdb_health", Embedded: "Health"},
-	VerbStatus: {REST: []string{"/status"}, GRPC: "Status", QUIC: "admin.Status", MCP: "qrdb_status", Embedded: "Status"},
-
-	VerbBarrierStatus:     {REST: []string{"/v1/barrier/status"}, GRPC: "BarrierStatus", QUIC: "barrier.Status", MCP: "qrdb_barrier_status", Embedded: "BarrierStatus"},
-	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize", Embedded: "BarrierInitialize", Transition: true},
+	// Barrier status is the one status question a sealed node answers:
+	// whether it is initialized, so a client can tell a node waiting for its
+	// first boot from one waiting to be unsealed. It is ListenerOnly: a node
+	// a cluster seal holds or cuts off refuses it on the regular listener.
+	VerbBarrierStatus: {REST: []string{"/v1/barrier/status"}, GRPC: "BarrierStatus", QUIC: "barrier.Status", MCP: "qrdb_barrier_status", Embedded: "BarrierStatus", ListenerOnly: true},
+	// Initialize is a first-boot verb: an initialized barrier refuses it
+	// anyway, so a sealed node that holds a key never serves it.
+	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize", Embedded: "BarrierInitialize", Transition: true, PreOperationalOnly: true},
 	VerbBarrierUnseal:     {REST: []string{"/v1/barrier/unseal"}, GRPC: "BarrierUnseal", QUIC: "barrier.Unseal", MCP: "qrdb_barrier_unseal", Embedded: "BarrierUnseal", Transition: true},
 
-	VerbShamirInitialize: {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Embedded: "BarrierInitializeShamir", Transition: true},
+	VerbShamirInitialize: {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Embedded: "BarrierInitializeShamir", Transition: true, PreOperationalOnly: true},
 
 	// GET and POST /v1/barrier/officers share one path (method-dispatched),
 	// so officer-register is method-qualified: GET, the holder list, is not
 	// allowlisted.
 	// officer-register is PreOperationalOnly: RegisterOfficer has the CA
-	// issue a holder certificate for the caller's CSR, so its authentication
-	// exemption must lapse the moment the enrollment ceremony reaches
-	// operational (see Names.PreOperationalOnly).
+	// issue a holder certificate for the caller's CSR, so its exemption
+	// must lapse the moment enrollment closes (see Names.PreOperationalOnly).
 	VerbOfficerRegister: {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", Embedded: "OfficerRegister", PreOperationalOnly: true},
+	// A share claim hands a holder the share it then submits to the quorum,
+	// so it is part of the unseal call: a barrier migrated to Shamir comes
+	// back sealed, and its holders claim their envelopes from the sealed
+	// node before M of them unseal it.
+	//
 	// The claim routes carry the holder in a path segment. They are listed
 	// as one-segment patterns, never as an /v1/barrier/officers/ prefix: a
 	// prefix would also admit POST /v1/barrier/officers/revoke, a rekey that
@@ -219,13 +251,18 @@ var Table = map[Verb]Names{
 	// The holder quorum: a holder answers a factor challenge and submits its
 	// share. Unseal and recovery happen here, so both must be reachable
 	// while sealed; the factor proof, verified against the roster the
-	// wrapped root key is sealed under, is the credential. A submission can
-	// complete an unseal, so it is a Transition.
+	// wrapped root key is sealed under, is the credential. The quorum
+	// service refuses every other op while the barrier is sealed, and a
+	// submission reports the unseal's progress in its own response. A
+	// submission can complete an unseal, so it is a Transition.
 	VerbQuorumBegin:  {REST: []string{"/v1/barrier/quorum/begin"}, GRPC: "BarrierQuorumBegin", QUIC: "barrier.QuorumBegin", MCP: "qrdb_barrier_quorum_begin", Embedded: "BarrierQuorumBegin"},
 	VerbQuorumSubmit: {REST: []string{"/v1/barrier/quorum/submit"}, GRPC: "BarrierQuorumSubmit", QUIC: "barrier.QuorumSubmit", MCP: "qrdb_barrier_quorum_submit", Embedded: "BarrierQuorumSubmit", Transition: true},
 
-	VerbCeremonyInitialize: {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Embedded: "CeremonyInitialize", Transition: true},
-	VerbCeremonyStatus:     {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status", Embedded: "CeremonyStatus"},
+	VerbCeremonyInitialize: {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Embedded: "CeremonyInitialize", Transition: true, PreOperationalOnly: true},
+	// Ceremony status is not on the sealed surface (it is absent from
+	// Verbs); it is here for AwaitingAdminCredentialVerbs, a state of an
+	// unsealed node.
+	VerbCeremonyStatus: {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status", Embedded: "CeremonyStatus"},
 	// ceremony-sign-csr is PreOperationalOnly for the same reason the officer
 	// registration verbs are: minting a NEW CA-signed certificate from a
 	// caller-supplied CSR needs the cluster CA key (Key A), which is
@@ -453,6 +490,18 @@ func MCPPreOperationalOnly() map[string]struct{} {
 	return out
 }
 
+// EmbeddedPreOperationalOnly derives the embedded transport's methods of the
+// PreOperationalOnly verbs.
+func EmbeddedPreOperationalOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.PreOperationalOnly && n.Embedded != "" {
+			out[n.Embedded] = struct{}{}
+		}
+	}
+	return out
+}
+
 // RESTAuthenticatedOnly derives the REST entries of the AuthenticatedOnly
 // verbs.
 func RESTAuthenticatedOnly() []string {
@@ -495,6 +544,64 @@ func MCPAuthenticatedOnly() map[string]struct{} {
 	for _, v := range Verbs {
 		if n := Table[v]; n.AuthenticatedOnly && n.MCP != "" {
 			out[n.MCP] = struct{}{}
+		}
+	}
+	return out
+}
+
+// RESTListenerOnly derives the REST entries of the ListenerOnly verbs.
+func RESTListenerOnly() []string {
+	var out []string
+	for _, v := range Verbs {
+		if Table[v].ListenerOnly {
+			out = append(out, Table[v].REST...)
+		}
+	}
+	return out
+}
+
+// GRPCFullMethodListenerOnly derives the fully-qualified gRPC methods of the
+// ListenerOnly verbs on serviceName.
+func GRPCFullMethodListenerOnly(serviceName string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.ListenerOnly && n.GRPC != "" {
+			out["/"+serviceName+"/"+n.GRPC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// QUICListenerOnly derives the native QUIC methods of the ListenerOnly verbs.
+func QUICListenerOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.ListenerOnly && n.QUIC != "" {
+			out[n.QUIC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// MCPListenerOnly derives the MCP tools of the ListenerOnly verbs.
+func MCPListenerOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.ListenerOnly && n.MCP != "" {
+			out[n.MCP] = struct{}{}
+		}
+	}
+	return out
+}
+
+// EmbeddedListenerOnly derives the embedded transport's methods of the
+// ListenerOnly verbs. The embedded transport is always the regular side of
+// the gate, so while sealed it refuses them.
+func EmbeddedListenerOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.ListenerOnly && n.Embedded != "" {
+			out[n.Embedded] = struct{}{}
 		}
 	}
 	return out
@@ -662,16 +769,24 @@ func (a *Admission) Admit(transition bool) (release func()) {
 	return a.mu.RUnlock
 }
 
+// EnrollmentProbe reports whether officer enrollment is still open: the
+// barrier has never been initialized and the ceremony has not reached
+// operational (see ceremony.CeremonyService.EnrollmentOpen). A sealed
+// node's gate reads it for a PreOperationalOnly verb only.
+type EnrollmentProbe interface {
+	// EnrollmentOpen is read under the request's context, and must return
+	// promptly and fail closed -- false -- when that context ends or the
+	// state cannot be read.
+	EnrollmentOpen(ctx context.Context) bool
+}
+
 // ListenerProbe is what the boot-time sealed-window listener's gate reads for
 // every request: whether the barrier is sealed, and whether officer
-// enrollment is still open to an unauthenticated caller (see
-// ceremony.CeremonyService.EnrollmentOpen). An implementation answers
-// EnrollmentOpen false whenever it cannot tell.
+// enrollment is still open. An implementation answers EnrollmentOpen false
+// whenever it cannot tell.
 type ListenerProbe interface {
 	IsSealed() bool
-	// EnrollmentOpen is read under the request's context, and must return
-	// promptly and fail closed when that context ends.
-	EnrollmentOpen(ctx context.Context) bool
+	EnrollmentProbe
 	// Admit holds the listener's Admission for one request; see Admission.
 	Admit(transition bool) (release func())
 }
@@ -711,7 +826,6 @@ func Anonymous(ctx context.Context) bool {
 	return v
 }
 
-// Request is what a sealed-window gate knows about one request.
 // StateProbe is implemented by a probe that can say why it is closed. The
 // node gate a cluster seal composes is closed both while the node is sealed
 // and while the node cannot confirm the cluster seal state, and every
@@ -737,6 +851,7 @@ func Sample(p interface{ IsSealed() bool }) (sealed, unconfirmed bool) {
 	return p.IsSealed(), false
 }
 
+// Request is what a sealed-window gate knows about one request.
 type Request struct {
 	// Sealed is the barrier state sampled for this request.
 	Sealed bool
@@ -750,11 +865,14 @@ type Request struct {
 	PreOperationalOnly bool
 	// Listener marks the boot-time sealed-window listener's gate.
 	Listener bool
-	// EnrollmentOpen is ListenerProbe.EnrollmentOpen, sampled for this
-	// request. Only a PreOperationalOnly request on the listener reads it.
+	// EnrollmentOpen is EnrollmentProbe.EnrollmentOpen, sampled for this
+	// request. Only a sealed PreOperationalOnly request reads it; a gate
+	// with no enrollment probe leaves it false.
 	EnrollmentOpen bool
 	// AuthenticatedOnly reports whether the verb is AuthenticatedOnly.
 	AuthenticatedOnly bool
+	// ListenerOnly reports whether the verb is ListenerOnly.
+	ListenerOnly bool
 }
 
 // Decision is a sealed-window gate's verdict on one request.
@@ -763,20 +881,19 @@ type Decision int
 const (
 	// Serve passes the request on to the listener's own handling.
 	Serve Decision = iota
-	// RefuseSealed refuses a request that is not on the allowlist while the
-	// barrier is sealed.
+	// RefuseSealed refuses every request a sealed node does not serve: one
+	// that is not the unseal call, or a first-boot verb once enrollment
+	// has closed. Every transport answers it with its Unavailable status
+	// and ReasonSealed.
 	RefuseSealed
 	// RefuseClosed refuses a request on the boot-time sealed-window listener
 	// once the barrier is unsealed.
 	RefuseClosed
-	// RefuseEnrollmentClosed refuses a PreOperationalOnly request on the
-	// boot-time sealed-window listener once officer enrollment has closed.
-	RefuseEnrollmentClosed
-	// RefuseUnconfirmed refuses a request that is not on the allowlist while
-	// the node cannot confirm the cluster seal state: its lease on the seal
-	// records ran out, or it has not read them since it started. The barrier
-	// is not sealed and the node keeps its keys, so the refusal is retryable
-	// and is not reported as sealed.
+	// RefuseUnconfirmed refuses every request a node that cannot confirm the
+	// cluster seal state does not serve: its lease on the seal records ran
+	// out, or it has not read them since it started. The barrier is not
+	// sealed and the node keeps its keys, so the refusal is retryable and is
+	// not reported as sealed.
 	RefuseUnconfirmed
 )
 
@@ -785,16 +902,29 @@ const (
 // client retries there.
 const ClosedMessage = "sealed-window listener closed: barrier unsealed"
 
-// EnrollmentClosedMessage is the refusal text of an anonymous officer
-// registration once the enrollment ceremony is over. Officers are registered
-// after that through an authenticated listener.
-const EnrollmentClosedMessage = "officer enrollment is closed to unauthenticated callers: register officers through an authenticated listener"
+// The structured form of RefuseSealed, which every transport carries beside
+// its Unavailable status so a client tells "up and sealed" from any other
+// unavailability without parsing text: gRPC as a google.rpc.ErrorInfo
+// detail, native QUIC as error-frame info, MCP as the error envelope's
+// reason, and REST as the body's "code".
+const (
+	// ErrorDomain is the ErrorInfo domain of qrdb's structured refusals,
+	// shared with pkg/replicaforward.ErrorDomain.
+	ErrorDomain = "qrdb.v1"
+
+	// ReasonSealed marks a refusal by a sealed node.
+	ReasonSealed = "SEALED"
+
+	// SealedMessage is the refusal text of RefuseSealed.
+	SealedMessage = "barrier sealed"
+)
 
 // Decide is the one sealed-window admission rule every transport applies.
 //
-// A gate on a regular listener serves every request once the barrier is
-// unsealed, and the listener's own authentication decides. While the barrier
-// is sealed it serves the allowlist, still behind that authentication.
+// A sealed node serves the unseal call and the initialized flag (barrier
+// status), and nothing else. A gate on a regular listener serves every request once the barrier is unsealed, and
+// the listener's own authentication decides. While the barrier is sealed it
+// serves the allowlist, still behind that authentication.
 //
 // The boot-time sealed-window listener has no authentication middleware,
 // because while the barrier is sealed there is no identity plane to
@@ -802,23 +932,35 @@ const EnrollmentClosedMessage = "officer enrollment is closed to unauthenticated
 // the moment the barrier unseals, not when it is next polled and stopped:
 // otherwise every route registered on it runs anonymously against an
 // unsealed barrier. It therefore refuses every request once unsealed,
-// allowlisted or not. While sealed it also refuses a PreOperationalOnly verb
-// (officer registration) once enrollment has closed, because that exemption
-// is justified only while the enrollment ceremony can still use a new
-// officer, and it never serves an AuthenticatedOnly verb.
+// allowlisted or not, and it never serves an AuthenticatedOnly verb. A
+// sealed regular listener never serves a ListenerOnly verb.
+//
+// On either listener a sealed node refuses a PreOperationalOnly verb once
+// enrollment has closed: a first-boot verb is justified only while the
+// barrier has never been initialized.
+//
+// A node that cannot confirm the cluster seal state is not sealed: its gate
+// serves the allowlist but for barrier status, which it refuses like a held
+// node does, and it refuses as RefuseUnconfirmed, never as RefuseSealed.
 func Decide(r Request) Decision {
 	switch {
 	case !r.Sealed && r.Listener:
 		return RefuseClosed
 	case !r.Sealed:
 		return Serve
-	case !r.Allowlisted && r.Unconfirmed:
-		return RefuseUnconfirmed
-	case !r.Allowlisted, r.Listener && r.AuthenticatedOnly:
-		return RefuseSealed
-	case r.Listener && r.PreOperationalOnly && !r.EnrollmentOpen:
-		return RefuseEnrollmentClosed
+	case !r.Allowlisted, r.Listener && r.AuthenticatedOnly, !r.Listener && r.ListenerOnly, r.PreOperationalOnly && !r.EnrollmentOpen:
+		return closedGateRefusal(r)
 	default:
 		return Serve
 	}
+}
+
+// closedGateRefusal is how a closed gate refuses r: as unconfirmed when it is
+// closed only because the node cannot confirm the cluster seal state, and as
+// sealed otherwise.
+func closedGateRefusal(r Request) Decision {
+	if r.Unconfirmed {
+		return RefuseUnconfirmed
+	}
+	return RefuseSealed
 }

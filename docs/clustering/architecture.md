@@ -571,6 +571,11 @@ every lease a full TTL when it unseals
 ([../barrier-seal/engineering.md](../barrier-seal/engineering.md)). An
 unsealed leader still expires a sealed follower's record when its TTL passes:
 a sealed node serves nothing, so it is not offered as a forwarding target.
+Its Raft replicas take no part either: sealing a node pauses every shard it
+hosts before the keys go -- a leader hands its leadership off first -- and a
+paused replica neither votes nor applies until the node unseals, so sealing a
+majority of a shard's voters stops that shard until enough of them unseal
+([../barrier-seal/architecture.md](../barrier-seal/architecture.md)).
 Replica forwarding resolves the node it
 forwards to from these records ([../replica-forwarding/](../replica-forwarding/)).
 The endpoints a node publishes come from one derivation,
@@ -831,7 +836,11 @@ cadence is `DefaultMembershipPollInterval`.
   (`pkg/backend/raft/leader_wait.go`) holds such a request, polling the
   node's leader report with backoff, and re-runs it once a leader is known,
   so a write or linearizable read sent to any node right after a leader
-  change succeeds rather than answering `not leader`. The refusal comes
+  change succeeds rather than answering `not leader`. The committed
+  membership read that resolves a new member's identity is a ReadIndex too,
+  and holds the same way: a membership change that removed the leader starts
+  an election, and the next `member add` or `add-observer` waits it out
+  instead of failing to read the membership. The refusal comes
   before anything is proposed, so the retry cannot apply a command twice.
   The hold is bounded by 10 seconds and by the caller's deadline; at the
   bound the request fails with `*raft.LeaderWaitError`, which wraps the

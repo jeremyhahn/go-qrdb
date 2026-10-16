@@ -29,6 +29,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -314,5 +315,49 @@ func TestProto_OnlyClaimResponsesCarryShareMaterial(t *testing.T) {
 		if !envelopes[name] {
 			t.Errorf("claim response %s no longer carries its envelope; update the INV-11 guard", name)
 		}
+	}
+}
+
+// TestBarrierStatusToProto_UninitializedHasNoInitializedAt pins the pre-init
+// answer on gRPC (and the Unix socket and QUIC, which share the converter):
+// a barrier never initialized carries an empty InitializedAt, as on REST and
+// MCP, never the zero time formatted, which reads as initialized.
+func TestBarrierStatusToProto_UninitializedHasNoInitializedAt(t *testing.T) {
+	got := BarrierStatusToProto(&service.BarrierStatusInfo{Sealed: true, Strategy: "passphrase"})
+	if got.GetInitializedAt() != "" {
+		t.Fatalf("InitializedAt = %q, want empty for an uninitialized barrier", got.GetInitializedAt())
+	}
+	if !got.GetSealed() || got.GetStrategy() != "passphrase" || got.GetClusterSeal() == nil {
+		t.Fatalf("BarrierStatusToProto = %+v, want sealed passphrase with a cluster seal state", got)
+	}
+}
+
+// TestBarrierStatusToProto_CarriesInitialized: the initialized flag reaches
+// the wire whichever way it reads, which is all a sealed node reports besides
+// sealed.
+func TestBarrierStatusToProto_CarriesInitialized(t *testing.T) {
+	for _, initialized := range []bool{false, true} {
+		got := BarrierStatusToProto(&service.BarrierStatusInfo{Sealed: true, Initialized: initialized, ClusterSeal: &clusterseal.Report{}})
+		if got.GetInitialized() != initialized || !got.GetSealed() {
+			t.Errorf("BarrierStatusToProto(initialized %v) = %+v", initialized, got)
+		}
+		if got.GetStrategy() != "" || got.GetInitializedAt() != "" || got.GetShamirTotal() != 0 {
+			t.Errorf("BarrierStatusToProto(initialized %v) = %+v, want nothing but sealed and initialized", initialized, got)
+		}
+	}
+}
+
+// TestBarrierStatusToProto_Initialized carries every field, InitializedAt in
+// RFC 3339 with nanoseconds.
+func TestBarrierStatusToProto_Initialized(t *testing.T) {
+	at := time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC)
+	got := BarrierStatusToProto(&service.BarrierStatusInfo{
+		Strategy: "shamir", HardwareBacked: true, InitializedAt: at, ShamirThreshold: 2, ShamirTotal: 3,
+	})
+	if got.GetInitializedAt() != at.Format(time.RFC3339Nano) {
+		t.Errorf("InitializedAt = %q, want %q", got.GetInitializedAt(), at.Format(time.RFC3339Nano))
+	}
+	if got.GetSealed() || !got.GetHardwareBacked() || got.GetShamirThreshold() != 2 || got.GetShamirTotal() != 3 {
+		t.Errorf("BarrierStatusToProto = %+v, want unsealed hardware-backed 2-of-3", got)
 	}
 }

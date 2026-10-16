@@ -334,7 +334,9 @@ func runCLISplit(t *testing.T, binary string, args ...string) (stdout, stderr st
 }
 
 // waitForBarrierReachable retries `barrier status` until the daemon's
-// sealed-window (or full) REST listener accepts the connection. Used once
+// sealed-window (or full) listener answers it: with the full status once
+// unsealed, with the initialized flag while sealed, and with the typed sealed
+// refusal while the cluster seal holds the node. Used once
 // per node right after startSealNode, before the barrier has necessarily
 // been initialized.
 func waitForBarrierReachable(t *testing.T, cli string, flags []string, timeout time.Duration) {
@@ -344,14 +346,22 @@ func waitForBarrierReachable(t *testing.T, cli string, flags []string, timeout t
 	var lastErr error
 	var lastStderr string
 	for time.Now().Before(deadline) {
-		_, stderr, err := runCLISplit(t, cli, args...)
-		if err == nil {
+		stdout, stderr, err := runCLISplit(t, cli, args...)
+		if err == nil || cliSealedRefusal(stdout+stderr) {
 			return
 		}
 		lastErr, lastStderr = err, stderr
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatalf("timed out after %v waiting for barrier status to become reachable: %v\nstderr: %s", timeout, lastErr, lastStderr)
+}
+
+// cliSealedRefusal reports whether CLI output carries the typed sealed
+// refusal (transport.BarrierSealedError) a sealed node answers every call
+// off its sealed surface with. It is how a CLI caller tells "up and sealed"
+// from "down".
+func cliSealedRefusal(output string) bool {
+	return strings.Contains(output, "transport: barrier sealed")
 }
 
 // barrierStatus fetches `barrier status --output json` and decodes it,
@@ -373,6 +383,13 @@ func barrierStatus(t *testing.T, cli string, flags []string) *transport.BarrierS
 				t.Fatalf("barrier status: decode JSON: %v\noutput: %s", decErr, stdout)
 			}
 			return &resp
+		}
+		// A node the cluster seal holds or cuts off refuses status; its
+		// own barrier is initialized, and its typed refusal is the answer
+		// "sealed". It carries no InitializedAt: callers read that
+		// unsealed.
+		if cliSealedRefusal(stdout + stderr) {
+			return &transport.BarrierStatusResponse{Sealed: true, Initialized: true}
 		}
 		lastErr, lastOut, lastErrOut = err, stdout, stderr
 		time.Sleep(200 * time.Millisecond)
@@ -937,6 +954,13 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 		t.Fatalf("kv put: %v\nstderr: %s", err, stderr)
 	}
 
+	// A sealed node answers no status, so InitializedAt is read while the
+	// node serves: here, and again once it has unsealed after the restart.
+	initializedAt := barrierStatus(t, cli, flags).InitializedAt
+	if initializedAt == "" {
+		t.Fatal("expected an initialized barrier to report InitializedAt")
+	}
+
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("barrier seal: %v\nstderr: %s", err, stderr)
 	}
@@ -944,7 +968,6 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	if !status.Sealed {
 		t.Fatal("expected barrier to be sealed before restart")
 	}
-	initializedAt := status.InitializedAt
 
 	stopSealNode(t, node)
 
@@ -960,9 +983,6 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	if !status.Sealed {
 		t.Fatal("expected barrier to still require an explicit unseal after restart (passphrase caches no secret)")
 	}
-	if status.InitializedAt == "" || status.InitializedAt != initializedAt {
-		t.Errorf("expected InitializedAt to survive restart unchanged: before=%q after=%q", initializedAt, status.InitializedAt)
-	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "unseal", "--passphrase", passphrase)...); err != nil {
@@ -970,6 +990,9 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	}
 
 	node.waitForFullBoot(t)
+	if after := barrierStatus(t, cli, flags).InitializedAt; after != initializedAt {
+		t.Errorf("expected InitializedAt to survive restart unchanged: before=%q after=%q", initializedAt, after)
+	}
 
 	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "kv", "get", "restart-key")...)
 	if err != nil {

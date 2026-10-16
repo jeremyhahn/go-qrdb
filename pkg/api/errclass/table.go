@@ -123,6 +123,10 @@ var dominantRules = []rule{
 	// returned a store and BEFORE that store's own Get/Put ran, which reports
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).
 	is(seal.ErrSealed, Unavailable),
+	// go-quicraft's own sentinel for the same condition: a node barrier
+	// re-sealed at runtime refuses every store read and write with it, and
+	// every service wrapper would otherwise report it as a server fault.
+	is(seal.ErrBarrierSealed, Unavailable),
 
 	// A tenant's location is a volume pool and slot resolved on each node.
 	// Dominant, because the tenant and database services wrap it in their
@@ -234,6 +238,14 @@ var dataPlaneRules = []rule{
 	// election as a server fault. A timed-out write may still have committed,
 	// so a client retries only a write it has made idempotent.
 	is(quicraft.ErrTimeout, Unavailable),
+	// A shard paused while the node seals: the seal pauses every shard the
+	// node hosts before it wipes the keys (seal-pause-resume), and a paused
+	// replica refuses proposals, reads and sessions with ErrShardPaused, which
+	// go-quicraft marks Temporary. The node serves again once it is unsealed
+	// and the shard resumes, so the refusal is retryable on every transport.
+	// Ahead of the ProposeError, ReadError and store wrappers' Internal rows
+	// (genericRules) for the same reason as ErrTimeout above.
+	is(quicraft.ErrShardPaused, Unavailable),
 	// go-quicraft v0.17.0's membership rejections, ahead of MembershipError's
 	// own blanket Internal row below (genericRules): an add that would bind a
 	// Raft address or node identity another ACTIVE member already holds is a
@@ -1492,6 +1504,7 @@ var authSamples = []error{
 	&auth.AuthError{Code: "unauthorized"},
 	&auth.AuthError{Code: "unauthenticated"},
 	&authmw.StoreUnavailableError{},
+	&authmw.BarrierSealedError{Err: seal.ErrBarrierSealed},
 	&auth.RevocationCheckError{},
 	&authmw.UserDisabledError{},
 	&authmw.AuthMethodNotPermittedError{},
@@ -1541,5 +1554,6 @@ var authSamples = []error{
 	&rbac.ResolveError{Err: &role.StoreError{Op: "get_by_name", Detail: "index lookup", Err: context.DeadlineExceeded}},
 	&rbac.ResolveError{Err: tenant.ErrTenantSealed},
 	&rbac.ResolveError{Err: seal.ErrSealed},
+	&rbac.ResolveError{Err: seal.ErrBarrierSealed},
 	&rbac.ResolveError{Err: &tenant.StoreError{Op: "get", Err: context.DeadlineExceeded}},
 }

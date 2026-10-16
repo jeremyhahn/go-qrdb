@@ -106,16 +106,27 @@ func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
+	return BarrierStatusToProto(info), nil
+}
 
-	return &pb.BarrierStatusResponse{
+// BarrierStatusToProto converts a barrier status to its wire form, shared by
+// the gRPC and native QUIC servers. Initialized is how a client tells a node
+// waiting for its first boot from an initialized one, as on REST and MCP; a
+// sealed node reports it and Sealed and nothing else.
+func BarrierStatusToProto(info *service.BarrierStatusInfo) *pb.BarrierStatusResponse {
+	out := &pb.BarrierStatusResponse{
 		Sealed:          info.Sealed,
+		Initialized:     info.Initialized,
 		Strategy:        info.Strategy,
 		HardwareBacked:  info.HardwareBacked,
-		InitializedAt:   info.InitializedAt.Format(time.RFC3339Nano),
 		ShamirThreshold: int32(info.ShamirThreshold),
 		ShamirTotal:     int32(info.ShamirTotal),
 		ClusterSeal:     ClusterSealToProto(info.ClusterSeal),
-	}, nil
+	}
+	if !info.InitializedAt.IsZero() {
+		out.InitializedAt = info.InitializedAt.Format(time.RFC3339Nano)
+	}
+	return out
 }
 
 // BarrierShamirInitialize initializes the barrier under Shamir custody: the

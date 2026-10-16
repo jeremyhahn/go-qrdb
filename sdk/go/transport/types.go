@@ -310,4 +310,8 @@ type OKResponse struct {
 // ErrorResponse is a simple error response.
 type ErrorResponse struct {
 	Error string `json:"error"`
+
+	// Code is the failure's structured reason when the server names one —
+	// SEALED for a sealed node's refusal — and empty otherwise.
+	Code string `json:"code,omitempty"`
 }

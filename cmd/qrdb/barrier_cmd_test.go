@@ -24,9 +24,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -45,6 +47,28 @@ func TestBarrierStatusCmd_TextOutput(t *testing.T) {
 	for _, label := range []string{"Sealed", "Strategy", "HardwareBacked", "InitializedAt"} {
 		if !strings.Contains(out, label) {
 			t.Errorf("expected %q in status output: %q", label, out)
+		}
+	}
+}
+
+// TestBarrierStatusCmd_SealedPrintsInitialized proves "qrdb barrier status"
+// prints the initialized flag a sealed node serves, which is how an operator
+// tells a node awaiting its first boot from one awaiting unseal.
+func TestBarrierStatusCmd_SealedPrintsInitialized(t *testing.T) {
+	for _, initialized := range []bool{false, true} {
+		root := newBarrierTestRoot(t, &mockBarrierService{
+			statusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
+				return &service.BarrierStatusInfo{Sealed: true, Initialized: initialized}, nil
+			},
+		})
+		out, err := executeCommand(root, "barrier", "status")
+		if err != nil {
+			t.Fatalf("barrier status: %v", err)
+		}
+		for _, want := range []string{"Sealed:          true", fmt.Sprintf("Initialized:     %t", initialized)} {
+			if !strings.Contains(out, want) {
+				t.Errorf("status output %q lacks %q", out, want)
+			}
 		}
 	}
 }

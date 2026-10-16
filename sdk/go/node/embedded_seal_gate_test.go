@@ -24,12 +24,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TestNode_EmbeddedClientRefusesWhileSealed pins the node's in-process client
 // to the gate its network listeners enforce: once the node barrier is sealed
-// through it, the next data request is refused with the sealed refusal, and
-// barrier status -- on the sealed-window allowlist -- still answers.
+// through it, the next data request and barrier status are refused with the
+// sealed refusal, and the unseal call -- the one call a sealed node serves --
+// is answered.
 func TestNode_EmbeddedClientRefusesWhileSealed(t *testing.T) {
 	cfg := sealedStandaloneConfig(t, t.TempDir())
 	n, err := NewStandaloneNode(context.Background(), cfg, nil, WithSealPassphrase([]byte("test-secret")))
@@ -45,7 +47,12 @@ func TestNode_EmbeddedClientRefusesWhileSealed(t *testing.T) {
 	require.Error(t, err, "the in-process client wrote through a sealed node barrier")
 	require.True(t, errors.Is(err, seal.ErrSealed), "err = %v, want the sealed refusal", err)
 
+	_, err = client.Barrier().BarrierStatus(ctx)
+	require.True(t, transport.IsBarrierSealed(err), "a sealed node answers no status: err = %v, want the sealed refusal", err)
+
+	require.NoError(t, client.Barrier().BarrierUnseal(ctx, &transport.BarrierUnsealRequest{Secret: []byte("test-secret")}),
+		"the unseal call is the one call a sealed node serves")
 	st, err := client.Barrier().BarrierStatus(ctx)
-	require.NoError(t, err, "barrier status is on the sealed-window allowlist")
-	require.True(t, st.Sealed)
+	require.NoError(t, err)
+	require.False(t, st.Sealed)
 }

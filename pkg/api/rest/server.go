@@ -291,6 +291,11 @@ type Server struct {
 	// has closed. Nil for a regular listener's gate.
 	sealedWindowListener sealedwindow.ListenerProbe
 
+	// sealedWindowDispatch, on a regular listener, sends every request that
+	// arrives while it reports the node barrier sealed down the boot-time
+	// listener's path. Nil installs no dispatch.
+	sealedWindowDispatch sealedwindow.ListenerProbe
+
 	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
 	// routes are not registered.
@@ -899,12 +904,30 @@ func WithServiceRegistry(reg ServiceRegistry) ServerOption {
 //
 // The middleware wraps the authentication middleware, so an allowlisted
 // request is still authenticated and authorized by it when one is
-// installed. The allowlist is anonymous only on a listener without one:
-// the boot-time sealed-window listener (see WithSealedWindowListener).
+// installed. The allowlist is anonymous only on the boot-time sealed-window
+// listener's path: that listener (see WithSealedWindowListener), and a
+// regular listener's requests while the node barrier is sealed (see
+// WithSealedWindowDispatch).
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
 		s.sealedWindowListener = nil
+	}
+}
+
+// WithSealedWindowDispatch makes a regular listener behave, while probe
+// reports the node barrier sealed, exactly as the boot-time sealed-window
+// listener does: each such request is served by the router behind that
+// listener's gate (SealedWindowListenerMiddleware) -- the allowlist, with no
+// authentication and so no user-store lookup, and the sealed 503 for
+// everything else -- instead of by the listener's own chain. Requests that
+// arrive while it reports the barrier unsealed run the regular chain
+// unchanged. Build probe with server.NewSealedWindowListenerProbe over the
+// bare node barrier, not the cluster-seal probe: a node a cluster seal holds
+// keeps its barrier unsealed and its authenticated cluster-unseal route.
+func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowDispatch = probe
 	}
 }
 
@@ -1132,8 +1155,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// other processing. The sealed-window middleware wraps auth, so it
 	// refuses a non-allowlisted request while the barrier is sealed before
 	// any authentication work, and an allowlisted request still reaches auth
-	// when auth is installed. Only a listener without auth -- the boot-time
-	// sealed-window listener -- serves its allowlist anonymously.
+	// when auth is installed. Only the boot-time sealed-window listener's
+	// path serves its allowlist anonymously: that listener itself, and a
+	// regular listener's requests while the node barrier is sealed (see
+	// WithSealedWindowDispatch).
 	// The SO dual-factor middleware is the innermost wrapper (directly
 	// around the mux) so it runs AFTER the auth middleware has resolved
 	// the caller's identity into the request context. It gates only the
@@ -1166,6 +1191,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// (everything built above, unchanged).
 	if s.awaitingAdminCredentialProbe != nil {
 		handler = AwaitingAdminCredentialMiddleware(s.awaitingAdminCredentialProbe, r)(handler)
+	}
+	// While the node barrier is sealed a request skips every layer above and
+	// takes the boot-time sealed-window listener's path instead: its gate
+	// over the raw router, with no authentication, SO gate or forwarding.
+	if s.sealedWindowDispatch != nil {
+		handler = sealedWindowDispatch(s.sealedWindowDispatch, r)(handler)
 	}
 	handler = scopeMiddleware(handler)
 	if s.corsConfig != nil {

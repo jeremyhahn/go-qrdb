@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -266,6 +267,11 @@ type RaftBackendFactory struct {
 	// zero value resolves to the package defaults WithImportSessionLimits
 	// documents. See WithImportSessionConfig.
 	importSessionCfg qrdbconfig.ImportSessionConfig
+
+	// startGate admits each shard start against a whole-node seal's pause
+	// (ShardPauser.beginStart); ShardPauser.SetTenants installs it. Unset, it
+	// admits every start.
+	startGate atomic.Pointer[ShardPauser]
 }
 
 // RaftBackendOption customizes a RaftBackendFactory.
@@ -936,7 +942,15 @@ func (f *RaftBackendFactory) startShardAsMember(
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "member-identities", Err: err}
 	}
 	shardCfg.MemberIdentities = identities
-	if err := f.host.StartShard(members, join, createFn, shardCfg); err != nil {
+	// Only the start itself is held against a seal's pause: once StartShard
+	// returns, the pause lists the shard and pauses it, so a slow election
+	// below never holds a seal back.
+	done, err := f.startGate.Load().beginStart()
+	if err == nil {
+		err = f.host.StartShard(members, join, createFn, shardCfg)
+		done()
+	}
+	if err != nil {
 		if registeredWAL != nil {
 			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {
 				_ = detached.Close()

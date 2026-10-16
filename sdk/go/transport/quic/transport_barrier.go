@@ -100,6 +100,7 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	}
 	return &transport.BarrierStatusResponse{
 		Sealed:          resp.GetSealed(),
+		Initialized:     resp.GetInitialized(),
 		Strategy:        resp.GetStrategy(),
 		HardwareBacked:  resp.GetHardwareBacked(),
 		InitializedAt:   resp.GetInitializedAt(),

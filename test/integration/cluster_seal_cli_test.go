@@ -213,13 +213,20 @@ type cliBarrierStatusFull struct {
 // cliBarrierStatusFor runs `barrier status --output json` against node over
 // proto and decodes it. It never fails the test itself: a connection failure
 // or a non-JSON error body is expected for the brief window right after a
-// restart, before the listener comes back up. On any failure ok is false and
+// restart, before the listener comes back up. A node whose barrier is sealed
+// answers Sealed with its initialized flag and nothing else; a node held or
+// cut off refuses status, and its typed sealed refusal reads as Sealed with
+// no cluster_seal. On any other
+// failure ok is false and
 // failure says what the CLI answered, so waitForCLIClusterSeal -- the only
 // caller, and the one that owns the timeout -- can report a read that never
 // succeeded as that, not as a zero status.
 func cliBarrierStatusFor(t *testing.T, node *multiProtocolSealNode, proto multiProtocol) (st cliBarrierStatusFull, failure string, ok bool) {
 	t.Helper()
 	out, err := runCLIProto(t, node.multiProtoNode, proto, "--output", "json", "barrier", "status")
+	if err != nil && cliSealedRefusal(out) {
+		return cliBarrierStatusFull{Sealed: true}, "", true
+	}
 	if err != nil {
 		return cliBarrierStatusFull{}, err.Error() + ": " + strings.TrimSpace(out), false
 	}
@@ -340,27 +347,35 @@ func TestBarrierClusterUnseal_CLI_PerProtocol(t *testing.T) {
 				}(node)
 			}
 			wg.Wait()
+			// Each node's own unseal succeeded, so the typed sealed refusal
+			// of status is the cluster record holding it.
 			for i, node := range h.nodes {
 				waitForCLIClusterSeal(t, node, restProto, 90*time.Second, "held after restart", func(st cliBarrierStatusFull) bool {
-					return !st.Sealed && st.ClusterSeal != nil && st.ClusterSeal.Sealed && st.ClusterSeal.Local == "held"
+					return st.Sealed
 				})
 				if st := httpGetStatus(t, h.nodes[0].ca, node.restPort, "sealed-key"); st == http.StatusOK {
 					t.Fatalf("node %d served a read while held", i+1)
 				}
 			}
 
-			// The command under test: `barrier cluster-unseal`, over proto,
-			// against whichever node this cycle's leader settled on.
-			leaderPort = waitForLeaderViaAdmin(t, h.nodes[0].ca, h.ports(), 60*time.Second)
-			var current *multiProtocolSealNode
-			for _, node := range h.nodes {
-				if node.restPort == leaderPort {
-					current = node
+			// The command under test: `barrier cluster-unseal`, over proto.
+			// One clear, from any node, clears the record; a held node
+			// answers no status, so there is no leader to look up first. A
+			// clear whose record the system shard could not confirm -- its
+			// write met the restart's leader election -- changes nothing and
+			// is the documented retryable refusal, so it is retried.
+			current := h.nodes[0]
+			var unsealOut string
+			for deadline := time.Now().Add(60 * time.Second); ; {
+				var err error
+				unsealOut, err = runCLIProto(t, current.multiProtoNode, proto, "--output", "json", "barrier", "cluster-unseal")
+				if err == nil {
+					break
 				}
-			}
-			unsealOut, err := runCLIProto(t, current.multiProtoNode, proto, "--output", "json", "barrier", "cluster-unseal")
-			if err != nil {
-				t.Fatalf("[%s] barrier cluster-unseal: %v\noutput: %s", proto.name, err, unsealOut)
+				if time.Now().After(deadline) {
+					t.Fatalf("[%s] barrier cluster-unseal: %v\noutput: %s", proto.name, err, unsealOut)
+				}
+				time.Sleep(time.Second)
 			}
 			var cleared clusterSealView
 			if jerr := json.Unmarshal([]byte(unsealOut), &cleared); jerr != nil || cleared.Sealed {

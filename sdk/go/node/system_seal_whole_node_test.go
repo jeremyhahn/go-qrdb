@@ -159,10 +159,12 @@ func TestClusteredNode_ClusterSealSealsTheWholeNode(t *testing.T) {
 	if err := nodes[0].Client().Barrier().BarrierSeal(ctx); err != nil {
 		t.Fatalf("BarrierSeal: %v", err)
 	}
+	// A sealed node answers no status: its refusal, with the node barrier
+	// sealed under it, is how a sealed node reads.
 	for i, n := range nodes {
 		for {
-			st, err := n.Client().Barrier().BarrierStatus(ctx)
-			if err == nil && st.Sealed {
+			_, err := n.Client().Barrier().BarrierStatus(ctx)
+			if transport.IsBarrierSealed(err) && n.IsSealed() {
 				break
 			}
 			select {

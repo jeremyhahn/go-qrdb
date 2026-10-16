@@ -246,7 +246,7 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 	if err == nil {
 		return resp.Status != ""
 	}
-	return reachableButUnauthorized(err)
+	return reachableButUnauthorized(err) || reachableButSealed(err)
 }
 
 // reachableButUnauthorized reports whether err is a *transport.RequestError
@@ -269,6 +269,14 @@ func reachableButUnauthorized(err error) bool {
 	default:
 		return false
 	}
+}
+
+// reachableButSealed reports whether err is a sealed node's refusal: the
+// server was reached and answered, and serves nothing but the unseal call
+// until its barrier is unsealed. A sealed node is up, so it counts as
+// connected — the caller connecting to it is usually the one about to unseal.
+func reachableButSealed(err error) bool {
+	return transport.IsBarrierSealed(err)
 }
 
 // Request performs a generic QUIC wire protocol request by method name.
@@ -1164,6 +1172,9 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 		return &transport.RequestError{Method: method, StatusCode: int(statusCode), Err: err}
 	}
 	msg := decoded.Message
+	if statusCode == wire.StatusUnavailable && decoded.Info.Sealed() {
+		return &transport.BarrierSealedError{Message: msg}
+	}
 
 	if build, ok := typedWireErrors[statusCode]; ok {
 		return build(msg)

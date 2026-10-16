@@ -49,6 +49,18 @@ func (e *BarrierSealedError) Unwrap() error {
 	return e.Err
 }
 
+// As lets errors.As match a *transport.BarrierSealedError, so a caller tells
+// a sealed node apart with transport.IsBarrierSealed on every transport,
+// embedded included.
+func (e *BarrierSealedError) As(target any) bool {
+	sealed, ok := target.(**transport.BarrierSealedError)
+	if !ok {
+		return false
+	}
+	*sealed = &transport.BarrierSealedError{Message: e.Error()}
+	return true
+}
+
 // NilServiceError is returned when a nil service is passed to New or
 // when an operation requires a service that was not injected.
 type NilServiceError struct {

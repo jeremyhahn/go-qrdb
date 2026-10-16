@@ -1338,6 +1338,10 @@ type Node struct {
 	// clusterSeal makes seals reach every node of the cluster once the cluster
 	// has activated cluster-seal; nil on a node with no barrier or no cluster.
 	clusterSeal *clusterseal.Deferred
+	// shardPauser pauses every Raft shard the clustered node hosts before a
+	// node seal wipes a key and resumes them on unseal; nil on a node with
+	// no barrier or no cluster.
+	shardPauser *server.ShardPauser
 	featureAdv  atomic.Pointer[cluster.Advertiser]
 	featureWG   sync.WaitGroup
 
@@ -1973,7 +1977,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// every database and tenant barrier is sealed alongside the system one.
 	defer func() {
 		if err != nil {
-			if serr := service.SealWholeNode(n.barrierRegistry.Load(), n.barrier.Load(), n.wholeNodeDatabases()); serr != nil {
+			if serr := service.SealWholeNode(context.Background(), nil, n.barrierRegistry.Load(), n.barrier.Load(), n.wholeNodeDatabases()); serr != nil {
 				n.logger.Error("node: failed to seal every barrier after a cancelled or failed clustered boot",
 					slog.Any("error", serr))
 			}
@@ -2115,9 +2119,18 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// start, node-locally until the monitor is set once the host, the
 	// services and the tenant infrastructure exist.
 	n.clusterSeal = clusterseal.NewDeferred()
+	// A node seal pauses every Raft shard the host runs before any key goes,
+	// and the node barrier's unseal resumes them. The tenant registries are
+	// given to it once they exist, below.
+	n.shardPauser = server.NewShardPauser(host, barrierRegistry, n.logger)
+	var sealPauser service.ShardPauser
+	if n.shardPauser != nil {
+		sealPauser = n.shardPauser
+	}
 
 	svcNode, err := n.buildServices(ctx, lifecycle.Infra{
 		ClusterSealer:     n.clusterSeal,
+		ShardPauser:       sealPauser,
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
 		WatchHub:          watchHub,
@@ -2245,6 +2258,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.tenantHostsHolder.Store(ti.Hosts)
 		}
 		n.raftBackend = ti.Raft
+		n.shardPauser.SetTenants(ti.Raft, ti.Hosts)
 		// Wire the IsolationRaft factory into the already-built backup
 		// service as its ShardRestarter, enabling ONLINE restore for
 		// dedicated per-database Raft shards (see
@@ -2625,7 +2639,7 @@ func (n *Node) Close() error {
 	// cannot hand out a barrier that is about to have its key material wiped.
 	barrierRegistry := n.barrierRegistry.Swap(nil)
 	barrier := n.barrier.Swap(nil)
-	record(service.SealWholeNode(barrierRegistry, barrier, n.wholeNodeDatabases()))
+	record(service.SealWholeNode(context.Background(), nil, barrierRegistry, barrier, n.wholeNodeDatabases()))
 	n.credCoreSvc = nil
 	// Drain per-tenant Pebble instances before closing the opened volume
 	// pools. Mirrors cmd/qrdbd/start.go shutdown ordering.
@@ -4781,7 +4795,7 @@ func buildNodeServerConfig(cfg *qrdbconfig.Config) *qrdbconfig.Config {
 func (n *Node) closeSeal() {
 	barrierRegistry := n.barrierRegistry.Swap(nil)
 	barrier := n.barrier.Swap(nil)
-	_ = service.SealWholeNode(barrierRegistry, barrier, n.wholeNodeDatabases())
+	_ = service.SealWholeNode(context.Background(), nil, barrierRegistry, barrier, n.wholeNodeDatabases())
 	n.credCoreSvc = nil
 	n.stopVolumeReporter()
 	if n.perTenantReg != nil {

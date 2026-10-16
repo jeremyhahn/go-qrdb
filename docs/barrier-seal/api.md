@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -166,10 +166,12 @@ barrier's record is cleared by its own capability, **cluster unseal**, in the
 matrix above:
 
 - It writes the clear record and returns the barrier's `cluster_seal` object.
-- The receiving node must already have unsealed itself; otherwise
-  `ErrSealed` (`503` / `UNAVAILABLE`).
-- It is on the sealed-window allowlist, because a node held by a cluster seal
-  refuses everything else, and it is still authenticated and authorized there.
+- The receiving node must already have unsealed its own barrier. While it is
+  sealed the listener serves only the anonymous sealed window and refuses
+  this call with the sealed `503` / `UNAVAILABLE` before authentication.
+- It is on the regular listener's sealed-window allowlist, because a node held
+  by a cluster seal refuses everything else, and it is still authenticated and
+  authorized there.
 - A record that is already clear is not rewritten; the call returns it.
 - It has no request fields. gRPC and Unix take `BarrierClusterUnsealRequest {}`
   and return `ClusterSealState`.
@@ -280,21 +282,47 @@ share is sealed to its holder.
 
 `mechanism`: `swap` (default) · `in-place`. `availability`: `quiesced`
 (default) · `online`. **Asynchronous** — the call returns once the migration has
-started; poll `BarrierStatus` until `strategy` changes.
+started; poll `BarrierStatus` until `strategy` changes, or until it answers
+the typed sealed refusal when the migration leaves the barrier sealed.
 
-`BarrierStatus` reports the sealed/unsealed state, the active strategy, the
-initialization timestamp, and — for Shamir barriers — the threshold and
-total of the share set in force.
+`BarrierStatus` reports the sealed/unsealed state, whether the barrier is
+initialized (`initialized`), the active strategy, the initialization
+timestamp, and — for Shamir barriers — the threshold and total of the share
+set in force.
 
 ## Sealed-window behaviour
 
 While the barrier is sealed the data path returns `ErrBarrierSealed` for every
-read and write. Only an allowlisted set of endpoints is reachable — the
+read and write. **A sealed node serves the unseal call, barrier status and
+nothing else** — passphrase unseal, the holder quorum and the share claims,
+barrier status, plus the first-boot verbs while enrollment is open. The
 allowlist, the format-version sentinel and the pre-host listener boot sequence
 are specified in [seal/sealed-window.md](../seal/sealed-window.md).
 
-`GET /v1/barrier/status` is read-only and **safe against a sealed barrier**;
-that is deliberate, since it is how an operator finds out what to do next.
+A node whose barrier was re-sealed serves exactly what a node that booted
+sealed serves, on every listener and every transport: the unseal call and
+barrier status anonymously, with no user-store lookup (the user store is
+behind the sealed barrier), and everything else refused with the typed sealed
+refusal — `503` `{"code":"SEALED"}` on REST, `UNAVAILABLE` with
+`ErrorInfo{qrdb.v1, SEALED}` on gRPC and Unix, and its equivalents on QUIC,
+MCP and embedded. Client certificates are still required at the TLS
+handshake; one authenticates the unseal caller and grants nothing past the
+seal. Once the barrier is unsealed every request is authenticated again.
+
+**A sealed node's `BarrierStatus` is two facts: `sealed: true` and
+`initialized`.** It answers before the first boot (`initialized: false`, the
+node needs initialization) and after it (`initialized: true`, the node is
+initialized and sealed), on every transport, with no store read: the barrier
+reads the flag once at boot and keeps it. Every other field is empty — no
+strategy, share counts, `initialized_at` or `cluster_seal` record — so it
+carries no secret. **Health and ceremony status are refused while sealed.**
+Unseal progress is in the unseal call's own response (a quorum submission
+reports its progress). The SDK surfaces the refusal as
+`transport.BarrierSealedError`.
+
+A node held or cut off by a cluster seal, whose own barrier is unsealed,
+refuses `BarrierStatus` like every other call outside the allowlist; read the
+seal record from a serving node.
 
 ## Status and error mapping
 
@@ -302,6 +330,7 @@ that is deliberate, since it is how an operator finds out what to do next.
 |---|---|---|
 | Success | 200 | `OK` |
 | Barrier sealed (data path) | 503 | `UNAVAILABLE` — `ErrBarrierSealed` |
+| Any call but the unseal call and barrier status on a sealed node — health and node status included | 503 `{"code":"SEALED"}` | `UNAVAILABLE` — `ErrorInfo{Domain: "qrdb.v1", Reason: "SEALED"}` |
 | Wrong passphrase | 403 | `PERMISSION_DENIED` — stays sealed |
 | Credential unseal or single-caller seal of a Shamir barrier | 409 / 422 | `FAILED_PRECONDITION` — use the holder quorum |
 | Several strategies registered, none named | 400 | `INVALID_ARGUMENT` — `ErrNoStrategySpecified` |
@@ -320,8 +349,8 @@ that is deliberate, since it is how an operator finds out what to do next.
 | A seal whose record could not be confirmed. **The receiving node is sealed**; the other nodes may not be | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry through another node |
 | An unseal whose clear record could not be written. The node sealed the barrier again | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry |
 | Cluster unseal before `cluster-seal` is activated | 409 | `FAILED_PRECONDITION` — `clusterseal.ErrInactive` |
-| Any request on a node a cluster seal holds, or whose node record is sealed | 503 | `UNAVAILABLE` — the sealed-window refusal (`SEALED`); `barrier status` shows why in `cluster_seal.local` |
-| Any request on a node cut off from the seal records — its lease lapsed, for example while the system shard has no leader — or that has not yet read them | 503 `SEAL_STATE_UNCONFIRMED`, `Retry-After: 5` | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, `ErrorInfo` reason `SEAL_STATE_UNCONFIRMED`; retryable. The barrier is not sealed: `barrier status` reports `sealed: false` and `cluster_seal.local` `cut_off` or `unconfirmed` |
+| Any request on a node a cluster seal holds, or whose node record is sealed | 503 | `UNAVAILABLE` — the sealed-window refusal (`SEALED`). The node answers no status; a serving node's `barrier status` shows the record in `cluster_seal` |
+| Any request on a node cut off from the seal records — its lease lapsed, for example while the system shard has no leader — or that has not yet read them | 503 `SEAL_STATE_UNCONFIRMED`, `Retry-After: 5` | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, `ErrorInfo` reason `SEAL_STATE_UNCONFIRMED`; retryable. The barrier is not sealed and the node keeps its key, but it serves only the unseal call: `barrier status` is refused with the same refusal |
 | An open stream ended by a seal | — | the barrier's sealed error: `UNAVAILABLE` |
 | An open stream ended because this node's lease ran out | — | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, retryable |
 

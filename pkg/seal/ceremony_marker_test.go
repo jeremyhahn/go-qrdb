@@ -117,3 +117,49 @@ func TestInitialized(t *testing.T) {
 		t.Fatalf("Initialized with an unreadable metadata record = %v, want the read failure", err)
 	}
 }
+
+// TestInitializedCached answers from memory alone: unknown until the barrier
+// has read its metadata or been initialized, then known whether it is sealed
+// or not, and a failed read leaves it unknown rather than "never initialized".
+func TestInitializedCached(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryBackend()
+	b := markerTestBarrier(t, base)
+	if got, known := b.InitializedCached(); got || known {
+		t.Fatalf("InitializedCached before any read = (%v, %v), want (false, false)", got, known)
+	}
+	if _, err := b.Initialized(ctx); err != nil {
+		t.Fatalf("Initialized: %v", err)
+	}
+	if got, known := b.InitializedCached(); got || !known {
+		t.Fatalf("InitializedCached after reading a pre-init barrier = (%v, %v), want (false, true)", got, known)
+	}
+	if err := b.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got, known := b.InitializedCached(); !got || !known {
+		t.Fatalf("InitializedCached after Initialize = (%v, %v), want (true, true)", got, known)
+	}
+
+	restarted := markerTestBarrier(t, base)
+	if got, known := restarted.InitializedCached(); got || known {
+		t.Fatalf("InitializedCached after a restart = (%v, %v), want (false, false)", got, known)
+	}
+	if _, err := restarted.Initialized(ctx); err != nil {
+		t.Fatalf("Initialized after a restart: %v", err)
+	}
+	if !restarted.IsSealed() {
+		t.Fatal("a restarted barrier must be sealed")
+	}
+	if got, known := restarted.InitializedCached(); !got || !known {
+		t.Fatalf("InitializedCached on a sealed, initialized barrier = (%v, %v), want (true, true)", got, known)
+	}
+
+	failing := markerTestBarrier(t, &markerReadFailBackend{StorageBackend: NewMemoryBackend(), suffix: b.metadataPath()})
+	if _, err := failing.Initialized(ctx); !errors.Is(err, errMarkerRead) {
+		t.Fatalf("Initialized with an unreadable metadata record = %v, want the read failure", err)
+	}
+	if got, known := failing.InitializedCached(); got || known {
+		t.Fatalf("InitializedCached after a failed read = (%v, %v), want (false, false)", got, known)
+	}
+}

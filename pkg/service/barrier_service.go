@@ -123,6 +123,11 @@ type BarrierStatusInfo struct {
 	// Sealed is true when the barrier is in sealed state.
 	Sealed bool
 
+	// Initialized is true once the barrier has been initialized. It is the
+	// one fact a sealed barrier reports besides Sealed: every other field is
+	// zero, and ClusterSeal empty, until the barrier is unsealed.
+	Initialized bool
+
 	// Strategy identifies which sealing strategy protects the root key.
 	Strategy string
 
@@ -304,6 +309,9 @@ type BarrierService struct {
 	// databases, when set, has a node seal mark every barrier-enabled
 	// database sealed (WithBarrierDatabases).
 	databases BarrierDatabases
+	// shards, when set, has a node seal pause every Raft shard the node
+	// hosts before it wipes a key (WithShardPauser).
+	shards ShardPauser
 }
 
 // Compile-time interface check.
@@ -395,10 +403,23 @@ func (s *BarrierService) BarrierInitialized(ctx context.Context) (bool, error) {
 
 // BarrierStatus returns the current barrier status, mapping the seal
 // package's BarrierStatus to the service-layer BarrierStatusInfo type.
-func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, error) {
+//
+// A sealed barrier answers only that it is sealed and whether it is
+// initialized, the flag a sealed node serves on its sealed surface. The flag
+// comes from memory once the barrier has read its metadata, which the server
+// does at boot; a barrier that has not reads it here once and remembers it.
+// Nothing else about the barrier is disclosed until it is unsealed.
+func (s *BarrierService) BarrierStatus(ctx context.Context) (*BarrierStatusInfo, error) {
+	if s.barrier.IsSealed() {
+		return s.sealedStatus(ctx)
+	}
 	status := s.barrier.Status()
+	if status.Sealed {
+		return s.sealedStatus(ctx)
+	}
 	return &BarrierStatusInfo{
 		Sealed:          status.Sealed,
+		Initialized:     true,
 		Strategy:        string(status.Strategy),
 		HardwareBacked:  status.HardwareBacked,
 		InitializedAt:   status.InitializedAt,
@@ -406,6 +427,19 @@ func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, e
 		ShamirTotal:     status.ShamirTotal,
 		ClusterSeal:     clusterseal.ReportOf(s.sealer, clusterseal.NodeBarrier()),
 	}, nil
+}
+
+// sealedStatus is a sealed barrier's whole status: sealed, and whether it is
+// initialized.
+func (s *BarrierService) sealedStatus(ctx context.Context) (*BarrierStatusInfo, error) {
+	initialized, known := s.barrier.InitializedCached()
+	if !known {
+		var err error
+		if initialized, err = s.barrier.Initialized(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return &BarrierStatusInfo{Sealed: true, Initialized: initialized, ClusterSeal: &clusterseal.Report{}}, nil
 }
 
 // BarrierInitializeShamir initializes the barrier under Shamir custody. The

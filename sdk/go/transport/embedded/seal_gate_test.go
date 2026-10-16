@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // gateProbe is a SealProbe whose answer the test sets.
@@ -127,23 +128,34 @@ func TestSealGate_AllowlistNamesRealMethods(t *testing.T) {
 			t.Errorf("sealed-window allowlist names %q, which *Transport does not have", name)
 		}
 	}
+	unsealed := false
 	tr, err := New(newMockKVService(), &mockAdminService{}, WithSealProbe(closedProbe()),
 		WithBarrierService(&mockBarrierService{
 			barrierClusterUnsealFn: func(context.Context) (*clusterseal.Report, error) {
 				return &clusterseal.Report{Active: true, Epoch: 2}, nil
 			},
+			barrierUnsealFn: func(context.Context, []byte) error {
+				unsealed = true
+				return nil
+			},
 			barrierStatusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
-				return &service.BarrierStatusInfo{Sealed: false}, nil
+				return &service.BarrierStatusInfo{Sealed: true}, nil
 			},
 		}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tr.BarrierStatus(context.Background()); err != nil {
-		t.Fatalf("BarrierStatus with the gate closed: %v", err)
+	if err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("s3cret")}); err != nil || !unsealed {
+		t.Fatalf("BarrierUnseal with the gate closed: served=%v err=%v", unsealed, err)
 	}
 	if _, err := tr.BarrierClusterUnseal(context.Background()); err != nil {
 		t.Fatalf("BarrierClusterUnseal with the gate closed: %v", err)
+	}
+	// A sealed node answers no status: the barrier status call is refused
+	// like any other request, and the caller learns "sealed" from the refusal.
+	var sealed *BarrierSealedError
+	if _, err := tr.BarrierStatus(context.Background()); !errors.As(err, &sealed) {
+		t.Fatalf("BarrierStatus with the gate closed: err = %v, want *BarrierSealedError", err)
 	}
 }
 
@@ -213,6 +225,12 @@ func TestSealGate_UnconfirmedIsNotSealed(t *testing.T) {
 	}
 	if _, sealed := errors.AsType[*BarrierSealedError](err); sealed {
 		t.Fatalf("Put on an unconfirmed node reported a sealed barrier: %v", err)
+	}
+	// Like a held node it answers no status question.
+	if _, err := unconfirmed.BarrierStatus(ctx); err == nil {
+		t.Fatal("BarrierStatus on an unconfirmed node: served, want *clusterseal.SealStateUnconfirmedError")
+	} else if _, ok := errors.AsType[*clusterseal.SealStateUnconfirmedError](err); !ok {
+		t.Fatalf("BarrierStatus on an unconfirmed node: %v, want *clusterseal.SealStateUnconfirmedError", err)
 	}
 
 	sealedTr, err := New(newMockKVService(), &mockAdminService{}, WithSealProbe(stateGateProbe{sealed: true}))

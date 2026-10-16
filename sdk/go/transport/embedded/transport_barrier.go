@@ -138,6 +138,7 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	}
 	resp := &transport.BarrierStatusResponse{
 		Sealed:          info.Sealed,
+		Initialized:     info.Initialized,
 		Strategy:        info.Strategy,
 		HardwareBacked:  info.HardwareBacked,
 		ShamirThreshold: info.ShamirThreshold,

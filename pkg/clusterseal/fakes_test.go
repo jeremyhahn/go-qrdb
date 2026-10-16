@@ -40,6 +40,13 @@ type memKV struct {
 	// onScan runs at the start of every Scan, outside the lock.
 	onScan func()
 	scans  int
+	// blockPut makes Put wait for its context to end, as a write does on a
+	// node that has lost its quorum.
+	blockPut bool
+	// staleErr fails ScanStale only: the local copy stays readable when the
+	// quorum reads (readErr) fail, as it does on a real node.
+	staleErr   error
+	staleScans int
 }
 
 var _ KV = (*memKV)(nil)
@@ -95,7 +102,14 @@ func (m *memKV) CompareAndSwap(_ context.Context, key string, expected, next []b
 	return true, nil
 }
 
-func (m *memKV) Put(_ context.Context, key string, value []byte) error {
+func (m *memKV) Put(ctx context.Context, key string, value []byte) error {
+	m.mu.Lock()
+	block := m.blockPut
+	m.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.writeErr != nil {
@@ -118,13 +132,27 @@ func (m *memKV) Scan(_ context.Context, prefix string) (map[string][]byte, error
 	if m.readErr != nil {
 		return nil, m.readErr
 	}
+	return m.matchLocked(prefix), nil
+}
+
+func (m *memKV) ScanStale(_ context.Context, prefix string) (map[string][]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.staleScans++
+	if m.staleErr != nil {
+		return nil, m.staleErr
+	}
+	return m.matchLocked(prefix), nil
+}
+
+func (m *memKV) matchLocked(prefix string) map[string][]byte {
 	out := map[string][]byte{}
 	for k, v := range m.data {
 		if strings.HasPrefix(k, prefix) {
 			out[k] = bytes.Clone(v)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (m *memKV) set(key string, value []byte) {

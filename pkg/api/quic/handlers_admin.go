@@ -26,25 +26,11 @@ import (
 )
 
 // handleHealth calls the admin service Health endpoint and returns a
-// serialized HealthResponse. The payload is ignored.
-//
-// admin.Health is on the sealed-window allowlist (pkg/api/sealedwindow.Table
-// VerbHealth), so this handler is reachable BEFORE the admin service exists
-// (adminSvc is nil throughout the pre-host sealed window --
-// cmd/qrdbd/seal_subsystem.go's awaitUnseal only wires the barrier/ceremony/
-// credential services). Rather than error in that state (which the
-// per-stream recover() in server.go would otherwise turn into an opaque
-// "internal server error", and which would make sdk/go/transport/quic's
-// Connect() -- which requires a successful Health RPC -- treat a perfectly
-// reachable, correctly-sealed daemon as unreachable), report the documented
-// "sealed" HealthStatus verdict directly.
+// serialized HealthResponse. The payload is ignored. A sealed node never
+// reaches it: the sealed-window gate refuses it first.
 func (s *Server) handleHealth(ctx context.Context, _ []byte) ([]byte, error) {
 	if s.adminSvc == nil {
-		resp, err := proto.Marshal(&pb.HealthResponse{Status: service.HealthStatusSealed})
-		if err != nil {
-			return nil, &MarshalError{Err: err}
-		}
-		return resp, nil
+		return nil, &ServiceNotConfiguredError{Service: "admin"}
 	}
 	info, err := s.adminSvc.Health(ctx)
 	if err != nil {
@@ -64,9 +50,6 @@ func (s *Server) handleHealth(ctx context.Context, _ []byte) ([]byte, error) {
 
 // handleStatus calls the admin service Status endpoint and returns a
 // serialized StatusResponse. The payload is ignored.
-//
-// admin.Status is also on the sealed-window allowlist (VerbStatus); see
-// handleHealth's doc comment for why the nil guard below is required.
 func (s *Server) handleStatus(ctx context.Context, _ []byte) ([]byte, error) {
 	if s.adminSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "admin"}

@@ -90,6 +90,7 @@ func runQRDB(t *testing.T, cli string, connArgs []string, subArgs ...string) (st
 // file asserts on, decoded from `qrdb --output json barrier status`.
 type cliBarrierStatusJSON struct {
 	Sealed          bool   `json:"sealed"`
+	Initialized     bool   `json:"initialized"`
 	Strategy        string `json:"strategy"`
 	ShamirThreshold int    `json:"shamir_threshold"`
 	ShamirTotal     int    `json:"shamir_total"`
@@ -492,7 +493,9 @@ func registerShamirOfficerWithIdentity(t *testing.T, cli string, connArgs []stri
 // waitForCLIBarrierSealed polls `qrdb --output json barrier status` (through
 // the CLI subprocess, tolerating the connection gap while the in-process
 // migration recycle tears the server down and brings it back up) until it
-// reports sealed==true. It is waitForBarrierSealedAgain's CLI-only analogue
+// reports sealed==true, or answers with the typed sealed refusal a node the
+// cluster seal holds gives. It is waitForBarrierSealedAgain's
+// CLI-only analogue
 // for nodes booted without a *testCA handle (e.g. bootSelfGenCANode, whose
 // daemon-generated CA this package does not wrap in a *testCA).
 func waitForCLIBarrierSealed(t *testing.T, cli string, connArgs []string, timeout time.Duration) {
@@ -500,6 +503,9 @@ func waitForCLIBarrierSealed(t *testing.T, cli string, connArgs []string, timeou
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		out, err := runQRDB(t, cli, connArgs, "--output", "json", "barrier", "status")
+		if err != nil && cliSealedRefusal(out) {
+			return
+		}
 		if err == nil {
 			var status cliBarrierStatusJSON
 			if jerr := json.Unmarshal([]byte(out), &status); jerr == nil && status.Sealed {
@@ -550,7 +556,7 @@ func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes(t *testi
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: none\n  shamir_threshold: 2\n  shamir_total: 3\n",
 		"[cli-enc-shamir] ")
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
@@ -591,18 +597,13 @@ func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes(t *testi
 	// ErrShamirThresholdInvalid forever without ever tearing down the data
 	// plane.
 	waitForCLIBarrierSealed(t, cli, node.restArgsNoAuth(), 120*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 90*time.Second)
+	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 90*time.Second)
 
-	// The barrier self-describes correctly WHILE SEALED (StorageBarrier.Status
-	// reads the persisted strategy from the sealed root-key blob without
-	// requiring an unseal first): it must report the REAL shamir strategy and
-	// M/N, not a silently mislabeled passphrase barrier.
-	status := cliBarrierStatus(t, cli, node.restArgsNoAuth())
-	if status.Strategy != "shamir" || !status.Sealed {
-		t.Fatalf("post-migration `barrier status` = %+v, want strategy=shamir sealed=true", status)
-	}
-	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
-		t.Fatalf("post-migration shamir scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
+	// A sealed node's `barrier status` answers sealed and initialized and
+	// nothing more. The strategy and M/N are checked once the quorum has
+	// unsealed it, below.
+	if status := cliBarrierStatus(t, cli, node.restArgsNoAuth()); !status.Sealed || !status.Initialized || status.Strategy != "" {
+		t.Fatalf("post-migration `barrier status` while sealed = %+v, want sealed, initialized and nothing more", status)
 	}
 
 	// The holders claim their envelopes from the sealed node, over their own
@@ -625,9 +626,14 @@ func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes(t *testi
 	}
 	waitForHealthy(t, node.dataDir, 90*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 90*time.Second)
-	status = cliBarrierStatus(t, cli, node.restArgsAdmin())
+	// The barrier reports the REAL shamir strategy and M/N, not a silently
+	// mislabeled passphrase barrier.
+	status := cliBarrierStatus(t, cli, node.restArgsAdmin())
 	if status.Strategy != "shamir" || status.Sealed {
 		t.Fatalf("after the unseal quorum: %+v, want strategy=shamir sealed=false", status)
+	}
+	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
+		t.Fatalf("post-migration shamir scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
 	}
 	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "kv", "get", "shamir-key"); err != nil || strings.TrimSpace(out) != "shamir-value" {
 		t.Fatalf("kv get shamir-key after the migration = %q (err=%v), want shamir-value (DATA LOSS)", out, err)

@@ -3762,6 +3762,10 @@ message BarrierStatusResponse {
     int32 shamir_total = 6;
     // cluster_seal is the node barrier's cluster seal state.
     ClusterSealState cluster_seal = 7;
+    // initialized is true once the barrier has been initialized. A sealed
+    // node reports only sealed and initialized; every other field is empty
+    // until it is unsealed.
+    bool initialized = 8;
 }
 
 // ClusterSealState is one barrier's cluster seal state as the receiving node

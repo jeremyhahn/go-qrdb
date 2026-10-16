@@ -1916,8 +1916,19 @@ func runStart(f *startFlags) (err error) {
 			// once the host, the services and the feature gate exist.
 			clusterSeal := clusterseal.NewDeferred()
 
+			// A node seal pauses every Raft shard the host runs before any
+			// key goes, and the node barrier's unseal resumes them; a
+			// standalone node has no host and pauses nothing. The tenant
+			// registries are given to it once they exist, below.
+			shardPauser := server.NewShardPauser(host, barrierRegistry, slog.Default())
+			var sealPauser service.ShardPauser
+			if shardPauser != nil {
+				sealPauser = shardPauser
+			}
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
 				ClusterSealer:        clusterSeal,
+				ShardPauser:          sealPauser,
 				AuthMethodVocabulary: authMethods.IsAuthMethod,
 				Host:                 svcHost,
 				// The raft system shard runs --sm; a type without MVCC revision
@@ -2408,6 +2419,7 @@ func runStart(f *startFlags) (err error) {
 			}
 			tenantHostReg := ti.Hosts
 			raftBackendReg := ti.Raft
+			shardPauser.SetTenants(raftBackendReg, tenantHostReg)
 			// Security review item 4(a): publish the just-built registry to
 			// sealSub.VolumeLifecycle's close-before-lock closure, which has
 			// been reading this holder (empty until now) since the seal
@@ -2434,6 +2446,7 @@ func runStart(f *startFlags) (err error) {
 					Barriers:    barrierRegistry,
 					Shards:      raftBackendReg,
 					Hosts:       tenantHostReg,
+					Pauser:      shardPauser,
 					Databases:   svcNode.Database,
 					Membership:  host,
 					SystemShard: shard.ShardKV,

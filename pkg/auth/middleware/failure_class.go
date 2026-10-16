@@ -182,6 +182,8 @@ type transientMarker interface {
 //     resolver.Resolve), retryable once the tenant is unsealed -- the same
 //     condition pkg/api/errclass's dominant rules give the same class for
 //     every other data-plane read.
+//   - seal.ErrBarrierSealed: go-quicraft's sentinel for the same read on a
+//     node barrier re-sealed at runtime, retryable once it is unsealed.
 //   - anything in the cause chain implementing transientMarker, asked
 //     directly rather than matched by type or label: role.StoreError and
 //     tenant.StoreError both decide at construction (not here) whether the
@@ -200,7 +202,8 @@ func resolveErrorIsTransient(cause error) bool {
 	if errors.Is(cause, context.DeadlineExceeded) || errors.Is(cause, context.Canceled) {
 		return true
 	}
-	if errors.Is(cause, tenant.ErrTenantSealed) || errors.Is(cause, seal.ErrSealed) {
+	if errors.Is(cause, tenant.ErrTenantSealed) || errors.Is(cause, seal.ErrSealed) ||
+		errors.Is(cause, seal.ErrBarrierSealed) {
 		return true
 	}
 	var marker transientMarker
@@ -325,6 +328,11 @@ var authFailureRules = []struct {
 	}},
 	{"StoreUnavailableError", func(err error) (AuthFailureClass, bool) {
 		var e *StoreUnavailableError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
+	// The user lookup met a sealed node barrier; retryable once unsealed.
+	{"BarrierSealedError", func(err error) (AuthFailureClass, bool) {
+		var e *BarrierSealedError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
 	// The RBAC authorizer's role-resolution failure

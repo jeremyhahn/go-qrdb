@@ -90,6 +90,26 @@ func (e *StoreUnavailableError) Unwrap() error {
 	return e.Err
 }
 
+// BarrierSealedError is returned when the user lookup met a sealed node
+// barrier: go-quicraft's seal.ErrBarrierSealed on a node re-sealed at
+// runtime, or qrdb's seal.ErrSealed. That is the node's sealed state, not a
+// store outage, so it is reported as such rather than as
+// *StoreUnavailableError. It maps to HTTP 503 / gRPC UNAVAILABLE: the request
+// succeeds once the barrier is unsealed.
+type BarrierSealedError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the sealed barrier.
+func (e *BarrierSealedError) Error() string {
+	return "auth/middleware: barrier is sealed: " + e.Err.Error()
+}
+
+// Unwrap returns the barrier's sealed sentinel.
+func (e *BarrierSealedError) Unwrap() error {
+	return e.Err
+}
+
 // The audit-failure error type and the audit-failure POSTURE both live in
 // pkg/audit now, not here (go-qrdb#445).
 //

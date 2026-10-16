@@ -71,6 +71,70 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Sealing a node's barrier pauses every shard on it first, and unsealing
+  resumes them.** After the seal record commits and before the keys leave
+  memory, `service.SealWholeNode` pauses every shard on the node, the system
+  shard included (`Host.PauseShard`), so no log write runs against a sealed
+  barrier; the unseal restores the keys, then resumes the shards
+  (`Host.ResumeShard`), and the node rejoins in place. No new Raft opcode; the
+  pause is not persisted, so a restarted node comes up unpaused. A paused
+  shard's `ErrShardPaused` answers Unavailable on every transport. From the
+  pause until the resume no tenant database shard or volume tenant host starts
+  on the node: a start in that window is refused with `seal.ErrSealed`.
+  `BarrierRegistry.SetSystemBarrier` moves every observer of the replaced
+  barrier to the new one, so a node sealed after an encryption migration still
+  resumes its shards and unlocks its volumes when the keyed barrier unseals,
+  and locks its volumes when it seals. The
+  node-barrier acknowledgement wait now reads the acknowledgements from the
+  node's own copy of the system shard (`clusterseal.KV.ScanStale`) and bounds
+  the whole wait, its own acknowledgement write included, by the
+  acknowledgement timeout: the last node to look no longer waits on a quorum
+  that its peers' pause has removed. See `docs/barrier-seal/architecture.md`.
+
+- **A sealed node serves the unseal call and its initialized flag, and nothing
+  else.** On REST, gRPC, Unix, QUIC, MCP and embedded, every other call —
+  health, node status and ceremony status included — is refused with one typed sealed refusal: REST `503
+  {"code":"SEALED"}`, gRPC/Unix `UNAVAILABLE` with `ErrorInfo{qrdb.v1,
+  SEALED}`, QUIC `StatusUnavailable` with the same `ErrorInfo`, MCP
+  `UNAVAILABLE`/`SEALED`, and embedded `*BarrierSealedError`. The SDK maps
+  each to `transport.BarrierSealedError` (`transport.IsBarrierSealed`), the
+  CLI prints `transport: barrier sealed`, and `qrdbdharness` readiness waits
+  read it as up and sealed. First-boot verbs are served only before
+  enrollment closes; the `ENROLLMENT_CLOSED` 403 is replaced by the sealed
+  refusal. A sealed barrier runs only the `unseal` and `recover` quorum
+  rounds: `seal`, `root-token` and `rekey` are refused with `ErrSealed`. A
+  client certificate authenticates the unseal caller and grants nothing past
+  the seal. See `docs/seal/sealed-window.md` (#695).
+
+- **Barrier status is a sealed node's one status answer: sealed, and whether
+  it is initialized.** Before the first boot and after it, a node whose
+  barrier is sealed answers barrier status on every transport's sealed
+  surface with `sealed: true` and the new `initialized` flag
+  (`BarrierStatusResponse.initialized`, field 8 on gRPC; `Initialized:` in
+  the CLI's text output) and nothing else — no strategy, share counts,
+  `initialized_at` or seal record. The barrier reads the flag once at boot
+  and caches it (`seal.StorageBarrier.InitializedCached`), so the answer
+  reads no store. A node held or cut off by a cluster seal still refuses
+  status; ceremony status stays refused while sealed
+  (`sealedwindow.VerbBarrierStatus`, `ListenerOnly`). An unsealed node
+  reports `initialized: true`. gRPC, Unix and QUIC now report an
+  uninitialized barrier's `initialized_at` empty, as REST and MCP do, instead
+  of the zero time (`grpc.BarrierStatusToProto`). The desktop GUI's
+  needs-init check reads the flag (#659, #695).
+
+- **go-quicraft v0.22.0-alpha in the root, SDK, GORM conformance,
+  cluster-proof, qrdb benchmark and kvcompare modules.** The root module, `sdk/go`,
+  `sdk/go/gorm/conformance` and `test/clusterproof` move from go-quicraft
+  v0.20.0 to v0.22.0-alpha, the planned 0.21.0-rc.3, and
+  `test/performance/qrdb` and `test/performance/cmd/kvcompare` move
+  go-quicraft/test/performance to v0.22.0-alpha. The release carries the
+  leader-executed request primitive, holds a shard while it is sealed instead
+  of latching it failed, and fails a forwarded read the leader cannot serve yet
+  with `ErrReadIndexNotReady` instead of holding it until the caller's
+  deadline. MVS also raises prometheus/client_golang to v1.25.0,
+  klauspost/compress to v1.20.1 and golang.org/x/{crypto,sync,sys,term,text}.
+  No qrdb code changes (#659).
+
 - **BREAKING: the login Subject is the immutable user id, not the username**
   (go-qrdb#670). Once a caller resolves to an account, `Identity.Subject` is
   that account's user id in decimal (`auth.UserSubject`), set only by

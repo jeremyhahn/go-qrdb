@@ -242,6 +242,9 @@ func TestQuorum_StateAndDomainChecks(t *testing.T) {
 	if _, err := f.submit(DomainUnseal, OpSeal, "h1"); !errors.Is(err, ErrSealed) {
 		t.Fatalf("seal while sealed = %v", err)
 	}
+	if _, err := f.submit(DomainUnseal, OpRootToken, "h1"); !errors.Is(err, ErrSealed) {
+		t.Fatalf("root token while sealed = %v", err)
+	}
 	if _, err := f.b.StartRekey(context.Background(), DomainUnseal, RekeyParams{}); !errors.Is(err, ErrSealed) {
 		t.Fatalf("rekey while sealed = %v", err)
 	}

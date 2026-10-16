@@ -139,6 +139,13 @@ func TestClassify_DominantRulesWinThroughWrappers(t *testing.T) {
 		{"sealed tenant inside a user store error", &user.StoreError{Op: "get", Err: tenant.ErrTenantSealed}, Unavailable},
 		{"cross-tenant refusal inside a user store error", &user.StoreError{Op: "get", Err: &tenant.CrossTenantDeniedError{}}, PermissionDenied},
 		{"closed store inside a time-series failure", &service.TimeSeriesError{Op: "write", Err: storage.ErrStorageClosed}, Unavailable},
+		// A node re-sealed at runtime: go-quicraft refuses every store read
+		// and write with its own sentinel, which is not seal.ErrSealed.
+		{"re-sealed node barrier, bare", seal.ErrBarrierSealed, Unavailable},
+		{"re-sealed node barrier inside a read failure", &service.ReadError{Err: seal.ErrBarrierSealed}, Unavailable},
+		{"re-sealed node barrier inside a propose failure", &service.ProposeError{Err: seal.ErrBarrierSealed}, Unavailable},
+		{"re-sealed node barrier inside a user store error", &user.StoreError{Op: "get", Err: seal.ErrBarrierSealed}, Unavailable},
+		{"re-sealed node barrier under the user lookup", &authmw.BarrierSealedError{Err: seal.ErrBarrierSealed}, Unavailable},
 		{"registration refused over a missing provider", &service.EmbeddingProviderRegistrationError{Provider: "p", Cause: &service.EmbeddingProviderNotFoundError{Provider: "p"}}, AlreadyExists},
 		{"unresolvable reclaim store over a missing tenant", &service.ReclaimStoreUnavailableError{TenantID: "t", Err: &service.TenantNotFoundError{TenantID: "t"}}, Unavailable},
 		{"a propose that failed because the caller gave up", &service.ProposeError{Err: context.DeadlineExceeded}, DeadlineExceeded},
@@ -173,6 +180,29 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 		{"a propose that may still commit", &service.ProposeError{Err: &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}}, Unavailable},
 		{"a user write whose raft wait ran out", &user.StoreError{Op: "create", Err: &service.ProposeError{Err: quicraft.ErrTimeout}}, Unavailable},
 		{"a failed rollback over a raft timeout stays itself", &user.IndexCompensationError{Op: "create", Cause: quicraft.ErrTimeout}, DataLoss},
+	} {
+		if got := Classify(tc.err); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestClassify_ShardPausedIsUnavailable: a shard the seal paused refuses with
+// ErrShardPaused, and the node serves again once it is unsealed, so the
+// refusal is Unavailable however a service wraps it, never the wrappers'
+// Internal.
+func TestClassify_ShardPausedIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"bare", quicraft.ErrShardPaused, Unavailable},
+		{"inside a propose failure", &service.ProposeError{Err: quicraft.ErrShardPaused}, Unavailable},
+		{"inside a read failure", &service.ReadError{Err: quicraft.ErrShardPaused}, Unavailable},
+		{"inside a batch failure", &service.BatchError{Err: quicraft.ErrShardPaused}, Unavailable},
+		{"inside a tenant store read", &tenant.StoreError{Op: "get", Err: &service.ReadError{Err: quicraft.ErrShardPaused}}, Unavailable},
+		{"a stopped shard is still a fault", &service.ProposeError{Err: quicraft.ErrShardNotFound}, Internal},
 	} {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)

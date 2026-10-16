@@ -932,6 +932,23 @@ func TestBarrierStatusToResponse_ZeroInitTime(t *testing.T) {
 	}
 }
 
+// TestBarrierStatusToResponse_CarriesInitialized: "initialized" is always on
+// the response, false as well as true, since it is the one fact a sealed node
+// reports besides "sealed".
+func TestBarrierStatusToResponse_CarriesInitialized(t *testing.T) {
+	for _, initialized := range []bool{false, true} {
+		resp := barrierStatusToResponse(&service.BarrierStatusInfo{Sealed: true, Initialized: initialized})
+		if got, ok := resp["initialized"]; !ok || got != initialized {
+			t.Errorf("initialized = (%v, %v), want (%v, true)", got, ok, initialized)
+		}
+		for _, absent := range []string{"initialized_at", "shamir_threshold", "shamir_total"} {
+			if _, ok := resp[absent]; ok {
+				t.Errorf("sealed response carries %q", absent)
+			}
+		}
+	}
+}
+
 func TestShamirInitToResponse(t *testing.T) {
 	info := &service.ShamirInitInfo{
 		Threshold:   1,

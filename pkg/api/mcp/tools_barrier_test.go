@@ -461,6 +461,34 @@ func TestHandleBarrierStatus_Success(t *testing.T) {
 	}
 }
 
+// TestHandleBarrierStatus_SealedReportsInitialized: a sealed node's status is
+// "sealed" and "initialized", the latter present whether true or false, and no
+// strategy detail.
+func TestHandleBarrierStatus_SealedReportsInitialized(t *testing.T) {
+	for _, initialized := range []bool{false, true} {
+		svc := newMockBarrierService()
+		svc.statusFn = func(_ context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{Sealed: true, Initialized: initialized, ClusterSeal: &clusterseal.Report{}}, nil
+		}
+		result, err := handleBarrierStatus(svc)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_status", map[string]any{}))
+		if err != nil {
+			t.Fatalf("handleBarrierStatus: %v", err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal([]byte(resultText(t, result)), &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if wire["sealed"] != true || wire["initialized"] != initialized {
+			t.Errorf("status = %v, want sealed and initialized=%v", wire, initialized)
+		}
+		for _, absent := range []string{"initialized_at", "shamir_threshold", "shamir_total"} {
+			if _, ok := wire[absent]; ok {
+				t.Errorf("sealed status carries %q", absent)
+			}
+		}
+	}
+}
+
 func TestHandleBarrierStatus_ShamirFields(t *testing.T) {
 	svc := newMockBarrierService()
 	svc.statusFn = func(_ context.Context) (*service.BarrierStatusInfo, error) {

@@ -1,6 +1,6 @@
 # Barrier and Seal — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
@@ -17,13 +17,23 @@ All verbs accept the root persistent flags documented in
 
 ## `qrdb barrier status`
 
-Show the current barrier state. Read-only and **safe to call against a sealed
-barrier**. No flags.
+Show the current barrier state. Read-only. No flags.
 
-The output includes the node barrier's cluster seal: whether the cluster has
-activated `cluster-seal`, the record's state and epoch, who wrote it, and this
-node's own state — `serving`, `sealed`, `held`, `cut_off` or `unconfirmed`
-(see [api.md](api.md#the-cluster_seal-status-object)). `qrdb tenant
+Against a sealed node the command prints two facts: `Sealed: true` and
+`Initialized:` (`initialized` in JSON), every other field empty. `Initialized:
+false` is a node waiting for its first boot, which needs `qrdb init`;
+`Initialized: true` is an initialized node whose barrier is sealed. Unseal
+progress is printed by the unseal call itself.
+
+Against a node that a cluster seal holds, or that the serving lease cuts off,
+the command fails with `transport: barrier sealed`. That refusal is the
+answer: the node is up, initialized and held.
+
+On a serving node the output includes the node barrier's cluster seal: whether
+the cluster has activated `cluster-seal`, the record's state and epoch, who
+wrote it, and this node's own state (see
+[api.md](api.md#the-cluster_seal-status-object)). A node that is held or cut
+off refuses status, so read the record from a node that serves. `qrdb tenant
 barrier-status` and `qrdb database barrier-status` print the same for their
 barriers.
 
@@ -126,12 +136,12 @@ qrdb barrier seal --so-pin SO123 --assume-yes
 
 End a cluster-wide seal of the node barrier. Run it, as the platform operator,
 on a node you have already unsealed — after a cluster seal, every node is
-restarted and unsealed at boot, and comes back **held** until this command
-writes the clear record. It unseals nothing by itself: every node still
+unsealed, in place or at boot after a restart, and comes back **held** until
+this command writes the clear record. It unseals nothing by itself: every node still
 unseals itself with its own credential. No flags.
 
 ```bash
-qrdb barrier unseal --passphrase '<passphrase>'   # this node, at boot
+qrdb barrier unseal --passphrase '<passphrase>'   # this node
 qrdb barrier cluster-unseal                       # once: clears the record
 qrdb barrier status --output json                 # cluster_seal.local: serving
 ```
@@ -171,7 +181,9 @@ strategy, **re-encrypting all at-rest data in place**.
 
 The migration runs **asynchronously**: a system-scope migration recycles the
 node's data plane in process, so the command returns once the migration has
-*started*. **Poll `barrier status`** until the strategy changes from `none`.
+*started*. **Poll `barrier status`** until the strategy changes from `none`,
+or until it fails with `transport: barrier sealed` when the migration brings
+the node back sealed.
 
 A tenant on the shared system barrier cannot change its encryption; the server
 rejects it. A migration to `shamir` splits the new unseal key to the holders

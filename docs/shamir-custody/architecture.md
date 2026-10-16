@@ -1,6 +1,6 @@
 # Shamir Custody — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 M-of-N custody of a barrier's key material by named **share holders**: who
 holds a share, how a share reaches them, how they prove who they are when they
@@ -165,6 +165,11 @@ Every share-gated operation is a **quorum round** run by one accumulator,
 | `root-token` | unseal | mints a one-time root token |
 | `rekey` | unseal or recovery | redistributes the domain's key (a pending rekey or revocation) |
 | `recover` | recovery | unseals the sealed barrier from the recovery key |
+
+**A sealed barrier runs `unseal` and `recover` and nothing else.** `seal`,
+`root-token` and `rekey` are refused with `ErrSealed` until the barrier is
+unsealed — a root token minted while sealed would grant past the seal — and
+`unseal` and `recover` are refused with `ErrAlreadyUnsealed` once it is.
 
 A holder submits by asking for a **challenge** (`quorum begin`), answering it
 with an admitted factor, and submitting the answer with the share it opened

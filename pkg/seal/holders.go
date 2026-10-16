@@ -97,6 +97,12 @@ func (op QuorumOp) ValidIn(d QuorumDomain) bool {
 	return quorumOpDomains[op][d]
 }
 
+// RunsSealed reports whether a sealed barrier runs op: the unseal and
+// recovery rounds, and nothing else.
+func (op QuorumOp) RunsSealed() bool {
+	return op == OpUnseal || op == OpRecover
+}
+
 // QuorumOpCount returns how many operations may run in domain.
 func QuorumOpCount(d QuorumDomain) int {
 	n := 0

@@ -496,20 +496,11 @@ func (s *qrdbServiceServer) Scan(ctx context.Context, req *pb.ScanRequest) (*pb.
 // Admin handlers (existing)
 // ---------------------------------------------------------------------------
 
-// Health returns the node health status.
-//
-// admin.Health is on the sealed-window allowlist (pkg/api/sealedwindow.Table
-// VerbHealth), so this handler is reachable BEFORE adminSvc exists (adminSvc
-// is nil throughout the pre-host sealed window -- cmd/qrdbd/seal_subsystem.go's
-// awaitUnseal only wires the barrier/ceremony/credential services). Rather
-// than fail the RPC in that state, report the documented "sealed"
-// HealthStatus verdict directly: sdk/go/transport/grpc and .../unix's
-// Connect() require a successful Health RPC before returning, so erroring
-// here would make a perfectly reachable, correctly-sealed daemon look
-// unreachable to every gRPC and Unix-socket client.
+// Health returns the node health status. A sealed node never reaches it: the
+// sealed-window gate refuses it with SealedError.
 func (s *qrdbServiceServer) Health(ctx context.Context, _ *emptypb.Empty) (*pb.HealthResponse, error) {
 	if s.adminSvc == nil {
-		return &pb.HealthResponse{Status: service.HealthStatusSealed}, nil
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	info, err := s.adminSvc.Health(ctx)
 	if err != nil {

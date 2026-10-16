@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -59,6 +60,11 @@ type TenantHostRegistry struct {
 	// MigrateEncryption (up to the barrier replacement); a concurrent Services
 	// returns ErrTenantMigrationInProgress (retryable) instead.
 	migrating sync.Map // tenantID -> struct{}
+
+	// startGate admits each Host build against a whole-node seal's pause
+	// (ShardPauser.beginStart); ShardPauser.SetTenants installs it. Unset, it
+	// admits every build.
+	startGate atomic.Pointer[ShardPauser]
 }
 
 // tenantInfoSource is the minimal tenant-metadata lookup the registry needs to
@@ -183,6 +189,13 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 		return nil, &TenantHostError{TenantID: tenantID, Op: "data-root", Err: ErrTenantDataRootUnset}
 	}
 
+	// The Host is not listed for a seal's pause until it is registered
+	// below, so the whole build is held against the pause.
+	done, err := r.startGate.Load().beginStart()
+	if err != nil {
+		return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: err}
+	}
+	defer done()
 	th, err := newTenantHost(ctx, tenantID, dataRoot, tb, r.importSessionCfg, r.logger)
 	if err != nil {
 		return nil, err
@@ -202,6 +215,20 @@ func (r *TenantHostRegistry) Started(tenantID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.hosts[tenantID]
 	return ok
+}
+
+// shardHosts snapshots each started volume tenant's Raft host, by tenant ID,
+// for the shard pauser.
+func (r *TenantHostRegistry) shardHosts() map[string]shardHost {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]shardHost, len(r.hosts))
+	for tenantID, th := range r.hosts {
+		if th.host != nil {
+			out[tenantID] = th.host
+		}
+	}
+	return out
 }
 
 // startedServices returns the service set of every tenant Host already built

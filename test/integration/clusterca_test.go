@@ -79,7 +79,7 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 		"--ca-file", caPath,
 		"--timeout", "20s",
 	}
-	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
 	// `qrdb init` is the only system bootstrap (go-qrdb#548). Its admin
 	// credential goes unused here -- auth is disabled -- but issuing it is
 	// what consumes Key A while ca-key.pem is still on disk.
@@ -125,7 +125,7 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 	// (server.ServeSealedWindow blocks until the unseal API is driven,
 	// whatever the strategy): reach the sealed-window listener, then
 	// unseal with an empty passphrase, which StrategyNone ignores.
-	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
 	if out, err := runQRDB(t, cli, connArgs, "barrier", "unseal", "--passphrase", ""); err != nil {
 		t.Fatalf("barrier unseal (restart): %v\noutput: %s", err, out)
 	}
@@ -210,7 +210,7 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 		"--ca-file", caPath,
 		"--timeout", "20s",
 	}
-	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
 	credDir := t.TempDir()
 	bootAdminIdentity(t, cli, caPath, adminPort, "SOPIN12345", "USERPIN12345",
 		filepath.Join(credDir, "admin-cert.pem"), filepath.Join(credDir, "admin-key.pem"), "",
@@ -269,7 +269,7 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 	// A restart ALWAYS comes back up sealed, even under strategy "none":
 	// reach the sealed-window listener, then unseal with an empty
 	// passphrase, which StrategyNone ignores.
-	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
+	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
 	if out, err := runQRDB(t, cli, connArgs, "barrier", "unseal", "--passphrase", ""); err != nil {
 		t.Fatalf("barrier unseal (restart): %v\noutput: %s", err, out)
 	}

@@ -265,6 +265,14 @@ func TestQuorum_SealAndRootToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, out.Complete)
 	assert.True(t, e.barrier.IsSealed())
+
+	// Sealed, the node issues a challenge for the unseal round only.
+	for _, op := range []seal.QuorumOp{seal.OpRootToken, seal.OpSeal, seal.OpRekey} {
+		_, err = e.svc.BeginQuorum(context.Background(), seal.DomainUnseal, op, "alice", "")
+		assert.ErrorIs(t, err, seal.ErrSealed, op)
+	}
+	_, err = e.svc.BeginQuorum(context.Background(), seal.DomainUnseal, seal.OpUnseal, "alice", "")
+	assert.NoError(t, err)
 }
 
 // TestRevoke_QuorumOfRemainingHoldersRedistributes pins revocation: it is a

@@ -158,6 +158,11 @@ type Server struct {
 	// and selects that listener's interceptors. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
 
+	// sealedWindowDispatch, on a regular listener, sends every call that
+	// arrives while it reports the node barrier sealed down the boot-time
+	// listener's chain. Nil installs no dispatch.
+	sealedWindowDispatch sealedwindow.ListenerProbe
+
 	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
 	// gate (go-qrdb#548 review item 3). While it reports true, only
 	// ceremony status and ceremony-initialize are served -- routed
@@ -519,17 +524,18 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // WithSealedWindowProbe installs the sealed-window unary and streaming
 // interceptors backed by the supplied probe. While probe.IsSealed()
 // returns true, every method whose trailing component is not on
-// SealedWindowAllowlist is rejected with codes.Unavailable + message
-// "barrier sealed"; a sealedwindow.StateProbe reporting the seal state
-// unconfirmed is refused instead with codes.Unavailable and ErrorInfo reason
-// SEAL_STATE_UNCONFIRMED. Once unsealed the interceptors are passthrough;
+// SealedWindowAllowlist is rejected with SealedError; a
+// sealedwindow.StateProbe reporting the seal state unconfirmed is refused
+// instead with codes.Unavailable and ErrorInfo reason SEAL_STATE_UNCONFIRMED.
+// Once unsealed the interceptors are passthrough;
 // on re-seal they engage again.
 //
 // The interceptors are appended to the chain after auth, so an
 // allowlisted method is still authenticated and authorized when an auth
-// middleware is installed. The allowlist is anonymous only on a server
-// without one: the boot-time sealed-window listener (see
-// WithSealedWindowListener).
+// middleware is installed. The allowlist is anonymous only on the boot-time
+// sealed-window listener's chain: that listener (see
+// WithSealedWindowListener), and a regular listener's calls while the node
+// barrier is sealed (see WithSealedWindowDispatch).
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
@@ -548,6 +554,22 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
 		s.sealedWindowListener = probe
+	}
+}
+
+// WithSealedWindowDispatch makes a regular listener behave, while probe
+// reports the node barrier sealed, exactly as the boot-time sealed-window
+// listener does: each such call runs the chain WithSealedWindowListener
+// builds -- the allowlist, served with no authentication and so no user-store
+// lookup, and codes.Unavailable for everything else -- instead of the
+// listener's own. Calls that arrive while it reports the barrier unsealed run
+// the regular chain unchanged. Build probe with
+// server.NewSealedWindowListenerProbe over the bare node barrier, not the
+// cluster-seal probe: a node a cluster seal holds keeps its barrier unsealed
+// and its authenticated cluster-unseal verb.
+func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowDispatch = probe
 	}
 }
 
@@ -675,75 +697,10 @@ func (s *Server) Start() error {
 		}
 	}
 
-	// Build interceptor chains for both unary and streaming RPCs.
-	// Auth interceptors are inserted after logging when configured.
-	// The sealed-window interceptor sits AFTER auth so non-allowlisted
-	// methods are rejected with codes.Unavailable before the handler
-	// runs, while allowlisted methods (Barrier*, Ceremony*) flow
-	// through unauthenticated during the sealed window — possession of
-	// the unseal credential is the authorization (Vault model).
-	unaryInterceptors := []grpc.UnaryServerInterceptor{
-		// Unconditional (go-qrdb#560 review C): a node with NO AuthMiddleware
-		// configured still runs the SO PIN gate on ceremony-initialize's
-		// admin-credential retry, which needs a per-source identity for
-		// auth.CallerPrincipal's lockout regardless of whether anything else
-		// here authenticates the caller. See RemoteAddrUnaryInterceptor.
-		authmw.RemoteAddrUnaryInterceptor,
-		recoveryInterceptor,
-		loggingInterceptor,
-		DatabaseScopeUnaryInterceptor,
-	}
-	if s.authMW != nil {
-		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
-	}
-	// The SO gate installs whenever there is one, auth middleware or not:
-	// with nothing to authenticate the caller there is no SO to admit, so it
-	// fails closed rather than being skipped.
-	if s.soGate != nil {
-		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
-	}
-	if s.sealedWindowProbe != nil {
-		unaryInterceptors = append(unaryInterceptors,
-			sealedWindowUnary(s.sealedWindowProbe, nil, s.sealedWindowListener))
-	}
-	// Replica forwarding sits innermost: the caller is authenticated and
-	// admitted here before a refusal is forwarded, and a request forwarded
-	// here is marked as served by this node whether or not this listener
-	// forwards itself.
-	_, nodeID := forward.NodeIdentity(s.tls)
-	unaryInterceptors = append(unaryInterceptors, servedByUnary(nodeID))
 	if s.replicaForwarding != nil {
 		s.forwarder = NewReplicaForwarder(*s.replicaForwarding, s.tls)
-		unaryInterceptors = append(unaryInterceptors, s.forwarder.UnaryInterceptor())
 	}
-	streamInterceptors := []grpc.StreamServerInterceptor{
-		streamRecoveryInterceptor,
-		streamLoggingInterceptor,
-		DatabaseScopeStreamInterceptor,
-	}
-	if s.authMW != nil {
-		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
-	}
-	if s.soGate != nil {
-		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
-	}
-	if s.sealedWindowProbe != nil {
-		streamInterceptors = append(streamInterceptors,
-			sealedWindowStream(s.sealedWindowProbe, nil, s.sealedWindowListener))
-	}
-	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) must be
-	// able to skip the ENTIRE chain above -- authMW included -- for the two
-	// methods it allows, which grpc.ChainUnaryInterceptor's ServerOption
-	// form cannot express (each interceptor only ever sees the NEXT one, not
-	// the combined chain or the bare RPC handler). It is therefore composed
-	// as a single grpc.UnaryInterceptor/StreamInterceptor wrapping the
-	// chain's own combined form, rather than appended as a chain member.
-	unaryChain := ChainUnaryServerInterceptors(unaryInterceptors...)
-	streamChain := ChainStreamServerInterceptors(streamInterceptors...)
-	if s.awaitingAdminCredentialProbe != nil {
-		unaryChain = AwaitingAdminCredentialUnaryInterceptor(s.awaitingAdminCredentialProbe, AwaitingAdminCredentialAllowlist, unaryChain)
-		streamChain = AwaitingAdminCredentialStreamInterceptor(s.awaitingAdminCredentialProbe, AwaitingAdminCredentialAllowlist, streamChain)
-	}
+	unaryChain, streamChain := s.admissionChains()
 	maxStreams := s.maxConcurrentStreams
 	if maxStreams == 0 {
 		maxStreams = DefaultMaxConcurrentStreams
@@ -854,6 +811,110 @@ func (s *Server) Start() error {
 	}()
 
 	return nil
+}
+
+// admissionPath is one path a call takes through the server's interceptors:
+// the authentication, SO gate, sealed-window gate and replica forwarder it
+// passes. A nil field installs nothing. A regular listener's path carries its
+// own; the boot-time sealed-window listener's carries only the listener gate.
+// admissionChains composes the server's unary and stream interceptors.
+func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+	unaryChain, streamChain := s.interceptorChains(admissionPath{
+		authMW:    s.authMW,
+		soGate:    s.soGate,
+		probe:     s.sealedWindowProbe,
+		listener:  s.sealedWindowListener,
+		forwarder: s.forwarder,
+	})
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) must be
+	// able to skip the ENTIRE chain above -- authMW included -- for the two
+	// methods it allows, which grpc.ChainUnaryInterceptor's ServerOption
+	// form cannot express (each interceptor only ever sees the NEXT one, not
+	// the combined chain or the bare RPC handler). It is therefore composed
+	// as a single grpc.UnaryInterceptor/StreamInterceptor wrapping the
+	// chain's own combined form, rather than appended as a chain member.
+	if s.awaitingAdminCredentialProbe != nil {
+		unaryChain = AwaitingAdminCredentialUnaryInterceptor(s.awaitingAdminCredentialProbe, AwaitingAdminCredentialAllowlist, unaryChain)
+		streamChain = AwaitingAdminCredentialStreamInterceptor(s.awaitingAdminCredentialProbe, AwaitingAdminCredentialAllowlist, streamChain)
+	}
+	// A call that arrives while the node barrier is sealed takes the
+	// boot-time sealed-window listener's chain instead -- the same builder
+	// with no authentication, SO gate or forwarder -- so a re-sealed node
+	// serves exactly what a node that booted sealed serves.
+	if s.sealedWindowDispatch != nil {
+		sealedUnary, sealedStream := s.interceptorChains(admissionPath{
+			probe:    s.sealedWindowDispatch,
+			listener: s.sealedWindowDispatch,
+		})
+		unaryChain = SealedWindowDispatchUnaryInterceptor(s.sealedWindowDispatch, sealedUnary, unaryChain)
+		streamChain = SealedWindowDispatchStreamInterceptor(s.sealedWindowDispatch, sealedStream, streamChain)
+	}
+	return unaryChain, streamChain
+}
+
+type admissionPath struct {
+	authMW    *authmw.AuthMiddleware
+	soGate    *authmw.SOGate
+	probe     sealedWindowProbe
+	listener  sealedwindow.ListenerProbe
+	forwarder *ReplicaForwarder
+}
+
+// interceptorChains builds the combined unary and stream interceptors of p.
+// Auth interceptors are inserted after logging when configured. The
+// sealed-window interceptor sits AFTER auth so non-allowlisted methods are
+// rejected with codes.Unavailable before the handler runs; on the boot-time
+// listener's path, which has no auth, the allowlisted methods (Barrier*,
+// Ceremony*) flow through unauthenticated during the sealed window --
+// possession of the unseal credential is the authorization (Vault model).
+func (s *Server) interceptorChains(p admissionPath) (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		// Unconditional (go-qrdb#560 review C): a node with NO AuthMiddleware
+		// configured still runs the SO PIN gate on ceremony-initialize's
+		// admin-credential retry, which needs a per-source identity for
+		// auth.CallerPrincipal's lockout regardless of whether anything else
+		// here authenticates the caller. See RemoteAddrUnaryInterceptor.
+		authmw.RemoteAddrUnaryInterceptor,
+		recoveryInterceptor,
+		loggingInterceptor,
+		DatabaseScopeUnaryInterceptor,
+	}
+	if p.authMW != nil {
+		unaryInterceptors = append(unaryInterceptors, p.authMW.UnaryInterceptor())
+	}
+	// The SO gate installs whenever there is one, auth middleware or not:
+	// with nothing to authenticate the caller there is no SO to admit, so it
+	// fails closed rather than being skipped.
+	if p.soGate != nil {
+		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(p.soGate))
+	}
+	if p.probe != nil {
+		unaryInterceptors = append(unaryInterceptors, sealedWindowUnary(p.probe, nil, p.listener))
+	}
+	// Replica forwarding sits innermost: the caller is authenticated and
+	// admitted here before a refusal is forwarded, and a request forwarded
+	// here is marked as served by this node whether or not this listener
+	// forwards itself.
+	_, nodeID := forward.NodeIdentity(s.tls)
+	unaryInterceptors = append(unaryInterceptors, servedByUnary(nodeID))
+	if p.forwarder != nil {
+		unaryInterceptors = append(unaryInterceptors, p.forwarder.UnaryInterceptor())
+	}
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		streamRecoveryInterceptor,
+		streamLoggingInterceptor,
+		DatabaseScopeStreamInterceptor,
+	}
+	if p.authMW != nil {
+		streamInterceptors = append(streamInterceptors, p.authMW.StreamInterceptor())
+	}
+	if p.soGate != nil {
+		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(p.soGate))
+	}
+	if p.probe != nil {
+		streamInterceptors = append(streamInterceptors, sealedWindowStream(p.probe, nil, p.listener))
+	}
+	return ChainUnaryServerInterceptors(unaryInterceptors...), ChainStreamServerInterceptors(streamInterceptors...)
 }
 
 // closePrebound closes a listener handed over by WithListener when Start

@@ -198,18 +198,16 @@ func (b *StorageBarrier) quorumTTL() time.Duration {
 	return DefaultShareTTL
 }
 
-// checkOpState refuses an operation the barrier's state cannot run.
+// checkOpState refuses an operation the barrier's state cannot run. A sealed
+// barrier runs the unseal and recovery rounds and nothing else: a root token
+// minted while sealed would grant past the seal.
 func (b *StorageBarrier) checkOpState(op QuorumOp) error {
 	sealed := b.state.Load() == stateSealed
-	switch op {
-	case OpUnseal, OpRecover:
-		if !sealed {
-			return ErrAlreadyUnsealed
-		}
-	case OpSeal, OpRekey:
-		if sealed {
-			return ErrSealed
-		}
+	switch {
+	case op.RunsSealed() && !sealed:
+		return ErrAlreadyUnsealed
+	case !op.RunsSealed() && sealed:
+		return ErrSealed
 	}
 	return nil
 }

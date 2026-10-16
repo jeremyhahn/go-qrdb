@@ -41,6 +41,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // clusterSealView is the cluster_seal object of GET /v1/barrier/status.
@@ -167,7 +170,12 @@ func (h *sealClusterHarness) stop(i int) {
 }
 
 // status reads node i's barrier status: whether its node barrier is sealed,
-// and its cluster_seal object.
+// and its cluster_seal object. A node that is not serving serves only the
+// unseal call. Sealed or held by the cluster record, it refuses status with
+// the typed sealed refusal; that reads as sealed with a zero cluster_seal,
+// since the refusal names no reason. Cut off, or not yet confirmed, it refuses
+// status as SEAL_STATE_UNCONFIRMED, which is not sealed and reads as not ok
+// here; waitForRefusal waits for it.
 func (h *sealClusterHarness) status(i int) (sealed bool, cs clusterSealView, ok bool) {
 	client := mtlsHTTPClient(h.t, h.ca, 5*time.Second)
 	resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", h.nodes[i].adminPort))
@@ -175,6 +183,13 @@ func (h *sealClusterHarness) status(i int) (sealed bool, cs clusterSealView, ok 
 		return false, cs, false
 	}
 	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return false, cs, false
+	}
+	if qrdbdharness.IsSealedRefusal(resp.StatusCode, raw) {
+		return true, cs, true
+	}
 	if resp.StatusCode != http.StatusOK {
 		return false, cs, false
 	}
@@ -182,7 +197,7 @@ func (h *sealClusterHarness) status(i int) (sealed bool, cs clusterSealView, ok 
 		Sealed      bool             `json:"sealed"`
 		ClusterSeal *clusterSealView `json:"cluster_seal"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.ClusterSeal == nil {
+	if err := json.Unmarshal(raw, &body); err != nil || body.ClusterSeal == nil {
 		return false, cs, false
 	}
 	return body.Sealed, *body.ClusterSeal, true
@@ -205,6 +220,38 @@ func (h *sealClusterHarness) waitFor(i int, timeout time.Duration, what string, 
 	}
 	h.t.Fatalf("node %d: timed out after %v waiting for %s (last: reachable=%v sealed=%v cluster_seal=%+v)",
 		i+1, timeout, what, seen, lastSealed, last)
+}
+
+// refusalCode returns the code of node i's 503 refusal of barrier status, or
+// "" when it answers anything else or cannot be reached.
+func (h *sealClusterHarness) refusalCode(i int) string {
+	client := mtlsHTTPClient(h.t, h.ca, 5*time.Second)
+	resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", h.nodes[i].adminPort))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Code string `json:"code"`
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable || json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body) != nil {
+		return ""
+	}
+	return body.Code
+}
+
+// waitForRefusal waits until node i refuses barrier status with code.
+func (h *sealClusterHarness) waitForRefusal(i int, timeout time.Duration, what, code string) {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for time.Now().Before(deadline) {
+		if last = h.refusalCode(i); last == code {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	h.t.Fatalf("node %d: timed out after %v waiting for %s (want refusal %s, last %q)", i+1, timeout, what, code, last)
 }
 
 // kvStatus returns the status of a KV read on node i, or 0 when the node did
@@ -283,7 +330,9 @@ func TestClusterSeal_NodeBarrier_RF3(t *testing.T) {
 	}
 
 	// Restart every node; each unseals with its OWN passphrase and comes back
-	// held: keys loaded, requests refused, until the record is cleared.
+	// held: keys loaded, requests refused, until the record is cleared. A
+	// held node serves only the unseal call, so once its own unseal has
+	// succeeded the typed sealed refusal of status is what "held" looks like.
 	for i := range h.nodes {
 		h.stop(i)
 	}
@@ -301,9 +350,7 @@ func TestClusterSeal_NodeBarrier_RF3(t *testing.T) {
 	}
 	wg.Wait()
 	for i := range h.nodes {
-		h.waitFor(i, 90*time.Second, "held after restart", func(sealed bool, cs clusterSealView) bool {
-			return !sealed && cs.Sealed && cs.Local == "held"
-		})
+		h.waitFor(i, 90*time.Second, "held after restart", func(sealed bool, _ clusterSealView) bool { return sealed })
 		if st := h.kvStatus(i, "sealed-key"); st == http.StatusOK {
 			t.Fatalf("node %d served a read while held", i+1)
 		}
@@ -318,9 +365,10 @@ func TestClusterSeal_NodeBarrier_RF3(t *testing.T) {
 		t.Fatal("node 1 unsealed with node 2's passphrase")
 	}
 	h.unsealOwn(0)
-	h.waitFor(0, 90*time.Second, "held after restart", func(sealed bool, cs clusterSealView) bool {
-		return !sealed && cs.Local == "held"
-	})
+	h.waitFor(0, 90*time.Second, "held after restart", func(sealed bool, _ clusterSealView) bool { return sealed })
+	if st := h.kvStatus(0, "sealed-key"); st == http.StatusOK {
+		t.Fatal("node 1 served a read while held")
+	}
 
 	// One cluster-unseal, from any node, clears the record; every node serves.
 	st, body := h.post(2, "/v1/barrier/cluster-unseal", map[string]any{})
@@ -355,9 +403,9 @@ func TestClusterSeal_CutOffNodeStopsServing_RF3(t *testing.T) {
 	// Cut node 1 off: the other two stop, so it cannot read the records.
 	h.stop(1)
 	h.stop(2)
-	h.waitFor(0, 30*time.Second, "cut off after the lease", func(sealed bool, cs clusterSealView) bool {
-		return !sealed && cs.Local == "cut_off"
-	})
+	// A cut-off node serves only the unseal call. Its own barrier never
+	// sealed, so it refuses status as unconfirmed, not as sealed.
+	h.waitForRefusal(0, 30*time.Second, "cut off after the lease", replicaforward.ReasonSealStateUnconfirmed)
 	if st := h.kvStatus(0, "cutoff-key"); st == http.StatusOK {
 		t.Fatal("a cut-off node served a read")
 	}

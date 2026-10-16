@@ -66,7 +66,7 @@ func newQuorumSealNode(t *testing.T, sealer *clustersealtest.Sealer) *quorumSeal
 
 	dbs := newPassphraseDatabases(t, e.barrier)
 
-	sealer.OnSeal(func(clusterseal.Barrier) error { return SealWholeNode(reg, nil, dbs) })
+	sealer.OnSeal(func(clusterseal.Barrier) error { return SealWholeNode(context.Background(), nil, reg, nil, dbs) })
 	e.svc = NewBarrierServiceWithCeremony(e.barrier, e.core, WithClusterSealer(sealer), WithBarrierRegistry(reg), WithBarrierDatabases(dbs))
 	return &quorumSealNode{env: e, reg: reg, dbs: dbs, holders: hs}
 }

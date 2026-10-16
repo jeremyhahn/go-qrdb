@@ -16,8 +16,8 @@ github.com/jeremyhahn/go-qrdb v0.7.0-alpha h1:zQZ6cgT+aia8OBmu9PVI53QR+KoTqdSma9
 github.com/jeremyhahn/go-qrdb v0.7.0-alpha/go.mod h1:40Ls6CNv5MTekjn0nlHw09L7MVtNxM5n1T4ZgmtAGuM=
 github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha h1:pjWXawUh5PS+17KPXVhU3S0PrSJgCI1DjysfvgqcG/M=
 github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha/go.mod h1:JOINVvuUEvqImRaMOQBC8VhY08LLZnwweIEGx5GUeBI=
-github.com/jeremyhahn/go-quicraft/test/performance v0.20.0 h1:ljSc1qq1jpWfCL3PACNhgkeBm052gVVexnHdMTOQOGc=
-github.com/jeremyhahn/go-quicraft/test/performance v0.20.0/go.mod h1:U4Gdk3bBiM/aT3wi5jVxwzmAk1HIDg0avkeYZvdoiRU=
+github.com/jeremyhahn/go-quicraft/test/performance v0.22.0-alpha h1:zjDIOLr5OpEe77UwxzwoSGFVac9o+wQcr2d7sm5JvIo=
+github.com/jeremyhahn/go-quicraft/test/performance v0.22.0-alpha/go.mod h1:dVW+/B+mJ5ntonEcNIhx2CnafFBy/fRe3/TlNkSrAZY=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=

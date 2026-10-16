@@ -26,11 +26,10 @@ import (
 
 func TestSealedWindowAllowed_AllowlistedMethods(t *testing.T) {
 	for _, method := range []string{
-		"admin.Health", "admin.Status",
-		"barrier.Status", "barrier.Initialize", "barrier.Unseal",
+		"barrier.Initialize", "barrier.Unseal",
 		"barrier.ShamirInitialize",
 		"barrier.QuorumBegin", "barrier.QuorumSubmit",
-		"ceremony.Initialize", "ceremony.Status",
+		"ceremony.Initialize",
 	} {
 		if !sealedWindowAllowed(method) {
 			t.Errorf("expected %q to be allowed while sealed", method)
@@ -61,40 +60,64 @@ func TestSealedWindowRefusal(t *testing.T) {
 	listener := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowListener(probe))
 	none := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	if _, refused := none.sealedWindowRefusal(context.Background(), "kv.Put"); refused {
+	if _, refused := sealedWindowGateRefusal(context.Background(), "kv.Put", none.sealedWindowProbe, none.sealedWindowListener); refused {
 		t.Error("no gate installed: kv.Put refused")
 	}
 	for _, srv := range []*Server{regular, listener} {
-		if _, refused := srv.sealedWindowRefusal(context.Background(), "barrier.Unseal"); refused {
+		if _, refused := sealedWindowGateRefusal(context.Background(), "barrier.Unseal", srv.sealedWindowProbe, srv.sealedWindowListener); refused {
 			t.Error("sealed: barrier.Unseal refused")
 		}
-		if r, refused := srv.sealedWindowRefusal(context.Background(), "kv.Put"); !refused || r.payload.Message != "barrier sealed" || r.status != wire.StatusUnavailable {
-			t.Errorf("sealed: kv.Put = (%+v, %v), want (Unavailable barrier sealed, true)", r, refused)
+		for _, method := range []string{"kv.Put", "admin.Health", "admin.Status"} {
+			r, refused := sealedWindowGateRefusal(context.Background(), method, srv.sealedWindowProbe, srv.sealedWindowListener)
+			assertQUICSealedRefusal(t, "sealed: "+method, r, refused)
 		}
 	}
-
-	// Officer registration: the listener refuses it once enrollment has
-	// closed; the regular gate leaves it to authentication.
-	if r, refused := listener.sealedWindowRefusal(context.Background(), "barrier.OfficerRegister"); !refused || r.status != wire.StatusPermissionDenied || r.payload.Message != sealedwindow.EnrollmentClosedMessage {
-		t.Errorf("listener, enrollment closed: barrier.OfficerRegister = (%+v, %v), want PermissionDenied", r, refused)
+	// Barrier status is the initialized flag of the sealed window's listener,
+	// served before and after the first boot; a regular gate refuses it.
+	if _, refused := sealedWindowGateRefusal(context.Background(), "barrier.Status", listener.sealedWindowProbe, listener.sealedWindowListener); refused {
+		t.Error("listener, enrollment closed: barrier.Status refused")
 	}
-	if _, refused := regular.sealedWindowRefusal(context.Background(), "barrier.OfficerRegister"); refused {
-		t.Error("regular gate: barrier.OfficerRegister refused")
+	r, refused := sealedWindowGateRefusal(context.Background(), "barrier.Status", regular.sealedWindowProbe, regular.sealedWindowListener)
+	assertQUICSealedRefusal(t, "regular, enrollment closed: barrier.Status", r, refused)
+
+	// Officer registration is a first-boot verb: both gates refuse it once
+	// enrollment has closed, with the same sealed refusal as any other call.
+	for name, srv := range map[string]*Server{"listener": listener, "regular": regular} {
+		r, refused := sealedWindowGateRefusal(context.Background(), "barrier.OfficerRegister", srv.sealedWindowProbe, srv.sealedWindowListener)
+		assertQUICSealedRefusal(t, name+", enrollment closed: barrier.OfficerRegister", r, refused)
 	}
 	probe.enrollment = true
-	if _, refused := listener.sealedWindowRefusal(context.Background(), "barrier.RecoveryOfficerRegister"); refused {
-		t.Error("listener, enrollment open: barrier.RecoveryOfficerRegister refused")
+	for _, method := range []string{"barrier.RecoveryOfficerRegister", "barrier.Status"} {
+		if _, refused := sealedWindowGateRefusal(context.Background(), method, listener.sealedWindowProbe, listener.sealedWindowListener); refused {
+			t.Errorf("listener, enrollment open: %s refused", method)
+		}
 	}
+	r, refused = sealedWindowGateRefusal(context.Background(), "barrier.Status", regular.sealedWindowProbe, regular.sealedWindowListener)
+	assertQUICSealedRefusal(t, "regular, enrollment open: barrier.Status", r, refused)
 
 	probe.sealed = false
-	if _, refused := regular.sealedWindowRefusal(context.Background(), "kv.Put"); refused {
+	if _, refused := sealedWindowGateRefusal(context.Background(), "kv.Put", regular.sealedWindowProbe, regular.sealedWindowListener); refused {
 		t.Error("regular gate, unsealed: kv.Put refused")
 	}
 	for _, method := range []string{"barrier.Unseal", "kv.Put"} {
-		r, refused := listener.sealedWindowRefusal(context.Background(), method)
+		r, refused := sealedWindowGateRefusal(context.Background(), method, listener.sealedWindowProbe, listener.sealedWindowListener)
 		if !refused || r.payload.Message != sealedwindow.ClosedMessage {
 			t.Errorf("listener gate, unsealed: %s = (%+v, %v), want (%q, true)", method, r, refused, sealedwindow.ClosedMessage)
 		}
+	}
+}
+
+// assertQUICSealedRefusal checks that a gate refused with the typed sealed
+// refusal: StatusUnavailable, the sealed message, and error-frame info in
+// the qrdb domain with reason SEALED.
+func assertQUICSealedRefusal(t *testing.T, what string, r sealedWindowRefusal, refused bool) {
+	t.Helper()
+	if !refused || r.status != wire.StatusUnavailable || r.payload.Message != sealedwindow.SealedMessage {
+		t.Errorf("%s = (%+v, %v), want refused Unavailable %q", what, r, refused, sealedwindow.SealedMessage)
+		return
+	}
+	if info := r.payload.Info; info == nil || info.Domain != sealedwindow.ErrorDomain || info.Reason != sealedwindow.ReasonSealed {
+		t.Errorf("%s: info = %+v, want {%s %s}", what, info, sealedwindow.ErrorDomain, sealedwindow.ReasonSealed)
 	}
 }
 
@@ -106,19 +129,27 @@ func (p stateSealedProbe) SealState() (sealed, unconfirmed bool) { return p.seal
 
 var _ sealedwindow.StateProbe = stateSealedProbe{}
 
+// TestSealedWindowRefusal_UnconfirmedIsNotSealed: a regular gate on a node
+// that cannot confirm the cluster seal state refuses with
+// SEAL_STATE_UNCONFIRMED, never the sealed refusal, and still serves the
+// allowlist -- barrier status included, which reports the node unsealed.
 func TestSealedWindowRefusal_UnconfirmedIsNotSealed(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowProbe(stateSealedProbe{sealed: true, unconfirmed: true}))
-	r, refused := srv.sealedWindowRefusal(context.Background(), "kv.Put")
-	if !refused || r.status != wire.StatusUnavailable {
-		t.Fatalf("kv.Put = (%+v, %v), want Unavailable", r, refused)
+	// An unconfirmed node is not sealed, so it refuses as unconfirmed; like a
+	// held node it answers no status question, barrier status included.
+	for _, method := range []string{"kv.Put", "barrier.Status"} {
+		r, refused := sealedWindowGateRefusal(context.Background(), method, srv.sealedWindowProbe, srv.sealedWindowListener)
+		if !refused || r.status != wire.StatusUnavailable {
+			t.Fatalf("%s = (%+v, %v), want Unavailable", method, r, refused)
+		}
+		if want := (&clusterseal.SealStateUnconfirmedError{}).Error(); r.payload.Message != want {
+			t.Errorf("%s: message = %q, want %q", method, r.payload.Message, want)
+		}
+		if r.payload.Info == nil || r.payload.Info.Reason != replicaforward.ReasonSealStateUnconfirmed || r.payload.Info.Domain != replicaforward.ErrorDomain {
+			t.Errorf("%s: info = %+v, want %s/%s", method, r.payload.Info, replicaforward.ErrorDomain, replicaforward.ReasonSealStateUnconfirmed)
+		}
 	}
-	if want := (&clusterseal.SealStateUnconfirmedError{}).Error(); r.payload.Message != want {
-		t.Errorf("message = %q, want %q", r.payload.Message, want)
-	}
-	if r.payload.Info == nil || r.payload.Info.Reason != replicaforward.ReasonSealStateUnconfirmed || r.payload.Info.Domain != replicaforward.ErrorDomain {
-		t.Errorf("info = %+v, want %s/%s", r.payload.Info, replicaforward.ErrorDomain, replicaforward.ReasonSealStateUnconfirmed)
-	}
-	if _, refused := srv.sealedWindowRefusal(context.Background(), "barrier.Unseal"); refused {
+	if _, refused := sealedWindowGateRefusal(context.Background(), "barrier.Unseal", srv.sealedWindowProbe, srv.sealedWindowListener); refused {
 		t.Error("unconfirmed: barrier.Unseal refused")
 	}
 }
@@ -126,6 +157,9 @@ func TestSealedWindowRefusal_UnconfirmedIsNotSealed(t *testing.T) {
 func TestSealedWindowAllowed_NonAllowlistedMethods(t *testing.T) {
 	for _, method := range []string{
 		"kv.Put", "kv.Get", "db.Create", "sql.Query", "user.Create",
+		// A sealed node answers no health or status question but barrier
+		// status, the pre-init answer TestSealedWindowRefusal covers.
+		"admin.Health", "admin.Status", "ceremony.Status",
 		// Holder administration needs an unsealed barrier.
 		"barrier.RekeyStart", "barrier.OfficerRevoke", "barrier.Seal",
 	} {
@@ -182,10 +216,10 @@ func TestSealedWindowRefusal_ClusterUnsealIsNeverAnonymous(t *testing.T) {
 	probe := &fakeSealedProbe{sealed: true, enrollment: true}
 	regular := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowProbe(probe))
 	listener := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowListener(probe))
-	if _, refused := regular.sealedWindowRefusal(context.Background(), "barrier.ClusterUnseal"); refused {
+	if _, refused := sealedWindowGateRefusal(context.Background(), "barrier.ClusterUnseal", regular.sealedWindowProbe, regular.sealedWindowListener); refused {
 		t.Error("regular gate refused barrier.ClusterUnseal")
 	}
-	if r, refused := listener.sealedWindowRefusal(context.Background(), "barrier.ClusterUnseal"); !refused || r.status != wire.StatusUnavailable {
+	if r, refused := sealedWindowGateRefusal(context.Background(), "barrier.ClusterUnseal", listener.sealedWindowProbe, listener.sealedWindowListener); !refused || r.status != wire.StatusUnavailable {
 		t.Errorf("boot-time listener: barrier.ClusterUnseal = (%+v, %v), want refused Unavailable", r, refused)
 	}
 }

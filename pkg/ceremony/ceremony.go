@@ -1010,7 +1010,9 @@ func (s *CeremonyService) CompleteClaimShare(ctx context.Context, domain seal.Qu
 }
 
 // BeginQuorum issues the factor challenge a holder answers to submit a share
-// to op in domain. It works while the barrier is sealed.
+// to op in domain. While the barrier is sealed it issues challenges for the
+// unseal and recovery rounds only, and refuses any other op with
+// seal.ErrSealed.
 func (s *CeremonyService) BeginQuorum(ctx context.Context, domain seal.QuorumDomain, op seal.QuorumOp, username, factor string) (*QuorumChallenge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

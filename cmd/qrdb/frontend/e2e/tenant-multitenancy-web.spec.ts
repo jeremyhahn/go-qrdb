@@ -158,7 +158,7 @@ test.describe("Multi-tenancy admin (web mode / REST payloads)", () => {
   }) => {
     const captured = await installTenantRoutes(page);
     await injectWebRestMock(page, {
-      sealStatus: { sealed: false, strategy: "none", hardware_backed: false },
+      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
       databases: [],
     });
 
@@ -191,7 +191,7 @@ test.describe("Multi-tenancy admin (web mode / REST payloads)", () => {
   }) => {
     const captured = await installTenantRoutes(page);
     await injectWebRestMock(page, {
-      sealStatus: { sealed: false, strategy: "none", hardware_backed: false },
+      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
       databases: [],
     });
 
@@ -221,7 +221,7 @@ test.describe("Multi-tenancy admin (web mode / REST payloads)", () => {
   test("(c) isolation selector offers all four modes", async ({ page }) => {
     await installTenantRoutes(page);
     await injectWebRestMock(page, {
-      sealStatus: { sealed: false, strategy: "none", hardware_backed: false },
+      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
       databases: [],
     });
 

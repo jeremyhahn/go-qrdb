@@ -200,6 +200,12 @@ func (a clusterSealKV) Scan(ctx context.Context, prefix string) (map[string][]by
 	return a.kv.Scan(ctx, prefix)
 }
 
+// ScanStale implements clusterseal.KV from this node's local state machine,
+// unfiltered for the same reason as Scan.
+func (a clusterSealKV) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return a.kv.ScanStale(ctx, prefix)
+}
+
 // SystemShardMembers lists the system shard's members by replica ID -- the
 // identity a clusterseal.Monitor acknowledges a node-barrier seal under --
 // sorted. Voters, observers and witnesses are all nodes that must read a seal
@@ -237,6 +243,9 @@ type ClusterSealParts struct {
 	Shards *RaftBackendFactory
 	// Hosts stops a volume tenant's host.
 	Hosts *TenantHostRegistry
+	// Pauser pauses every Raft shard the node hosts before a node seal
+	// wipes a key; nil pauses nothing.
+	Pauser *ShardPauser
 	// Databases seals a database's barrier on this node.
 	Databases service.DatabaseServicer
 	// Membership reads the system shard's membership.
@@ -263,7 +272,7 @@ func NewClusterSealMonitor(p ClusterSealParts) (*clusterseal.Monitor, error) {
 	if p.KV == nil || p.Barriers == nil || p.Membership == nil {
 		return nil, &clusterseal.ConfigError{Field: "parts", Reason: "KV, Barriers and Membership are required"}
 	}
-	enforcer := &SealEnforcer{Barriers: p.Barriers}
+	enforcer := &SealEnforcer{Barriers: p.Barriers, Pauser: p.Pauser}
 	if p.Shards != nil {
 		enforcer.Shards = p.Shards
 	}
@@ -329,19 +338,28 @@ type SealEnforcer struct {
 	Hosts tenantHosts
 	// Databases seals a database's barrier and marks the database sealed.
 	Databases databaseSealer
+	// Pauser pauses every Raft shard the node hosts before a node seal
+	// wipes a key, and resumes them once the node barrier is unsealed.
+	Pauser *ShardPauser
 }
 
 var _ clusterseal.Enforcer = (*SealEnforcer)(nil)
 
 // SealNode wipes this node's node key and every tenant and database key held
-// on it, through the one whole-node seal (service.SealWholeNode). Nothing on
-// a sealed node can be served, and its system shard stops with its key.
-func (e *SealEnforcer) SealNode(context.Context) error {
+// on it, through the one whole-node seal (service.SealWholeNode), after
+// pausing every Raft shard the node hosts, the system shard included. Nothing
+// on a sealed node can be served; its shards stay paused, loaded, until the
+// node barrier is unsealed here and Pauser resumes them.
+func (e *SealEnforcer) SealNode(ctx context.Context) error {
 	var dbs service.BarrierDatabases
 	if e.Databases != nil {
 		dbs = e.Databases
 	}
-	return service.SealWholeNode(e.Barriers, nil, dbs)
+	var shards service.ShardPauser
+	if e.Pauser != nil {
+		shards = e.Pauser
+	}
+	return service.SealWholeNode(ctx, shards, e.Barriers, nil, dbs)
 }
 
 // SealTenant stops tenantID's dedicated shards and volume host on this node

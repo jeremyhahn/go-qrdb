@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -758,6 +759,56 @@ func TestAuthenticate_UserStoreError(t *testing.T) {
 	var sue *StoreUnavailableError
 	if !errors.As(err, &sue) {
 		t.Fatalf("expected StoreUnavailableError, got %T: %v", err, err)
+	}
+}
+
+// TestAuthenticate_UserStoreBarrierSealed pins the re-sealed node: go-quicraft
+// refuses the user lookup with its own ErrBarrierSealed, bare or wrapped by the
+// user store. That is the sealed state, not a store outage, so the answer is
+// the typed *BarrierSealedError (503/UNAVAILABLE), never *StoreUnavailableError.
+func TestAuthenticate_UserStoreBarrierSealed(t *testing.T) {
+	for name, storeErr := range map[string]error{
+		"bare":    seal.ErrBarrierSealed,
+		"wrapped": &user.StoreError{Op: "get", Detail: "user lookup", Err: seal.ErrBarrierSealed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := &auth.Identity{Subject: "alice", TenantID: "t1"}
+			m := New(&mockAuthorizer{},
+				WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
+				WithUserService(&mockUserServicer{err: storeErr}))
+
+			_, _, err := m.authenticate(context.Background())
+			var sealed *BarrierSealedError
+			if !errors.As(err, &sealed) {
+				t.Fatalf("err = %T %v, want *BarrierSealedError", err, err)
+			}
+			var sue *StoreUnavailableError
+			if errors.As(err, &sue) {
+				t.Fatalf("err = %v, must not be *StoreUnavailableError", err)
+			}
+			if !errors.Is(err, seal.ErrBarrierSealed) {
+				t.Fatalf("err = %v, want it to wrap seal.ErrBarrierSealed", err)
+			}
+			if got := ClassifyAuthError(err); got != AuthFailureUnavailable {
+				t.Fatalf("ClassifyAuthError = %v, want AuthFailureUnavailable", got)
+			}
+		})
+	}
+}
+
+// TestAuthenticate_UserStoreQrdbSealed covers qrdb's own sealed sentinel on
+// the same path: a barrier that seals between resolve and read reports
+// seal.ErrSealed, and it is the same sealed answer.
+func TestAuthenticate_UserStoreQrdbSealed(t *testing.T) {
+	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
+	m := New(&mockAuthorizer{},
+		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
+		WithUserService(&mockUserServicer{err: seal.ErrSealed}))
+
+	_, _, err := m.authenticate(context.Background())
+	var sealed *BarrierSealedError
+	if !errors.As(err, &sealed) {
+		t.Fatalf("err = %T %v, want *BarrierSealedError", err, err)
 	}
 }
 

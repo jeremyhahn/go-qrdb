@@ -27,6 +27,7 @@ import (
 	"time"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 const (
@@ -511,13 +512,19 @@ func (b *ConnectionManagerBinding) connectExternal(p ConnectionProfile) (*sdk.Cl
 }
 
 // probeBarrierStatus calls the barrier status endpoint to determine whether
-// the server needs initialization, is sealed, or is ready. Returns
-// connectionStatusConnected when the probe fails (barrier may be absent).
+// the server needs initialization, is sealed, or is ready. A node waiting
+// for its first boot answers with no InitializedAt; an initialized sealed
+// node refuses the call with *transport.BarrierSealedError, which is the
+// answer: connectionStatusSealed. Returns connectionStatusConnected when the probe
+// fails otherwise (barrier may be absent).
 func (b *ConnectionManagerBinding) probeBarrierStatus(client *sdk.Client, p ConnectionProfile) string {
 	ctx, cancel := context.WithTimeout(b.ctx, defaultConnectTimeout)
 	defer cancel()
 
 	resp, err := client.Barrier().BarrierStatus(ctx)
+	if transport.IsBarrierSealed(err) {
+		return connectionStatusSealed
+	}
 	if err != nil {
 		b.logger.Debug("connection manager: barrier probe failed, assuming connected", "profileID", p.ID, "error", err)
 		return connectionStatusConnected

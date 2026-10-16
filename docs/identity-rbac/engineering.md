@@ -1175,6 +1175,7 @@ authenticated value — whether or not the authenticator set one.
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
 | The linearizable user lookup misses its 500 ms budget for a NON-system tenant | retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
 | The user lookup fails with anything but an election (a corrupt record, a decrypt refusal, a cancelled request) | that error, at once, with no retry | **yes** |
+| The user lookup meets a sealed node barrier (`seal.ErrBarrierSealed` from go-quicraft on a node re-sealed at runtime, or `seal.ErrSealed`) | `*middleware.BarrierSealedError` (503, retryable once unsealed) — never `StoreUnavailableError`, and never logged as a store outage | **yes** |
 | The linearizable role resolution misses its 500 ms budget for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
@@ -1262,6 +1263,8 @@ through unclassified instead of silently becoming retryable:
   role store (`routingRoleService.storeFor` → `resolver.Resolve`) resolved to
   a sealed barrier, or sealed one step later; retryable once unsealed, the
   same class every other data-plane read gives this condition.
+- `seal.ErrBarrierSealed` — go-quicraft's sentinel for the same read on a
+  node barrier re-sealed at runtime; retryable once unsealed.
 - A cause implementing a small, unexported `transientMarker` interface
   (`ReadTransient() bool`), consulted via `errors.As`. `*role.StoreError`
   (fields `Op`, `Detail`, `Err`) and `*tenant.StoreError` (fields `Op`,

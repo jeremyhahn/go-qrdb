@@ -62,6 +62,82 @@ func TestSetSystemBarrierReplacesTheLiveBarrier(t *testing.T) {
 	}
 }
 
+// TestSetSystemBarrierMovesTheObserversToTheReplacement covers what other
+// subsystems hang on the system barrier: the shard pauser's resume and the
+// volume lifecycle's lock and unlock. A swap that left them on the replaced
+// barrier would let the live one seal and unseal without them.
+func TestSetSystemBarrierMovesTheObserversToTheReplacement(t *testing.T) {
+	ctx := context.Background()
+	reg := newNoPoolRegistry(t)
+	original := reg.SystemBarrier()
+	var unsealed, sealing int
+	original.OnUnsealed(func(context.Context) { unsealed++ })
+	original.OnSealing(func(context.Context) error { sealing++; return nil })
+
+	replacement := newSwapBarrier(t, "sys/root-2")
+	reg.SetSystemBarrier(replacement)
+	if err := replacement.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := replacement.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := replacement.Unseal(ctx, Credentials{}); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if unsealed != 2 || sealing != 1 {
+		t.Fatalf("on the replacement: unsealed observer ran %d times, sealing %d; want 2 and 1", unsealed, sealing)
+	}
+
+	// The replaced barrier drives them no more.
+	if err := original.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize original: %v", err)
+	}
+	if err := original.Seal(); err != nil {
+		t.Fatalf("Seal original: %v", err)
+	}
+	if unsealed != 2 || sealing != 1 {
+		t.Fatalf("the replaced barrier still ran the observers: unsealed %d, sealing %d", unsealed, sealing)
+	}
+}
+
+// TestSetSystemBarrierUnsealsSystemManagedTenantsOnce covers the registry's
+// own observer: it moves with the others rather than being registered again,
+// so the replacement's unseal brings each system-managed tenant back once.
+func TestSetSystemBarrierUnsealsSystemManagedTenantsOnce(t *testing.T) {
+	ctx := context.Background()
+	reg := newNoPoolRegistry(t)
+	replacement := newSwapBarrier(t, "sys/root-2")
+	reg.SetSystemBarrier(replacement)
+	if err := replacement.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := reg.RegisterTenant(ctx, "acme", NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "acme/root"}, NewSystemBarrierStrategy(replacement)); err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+	if err := reg.InitializeTenant(ctx, "acme", Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant: %v", err)
+	}
+	if err := reg.SealAll(); err != nil {
+		t.Fatalf("SealAll: %v", err)
+	}
+
+	if err := replacement.Unseal(ctx, Credentials{}); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	tb, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if tb.IsSealed() {
+		t.Fatal("the replacement's unseal left the system-managed tenant sealed")
+	}
+	if n := len(replacement.unsealedObservers); n != 1 {
+		t.Fatalf("the replacement carries %d unseal observers, want the registry's one", n)
+	}
+}
+
 // TestReplaceTenantBarrierRefusesAnUnregisteredTenant covers the guard. A
 // shared-barrier tenant has no dedicated barrier to replace, and silently
 // registering one would give it a barrier the rest of the system does not

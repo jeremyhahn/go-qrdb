@@ -24,6 +24,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 // ErrorPayload is the body of every response frame whose status is not
@@ -59,6 +61,14 @@ type ErrorInfo struct {
 	Domain   string
 	Reason   string
 	Metadata map[string]string
+}
+
+// Sealed reports whether i names a sealed node's refusal (see
+// sealedwindow.ReasonSealed). The status alone is not enough — Unavailable
+// also means a node that is draining — so a client reads the reason here
+// rather than importing the sealed-window contract itself.
+func (i *ErrorInfo) Sealed() bool {
+	return i != nil && i.Domain == sealedwindow.ErrorDomain && i.Reason == sealedwindow.ReasonSealed
 }
 
 // EncodeErrorPayload renders p as the body of an error frame whose status is

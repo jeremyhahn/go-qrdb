@@ -227,3 +227,26 @@ func TestRaftTimeoutIsUnavailableOnEveryTransport(t *testing.T) {
 		}
 	}
 }
+
+// TestShardPausedIsUnavailableOnEveryTransport: a request that meets a shard
+// the seal paused answers Unavailable on REST, gRPC (and so the unix socket,
+// which serves the gRPC services), QUIC and MCP, each read from the
+// transport's own mapping.
+func TestShardPausedIsUnavailableOnEveryTransport(t *testing.T) {
+	want := answers{
+		rest: http.StatusServiceUnavailable,
+		grpc: codes.Unavailable,
+		quic: quicwire.StatusUnavailable,
+		mcp:  int(wire.CodeUnavailable),
+	}
+	for name, err := range map[string]error{
+		"bare":    quicraft.ErrShardPaused,
+		"propose": &service.ProposeError{Err: quicraft.ErrShardPaused},
+		"read":    &service.ReadError{Err: quicraft.ErrShardPaused},
+		"batch":   &service.BatchError{Err: quicraft.ErrShardPaused},
+	} {
+		if got := answer(wrapped{err}); got != want {
+			t.Errorf("%s: answered %+v, want %+v", name, got, want)
+		}
+	}
+}

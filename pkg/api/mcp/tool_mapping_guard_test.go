@@ -478,6 +478,25 @@ func TestToolMappingGuard_ListedToolsExactlyCovered(t *testing.T) {
 	}
 }
 
+// TestBuiltinToolCatalogue_CoversFullyWiredServer guards the sealed listener's
+// refusal set: a sealed node registers builtinToolCatalogue as refusing
+// handlers so every tool it does not serve answers the typed sealed
+// Unavailable rather than "tool not found". A tool a fully wired server lists
+// but the catalogue omits would leak that difference. The converse is not asserted:
+// the fixture wires no volume-pool or invitation service, so the catalogue
+// legitimately names tools this server does not list.
+func TestBuiltinToolCatalogue_CoversFullyWiredServer(t *testing.T) {
+	catalogue := make(map[string]bool)
+	for _, tl := range builtinToolCatalogue() {
+		catalogue[tl.Tool.Name] = true
+	}
+	for name := range newFullyWiredGuardServer(t).MCPServer().ListTools() {
+		if !catalogue[name] {
+			t.Errorf("tool %q is served by a fully wired server but missing from builtinToolCatalogue", name)
+		}
+	}
+}
+
 // TestToolMappingGuard_PermissionsRegistered verifies every permission
 // referenced by the registry exists in the global permission catalog, except
 // the deliberately unregistered identity-gated sentinel.

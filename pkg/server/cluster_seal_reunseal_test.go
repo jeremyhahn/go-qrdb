@@ -73,6 +73,12 @@ func (k *reunsealKV) Scan(_ context.Context, prefix string) (map[string][]byte, 
 	return out, nil
 }
 
+// ScanStale reads the same map: this single-process store has no quorum,
+// so its local copy is always current.
+func (k *reunsealKV) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return k.Scan(ctx, prefix)
+}
+
 // reunsealGate reports every feature activated.
 type reunsealGate struct{}
 

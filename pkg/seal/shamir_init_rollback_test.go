@@ -60,6 +60,10 @@ func assertUninitialized(t *testing.T, b *StorageBarrier, backend StorageBackend
 			t.Errorf("%s is still persisted", path)
 		}
 	}
+	// Read before Status, which would itself learn the answer from the store.
+	if got, known := b.InitializedCached(); got || !known {
+		t.Errorf("InitializedCached after the rollback = (%v, %v), want (false, true)", got, known)
+	}
 	status := b.Status()
 	if status.Strategy != "" {
 		t.Errorf("status strategy = %q, want none", status.Strategy)

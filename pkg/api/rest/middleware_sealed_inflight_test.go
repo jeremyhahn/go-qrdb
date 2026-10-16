@@ -36,7 +36,7 @@ func TestSealedWindowListener_NoRequestInFlightAcrossUnseal(t *testing.T) {
 	var sealedAtEnd atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/barrier/status":
+		case "/v1/barrier/quorum/begin":
 			close(entered)
 			<-release
 			sealedAtEnd.Store(probe.IsSealed())
@@ -50,7 +50,7 @@ func TestSealedWindowListener_NoRequestInFlightAcrossUnseal(t *testing.T) {
 	statusDone := make(chan int, 1)
 	go func() {
 		rr := httptest.NewRecorder()
-		gate.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil))
+		gate.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/barrier/quorum/begin", nil))
 		statusDone <- rr.Code
 	}()
 	<-entered
@@ -71,7 +71,7 @@ func TestSealedWindowListener_NoRequestInFlightAcrossUnseal(t *testing.T) {
 
 	close(release)
 	if code := <-statusDone; code != http.StatusOK {
-		t.Fatalf("in-flight status request: %d", code)
+		t.Fatalf("in-flight quorum request: %d", code)
 	}
 	if !sealedAtEnd.Load() {
 		t.Fatal("the in-flight request ran past the unseal")

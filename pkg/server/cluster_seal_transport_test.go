@@ -115,12 +115,10 @@ func TestClusterSeal_OnEveryTransport(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s has no barrier surface", name)
 			}
-			st, err := bc.BarrierStatus(ctx)
-			if err != nil {
-				t.Fatalf("BarrierStatus on a held node: %v", err)
-			}
-			if st.ClusterSeal == nil || !st.ClusterSeal.Active || st.ClusterSeal.Epoch == 0 {
-				t.Fatalf("ClusterSeal = %+v, want the active record", st.ClusterSeal)
+			// A held node is sealed: it serves the unseal call and nothing
+			// else, barrier status included.
+			if _, err := bc.BarrierStatus(ctx); !transport.IsBarrierSealed(err) {
+				t.Fatalf("BarrierStatus on a held node: err = %v, want the typed sealed refusal", err)
 			}
 			if err := scoped[name].Put(ctx, "k", []byte("v")); err == nil || !strings.Contains(err.Error(), "barrier sealed") {
 				t.Fatalf("Put on a held node: err = %v, want the sealed refusal", err)

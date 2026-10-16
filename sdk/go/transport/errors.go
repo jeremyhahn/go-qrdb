@@ -15,6 +15,7 @@
 package transport
 
 import (
+	"errors"
 	"strconv"
 	"time"
 )
@@ -178,6 +179,31 @@ type CapabilityUnsupportedError struct {
 // Error returns a human-readable description.
 func (e *CapabilityUnsupportedError) Error() string {
 	return "transport: unsupported capability: " + e.Message
+}
+
+// BarrierSealedError reports that the node is up and its barrier is sealed.
+//
+// A sealed node serves the unseal call and nothing else; every other call is
+// refused with this error on every transport. It is how a caller, a health
+// probe or a readiness wait tells "reachable and sealed" from "unreachable":
+// the node answered, it will serve once unsealed, and retrying the same call
+// before then cannot succeed. Detect it with errors.As or IsBarrierSealed,
+// never by matching message text.
+type BarrierSealedError struct {
+	// Message is the server's account of the refusal.
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *BarrierSealedError) Error() string {
+	return "transport: barrier sealed: " + e.Message
+}
+
+// IsBarrierSealed reports whether err, or any error it wraps, is a
+// *BarrierSealedError.
+func IsBarrierSealed(err error) bool {
+	var sealed *BarrierSealedError
+	return errors.As(err, &sealed)
 }
 
 // RevisionCompactedError is returned when a requested revision has

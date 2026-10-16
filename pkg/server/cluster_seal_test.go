@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // testClusterSeal is a ClusterSeal over a faithful Sealer double, with a
@@ -180,6 +181,28 @@ func TestApplyClusterSeal(t *testing.T) {
 	none.applyClusterSeal()
 	if none.sealedWindowProbe != nil {
 		t.Fatal("a probe was invented where none was configured")
+	}
+}
+
+// TestNew_ListenerProbeKeysOnTheNodeBarrier: the listener probe a regular
+// listener dispatches on reports the node barrier alone, so a node the
+// cluster holds while its own barrier is unsealed stays on the authenticated
+// path, where barrier-cluster-unseal is served; the regular gate's probe
+// still folds the cluster seal in.
+func TestNew_ListenerProbeKeysOnTheNodeBarrier(t *testing.T) {
+	cs := newTestClusterSeal()
+	cs.setRefusing(true)
+	for _, barrierSealed := range []bool{false, true} {
+		srv := New(&config.Config{}, nil, nil, WithSealedWindowProbe(boolProbe(barrierSealed)), WithClusterSeal(cs))
+		if got := srv.listenerProbe().IsSealed(); got != barrierSealed {
+			t.Errorf("barrier sealed %v, cluster refusing: listener probe IsSealed = %v", barrierSealed, got)
+		}
+		if !srv.opts.sealedWindowProbe.IsSealed() {
+			t.Errorf("barrier sealed %v, cluster refusing: the regular gate's probe dropped the cluster seal", barrierSealed)
+		}
+	}
+	if srv := New(&config.Config{}, nil, nil, WithClusterSeal(cs)); srv.listenerProbe() != nil {
+		t.Fatal("a listener probe was built where no sealed-window probe was configured")
 	}
 }
 
@@ -353,6 +376,30 @@ func TestSealEnforcer_SealNodeWipesEveryKey(t *testing.T) {
 	}
 	if e.NodeUnsealed() || e.TenantUnsealed("acme") {
 		t.Fatal("a key survived the node seal")
+	}
+}
+
+func TestSealEnforcer_SealNodePausesTheShardsFirstAndTheUnsealResumesThem(t *testing.T) {
+	reg := newEnforcerRegistry(t)
+	var keyHeldAtPause bool
+	host := &fakeShardHost{shards: []uint64{shard.ShardKV}}
+	host.onPause = func() { keyHeldAtPause = !reg.SystemBarrier().IsSealed() }
+	e := &SealEnforcer{Barriers: reg, Pauser: newShardPauser(host, reg, nil)}
+	if err := e.SealNode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !keyHeldAtPause || !slices.Equal(host.sortedPaused(), []uint64{shard.ShardKV}) {
+		t.Fatalf("paused %v with the node key held %v; want the system shard, before the wipe", host.sortedPaused(), keyHeldAtPause)
+	}
+	if e.NodeUnsealed() {
+		t.Fatal("the node key survived the node seal")
+	}
+	if len(host.sortedResumed()) != 0 {
+		t.Fatal("a shard resumed while the node is sealed")
+	}
+	unsealNode(t, reg)
+	if !slices.Equal(host.sortedResumed(), []uint64{shard.ShardKV}) {
+		t.Fatalf("resumed %v after the unseal, want the system shard", host.sortedResumed())
 	}
 }
 

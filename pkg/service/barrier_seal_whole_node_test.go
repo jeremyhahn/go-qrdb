@@ -160,7 +160,7 @@ func TestBarrierSeal_SealsTheWholeNode(t *testing.T) {
 func TestSealWholeNode_SealsEveryPartAndJoinsErrors(t *testing.T) {
 	f := newWholeNodeFixture(t)
 	sys := f.reg.SystemBarrier()
-	if err := SealWholeNode(nil, sys, f.dbs); err != nil {
+	if err := SealWholeNode(context.Background(), nil, nil, sys, f.dbs); err != nil {
 		t.Fatalf("SealWholeNode: %v", err)
 	}
 	if !sys.IsSealed() || !databaseKeyWiped(t, f.dbs, "secure") {
@@ -169,16 +169,81 @@ func TestSealWholeNode_SealsEveryPartAndJoinsErrors(t *testing.T) {
 
 	boom := errors.New("boom")
 	g := newWholeNodeFixture(t)
-	err := SealWholeNode(g.reg, nil, failingDatabases{err: boom})
+	err := SealWholeNode(context.Background(), nil, g.reg, nil, failingDatabases{err: boom})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the database half's error", err)
 	}
 	if !g.reg.SystemBarrier().IsSealed() {
 		t.Fatal("a failing database half stopped the rest of the node seal")
 	}
-	if err := SealWholeNode(nil, nil, nil); err != nil {
+	if err := SealWholeNode(context.Background(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("SealWholeNode with nothing to seal: %v", err)
 	}
+}
+
+// recordingPauser is a ShardPauser that records, at the moment it is asked to
+// pause, whether the node still held its keys, and fails with err.
+type recordingPauser struct {
+	sys *seal.StorageBarrier
+	dbs *database.Manager
+	t   *testing.T
+
+	calls           int
+	sysKeyHeld      bool
+	databaseKeyHeld bool
+	err             error
+}
+
+var _ ShardPauser = (*recordingPauser)(nil)
+
+func (p *recordingPauser) PauseShards(context.Context) error {
+	p.calls++
+	p.sysKeyHeld = !p.sys.IsSealed()
+	if p.dbs != nil {
+		p.databaseKeyHeld = !databaseKeyWiped(p.t, p.dbs, "secure")
+	}
+	return p.err
+}
+
+func TestSealWholeNode_PausesTheShardsBeforeAnyKeyGoes(t *testing.T) {
+	f := newWholeNodeFixture(t)
+	sys := f.reg.SystemBarrier()
+	p := &recordingPauser{sys: sys, dbs: f.dbs, t: t}
+	if err := SealWholeNode(context.Background(), p, f.reg, nil, f.dbs); err != nil {
+		t.Fatalf("SealWholeNode: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("PauseShards ran %d times, want 1", p.calls)
+	}
+	if !p.sysKeyHeld || !p.databaseKeyHeld {
+		t.Fatalf("a key was gone before the shards paused: system held %v, database held %v",
+			p.sysKeyHeld, p.databaseKeyHeld)
+	}
+	f.requireAllSealed(t)
+}
+
+func TestSealWholeNode_AFailedPauseStillWipesTheKeys(t *testing.T) {
+	f := newWholeNodeFixture(t)
+	refused := errors.New("pause refused")
+	p := &recordingPauser{sys: f.reg.SystemBarrier(), err: refused}
+	if err := SealWholeNode(context.Background(), p, f.reg, nil, f.dbs); !errors.Is(err, refused) {
+		t.Fatalf("SealWholeNode = %v, want the pause's error", err)
+	}
+	f.requireAllSealed(t)
+}
+
+func TestBarrierSeal_PausesThroughTheShardPauser(t *testing.T) {
+	f := newWholeNodeFixture(t)
+	sys := f.reg.SystemBarrier()
+	p := &recordingPauser{sys: sys}
+	svc := NewBarrierService(sys, WithBarrierRegistry(f.reg), WithBarrierDatabases(f.dbs), WithShardPauser(p))
+	if err := svc.BarrierSeal(context.Background()); err != nil {
+		t.Fatalf("BarrierSeal: %v", err)
+	}
+	if p.calls != 1 || !p.sysKeyHeld {
+		t.Fatalf("BarrierSeal paused %d times, system key held %v; want once, before the wipe", p.calls, p.sysKeyHeld)
+	}
+	f.requireAllSealed(t)
 }
 
 // failingDatabases is a database half whose seal fails.

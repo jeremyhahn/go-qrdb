@@ -475,11 +475,24 @@ func (r *BarrierRegistry) SystemBarrier() *StorageBarrier { return r.system }
 // re-encrypted to a keyed strategy, the live none barrier is replaced with the
 // freshly-unsealed keyed barrier. The caller MUST have quiesced (torn down) the
 // data plane first so no reader observes the swap mid-flight.
+//
+// Every OnUnsealed and OnSealing observer registered on the replaced barrier
+// moves to b: the registry's own system-managed tenant unseal, the shard
+// pauser's resume and the volume lifecycle's lock and unlock all follow the
+// barrier that now guards the node, and the replaced barrier keeps none, so a
+// node sealed after the swap resumes its shards and unlocks its volumes when
+// b unseals.
 func (r *BarrierRegistry) SetSystemBarrier(b *StorageBarrier) {
+	old := r.system
 	r.system = b
-	if b != nil {
-		b.OnUnsealed(r.unsealSystemManagedTenants)
+	if b == nil || b == old {
+		return
 	}
+	if old != nil {
+		old.moveObserversTo(b)
+		return
+	}
+	b.OnUnsealed(r.unsealSystemManagedTenants)
 }
 
 // ReplaceTenantBarrier swaps the registered barrier for an existing tenant,

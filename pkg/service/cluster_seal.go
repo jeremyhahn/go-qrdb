@@ -55,18 +55,38 @@ type BarrierDatabases interface {
 	SealBarrierDatabases() error
 }
 
+// ShardPauser is the Raft half of a whole-node seal: PauseShards stops every
+// Raft replica the node hosts, the system shard included, without unloading
+// it, and returns once none of them has log, apply or snapshot work in flight
+// -- so no write reaches a log after the keys protecting it are wiped. A
+// paused replica refuses requests with quicraft.ErrShardPaused. The pauser
+// resumes the replicas itself once the node barrier is unsealed again, after
+// the keys are back, so a seal is undone by an unseal alone. If ctx ends
+// first PauseShards returns ctx's error and the replicas stay paused.
+// *server.ShardPauser satisfies it.
+type ShardPauser interface {
+	PauseShards(ctx context.Context) error
+}
+
 // SealWholeNode is the one whole-node seal. Every path that seals a node --
 // the single-admin seal, a share-holder seal quorum (BarrierService.seal),
 // and a node seal record's enforcement (server.SealEnforcer.SealNode) --
-// calls it, so they cannot diverge. It seals every database barrier
+// calls it, so they cannot diverge. It first pauses every Raft shard the node
+// hosts (shards; see ShardPauser), so no write reaches a log the keys are
+// about to stop protecting, then seals every database barrier
 // (databases, through the database barrier manager's own registry), then
 // every tenant barrier and the system barrier (registry.SealAll), or the
 // system barrier alone when there is no registry. Each registry records the
 // system-managed barriers it moved from unsealed to sealed, the only ones the
-// node unseal brings back. Every part runs even when another fails; the
-// errors are joined. Ending the node's streams is the caller's.
-func SealWholeNode(registry *seal.BarrierRegistry, system *seal.StorageBarrier, databases BarrierDatabases) error {
+// node unseal brings back. Every part runs even when another fails -- a
+// pause that fails still wipes the keys, since a seal must always remove
+// them -- and the errors are joined. Ending the node's streams is the
+// caller's.
+func SealWholeNode(ctx context.Context, shards ShardPauser, registry *seal.BarrierRegistry, system *seal.StorageBarrier, databases BarrierDatabases) error {
 	var errs []error
+	if shards != nil {
+		errs = append(errs, shards.PauseShards(ctx))
+	}
 	if databases != nil {
 		errs = append(errs, databases.SealBarrierDatabases())
 	}
@@ -86,12 +106,19 @@ func WithBarrierDatabases(dbs BarrierDatabases) BarrierServiceOption {
 	return func(b *BarrierService) { b.databases = dbs }
 }
 
+// WithShardPauser makes a node seal pause every Raft shard the node hosts
+// before it wipes a key (SealWholeNode). Without it -- a standalone node has
+// no Raft shards -- nothing is paused.
+func WithShardPauser(p ShardPauser) BarrierServiceOption {
+	return func(b *BarrierService) { b.shards = p }
+}
+
 // seal seals the node barrier: cluster-wide through the sealer when active,
 // this node only otherwise. Once active, the sealer records the seal before
 // it wipes this node's key, because the key protects this node's Raft log;
 // every node's monitor then seals the whole node (SealEnforcer.SealNode).
-// Before activation this node is sealed here the same way: every tenant
-// barrier and the node barrier, then every open stream ends -- after the
+// Before activation this node is sealed here the same way: every Raft shard
+// paused, every tenant barrier and the node barrier, then every open stream ends -- after the
 // barriers, so the sealed node barrier is the gate a stream opening between
 // the two finds closed.
 func (s *BarrierService) seal(ctx context.Context) error {
@@ -99,7 +126,7 @@ func (s *BarrierService) seal(ctx context.Context) error {
 		_, err := s.sealer.Seal(ctx, clusterseal.NodeBarrier(), clusterseal.PrincipalFrom(ctx))
 		return err
 	}
-	err := SealWholeNode(s.registry, s.barrier, s.databases)
+	err := SealWholeNode(ctx, s.shards, s.registry, s.barrier, s.databases)
 	if streams := clusterseal.StreamsOf(s.sealer); streams != nil {
 		streams.EndAll(&clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()})
 	}

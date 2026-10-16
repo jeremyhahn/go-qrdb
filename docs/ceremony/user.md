@@ -8,8 +8,8 @@ M-of-N custody, its first share holders. Most operators never run it by hand —
 
 ## Prerequisites
 
-- A daemon that has never been initialized (`qrdb ceremony status` reports
-  `awaiting_init`).
+- A daemon that has never been initialized (`qrdb barrier status` reports
+  `Initialized: false`; a sealed node refuses `qrdb ceremony status`).
 - For M-of-N: a CSR from each initial share holder — Security Officers and key
   custodians — generated with their own private key, ideally on a PIV card or
   security key.

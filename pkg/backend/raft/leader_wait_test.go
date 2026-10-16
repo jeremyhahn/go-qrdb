@@ -87,6 +87,9 @@ func electionAdapter(unknownPolls, refusals int64, calls *atomic.Int64) (*HostAd
 		followerReadFn: func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
 			return refuseFirst[interface{}](refusals, calls, noLeaderRefusal, q)()
 		},
+		syncGetShardMembershipFn: func(context.Context, uint64) (*quicraft.Membership, error) {
+			return refuseFirst(refusals, calls, noLeaderRefusal, &quicraft.Membership{ConfigChangeID: 7})()
+		},
 	}
 	return newTestAdapter(mock), r
 }
@@ -131,6 +134,19 @@ func TestHostAdapter_FollowerRead_HoldsThroughLeaderlessMoment(t *testing.T) {
 	got, err := a.FollowerRead(context.Background(), leaderWaitShard, "q")
 	require.NoError(t, err)
 	assert.Equal(t, "q", got)
+	assert.Equal(t, int64(2), calls.Load())
+}
+
+// The committed membership is read with a ReadIndex, so a membership change
+// that has just removed the leader refuses it until the shard elects another.
+func TestHostAdapter_SyncGetShardMembership_HoldsThroughLeaderlessMoment(t *testing.T) {
+	var calls atomic.Int64
+	a, _ := electionAdapter(2, 1, &calls)
+
+	m, err := a.SyncGetShardMembership(context.Background(), leaderWaitShard)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, uint64(7), m.ConfigChangeID)
 	assert.Equal(t, int64(2), calls.Load())
 }
 
@@ -218,6 +234,20 @@ func TestHostAdapter_SyncRead_OtherErrorIsNotHeld(t *testing.T) {
 	})
 
 	_, err := a.SyncRead(context.Background(), leaderWaitShard, "q")
+	require.ErrorIs(t, err, quicraft.ErrShardNotFound)
+	assert.Equal(t, int64(1), calls.Load())
+}
+
+func TestHostAdapter_SyncGetShardMembership_OtherErrorIsNotHeld(t *testing.T) {
+	var calls atomic.Int64
+	a := newTestAdapter(&mockQuicraftHost{
+		syncGetShardMembershipFn: func(context.Context, uint64) (*quicraft.Membership, error) {
+			calls.Add(1)
+			return nil, quicraft.ErrShardNotFound
+		},
+	})
+
+	_, err := a.SyncGetShardMembership(context.Background(), leaderWaitShard)
 	require.ErrorIs(t, err, quicraft.ErrShardNotFound)
 	assert.Equal(t, int64(1), calls.Load())
 }

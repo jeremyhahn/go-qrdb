@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 ## Exported surface
 
@@ -345,8 +345,25 @@ services and to the server, which wraps the node's sealed-window probe with
   `ErrNoStrategySpecified` otherwise. Exactly one registered is selected
   unconditionally.
 - **Sealed refuses everything.** `ErrBarrierSealed` for every data-path read and
-  write until unsealed. Only the sealed-window allowlist is reachable. That
-  includes what was opened before the seal: on the SQL wires every statement of
+  write until unsealed. Only the sealed-window allowlist -- the unseal call,
+  barrier status, and the first-boot verbs while enrollment is open -- is
+  reachable. Barrier status is `ListenerOnly`: the sealed path answers it
+  with `sealed` and `initialized` alone, the flag the barrier caches at boot
+  (`seal.StorageBarrier.InitializedCached`, primed by
+  `server.NewSealedWindowListenerProbe`), so it reads no store and discloses
+  no strategy, share count or seal record; the regular gate of a held or
+  cut-off node refuses it. Health, node status and ceremony status are
+  refused with the typed sealed refusal (`sealedwindow.RefuseSealed`: domain `qrdb.v1`, reason
+  `SEALED`), which clients read as up-and-sealed. The quorum likewise runs
+  only the unseal and recovery rounds while sealed (`QuorumOp.RunsSealed`):
+  a root token minted while sealed would grant past the seal. The allowlist
+  is served anonymously on every listener: pkg/server hands each regular listener the
+  node's one listener probe (`WithSealedWindowDispatch` on REST, gRPC, Unix,
+  QUIC and MCP), keyed on the node barrier alone, and while it reports sealed
+  a request takes the boot-time listener's chain instead of authentication,
+  so nothing reads the user store behind the sealed barrier
+  ([seal/sealed-window.md](../seal/sealed-window.md#auth-model-during-the-sealed-window)).
+  Sealed refusal also includes what was opened before the seal: on the SQL wires every statement of
   an open session, every Execute of a statement prepared while the node served
   (PostgreSQL `57P03`) and MySQL `COM_INIT_DB`, and the session itself, whose
   connection the seal closes (a MySQL server-side cursor and an open
@@ -487,13 +504,18 @@ services and to the server, which wraps the node's sealed-window probe with
   (`server.NodeSealProbe`: the node barrier, plus the cluster seal when there
   is one), gates every request method before reading its arguments, and
   refuses with `*embedded.BarrierSealedError` (`errors.Is(err,
-  seal.ErrSealed)`). Every gate samples its probe with `sealedwindow.Sample`:
+  seal.ErrSealed)`). The embedded transport exists only once the node has
+  unsealed, so enrollment is closed and it refuses the first-boot verbs
+  (`sealedwindow.EmbeddedPreOperationalOnly`) while sealed; it needs no
+  enrollment probe. Every gate samples its probe with `sealedwindow.Sample`:
   a probe that implements `sealedwindow.StateProbe` -- `server.NodeSealProbe`
   does -- reports a cut-off or unconfirmed node apart from a sealed one, and
   `Decide` answers it `RefuseUnconfirmed`, which each transport maps to its
   `SEAL_STATE_UNCONFIRMED` form (the embedded one to
-  `*clusterseal.SealStateUnconfirmedError`), never to its sealed refusal.
-  `Connect`, `Close` and `WithDatabase` are lifecycle, not
+  `*clusterseal.SealStateUnconfirmedError`), never to its sealed refusal. An
+  unconfirmed node is not sealed, but like a held node it answers no status
+  question: barrier status, a `ListenerOnly` verb, is refused on its regular
+  listener as unconfirmed, and only the unseal call is served. `Connect`, `Close` and `WithDatabase` are lifecycle, not
   requests; a database-scoped transport inherits the gate.
   `TestSealGate_RefusesEveryRequestOutsideTheAllowlist` walks the method set
   by reflection, so a request method added without the gate fails. The node's

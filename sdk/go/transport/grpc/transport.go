@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/retryinfo"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealedinfo"
 )
 
 // Compile-time interface assertions.
@@ -159,7 +160,7 @@ func (t *Transport) connectHealthy(ctx context.Context) bool {
 	if err == nil {
 		return resp.GetStatus() != ""
 	}
-	return reachableButUnauthorized(err)
+	return reachableButUnauthorized(err) || reachableButSealed(err)
 }
 
 // reachableButUnauthorized reports whether err is a gRPC status error
@@ -195,6 +196,15 @@ func reachableButUnauthorized(err error) bool {
 	}
 }
 
+// reachableButSealed reports whether err is a sealed node's refusal: the
+// server was reached and answered, and serves nothing but the unseal call
+// until its barrier is unsealed. A sealed node is up, so it counts as
+// connected — the caller connecting to it is usually the one about to unseal.
+func reachableButSealed(err error) bool {
+	st, ok := status.FromError(err)
+	return ok && sealedinfo.Sealed(st)
+}
+
 // Close shuts down the gRPC connection and releases all resources.
 func (t *Transport) Close() error {
 	if t.closed.Swap(true) {
@@ -220,7 +230,7 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 	if err == nil {
 		return resp.GetStatus() != ""
 	}
-	return reachableButUnauthorized(err)
+	return reachableButUnauthorized(err) || reachableButSealed(err)
 }
 
 // Request performs a generic gRPC request dispatch by method name. This
@@ -938,6 +948,9 @@ func mapGRPCError(method string, err error) error {
 	st, ok := status.FromError(err)
 	if !ok {
 		return &transport.RequestError{Method: method, Err: err}
+	}
+	if sealedinfo.Sealed(st) {
+		return &transport.BarrierSealedError{Message: st.Message()}
 	}
 
 	switch st.Code() {

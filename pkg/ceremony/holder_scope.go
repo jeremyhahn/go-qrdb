@@ -1200,6 +1200,12 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	if !op.ValidIn(h.domain) {
 		return nil, &seal.QuorumOpInvalidError{Domain: h.domain, Op: op}
 	}
+	// A sealed barrier runs the unseal and recovery rounds and nothing else,
+	// so it issues no challenge for any other round. The seal state is not a
+	// secret, so refusing here tells a stranger nothing a decoy would hide.
+	if barrier.IsSealed() && !op.RunsSealed() {
+		return nil, seal.ErrSealed
+	}
 	peerThumb, err := h.throttle(ctx, d, quorumKindBegin)
 	if err != nil {
 		return nil, err

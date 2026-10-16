@@ -68,6 +68,7 @@ func (n *Node) startClusterSeal(ctx context.Context, host *quicraft.Host, svcNod
 		Barriers:    barriers,
 		Shards:      n.raftBackend,
 		Hosts:       n.tenantHosts,
+		Pauser:      n.shardPauser,
 		Databases:   svcNode.Database,
 		Membership:  host,
 		SystemShard: shard.ShardKV,

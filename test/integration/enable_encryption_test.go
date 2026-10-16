@@ -117,7 +117,9 @@ func tenantBarrierStatusJSON(t *testing.T, client *http.Client, port int, tenant
 // barrierStatusJSON fetches GET /v1/barrier/status and decodes the strategy +
 // sealed fields. It tolerates transient connection errors (returns ok=false)
 // because the daemon's in-process migration recycle briefly tears the data-plane
-// server down before the sealed-window listener comes back up.
+// server down before the sealed-window listener comes back up. A sealed node
+// answers sealed with no strategy; a node the cluster seal holds answers the
+// typed sealed refusal, which reads the same.
 func barrierStatusJSON(t *testing.T, ca *testCA, port int) (strategy string, sealed, ok bool) {
 	t.Helper()
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
@@ -126,6 +128,13 @@ func barrierStatusJSON(t *testing.T, ca *testCA, port int) (strategy string, sea
 		return "", false, false
 	}
 	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return "", false, false
+	}
+	if qrdbdharness.IsSealedRefusal(resp.StatusCode, raw) {
+		return "", true, true
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", false, false
 	}
@@ -133,7 +142,7 @@ func barrierStatusJSON(t *testing.T, ca *testCA, port int) (strategy string, sea
 		Strategy string `json:"strategy"`
 		Sealed   bool   `json:"sealed"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return "", false, false
 	}
 	return body.Strategy, body.Sealed, true

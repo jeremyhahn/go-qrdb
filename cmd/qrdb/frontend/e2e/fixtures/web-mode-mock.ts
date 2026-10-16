@@ -58,6 +58,8 @@ export interface WebMockState {
   /** Seal status returned by GET /v1/barrier/status. */
   sealStatus: {
     sealed: boolean;
+    /** The daemon's initialized flag, which the SDK reads as is. */
+    initialized: boolean;
     strategy: string;
     hardware_backed: boolean;
     initialized_at?: string;
@@ -102,6 +104,7 @@ export const threeNodeTopology: WebMockTopology = {
 export const defaultWebMockState: WebMockState = {
   sealStatus: {
     sealed: false,
+    initialized: true,
     strategy: "none",
     hardware_backed: false,
     initialized_at: "2026-01-01T00:00:00Z",

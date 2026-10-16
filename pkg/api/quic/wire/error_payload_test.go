@@ -26,6 +26,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 // TestErrorPayload_RoundTrips: the message and the delay survive the frame,
@@ -161,5 +163,38 @@ func TestPayloadEncodeError_Unwraps(t *testing.T) {
 	err := &PayloadEncodeError{Err: cause}
 	if !errors.Is(err, cause) || err.Error() == "" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestErrorInfo_SealedNamesTheSealedRefusal: the sealed-window domain and
+// reason make the sealed refusal, and survive the frame.
+func TestErrorInfo_SealedNamesTheSealedRefusal(t *testing.T) {
+	info := &ErrorInfo{Domain: sealedwindow.ErrorDomain, Reason: sealedwindow.ReasonSealed}
+	if !info.Sealed() {
+		t.Fatalf("%+v is not the sealed refusal", info)
+	}
+	body, err := EncodeErrorPayload(StatusUnavailable, ErrorPayload{Message: sealedwindow.SealedMessage, Info: info})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeErrorPayload(body)
+	if err != nil || !got.Info.Sealed() {
+		t.Fatalf("decoded %+v, %v; want the sealed refusal", got, err)
+	}
+}
+
+// TestErrorInfo_SealedRefusesEveryOtherInfo: no info, another reason in the
+// qrdb domain, and the sealed reason in another domain are not the sealed
+// refusal.
+func TestErrorInfo_SealedRefusesEveryOtherInfo(t *testing.T) {
+	for name, info := range map[string]*ErrorInfo{
+		"no info":      nil,
+		"other reason": {Domain: sealedwindow.ErrorDomain, Reason: "NOT_LEADER"},
+		"other domain": {Domain: "example.com", Reason: sealedwindow.ReasonSealed},
+		"empty":        {},
+	} {
+		if info.Sealed() {
+			t.Errorf("%s: %+v reported as the sealed refusal", name, info)
+		}
 	}
 }

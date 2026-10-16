@@ -525,7 +525,7 @@ func TestCLI_Init_ProductionBootProof_CSRAndGenerate_OnManagedCA(t *testing.T) {
 
 	t.Run("csr-sign", func(t *testing.T) {
 		node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[boot-proof-csr] ")
-		pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+		pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 		dir := t.TempDir()
 		keyPath := filepath.Join(dir, "admin-key.pem")
@@ -559,7 +559,7 @@ func TestCLI_Init_ProductionBootProof_CSRAndGenerate_OnManagedCA(t *testing.T) {
 
 	t.Run("generate", func(t *testing.T) {
 		node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[boot-proof-generate] ")
-		pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+		pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 		node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 

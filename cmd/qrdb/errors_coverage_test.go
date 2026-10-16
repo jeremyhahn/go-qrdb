@@ -166,7 +166,6 @@ func TestCLIErrors_DescribeThemselves(t *testing.T) {
 		t.Fatalf("DatabaseScopeError = %q", scoped.Error())
 	}
 	for want, err := range map[string]error{
-		"qrdb: a shamir barrier is unsealed by its share holders, one authenticated submission each":                      &ShamirHolderUnsealError{},
 		"qrdb: barrier init: --so-pin/--user-pin are not allowed when --barrier-strategy=none":                            &PINsNotAllowedError{Strategy: "none", Op: "init"},
 		"qrdb: restore to revision 42 left 3 key(s) unrestored due to conflicts; see output above, or retry with --force": &RestoreConflictsError{Revision: 42, Conflicted: 3},
 		`qrdb: invalid --role value "admin": want role_id:tenant_id`:                                                      &InvalidFlagValueError{Flag: "role", Value: "admin", Want: "role_id:tenant_id"},
