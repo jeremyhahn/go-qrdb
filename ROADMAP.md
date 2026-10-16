@@ -100,6 +100,10 @@ The cluster engine and database system for every project in the stack: embedded,
 - **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — open
 - **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — planned
 - **identity-tenant-owner** — a typed TenantOwner on transport.Identity, set by the identity hydrator from the role store; the field consumers authorize on — [docs/identity-rbac/](docs/identity-rbac/) — planned
+- **rbac-list-own-permissions** — RBACClient.ListOwnPermissions lists the authenticated caller's own effective permissions, authentication only, on every transport and the CLI — [docs/identity-rbac/](docs/identity-rbac/) — planned
+- **iam-policy-enabled-presence** — a presence-tracked enabled field on ABAC policies (absent = enabled, false = skipped), returned unchanged on every read — [docs/auth/](docs/auth/) — planned
+- **sdk-abac-condition-parser** — sdk/go type and constructor aliases for the ABAC condition parser, so consumers validate conditions with the server's own parser — [docs/auth/](docs/auth/) — planned
+- **abac-condition-value-quoting** — RFC 8259 JSON-string quoting for ABAC condition values: a quoted value is one token, unquoted values unchanged, malformed quotes rejected — [docs/auth/](docs/auth/) — planned
 
 ## Future
 
