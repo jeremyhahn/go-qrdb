@@ -99,6 +99,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — open
 - **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — open
 - **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — planned
+- **identity-tenant-owner** — a typed TenantOwner on transport.Identity, set by the identity hydrator from the role store; the field consumers authorize on — [docs/identity-rbac/](docs/identity-rbac/) — planned
 
 ## Future
 
