@@ -58,6 +58,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -82,6 +83,18 @@ const (
 	// does not make it faster, it only refuses a request that would have been
 	// answered. Matches the auth user lookup's budget (lookupUser).
 	resolveTimeout = 5 * time.Second
+
+	// resolveSettleBudget bounds how long one permission resolve waits out
+	// the role store's shard electing a leader or moving it
+	// (service.LeadershipTransient) before its error stands: the same bound
+	// the user lookup in front of it waits (pkg/auth/middleware), so a
+	// request that authenticated through an election is not then refused
+	// by it. The request's own context ends the wait sooner.
+	resolveSettleBudget = 10 * time.Second
+
+	// resolveSettlePoll paces the permission resolve's attempts while it
+	// waits out an election.
+	resolveSettlePoll = 100 * time.Millisecond
 )
 
 // soDeniedActions is the set of resource-specific cryptographic actions
@@ -238,6 +251,10 @@ type RBACAuthorizer struct {
 	// request is denied (fail safe). The scope is never defaulted to an
 	// admitting value on error.
 	scopes permission.ScopeResolver
+
+	// settleBudget bounds how long resolvePermissionSet waits out an
+	// election of the role store's shard. Zero reads as resolveSettleBudget.
+	settleBudget time.Duration
 }
 
 // Option configures an RBACAuthorizer.
@@ -465,13 +482,42 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 	// must not block the whole request until an outer deadline the caller may
 	// not have set at all; it ends in a *ResolveError wrapping
 	// context.DeadlineExceeded — a retryable 503 — instead of a hang (go-qrdb
-	// strict-isolation phase 0 review finding BL2, N4). The budget depends on
-	// whether anything can answer in the primary's place: with a fallback,
-	// resolveSyncTimeout fails over to it within a blip, at the cost of a
-	// marginally-staler read for the system tenant, which is safe for
-	// replicated role data; without one, resolveTimeout lets a read slowed by
-	// a leader election finish rather than refusing it. Mirrors the auth
-	// user-lookup guard, lookupUser.
+	// strict-isolation phase 0 review finding BL2, N4). The budget of each
+	// attempt depends on whether anything can answer in the primary's place:
+	// with a fallback, resolveSyncTimeout fails over to it within a blip, at
+	// the cost of a marginally-staler read for the system tenant, which is
+	// safe for replicated role data; without one, resolveTimeout lets a read
+	// slowed by a leader election finish rather than refusing it. Mirrors the
+	// auth user-lookup guard, lookupUser.
+	//
+	// An attempt that fails because the role store's shard is electing a
+	// leader or moving it (service.LeadershipTransient) is retried until a
+	// leader answers, resolveCtx ends, or the settle budget passes; its error
+	// then stands. The user lookup in front of this resolve waits out the
+	// same election (lookupUser), so without this a request authenticated
+	// through it would be refused here with a 503.
+	budget := a.settleBudget
+	if budget == 0 {
+		budget = resolveSettleBudget
+	}
+	perms, err := service.SettleLeadership(resolveCtx, budget, resolveSettlePoll, func() ([]permission.Permission, error) {
+		return a.resolvePermissionsOnce(resolveCtx, roleIDs, useFallback)
+	})
+	if err != nil {
+		return nil, &ResolveError{Err: err}
+	}
+	a.cache.set(cacheTenantID, subject, roleIDs, perms)
+	permSet := make(map[permission.Permission]struct{}, len(perms))
+	for _, p := range perms {
+		permSet[p] = struct{}{}
+	}
+	return permSet, nil
+}
+
+// resolvePermissionsOnce makes one bounded primary resolve of roleIDs and,
+// when useFallback is set and the primary failed transiently, one fallback
+// resolve. On failure it returns the primary's error.
+func (a *RBACAuthorizer) resolvePermissionsOnce(resolveCtx context.Context, roleIDs []string, useFallback bool) ([]permission.Permission, error) {
 	budget := resolveTimeout
 	if useFallback {
 		budget = resolveSyncTimeout
@@ -493,7 +539,7 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 		var notFound *role.RoleNotFoundError
 		var invalidReq *role.ValidationError
 		if errors.As(err, &notFound) || errors.As(err, &invalidReq) {
-			return nil, &ResolveError{Err: err}
+			return nil, err
 		}
 		// Primary resolution failed or timed out for some OTHER (transient)
 		// reason. Retry against the StaleRead-backed fallback when available
@@ -504,20 +550,15 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 		// fallback. For any other tenant the primary's transient error
 		// stands, and the caller gets the retryable failure it describes.
 		if !useFallback {
-			return nil, &ResolveError{Err: err}
+			return nil, err
 		}
 		fperms, ferr := a.rolesFallback.ResolvePermissions(resolveCtx, roleIDs)
 		if ferr != nil {
-			return nil, &ResolveError{Err: err}
+			return nil, err
 		}
 		perms = fperms
 	}
-	a.cache.set(cacheTenantID, subject, roleIDs, perms)
-	permSet := make(map[permission.Permission]struct{}, len(perms))
-	for _, p := range perms {
-		permSet[p] = struct{}{}
-	}
-	return permSet, nil
+	return perms, nil
 }
 
 // Authorize checks whether the given identity has permission to perform

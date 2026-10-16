@@ -785,22 +785,9 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID string, key us
 	if budget == 0 {
 		budget = authLookupSettleBudget
 	}
-	deadline := time.Now().Add(budget)
-	for {
-		u, err := m.lookupUserOnce(ctx, tenantID, key)
-		if err == nil || !service.LeadershipTransient(err) || ctx.Err() != nil {
-			return u, err
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, err
-		case <-time.After(min(authLookupSettlePoll, remaining)):
-		}
-	}
+	return service.SettleLeadership(ctx, budget, authLookupSettlePoll, func() (*user.User, error) {
+		return m.lookupUserOnce(ctx, tenantID, key)
+	})
 }
 
 // lookupUserOnce is one attempt of lookupUser: the user store, then, for the

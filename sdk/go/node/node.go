@@ -1375,6 +1375,12 @@ type Node struct {
 	// by the lifecycle-gated boot, teardown and Close paths.
 	stopReclaimSweep func()
 
+	// stopTrustPoolRefresh ends the trust pool's refresh loop of the current
+	// data plane (startTrustPoolRefresh) and waits for it to exit; nil when
+	// none runs. Written only by the lifecycle-gated boot, teardown and
+	// Close paths.
+	stopTrustPoolRefresh func()
+
 	// featureGate decides when the clustered host's Raft groups may be sent
 	// guarded writes; nil for a host with no transport. featureAdv is its
 	// lease-backed advertisement once startFeatureGate has brought it up, and
@@ -1982,6 +1988,39 @@ func (n *Node) stopStandaloneSweepers() {
 	if n.stopReclaimSweep != nil {
 		n.stopReclaimSweep()
 		n.stopReclaimSweep = nil
+	}
+}
+
+// startTrustPoolRefresh runs pool's refresh loop until stopTrustPool.
+//
+// Every refresh reads the CA certificates and trust anchors through the
+// data-plane services, and so through the storage backend beneath them: a
+// refresh still in flight when that backend closes holds a storage iterator
+// open across the close, which Pebble refuses with a panic. Cancelling the
+// loop's context alone does not end that refresh -- it only stops the next
+// one -- so the loop belongs to the data plane it reads, and teardownDataPlane
+// and Close wait for it to exit before closing what it reads through.
+func (n *Node) startTrustPoolRefresh(pool *clienttrust.Pool) {
+	ctx, cancel := context.WithCancel(n.background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Run(ctx)
+	}()
+	n.stopTrustPoolRefresh = func() {
+		cancel()
+		<-done
+	}
+}
+
+// stopTrustPool stops the trust pool's refresh loop and waits for it to exit,
+// so no refresh is left reading through a data plane about to close. The
+// pool's last snapshot stays loaded for the handshakes that still use it. It
+// is a no-op when no refresh loop runs.
+func (n *Node) stopTrustPool() {
+	if n.stopTrustPoolRefresh != nil {
+		n.stopTrustPoolRefresh()
+		n.stopTrustPoolRefresh = nil
 	}
 }
 
@@ -2609,6 +2648,9 @@ func (n *Node) Close() error {
 	// through is stopped: cancelling alone leaves a revoke or a reclaim in
 	// flight.
 	n.stopStandaloneSweepers()
+	// So for the trust pool's refresh, which reads the CA certificates
+	// through the storage closed below.
+	n.stopTrustPool()
 	record(n.stopFeatureGate())
 	record(n.stopMemberRecord())
 	// Stop the volume-pool Reporter's refresh goroutine before svcNode/host
@@ -3799,8 +3841,15 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// at the TLS layer and bound to their own tenant at the auth layer.
 	svcNode.WireTrustAnchors(n.trustPool)
 	// The handshake hook only loads the snapshot Run builds; it never reads
-	// storage itself.
-	go n.trustPool.Run(n.background())
+	// storage itself. The refresh loop does, so a wiring pass that fails
+	// below stops it before its caller closes that storage.
+	n.startTrustPoolRefresh(n.trustPool)
+	wired := false
+	defer func() {
+		if !wired {
+			n.stopTrustPool()
+		}
+	}()
 
 	// n.trustPool is ALWAYS handed to the auth layer as the enforcement
 	// source, regardless of whether a cluster CA was resolved above: that
@@ -4078,6 +4127,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return &ServerCreateError{Err: err}
 	}
 	n.srv.Store(srv)
+	wired = true
 	return nil
 }
 

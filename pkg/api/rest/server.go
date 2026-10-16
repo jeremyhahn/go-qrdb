@@ -1224,11 +1224,15 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	s.server = &http.Server{
 		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: serverWriteTimeout,
 	}
 
 	return s
 }
+
+// serverWriteTimeout is the http.Server WriteTimeout: the longest a handler
+// may take before its response can no longer be written.
+const serverWriteTimeout = 30 * time.Second
 
 // Start begins listening and serving HTTP requests in the background.
 // When TLS is configured, the listener is wrapped with tls.NewListener

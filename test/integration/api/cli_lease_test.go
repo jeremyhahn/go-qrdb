@@ -7,8 +7,27 @@ package integration
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+)
+
+const (
+	// leaseExpiryTTL is the TTL of the lease TestCLIClusterLeaseExpiryNotifiesWatch
+	// lets expire. The kv put that attaches the key must land inside it, one
+	// CLI round trip after the grant: a 3 s TTL lost that race on a loaded
+	// runner, where the grant and the put took 7.3 s between them.
+	leaseExpiryTTL = 10 * time.Second
+
+	// leaseExpiryMargin is how long past the TTL the test waits for the
+	// expiry sweep to delete the key and the watch to print it. The sweep
+	// (lease.Lessor.RunExpiry) ticks every lease.DefaultExpiryInterval (1s)
+	// and revokes a lease once its apply-time expiry has passed, so the
+	// delete is one sweep tick plus one revoke proposal past the TTL; the
+	// margin leaves that proposal the same loaded-runner headroom as the
+	// 7.3s grant-to-put round trip measured above.
+	leaseExpiryMargin = 10 * time.Second
 )
 
 // TestCLIMultiProtocolLeaseLifecycle tests the full lease lifecycle
@@ -201,8 +220,12 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 			// lease's countdown cannot run out while the watch is starting.
 			watch := startCLIWatch(t, cfg, proto, probeKey, "watch", prefix, "--prefix")
 
-			// Grant a short-lived lease (no keep-alive -> it will expire).
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "grant", "--ttl", "3")
+			// Grant a lease that is never kept alive, so it expires. Its TTL
+			// is the window the put below must land in: a TTL shorter than
+			// one CLI round trip expires the lease before the put names it,
+			// and the put fails with "lease not found".
+			grantStart := time.Now()
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "grant", "--ttl", strconv.Itoa(int(leaseExpiryTTL/time.Second)))
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -230,12 +253,18 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] kv put --lease-id failed: %v", proto, err)
+				t.Fatalf("[%s] kv put --lease-id failed %s after the grant began (ttl %s): %v",
+					proto, time.Since(grantStart).Round(time.Millisecond), leaseExpiryTTL, err)
 			}
 
-			// Do not keep-alive: the lease (ttl=3s) expires and the lessor
-			// deletes the attached key, which the watch reports.
-			watch.waitFor(t, "DELETE "+key)
+			// Do not keep-alive: the lease expires and the lessor deletes the
+			// attached key, which the watch reports. The wait is bounded by the
+			// grant, the TTL and the expiry margin, not by the watch's start.
+			want := "DELETE " + key
+			if output, ok := watch.await(want, grantStart.Add(leaseExpiryTTL+leaseExpiryMargin)); !ok {
+				t.Fatalf("[%s] watch output does not contain %q within %s of the grant; output: %q",
+					proto, want, leaseExpiryTTL+leaseExpiryMargin, output)
+			}
 
 			t.Logf("[%s] lease-expiry delete observed by watch for prefix: %s", proto, prefix)
 		})

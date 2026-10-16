@@ -163,21 +163,30 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	// emitAudit -- so the operation must be performed BY an "acme" identity,
 	// not merely ABOUT one, for the event to land in acme's chain segment).
 	// ---------------------------------------------------------------------
-	const tenantID = "aud-acme"
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
-	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
-	if err != nil {
-		t.Fatalf("certtest.NewCSR: %v", err)
-	}
 	// A create whose writes outlive the endpoint's bound -- a cluster this
 	// fresh, on a loaded runner, can take that long to commit the admin's
 	// certificate -- answers 503 after the exclusive provisioning has undone
 	// what it wrote, so it is retried, bounded by a deadline; any other
 	// status, or a 503 past the deadline, fails with the last one returned.
-	var tenantBody []byte
+	// Undoing a tenant deletes it, which retires its id
+	// (bootstrap.TenantProvisionConfig.Exclusive), so every attempt names a
+	// fresh id and a fresh admin: a retry under the id the undo retired is
+	// refused 409 for good.
+	var (
+		tenantID    string
+		adminKeyPEM []byte
+		tenantBody  []byte
+	)
 	tenantDeadline := time.Now().Add(60 * time.Second)
-	for {
+	for attempt := 1; ; attempt++ {
+		tenantID = fmt.Sprintf("aud-acme-%d", attempt)
+		keyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+		if err != nil {
+			t.Fatalf("certtest.NewCSR: %v", err)
+		}
+		adminKeyPEM = keyPEM
 		var tenantStatus int
 		tenantBody, tenantStatus = iraftAPIPost(t, sysClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
 			map[string]interface{}{

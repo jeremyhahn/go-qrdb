@@ -207,8 +207,8 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 
 	// Confirm the source barrier is genuinely unencrypted on every node.
 	for i := range 3 {
-		if strategy, _, ok := barrierStatusJSON(t, ca, adminPorts[i]); !ok || strategy != "none" {
-			t.Fatalf("node %d pre-migration strategy = %q (ok=%v), want none", i+1, strategy, ok)
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "none" {
+			t.Fatalf("node %d pre-migration barrier: %s, want unsealed none", i+1, got)
 		}
 	}
 
@@ -247,8 +247,12 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 		if i == leaderIdx {
 			continue
 		}
-		if strategy, _, ok := barrierStatusJSON(t, ca, adminPorts[i]); !ok || strategy != "none" {
-			t.Fatalf("node %d migrated (strategy %q) before it had its own credential", i+1, strategy)
+		// The leader's own recycle is an in-process reboot, and the follower
+		// reconcilers are recycling as their credentials land, so quorum can be
+		// gone for this window: wait for a definitive answer, and fail only on
+		// a definitive wrong one.
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "none" {
+			t.Fatalf("node %d migrated before it had its own credential: %s", i+1, got)
 		}
 		writeMigrationCredential(t, credDirs[i], "system", newPassphrase)
 	}
@@ -285,9 +289,8 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	newLeaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 90*time.Second)
 
 	for i := range 3 {
-		strategy, _, ok := barrierStatusJSON(t, ca, adminPorts[i])
-		if !ok || strategy != "passphrase" {
-			t.Fatalf("node %d post-migration strategy = %q (ok=%v), want passphrase", i+1, strategy, ok)
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "passphrase" {
+			t.Fatalf("node %d post-migration barrier: %s, want unsealed passphrase", i+1, got)
 		}
 	}
 	for k, v := range seed {
@@ -585,8 +588,8 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 
 	// The system barrier is untouched on every node (still none, unsealed).
 	for i := range 3 {
-		if strategy, sealed, ok := barrierStatusJSON(t, ca, adminPorts[i]); !ok || strategy != "none" || sealed {
-			t.Fatalf("node %d system barrier changed by tenant migration: strategy=%q sealed=%v", i+1, strategy, sealed)
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "none" {
+			t.Fatalf("node %d system barrier changed by tenant migration: %s", i+1, got)
 		}
 	}
 

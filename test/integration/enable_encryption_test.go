@@ -122,30 +122,89 @@ func tenantBarrierStatusJSON(t *testing.T, client *http.Client, port int, tenant
 // typed sealed refusal, which reads the same.
 func barrierStatusJSON(t *testing.T, ca *testCA, port int) (strategy string, sealed, ok bool) {
 	t.Helper()
+	r := readBarrierStatus(t, ca, port)
+	return r.Strategy, r.Sealed, r.Definitive
+}
+
+// barrierStatusReading is one GET /v1/barrier/status answer. Definitive is
+// true when the node answered with its barrier state -- a 200 with a decodable
+// body, or the typed sealed refusal -- and false for a transient answer (a
+// transport error, any other status, an undecodable body), which says nothing
+// about the barrier. Status, Body and Err keep the raw answer so a failure
+// message can show what the node actually said.
+type barrierStatusReading struct {
+	Strategy   string
+	Sealed     bool
+	Definitive bool
+	Status     int
+	Body       string
+	Err        error
+}
+
+// String renders the reading for a failure message, raw answer included.
+func (r barrierStatusReading) String() string {
+	if r.Err != nil {
+		return fmt.Sprintf("no answer (%v)", r.Err)
+	}
+	return fmt.Sprintf("strategy=%q sealed=%v definitive=%v (HTTP %d, body: %s)",
+		r.Strategy, r.Sealed, r.Definitive, r.Status, r.Body)
+}
+
+// readBarrierStatus fetches GET /v1/barrier/status once and classifies the
+// answer. A sealed node answers sealed with no strategy; a node the cluster
+// seal holds answers the typed sealed refusal, which reads the same.
+func readBarrierStatus(t *testing.T, ca *testCA, port int) barrierStatusReading {
+	t.Helper()
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
 	resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", port))
 	if err != nil {
-		return "", false, false
+		return barrierStatusReading{Err: err}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	r := barrierStatusReading{Status: resp.StatusCode, Body: string(raw)}
 	if err != nil {
-		return "", false, false
+		r.Err = err
+		return r
 	}
 	if qrdbdharness.IsSealedRefusal(resp.StatusCode, raw) {
-		return "", true, true
+		r.Sealed, r.Definitive = true, true
+		return r
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", false, false
+		return r
 	}
 	var body struct {
 		Strategy string `json:"strategy"`
 		Sealed   bool   `json:"sealed"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
-		return "", false, false
+		return r
 	}
-	return body.Strategy, body.Sealed, true
+	r.Strategy, r.Sealed, r.Definitive = body.Strategy, body.Sealed, true
+	return r
+}
+
+// waitForDefinitiveBarrierStatus polls the barrier status until the node gives
+// a definitive answer and returns it, so the caller asserts on what the
+// barrier is rather than on whether one request happened to get through. A
+// cluster in the middle of a system recycle has nodes rebooting in process and
+// a leader that may have lost quorum; a node still serving can answer
+// transiently through that window. At the deadline it fails with the last
+// transient answer, HTTP status and body included.
+func waitForDefinitiveBarrierStatus(t *testing.T, ca *testCA, port int, timeout time.Duration) barrierStatusReading {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		r := readBarrierStatus(t, ca, port)
+		if r.Definitive {
+			return r
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("barrier status on port %d gave no definitive answer within %v; last: %s", port, timeout, r)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // waitForBarrierSealedAgain polls the barrier status until it reports
