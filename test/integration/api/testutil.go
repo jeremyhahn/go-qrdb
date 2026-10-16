@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -464,13 +465,70 @@ func requireFeature(t *testing.T, cfg *TestConfig, feature string) {
 	}
 }
 
-// execCLIBackground starts a CLI command in the background with a context
-// timeout. Returns the stdout buffer and a cancel function. The caller must
-// cancel the context and wait for the command to finish.
-func execCLIBackground(t *testing.T, cfg *TestConfig, protocol ProtocolType, timeout time.Duration, args ...string) (*bytes.Buffer, context.CancelFunc) {
-	t.Helper()
+// cliWatchTimeout bounds every wait on a background `qrdb watch`, the same
+// 30s the suite passes as --timeout to each foreground CLI call.
+const cliWatchTimeout = 30 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+// cliWatchProbeInterval is how long startCLIWatch waits for one probe write
+// to show up in the watch output before it writes the next one.
+const cliWatchProbeInterval = time.Second
+
+// cliWatchProbePrefix starts every value startCLIWatch writes to prove the
+// watch is established.
+const cliWatchProbePrefix = "watch-ready-"
+
+// syncBuffer collects a child process's output. exec's copy goroutine writes
+// it while the test reads it, so every access holds mu. changed is closed and
+// replaced on each write, letting a reader block until the output grows
+// instead of polling.
+type syncBuffer struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	changed chan struct{}
+}
+
+func newSyncBuffer() *syncBuffer {
+	return &syncBuffer{changed: make(chan struct{})}
+}
+
+// Write appends p and wakes every reader waiting on the previous snapshot.
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n, err := b.buf.Write(p)
+	close(b.changed)
+	b.changed = make(chan struct{})
+	return n, err
+}
+
+// snapshot returns the output so far and a channel the next write closes.
+func (b *syncBuffer) snapshot() (string, <-chan struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String(), b.changed
+}
+
+// cliWatch is a `qrdb watch` running in the background.
+type cliWatch struct {
+	proto    ProtocolType
+	out      *syncBuffer
+	exited   chan struct{}
+	deadline time.Time
+}
+
+// startCLIWatch starts `qrdb watch args...` in the background and returns once
+// the watch is established. `qrdb watch` prints nothing until an event
+// arrives and the server sends no creation acknowledgement, so the signal is
+// an event: startCLIWatch puts probe values on probeKey, which the watch must
+// cover, until the watch reports one. A probe the watch reports was committed
+// after the watch was registered, so any later write is delivered too.
+//
+// The watch runs with --timeout 0, which removes the CLI's own bound on it:
+// nothing the test does in between can run its lifetime out. The process
+// lives until the test ends; every wait on it, the establishment and each
+// waitFor, shares one deadline of cliWatchTimeout from the start.
+func startCLIWatch(t *testing.T, cfg *TestConfig, protocol ProtocolType, probeKey string, args ...string) *cliWatch {
+	t.Helper()
 
 	serverURL := cfg.GetServerURL(protocol)
 	var prefixArgs []string
@@ -495,24 +553,86 @@ func execCLIBackground(t *testing.T, cfg *TestConfig, protocol ProtocolType, tim
 		}
 	}
 
+	prefixArgs = append(prefixArgs, "--timeout", "0")
 	args = append(prefixArgs, args...)
+
+	t.Logf("exec (background): %s %s", cfg.CLIBinPath, strings.Join(args, " "))
+
+	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, cfg.CLIBinPath, args...)
 
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stdout
+	w := &cliWatch{
+		proto:    protocol,
+		out:      newSyncBuffer(),
+		exited:   make(chan struct{}),
+		deadline: time.Now().Add(cliWatchTimeout),
+	}
+	cmd.Stdout = w.out
+	cmd.Stderr = w.out
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		t.Fatalf("failed to start background CLI command: %v", err)
+		t.Fatalf("[%s] failed to start background CLI command: %v", protocol, err)
 	}
-
+	go func() {
+		_ = cmd.Wait()
+		close(w.exited)
+	}()
 	t.Cleanup(func() {
 		cancel()
-		_ = cmd.Wait()
+		<-w.exited
 	})
 
-	return &stdout, cancel
+	for n := 1; ; n++ {
+		probe := fmt.Sprintf("%s%d", cliWatchProbePrefix, n)
+		stdout, stderr, err := execCLIWithProtocol(t, cfg, protocol, "kv", "put", probeKey, probe)
+		if err != nil {
+			t.Fatalf("[%s] watch probe put %s=%s failed: %v\nstdout: %s\nstderr: %s",
+				protocol, probeKey, probe, err, stdout, stderr)
+		}
+		wait := min(cliWatchProbeInterval, time.Until(w.deadline))
+		if _, ok := w.await(cliWatchProbePrefix, time.Now().Add(wait)); ok {
+			return w
+		}
+		if time.Now().After(w.deadline) {
+			out, _ := w.out.snapshot()
+			t.Fatalf("[%s] watch not established within %s: no probe on %s reported; output: %q",
+				protocol, cliWatchTimeout, probeKey, out)
+		}
+	}
+}
+
+// waitFor blocks until the watch output contains want and returns the output,
+// failing the test if the watch exits or the deadline passes first.
+func (w *cliWatch) waitFor(t *testing.T, want string) string {
+	t.Helper()
+	out, ok := w.await(want, w.deadline)
+	if !ok {
+		t.Fatalf("[%s] watch output does not contain %q within %s of the watch starting; output: %q",
+			w.proto, want, cliWatchTimeout, out)
+	}
+	return out
+}
+
+// await waits until the output contains want, the process exits, or until
+// passes. It reports the output and whether want was found.
+func (w *cliWatch) await(want string, until time.Time) (string, bool) {
+	timer := time.NewTimer(time.Until(until))
+	defer timer.Stop()
+	for {
+		out, changed := w.out.snapshot()
+		if strings.Contains(out, want) {
+			return out, true
+		}
+		select {
+		case <-changed:
+		case <-w.exited:
+			out, _ = w.out.snapshot()
+			return out, strings.Contains(out, want)
+		case <-timer.C:
+			return out, false
+		}
+	}
 }
 
 // execCLIWithShamirProtocol executes the CLI against the dedicated

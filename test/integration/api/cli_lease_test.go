@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestCLIMultiProtocolLeaseLifecycle tests the full lease lifecycle
@@ -190,6 +189,18 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 				t.Fatalf("server not available for protocol %s", proto)
 			}
 
+			ts := testTimestamp()
+			prefix := fmt.Sprintf("__svc-test-%s-%d", proto, ts)
+			key := prefix + "/instance-1"
+			probeKey := prefix + "/probe"
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", probeKey) //nolint:errcheck
+			})
+
+			// Establish the prefix watch BEFORE the lease exists, so the
+			// lease's countdown cannot run out while the watch is starting.
+			watch := startCLIWatch(t, cfg, proto, probeKey, "watch", prefix, "--prefix")
+
 			// Grant a short-lived lease (no keep-alive -> it will expire).
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "grant", "--ttl", "3")
 			if err != nil {
@@ -208,9 +219,6 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 				t.Fatalf("[%s] could not extract lease ID from output: %s", proto, stdout)
 			}
 
-			ts := testTimestamp()
-			prefix := fmt.Sprintf("__svc-test-%s-%d", proto, ts)
-			key := prefix + "/instance-1"
 			t.Cleanup(func() {
 				execCLIWithProtocol(t, cfg, proto, "kv", "del", key)           //nolint:errcheck
 				execCLIWithProtocol(t, cfg, proto, "lease", "revoke", leaseID) //nolint:errcheck
@@ -225,19 +233,9 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 				t.Fatalf("[%s] kv put --lease-id failed: %v", proto, err)
 			}
 
-			// Start a prefix watch BEFORE the lease expires so it observes the
-			// expiry-driven delete.
-			buf, cancel := execCLIBackground(t, cfg, proto, 20*time.Second, "watch", prefix, "--prefix")
-
-			// Do not keep-alive: wait for the lease (ttl=3s) to expire and the
-			// lessor to delete the attached key, plus propagation margin.
-			time.Sleep(10 * time.Second)
-
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "DELETE",
-				fmt.Sprintf("[%s] watch should observe a DELETE when the lease expires; output: %s", proto, output))
+			// Do not keep-alive: the lease (ttl=3s) expires and the lessor
+			// deletes the attached key, which the watch reports.
+			watch.waitFor(t, "DELETE "+key)
 
 			t.Logf("[%s] lease-expiry delete observed by watch for prefix: %s", proto, prefix)
 		})

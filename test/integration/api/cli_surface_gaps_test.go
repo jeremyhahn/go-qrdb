@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // extractLineValue scans output for the first line beginning with prefix and
@@ -537,9 +536,11 @@ func TestCLIMultiProtocolWatchPrefixStartRevision(t *testing.T) {
 			ts := testTimestamp()
 			prefix := fmt.Sprintf("watch-pfx-rev-%s-%d", proto, ts)
 			childKey := prefix + "/child"
+			probeKey := prefix + "/probe"
 
 			t.Cleanup(func() {
 				execCLIWithProtocol(t, cfg, proto, "kv", "del", childKey) //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", probeKey) //nolint:errcheck
 			})
 
 			// Advance the revision before starting the watch.
@@ -560,9 +561,8 @@ func TestCLIMultiProtocolWatchPrefixStartRevision(t *testing.T) {
 			assertNotEmpty(t, rev, fmt.Sprintf("[%s] kv revision should return a revision number", proto))
 
 			// Start a background prefix watch from that revision.
-			buf, cancel := execCLIBackground(t, cfg, proto, 10*time.Second,
+			watch := startCLIWatch(t, cfg, proto, probeKey,
 				"watch", prefix, "--prefix", "--start-revision", rev)
-			time.Sleep(1 * time.Second)
 
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", childKey, "prefix-rev-value")
 			if err != nil {
@@ -571,14 +571,7 @@ func TestCLIMultiProtocolWatchPrefixStartRevision(t *testing.T) {
 				t.Fatalf("[%s] kv put failed: %v", proto, err)
 			}
 
-			time.Sleep(2 * time.Second)
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "PUT",
-				fmt.Sprintf("[%s] watch --prefix --start-revision output should contain 'PUT'", proto))
-			assertContains(t, output, "prefix-rev-value",
-				fmt.Sprintf("[%s] watch --prefix --start-revision output should contain 'prefix-rev-value'", proto))
+			watch.waitFor(t, "PUT "+childKey+" prefix-rev-value")
 
 			t.Logf("[%s] watch --prefix --start-revision passed for prefix: %s (rev: %s)", proto, prefix, rev)
 		})
@@ -601,9 +594,11 @@ func TestCLIMultiProtocolWatchPrefixPrevKV(t *testing.T) {
 			ts := testTimestamp()
 			prefix := fmt.Sprintf("watch-pfx-prev-%s-%d", proto, ts)
 			childKey := prefix + "/child"
+			probeKey := prefix + "/probe"
 
 			t.Cleanup(func() {
 				execCLIWithProtocol(t, cfg, proto, "kv", "del", childKey) //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", probeKey) //nolint:errcheck
 			})
 
 			// Seed the initial value before the watch starts.
@@ -614,9 +609,10 @@ func TestCLIMultiProtocolWatchPrefixPrevKV(t *testing.T) {
 				t.Fatalf("[%s] kv put initial value failed: %v", proto, err)
 			}
 
-			buf, cancel := execCLIBackground(t, cfg, proto, 10*time.Second,
+			// The probe goes to a sibling key, so childKey's previous value
+			// is still the seed written before the watch started.
+			watch := startCLIWatch(t, cfg, proto, probeKey,
 				"watch", prefix, "--prefix", "--prev-kv")
-			time.Sleep(1 * time.Second)
 
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", childKey, "pfx-new-value")
 			if err != nil {
@@ -625,14 +621,8 @@ func TestCLIMultiProtocolWatchPrefixPrevKV(t *testing.T) {
 				t.Fatalf("[%s] kv put new value failed: %v", proto, err)
 			}
 
-			time.Sleep(2 * time.Second)
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "pfx-old-value",
-				fmt.Sprintf("[%s] watch --prefix --prev-kv output should contain previous value 'pfx-old-value'", proto))
-			assertContains(t, output, "pfx-new-value",
-				fmt.Sprintf("[%s] watch --prefix --prev-kv output should contain new value 'pfx-new-value'", proto))
+			// The event line is "PUT <key> <value> <prev-key> <prev-value>".
+			watch.waitFor(t, "PUT "+childKey+" pfx-new-value "+childKey+" pfx-old-value")
 
 			t.Logf("[%s] watch --prefix --prev-kv passed for prefix: %s", proto, prefix)
 		})

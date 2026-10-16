@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // watchSupportedProtocols returns protocols that support the watch streaming API.
@@ -41,9 +40,8 @@ func TestCLIMultiProtocolWatchKey(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "kv", "del", key) //nolint:errcheck
 			})
 
-			// Start background watch on the key.
-			buf, cancel := execCLIBackground(t, cfg, proto, 10*time.Second, "watch", key)
-			time.Sleep(1 * time.Second)
+			// Start background watch on the key; it probes the key itself.
+			watch := startCLIWatch(t, cfg, proto, key, "watch", key)
 
 			// Trigger a put event.
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "watched-value")
@@ -53,17 +51,7 @@ func TestCLIMultiProtocolWatchKey(t *testing.T) {
 				t.Fatalf("[%s] kv put failed: %v", proto, err)
 			}
 
-			// Wait for event propagation.
-			time.Sleep(2 * time.Second)
-
-			// Cancel the background watch and read output.
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "PUT",
-				fmt.Sprintf("[%s] watch output should contain 'PUT'", proto))
-			assertContains(t, output, "watched-value",
-				fmt.Sprintf("[%s] watch output should contain 'watched-value'", proto))
+			watch.waitFor(t, "PUT "+key+" watched-value")
 
 			t.Logf("[%s] watch key passed for key: %s", proto, key)
 		})
@@ -87,15 +75,16 @@ func TestCLIMultiProtocolWatchPrefix(t *testing.T) {
 			ts := testTimestamp()
 			prefix := fmt.Sprintf("watch-pfx-%s-%d", proto, ts)
 			childKey := prefix + "/child"
+			probeKey := prefix + "/probe"
 
-			// Cleanup the child key after the test.
+			// Cleanup the keys after the test.
 			t.Cleanup(func() {
 				execCLIWithProtocol(t, cfg, proto, "kv", "del", childKey) //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", probeKey) //nolint:errcheck
 			})
 
-			// Start background watch on the prefix.
-			buf, cancel := execCLIBackground(t, cfg, proto, 10*time.Second, "watch", prefix, "--prefix")
-			time.Sleep(1 * time.Second)
+			// Start background watch on the prefix; it probes a sibling key.
+			watch := startCLIWatch(t, cfg, proto, probeKey, "watch", prefix, "--prefix")
 
 			// Trigger a put event on a sub-key.
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "put", childKey, "child-value")
@@ -105,17 +94,7 @@ func TestCLIMultiProtocolWatchPrefix(t *testing.T) {
 				t.Fatalf("[%s] kv put failed: %v", proto, err)
 			}
 
-			// Wait for event propagation.
-			time.Sleep(2 * time.Second)
-
-			// Cancel the background watch and read output.
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "PUT",
-				fmt.Sprintf("[%s] watch prefix output should contain 'PUT'", proto))
-			assertContains(t, output, "child-value",
-				fmt.Sprintf("[%s] watch prefix output should contain 'child-value'", proto))
+			watch.waitFor(t, "PUT "+childKey+" child-value")
 
 			t.Logf("[%s] watch prefix passed for prefix: %s", proto, prefix)
 		})
@@ -143,19 +122,17 @@ func TestCLIMultiProtocolWatchPrevKV(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "kv", "del", key) //nolint:errcheck
 			})
 
-			// Put the initial value.
+			// Start background watch with --prev-kv. It probes the key itself,
+			// so the old value is written once the watch is established.
+			watch := startCLIWatch(t, cfg, proto, key, "watch", key, "--prev-kv")
+
+			// Put the old value, then the new value whose event carries it.
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "old-value")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] kv put initial value failed: %v", proto, err)
+				t.Fatalf("[%s] kv put old value failed: %v", proto, err)
 			}
-
-			// Start background watch with --prev-kv.
-			buf, cancel := execCLIBackground(t, cfg, proto, 10*time.Second, "watch", key, "--prev-kv")
-			time.Sleep(1 * time.Second)
-
-			// Put the new value to trigger the watch event.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "new-value")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -163,15 +140,8 @@ func TestCLIMultiProtocolWatchPrevKV(t *testing.T) {
 				t.Fatalf("[%s] kv put new value failed: %v", proto, err)
 			}
 
-			// Wait for event propagation.
-			time.Sleep(2 * time.Second)
-
-			// Cancel the background watch and read output.
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "old-value",
-				fmt.Sprintf("[%s] watch --prev-kv output should contain previous value 'old-value'", proto))
+			// The event line is "PUT <key> <value> <prev-key> <prev-value>".
+			watch.waitFor(t, "PUT "+key+" new-value "+key+" old-value")
 
 			t.Logf("[%s] watch --prev-kv passed for key: %s", proto, key)
 		})
@@ -221,9 +191,8 @@ func TestCLIMultiProtocolWatchStartRevision(t *testing.T) {
 				fmt.Sprintf("[%s] kv revision should return a revision number", proto))
 
 			// Start background watch with --start-revision.
-			buf, cancel := execCLIBackground(t, cfg, proto, 10*time.Second,
+			watch := startCLIWatch(t, cfg, proto, key,
 				"watch", key, "--start-revision", rev)
-			time.Sleep(1 * time.Second)
 
 			// Put a new value to trigger a watch event.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "revision-value")
@@ -233,17 +202,7 @@ func TestCLIMultiProtocolWatchStartRevision(t *testing.T) {
 				t.Fatalf("[%s] kv put revision value failed: %v", proto, err)
 			}
 
-			// Wait for event propagation.
-			time.Sleep(2 * time.Second)
-
-			// Cancel the background watch and read output.
-			cancel()
-			output := buf.String()
-
-			assertContains(t, output, "PUT",
-				fmt.Sprintf("[%s] watch --start-revision output should contain 'PUT'", proto))
-			assertContains(t, output, "revision-value",
-				fmt.Sprintf("[%s] watch --start-revision output should contain 'revision-value'", proto))
+			watch.waitFor(t, "PUT "+key+" revision-value")
 
 			t.Logf("[%s] watch --start-revision passed for key: %s (rev: %s)", proto, key, rev)
 		})
