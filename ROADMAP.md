@@ -1,8 +1,6 @@
 # go-qrdb roadmap
 
-> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-10-15
-> The Software Department refreshes it under handbook `software/conventions/roadmap.md`; the project agent proposes changes by PR.
-> Agrees with [docs/SPEC.md](docs/SPEC.md), the normative feature table: shipped = Complete, in progress = Now or Next, planned = Later, future = Future.
+> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-10-16
 
 ## Mission
 
@@ -10,8 +8,8 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Milestones
 
-- [Working fundamentally: Raft clustering and storage](../../milestone/28) — gate — due 2026-10-27 — 5 open, 2 closed
-- [Dev complete](../../milestone/12) — release — due 2026-11-09 — 9 open, 27 closed — criteria in [docs/SPEC.md](docs/SPEC.md#release-criteria)
+- [Working fundamentally: Raft clustering and storage](../../milestone/28) — RC — projected 2026-11-02 04Z
+- [Dev complete](../../milestone/12) — RC — projected 2026-11-02 04Z — criteria in [docs/SPEC.md](docs/SPEC.md#release-criteria)
 
 ## Complete
 
@@ -39,6 +37,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **volume-pools** — named volume pools — [docs/volume-pools/](docs/volume-pools/) — done
 - **backup-restore** — snapshots, verification, selective restore — [docs/backup-restore/](docs/backup-restore/) — done
 - **clustering** — discovery, formation, membership, rebalance — [docs/clustering/](docs/clustering/) — done
+- **bounded-startup-read** — each startup wait of a restarted node bounded, retried and reported — [#668](../../issues/668), PR [#714](../../pulls/714) — done
 - **clusterenroll-coverage** — `pkg/clusterenroll` coverage back to its baseline — [#652](../../issues/652) — done
 - **run-modes** — standalone and Raft run modes — [docs/run-modes/](docs/run-modes/) — done
 - **capabilities** — the effective runtime feature profile — [docs/capabilities/](docs/capabilities/) — done
@@ -51,6 +50,8 @@ The cluster engine and database system for every project in the stack: embedded,
 - **request-context-dpop** — DPoP proof, method and URI in the request context — [#646](../../issues/646) — done
 - **replica-forwarding** — forward to the replica leader on every transport — [docs/replica-forwarding/](docs/replica-forwarding/) — done
 - **barrier-seal** — the at-rest barrier, strategies, per-node keys — [docs/barrier-seal/](docs/barrier-seal/) — done
+- **sealed-mode-serving** — adopt the go-quicraft release candidate, with sealed-mode serving — [#659](../../issues/659), PR [#695](../../pulls/695) — done
+- **seal-pause-resume** — seal pauses every shard the node hosts; unseal resumes them — PR [#695](../../pulls/695) — done
 - **shamir-custody** — Security Officers, M-of-N shares, rekey — [docs/shamir-custody/](docs/shamir-custody/) — done
 - **ceremony** — the initialization ceremony and share lifecycle — [docs/ceremony/](docs/ceremony/) — done
 - **firstboot** — system tenant, built-in roles, platform admin — [docs/firstboot/](docs/firstboot/) — done
@@ -64,6 +65,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **identity-hydrator** — `WithIdentityHydrator`; the login Subject is the immutable user id — [#670](../../issues/670) — done
 - **user-password-self-scope** — the User role holds self-scoped `passwords:write` and `passwords:delete` — [docs/auth/](docs/auth/) — done
 - **role-delete-cascade** — deleting a role removes it from every holder — [#697](../../issues/697) — done
+- **sdk-abac-condition-parser** — sdk/go type and constructor aliases for the ABAC condition parser, so consumers validate conditions with the server's own parser — [docs/auth/](docs/auth/) — done
 - **auth-factors** — the `Factor` framework, PIN custody — [docs/auth-factors/](docs/auth-factors/) — done
 - **audit** — compliance audit logging and query — [docs/audit/](docs/audit/) — done
 - **rate-limit** — per-permission throttling on every transport — [docs/rate-limit/](docs/rate-limit/) — done
@@ -75,13 +77,11 @@ The cluster engine and database system for every project in the stack: embedded,
 ## Now
 
 - **cluster-verification** — the qrdb-3-node-proven gate passes on the three-node cluster; cluster suites green on main — [#668](../../issues/668), [#671](../../issues/671), [#679](../../issues/679) — blocked: the pinned port set (#671) and the rate nemesis (#679)
-- **sealed-mode-serving** — adopt the go-quicraft release candidate, with sealed-mode serving — [#659](../../issues/659), PR [#695](../../pulls/695) — in review
-- **bounded-startup-read** — each startup wait of a restarted node bounded, retried and reported — [#668](../../issues/668), PR [#714](../../pulls/714) — in review
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683) — open
 - **lease-reads** — lease reads documented as linearizable under the 1 % clock-rate bound — [#678](../../issues/678), PR [#681](../../pulls/681) — in review
 - **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — in review
 - **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — in review
-- **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — in progress
+- **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — open
 
 ## Next
 
@@ -90,7 +90,6 @@ The cluster engine and database system for every project in the stack: embedded,
 - **file-backend-encryption** — file backend encrypted at rest under the node barrier — [#630](../../issues/630), PR [#681](../../pulls/681) — in review
 - **embedder-seams** — `sdk/go` exposes the seams embedders need — [#626](../../issues/626), PR [#681](../../pulls/681) — in review
 - **lease-keepalive-latency** — no heavy keepalive tail — [#275](../../issues/275), PR [#681](../../pulls/681) — in review
-- **seal-pause-resume** — seal pauses every shard the node hosts; unseal resumes them — PR [#695](../../pulls/695) — in review
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729) — in review
 
 ## Later
@@ -98,20 +97,20 @@ The cluster engine and database system for every project in the stack: embedded,
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — open
 - **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — open
-- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — planned
-- **identity-tenant-owner** — a typed TenantOwner on transport.Identity, set by the identity hydrator from the role store; the field consumers authorize on — [docs/identity-rbac/](docs/identity-rbac/) — planned
-- **rbac-list-own-permissions** — RBACClient.ListOwnPermissions lists the authenticated caller's own effective permissions, authentication only, on every transport and the CLI — [docs/identity-rbac/](docs/identity-rbac/) — planned
-- **iam-policy-enabled-presence** — a presence-tracked enabled field on ABAC policies (absent = enabled, false = skipped), returned unchanged on every read — [docs/auth/](docs/auth/) — planned
-- **sdk-abac-condition-parser** — sdk/go type and constructor aliases for the ABAC condition parser, so consumers validate conditions with the server's own parser — [docs/auth/](docs/auth/) — planned
-- **abac-condition-value-quoting** — RFC 8259 JSON-string quoting for ABAC condition values: a quoted value is one token, unquoted values unchanged, malformed quotes rejected — [docs/auth/](docs/auth/) — planned
+- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — open
+- **identity-tenant-owner** — a typed TenantOwner on transport.Identity, set by the identity hydrator from the role store; the field consumers authorize on — [docs/identity-rbac/](docs/identity-rbac/) — open
+- **rbac-list-own-permissions** — RBACClient.ListOwnPermissions lists the authenticated caller's own effective permissions, authentication only, on every transport and the CLI — [docs/identity-rbac/](docs/identity-rbac/) — open
+- **iam-policy-enabled-presence** — a presence-tracked enabled field on ABAC policies (absent = enabled, false = skipped), returned unchanged on every read — [docs/auth/](docs/auth/) — open
+- **abac-condition-value-quoting** — RFC 8259 JSON-string quoting for ABAC condition values: a quoted value is one token, unquoted values unchanged, malformed quotes rejected — [docs/auth/](docs/auth/) — open
+- **default-roles** — shipped default roles every tenant starts with; they carry the OTA activate and confirm permissions — [#737](../../issues/737) — open
+- **device-onboarding-permission** — device onboarding is a tenant-scoped permission, not a role; each tenant onboards its own devices — [#737](../../issues/737) — open
+- **ota-activate-confirm-permissions** — OTA activate and confirm are tenant-scoped permissions, not roles — [#737](../../issues/737) — open
 
 ## Future
 
 - **range-delete** — engine range delete for dropped databases — [#457](../../issues/457) — open
 - **dead-code-triage** — unreachable symbols triaged, wired or deleted — [#350](../../issues/350) — open
 - **barrier-passphrase-change** — a supported system-barrier passphrase change — [#631](../../issues/631) — open
-- **device-onboarding-permission** — device onboarding is a permission, not a role — [docs/identity-rbac/](docs/identity-rbac/) — open
-- **ota-activate-confirm-permissions** — OTA activate and confirm are permissions, not roles — [docs/identity-rbac/](docs/identity-rbac/) — open
 - **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627) — open
 - **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision

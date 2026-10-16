@@ -126,6 +126,15 @@ SDK re-exports (`sdk/go/types_abac.go`): `ABACPolicy`, `ABACRule`,
 and `Node.ABACPolicyReloader` live in `sdk/go/node`, imported directly (not
 re-exported through `sdk/go`).
 
+The condition parser is re-exported beside them, so a consumer validates a
+condition expression with the parser the server evaluates, not a fork of it:
+
+- `ABACConditionParser` is `abac.ConditionParser`.
+- `NewABACConditionParser` is `abac.NewConditionParser`.
+- `ABACCompiledCondition` is `abac.CompiledCondition`, the result of `Parse`.
+- `ABACConditionParseError` is `abac.ConditionParseError`, the error `Parse`
+  returns; match it with `errors.As`.
+
 ## Policy schema
 
 ```yaml

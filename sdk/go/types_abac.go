@@ -101,3 +101,20 @@ var LoadABACPolicyDir = abac.LoadDir
 // LoadABACPolicyFile loads and validates the policy documents contained in
 // a single YAML file.
 var LoadABACPolicyFile = abac.LoadFile
+
+// ABACConditionParser parses ABAC condition expressions into compiled
+// conditions. It is the parser the server evaluates policy conditions with,
+// so a consumer validating an expression gets the server's verdict.
+type ABACConditionParser = abac.ConditionParser
+
+// ABACCompiledCondition is a parsed condition expression, evaluated against
+// an authorization context.
+type ABACCompiledCondition = abac.CompiledCondition
+
+// ABACConditionParseError is returned when a condition expression cannot be
+// parsed.
+type ABACConditionParseError = abac.ConditionParseError
+
+// NewABACConditionParser creates a condition parser holding the given policy
+// variables.
+var NewABACConditionParser = abac.NewConditionParser
