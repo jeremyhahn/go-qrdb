@@ -44,6 +44,10 @@ var (
 
 	// ErrInvalidPath is returned when a file storage path is invalid.
 	ErrInvalidPath = &StorageError{Code: "invalid_path", Message: "storage path is invalid"}
+
+	// ErrInvalidRange is returned when a range has an empty start or an end at
+	// or before the start.
+	ErrInvalidRange = &StorageError{Code: "invalid_range", Message: "range end must be after start"}
 )
 
 // OpError wraps an error with the storage operation that caused it.

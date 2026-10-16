@@ -268,6 +268,11 @@ type RaftBackendFactory struct {
 	// documents. See WithImportSessionConfig.
 	importSessionCfg qrdbconfig.ImportSessionConfig
 
+	// leaseCfg sets the lease checkpoint interval and failover grace of every
+	// shard this factory builds (config.Lease, "lease:" in YAML). The zero
+	// value resolves to the lease package defaults. See WithLeaseConfig.
+	leaseCfg qrdbconfig.LeaseConfig
+
 	// startGate admits each shard start against a whole-node seal's pause
 	// (ShardPauser.beginStart); ShardPauser.SetTenants installs it. Unset, it
 	// admits every start.
@@ -291,6 +296,13 @@ func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 // defaults WithImportSessionLimits documents, not unbounded staging.
 func WithImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.importSessionCfg = cfg }
+}
+
+// WithLeaseConfig sets the checkpoint interval and failover grace the lease
+// sweeper of every shard this factory builds runs with. Omitting it leaves
+// both at the lease package defaults.
+func WithLeaseConfig(cfg qrdbconfig.LeaseConfig) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.leaseCfg = cfg }
 }
 
 // WithMultiplexLogDB wires the shared host's multiplex LogDB so the factory can
@@ -997,6 +1009,11 @@ func (f *RaftBackendFactory) startShardAsMember(
 	// replicaID (the placement-assigned ID for this node) is used rather than
 	// f.localReplicaID so multi-replica shards correctly gate on the right ID.
 	if rs.services.Lease != nil {
+		expiryOpts, err := service.LeaseExpiryOptions(f.adapter, shardID, f.leaseCfg)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
 		localReplicaID := replicaID
 		go rs.lessor.RunExpiry(ctx, lease.DefaultExpiryInterval,
 			func() bool {
@@ -1005,6 +1022,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 			},
 			rs.services.Lease.Revoke,
 			f.logger,
+			expiryOpts...,
 		)
 	}
 

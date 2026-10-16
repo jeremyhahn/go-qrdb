@@ -415,9 +415,11 @@ type mockStandaloneStorage struct {
 	batchCommitErr error
 }
 
-func (m *mockStandaloneStorage) Get(_ []byte) ([]byte, error)  { return nil, nil }
-func (m *mockStandaloneStorage) Set(_, _ []byte) error         { return nil }
-func (m *mockStandaloneStorage) Delete(_ []byte) error         { return nil }
+func (m *mockStandaloneStorage) Get(_ []byte) ([]byte, error) { return nil, nil }
+func (m *mockStandaloneStorage) Set(_, _ []byte) error        { return nil }
+func (m *mockStandaloneStorage) Delete(_ []byte) error        { return nil }
+
+func (m *mockStandaloneStorage) DeleteRange(_, _ []byte) error { return nil }
 func (m *mockStandaloneStorage) Exists(_ []byte) (bool, error) { return false, nil }
 func (m *mockStandaloneStorage) Close() error                  { return nil }
 func (m *mockStandaloneStorage) List(_ []byte) ([][]byte, error) {
@@ -443,12 +445,14 @@ type mockStandaloneBatch struct {
 	commitErr error
 }
 
-func (b *mockStandaloneBatch) Set(_, _ []byte) error        { return b.setErr }
-func (b *mockStandaloneBatch) Delete(_ []byte) error        { return nil }
-func (b *mockStandaloneBatch) Get(_ []byte) ([]byte, error) { return nil, nil }
-func (b *mockStandaloneBatch) Commit() error                { return b.commitErr }
-func (b *mockStandaloneBatch) Rollback() error              { return nil }
-func (b *mockStandaloneBatch) Close() error                 { return nil }
+func (b *mockStandaloneBatch) Set(_, _ []byte) error { return b.setErr }
+func (b *mockStandaloneBatch) Delete(_ []byte) error { return nil }
+
+func (b *mockStandaloneBatch) DeleteRange(_, _ []byte) error { return nil }
+func (b *mockStandaloneBatch) Get(_ []byte) ([]byte, error)  { return nil, nil }
+func (b *mockStandaloneBatch) Commit() error                 { return b.commitErr }
+func (b *mockStandaloneBatch) Rollback() error               { return nil }
+func (b *mockStandaloneBatch) Close() error                  { return nil }
 func (b *mockStandaloneBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
 	return &emptyStandaloneIterator{}
 }

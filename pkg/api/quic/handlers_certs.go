@@ -58,6 +58,26 @@ type enrolledCertWireResponse struct {
 	NotAfter   time.Time `json:"notAfter"`
 }
 
+// issueDelegationWireRequest is the JSON wire payload for cert.Delegate: a
+// service principal's CSR and the scope the caller's tenant delegates to it.
+type issueDelegationWireRequest struct {
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	CSRPEM    string   `json:"csrPEM"`
+	TTL       string   `json:"ttl,omitempty"`
+}
+
+// issuedDelegationWireResponse is a delegation certificate the tenant's CA
+// issued.
+type issuedDelegationWireResponse struct {
+	TenantID  string    `json:"tenantID"`
+	Principal string    `json:"principal"`
+	Scope     []string  `json:"scope"`
+	CertPEM   string    `json:"certPEM"`
+	Serial    string    `json:"serial"`
+	NotAfter  time.Time `json:"notAfter"`
+}
+
 // revokeCertWireRequest is the JSON wire payload for cert.Revoke.
 type revokeCertWireRequest struct {
 	Serial string `json:"serial"`
@@ -209,6 +229,52 @@ func (s *Server) handleEnrollCert(ctx context.Context, payload []byte) ([]byte, 
 		return nil, err
 	}
 	return marshalEnrolled(enrolled)
+}
+
+// handleIssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal. The principal keeps its private key.
+func (s *Server) handleIssueDelegation(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.certEnroll == nil {
+		return nil, &ServiceNotConfiguredError{Service: "cert enrollment"}
+	}
+	var req issueDelegationWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	var ttl time.Duration
+	if req.TTL != "" {
+		d, err := time.ParseDuration(req.TTL)
+		if err != nil {
+			return nil, &InvalidTTLError{Value: req.TTL, Err: err}
+		}
+		ttl = d
+	}
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsDelegate); err != nil {
+		return nil, err
+	}
+	issued, err := s.certEnroll.IssueDelegation(ctx, &service.IssueDelegationRequest{
+		TenantID:  tenantID,
+		Principal: req.Principal,
+		Scope:     req.Scope,
+		CSRPEM:    []byte(req.CSRPEM),
+		TTL:       ttl,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out, err := json.Marshal(issuedDelegationWireResponse{
+		TenantID:  issued.TenantID,
+		Principal: issued.Principal,
+		Scope:     issued.Scope,
+		CertPEM:   string(issued.CertPEM),
+		Serial:    issued.Serial,
+		NotAfter:  issued.NotAfter,
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
 }
 
 // handleRevokeCert unmarshals a JSON revoke cert request, marks the

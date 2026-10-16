@@ -400,7 +400,9 @@ func (e *HolderIdentityNotPermittedError) Error() string {
 // node to calls made in its own process (sdk/go/node Node.ServiceContext) and
 // is never accepted from a request, whatever credential produced the claim --
 // a certificate's common name, a bearer token, a forwarded on-behalf
-// assertion, a user record.
+// assertion, a user record. The single exception is a tenant-issued
+// delegation the mTLS authenticator verified (auth.DelegationOf), which never
+// produces this error.
 //
 // It matches auth.ErrUnauthenticated under errors.Is and errors.As, so every
 // transport answers its unauthenticated status (401, Unauthenticated): the
@@ -418,6 +420,18 @@ func (e *ServicePrincipalPresentedError) Error() string {
 
 // Unwrap exposes auth.ErrUnauthenticated.
 func (e *ServicePrincipalPresentedError) Unwrap() error { return auth.ErrUnauthenticated }
+
+// DelegationUnauditedError is the cause a delegated request is refused with
+// when the middleware has no audit logger: every use of a tenant-issued
+// delegation is recorded in the delegating tenant's trail, so with nowhere to
+// record it the request is not served. It reaches the caller wrapped in an
+// *audit.GateError.
+type DelegationUnauditedError struct{}
+
+// Error says why the request was refused.
+func (e *DelegationUnauditedError) Error() string {
+	return "auth/middleware: no audit logger is wired, and a delegated request is never served unaudited"
+}
 
 // UnresolvedUserSubjectError is returned when an identity names a user
 // account by its immutable id -- its UserID is set, or its Subject has the

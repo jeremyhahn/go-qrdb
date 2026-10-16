@@ -707,6 +707,49 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	}
 }
 
+// TestProvisionTenant_ReportsTheCommittedTenantRecord asserts both admin
+// paths hand back the tenant record the run created, so a caller can answer
+// without a read that could fail after the commit, and that a re-run which
+// found the tenant already present reports none.
+func TestProvisionTenant_ReportsTheCommittedTenantRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		isolation tenant.IsolationType
+		existing  bool
+		wantNil   bool
+	}{
+		{name: "direct admin", isolation: tenant.IsolationPrefix},
+		{name: "pending admin", isolation: tenant.IsolationBarrier},
+		{name: "re-run on an existing tenant", isolation: tenant.IsolationPrefix, existing: true, wantNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+				TenantID:    "acme",
+				DisplayName: "Acme Corp",
+				Isolation:   tc.isolation,
+				AdminCSRPEM: validAdminCSR(t),
+			}, Dependencies{
+				Tenants: &fakeTenants{createAlreadyErr: tc.existing}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+				Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+				PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
+				Logger:        discardLogger(),
+			})
+			if err != nil {
+				t.Fatalf("ProvisionTenant: %v", err)
+			}
+			if tc.wantNil {
+				if result.Tenant != nil {
+					t.Fatalf("result.Tenant = %+v, want nil when this run created no record", result.Tenant)
+				}
+				return
+			}
+			if result.Tenant == nil || result.Tenant.ID != "acme" || result.Tenant.Name != "Acme Corp" || result.Tenant.IsolationType != tc.isolation {
+				t.Fatalf("result.Tenant = %+v, want the created acme/Acme Corp/%s record", result.Tenant, tc.isolation)
+			}
+		})
+	}
+}
+
 // TestProvisionTenant_DoesNotInitTenantBarrier asserts the system-admin
 // provisioning path never touches the barrier registry: no tenant barrier is
 // registered and none is initialized. The default isolation (barrier) keeps

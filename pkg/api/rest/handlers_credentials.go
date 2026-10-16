@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -190,11 +192,19 @@ func (s *Server) handleCredentialRetrieveVersion(w http.ResponseWriter, r *http.
 		return
 	}
 
-	value, err := s.credentialSvc.CredentialRetrieveVersion(r.Context(), name, version)
+	buf, err := s.credentialSvc.CredentialRetrieveVersionBuffer(r.Context(), name, version)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
+	// The response DTO is the one boundary where the value leaves protected
+	// memory. It is wiped as soon as it has been encoded.
+	value, err := service.CredentialWireValue(buf)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	defer secure.Wipe(value)
 
 	writeJSON(w, transport.CredentialRetrieveVersionResponse{Value: value})
 }
@@ -399,10 +409,18 @@ func (s *Server) handleCredentialStore(w http.ResponseWriter, r *http.Request) {
 // handleCredentialRetrieve handles GET /v1/credentials/{name}/value -- returns
 // the credential value for the given name.
 func (s *Server) handleCredentialRetrieve(w http.ResponseWriter, r *http.Request, name string) {
-	value, err := s.credentialSvc.CredentialRetrieve(r.Context(), name)
+	buf, err := s.credentialSvc.CredentialRetrieveBuffer(r.Context(), name)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
+	// credentialValueResponse is the wire DTO: the one boundary where the value
+	// leaves protected memory. It is wiped as soon as it has been encoded.
+	value, err := service.CredentialWireValue(buf)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	defer secure.Wipe(value)
 	writeJSON(w, credentialValueResponse{Value: value})
 }

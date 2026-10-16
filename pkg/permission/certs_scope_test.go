@@ -79,6 +79,47 @@ func TestCertsPermissions_AreSelfStrict(t *testing.T) {
 	}
 }
 
+// TestCertsDelegate_IsTenantOnly: a delegation lets a service act inside the
+// tenant whose CA signs it, so only that tenant may give one. ScopeSelf would
+// let the system tenant lift it into every tenant; ScopeTenantOnly denies the
+// platform outright.
+func TestCertsDelegate_IsTenantOnly(t *testing.T) {
+	if got := mustScope(t, CertsDelegate); got != ScopeTenantOnly {
+		t.Fatalf("LookupScope(%s) = %v, want ScopeTenantOnly", CertsDelegate, got)
+	}
+}
+
+// TestCertsDelegate_GrantedToTheTenantsIdentityAuthorities: the Security
+// Officer and the tenant admin issue identities, so they issue delegations;
+// no other built-in role does, and the duty is governance.
+func TestCertsDelegate_GrantedToTheTenantsIdentityAuthorities(t *testing.T) {
+	for role, want := range map[string]bool{
+		RoleSO: true, RoleAdmin: true, RoleOperator: false, RoleUser: false, RoleAuditor: false,
+	} {
+		if got := HasRoleGrant(role, CertsDelegate); got != want {
+			t.Errorf("HasRoleGrant(%s, %s) = %v, want %v", role, CertsDelegate, got, want)
+		}
+	}
+	if got := LookupDuty(CertsDelegate); got != DutyGovernance {
+		t.Errorf("LookupDuty(%s) = %v, want DutyGovernance", CertsDelegate, got)
+	}
+}
+
+// TestIsBuiltinRole names exactly the five built-in roles; a principal named
+// for one would hold that whole role.
+func TestIsBuiltinRole(t *testing.T) {
+	for _, r := range []string{RoleSO, RoleAdmin, RoleOperator, RoleUser, RoleAuditor} {
+		if !IsBuiltinRole(r) {
+			t.Errorf("IsBuiltinRole(%q) = false", r)
+		}
+	}
+	for _, r := range []string{"", "billing", "Admin", "admin "} {
+		if IsBuiltinRole(r) {
+			t.Errorf("IsBuiltinRole(%q) = true", r)
+		}
+	}
+}
+
 func TestCertsRevokeCross_SplitsIntoTheCertsResource(t *testing.T) {
 	if got := Resource(CertsRevokeCross); got != "certs" {
 		t.Errorf("Resource = %q, want %q", got, "certs")

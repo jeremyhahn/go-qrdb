@@ -404,6 +404,30 @@ type EnrolledCert struct {
 	NotAfter   time.Time `json:"notAfter"`
 }
 
+// IssueDelegationRequest asks the caller's own tenant's CA for a delegation
+// certificate: Principal, an embedder's service principal, may act inside the
+// tenant with at most Scope. The principal keeps its private key; the server
+// sees only the CSR, whose Subject is ignored.
+type IssueDelegationRequest struct {
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	CSRPEM    string   `json:"csrPEM"`
+	// TTL is a Go duration; empty is the delegation default of one hour, and
+	// more than 24h is refused.
+	TTL string `json:"ttl,omitempty"`
+}
+
+// IssuedDelegation is a delegation certificate the tenant's CA issued. It is
+// revoked like any certificate the CA issued: RevokeCert(Serial).
+type IssuedDelegation struct {
+	TenantID  string    `json:"tenantID"`
+	Principal string    `json:"principal"`
+	Scope     []string  `json:"scope"`
+	CertPEM   string    `json:"certPEM"`
+	Serial    string    `json:"serial"`
+	NotAfter  time.Time `json:"notAfter"`
+}
+
 // CertRecord is the metadata for an issued certificate.
 type CertRecord struct {
 	Serial    string `json:"serial"`

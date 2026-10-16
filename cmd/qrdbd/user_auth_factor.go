@@ -28,6 +28,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -63,7 +64,7 @@ var ErrNoTenantStoreResolver = errors.New("qrdbd: user auth-factor service requi
 // than aborting startup: it is an additive capability layered on top of the
 // always-present user/role management services, and serving it unrouted is
 // the defect, not the fallback.
-func buildUserAuthFactorServiceOption(_ context.Context, resolver tenant.StoreResolver, legacyStore kvstore.KVStore, logger *slog.Logger) (server.ServerOption, error) {
+func buildUserAuthFactorServiceOption(_ context.Context, resolver tenant.StoreResolver, legacyStore kvstore.KVStore, trail audit.AuditLogger, logger *slog.Logger) (server.ServerOption, error) {
 	if resolver == nil {
 		return nil, ErrNoTenantStoreResolver
 	}
@@ -73,6 +74,7 @@ func buildUserAuthFactorServiceOption(_ context.Context, resolver tenant.StoreRe
 	svc, err := service.NewRoutingUserAuthFactorService(service.RoutingUserAuthFactorServiceConfig{
 		Resolver:    resolver,
 		LegacyStore: legacyStore,
+		AuditLogger: trail,
 		Logger:      logger,
 	})
 	if err != nil {

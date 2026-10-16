@@ -94,6 +94,45 @@ func NewDAO[E dao.Entity](store KVStore, entityType string, newEntity func() E, 
 	return dao.New(store, entityType, newEntity, opts...)
 }
 
+// NewDAOTransactional creates a new DAOTransactional backed by the given
+// KVStore.
+func NewDAOTransactional[E dao.Entity](store KVStore, entityType string, newEntity func() E, opts ...DAOOption) (DAOTransactional[E], error) {
+	return dao.NewTransactional(store, entityType, newEntity, opts...)
+}
+
+// NewDatabaseDAO creates a GenericDAO for entityType in the named database,
+// its store resolved through factory (DAOFactory.DatabaseKVStore). A
+// database the factory cannot resolve is refused with
+// DAODatabaseStoreUnresolvedError; the DAO is never built over the
+// factory's default store instead. NewClientDAOFactory resolves database
+// names against a node or remote client.
+func NewDatabaseDAO[E dao.Entity](factory *DAOFactory, database, entityType string, newEntity func() E, opts ...DAOOption) (GenericDAO[E], error) {
+	return dao.NewDatabaseDAO(factory, database, entityType, newEntity, opts...)
+}
+
+// NewDatabaseDAOTransactional is NewDatabaseDAO for a DAOTransactional.
+func NewDatabaseDAOTransactional[E dao.Entity](factory *DAOFactory, database, entityType string, newEntity func() E, opts ...DAOOption) (DAOTransactional[E], error) {
+	return dao.NewDatabaseTransactional(factory, database, entityType, newEntity, opts...)
+}
+
+// NewClientDAOFactory returns a DAOFactory over c: its default store is
+// c.KVStore(), and a database name resolves to the store of
+// c.DatabaseScoped(name), so NewDatabaseDAO places a DAO in that database of
+// the caller's tenant. A database c cannot scope to resolves to no store,
+// which NewDatabaseDAO refuses with DAODatabaseStoreUnresolvedError.
+func NewClientDAOFactory(c *Client) *DAOFactory {
+	return dao.NewFactoryWithConfig(&dao.FactoryConfig{
+		KVStoreProvider: func(uint64) kvstore.KVStore { return c.KVStore() },
+		PartitionedProvider: func(database string, _ uint64) kvstore.KVStore {
+			scoped, err := c.DatabaseScoped(database)
+			if err != nil {
+				return nil
+			}
+			return scoped.KVStore()
+		},
+	})
+}
+
 // IsDAONotFound returns true if the error indicates an entity was not found.
 func IsDAONotFound(err error) bool {
 	return dao.IsNotFound(err)

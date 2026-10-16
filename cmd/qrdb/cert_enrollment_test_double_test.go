@@ -48,6 +48,7 @@ type fakeCertEnrollment struct {
 	addAnchorsFn   func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
 	listAnchorsFn  func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeAnchorFn func(ctx context.Context, tenantID, fingerprint string) error
+	delegateFn     func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollment)(nil)
@@ -78,6 +79,20 @@ func (f *fakeCertEnrollment) EnrollCertificate(ctx context.Context, req *service
 		CertPEM:    req.CertPEM,
 		Thumbprint: "mock-thumbprint",
 		NotAfter:   time.Now().Add(24 * time.Hour),
+	}, nil
+}
+
+func (f *fakeCertEnrollment) IssueDelegation(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	if f.delegateFn != nil {
+		return f.delegateFn(ctx, req)
+	}
+	return &service.IssuedDelegation{
+		TenantID:  req.TenantID,
+		Principal: req.Principal,
+		Scope:     req.Scope,
+		CertPEM:   []byte("-----BEGIN CERTIFICATE-----\ndelegation\n-----END CERTIFICATE-----\n"),
+		Serial:    "DDEEFF00",
+		NotAfter:  time.Now().Add(time.Hour),
 	}, nil
 }
 

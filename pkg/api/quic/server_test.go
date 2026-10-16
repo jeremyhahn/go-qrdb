@@ -198,6 +198,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"admin.GetShardState": true, "admin.GetTopology": true,
 		"admin.GetReplicaStates":  true,
 		"admin.GetNodeCompaction": true, "admin.SetNodeCompaction": true,
+		"admin.GetStateHashes":    true,
 		"admin.MintJoinToken":     true,
 		"admin.AddObserverMember": true, "admin.ListPendingJoinRequests": true,
 		"admin.ApproveJoinRequest": true, "admin.RejectJoinRequest": true,
@@ -258,7 +259,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.ListPermissions": true, "role.ResolvePermissions": true,
 		"role.ReconcileBuiltIn": true,
 		// Certificate management
-		"cert.Issue": true, "cert.Enroll": true,
+		"cert.Issue": true, "cert.Enroll": true, "cert.Delegate": true,
 		"cert.Revoke": true, "cert.List": true,
 		// Collection
 		"collection.Create": true, "collection.Drop": true,
@@ -534,7 +535,7 @@ func TestBuildHandlers_RoleMethods(t *testing.T) {
 func TestBuildHandlers_CertMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	certMethods := []string{
-		"cert.Issue", "cert.Enroll", "cert.Revoke", "cert.List",
+		"cert.Issue", "cert.Enroll", "cert.Delegate", "cert.Revoke", "cert.List",
 	}
 	for _, m := range certMethods {
 		if _, ok := srv.handlers[m]; !ok {

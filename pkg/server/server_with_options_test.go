@@ -252,6 +252,26 @@ func TestResolveCryptoOptions_TrustAnchorsNilWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestResolveCryptoOptions_SurfacesCertProvider asserts that an injected
+// certificate provider reaches embedders, which forward it into
+// lifecycle.Infra.CertProvider before BuildServices builds the login CA.
+func TestResolveCryptoOptions_SurfacesCertProvider(t *testing.T) {
+	prov := &stubCertProvider{}
+
+	crypto := ResolveCryptoOptions(WithCertProvider(prov))
+	if crypto.CertProvider != prov {
+		t.Fatal("ResolveCryptoOptions: CertProvider is not the supplied provider")
+	}
+}
+
+// TestResolveCryptoOptions_CertProviderNilWhenAbsent verifies that no
+// WithCertProvider keeps the built-in login CA.
+func TestResolveCryptoOptions_CertProviderNilWhenAbsent(t *testing.T) {
+	if crypto := ResolveCryptoOptions(); crypto.CertProvider != nil {
+		t.Fatalf("ResolveCryptoOptions: CertProvider = %v, want nil when option not supplied", crypto.CertProvider)
+	}
+}
+
 // TestStart_AllProtocols_WithCertEnrollmentAndOnboarding asserts that
 // WithCertEnrollment and WithTenantOnboarding reach every protocol server's
 // own startup path (startREST, startGRPC, startQUIC, startUnix, startMCP

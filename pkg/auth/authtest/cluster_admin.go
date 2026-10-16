@@ -27,7 +27,8 @@ import (
 
 // Admin is a service.AdminServicer that implements the platform-only methods
 // -- AddMember, RemoveMember, RequestSnapshot, Drain and the node-keyspace
-// compaction policy's NodeCompaction and SetNodeCompaction -- and counts the
+// compaction policy's NodeCompaction and SetNodeCompaction, and StateHashes
+// -- and counts the
 // calls that reached them, so a test can tell a refused request from one
 // the service performed. Every other method is delegated to the embedded
 // AdminServicer, which a test sets to its package's own admin double when the
@@ -38,7 +39,10 @@ type Admin struct {
 	changes atomic.Int64
 }
 
-var _ service.AdminServicer = (*Admin)(nil)
+var (
+	_ service.AdminServicer      = (*Admin)(nil)
+	_ service.ReplicaStateHasher = (*Admin)(nil)
+)
 
 // AddMember records the membership change.
 func (a *Admin) AddMember(context.Context, uint64, uint64, string, string) error {
@@ -84,9 +88,16 @@ func (a *Admin) SetNodeCompaction(context.Context, *compaction.Policy) error {
 	return nil
 }
 
+// StateHashes records the read. Implements service.ReplicaStateHasher so the
+// transports' type assertion reaches it.
+func (a *Admin) StateHashes(context.Context, []uint64) (*service.StateHashesResponse, error) {
+	a.changes.Add(1)
+	return &service.StateHashesResponse{}, nil
+}
+
 // ClusterChanges reports how many of the platform-only calls -- add-member,
-// remove-member, snapshot, drain and the node compaction policy's read and
-// write -- reached the service.
+// remove-member, snapshot, drain, the node compaction policy's read and
+// write, and the replica state hashes read -- reached the service.
 func (a *Admin) ClusterChanges() int64 { return a.changes.Load() }
 
 // ClusterAdminCaller is one caller of the cluster-membership operations, and

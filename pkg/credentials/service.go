@@ -37,7 +37,7 @@ type CredentialService struct {
 	// transiently (Open → copy → Destroy) when a value is read.
 	manualCreds map[string]*secure.Secret
 	waitersMu   sync.Mutex
-	waiters     map[string][]chan []byte
+	waiters     map[string][]chan waiterDelivery
 
 	// Manual-strategy versioned-rotation state. Guarded by mu.
 	// manualVersions stores non-current grace-period values keyed by
@@ -55,6 +55,14 @@ type CredentialService struct {
 	// mu so the daemon can attach it after construction (the seal subsystem
 	// builds the service before the compliance logger exists).
 	audit audit.AuditLogger
+}
+
+// waiterDelivery is what submitManual hands a blocked retriever: its own
+// protected copy of the submitted value, or the error that prevented making
+// one (an exhausted locked-memory budget). Exactly one field is set.
+type waiterDelivery struct {
+	buf *secure.Buffer
+	err error
 }
 
 // Option configures a CredentialService at construction time.
@@ -98,7 +106,7 @@ func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slo
 		strategy:    strategy,
 		logger:      logger,
 		manualCreds: make(map[string]*secure.Secret),
-		waiters:     make(map[string][]chan []byte),
+		waiters:     make(map[string][]chan waiterDelivery),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -181,11 +189,18 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 	return nil
 }
 
-// RetrieveCredential returns the credential value for the given name.
-// For the manual strategy, this blocks until the credential is submitted
-// or the context is cancelled. For the barrier strategy, the value is
-// retrieved and decrypted from the StorageBarrier.
-func (s *CredentialService) RetrieveCredential(ctx context.Context, name string) ([]byte, error) {
+// RetrieveCredentialBuffer returns the credential value for the given name in
+// protected memory. For the manual strategy, this blocks until the credential
+// is submitted or the context is cancelled. For the barrier strategy, the value
+// is retrieved and decrypted from the StorageBarrier.
+//
+// The returned buffer is a fresh copy owned by the caller, who MUST Destroy it
+// once done, on every path. The value never exists as a plain []byte inside
+// this package: it is copied out only by a caller that chooses to, and the one
+// place the stack does so on purpose is the secret-bearing wire DTO of each
+// transport (see docs/credentials/architecture.md, "Protected-memory
+// boundary").
+func (s *CredentialService) RetrieveCredentialBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -201,7 +216,7 @@ func (s *CredentialService) RetrieveCredential(ctx context.Context, name string)
 }
 
 // SubmitCredential submits a credential for the manual strategy. Waiters
-// blocking on RetrieveCredential are notified and receive a copy of the
+// blocking on RetrieveCredentialBuffer are notified and receive a copy of the
 // value. For the barrier strategy, this delegates to StoreCredential.
 func (s *CredentialService) SubmitCredential(ctx context.Context, name string, value []byte) error {
 	if err := validateName(name); err != nil {
@@ -268,30 +283,19 @@ func newSecretCopy(ctx context.Context, value []byte) (*secure.Secret, error) {
 	return secure.NewSecret(ctx, tmp) // wipes tmp
 }
 
-// openSecretCopy materializes a sealed secret's plaintext into a fresh
-// caller-owned []byte, destroying the transient enclave buffer before return.
-//
-// The copy runs inside a COORDINATED borrow (go-qrdb#74). It used to size the
-// destination from buf.Size() and then read buf.Bytes(), which is two separate
-// borrows with a gap between them: a concurrent destroy (a shutdown
-// enclave.WipeAll) landing in that gap unmaps the pages, and the caller
-// receives a correctly sized run of zeros with nothing reporting a fault.
-// secure.CopyOut holds one borrow across both and refuses an empty source.
-//
-// Destroy stays OUTSIDE the borrow, and that placement is load-bearing: Destroy
-// takes this same buffer's lock exclusively, so calling it from inside the
-// shared hold would deadlock the caller against itself.
-//
-// Traced callees: secure.CopyOut's callback is make + copy and reaches nothing
-// in pkg/secure. Asserted under the borrow guard by
-// TestOpenSecretCopy_TakesNoNestedBorrow.
-func openSecretCopy(ctx context.Context, sec *secure.Secret) ([]byte, error) {
-	buf, err := sec.Open(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer buf.Destroy()
-	return secure.CopyOut(buf)
+// newBufferCopy copies value into a fresh protected Buffer. The caller's value
+// is left intact (a throwaway copy is what NewBufferFromBytes wipes).
+func newBufferCopy(value []byte) (*secure.Buffer, error) {
+	tmp := make([]byte, len(value))
+	copy(tmp, value)
+	return secure.NewBufferFromBytes(tmp) // wipes tmp
+}
+
+// bufferFromHeap moves a plaintext slice that a lower layer (the storage
+// barrier's decrypt) allocated into a protected Buffer and wipes the slice, so
+// the heap copy lives only as long as this call.
+func bufferFromHeap(value []byte) (*secure.Buffer, error) {
+	return secure.NewBufferFromBytes(value) // wipes value
 }
 
 // storeManual seals a credential into an in-memory go-enclave sealed enclave.
@@ -320,20 +324,20 @@ func (s *CredentialService) storeManual(ctx context.Context, name string, value 
 // credential has not yet been submitted, a waiter channel is registered
 // and the call blocks until the credential is submitted or the context
 // is cancelled.
-func (s *CredentialService) retrieveManual(ctx context.Context, name string) ([]byte, error) {
-	// Fast path: credential already exists. Materialize the enclave into a
-	// transient copy while holding the read lock.
+func (s *CredentialService) retrieveManual(ctx context.Context, name string) (*secure.Buffer, error) {
+	// Fast path: credential already exists. Open the enclave into a fresh
+	// protected buffer while holding the read lock.
 	s.mu.RLock()
 	sec, ok := s.manualCreds[name]
 	if ok {
-		out, err := openSecretCopy(ctx, sec)
+		out, err := sec.Open(ctx)
 		s.mu.RUnlock()
 		return out, err
 	}
 	s.mu.RUnlock()
 
 	// Slow path: register a waiter and block.
-	ch := make(chan []byte, 1)
+	ch := make(chan waiterDelivery, 1)
 
 	s.waitersMu.Lock()
 	s.waiters[name] = append(s.waiters[name], ch)
@@ -343,20 +347,18 @@ func (s *CredentialService) retrieveManual(ctx context.Context, name string) ([]
 		slog.String("name", name))
 
 	select {
-	case value := <-ch:
-		out := make([]byte, len(value))
-		copy(out, value)
-		// Wipe the channel-delivered plaintext copy; the caller keeps `out`.
-		secure.Wipe(value)
-		return out, nil
+	case d := <-ch:
+		// The delivered buffer is this waiter's own protected copy; the caller
+		// keeps it.
+		return d.buf, d.err
 	case <-ctx.Done():
 		// Deregister this waiter so a later submit does not copy the credential
 		// into an abandoned buffered channel. If submit already raced and
-		// delivered, drain and wipe the buffered plaintext.
+		// delivered, drain and destroy the buffered protected copy.
 		s.removeWaiter(name, ch)
 		select {
-		case value := <-ch:
-			secure.Wipe(value)
+		case d := <-ch:
+			d.buf.Destroy()
 		default:
 		}
 		return nil, ctx.Err()
@@ -365,7 +367,7 @@ func (s *CredentialService) retrieveManual(ctx context.Context, name string) ([]
 
 // removeWaiter removes a single waiter channel from the pending-waiters list
 // for name. Used when a waiting retrieve is cancelled before a submit arrives.
-func (s *CredentialService) removeWaiter(name string, ch chan []byte) {
+func (s *CredentialService) removeWaiter(name string, ch chan waiterDelivery) {
 	s.waitersMu.Lock()
 	defer s.waitersMu.Unlock()
 	waiters := s.waiters[name]
@@ -382,12 +384,12 @@ func (s *CredentialService) removeWaiter(name string, ch chan []byte) {
 
 // retrieveBarrier retrieves a credential from the StorageBarrier. If the
 // underlying storage returns an error, ErrCredentialNotFound is returned.
-func (s *CredentialService) retrieveBarrier(ctx context.Context, name string) ([]byte, error) {
+func (s *CredentialService) retrieveBarrier(ctx context.Context, name string) (*secure.Buffer, error) {
 	data, err := s.barrier.Get(ctx, credentialPrefix+name)
 	if err != nil {
 		return nil, ErrCredentialNotFound
 	}
-	return data, nil
+	return bufferFromHeap(data)
 }
 
 // submitManual submits a credential to the in-memory map and notifies
@@ -415,9 +417,8 @@ func (s *CredentialService) submitManual(ctx context.Context, name string, value
 	waiters := s.waiters[name]
 	delete(s.waiters, name)
 	for _, ch := range waiters {
-		out := make([]byte, len(value))
-		copy(out, value)
-		ch <- out
+		buf, copyErr := newBufferCopy(value)
+		ch <- waiterDelivery{buf: buf, err: copyErr}
 		close(ch)
 	}
 	s.waitersMu.Unlock()

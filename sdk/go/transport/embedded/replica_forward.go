@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	quicsdk "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 )
 
@@ -57,8 +58,9 @@ type replicaForwarding struct {
 // identity caller authenticates for it: the identity the embedder configured,
 // never the node's. A call caller authenticates no identity for, one whose
 // identity belongs to another tenant than the refused database, and every
-// stream is answered the refusal. With either argument nil nothing is
-// forwarded.
+// stream is answered the refusal. A call a follower refuses with the leader's
+// address -- *transport.NotLeaderError, a lease's remaining TTL -- goes to
+// that leader the same way. With either argument nil nothing is forwarded.
 func WithReplicaForwarding(forwarder ReplicaForwarder, caller auth.Authenticator) Option {
 	return func(t *Transport) {
 		if forwarder == nil || caller == nil {
@@ -70,7 +72,7 @@ func WithReplicaForwarding(forwarder ReplicaForwarder, caller auth.Authenticator
 }
 
 // forwardingScope is a database-scoped transport that forwards what the node
-// refuses as a non-replica. Every method it does not override -- the control
+// refuses as a non-replica or as a follower. Every method it does not override -- the control
 // plane, and the streams -- is the scoped transport's own.
 type forwardingScope struct {
 	*Transport
@@ -86,7 +88,7 @@ type forwardingScope struct {
 func (s *forwardingScope) forwardTo(ctx context.Context, err error) (*quicsdk.Transport, bool) {
 	var refusal *placement.NotAReplicaError
 	if !errors.As(err, &refusal) {
-		return nil, false
+		return s.forwardToLeader(ctx, err)
 	}
 	caller, aerr := s.fwd.caller.Authenticate(ctx)
 	if aerr != nil || caller == nil || caller.Subject == "" {
@@ -103,6 +105,33 @@ func (s *forwardingScope) forwardTo(ctx context.Context, err error) (*quicsdk.Tr
 		status, body, ok := s.fwd.forwarder.Forward(ctx, caller, method, database, payload, refusal)
 		if !ok {
 			return 0, nil, refusal
+		}
+		return status, body, nil
+	}), true
+}
+
+// forwardToLeader returns the transport to make a call again with when err is
+// a follower's refusal naming its leader -- a lease's remaining TTL, which
+// only the leader knows -- one that sends each request frame to that leader
+// through the forwarder, as the configured caller, as the network transports
+// forward a not-leader refusal. It returns false when err is no such refusal,
+// the leader is unknown, or the caller does not authenticate, and the caller
+// is then answered err.
+func (s *forwardingScope) forwardToLeader(ctx context.Context, err error) (*quicsdk.Transport, bool) {
+	var notLeader *transport.NotLeaderError
+	if !errors.As(err, &notLeader) || notLeader.LeaderAddress == "" {
+		return nil, false
+	}
+	caller, aerr := s.fwd.caller.Authenticate(ctx)
+	if aerr != nil || caller == nil || caller.Subject == "" {
+		slog.Warn("replicaforward: embedded call not forwarded to the leader: the configured caller did not authenticate",
+			"database", s.database, "leader_raft_addr", notLeader.LeaderAddress, "error", aerr)
+		return nil, false
+	}
+	return quicsdk.NewFrameTransport(s.database, func(ctx context.Context, method, database string, payload []byte) (uint16, []byte, error) {
+		status, body, ok := s.fwd.forwarder.ForwardToLeader(ctx, caller, method, database, payload, notLeader.LeaderAddress)
+		if !ok {
+			return 0, nil, notLeader
 		}
 		return status, body, nil
 	}), true

@@ -680,30 +680,6 @@ func (e *SecureMemoryWipeError) Error() string {
 // Unwrap returns the corruption error WipeAll detected, if any.
 func (e *SecureMemoryWipeError) Unwrap() error { return e.Err }
 
-// SealedSMStoragePlaintextError is returned at start when the seal barrier is
-// enabled and --sm names a storage-generic state machine (disk, fast) over an
-// --sm-storage that cannot be encrypted at rest (file). Pebble storage is
-// encrypted through the barrier and memory storage persists nothing, so both
-// are allowed.
-type SealedSMStoragePlaintextError struct {
-	SMType  string
-	Storage string
-	Err     error
-}
-
-// Error returns a human-readable description with the remedy.
-func (e *SealedSMStoragePlaintextError) Error() string {
-	storage := e.Storage
-	if storage == "" {
-		storage = "pebble"
-	}
-	return "cli: --sm " + strconv.Quote(e.SMType) + " over --sm-storage " + strconv.Quote(storage) +
-		" would store data in plaintext while the seal barrier is enabled; use --sm-storage pebble (encrypted at rest) or memory"
-}
-
-// Unwrap returns the registry's refusal.
-func (e *SealedSMStoragePlaintextError) Unwrap() error { return e.Err }
-
 // InspectionOptOutAuditError is returned by start when the process-inspection
 // opt-out was honoured but the compliance audit trail refused the record of
 // it. The node does not run inspectable off the record.

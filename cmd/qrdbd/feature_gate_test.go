@@ -16,7 +16,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -177,6 +180,50 @@ func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
 	require.NoError(t, closer.Close())
 	assert.False(t, g.Activated(featuregate.GuardedWrites),
 		"a degraded gate never started, so it tracks no activation locally")
+}
+
+// countingCloser counts withdrawals and fails each one with err.
+type countingCloser struct {
+	calls int
+	err   error
+}
+
+func (c *countingCloser) Close() error { c.calls++; return c.err }
+
+// captureDefaultLog routes slog's default logger into a buffer for the test.
+// Not parallel: the default logger is process-wide.
+func captureDefaultLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestWithdrawFeatures_FailureIsLoggedNotFatal: shutdown withdraws the
+// advertisement exactly once and goes on tearing down when the withdrawal
+// fails; the failure is logged with its cause rather than swallowed.
+func TestWithdrawFeatures_FailureIsLoggedNotFatal(t *testing.T) {
+	logs := captureDefaultLog(t)
+	closer := &countingCloser{err: errors.New("lease revoke timed out")}
+
+	withdrawFeatures(closer)
+
+	assert.Equal(t, 1, closer.calls)
+	assert.Contains(t, logs.String(), "feature advertisement withdrawal failed")
+	assert.Contains(t, logs.String(), "lease revoke timed out")
+}
+
+// TestWithdrawFeatures_SuccessLogsNothing: a clean withdrawal is silent.
+func TestWithdrawFeatures_SuccessLogsNothing(t *testing.T) {
+	logs := captureDefaultLog(t)
+	closer := &countingCloser{}
+
+	withdrawFeatures(closer)
+
+	assert.Equal(t, 1, closer.calls)
+	assert.Empty(t, logs.String())
 }
 
 // TestStartFeatureGate_BoundsEveryStartRead is the regression for a restarted

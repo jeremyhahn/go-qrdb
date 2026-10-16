@@ -212,6 +212,10 @@ func TestGRPCUserAuthFactor_AllMethods_Closed(t *testing.T) {
 			_, e := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{})
 			return e
 		}},
+		{"DeleteAuthFactor", func() error {
+			_, e := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{})
+			return e
+		}},
 		{"RotateAuthFactor", func() error {
 			_, e := tr.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{})
 			return e

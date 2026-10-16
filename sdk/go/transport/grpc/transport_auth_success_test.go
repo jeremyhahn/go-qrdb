@@ -193,6 +193,10 @@ func (f *fakeCertEnrollmentServicer) RemoveTrustAnchor(_ context.Context, tenant
 	return nil
 }
 
+func (f *fakeCertEnrollmentServicer) IssueDelegation(_ context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	return &service.IssuedDelegation{TenantID: req.TenantID, Principal: req.Principal, Scope: req.Scope}, nil
+}
+
 // ===========================================================================
 // Server setup
 // ===========================================================================

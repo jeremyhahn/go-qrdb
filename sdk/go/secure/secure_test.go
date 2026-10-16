@@ -25,7 +25,6 @@ package secure_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -80,30 +79,23 @@ func TestGuardBorrows_ArmsAndDisarmsThroughTheSDK(t *testing.T) {
 //
 // Mutation-verified, and the result dictated the shape: replacing the body of
 // the SDK's GuardBorrows with `return func() {}` does not make this test fail,
-// it makes it HANG — the allocation inside the borrow becomes the real
-// self-deadlock, on a goroutine this test is waiting for. Which is the
-// migration's whole subject arriving in the test that asserts it is detected.
+// it makes it HANG — the buffer's Destroy inside its own borrow becomes the
+// real self-deadlock, on a goroutine this test is waiting for.
 //
 // So the wait is bounded and the timeout names the cause. A test that proves
 // the deadlock is caught must not itself depend on the catch to terminate.
 //
 // The bound cannot RECOVER from a genuine hang — the wedged goroutine holds
-// the purge lock for the life of the binary, so anything after this in the
-// package blocks behind it. What it buys is that the failure arrives WITH its
-// reason, ahead of the wedge, instead of the run dying on its wall-clock limit
-// naming whichever test happened to be running.
+// the buffer's lock for the life of the binary. What it buys is that the
+// failure arrives WITH its reason instead of the run dying on its wall-clock
+// limit naming whichever test happened to be running.
 //
 // Which is why the buffer's Destroy is SKIPPED once the wait has timed out,
-// and that placement is load-bearing rather than tidy. Destroy is purge-class:
-// it takes the purge lock exclusively, and the wedged goroutine is holding it
-// shared and never will not be. An unconditional `defer buf.Destroy()` blocks
-// during the Goexit that t.Fatalf starts, so the diagnostic never prints and
-// the run dies on its own timeout with the stack of the cleanup instead of the
-// cause. Measured here with the mutant applied, before the skip existed.
-//
-// pkg/dek's TestClusterDEKManager_ToleratesABarrierThatAllocatesProtectedMemory
-// learned the same thing on the same class of failure. Two tests reaching it
-// independently is the argument for stating it rather than re-deriving it.
+// and that placement is load-bearing rather than tidy. Destroy takes the
+// buffer's lock exclusively, and the wedged goroutine is holding it shared and
+// never will not be. An unconditional `defer buf.Destroy()` blocks during the
+// Goexit that t.Fatalf starts, so the diagnostic never prints and the run dies
+// on its own timeout with the stack of the cleanup instead of the cause.
 func TestGuardBorrows_ReportsAViolationThroughTheSDK(t *testing.T) {
 	buf, err := securesdk.NewBuffer(32)
 	if err != nil {
@@ -128,11 +120,9 @@ func TestGuardBorrows_ReportsAViolationThroughTheSDK(t *testing.T) {
 		go func() {
 			defer close(done)
 			_ = buf.WithBytes(func([]byte) error {
-				// Purge-class inside a borrow — the self-deadlock, which the
-				// armed guard turns into a report.
-				if s, secErr := securesdk.NewSecret(context.Background(), []byte("inside the borrow")); secErr == nil {
-					s.Destroy()
-				}
+				// The borrowed buffer reentered from inside its own borrow —
+				// the self-deadlock, which the armed guard turns into a report.
+				buf.Destroy()
 				return nil
 			})
 		}()
@@ -140,7 +130,7 @@ func TestGuardBorrows_ReportsAViolationThroughTheSDK(t *testing.T) {
 		case <-done:
 		case <-time.After(deadlockBound):
 			hung.Store(true)
-			t.Fatalf("the allocation inside the borrow did not return within %s: "+
+			t.Fatalf("the Destroy inside the borrow did not return within %s: "+
 				"the SDK's GuardBorrows armed nothing, so this is the real "+
 				"self-deadlock rather than the report it should have produced",
 				deadlockBound)
@@ -148,10 +138,10 @@ func TestGuardBorrows_ReportsAViolationThroughTheSDK(t *testing.T) {
 	}()
 
 	if got == "" {
-		t.Fatal("the SDK's GuardBorrows did not report an allocation made inside a borrow")
+		t.Fatal("the SDK's GuardBorrows did not report a Destroy of the borrowed buffer")
 	}
-	if !bytes.Contains([]byte(got), []byte("NESTED BORROW")) {
-		t.Errorf("report = %q, want it to name the nested borrow", got)
+	if !bytes.Contains([]byte(got), []byte("reentered a Buffer it was borrowing")) {
+		t.Errorf("report = %q, want it to name the reentered buffer", got)
 	}
 }
 

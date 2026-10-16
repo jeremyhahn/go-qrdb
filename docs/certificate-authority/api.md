@@ -1,6 +1,6 @@
 # Certificate Authority — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -11,16 +11,17 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 |---|---|---|---|---|---|---|
 | Issue a client certificate from a CSR | `POST /certs/issue` | `IssueCert` | `cert.Issue` | `qrdb_cert_issue` | `IssueCert` | `certs:issue` |
 | Enrol a bring-your-own certificate | `POST /certs/enroll` | `EnrollCert` | `cert.Enroll` | `qrdb_cert_enroll` | `EnrollCert` | `certs:enroll` |
+| Issue a delegation to a service principal | `POST /certs/delegate` | `IssueDelegation` | `cert.Delegate` | `qrdb_cert_delegate` | `IssueDelegation` | `certs:delegate` |
 | Export PKCS#12 | `POST /certs/export` | `ExportCert` | `cert.Export` | `qrdb_cert_export` | `ExportCert` | `certs:export` |
 | Revoke certificate | `POST /certs/revoke` | `RevokeCert` | `cert.Revoke` | `qrdb_cert_revoke` | `RevokeCert` | `certs:revoke` |
 | List certificates | `GET /certs/list` | `ListCerts` | `cert.List` | `qrdb_cert_list` | `ListCerts` | `certs:list` |
 | Fetch the CA bootstrap certificate | `GET /v1/ca/bootstrap` | MISSING | MISSING | MISSING | `CACertPEM()` in process | **public**, conditionally registered |
 
-Five capabilities on all six transports, plus the public bootstrap route.
+Six capabilities on all six transports, plus the public bootstrap route.
 
-**No verb generates a client's private key.** Issue signs a certificate
-signing request the requester made with its own key; enrol binds a certificate
-the requester already holds. Both act on an **existing** account of the
+**No verb generates a client's private key.** Issue and delegate sign a
+certificate signing request the requester made with its own key; enrol binds a
+certificate the requester already holds. Both act on an **existing** account of the
 caller's own tenant and bind the certificate's public key to it in the same
 call. The trust anchors that enrolment verifies against are their own feature:
 [../trust-anchors/api.md](../trust-anchors/api.md).
@@ -39,6 +40,7 @@ tenant. A second check establishes the target:
 | Capability | Target tenant | Additional permission |
 |---|---|---|
 | Issue, Enrol | the **caller's own** tenant — no request field names a tenant | — (`certs:issue` / `certs:enroll` re-checked against it) |
+| Delegate | the **caller's own** tenant, never the system tenant — no request field names a tenant | — (`certs:delegate` re-checked against it) |
 | List | the request's `tenantID` / `tenant_id` | — (`certs:list` re-checked against the target) |
 | Revoke, serial **known** to this node | the owning tenant, resolved from the serial | — (`certs:revoke` re-checked against the owner) |
 | Revoke, serial **unknown** to this node | none — deny-by-serial | **`certs:revoke:cross`** (system tenant only) |
@@ -109,6 +111,53 @@ Both return `201` with the bound certificate — never a key:
 
 `serial` is omitted for an enrolled certificate, which this CA did not issue.
 
+## Issuing a delegation
+
+`POST /certs/delegate` has the caller's own tenant's login CA issue a
+short-lived client certificate to an embedder's **service principal**, naming
+the permissions the principal may exercise inside the tenant. How the
+certificate is verified, and what authority it confers, is in
+[../identity-rbac/api.md](../identity-rbac/api.md#delegation-certificates).
+
+```json
+{ "principal": "billing", "scope": ["kv:get", "kv:put"],
+  "csrPEM": "<PEM CERTIFICATE REQUEST>", "ttl": "30m" }
+```
+
+| Field | Rule |
+|---|---|
+| `principal` | `[a-z0-9][a-z0-9._-]*`, at most 64 bytes, and not the name of a built-in role |
+| `scope` | 1 to 64 registered `resource:action` permissions, no duplicates |
+| `csrPEM` | the principal's own CSR; only its public key is used, under the same key rules as `POST /certs/issue` |
+| `ttl` | a Go duration; absent means 1 hour, more than `24h` is refused |
+
+The certificate's CN is `qrdb-service:<principal>`, its OU is the caller's
+tenant, and, when the node has a trust domain, its URI SAN is
+`spiffe://<trust-domain>/tenant/<tenant>/service/<principal>`. The grant rides
+in a **critical** extension, so a verifier that does not understand it refuses
+the certificate rather than reading it as a user login. EKU is ClientAuth only.
+
+Only a tenant delegates. The system tenant is refused, and so is a caller
+that is itself authenticated by a delegation: a delegation that could renew
+itself would have no lifetime. Every issuance is written to the tenant's audit
+trail as `cert.delegate` with the principal and scope, before the CA signs.
+
+Returns `201` with the certificate — never a key:
+
+```json
+{ "tenantID": "acme", "principal": "billing", "scope": ["kv:get", "kv:put"],
+  "certPEM": "<PEM>", "serial": "3f2a9c…", "notAfter": "2026-10-09T10:30:00Z" }
+```
+
+gRPC and Unix use `IssueDelegationRequest` / `IssuedDelegationResponse` with
+`principal`, `scope`, `csr_pem`, `ttl` and `tenant_id`, `cert_pem`, `serial`,
+`not_after` (RFC 3339). QUIC takes and returns the REST bodies; the MCP tool
+takes `principal`, `scope`, `csr_pem` and `ttl`.
+
+A delegation is revoked like any certificate this CA issued, by serial with
+`POST /certs/revoke`, and appears in `GET /certs/list`. It is refused within
+`auth.revocation_cache_ttl` of revocation, and outright at `notAfter`.
+
 `GET /certs/list` — `tenantID` query parameter. Response elements are
 `CertRecord`:
 
@@ -150,7 +199,7 @@ The CA private key is destroyed in memory when the barrier seals. While sealed:
 
 | Operation | Behaviour |
 |---|---|
-| Issue, export, revoke, `IsRevoked`, list | `BarrierSealedError` |
+| Issue, delegate, export, revoke, `IsRevoked`, list | `BarrierSealedError` |
 | `CACertPEM()` / `GET /v1/ca/bootstrap` | **still works** — the CA certificate is public data served from cache |
 
 That asymmetry is deliberate: a client needs the CA certificate to connect at
@@ -168,6 +217,8 @@ than merely inert.
 | Export targets a revoked certificate | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError`, `service.CertEnrollmentFieldError` |
 | CSR does not parse, its signature does not verify, or its key is not accepted | 400 | `INVALID_ARGUMENT` — `cert.InvalidCSRError` |
+| Delegation names a malformed or built-in-role principal, an unregistered or duplicate permission, or a lifetime over 24 hours | 400 | `INVALID_ARGUMENT` — `service.DelegationRequestError` |
+| Delegation requested by the system tenant or by a delegated caller | 403 | `PERMISSION_DENIED` — `service.DelegationDeniedError` |
 | The named account does not exist in the caller's tenant | 404 | `NOT_FOUND` — `user.UserNotFoundError` |
 | Enrolled certificate does not chain to a trust anchor of the tenant | 400 | `INVALID_ARGUMENT` — `trustanchor.CertificateNotTrustedError` |
 | Enrolled certificate authenticates as another account or tenant | 400 | `INVALID_ARGUMENT` — `certenroll.IdentityMismatchError` |

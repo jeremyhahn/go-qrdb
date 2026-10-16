@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -501,12 +502,19 @@ func TestPebbleHandleLeaseKeepAlive_NonexistentLease(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	// Keep-alive on a nonexistent lease is an idempotent no-op success: a
-	// non-nil error from Update() would stall the Raft group.
+	// non-nil error from Update() would stall the Raft group, and the apply
+	// must not classify it as an application error either -- it carries the
+	// not-found outcome back in its own Data tag instead (go-qrdb#275), so
+	// the service layer can answer the caller without a second linearized
+	// read, while the apply itself stays an unrefused success.
 	if err := s.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error for nonexistent lease: %v", err)
 	}
 	if _, ok := protocol.DecodeAppError(results[0].Data); ok {
 		t.Fatal("expected no app-error for idempotent keep-alive of nonexistent lease")
+	}
+	if id, ok := protocol.DecodeLeaseKeepAliveNotFound(results[0].Data); !ok || id != 99999 {
+		t.Fatalf("expected lease-keep-alive-not-found payload for lease 99999, got ok=%v id=%d", ok, id)
 	}
 	if results[0].Value != 0 {
 		t.Fatalf("expected idempotent result Value 0, got %d", results[0].Value)
@@ -1371,6 +1379,73 @@ func TestMVCCLookup_LeaseTimeToLiveFound(t *testing.T) {
 	l := result.(*service.Lease)
 	if l.ID != leaseID {
 		t.Fatalf("expected lease ID %d, got %d", leaseID, l.ID)
+	}
+}
+
+func TestMVCCLookup_LeaseKeepAlive(t *testing.T) {
+	s := NewMVCCStateMachine(nil)
+	lr := lease.NewLessor()
+	s.SetLessor(lr)
+	if _, err := s.Open(context.Background(), t.TempDir(), nil); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		lr.Close()
+		_ = s.Close(context.Background())
+	})
+
+	results := make([]sm.Result, 1)
+	grant := []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(30))}}
+	if err := s.Update(context.Background(), grant, results); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	leaseID := int64(results[0].Value)
+
+	var np *lease.NotPrimaryError
+	if _, err := s.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: leaseID}); !errors.As(err, &np) {
+		t.Fatalf("Lookup before RunExpiry error = %v, want *lease.NotPrimaryError", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lr.RunExpiry(ctx, time.Hour, func() bool { return true },
+			func(context.Context, int64) error { return nil }, nil)
+	}()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := s.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: leaseID})
+		if err == nil {
+			if l := got.(*service.Lease); l.ID != leaseID {
+				t.Fatalf("lease ID = %d, want %d", l.ID, leaseID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Lookup never renewed: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var lnf *service.LeaseNotFoundError
+	if _, err := s.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: leaseID + 99}); !errors.As(err, &lnf) {
+		t.Fatalf("unknown lease error = %v, want *service.LeaseNotFoundError", err)
+	}
+}
+
+func TestMVCCLookup_LeaseKeepAliveWithoutLessor(t *testing.T) {
+	s := NewMVCCStateMachine(nil)
+	if _, err := s.Open(context.Background(), t.TempDir(), nil); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	var iq *engine.InvalidQueryError
+	if _, err := s.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: 1}); !errors.As(err, &iq) {
+		t.Fatalf("error = %v, want *engine.InvalidQueryError", err)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,9 +66,10 @@ func runHelper(mode string) int {
 	case orphanHelperMode:
 		// Leave a grandchild holding this process's stdout, then exit: the
 		// shape of a daemon whose descendant outlives it.
-		// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, with no arguments; the helper mode travels in a compile-time-literal environment entry. No shell is involved.
-		child := exec.Command(os.Args[0])
-		child.Env = append(os.Environ(), helperEnv+"=sleep")
+		child, err := helperCommand("sleep")
+		if err != nil {
+			return 1
+		}
 		child.Stdout = os.Stdout
 		if err := child.Start(); err != nil {
 			return 1
@@ -86,6 +88,46 @@ func runHelper(mode string) int {
 		return 2
 	}
 	return 0
+}
+
+// helperCommand returns a command that re-executes this test binary as the
+// helper subprocess named by mode. The binary is the one this process is
+// running, as the kernel resolves it, never os.Args[0], which the parent
+// chooses; it runs with no arguments and no shell, and the mode travels in
+// the environment.
+func helperCommand(mode string) (*exec.Cmd, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if !filepath.IsAbs(self) {
+		return nil, errors.New("qrdbdharness: test binary path " + strconv.Quote(self) + " is not absolute")
+	}
+	// #nosec G204,G702 -- self is this process's own executable, resolved by the kernel (os.Executable) and checked absolute above; no argument is passed and no shell is involved. The only other input, mode, goes into the environment, never the command line.
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), helperEnv+"="+mode)
+	return cmd, nil
+}
+
+func TestHelperCommandReexecsThisBinary(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := helperCommand("print")
+	if err != nil {
+		t.Fatalf("helperCommand: %v", err)
+	}
+	if cmd.Path != self || len(cmd.Args) != 1 {
+		t.Errorf("command = %q %v, want this test binary %q with no arguments", cmd.Path, cmd.Args[1:], self)
+	}
+	if !slices.Contains(cmd.Env, helperEnv+"=print") {
+		t.Errorf("environment lacks the helper mode %s=print", helperEnv)
+	}
+	out, err := cmd.Output()
+	if err != nil || string(out) != "first\nsecond\n" {
+		t.Errorf("helper ran with output %q, err %v; want the print helper's", out, err)
+	}
 }
 
 // startHelper launches this test binary in the given helper mode.

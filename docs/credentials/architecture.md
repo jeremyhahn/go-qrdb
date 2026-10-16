@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 Named credentials with versioned rotation, plus the SPI that resolves
 `credential://` and `literal://` references in configuration at boot.
@@ -99,6 +99,63 @@ the SPI.
 - Each verb carries its own permission; **`credentials:submit`,
   `credentials:rotate` and `credentials:delete` are sensitive and distinct from
   reads**.
+
+## Protected-memory boundary
+
+A retrieved credential is returned to the caller as a go-enclave-backed
+`*secure.Buffer`, not a `[]byte` (handbook `security-review.md` §6). The
+protected-memory handle runs from the store to the last point at which a
+caller must hold bytes:
+
+| Hop | Surface | Form of the value |
+|---|---|---|
+| Store | `credentials.CredentialService.RetrieveCredentialBuffer`, `RetrieveCredentialVersionBuffer` | `*secure.Buffer`. `manual` opens the enclave straight into a fresh Buffer; `barrier` moves the barrier's decrypted heap slice into one, wiping the slice (the decrypt itself happens in the barrier, below this feature) |
+| Service | `service.CredentialServicer.CredentialRetrieveBuffer`, `CredentialRetrieveVersionBuffer` | `*secure.Buffer`, passed through |
+| In-process consumers | embedded SDK transport, `pkg/secret` `CredentialResolver` | `*secure.Buffer`. The resolver seals it into a `SecretValue` with `secret.NewSecretValueFromBuffer`, which consumes the Buffer without a heap copy |
+| **Wire** | REST, gRPC, QUIC, MCP, Unix handlers | **bytes, by design** (below) |
+| SDK client | `transport.CredentialClient.CredentialRetrieveBuffer`, `CredentialRetrieveVersionBuffer` | `*secure.Buffer`, rebuilt from the decoded wire value |
+| **Output** | `qrdb credential retrieve`, `retrieve-version`; the desktop binding | **bytes, by design** (below) |
+
+**The secret-bearing wire DTO is the single boundary where bytes leave
+protected memory on the server.** A response body, a protobuf message and an
+MCP tool result are all byte or string containers owned by an encoder, so the
+value has to be copied out of the Buffer to be sent. That copy is
+`service.CredentialWireValue`, the only place a handler does it: it copies the
+value out under a held borrow (`secure.CopyOut`) and destroys the Buffer in the
+same call, so the protected copy does not outlive the hand-off. REST, QUIC and
+MCP wipe the copied slice as soon as it has been encoded. gRPC cannot: it
+marshals the response after the handler returns, so the slice is released to
+the garbage collector and not wiped. This posture is accepted rather than
+engineered around — every transport is TLS-protected and
+the credential is by definition about to cross a process boundary. The same
+holds in the other direction, and each SDK remote transport builds the Buffer
+itself from its own response. REST and MCP decode the base64 text straight into the Buffer's window
+(`transport.WireValue`, `transport.BufferFromBase64`), so the plaintext never
+exists as a heap slice there. gRPC, Unix and QUIC decode a protobuf `bytes`
+field, which the protobuf runtime allocates; the transport moves it into the
+Buffer with `transport.BufferFromWire` and wipes it, and QUIC also wipes the
+whole response frame. In every case the framework's own read buffers (the HTTP
+body, the JSON decoder's scratch, the MCP tool-result string, gRPC's receive
+buffer) are outside this package's control and are not wiped.
+
+**The CLI and the desktop binding are the output boundary.** The CLI writes the
+value to the terminal or pipe inside the Buffer's borrow (`printSecretBuffer`)
+and destroys the Buffer; the desktop binding converts it to a string for the
+frontend, which cannot hold a Buffer. Nothing downstream of either is protected
+memory, and that is the point at which the operator asked to see the value.
+
+The two copies that are never wiped, the gRPC handlers' response field and the
+desktop binding's string, each carry a `//secure:unwiped` directive naming the
+framework that encodes the value after the function returns, so
+`make secure-analyzer` holds every other copy-out to a wipe.
+
+OWNER ruling, 2026-10-07: the `[]byte` forms of these methods
+(`RetrieveCredential`, `RetrieveCredentialVersion`, `CredentialRetrieve`,
+`CredentialRetrieveVersion`) are deleted now from exported Go interfaces and
+implementations, with no compatibility code. Only the `*secure.Buffer` forms
+remain for Go callers. The wire contract is unchanged: REST, gRPC, QUIC, MCP
+and Unix still carry credential retrieve responses as secret-bearing wire DTOs
+at the process boundary.
 
 ## What this feature deliberately does not do
 

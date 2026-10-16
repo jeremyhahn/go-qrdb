@@ -95,7 +95,7 @@ func TestKeepAlive_RestartsTheTTLFromTheClock(t *testing.T) {
 	unrenewed, _ := lr.Grant(nopWriter{}, 10)
 
 	fake.Advance(8 * time.Second)
-	if _, err := lr.KeepAlive(renewed.ID); err != nil {
+	if _, err := lr.KeepAlive(nopWriter{}, renewed.ID); err != nil {
 		t.Fatalf("KeepAlive: %v", err)
 	}
 	fake.Advance(3 * time.Second) // 11s: past the original deadline, 3s into the renewed one

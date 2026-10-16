@@ -120,6 +120,23 @@ handlers: nothing about how the closed store is DETECTED changed. The condition
 was always classified `Unavailable` by the service-error mapper; what was
 missing was somewhere on the wire to put the answer.
 
+## At rest: what a caller can observe
+
+At-rest encryption has no request of its own; the per-backend guarantee is in
+[architecture.md](architecture.md#at-rest-encryption-one-mechanism-for-every-on-disk-backend).
+Two things reach a caller:
+
+- **A store whose barrier is sealed** answers every data-plane request with
+  the barrier's sealed error: `503` on REST, `UNAVAILABLE` on gRPC, QUIC and
+  MCP, and on `embedded` the value itself (`errors.Is(err, sdk.ErrSealed)`).
+  It is the same answer for
+  `pebble` and `file`; see
+  [../barrier-seal/api.md](../barrier-seal/api.md).
+- **The capability report's `unencryptedAtRest` list** (`unencrypted_at_rest`
+  in the protobuf) names each store that keeps data outside the barrier while
+  the seal is on. A standalone `storage.backend: objstore` is the one entry
+  this feature can produce; `pebble` and `file` never appear in it.
+
 ## Error semantics
 
 | Condition | Behavior |
@@ -128,6 +145,7 @@ missing was somewhere on the wire to put the answer.
 | Transport without `VolumePoolProvider` | `Client.VolumePools()` returns nil |
 | Non-local backend registered | refused — pools are `LocalOnly` |
 | Any engine operation after `Close` | error matching `ErrStorageClosed`, never a panic |
+| Any operation on an encrypted store while its barrier is sealed | the barrier's sealed error (`503` / `UNAVAILABLE`; `sdk.ErrSealed` on `embedded`) |
 
 ## Versioning
 

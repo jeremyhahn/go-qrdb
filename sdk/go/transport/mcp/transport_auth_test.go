@@ -402,6 +402,10 @@ type mockCertEnrollmentServicer struct {
 	lastListTenant                 string
 	lastRemoveTenant, lastRemoveFP string
 	removeErr                      error
+
+	lastDelegation *service.IssueDelegationRequest
+	delegationResp *service.IssuedDelegation
+	delegationErr  error
 }
 
 var _ service.CertEnrollmentServicer = (*mockCertEnrollmentServicer)(nil)
@@ -467,6 +471,16 @@ func (m *mockCertEnrollmentServicer) RemoveTrustAnchor(_ context.Context, tenant
 	defer m.mu.Unlock()
 	m.lastRemoveTenant, m.lastRemoveFP = tenantID, fingerprint
 	return m.removeErr
+}
+
+func (m *mockCertEnrollmentServicer) IssueDelegation(_ context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastDelegation = req
+	if m.delegationErr != nil {
+		return nil, m.delegationErr
+	}
+	return m.delegationResp, nil
 }
 
 // ---------------------------------------------------------------------------

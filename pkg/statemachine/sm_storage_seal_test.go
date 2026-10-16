@@ -17,7 +17,6 @@ package statemachine
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,40 +29,31 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 )
 
-// TestResolveTypedWithStorage_UnderTheSealBarrier pins what a storage-generic
-// state machine may compose while the seal barrier is enabled: pebble storage,
-// which is opened on the barrier's encfs, and memory storage, which persists
-// nothing — never file storage, which has no encrypting seam and is refused at
-// resolution, before any storage is opened.
+// TestResolveTypedWithStorage_UnderTheSealBarrier pins that a storage-generic
+// state machine may compose every storage while the seal barrier is enabled:
+// pebble and file storage, which are opened on the barrier's encfs, and memory
+// storage, which persists nothing.
 func TestResolveTypedWithStorage_UnderTheSealBarrier(t *testing.T) {
 	sealed := atrest.New(sealtest.UnsealedBarrier(t))
 	root := t.TempDir()
 
-	for _, tc := range []struct {
-		smType, kind string
-		refused      bool
-	}{
-		{"disk", "file", true},
-		{"disk", "pebble", false},
-		{"disk", "", false},
-		{"fast", "pebble", false},
-		{"fast", "file", true},
-		{"disk", "memory", false},
-		{"fast", "memory", false},
-		{"memory", "", false},
-		{"highperf", "", false},
+	for _, tc := range []struct{ smType, kind string }{
+		{"disk", "file"},
+		{"disk", "pebble"},
+		{"disk", ""},
+		{"fast", "pebble"},
+		{"fast", "file"},
+		{"disk", "memory"},
+		{"fast", "memory"},
+		{"memory", ""},
+		{"highperf", ""},
 	} {
-		_, err := ResolveTypedWithStorage(tc.smType, "", StorageConfig{Root: root, Kind: tc.kind, Encryptor: sealed})
-		var unencrypted *SMStorageUnencryptedError
-		if got := errors.As(err, &unencrypted); got != tc.refused {
-			t.Errorf("%s over %q under the barrier: err = %v; refused=%v, want %v", tc.smType, tc.kind, err, got, tc.refused)
-		}
-		if tc.refused && unencrypted.Error() == "" {
-			t.Error("SMStorageUnencryptedError has an empty message")
+		if _, err := ResolveTypedWithStorage(tc.smType, "", StorageConfig{Root: root, Kind: tc.kind, Encryptor: sealed}); err != nil {
+			t.Errorf("%s over %q under the barrier: %v", tc.smType, tc.kind, err)
 		}
 	}
 
-	// Without the barrier nothing is refused for encryption.
+	// Nor with the barrier off.
 	for _, enc := range []*atrest.Encryptor{nil, atrest.New(nil)} {
 		if _, err := ResolveTypedWithStorage("disk", "", StorageConfig{Root: root, Kind: "file", Encryptor: enc}); err != nil {
 			t.Errorf("disk over file with the barrier off: %v", err)
@@ -71,19 +61,25 @@ func TestResolveTypedWithStorage_UnderTheSealBarrier(t *testing.T) {
 	}
 }
 
-// TestStorageGenericSMsEncryptPebbleStorageUnderTheBarrier is the other half:
-// under the seal barrier, disk and fast over pebble storage write only
-// ciphertext — a sentinel value written through the state machine appears in
-// no file under the replica's directory — and a replica restarted with the
-// same barrier reads it back.
-func TestStorageGenericSMsEncryptPebbleStorageUnderTheBarrier(t *testing.T) {
-	const sentinel = "SEALED-SENTINEL-PLAINTEXT-VALUE"
+// TestStorageGenericSMsEncryptStorageUnderTheBarrier is the other half: under
+// the seal barrier, disk and fast over pebble or file storage write only
+// ciphertext — neither the sentinel key nor the sentinel value written through
+// the state machine appears in any file under the replica's directory — and a
+// replica restarted with the same barrier reads it back.
+func TestStorageGenericSMsEncryptStorageUnderTheBarrier(t *testing.T) {
+	const (
+		sentinelKey = "SEALED-SENTINEL-PLAINTEXT-KEY"
+		sentinel    = "SEALED-SENTINEL-PLAINTEXT-VALUE"
+	)
 	sealed := atrest.New(sealtest.UnsealedBarrier(t))
 	ctx := context.Background()
 
-	for _, smType := range []string{"disk", "fast"} {
-		t.Run(smType, func(t *testing.T) {
-			sc := StorageConfig{Root: t.TempDir(), Kind: "pebble", Encryptor: sealed}
+	for _, tc := range []struct{ smType, kind string }{
+		{"disk", "pebble"}, {"fast", "pebble"}, {"disk", "file"}, {"fast", "file"},
+	} {
+		smType := tc.smType
+		t.Run(smType+"/"+tc.kind, func(t *testing.T) {
+			sc := StorageConfig{Root: t.TempDir(), Kind: tc.kind, Encryptor: sealed}
 			open := func() interface{} {
 				createFn, err := ResolveTypedWithStorage(smType, "", sc)
 				if err != nil {
@@ -104,7 +100,7 @@ func TestStorageGenericSMsEncryptPebbleStorageUnderTheBarrier(t *testing.T) {
 			}
 
 			m := open().(updater)
-			if err := m.Update(ctx, []sm.Entry{{Index: 1, Cmd: mustEncode(kv.EncodePut([]byte("k"), []byte(sentinel)))}}, make([]sm.Result, 1)); err != nil {
+			if err := m.Update(ctx, []sm.Entry{{Index: 1, Cmd: mustEncode(kv.EncodePut([]byte(sentinelKey), []byte(sentinel)))}}, make([]sm.Result, 1)); err != nil {
 				t.Fatalf("Update: %v", err)
 			}
 			if err := m.Close(ctx); err != nil {
@@ -120,8 +116,10 @@ func TestStorageGenericSMsEncryptPebbleStorageUnderTheBarrier(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if bytes.Contains(body, []byte(sentinel)) {
-					t.Errorf("plaintext leaked in %s", p)
+				for _, plain := range []string{sentinelKey, sentinel} {
+					if bytes.Contains(body, []byte(plain)) {
+						t.Errorf("plaintext %q leaked in %s", plain, p)
+					}
 				}
 				return nil
 			})
@@ -134,7 +132,7 @@ func TestStorageGenericSMsEncryptPebbleStorageUnderTheBarrier(t *testing.T) {
 			if smType == "disk" {
 				m2 := open().(updater)
 				t.Cleanup(func() { _ = m2.Close(ctx) })
-				got, err := m2.Lookup(ctx, []byte("k"))
+				got, err := m2.Lookup(ctx, []byte(sentinelKey))
 				if err != nil || string(got.([]byte)) != sentinel {
 					t.Fatalf("restarted replica read %v, %v; want the sentinel", got, err)
 				}

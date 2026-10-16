@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -95,10 +96,18 @@ func handleCredentialRetrieve(svc service.CredentialServicer) mcpserver.ToolHand
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
-		value, err := svc.CredentialRetrieve(ctx, name)
+		buf, err := svc.CredentialRetrieveBuffer(ctx, name)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_credential_retrieve", Err: err}
 		}
+		// The base64 tool result is the wire DTO: the one boundary where the
+		// value leaves protected memory. The plain slice is wiped as soon as it
+		// has been encoded.
+		value, err := service.CredentialWireValue(buf)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_retrieve", Err: err}
+		}
+		defer secure.Wipe(value)
 		return mcp.NewToolResultText(base64.StdEncoding.EncodeToString(value)), nil
 	}
 }
@@ -339,10 +348,18 @@ func handleCredentialRetrieveVersion(svc service.CredentialServicer) mcpserver.T
 
 		version := mcp.ParseUInt64(req, "version", 0)
 
-		value, err := svc.CredentialRetrieveVersion(ctx, name, version)
+		buf, err := svc.CredentialRetrieveVersionBuffer(ctx, name, version)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_credential_retrieve_version", Err: err}
 		}
+		// The JSON tool result is the wire DTO: the one boundary where the value
+		// leaves protected memory. The plain slice is wiped as soon as it has
+		// been encoded.
+		value, err := service.CredentialWireValue(buf)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_retrieve_version", Err: err}
+		}
+		defer secure.Wipe(value)
 
 		// encoding/json renders a []byte field as base64 (RFC 4648), so binary
 		// credential content round-trips byte-for-byte into the client's

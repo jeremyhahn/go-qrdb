@@ -87,8 +87,17 @@ func TestLease_ThreeNode_RePutLeavesOldLease(t *testing.T) {
 	assertLeaseBindings(t, ca, adminPorts, leaderPort, a, b)
 }
 
+// leaseBindingTrustDomain is the SPIFFE trust domain of restartableCluster's
+// node certificates.
+const leaseBindingTrustDomain = "qrdb.lease.cluster"
+
 // restartableCluster is a three-node cluster whose processes this test stops
-// and restarts over the same data directories.
+// and restarts over the same data directories. A follower answers a lease's
+// remaining TTL by forwarding the query to the leader, so the cluster is set
+// up the way forwarding needs: each node carries a SPIFFE node identity, with
+// which it signs the on-behalf assertion that lets the leader serve the
+// forward as its caller, and names every peer's admin URL, as nodes sharing
+// one host on distinct admin ports must (writePeerAdminURLConfig).
 type restartableCluster struct {
 	bin        string
 	ca         *testCA
@@ -99,6 +108,7 @@ type restartableCluster struct {
 	dataDirs   []string
 	nodeTLS    [][]string
 	memberIDs  string
+	config     string
 	cmds       []*exec.Cmd
 }
 
@@ -113,7 +123,14 @@ func newRestartableCluster(t *testing.T, smType string) *restartableCluster {
 		grpcPorts:  allocateTCPPorts(t, 3),
 		dataDirs:   []string{t.TempDir(), t.TempDir(), t.TempDir()},
 	}
-	c.nodeTLS, c.memberIDs = c.ca.clusterNodeTLS(t, 3)
+	raftAddrs := make([]string, len(c.raftPorts))
+	peerAdminURLs := make(map[string]string, len(c.raftPorts))
+	for i, port := range c.raftPorts {
+		raftAddrs[i] = fmt.Sprintf("127.0.0.1:%d", port)
+		peerAdminURLs[raftAddrs[i]] = fmt.Sprintf("https://127.0.0.1:%d", c.adminPorts[i])
+	}
+	c.nodeTLS, c.memberIDs = c.ca.clusterNodeSPIFFETLS(t, raftAddrs, leaseBindingTrustDomain)
+	c.config = writePeerAdminURLConfig(t, peerAdminURLs)
 	return c
 }
 
@@ -126,6 +143,7 @@ func (c *restartableCluster) start(t *testing.T, round int) int {
 	for i := range 3 {
 		args := []string{
 			"start",
+			"--config", c.config,
 			"--listen", fmt.Sprintf("0.0.0.0:%d", c.raftPorts[i]),
 			"--raft-address", fmt.Sprintf("127.0.0.1:%d", c.raftPorts[i]),
 			"--data-dir", c.dataDirs[i],
@@ -200,6 +218,16 @@ func TestLease_ThreeNode_BindingsSurviveFullRestart(t *testing.T) {
 }
 
 // waitForKeyAbsent polls key on port until it answers 404.
+// leaseKeyPresentError reports a key that is still readable although the lease
+// it is bound to should already have taken it away.
+type leaseKeyPresentError struct {
+	Key string
+}
+
+func (e *leaseKeyPresentError) Error() string {
+	return "key " + e.Key + " is still present"
+}
+
 func waitForKeyAbsent(t *testing.T, ca *testCA, port int, key string, timeout time.Duration) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key)

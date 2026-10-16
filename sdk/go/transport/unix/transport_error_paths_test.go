@@ -707,7 +707,7 @@ func TestUnixRT_CredentialRetrieve_Error(t *testing.T) {
 	tr, cleanup := connectTransportWithCredentials(t, svc)
 	defer cleanup()
 
-	_, err := tr.CredentialRetrieve(context.Background(), "missing")
+	_, err := tr.retrieveBytes(context.Background(), "missing")
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -36,7 +36,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -73,7 +72,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -347,6 +345,11 @@ type startFlags struct {
 	// ("import_session:"). When no config file is provided, the zero value
 	// resolves to the package defaults WithImportSessionLimits documents.
 	importSessionConfig qrdbconfig.ImportSessionConfig
+
+	// leaseConfig sets the lease checkpoint interval and failover grace,
+	// loaded from YAML ("lease:"). The zero value resolves to the lease
+	// package defaults.
+	leaseConfig qrdbconfig.LeaseConfig
 
 	// tenantConfig holds the tenant defaults (default quotas + entitlements)
 	// loaded from YAML, applied to tenants whose own values are unset.
@@ -972,6 +975,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// Import session config is always inherited from YAML — there is no
 	// CLI flag equivalent for a chunked import session's quotas.
 	f.importSessionConfig = cfg.ImportSession
+	f.leaseConfig = cfg.Lease
 }
 
 // raftListenHost is the host the auto-selected Raft listener BINDS at, and
@@ -1718,11 +1722,7 @@ func runStart(f *startFlags) (err error) {
 				if localBackend == database.BackendRaft {
 					return &StandaloneRaftBackendError{}
 				}
-				var dataPlaneFS vfs.FS
-				if sealSub != nil && !sealSub.SealBarrier.IsSealed() && localBackend == database.BackendPebble {
-					dataPlaneFS = encfs.New(vfs.Default, sealSub.SealBarrier)
-				}
-				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, dataPlaneFS, f.storageConfig.Objstore)
+				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig.Objstore)
 				if lerr != nil {
 					return lerr
 				}
@@ -2412,6 +2412,7 @@ func runStart(f *startFlags) (err error) {
 				FeatureGate:          featureGate,
 				ClusterSealer:        tenantSealer,
 				ImportSession:        f.importSessionConfig,
+				Lease:                f.leaseConfig,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -2717,7 +2718,7 @@ func runStart(f *startFlags) (err error) {
 			// factor" surface the SDK's embedded transport already exposes
 			// (sdk/go/node.go buildLoginOpts). See buildUserAuthFactorServiceOption.
 			if opt, err := buildUserAuthFactorServiceOption(
-				sigCtx, mgmtResult.storeResolver, mgmtResult.legacyFactorStore, slog.Default(),
+				sigCtx, mgmtResult.storeResolver, mgmtResult.legacyFactorStore, complianceAudit, slog.Default(),
 			); err == nil {
 				serverOpts = append(serverOpts, opt)
 			} else {
@@ -2941,6 +2942,11 @@ func runStart(f *startFlags) (err error) {
 				stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(bootCtx, lr, leaseSvc, slog.Default())
 				defer stopLeaseExpiry()
 			} else if leaseSvc != nil && host != nil {
+				expiryOpts, err := service.LeaseExpiryOptions(svcHost, shard.ShardKV, f.leaseConfig)
+				if err != nil {
+					_ = shutdownNode(nodeCloser)
+					return err
+				}
 				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
 					func() bool {
 						leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
@@ -2948,7 +2954,7 @@ func runStart(f *startFlags) (err error) {
 					},
 					leaseSvc.Revoke,
 					slog.Default(),
-					lease.WithExpiryHold(sealedHold(nodeSeal)),
+					append(expiryOpts, lease.WithExpiryHold(sealedHold(nodeSeal)))...,
 				)
 			}
 
@@ -3716,10 +3722,9 @@ func shutdownNode(node io.Closer) error {
 // time-series storage, and with store.WithEncryptor, which wraps every
 // Pebble file the state machine creates (sstables, WAL, manifest, snapshots)
 // in the barrier-driven encfs. Every other type resolves from the registry
-// over the data dir and --sm-storage, carrying the same encryptor: pebble
-// storage is opened on that encfs too, and storage that cannot be encrypted
-// (file) is refused here, at start, while the seal barrier is enabled
-// (SealedSMStoragePlaintextError), rather than opened.
+// over the data dir and --sm-storage, carrying the same encryptor: pebble and
+// file storage are opened on that encfs too, and memory storage persists
+// nothing.
 //
 // Every state machine the returned function creates gets a fresh audit.Chain
 // of its own: Chain.Restore replaces the whole head table with what one
@@ -3787,10 +3792,6 @@ func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig, 
 	var notApplicable *statemachine.SMStorageNotApplicableError
 	if errors.As(err, &notApplicable) {
 		return nil, &SMStorageTypeMismatchError{Storage: sc.Kind, SMType: smType}
-	}
-	var unencrypted *statemachine.SMStorageUnencryptedError
-	if errors.As(err, &unencrypted) {
-		return nil, &SealedSMStoragePlaintextError{SMType: smType, Storage: sc.Kind, Err: err}
 	}
 	name := smType
 	if smBackend != "" {

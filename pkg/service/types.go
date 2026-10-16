@@ -338,6 +338,14 @@ type ImportStageOpenSessionsQuery = statemachine.ImportStageOpenSessionsQuery
 // LeaseTimeToLiveQuery is an alias for the canonical lease.LeaseTimeToLiveQuery type.
 type LeaseTimeToLiveQuery = lease.LeaseTimeToLiveQuery
 
+// LeaseKeepAliveQuery renews a lease in the answering replica's memory; see
+// lease.LeaseKeepAliveQuery.
+type LeaseKeepAliveQuery = lease.LeaseKeepAliveQuery
+
+// LeaseCheckpointNowQuery asks the answering replica, if it is the lease
+// primary, to checkpoint every live lease now; see lease.LeaseCheckpointNowQuery.
+type LeaseCheckpointNowQuery = lease.LeaseCheckpointNowQuery
+
 // LeasesQuery is an alias for the canonical lease.LeasesQuery type.
 type LeasesQuery = lease.LeasesQuery
 

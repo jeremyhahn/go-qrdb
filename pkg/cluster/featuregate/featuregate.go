@@ -131,6 +131,14 @@ const ClusterSeal Feature = "cluster-seal"
 // the opcode.
 const ImportStaging Feature = "import-staging"
 
+// RangeDelete is protocol.OpDeleteRange: the deletion of every live key in a
+// range as one entry -- the batch of single deletes over them, never a
+// storage range tombstone -- which keyspace reclaim uses to remove a dropped
+// database's keys in one proposal per chunk. A replica that does not know
+// the opcode would refuse it while its peers deleted the keys, so it is
+// proposed only once every replica of the group can apply it.
+const RangeDelete Feature = "range-delete"
+
 // AuditAppend is protocol.OpAuditAppend: a deterministic, apply-time-assigned
 // append (or retention prune) to a tenant's replicated audit hash chain. A
 // replica that does not implement it would apply nothing for an opcode it
@@ -147,6 +155,15 @@ const AuditAppend Feature = "audit-append"
 // apply it (docs/time-series/engineering.md "Retention enforcement").
 const TimeSeriesRetention Feature = "timeseries-retention"
 
+// LeaseCheckpoint is protocol.OpLeaseCheckpoint: the leader's replicated
+// record of how much TTL each long-lived lease had left, which a new leader and
+// a restarted replica count the lease's deadline from. A replica that does not
+// know the opcode would apply nothing while its peers record the checkpoint,
+// so a leader checkpoints no lease until the feature is enabled for the group;
+// until then a new leader grants every lease a full TTL, as it did before
+// (docs/leases/architecture.md "Keep-alive").
+const LeaseCheckpoint Feature = "lease-checkpoint"
+
 // PerNodeBarrierKeys is per-node barrier initialisation: an isolated tenant's
 // barrier is initialised by every serving node from the barrier owner's signed
 // init statement under "__sys:cluster/barrier/init/" (see pkg/barrierinit),
@@ -160,7 +177,7 @@ const PerNodeBarrierKeys Feature = "per-node-barrier-keys"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine, TimeSeriesRetention, PerNodeBarrierKeys}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

@@ -738,13 +738,18 @@ func watchingTargets() map[string]func(*testing.T) (conformanceTarget, *mockWatc
 // It is a recorder rather than a stub because the handlers under test read
 // their own writes back: a stub that answered nothing would make every guarded
 // verb decline and record nothing.
+//
+// The applied-index stamp Update writes after every batch is not a handler's
+// write and is not recorded.
 type durabilityRecorder struct {
 	Backend
 	calls []string
 }
 
 func (d *durabilityRecorder) Put(key, value []byte) error {
-	d.calls = append(d.calls, "Put")
+	if string(key) != diskMetaKeyLastApplied {
+		d.calls = append(d.calls, "Put")
+	}
 	return d.Backend.Put(key, value)
 }
 
@@ -1053,6 +1058,14 @@ func (s *twoOpStorage) Delete(key []byte) error {
 	n := s.enter()
 	err := s.memStorage.Delete(key)
 	s.record("delete:" + string(key))
+	s.leave(n)
+	return err
+}
+
+func (s *twoOpStorage) DeleteRange(start, end []byte) error {
+	n := s.enter()
+	err := s.memStorage.DeleteRange(start, end)
+	s.record("delete_range:" + string(start) + ".." + string(end))
 	s.leave(n)
 	return err
 }

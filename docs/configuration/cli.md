@@ -1,6 +1,6 @@
 # Configuration — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
 
 Configuration is a **daemon** concern. `qrdbd` reads it; the `qrdb` client has
 no verb that changes it, only `admin capabilities` to report what took effect.
@@ -57,6 +57,10 @@ config: unknown key "storage.cach_size" in /etc/qrdb/qrdb.yaml:14
 | `--max-in-mem-log-size` | `raft.max_in_mem_log_size` |
 | `--max-total-in-mem-log-size` | `raft.max_total_in_mem_log_size` |
 | `--sm` | `raft.sm_type` — `pebble` (default), `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk` or `highperf`; every type serves transactions, guarded batches and durable leases ([what differs](../run-modes/architecture.md#raft--single--or-multi-node)). The legacy `regular` is refused at start (`SMLeasesUnsupportedError`): it keeps no leases, which cluster membership requires; use `standard` |
+| `--sm-backend` | `raft.sm_backend` |
+| `--sm-storage` | `raft.sm_storage` |
+| `--lease-read` | `raft.lease_read` |
+| `--check-quorum` | `raft.check_quorum` |
 | `--tls-ca-file` | `tls.ca_file` |
 | `--tls-cert-file` | `tls.cert_file` |
 | `--tls-key-file` | `tls.key_file` |
@@ -91,6 +95,51 @@ Feature-specific flags are documented in their own folders: `--mode`
 `--replica-forwarding` / `--replica-forwarding-timeout`
 ([../replica-forwarding/cli.md](../replica-forwarding/cli.md)),
 `--threshold` / `--total` ([../firstboot/cli.md](../firstboot/cli.md)).
+
+## Raft flags
+
+Every `qrdbd start` flag that configures the Raft layer, with the `raft.*` key
+and environment variable that set the same value. Every `raft.*` key takes
+`QRDB_RAFT_<KEY>` (`raft.lease_read` → `QRDB_RAFT_LEASE_READ`); like any
+environment override it is read only with `--config`. [user.md](user.md#raft-settings)
+covers the same settings from the YAML side.
+
+Two defaults depend on whether `--config` is given. Without it, `--listen` is
+`0.0.0.0:63001` and `--peers` is empty. With it, an unset `raft.listen_address`
+binds `raft.raft_address`, and `raft.peers` defaults to `1=127.0.0.1:63001`.
+Both forms describe a single-node cluster.
+
+| Flag | YAML key / env var | Type | Default | Validation | Effect |
+|---|---|---|---|---|---|
+| `--data-dir` | `raft.data_dir` / `QRDB_RAFT_DATA_DIR` | string | `./data` | must not be empty | Base directory for Raft state: the WAL in `wal/`, host metadata in `nodehost/`. With `--discovery` other than `static` and no `--config`, an unset value becomes `./data/<replica-id>`. |
+| `--deployment-id` | `raft.deployment_id` / `QRDB_RAFT_DEPLOYMENT_ID` | uint64 | `1` | none | Isolates Raft clusters on the same network. Set the same value on every node of a cluster. |
+| `--shard-id` | `raft.shard_id` / `QRDB_RAFT_SHARD_ID` | uint64 | `1` (`shard.ShardKV`) | raft mode: greater than 0 and below 1000 (`shard.UserMin`) | ID of the node's own Raft group, the system shard. IDs from 1000 up are issued to databases. The flag's help text calls it deprecated; leave it at 1. |
+| `--replica-id` | `raft.replica_id` / `QRDB_RAFT_REPLICA_ID` | uint64 | `1` | raft mode: greater than 0 | This node's replica ID in the shard; unique per node. With `--discovery` other than `static` and no `--config`, an unset value is generated at random. |
+| `--raft-address` | `raft.raft_address` / `QRDB_RAFT_RAFT_ADDRESS` | `host:port` | `127.0.0.1:63001` | raft mode: must not be empty | Address peers dial for Raft traffic (QUIC over UDP). Its host is the default `server.advertise_host`. |
+| `--listen` | `raft.listen_address` / `QRDB_RAFT_LISTEN_ADDRESS` | `host:port` | flag: `0.0.0.0:63001`; YAML: empty, meaning `raft.raft_address` | none | Bind address of the Raft transport. |
+| `--peers` | `raft.peers` / `QRDB_RAFT_PEERS` | flag: list, repeated or comma-separated; YAML: comma-separated string | flag: empty; YAML: `1=127.0.0.1:63001` | each entry `replicaID=host:port`, else `PeerParseError` at start; standalone mode: at most one entry | Initial voting membership. None or one entry is a single-node cluster. |
+| `--member-identities` | `raft.member_identities` / `QRDB_RAFT_MEMBER_IDENTITIES` | same shapes as `--peers` | empty | each entry `replicaID=spki:<hex>`; required on a multi-node replica | Raft identities of the other replicas ([../clustering/user.md](../clustering/user.md)). Ignored on a single-node cluster. |
+| `--join` | `raft.join` / `QRDB_RAFT_JOIN` | bool | `false` | refused in standalone mode | Join an existing cluster rather than form a new one. |
+| `--snapshot-entries` | `raft.snapshot_entries` / `QRDB_RAFT_SNAPSHOT_ENTRIES` | uint64 | `0`, which go-quicraft replaces with its default, 100000 | go-quicraft refuses the shard at start unless the effective value exceeds the effective `compaction_overhead` | Applied entries between automatic snapshots. `0` does **not** turn snapshots off; `18446744073709551615` (go-quicraft's `SnapshotsDisabled`) does. |
+| `--compaction-overhead` | `raft.compaction_overhead` / `QRDB_RAFT_COMPACTION_OVERHEAD` | uint64 | `0`, meaning 5000 | none | Log entries kept after a snapshot so a lagging follower can catch up from the log. |
+| `--max-in-mem-log-size` | `raft.max_in_mem_log_size` / `QRDB_RAFT_MAX_IN_MEM_LOG_SIZE` | uint64, bytes | `0`, no limit | none | In-memory Raft log size per shard above which proposals are rate-limited. |
+| `--max-total-in-mem-log-size` | `raft.max_total_in_mem_log_size` / `QRDB_RAFT_MAX_TOTAL_IN_MEM_LOG_SIZE` | uint64, bytes | `0`, no limit | none | In-memory Raft log size summed over every shard on the host; above it new proposals fail with `ErrSystemBusy`. |
+| `--sm` | `raft.sm_type` / `QRDB_RAFT_SM_TYPE` | string | `pebble` | `pebble`, `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`; `regular` passes validation and is refused at start | State machine type ([what differs](../run-modes/architecture.md#raft--single--or-multi-node)). |
+| `--sm-backend` | `raft.sm_backend` / `QRDB_RAFT_SM_BACKEND` | string | empty: `sm_type` is used as is | `standard`, `concurrent`, `fast`, `disk` | Backend variant when `sm_type` names a logical engine. |
+| `--sm-storage` | `raft.sm_storage` / `QRDB_RAFT_SM_STORAGE` | string | empty, meaning `pebble` | `pebble`, `file`, `memory`; `objstore` is refused; a value other than `pebble` needs `sm_type` or `sm_backend` `disk` or `fast` | Storage under the storage-generic state machines. Keep it the same on every replica of a shard. |
+| `--lease-read` | `raft.lease_read` / `QRDB_RAFT_LEASE_READ` | bool | `true` | needs `check_quorum` on; go-quicraft refuses the shard at start otherwise (`LeaseReadRequiresCheckQuorumError`) | The leader answers linearizable reads from its leadership lease, with no heartbeat round. When that is linearizable: [../key-value/engineering.md](../key-value/engineering.md#consistency-levels--pkgconsistency); what each replica needs: [../deployment/user.md](../deployment/user.md#keep-replica-clocks-disciplined). |
+| `--check-quorum` | `raft.check_quorum` / `QRDB_RAFT_CHECK_QUORUM` | bool | `true` | turning it off also needs `lease_read` off | The leader steps down when it cannot reach a quorum within an election timeout. go-quicraft calls turning it off unsafe in production. |
+| `--debug-raft` | none | bool | `false` | none | Raises the log level to `debug`, which includes Raft protocol logging. |
+
+The validation column is enforced in two places. A value from the file or the
+environment is checked at config load and refused with a `ValidationError`
+naming the key. A value from a flag is not checked at config load. The checks
+that go-quicraft makes when the shard starts apply to both.
+
+No flag or key sets election or heartbeat timing (`ElectionRTT`,
+`HeartbeatRTT`, `RTTMillisecond`) or pre-vote. A networked node runs
+go-quicraft's defaults. A single-node daemon has no Raft transport and uses a
+shorter tuning instead (`cluster.ApplyTransportlessHostTuning`).
 
 ## Environment variables
 

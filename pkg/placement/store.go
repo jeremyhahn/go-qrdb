@@ -467,6 +467,53 @@ func (s *Store) MarkDropCommitted(ctx context.Context, tenantID, database string
 	return &StoreError{TenantID: tenantID, Database: database, Op: "mark-drop-committed", Err: &ConflictError{}}
 }
 
+// RemoveReplica drops replicaID from the entry for (target.TenantID,
+// target.Database) and returns the entry as stored afterwards, with RF
+// following the remaining replicas.
+//
+// Unlike a compare-and-swap against target, it applies to whatever the entry
+// holds when it runs: it records a removal that has already happened
+// elsewhere -- the replica's Raft eviction -- so a concurrent change to
+// another field (a reconciler promoting a replica, the drop fence) is kept
+// rather than refused. Removing a replica the entry does not list writes
+// nothing and returns the entry unchanged.
+//
+// Commits through CompareAndSwapPlacement with the same bounded retry as
+// SetDropping. Returns a *StoreError wrapping ErrPlacementNotFound when the
+// entry is gone, or *ConflictError when every attempt lost the race.
+func (s *Store) RemoveReplica(ctx context.Context, target *Placement, replicaID uint64) (*Placement, error) {
+	if target == nil {
+		return nil, &StoreError{Op: "remove-replica", Err: ErrPlacementNotFound}
+	}
+	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
+		p, err := s.Get(ctx, target.TenantID, target.Database)
+		if err != nil {
+			return nil, err
+		}
+		replicas := make([]Replica, 0, len(p.Replicas))
+		for _, r := range p.Replicas {
+			if r.ReplicaID != replicaID {
+				replicas = append(replicas, r)
+			}
+		}
+		if len(replicas) == len(p.Replicas) {
+			return p, nil
+		}
+		next := *p
+		next.Replicas = replicas
+		next.RF = len(replicas)
+		swapped, err := s.CompareAndSwapPlacement(ctx, p, &next)
+		if err != nil {
+			return nil, err
+		}
+		if swapped {
+			return &next, nil
+		}
+		// Lost the race: retry with a fresh read.
+	}
+	return nil, &StoreError{TenantID: target.TenantID, Database: target.Database, Op: "remove-replica", Err: &ConflictError{}}
+}
+
 // List returns every placement in the table, decoded from the values so the
 // result is independent of key formatting. An undecodable record fails the
 // whole listing rather than returning a partial view.

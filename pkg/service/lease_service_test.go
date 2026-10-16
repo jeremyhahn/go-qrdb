@@ -17,10 +17,16 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
 // ---------------------------------------------------------------------------
@@ -258,62 +264,119 @@ func TestLeaseService_Revoke_NotLeaderError(t *testing.T) {
 // KeepAlive
 // ---------------------------------------------------------------------------
 
-func TestLeaseService_KeepAlive_Success(t *testing.T) {
+// A leader renews in memory: one linearizable read, no proposal.
+func TestLeaseService_KeepAlive_RenewsLocallyWithoutProposing(t *testing.T) {
 	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Value: 42}, nil
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			t.Fatal("a leader-local renewal must not propose")
+			return sm.Result{}, nil
 		},
 		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			q, ok := query.(LeaseTimeToLiveQuery)
+			q, ok := query.(LeaseKeepAliveQuery)
 			if !ok {
-				t.Fatalf("expected LeaseTimeToLiveQuery, got %T", query)
+				t.Fatalf("expected LeaseKeepAliveQuery, got %T", query)
 			}
 			if q.ID != 42 {
 				t.Fatalf("expected lease ID 42, got %d", q.ID)
 			}
-			return &Lease{
-				ID:           42,
-				TTL:          60,
-				GrantedTTL:   60,
-				RemainingTTL: 58,
-				Keys:         [][]byte{[]byte("key1")},
-			}, nil
+			return &Lease{ID: 42, TTL: 60, GrantedTTL: 60, RemainingTTL: 60}, nil
 		},
 	}
 
-	svc := NewLeaseService(host, 1)
-	lease, err := svc.KeepAlive(context.Background(), 42)
+	got, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if lease == nil {
-		t.Fatal("expected non-nil lease")
+	if got.ID != 42 || got.TTL != 60 || got.RemainingTTL != 60 {
+		t.Fatalf("unexpected lease %+v", got)
 	}
-	if lease.ID != 42 {
-		t.Fatalf("expected lease ID 42, got %d", lease.ID)
+}
+
+// A replica that is not the primary renews through the log and answers from
+// the committed result, with no read-back (go-qrdb#275).
+func TestLeaseService_KeepAlive_NotPrimaryFallsBackToTheLog(t *testing.T) {
+	var proposed bool
+	host := &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{
+				Value: 42,
+				Data:  protocol.EncodeLeaseInfo(42, 60, 58, [][]byte{[]byte("key1")}),
+			}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			if _, ok := query.(LeaseKeepAliveQuery); ok {
+				return nil, &lease.NotPrimaryError{}
+			}
+			t.Fatalf("a log-backed renewal must not read back; got query %T", query)
+			return nil, nil
+		},
 	}
-	if lease.TTL != 60 {
-		t.Fatalf("expected TTL 60, got %d", lease.TTL)
+
+	got, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
-	if lease.RemainingTTL != 58 {
-		t.Fatalf("expected RemainingTTL 58, got %d", lease.RemainingTTL)
+	if !proposed {
+		t.Fatal("expected the renewal to be proposed")
+	}
+	if got.ID != 42 || got.TTL != 60 || got.RemainingTTL != 58 {
+		t.Fatalf("unexpected lease %+v", got)
+	}
+	if len(got.Keys) != 1 || string(got.Keys[0]) != "key1" {
+		t.Fatalf("expected keys [key1], got %v", got.Keys)
+	}
+}
+
+// The log-backed renewal of a lease the lessor does not hold is an idempotent
+// apply success carrying the not-found marker, reported as *LeaseNotFoundError.
+func TestLeaseService_KeepAlive_NotPrimaryNotFound(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			return sm.Result{Value: 0, Data: protocol.EncodeLeaseKeepAliveNotFound(42)}, nil
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, &lease.NotPrimaryError{}
+		},
+	}
+
+	_, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	var lnf *LeaseNotFoundError
+	if !errors.As(err, &lnf) || lnf.LeaseID != 42 {
+		t.Fatalf("expected *LeaseNotFoundError{42}, got %T: %v", err, err)
+	}
+}
+
+// A committed result that carries neither lease info nor the not-found marker
+// is refused rather than answered with a zero lease.
+func TestLeaseService_KeepAlive_NotPrimaryUndecodableResult(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			return sm.Result{Value: 42}, nil
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, &lease.NotPrimaryError{}
+		},
+	}
+
+	_, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	var ur *unexpectedResultTypeError
+	if !errors.As(err, &ur) {
+		t.Fatalf("expected *unexpectedResultTypeError, got %T: %v", err, err)
 	}
 }
 
 func TestLeaseService_KeepAlive_ProposeError(t *testing.T) {
-	sentinel := errors.New("proposal dropped")
 	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{}, sentinel
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			return sm.Result{}, errors.New("proposal dropped")
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, &lease.NotPrimaryError{}
 		},
 	}
 
-	svc := NewLeaseService(host, 1)
-	_, err := svc.KeepAlive(context.Background(), 42)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
+	_, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
 	var pe *ProposeError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *ProposeError, got %T: %v", err, err)
@@ -321,25 +384,288 @@ func TestLeaseService_KeepAlive_ProposeError(t *testing.T) {
 }
 
 func TestLeaseService_KeepAlive_ReadError(t *testing.T) {
-	sentinel := errors.New("state machine error")
 	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Value: 42}, nil
-		},
-		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, sentinel
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, errors.New("state machine error")
 		},
 	}
 
-	svc := NewLeaseService(host, 1)
-	_, err := svc.KeepAlive(context.Background(), 42)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
+	_, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
 	var re *ReadError
 	if !errors.As(err, &re) {
 		t.Fatalf("expected *ReadError, got %T: %v", err, err)
+	}
+}
+
+func TestLeaseService_KeepAlive_UnknownLeaseIsTyped(t *testing.T) {
+	for name, cause := range map[string]error{
+		"lessor":  &lease.NotFoundError{ID: 42},
+		"service": &LeaseNotFoundError{LeaseID: 42},
+	} {
+		t.Run(name, func(t *testing.T) {
+			host := &mockHost{
+				syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+					return nil, cause
+				},
+			}
+			_, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+			var lnf *LeaseNotFoundError
+			if !errors.As(err, &lnf) || lnf.LeaseID != 42 {
+				t.Fatalf("expected *LeaseNotFoundError{42}, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestLeaseService_KeepAlive_UnexpectedResultType(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return "not a lease", nil
+		},
+	}
+	_, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	var ur *unexpectedResultTypeError
+	if !errors.As(err, &ur) {
+		t.Fatalf("expected *unexpectedResultTypeError, got %T: %v", err, err)
+	}
+}
+
+// A lease the leader has checkpointed is renewed through the log, whose apply
+// clears the checkpoint.
+func TestLeaseService_KeepAlive_CheckpointedFallsBackToTheLog(t *testing.T) {
+	var proposed bool
+	host := &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 42, Data: protocol.EncodeLeaseInfo(42, 600, 600, nil)}, nil
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, &lease.CheckpointedError{ID: 42}
+		},
+	}
+
+	got, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !proposed || got.RemainingTTL != 600 {
+		t.Fatalf("proposed = %v, lease = %+v; want a replicated renewal to 600s", proposed, got)
+	}
+}
+
+func TestNewLeaseCheckpointer_ProposesTheBatchInBoundedCommands(t *testing.T) {
+	var cmds [][]byte
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, shardID uint64, c []byte) (sm.Result, error) {
+			if shardID != 7 {
+				t.Fatalf("shard = %d, want 7", shardID)
+			}
+			cmds = append(cmds, c)
+			return sm.Result{}, nil
+		},
+	}
+	cps := make([]lease.Checkpoint, protocol.MaxLeaseCheckpointBatch+1)
+	for i := range cps {
+		cps[i] = lease.Checkpoint{ID: int64(i + 1), RemainingTTL: 30}
+	}
+	if err := NewLeaseCheckpointer(host, 7).Checkpoint(context.Background(), 9, 31, cps); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if len(cmds) != 2 {
+		t.Fatalf("proposed %d commands, want 2", len(cmds))
+	}
+	var got []lease.Checkpoint
+	for _, c := range cmds {
+		cmd, err := protocol.DecodeCommand(c)
+		if err != nil || cmd.Op != protocol.OpLeaseCheckpoint {
+			t.Fatalf("proposed %x, want a lease checkpoint (%v)", c, err)
+		}
+		token, index, batch, err := protocol.DecodeLeaseCheckpoint(cmd.Payload)
+		if err != nil || token != 9 || index != 31 {
+			t.Fatalf("token = %d, index = %d, err = %v; want 9 and 31", token, index, err)
+		}
+		got = append(got, batch...)
+	}
+	if !slices.Equal(got, cps) {
+		t.Fatal("the proposed commands do not carry the batch in order")
+	}
+}
+
+func TestNewLeaseCheckpointer_StopsAtTheFirstError(t *testing.T) {
+	for name, tc := range map[string]struct {
+		result sm.Result
+		err    error
+		want   any
+	}{
+		"propose": {err: errors.New("dropped"), want: new(*ProposeError)},
+		"refusal": {result: statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), want: new(*ProposeError)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			host := &mockHost{
+				syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+					calls++
+					return tc.result, tc.err
+				},
+			}
+			cps := make([]lease.Checkpoint, protocol.MaxLeaseCheckpointBatch+1)
+			err := NewLeaseCheckpointer(host, 1).Checkpoint(context.Background(), 1, 1, cps)
+			if !errors.As(err, tc.want) {
+				t.Fatalf("got %T: %v", err, err)
+			}
+			if calls != 1 {
+				t.Fatalf("proposed %d commands after the first failed, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestLeaseService_CheckpointEnabledFollowsTheFeatureGate(t *testing.T) {
+	if !NewLeaseCheckpointer(&mockHost{}, 1).CheckpointEnabled() {
+		t.Fatal("a host with no feature gate must allow checkpoints")
+	}
+	gated := &gatedHost{mockHost: &mockHost{}, enabled: map[uint64]bool{2: true}}
+	if NewLeaseCheckpointer(gated, 1).CheckpointEnabled() {
+		t.Fatal("checkpoints allowed in a group whose gate is closed")
+	}
+	if !NewLeaseCheckpointer(gated, 2).CheckpointEnabled() {
+		t.Fatal("checkpoints refused in a group whose gate is open")
+	}
+	if !slices.Equal(gated.asked, []featuregate.Feature{featuregate.LeaseCheckpoint, featuregate.LeaseCheckpoint}) {
+		t.Fatalf("asked the gate about %v, want lease-checkpoint", gated.asked)
+	}
+}
+
+// Until every replica of the group can apply a lease checkpoint, a renewal
+// goes through the log even on the leader: a replica that predates the
+// lease-checkpoint feature counts leases only from the log, so a renewal
+// made in the leader's memory would be invisible to it, and on becoming
+// leader it would revoke a lease its holder was keeping alive.
+func TestLeaseService_KeepAlive_GateClosedRenewsThroughTheLog(t *testing.T) {
+	var proposed bool
+	host := &gatedHost{
+		mockHost: &mockHost{
+			syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+				proposed = true
+				return sm.Result{Value: 42, Data: protocol.EncodeLeaseInfo(42, 60, 60, nil)}, nil
+			},
+			syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+				t.Fatalf("a renewal in a group whose lease-checkpoint gate is closed must not renew in memory; got query %T", query)
+				return nil, nil
+			},
+		},
+		enabled: map[uint64]bool{},
+	}
+
+	got, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("KeepAlive: %v", err)
+	}
+	if !proposed {
+		t.Fatal("KeepAlive did not propose the renewal")
+	}
+	if got.ID != 42 || got.RemainingTTL != 60 {
+		t.Fatalf("lease = %+v, want the committed renewal of 42", got)
+	}
+	if !slices.Equal(host.asked, []featuregate.Feature{featuregate.LeaseCheckpoint}) {
+		t.Fatalf("asked the gate about %v, want lease-checkpoint", host.asked)
+	}
+}
+
+// Once the gate is open, the leader renews in memory as before.
+func TestLeaseService_KeepAlive_GateOpenRenewsLocally(t *testing.T) {
+	host := &gatedHost{
+		mockHost: &mockHost{
+			syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+				t.Fatal("a leader-local renewal must not propose")
+				return sm.Result{}, nil
+			},
+			syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+				return &Lease{ID: 42, TTL: 60, GrantedTTL: 60, RemainingTTL: 60}, nil
+			},
+		},
+		enabled: map[uint64]bool{1: true},
+	}
+
+	got, err := NewLeaseService(host, 1).KeepAlive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("KeepAlive: %v", err)
+	}
+	if got.ID != 42 || got.RemainingTTL != 60 {
+		t.Fatalf("lease = %+v, want the local renewal of 42", got)
+	}
+}
+
+func TestLeaseService_CheckpointAll(t *testing.T) {
+	answered := func(err error) <-chan error {
+		ch := make(chan error, 1)
+		ch <- err
+		return ch
+	}
+	boom := errors.New("not applied")
+	for name, tc := range map[string]struct {
+		result   any
+		err      error
+		canceled bool
+		check    func(error) bool
+	}{
+		"applied":     {result: answered(nil), check: func(err error) bool { return err == nil }},
+		"failed":      {result: answered(boom), check: func(err error) bool { return errors.Is(err, boom) }},
+		"not primary": {err: &lease.NotPrimaryError{}, check: func(err error) bool { var np *lease.NotPrimaryError; return errors.As(err, &np) }},
+		"read error":  {err: errors.New("closed"), check: func(err error) bool { var re *ReadError; return errors.As(err, &re) }},
+		"unexpected":  {result: "no", check: func(err error) bool { var ur *unexpectedResultTypeError; return errors.As(err, &ur) }},
+		"abandoned": {result: make(<-chan error), canceled: true,
+			check: func(err error) bool { return errors.Is(err, context.Canceled) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			host := &mockHost{
+				staleReadFn: func(_ context.Context, shardID uint64, query any) (any, error) {
+					if _, ok := query.(LeaseCheckpointNowQuery); !ok || shardID != 3 {
+						t.Fatalf("read %T on shard %d, want LeaseCheckpointNowQuery on 3", query, shardID)
+					}
+					return tc.result, tc.err
+				},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			svc := &LeaseService{host: host, shardID: 3}
+			if err := svc.CheckpointAll(ctx); !tc.check(err) {
+				t.Fatalf("CheckpointAll = %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestLeaseService_AwaitApplied(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err   error
+		check func(error) bool
+	}{
+		"applied":    {check: func(err error) bool { return err == nil }},
+		"read error": {err: errors.New("read index not ready"), check: func(err error) bool { var re *ReadError; return errors.As(err, &re) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reads := 0
+			host := &mockHost{
+				syncReadFn: func(_ context.Context, shardID uint64, query any) (any, error) {
+					reads++
+					if _, ok := query.(LeasesQuery); !ok || shardID != 3 {
+						t.Fatalf("read %T on shard %d, want a linearizable LeasesQuery on 3", query, shardID)
+					}
+					return []*Lease{}, tc.err
+				},
+			}
+			svc := &LeaseService{host: host, shardID: 3}
+			if err := svc.AwaitApplied(context.Background()); !tc.check(err) {
+				t.Fatalf("AwaitApplied = %T: %v", err, err)
+			}
+			if reads != 1 {
+				t.Fatalf("AwaitApplied made %d linearizable reads, want 1", reads)
+			}
+		})
 	}
 }
 
@@ -460,6 +786,81 @@ func TestLeaseService_TimeToLive_NotLeaderError(t *testing.T) {
 	}
 	if nle.LeaderID != 5 {
 		t.Fatalf("expected LeaderID 5, got %d", nle.LeaderID)
+	}
+}
+
+// TestLeaseService_TimeToLive_FollowerNamesTheLeader pins review 5188: a
+// follower's deadline lags the leader's in-memory renewals, so its replica
+// answers *lease.StaleTTLError and the service refuses with the leader's
+// replica ID and Raft address for the transports to forward to, keeping the
+// replica's view of the lease for an ownership check.
+func TestLeaseService_TimeToLive_FollowerNamesTheLeader(t *testing.T) {
+	held := &Lease{ID: 7, TTL: 10, GrantedTTL: 10, RemainingTTL: 2, Keys: [][]byte{[]byte("k")}}
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, &lease.StaleTTLError{Lease: held}
+		},
+		getLeaderIDFn: func(uint64) (uint64, bool, error) { return 2, true, nil },
+		memberships: map[uint64]*quicraft.Membership{
+			3: {Nodes: map[uint64]string{1: "10.0.0.1:9100", 2: "10.0.0.2:9100"}},
+		},
+	}
+
+	l, err := NewLeaseService(host, 3).TimeToLive(context.Background(), 7)
+	if l != nil {
+		t.Fatalf("follower answered a remaining TTL: %+v", l)
+	}
+	var stale *LeaseTTLNotLeaderError
+	if !errors.As(err, &stale) {
+		t.Fatalf("error = %T: %v, want *LeaseTTLNotLeaderError", err, err)
+	}
+	if stale.Lease != held {
+		t.Fatalf("refusal lease = %+v, want the replica's view %+v", stale.Lease, held)
+	}
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("refusal does not unwrap to *NotLeaderError: %v", err)
+	}
+	if nle.ShardID != 3 || nle.LeaderID != 2 || nle.LeaderAddress != "10.0.0.2:9100" {
+		t.Fatalf("not-leader = %+v, want shard 3 leader 2 at 10.0.0.2:9100", nle)
+	}
+	if got, err := LeaseExists(nil, err); err != nil || got != held {
+		t.Fatalf("LeaseExists = %v, %v; want the replica's view", got, err)
+	}
+}
+
+func TestLeaseService_TimeToLive_FollowerWithoutALeader(t *testing.T) {
+	for name, host := range map[string]*mockHost{
+		"no leader": {getLeaderIDFn: func(uint64) (uint64, bool, error) { return 0, false, nil }},
+		"no membership": {
+			getLeaderIDFn: func(uint64) (uint64, bool, error) { return 2, true, nil },
+			membershipErr: errors.New("membership unavailable"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			host.syncReadFn = func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+				return nil, &lease.StaleTTLError{Lease: &Lease{ID: 7}}
+			}
+			_, err := NewLeaseService(host, 3).TimeToLive(context.Background(), 7)
+			var nle *NotLeaderError
+			if !errors.As(err, &nle) {
+				t.Fatalf("error = %T: %v, want *NotLeaderError", err, err)
+			}
+			if nle.LeaderAddress != "" {
+				t.Fatalf("LeaderAddress = %q, want empty", nle.LeaderAddress)
+			}
+		})
+	}
+}
+
+func TestLeaseExists_PassesOtherAnswersThrough(t *testing.T) {
+	l := &Lease{ID: 1}
+	if got, err := LeaseExists(l, nil); got != l || err != nil {
+		t.Fatalf("LeaseExists(lease, nil) = %v, %v", got, err)
+	}
+	nf := &LeaseNotFoundError{LeaseID: 1}
+	if got, err := LeaseExists(nil, nf); got != nil || err != nf {
+		t.Fatalf("LeaseExists(nil, not found) = %v, %v", got, err)
 	}
 }
 

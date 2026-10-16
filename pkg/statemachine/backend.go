@@ -120,6 +120,13 @@ type Backend interface {
 	// for cross-replica consistency verification.
 	GetHash() (uint64, error)
 
+	// Records calls fn once for every stored record, in strictly ascending
+	// bytewise key order, and stops at the first error fn returns. It visits
+	// exactly the records SaveSnapshot carries. Callers that need a view
+	// pinned to an applied index hold the state machine's batch lock
+	// exclusively for the whole visit.
+	Records(fn RecordVisitor) error
+
 	// Close releases all resources held by the backend. It must wait
 	// for any in-flight asynchronous operations to complete.
 	Close() error

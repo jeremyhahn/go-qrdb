@@ -17,6 +17,7 @@ package store
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -30,7 +31,7 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 // must not cover, because every replica holds its own value for it.
 //
 // Both state machines reserve the 0x00 prefix for their own records. All but
-// three of those are node-local. The three replicated tables are written only
+// four of those are node-local. The four replicated tables are written only
 // in the apply batch, so they travel in snapshots (and so in backups) and are
 // covered by the hash like any other applied record:
 //
@@ -45,9 +46,14 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 //     it would hand the recovering replica a chain that resumes from a head
 //     no committed log entry produced, breaking the property
 //     (docs/audit/architecture.md#the-hash-chain-stays-linear-under-raft-because-it-is-assigned-at-apply-time)
-//     this table exists to guarantee.
+//     this table exists to guarantee;
+//   - the import staging table (importstage.TablePrefix): a snapshot that
+//     dropped it would hand the recovering replica lease bindings for staged
+//     chunks it does not hold, so a chunked import resumed against it after a
+//     leader change would find the chunks staged before the snapshot missing.
 func isNodeLocalKey(k []byte) bool {
-	return len(k) > 0 && k[0] == '\x00' && !lease.IsTableKey(k) && !compaction.IsTableKey(k) && !audit.IsTableKey(k)
+	return len(k) > 0 && k[0] == '\x00' &&
+		!lease.IsTableKey(k) && !compaction.IsTableKey(k) && !audit.IsTableKey(k) && !importstage.IsTableKey(k)
 }
 
 // The internal key namespace is declared once, in pkg/service. This package

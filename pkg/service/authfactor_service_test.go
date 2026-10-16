@@ -815,9 +815,17 @@ func TestAuthFactorService_RevokeFactor_alreadyRevoked(t *testing.T) {
 	}
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*afMockKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap replaces the value only when the stored value still equals
+// expected, matching the real engines: an absent key is left absent. The user
+// auth-factor service commits its factor-set record through it, so a stub
+// that always refused would make every second membership change contend.
+func (m *afMockKV) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	current, ok := m.store[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
 }
 
 // ListAll mirrors List on this double: it applies no internal-key guard,

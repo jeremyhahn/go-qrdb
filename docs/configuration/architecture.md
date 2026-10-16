@@ -173,7 +173,8 @@ create --etcd` uses `localhost:2379`).
   `QRDB_BARRIER_STRATEGY`, `QRDB_SHARES`, `QRDB_THRESHOLD`, `QRDB_HOSTNAME`,
   `QRDB_SANS`) are bound separately by their own commands and are unaffected.
 - **No separate bind host per protocol.** All API listeners share
-  `server.host`. The enrollment listener is the one exception
-  (`bootstrap.noise_host`), because it serves a different trust boundary — a
-  joining node reaches it before it holds any credential.
+  `server.host`. The two Noise NK listeners are the exceptions
+  (`bootstrap.noise_host`, `cluster_join.listen_host`), because they serve a
+  different trust boundary: a joining node reaches them before it holds any
+  credential.
 - **No config-driven database creation beyond the `databases:` block.**

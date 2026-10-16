@@ -97,6 +97,38 @@ func TestConfirmClusterCAPersisted_DeletionFailureIsNotFatal(t *testing.T) {
 	}
 }
 
+// TestConfirmClusterCAPersisted_UnremovableLocalKeyIsNotFatal: once the CA is
+// confirmed durable, a local cache that cannot be removed is a cleanup
+// failure, not a boot failure. A non-empty directory in ca-key.pem's place
+// makes the remove fail with something other than "not exist".
+func TestConfirmClusterCAPersisted_UnremovableLocalKeyIsNotFatal(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	if err := os.MkdirAll(filepath.Join(keyPath, "pinned"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	if err := confirmClusterCAPersisted(context.Background(), &stubClusterCAProvider{}, dir, true); err != nil {
+		t.Fatalf("confirmClusterCAPersisted = %v, want nil: an unremovable cache must not fail the boot", err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("stat %s: %v; the unremovable entry should remain", keyPath, err)
+	}
+}
+
+// TestConfirmClusterCAPersisted_ProviderFailureKeepsTheCause: the fatal error
+// names the persistence check and still reaches the provider's own error.
+func TestConfirmClusterCAPersisted_ProviderFailureKeepsTheCause(t *testing.T) {
+	boom := errors.New("store unreachable")
+	err := confirmClusterCAPersisted(context.Background(), &stubClusterCAProvider{certErr: boom}, t.TempDir(), false)
+	if !errors.Is(err, boom) {
+		t.Fatalf("confirmClusterCAPersisted = %v, want it to wrap the provider error", err)
+	}
+	if want := "qrdbd: cluster CA persistence check failed: store unreachable"; err.Error() != want {
+		t.Fatalf("message = %q, want %q", err.Error(), want)
+	}
+}
+
 // TestClusterCABootstrapPEMs_WithholdForExplicitTLS is the BYO-TLS proof:
 // bundle.CACertPEM is the operator's own trust anchor for an ExplicitTLS
 // bundle, and must never be offered to the built-in cluster CA provider as

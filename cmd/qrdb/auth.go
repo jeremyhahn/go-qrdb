@@ -261,6 +261,7 @@ func newAuthFactorCmd() *cobra.Command {
 	cmd.AddCommand(newAuthFactorListCmd())
 	cmd.AddCommand(newAuthFactorAddCmd())
 	cmd.AddCommand(newAuthFactorRemoveCmd())
+	cmd.AddCommand(newAuthFactorDeleteCmd())
 	cmd.AddCommand(newAuthFactorRotateCmd())
 	cmd.AddCommand(newAuthFactorRelabelCmd())
 	return cmd
@@ -290,10 +291,15 @@ func newAuthFactorAddCmd() *cobra.Command {
 		Short: "Enroll a new factor",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags.hasExpectedVersion = cmd.Flags().Changed("expected-version")
 			return runAuthFactorAdd(cmd.Context(), &flags)
 		},
 	}
 	bindAuthFactorAddFlags(cmd, &flags)
+	cmd.Flags().BoolVar(&flags.ifNoActiveType, "if-no-active-type", false,
+		"Add only if the user has no active factor of --type")
+	cmd.Flags().Uint64Var(&flags.expectedVersion, "expected-version", 0,
+		"Add only if the user's factor set is at this version (see 'auth factor list')")
 	return cmd
 }
 
@@ -309,6 +315,12 @@ type authFactorAddFlags struct {
 	fido2Device   string
 	pivReader     string
 	pivSlot       string
+
+	// ifNoActiveType, expectedVersion and hasExpectedVersion are the add
+	// condition. They are bound on add only: a rotation refuses a condition.
+	ifNoActiveType     bool
+	expectedVersion    uint64
+	hasExpectedVersion bool
 }
 
 // bindAuthFactorAddFlags wires the canonical add/rotate flag set onto a
@@ -341,6 +353,26 @@ func newAuthFactorRemoveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Allow removing the last factor (admin)")
+	return cmd
+}
+
+// newAuthFactorDeleteCmd implements "auth factor delete <factor-id>
+// [--force]": the hard delete that rolls back an add, freeing the
+// credential to be bound again. A revoked factor is refused.
+func newAuthFactorDeleteCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "delete <factor-id>",
+		Short: "Delete a factor outright so its credential can be bound again",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return &MissingFactorIDError{Op: "auth factor delete"}
+			}
+			return runAuthFactorDelete(cmd.Context(), args[0], force)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Allow deleting the last factor (admin)")
 	return cmd
 }
 
@@ -452,6 +484,7 @@ func printFactorList(resp *transport.AuthFactorListResponse) error {
 			})
 		}
 		printTable(headers, rows)
+		_, _ = fmt.Fprintf(outputWriter, "Factor set version: %d\n", resp.FactorSetVersion)
 	}
 	return nil
 }
@@ -477,7 +510,32 @@ func runAuthFactorAdd(ctx context.Context, f *authFactorAddFlags) error {
 	if err != nil {
 		return err
 	}
-	return printFactorRecord(&resp.Factor)
+	return printFactorAdd(resp)
+}
+
+// factorAddOutput is the record an add prints, with the factor-set version
+// a conditional add committed beside the record's own fields, so the
+// record's shape is the same whether or not the add carried a condition.
+type factorAddOutput struct {
+	transport.AuthFactorRecord `yaml:",inline"`
+	FactorSetVersion           uint64 `json:"factor_set_version,omitempty" yaml:",omitempty"`
+}
+
+// printFactorAdd renders an AuthFactorAddResponse.
+func printFactorAdd(resp *transport.AuthFactorAddResponse) error {
+	out := factorAddOutput{AuthFactorRecord: resp.Factor, FactorSetVersion: resp.FactorSetVersion}
+	switch outputFormat {
+	case "json":
+		return printJSON(out)
+	case "yaml":
+		return printYAML(out)
+	default:
+		printFactorRecordText(&resp.Factor)
+		if resp.FactorSetVersion != 0 {
+			_, _ = fmt.Fprintf(outputWriter, "Factor Set:    version %d\n", resp.FactorSetVersion)
+		}
+	}
+	return nil
 }
 
 // printFactorRecord renders a single AuthFactorRecord.
@@ -488,21 +546,26 @@ func printFactorRecord(rec *transport.AuthFactorRecord) error {
 	case "yaml":
 		return printYAML(rec)
 	default:
-		_, _ = fmt.Fprintf(outputWriter, "ID:            %s\n", rec.ID)
-		_, _ = fmt.Fprintf(outputWriter, "Type:          %s\n", rec.Type)
-		_, _ = fmt.Fprintf(outputWriter, "User:          %d\n", rec.UserID)
-		if rec.Label != "" {
-			_, _ = fmt.Fprintf(outputWriter, "Label:         %s\n", rec.Label)
-		}
-		_, _ = fmt.Fprintf(outputWriter, "Registered At: %s\n", rec.RegisteredAt.Format("2006-01-02T15:04:05Z"))
-		if rec.RevokedAt != nil {
-			_, _ = fmt.Fprintf(outputWriter, "Revoked At:    %s\n", rec.RevokedAt.Format("2006-01-02T15:04:05Z"))
-		}
-		if rec.CreatedBy != "" {
-			_, _ = fmt.Fprintf(outputWriter, "Created By:    %s\n", rec.CreatedBy)
-		}
+		printFactorRecordText(rec)
 	}
 	return nil
+}
+
+// printFactorRecordText renders rec as the text output's labelled lines.
+func printFactorRecordText(rec *transport.AuthFactorRecord) {
+	_, _ = fmt.Fprintf(outputWriter, "ID:            %s\n", rec.ID)
+	_, _ = fmt.Fprintf(outputWriter, "Type:          %s\n", rec.Type)
+	_, _ = fmt.Fprintf(outputWriter, "User:          %d\n", rec.UserID)
+	if rec.Label != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Label:         %s\n", rec.Label)
+	}
+	_, _ = fmt.Fprintf(outputWriter, "Registered At: %s\n", rec.RegisteredAt.Format("2006-01-02T15:04:05Z"))
+	if rec.RevokedAt != nil {
+		_, _ = fmt.Fprintf(outputWriter, "Revoked At:    %s\n", rec.RevokedAt.Format("2006-01-02T15:04:05Z"))
+	}
+	if rec.CreatedBy != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Created By:    %s\n", rec.CreatedBy)
+	}
 }
 
 // buildAddRequest validates the canonical add/rotate flag set and
@@ -524,14 +587,20 @@ func buildAddRequest(userID uint64, f *authFactorAddFlags) (*transport.AuthFacto
 		return nil, err
 	}
 
-	return &transport.AuthFactorAddRequest{
-		UserID:     userID,
-		Type:       f.factorType,
-		Label:      f.label,
-		Credential: credential,
-		Metadata:   metadata,
-		CreatedBy:  f.createdBy,
-	}, nil
+	req := &transport.AuthFactorAddRequest{
+		UserID:         userID,
+		Type:           f.factorType,
+		Label:          f.label,
+		Credential:     credential,
+		Metadata:       metadata,
+		CreatedBy:      f.createdBy,
+		IfNoActiveType: f.ifNoActiveType,
+	}
+	if f.hasExpectedVersion {
+		version := f.expectedVersion
+		req.ExpectedFactorSetVersion = &version
+	}
+	return req, nil
 }
 
 // credentialAndMetadata derives the canonical credential lookup-key
@@ -619,6 +688,25 @@ func runAuthFactorRemove(ctx context.Context, factorID string, force bool) error
 		return err
 	}
 	if _, err := cl.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{
+		FactorID: factorID,
+		Force:    force,
+	}); err != nil {
+		return err
+	}
+	printOK()
+	return nil
+}
+
+// runAuthFactorDelete dispatches "auth factor delete".
+func runAuthFactorDelete(ctx context.Context, factorID string, force bool) error {
+	if factorID == "" {
+		return &MissingFactorIDError{Op: "auth factor delete"}
+	}
+	cl, err := userAuthFactorClient()
+	if err != nil {
+		return err
+	}
+	if _, err := cl.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{
 		FactorID: factorID,
 		Force:    force,
 	}); err != nil {

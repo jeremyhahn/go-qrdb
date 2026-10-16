@@ -145,12 +145,16 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 	if err != nil {
 		return nil, translateError(err)
 	}
-	return &transport.RebalanceResult{
+	out := &transport.RebalanceResult{
 		MovesCompleted: result.MovesCompleted,
 		MovesFailed:    result.MovesFailed,
 		Duration:       result.Duration,
 		FinalImbalance: result.FinalImbalance,
-	}, nil
+	}
+	for _, f := range result.Failures {
+		out.Failures = append(out.Failures, transport.RebalanceMoveFailure(f))
+	}
+	return out, nil
 }
 
 // GetImbalanceReport returns the current cluster balance report by

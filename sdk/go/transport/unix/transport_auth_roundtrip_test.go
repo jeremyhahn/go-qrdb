@@ -256,6 +256,7 @@ type mockCertEnrollmentSvc struct {
 	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
+	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
 }
 
 func (m *mockCertEnrollmentSvc) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
@@ -291,6 +292,13 @@ func (m *mockCertEnrollmentSvc) RemoveTrustAnchor(ctx context.Context, tenantID,
 		return m.removeFn(ctx, tenantID, fingerprint)
 	}
 	return nil
+}
+
+func (m *mockCertEnrollmentSvc) IssueDelegation(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	if m.delegFn != nil {
+		return m.delegFn(ctx, req)
+	}
+	return &service.IssuedDelegation{TenantID: req.TenantID, Principal: req.Principal, Scope: req.Scope, CertPEM: []byte("-----BEGIN CERTIFICATE-----\n"), Serial: "d1"}, nil
 }
 
 var _ service.CertEnrollmentServicer = (*mockCertEnrollmentSvc)(nil)

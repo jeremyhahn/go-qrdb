@@ -71,6 +71,7 @@ var targetResolvedOperations = map[string]struct{}{
 	"ListCerts":                    {},
 	"IssueCert":                    {},
 	"EnrollCert":                   {},
+	"IssueDelegation":              {},
 	"AddTrustAnchors":              {},
 	"ListTrustAnchors":             {},
 	"RemoveTrustAnchor":            {},

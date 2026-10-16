@@ -37,9 +37,10 @@ const (
 
 	// LeaseRead allows the Raft leader to serve reads directly when its
 	// leadership lease is still valid, skipping the ReadIndex round-trip.
-	// Provides near-linearizable reads with sub-millisecond latency.
-	// Use for: high-throughput read workloads where a brief (<election
-	// timeout) window of stale reads during leader failover is acceptable.
+	// The lease is measured on the leader's monotonic clock, so reads stay
+	// linearizable, with no stale-read window, while replica clock rates
+	// differ by less than 1%; near or after lease expiry the read falls back
+	// to the heartbeat round. Use for: high-throughput read workloads.
 	LeaseRead
 
 	// Eventual allows reading from local node without Raft coordination.

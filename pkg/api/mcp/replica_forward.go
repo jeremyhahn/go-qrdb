@@ -231,6 +231,11 @@ func (f *replicaForwarder) forwardToLeader(ctx context.Context, req mcpgo.CallTo
 		slog.Warn("admin forwarding: not forwarded", "protocol", cluster.APIProtocolMCP, "leader_raft_addr", leaderAddr, "error", err)
 		return nil, nil, false
 	}
+	// The deadline covers the leader lookup too: it reads the member
+	// records from the system shard, and a read that does not complete
+	// would otherwise hold this call open for as long as the caller waits.
+	ctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
+	defer cancel()
 	member, found, merr := f.cfg.Locator.MemberByAddress(ctx, leaderAddr)
 	if merr != nil || !found {
 		slog.Warn("admin forwarding: leader not found in member records", "leader_raft_addr", leaderAddr, "error", merr)
@@ -242,8 +247,6 @@ func (f *replicaForwarder) forwardToLeader(ctx context.Context, req mcpgo.CallTo
 		return nil, nil, false
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
-	defer cancel()
 	rt := &onBehalfTransport{base: f.base, caller: caller, key: f.key, nodeID: f.nodeID}
 	cli, err := mcpclient.NewStreamableHttpClient("https://"+endpoint+"/mcp", mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
 	if err != nil {

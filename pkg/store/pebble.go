@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statedigest"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -160,6 +161,7 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpMVCCPut:         pebbleHandleMVCCPut,
 		protocol.OpMVCCPutIfAbsent: pebbleHandleMVCCPutIfAbsent,
 		protocol.OpMVCCDelete:      pebbleHandleMVCCDelete,
+		protocol.OpDeleteRange:     pebbleHandleDeleteRange,
 
 		// Batch and transaction operations.
 		protocol.OpBatch:            pebbleHandleBatch,
@@ -174,9 +176,10 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpImportStage: pebbleHandleImportStage,
 
 		// Lease operations.
-		protocol.OpLeaseGrant:     pebbleHandleLeaseGrant,
-		protocol.OpLeaseRevoke:    pebbleHandleLeaseRevoke,
-		protocol.OpLeaseKeepAlive: pebbleHandleLeaseKeepAlive,
+		protocol.OpLeaseGrant:      pebbleHandleLeaseGrant,
+		protocol.OpLeaseRevoke:     pebbleHandleLeaseRevoke,
+		protocol.OpLeaseKeepAlive:  pebbleHandleLeaseKeepAlive,
+		protocol.OpLeaseCheckpoint: pebbleHandleLeaseCheckpoint,
 
 		// Replicated audit chain (append and retention prune, one opcode,
 		// two sub-types -- see protocol.OpAuditAppend).
@@ -441,10 +444,7 @@ func (s *PebbleStateMachine) readLastApplied() (uint64, error) {
 	}
 	defer func() { _ = closer.Close() }()
 
-	if len(val) != 8 {
-		return 0, nil
-	}
-	return binary.LittleEndian.Uint64(val), nil
+	return decodeLastApplied(val), nil
 }
 
 // Update applies committed entries to the PebbleDB store using an atomic
@@ -478,6 +478,9 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 			return &protocol.InvalidCommandError{Reason: "empty command"}
 		}
 
+		if s.lessor != nil {
+			s.lessor.Applying(e.Index)
+		}
 		result, notifs, err := s.dispatch(batch, e.Cmd)
 
 		// An opcode this state machine has no handler for is a refusal, not a
@@ -547,6 +550,12 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 //   - []byte: returns a copy of the value for the given key
 //   - string: returns a copy of the value for the given key
 func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (interface{}, error) {
+	// The state digest scans a snapshot rather than the live database, so it
+	// takes the lock only to open one; see stateDigest.
+	if _, ok := query.(statedigest.Query); ok {
+		return s.stateDigest()
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -568,12 +577,41 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		// than the generic query error this used to return (go-qrdb#387):
 		// no transport's error mapping recognized the latter as a
 		// lease-not-found condition, so it never reached a caller as
-		// anything but an internal fault.
-		l, err := s.lessor.LookupOrNotFound(q.ID)
+		// anything but an internal fault. A follower's *lease.StaleTTLError
+		// passes through, as it does there.
+		l, err := s.lessor.TimeToLive(q.ID)
 		if err != nil {
-			return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
+			var nf *lease.NotFoundError
+			if errors.As(err, &nf) {
+				return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
+			}
+			return nil, err
 		}
 		return l, nil
+
+	case lease.LeaseKeepAliveQuery:
+		if s.lessor == nil {
+			return nil, &InvalidQueryError{Reason: "lessor not configured"}
+		}
+		l, err := s.lessor.RenewLocal(q.ID)
+		if err != nil {
+			var nf *lease.NotFoundError
+			if errors.As(err, &nf) {
+				return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
+			}
+			return nil, err
+		}
+		return l, nil
+
+	case lease.LeaseCheckpointNowQuery:
+		if s.lessor == nil {
+			return nil, &InvalidQueryError{Reason: "lessor not configured"}
+		}
+		answer, err := s.lessor.RequestCheckpoint()
+		if err != nil {
+			return nil, err
+		}
+		return answer, nil
 
 	case lease.LeasesQuery:
 		if s.lessor == nil {
@@ -1357,33 +1395,86 @@ func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []by
 	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
 		return res, nil, nil
 	}
-
-	// Capture previous value for index maintenance and watch notifications.
-	oldValue, _ := s.getKeyInBatch(batch, cmd.Key)
-	prevKv := s.watchPrevKV(batch, cmd.Key)
-
-	if err := s.removeIndexesOnDelete(cmd.Key, oldValue); err != nil {
+	notifs, err := s.deleteKey(batch, cmd.Key, nil)
+	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	return sm.Result{Value: 1}, notifs, nil
+}
 
-	if err := batch.Delete(cmd.Key, pebble.Sync); err != nil {
+// deleteKey stages the delete of key into the apply batch with everything a
+// delete carries: the key's secondary-index entries are removed and its lease
+// binding released in the same batch, and, when there is a watch hub, a
+// delete event is appended to notifs. The caller has already refused a
+// reserved key.
+func (s *PebbleStateMachine) deleteKey(batch *pebble.Batch, key []byte, notifs []pebbleNotification) ([]pebbleNotification, error) {
+	// Capture previous value for index maintenance and watch notifications.
+	oldValue, _ := s.getKeyInBatch(batch, key)
+	prevKv := s.watchPrevKV(batch, key)
+
+	if err := s.removeIndexesOnDelete(key, oldValue); err != nil {
+		return nil, err
+	}
+	if err := batch.Delete(key, pebble.Sync); err != nil {
+		return nil, &WriteError{Err: err}
+	}
+	if err := s.bindLease(batch, key, lease.NoLease); err != nil {
+		return nil, err
+	}
+	if s.hub != nil {
+		notifs = append(notifs, pebbleNotification{
+			eventType: watch.EventDelete,
+			key:       key,
+			kv:        &qrdbkv.KeyValue{Key: key},
+			prevKv:    prevKv,
+		})
+	}
+	return notifs, nil
+}
+
+// pebbleHandleDeleteRange applies protocol.OpDeleteRange: it deletes every
+// key in [start, end) -- through the end of the keyspace when end is empty --
+// as OpDelete deletes each one, and reports how many it deleted. The keys are
+// read through the apply batch, so an earlier entry of the same apply is
+// seen. It writes no storage range tombstone, which would leave the keys'
+// index entries and lease bindings behind and tell no watcher.
+//
+// A start in the reserved 0x00 namespace refuses; any other start sorts above
+// that whole namespace, so no reserved record is in its range. Bounds that do
+// not describe a range are refused in the result, as the engines refuse them,
+// rather than halting apply.
+func pebbleHandleDeleteRange(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	start, end, err := statemachine.DecodeDeleteRange(payload)
+	var rangeErr *statemachine.InvalidRangeError
+	if errors.As(err, &rangeErr) {
+		return statemachine.RefusalResult(rangeErr), nil, nil
+	}
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(start); refused {
+		return res, nil, nil
+	}
+	iter, err := batch.NewIter(&pebble.IterOptions{LowerBound: start, UpperBound: end})
+	if err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
 	}
-	if err := s.bindLease(batch, cmd.Key, lease.NoLease); err != nil {
-		return sm.Result{}, nil, err
+	var keys [][]byte
+	for ok := iter.First(); ok; ok = iter.Next() {
+		keys = append(keys, append([]byte(nil), iter.Key()...))
 	}
-
+	iterErr := iter.Error()
+	_ = iter.Close()
+	if iterErr != nil {
+		return sm.Result{}, nil, &WriteError{Err: iterErr}
+	}
 	var notifs []pebbleNotification
-	if s.hub != nil {
-		notifs = []pebbleNotification{{
-			eventType: watch.EventDelete,
-			key:       cmd.Key,
-			kv:        &qrdbkv.KeyValue{Key: cmd.Key},
-			prevKv:    prevKv,
-		}}
+	for _, key := range keys {
+		if notifs, err = s.deleteKey(batch, key, notifs); err != nil {
+			return sm.Result{}, nil, err
+		}
 	}
-
-	return sm.Result{Value: 1}, notifs, nil
+	return sm.Result{Value: uint64(len(keys))}, notifs, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1848,7 +1939,7 @@ func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload
 }
 
 // pebbleHandleLeaseKeepAlive resets a lease's TTL.
-func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	leaseID, err := protocol.DecodeLeaseKeepAlive(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -1858,18 +1949,44 @@ func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload 
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
-	_, kaErr := s.lessor.KeepAlive(leaseID)
+	// The batch receives the deletion of the lease's checkpoint record, if it
+	// has one (lease.Lessor.KeepAlive).
+	l, kaErr := s.lessor.KeepAlive(pebbleLeaseWriter{batch: batch}, leaseID)
 	if kaErr != nil {
 		var nfe *lease.NotFoundError
 		if errors.As(kaErr, &nfe) {
 			// Lease already gone — idempotent success so Raft Apply does not
 			// stall on duplicate/replayed keepalive proposals.
-			return sm.Result{Value: 0}, nil, nil
+			return sm.Result{Value: 0, Data: protocol.EncodeLeaseKeepAliveNotFound(leaseID)}, nil, nil
 		}
 		return sm.Result{}, nil, kaErr
 	}
 
-	return sm.Result{Value: uint64(leaseID)}, nil, nil
+	// The apply already computed the lease's post-reset state; carrying it
+	// back in Data lets the service layer answer the caller from this
+	// committed result instead of a second, separately linearized read
+	// (go-qrdb#275).
+	return sm.Result{Value: uint64(leaseID), Data: protocol.EncodeLeaseInfo(l.ID, l.GrantedTTL, l.RemainingTTL, l.Keys)}, nil, nil
+}
+
+// pebbleHandleLeaseCheckpoint records the leader's checkpoint of the remaining
+// TTL of a batch of leases (lease.Lessor.ApplyCheckpoints), so that a replica
+// that becomes leader counts each lease from what it had left. A storage fault
+// is an apply fault, as for every lease-table write.
+func pebbleHandleLeaseCheckpoint(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	token, index, cps, err := protocol.DecodeLeaseCheckpoint(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if s.lessor == nil {
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
+	}
+
+	if err := s.lessor.ApplyCheckpoints(pebbleLeaseWriter{batch: batch}, token, index, cps); err != nil {
+		return sm.Result{}, nil, err
+	}
+	return sm.Result{Value: uint64(len(cps))}, nil, nil
 }
 
 // ---------------------------------------------------------------------------

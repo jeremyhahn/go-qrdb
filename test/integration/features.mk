@@ -93,13 +93,13 @@
 INTTEST_api_server          := cli_multiprotocol_test.go
 INTTEST_attested_caller     :=
 INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go
-INTTEST_auth_factors        := auth_cli_test.go auth/factors_test.go
+INTTEST_auth_factors        := auth_cli_test.go auth_factor_condition_cli_test.go auth/factors_test.go
 INTTEST_backup_restore      := backup_cli_test.go backup_restore_test.go
 INTTEST_barrier_seal        := barrier_cli_test.go barrier_permutations_cli_test.go cluster_seal_cli_test.go cluster_seal_test.go cluster_enable_encryption_test.go enable_encryption_cli_test.go enable_encryption_test.go tenant_barrier_sealed_window_cli_test.go tenant_barrier_restart_cli_test.go fips_kdf_test.go
 INTTEST_ceremony            := officer_ceremony_cli_test.go ceremony_forwarding_test.go ceremony_follower_forward_test.go
-INTTEST_certificate_authority := ca_cli_test.go clusterca_test.go cluster_ca_anchor_spof_test.go
+INTTEST_certificate_authority := ca_cli_test.go ca_delegate_cli_test.go clusterca_test.go cluster_ca_anchor_spof_test.go
 INTTEST_capabilities        := cli_multiprotocol_test.go
-INTTEST_clustering          := admin_test.go admin_cluster_cli_test.go cluster_test.go drain_test.go rebalance_cli_test.go join_request_cli_test.go join_token_cli_test.go member_record_test.go dynamic_membership_pebble_test.go
+INTTEST_clustering          := admin_test.go admin_cluster_cli_test.go admin_state_hash_cli_test.go cluster_test.go drain_test.go rebalance_cli_test.go join_request_cli_test.go join_token_cli_test.go member_record_test.go dynamic_membership_pebble_test.go
 # cluster-verification: the in-CI leader SIGKILL-under-load, leader
 # partition and lease-read-after-leader-change tests. The soak itself
 # (`make cluster-proof`) is not this harness and is never selected here.
@@ -120,10 +120,10 @@ INTTEST_firstboot           := init_cli_test.go
 INTTEST_full_text_search    := fts_test.go
 INTTAGS_full_text_search    := qrdb_fts
 INTTEST_guarded_swap        := feature_gate_cluster_test.go
-INTTEST_identity_rbac       := roles_cli_test.go users_cli_test.go invitation_cli_test.go
+INTTEST_identity_rbac       := roles_cli_test.go users_cli_test.go invitation_cli_test.go identity_hydrator_test.go
 INTTEST_key_value           := kv_cli_test.go kv_test.go kv_read_permission_test.go kv_restore_cli_test.go kv_restore_default_sm_cli_test.go batch_cli_test.go batch_import_cli_test.go batch_import_session_test.go
 INTTEST_key_wrapping        := key_wrapping_cli_test.go
-INTTEST_leases              := lease_binding_test.go lease_cli_test.go
+INTTEST_leases              := lease_binding_test.go lease_cli_test.go lease_keepalive_test.go
 INTTEST_multi_tenancy       := tenant_cli_test.go tenant_data_root_cli_test.go tenant_deleted_cli_test.go tenant_isolation_cli_test.go isolation_raft_cluster_test.go isolation_raft_dedicated_wal_test.go isolation_raft_rebalance_test.go isolation_raft_scale_test.go isolation_raft_shard_ids_test.go tenant_barrier_init_proof_cli_test.go
 INTTEST_rag                 := rag_cli_test.go
 INTTEST_rate_limit          :=

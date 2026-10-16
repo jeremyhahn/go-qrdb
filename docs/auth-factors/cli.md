@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 Command group: `qrdb auth`, with a `factor` subgroup implementing the N-factor
 model (one User → many AuthFactors). All verbs accept the root persistent flags
@@ -48,6 +48,21 @@ Enroll a new factor.
 | `--reader` | string | — | PC/SC reader name metadata (`--type piv`) |
 | `--slot` | string | `9a` | PIV slot id metadata (`--type piv`) |
 | `--created-by` | string | `self` | provenance: `self \| admin \| ceremony` |
+| `--if-no-active-type` | bool | `false` | add only if the user holds no active factor of `--type` |
+| `--expected-version` | uint | — | add only if the user's factor set is still at this version, as `list` reports it |
+
+`--if-no-active-type` and `--expected-version` make the add **conditional**,
+and may be given together. The server decides the condition in the same write
+that adds the factor, so of several commands racing the same claim exactly one
+succeeds. A refused add exits non-zero with an error naming the active factor that
+already holds the type (`--if-no-active-type`) or the current and expected
+versions (`--expected-version`, checked first); nothing is enrolled. `--expected-version 0` means "the user's factors
+have never changed".
+
+A conditional add reports the version it committed: `Factor Set:    version N`
+in table output, `factor_set_version` in JSON (inline beside the factor
+record's own fields). An unconditional add prints the factor record alone, as
+it always has.
 
 ```bash
 qrdb auth factor add --user 42 --type mtls --label "laptop" --cert ./alice/cert.pem
@@ -57,6 +72,14 @@ qrdb auth factor add --user 42 --type fido2 --label "yubikey-5" \
 
 qrdb auth factor add --user 42 --type piv --label "badge" \
      --credential-hex d4e5f6... --reader "Generic Reader 00 00" --slot 9a
+
+# One-time claim: enrol the user's first PIV card, or nothing.
+qrdb auth factor add --user 42 --type piv --label "badge" \
+     --credential-hex d4e5f6... --if-no-active-type
+
+# Add only if nothing changed since the list you read.
+qrdb auth factor add --user 42 --type fido2 --label "spare" \
+     --credential-hex a1b2c3... --expected-version 3
 ```
 
 ## `qrdb auth factor list`
@@ -65,14 +88,20 @@ qrdb auth factor add --user 42 --type piv --label "badge" \
 |---|---|---|
 | `--user` | string | yes — numeric user id |
 
+Table output ends with `Factor set version: N`; JSON carries it as
+`factor_set_version`. That is the value `add --expected-version` compares
+against. It is read before the factors, so it is never newer than the list
+printed with it.
+
 ```bash
 qrdb auth factor list --user 42 --output json
 ```
 
 ## `qrdb auth factor rotate <factor-id>`
 
-Rotate an enrolled factor's key material. Takes the same flags as `add`;
-`--user` is **inherited** rather than required.
+Rotate an enrolled factor's key material. Takes the same flags as `add`
+except the two conditions — `--if-no-active-type` and `--expected-version` are
+refused as unknown flags; `--user` is **inherited** rather than required.
 
 ```bash
 qrdb auth factor rotate 7 --type mtls --label "laptop" --cert ./alice/new-cert.pem
@@ -97,6 +126,33 @@ qrdb auth factor remove 7 --force     # only when you mean it
 
 Removing a user's last factor is refused without `--force`, because it locks
 them out.
+
+`remove` **revokes**: the factor stays listed with `revoked_at` set, and its
+credential stays claimed, so the same certificate or token can never be
+enrolled again.
+
+## `qrdb auth factor delete <factor-id>`
+
+Delete a factor outright, so its credential can be bound again — the
+rollback for an `add` whose enrolment did not complete. The factor, its
+credential and SPKI claims and its place in the user's factor set go in one
+atomic commit; the factor is no longer listed. Prints `OK`.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--force` | bool | allow deleting the **last** factor (admin); the user is deactivated |
+
+```bash
+qrdb auth factor add --user 42 --type mtls --label "laptop" --cert ./alice/cert.pem
+qrdb auth factor delete 7 --force     # 7 was the user's only factor
+qrdb auth factor add --user 42 --type mtls --label "laptop" --cert ./alice/cert.pem   # binds again
+```
+
+A **revoked** factor cannot be deleted: the command exits non-zero with a
+`factor revoked` error and the credential stays claimed, so nothing undoes a
+`remove`. Deleting an id that is not there — including one already deleted —
+exits non-zero with a not-found error. The command needs the same permission
+as `add`.
 
 ## PINs
 

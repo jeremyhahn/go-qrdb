@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -51,11 +52,27 @@ func (m *mockCredentialService) CredentialStore(ctx context.Context, name string
 	return nil
 }
 
-func (m *mockCredentialService) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+func (m *mockCredentialService) retrieveValue(ctx context.Context, name string) ([]byte, error) {
 	if m.retrieveFn != nil {
 		return m.retrieveFn(ctx, name)
 	}
 	return nil, nil
+}
+
+func (m *mockCredentialService) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	v, err := m.retrieveValue(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
+}
+
+func (m *mockCredentialService) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	v, err := m.retrieveVersionValue(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 
 func (m *mockCredentialService) CredentialSubmit(ctx context.Context, name string, value []byte) error {
@@ -93,7 +110,7 @@ func (m *mockCredentialService) CredentialRotate(ctx context.Context, name strin
 	return &credentials.RotateResult{Name: name}, nil
 }
 
-func (m *mockCredentialService) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (m *mockCredentialService) retrieveVersionValue(ctx context.Context, name string, version uint64) ([]byte, error) {
 	if m.retrieveVersionFn != nil {
 		return m.retrieveVersionFn(ctx, name, version)
 	}
@@ -351,7 +368,7 @@ func TestEmbeddedCredential_RetrieveVersion(t *testing.T) {
 	}
 	tr := newCredentialTransport(t, svc)
 
-	resp, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	resp, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "db-password",
 		Version: 2,
 	})
@@ -380,7 +397,7 @@ func TestEmbeddedCredential_RetrieveVersion_Current(t *testing.T) {
 	}
 	tr := newCredentialTransport(t, svc)
 
-	resp, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	resp, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name: "db-password",
 	})
 	if err != nil {
@@ -394,7 +411,7 @@ func TestEmbeddedCredential_RetrieveVersion_Current(t *testing.T) {
 func TestEmbeddedCredential_RetrieveVersion_NilService(t *testing.T) {
 	tr := newCredentialTransport(t, nil)
 
-	_, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "x"})
+	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "x"})
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
 		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
@@ -404,7 +421,7 @@ func TestEmbeddedCredential_RetrieveVersion_NilService(t *testing.T) {
 func TestEmbeddedCredential_RetrieveVersion_NilRequest(t *testing.T) {
 	tr := newCredentialTransport(t, &mockCredentialService{})
 
-	_, err := tr.CredentialRetrieveVersion(context.Background(), nil)
+	_, err := tr.retrieveVersionResponse(context.Background(), nil)
 	var nilReqErr *NilRequestError
 	if !errors.As(err, &nilReqErr) {
 		t.Fatalf("expected NilRequestError, got %T: %v", err, err)
@@ -414,7 +431,7 @@ func TestEmbeddedCredential_RetrieveVersion_NilRequest(t *testing.T) {
 func TestEmbeddedCredential_RetrieveVersion_Closed(t *testing.T) {
 	tr := closedCredentialTransport(t)
 
-	_, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "x"})
+	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "x"})
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
@@ -429,7 +446,7 @@ func TestEmbeddedCredential_RetrieveVersion_ServiceError(t *testing.T) {
 	}
 	tr := newCredentialTransport(t, svc)
 
-	_, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "x", Version: 1})
+	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "x", Version: 1})
 	if !errors.Is(err, errCredential) {
 		t.Errorf("expected errCredential, got %v", err)
 	}
@@ -663,16 +680,20 @@ func TestEmbeddedCredential_Dispatch_RetrieveVersion(t *testing.T) {
 	}
 	tr := newCredentialTransport(t, svc)
 
-	var resp *transport.CredentialRetrieveVersionResponse
-	err := tr.Request(context.Background(), "CredentialRetrieveVersion", &transport.CredentialRetrieveVersionRequest{
+	buf, err := tr.CredentialRetrieveVersionBuffer(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "k",
 		Version: 1,
-	}, &resp)
+	})
 	if err != nil {
-		t.Fatalf("dispatch error: %v", err)
+		t.Fatalf("retrieve version buffer error: %v", err)
 	}
-	if resp == nil || string(resp.Value) != "payload" {
-		t.Fatalf("dispatch returned unexpected result: %+v", resp)
+	defer buf.Destroy()
+	got, err := secure.CopyOut(buf)
+	if err != nil {
+		t.Fatalf("copy out: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("retrieve returned %q, want payload", got)
 	}
 }
 
@@ -720,7 +741,6 @@ func TestEmbeddedCredential_Dispatch_InvalidRequest(t *testing.T) {
 	}{
 		{"CredentialList"},
 		{"CredentialRotate"},
-		{"CredentialRetrieveVersion"},
 		{"CredentialListVersions"},
 		{"CredentialGCExpired"},
 	}

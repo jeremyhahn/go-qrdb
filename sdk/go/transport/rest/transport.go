@@ -1052,10 +1052,14 @@ func (t *Transport) decodeErrorResponse(method string, resp *http.Response) erro
 		return &transport.BarrierSealedError{Message: msg}
 	}
 
+	err := transport.RefusalError(errResp.Code, errResp.Metadata)
+	if err == nil {
+		err = serverErrorFor(resp.StatusCode, msg)
+	}
 	return &transport.RequestError{
 		Method:     method,
 		StatusCode: resp.StatusCode,
-		Err:        serverErrorFor(resp.StatusCode, msg),
+		Err:        err,
 		RetryAfter: retryAfterHeader(resp.Header.Get("Retry-After")),
 	}
 }

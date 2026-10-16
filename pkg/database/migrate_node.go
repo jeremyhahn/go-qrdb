@@ -48,6 +48,22 @@ func (e *MigrateStoreDirError) Error() string {
 
 func (e *MigrateStoreDirError) Unwrap() error { return e.Err }
 
+// storeRecodeFunc re-encrypts the store at srcDir, readable under srcEnc, into
+// dstDir under dstEnc, returning the units it processed.
+type storeRecodeFunc func(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) (int64, error)
+
+// storeVerifyFunc proves the store at dstDir, readable under dstEnc, holds
+// exactly the records of the one at srcDir, readable under srcEnc.
+type storeVerifyFunc func(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) error
+
+// migratedStore is one store directory a migration moves, with how it is
+// recoded and verified.
+type migratedStore struct {
+	dir    string
+	recode storeRecodeFunc
+	verify storeVerifyFunc
+}
+
 // NodeStoreMigration drives an at-rest encryption migration for a single node's
 // data stores, using the swap mechanism: each store is logically copied into a
 // freshly-keyed sibling, verified, and atomically swapped into place; the
@@ -63,11 +79,18 @@ func (e *MigrateStoreDirError) Unwrap() error { return e.Err }
 // (initialized + unsealed over a staging root-key path in the same seal store);
 // its Encryptor encrypts the migrated data and its sealed root key is adopted
 // at commit.
+//
+// StoreDirs are Pebble stores, recoded by the migration's mechanism.
+// FileStoreDirs are file-backend stores (pkg/storage/file), which are not
+// Pebble stores: each is copied and verified record by record through the
+// file engine (ReencryptFileStore) whatever the mechanism, and is swapped and
+// journaled alongside StoreDirs.
 type NodeStoreMigration struct {
-	Source    *seal.StorageBarrier
-	Target    *seal.StorageBarrier
-	StoreDirs []string
-	Logger    *slog.Logger
+	Source        *seal.StorageBarrier
+	Target        *seal.StorageBarrier
+	StoreDirs     []string
+	FileStoreDirs []string
+	Logger        *slog.Logger
 
 	// journal optionally overrides where the crash-safe migration journal calls
 	// (Begin/Checkpoint/Finish/AdoptMigratedRootKey) are routed. When nil — the
@@ -99,6 +122,25 @@ func (m *NodeStoreMigration) journalStore() migrationJournalStore {
 	return m.Source
 }
 
+// stores returns every store the migration moves: each Pebble store recoded by
+// the mechanism's recode, then each file store through the file engine.
+func (m *NodeStoreMigration) stores(recode storeRecodeFunc) []migratedStore {
+	out := make([]migratedStore, 0, len(m.StoreDirs)+len(m.FileStoreDirs))
+	for _, dir := range m.StoreDirs {
+		out = append(out, migratedStore{dir: dir, recode: recode, verify: VerifyReencryptedStore})
+	}
+	for _, dir := range m.FileStoreDirs {
+		out = append(out, migratedStore{dir: dir, recode: ReencryptFileStore, verify: VerifyReencryptedFileStore})
+	}
+	return out
+}
+
+// dirs returns every store directory the migration stages, swaps and
+// journals.
+func (m *NodeStoreMigration) dirs() []string {
+	return append(append([]string(nil), m.StoreDirs...), m.FileStoreDirs...)
+}
+
 // Run executes the migration end to end with crash-safe journalling. On
 // success every store directory holds keyed (encrypted) data and the barrier's
 // persisted root key is the keyed one. On failure before the commit point the
@@ -108,7 +150,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	// key/value copy (Pebble rebuilds its layout); in-place performs a raw,
 	// structure-preserving file-by-file recodec. Both write to a keyed sibling
 	// directory and share the crash-safe verify + atomic-swap commit below.
-	var recode func(context.Context, string, *atrest.Encryptor, string, *atrest.Encryptor) (int64, error)
+	var recode storeRecodeFunc
 	switch opts.Mechanism {
 	case seal.MechanismSwap:
 		recode = ReencryptPebbleStore
@@ -117,6 +159,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	default:
 		return seal.ErrMigrationInvalidMechanism
 	}
+	stores := m.stores(recode)
 	src := atrest.New(m.Source)
 	dst := atrest.New(m.Target)
 
@@ -139,7 +182,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	// swapped but before the canonical root key is updated), and the store
 	// directories so recovery can roll their swaps forward or back from the
 	// journal alone.
-	j.StoreDirs = append([]string(nil), m.StoreDirs...)
+	j.StoreDirs = m.dirs()
 	if m.Target != nil {
 		j.StagingRootKeyPath = m.Target.RootKeyPath()
 	}
@@ -153,17 +196,17 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
-	for _, dir := range m.StoreDirs {
-		if j.Stores[dir] {
+	for _, s := range stores {
+		if j.Stores[s.dir] {
 			continue // already copied (resume)
 		}
-		keyedDir := dir + keyedSuffix
+		keyedDir := s.dir + keyedSuffix
 		_ = os.RemoveAll(keyedDir) // clear any stale partial copy
-		if _, cerr := recode(ctx, dir, src, keyedDir, dst); cerr != nil {
-			err = &MigrateStoreDirError{Dir: dir, Err: cerr}
+		if _, cerr := s.recode(ctx, s.dir, src, keyedDir, dst); cerr != nil {
+			err = &MigrateStoreDirError{Dir: s.dir, Err: cerr}
 			return err
 		}
-		j.Stores[dir] = true
+		j.Stores[s.dir] = true
 		if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 			return err
 		}
@@ -174,9 +217,9 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
-	for _, dir := range m.StoreDirs {
-		if verr := VerifyReencryptedStore(ctx, dir, src, dir+keyedSuffix, dst); verr != nil {
-			err = &MigrateStoreDirError{Dir: dir, Err: verr}
+	for _, s := range stores {
+		if verr := s.verify(ctx, s.dir, src, s.dir+keyedSuffix, dst); verr != nil {
+			err = &MigrateStoreDirError{Dir: s.dir, Err: verr}
 			return err
 		}
 	}
@@ -187,7 +230,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 		return err
 	}
 	// 1. Swap each keyed copy into place, keeping a backup of the original.
-	for _, dir := range m.StoreDirs {
+	for _, dir := range j.StoreDirs {
 		if serr := swapDir(dir); serr != nil {
 			err = &MigrateStoreDirError{Dir: dir, Err: serr}
 			return err
@@ -198,7 +241,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 		return err
 	}
 	// 3. Remove the pre-migration backups now that the commit is durable.
-	for _, dir := range m.StoreDirs {
+	for _, dir := range j.StoreDirs {
 		_ = os.RemoveAll(dir + backupSuffix)
 	}
 
@@ -212,7 +255,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	}
 	if m.Logger != nil {
 		m.Logger.Info("node encryption migration complete",
-			slog.Int("stores", len(m.StoreDirs)),
+			slog.Int("stores", len(stores)),
 			slog.String("strategy", string(opts.TargetStrategy)))
 	}
 	return nil
@@ -262,7 +305,7 @@ func swapDir(dir string) error {
 // rollback removes staging copies and marks the journal failed. Best-effort:
 // it never returns an error because it runs on a failure path.
 func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRef) {
-	for _, dir := range m.StoreDirs {
+	for _, dir := range m.dirs() {
 		_ = os.RemoveAll(dir + keyedSuffix)
 	}
 	j.Phase = seal.PhaseFailed

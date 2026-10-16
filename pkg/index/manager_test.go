@@ -15,6 +15,7 @@
 package index
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -31,12 +32,13 @@ import (
 // mockBatch is a minimal mock batch implementation.
 type mockBatch struct{}
 
-func (m *mockBatch) Set(key, value []byte) error    { return nil }
-func (m *mockBatch) Delete(key []byte) error        { return nil }
-func (m *mockBatch) Get(key []byte) ([]byte, error) { return nil, nil }
-func (m *mockBatch) Commit() error                  { return nil }
-func (m *mockBatch) Rollback() error                { return nil }
-func (m *mockBatch) Close() error                   { return nil }
+func (m *mockBatch) Set(key, value []byte) error         { return nil }
+func (m *mockBatch) Delete(key []byte) error             { return nil }
+func (m *mockBatch) DeleteRange(start, end []byte) error { return nil }
+func (m *mockBatch) Get(key []byte) ([]byte, error)      { return nil, nil }
+func (m *mockBatch) Commit() error                       { return nil }
+func (m *mockBatch) Rollback() error                     { return nil }
+func (m *mockBatch) Close() error                        { return nil }
 func (m *mockBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	return &mockIterator{}
 }
@@ -93,6 +95,24 @@ func (m *mockStorage) Set(key, value []byte) error {
 func (m *mockStorage) Delete(key []byte) error {
 	delete(m.data, string(key))
 	return nil
+}
+
+func (m *mockStorage) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	for k := range m.data {
+		if inDeleteRange([]byte(k), start, end) {
+			delete(m.data, k)
+		}
+	}
+	return nil
+}
+
+// inDeleteRange reports whether key falls in [start, end); a nil end runs to
+// the end of the keyspace, as storage.Storage.DeleteRange defines it.
+func inDeleteRange(key, start, end []byte) bool {
+	return bytes.Compare(key, start) >= 0 && (len(end) == 0 || bytes.Compare(key, end) < 0)
 }
 
 func (m *mockStorage) Close() error {

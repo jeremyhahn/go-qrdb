@@ -397,6 +397,8 @@ Every composer that serves relational DDL starts the sweep loop on every node: t
 
 **Residuals.** An entry whose job store is gone for good but cannot be proven gone — a dedicated Raft database that was dropped, or a node-local store on a node that was decommissioned — has no owner and stays in the index: a few hundred bytes, costing only its share of a page listing. A publish attempt that crashed before its transaction, on a table nothing ever modifies again, keeps its fenced entry for the same reason.
 
+**A system shard without MVCC.** The index is listed with the system store's MVCC `Range`, which a control-plane group running any `raft.sm_type` other than `mvcc` refuses with `*service.MVCCBackendRequiredError`. Its transactions still commit, so an index entry written there is never listed, and the keyspace it names is not reclaimed. The refusal is permanent for the life of the process, so the sweeper logs it ONCE, as a WARN naming `raft.sm_type`, and stops listing (`ReclaimSweeper.indexUnlistable`); any other listing failure is transient and is logged and retried on every pass.
+
 Per-statement ceilings are enforced at the statement, not deferred to an eventual proposal rejection: 65535 bytes for an encoded key, 4 MB for an encoded row, 8 MiB for one statement's estimated compares + ops (`RowKeyTooLargeError`, `RowValueTooLargeError`, `RowTransactionTooLargeError`).
 
 ### Tables with no PRIMARY KEY

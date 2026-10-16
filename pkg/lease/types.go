@@ -38,5 +38,22 @@ type LeaseTimeToLiveQuery struct {
 	ID int64
 }
 
+// LeaseKeepAliveQuery renews a lease in the memory of the replica that answers
+// it, which must be the Raft leader. It travels as a linearizable read, not a
+// proposal: the read confirms leadership with a heartbeat quorum and writes
+// nothing to the log. A replica that is not the lease primary answers with
+// *NotPrimaryError, and a lease whose checkpoint the renewal would change
+// with *CheckpointedError (see Lessor.RenewLocal).
+type LeaseKeepAliveQuery struct {
+	ID int64
+}
+
+// LeaseCheckpointNowQuery asks the leader's lessor to checkpoint every live
+// lease at once (see Lessor.RequestCheckpoint). It travels as a local read of
+// the replica that answers it and is answered with a <-chan error that
+// receives the outcome once the checkpoint has been applied, or with
+// *NotPrimaryError on a replica that is not the lease primary.
+type LeaseCheckpointNowQuery struct{}
+
 // LeasesQuery queries all active leases.
 type LeasesQuery struct{}

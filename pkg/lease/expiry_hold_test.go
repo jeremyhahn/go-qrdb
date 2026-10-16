@@ -156,7 +156,7 @@ func TestLessor_Promote_ExtendsExpiredLeases(t *testing.T) {
 		t.Fatalf("expired = %v, want [%d]", ids, l.ID)
 	}
 
-	lr.promote()
+	lr.renewAfterHold()
 	if ids := lr.ExpiredLeaseIDs(); len(ids) != 0 {
 		t.Fatalf("expired after promote = %v, want none", ids)
 	}
@@ -178,7 +178,7 @@ func TestLessor_Promote_NeverShortens(t *testing.T) {
 	lr.leases[4242] = &lease{id: 4242, ttl: 1, expiry: far, keys: map[string]struct{}{}}
 	lr.mu.Unlock()
 
-	lr.promote()
+	lr.renewAfterHold()
 
 	l := lr.leases[4242]
 	l.mu.RLock()

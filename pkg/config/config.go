@@ -359,6 +359,21 @@ type TenantConfig struct {
 // tenant.quota_reconcile_interval when unset.
 const DefaultQuotaReconcileIntervalString = "5m"
 
+const (
+	// DefaultLeaseCheckpointIntervalString is the default lease.checkpoint_interval.
+	// It is etcd's lessor checkpoint interval.
+	DefaultLeaseCheckpointIntervalString = "5m"
+
+	// DefaultLeaseFailoverGraceString is the default lease.failover_grace.
+	DefaultLeaseFailoverGraceString = "5s"
+
+	// MaxLeaseCheckpointInterval bounds lease.checkpoint_interval.
+	MaxLeaseCheckpointInterval = time.Hour
+
+	// MaxLeaseFailoverGrace bounds lease.failover_grace.
+	MaxLeaseFailoverGrace = time.Hour
+)
+
 // QuotaReconcileIntervalDuration returns the parsed QuotaReconcileInterval, or
 // the default 5m when unset.
 func (c TenantConfig) QuotaReconcileIntervalDuration() (time.Duration, error) {
@@ -1027,6 +1042,45 @@ type LeaseConfig struct {
 	// checks. Lower values improve expiry accuracy at the cost of
 	// CPU usage.
 	CheckInterval int64 `yaml:"check_interval"`
+
+	// CheckpointInterval is how often the Raft leader replicates the remaining
+	// TTL of every lease that outlives the interval, as a Go duration ("5m"),
+	// as etcd's lessor does. A replica that becomes leader counts a
+	// checkpointed lease from what it had left rather than from a full TTL;
+	// the leader also checkpoints every lease on demand before it hands
+	// leadership away. A shorter interval tightens the bound on a lease that
+	// is no longer renewed, at the cost of a log write per lease per interval.
+	// Empty means DefaultLeaseCheckpointIntervalString. Must be above zero and
+	// at most MaxLeaseCheckpointInterval.
+	CheckpointInterval string `yaml:"checkpoint_interval"`
+
+	// FailoverGrace is the time added, beyond one full TTL, to every lease's
+	// deadline when a replica becomes leader, as a Go duration ("5s"). It
+	// covers renewals the previous leader never checkpointed and the time
+	// clients need to find the new leader. Empty means
+	// DefaultLeaseFailoverGraceString; "0s" is valid. Must not be negative and
+	// is at most MaxLeaseFailoverGrace.
+	FailoverGrace string `yaml:"failover_grace"`
+}
+
+// CheckpointIntervalDuration returns CheckpointInterval as a duration, applying
+// the default when it is unset.
+func (c LeaseConfig) CheckpointIntervalDuration() (time.Duration, error) {
+	s := strings.TrimSpace(c.CheckpointInterval)
+	if s == "" {
+		s = DefaultLeaseCheckpointIntervalString
+	}
+	return parseDuration(s)
+}
+
+// FailoverGraceDuration returns FailoverGrace as a duration, applying the
+// default when it is unset.
+func (c LeaseConfig) FailoverGraceDuration() (time.Duration, error) {
+	s := strings.TrimSpace(c.FailoverGrace)
+	if s == "" {
+		s = DefaultLeaseFailoverGraceString
+	}
+	return parseDuration(s)
 }
 
 // IndexConfig configures the secondary indexing system.
@@ -2227,6 +2281,20 @@ func (c *Config) Validate() error {
 	}
 	if c.Lease.CheckInterval < 0 {
 		return &ValidationError{Field: "lease.check_interval", Reason: "must not be negative"}
+	}
+	checkpoint, err := c.Lease.CheckpointIntervalDuration()
+	if err != nil {
+		return &ValidationError{Field: "lease.checkpoint_interval", Reason: "must be a duration such as 1s: " + err.Error()}
+	}
+	if checkpoint <= 0 || checkpoint > MaxLeaseCheckpointInterval {
+		return &ValidationError{Field: "lease.checkpoint_interval", Reason: "must be above zero and at most " + MaxLeaseCheckpointInterval.String()}
+	}
+	grace, err := c.Lease.FailoverGraceDuration()
+	if err != nil {
+		return &ValidationError{Field: "lease.failover_grace", Reason: "must be a duration such as 5s: " + err.Error()}
+	}
+	if grace < 0 || grace > MaxLeaseFailoverGrace {
+		return &ValidationError{Field: "lease.failover_grace", Reason: "must not be negative and at most " + MaxLeaseFailoverGrace.String()}
 	}
 
 	// Index validation.

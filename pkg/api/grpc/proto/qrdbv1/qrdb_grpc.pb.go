@@ -118,6 +118,7 @@ const (
 	QRDBService_GetReplicaStates_FullMethodName                  = "/qrdb.v1.QRDBService/GetReplicaStates"
 	QRDBService_GetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/GetNodeCompaction"
 	QRDBService_SetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/SetNodeCompaction"
+	QRDBService_GetStateHashes_FullMethodName                    = "/qrdb.v1.QRDBService/GetStateHashes"
 	QRDBService_MintJoinToken_FullMethodName                     = "/qrdb.v1.QRDBService/MintJoinToken"
 	QRDBService_AddObserverMember_FullMethodName                 = "/qrdb.v1.QRDBService/AddObserverMember"
 	QRDBService_ListPendingJoinRequests_FullMethodName           = "/qrdb.v1.QRDBService/ListPendingJoinRequests"
@@ -149,6 +150,7 @@ const (
 	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
 	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
 	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
+	QRDBService_IssueDelegation_FullMethodName                   = "/qrdb.v1.QRDBService/IssueDelegation"
 	QRDBService_TrustAnchorAdd_FullMethodName                    = "/qrdb.v1.QRDBService/TrustAnchorAdd"
 	QRDBService_TrustAnchorList_FullMethodName                   = "/qrdb.v1.QRDBService/TrustAnchorList"
 	QRDBService_TrustAnchorRemove_FullMethodName                 = "/qrdb.v1.QRDBService/TrustAnchorRemove"
@@ -476,6 +478,11 @@ type QRDBServiceClient interface {
 	// SetNodeCompaction sets the platform's node-keyspace compaction policy;
 	// an unset compaction turns it off. System tenant only.
 	SetNodeCompaction(ctx context.Context, in *SetNodeCompactionRequest, opts ...grpc.CallOption) (*NodeCompactionResponse, error)
+	// GetStateHashes returns the answering node's replica state hashes: each
+	// replica's applied index and the SHA-256 digest of its state machine at
+	// that index, read locally with no proposal. admin:state_hash is
+	// ScopeCross: system tenant only.
+	GetStateHashes(ctx context.Context, in *GetStateHashesRequest, opts ...grpc.CallOption) (*GetStateHashesResponse, error)
 	// MintJoinToken mints a single-use, identity-bound member-side CSR join
 	// token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
 	// no built-in role carries cluster:join_token by default.
@@ -564,6 +571,11 @@ type QRDBServiceClient interface {
 	// the caller's own tenant, after verifying it chains to one of the
 	// tenant's registered trust anchors and authenticates as that account.
 	EnrollCert(ctx context.Context, in *EnrollCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error)
+	// IssueDelegation has the caller's own tenant's CA issue a short-lived
+	// delegation certificate from a CSR: the named service principal may act
+	// inside the tenant with at most the delegated scope. The system tenant
+	// and a delegated caller are refused.
+	IssueDelegation(ctx context.Context, in *IssueDelegationRequest, opts ...grpc.CallOption) (*IssuedDelegationResponse, error)
 	// TrustAnchorAdd registers CA certificates as trust anchors of
 	// tenant_id, which must be the caller's own tenant.
 	TrustAnchorAdd(ctx context.Context, in *TrustAnchorAddRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error)
@@ -1724,6 +1736,16 @@ func (c *qRDBServiceClient) SetNodeCompaction(ctx context.Context, in *SetNodeCo
 	return out, nil
 }
 
+func (c *qRDBServiceClient) GetStateHashes(ctx context.Context, in *GetStateHashesRequest, opts ...grpc.CallOption) (*GetStateHashesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetStateHashesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetStateHashes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) MintJoinToken(ctx context.Context, in *MintJoinTokenRequest, opts ...grpc.CallOption) (*MintJoinTokenResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MintJoinTokenResponse)
@@ -2028,6 +2050,16 @@ func (c *qRDBServiceClient) EnrollCert(ctx context.Context, in *EnrollCertReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EnrolledCertResponse)
 	err := c.cc.Invoke(ctx, QRDBService_EnrollCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) IssueDelegation(ctx context.Context, in *IssueDelegationRequest, opts ...grpc.CallOption) (*IssuedDelegationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IssuedDelegationResponse)
+	err := c.cc.Invoke(ctx, QRDBService_IssueDelegation_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3385,6 +3417,11 @@ type QRDBServiceServer interface {
 	// SetNodeCompaction sets the platform's node-keyspace compaction policy;
 	// an unset compaction turns it off. System tenant only.
 	SetNodeCompaction(context.Context, *SetNodeCompactionRequest) (*NodeCompactionResponse, error)
+	// GetStateHashes returns the answering node's replica state hashes: each
+	// replica's applied index and the SHA-256 digest of its state machine at
+	// that index, read locally with no proposal. admin:state_hash is
+	// ScopeCross: system tenant only.
+	GetStateHashes(context.Context, *GetStateHashesRequest) (*GetStateHashesResponse, error)
 	// MintJoinToken mints a single-use, identity-bound member-side CSR join
 	// token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
 	// no built-in role carries cluster:join_token by default.
@@ -3473,6 +3510,11 @@ type QRDBServiceServer interface {
 	// the caller's own tenant, after verifying it chains to one of the
 	// tenant's registered trust anchors and authenticates as that account.
 	EnrollCert(context.Context, *EnrollCertRequest) (*EnrolledCertResponse, error)
+	// IssueDelegation has the caller's own tenant's CA issue a short-lived
+	// delegation certificate from a CSR: the named service principal may act
+	// inside the tenant with at most the delegated scope. The system tenant
+	// and a delegated caller are refused.
+	IssueDelegation(context.Context, *IssueDelegationRequest) (*IssuedDelegationResponse, error)
 	// TrustAnchorAdd registers CA certificates as trust anchors of
 	// tenant_id, which must be the caller's own tenant.
 	TrustAnchorAdd(context.Context, *TrustAnchorAddRequest) (*TrustAnchorListResponse, error)
@@ -4036,6 +4078,9 @@ func (UnimplementedQRDBServiceServer) GetNodeCompaction(context.Context, *emptyp
 func (UnimplementedQRDBServiceServer) SetNodeCompaction(context.Context, *SetNodeCompactionRequest) (*NodeCompactionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetNodeCompaction not implemented")
 }
+func (UnimplementedQRDBServiceServer) GetStateHashes(context.Context, *GetStateHashesRequest) (*GetStateHashesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetStateHashes not implemented")
+}
 func (UnimplementedQRDBServiceServer) MintJoinToken(context.Context, *MintJoinTokenRequest) (*MintJoinTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MintJoinToken not implemented")
 }
@@ -4128,6 +4173,9 @@ func (UnimplementedQRDBServiceServer) IssueCert(context.Context, *IssueCertReque
 }
 func (UnimplementedQRDBServiceServer) EnrollCert(context.Context, *EnrollCertRequest) (*EnrolledCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EnrollCert not implemented")
+}
+func (UnimplementedQRDBServiceServer) IssueDelegation(context.Context, *IssueDelegationRequest) (*IssuedDelegationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IssueDelegation not implemented")
 }
 func (UnimplementedQRDBServiceServer) TrustAnchorAdd(context.Context, *TrustAnchorAddRequest) (*TrustAnchorListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TrustAnchorAdd not implemented")
@@ -5997,6 +6045,24 @@ func _QRDBService_SetNodeCompaction_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_GetStateHashes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetStateHashesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetStateHashes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetStateHashes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetStateHashes(ctx, req.(*GetStateHashesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_MintJoinToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(MintJoinTokenRequest)
 	if err := dec(in); err != nil {
@@ -6551,6 +6617,24 @@ func _QRDBService_EnrollCert_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).EnrollCert(ctx, req.(*EnrollCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_IssueDelegation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IssueDelegationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).IssueDelegation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_IssueDelegation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).IssueDelegation(ctx, req.(*IssueDelegationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8947,6 +9031,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_SetNodeCompaction_Handler,
 		},
 		{
+			MethodName: "GetStateHashes",
+			Handler:    _QRDBService_GetStateHashes_Handler,
+		},
+		{
 			MethodName: "MintJoinToken",
 			Handler:    _QRDBService_MintJoinToken_Handler,
 		},
@@ -9069,6 +9157,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EnrollCert",
 			Handler:    _QRDBService_EnrollCert_Handler,
+		},
+		{
+			MethodName: "IssueDelegation",
+			Handler:    _QRDBService_IssueDelegation_Handler,
 		},
 		{
 			MethodName: "TrustAnchorAdd",
@@ -10706,6 +10798,7 @@ const (
 	UserAuthFactorService_List_FullMethodName    = "/qrdb.v1.UserAuthFactorService/List"
 	UserAuthFactorService_Get_FullMethodName     = "/qrdb.v1.UserAuthFactorService/Get"
 	UserAuthFactorService_Remove_FullMethodName  = "/qrdb.v1.UserAuthFactorService/Remove"
+	UserAuthFactorService_Delete_FullMethodName  = "/qrdb.v1.UserAuthFactorService/Delete"
 	UserAuthFactorService_Rotate_FullMethodName  = "/qrdb.v1.UserAuthFactorService/Rotate"
 	UserAuthFactorService_Relabel_FullMethodName = "/qrdb.v1.UserAuthFactorService/Relabel"
 	UserAuthFactorService_Login_FullMethodName   = "/qrdb.v1.UserAuthFactorService/Login"
@@ -10731,6 +10824,11 @@ type UserAuthFactorServiceClient interface {
 	Get(ctx context.Context, in *UserAuthFactorGetRequest, opts ...grpc.CallOption) (*UserAuthFactorGetResponse, error)
 	// Remove deletes an auth factor.
 	Remove(ctx context.Context, in *UserAuthFactorRemoveRequest, opts ...grpc.CallOption) (*UserAuthFactorRemoveResponse, error)
+	// Delete hard-deletes an auth factor and frees its credential and SPKI
+	// indexes, so a rolled-back add can bind the same credential again. It
+	// carries the add permission because it undoes an add; a revoked factor
+	// is refused.
+	Delete(ctx context.Context, in *UserAuthFactorDeleteRequest, opts ...grpc.CallOption) (*UserAuthFactorDeleteResponse, error)
 	// Rotate atomically replaces one factor with another.
 	Rotate(ctx context.Context, in *UserAuthFactorRotateRequest, opts ...grpc.CallOption) (*UserAuthFactorRotateResponse, error)
 	// Relabel updates the human-readable label of a factor.
@@ -10788,6 +10886,16 @@ func (c *userAuthFactorServiceClient) Remove(ctx context.Context, in *UserAuthFa
 	return out, nil
 }
 
+func (c *userAuthFactorServiceClient) Delete(ctx context.Context, in *UserAuthFactorDeleteRequest, opts ...grpc.CallOption) (*UserAuthFactorDeleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorDeleteResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Delete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *userAuthFactorServiceClient) Rotate(ctx context.Context, in *UserAuthFactorRotateRequest, opts ...grpc.CallOption) (*UserAuthFactorRotateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UserAuthFactorRotateResponse)
@@ -10838,6 +10946,11 @@ type UserAuthFactorServiceServer interface {
 	Get(context.Context, *UserAuthFactorGetRequest) (*UserAuthFactorGetResponse, error)
 	// Remove deletes an auth factor.
 	Remove(context.Context, *UserAuthFactorRemoveRequest) (*UserAuthFactorRemoveResponse, error)
+	// Delete hard-deletes an auth factor and frees its credential and SPKI
+	// indexes, so a rolled-back add can bind the same credential again. It
+	// carries the add permission because it undoes an add; a revoked factor
+	// is refused.
+	Delete(context.Context, *UserAuthFactorDeleteRequest) (*UserAuthFactorDeleteResponse, error)
 	// Rotate atomically replaces one factor with another.
 	Rotate(context.Context, *UserAuthFactorRotateRequest) (*UserAuthFactorRotateResponse, error)
 	// Relabel updates the human-readable label of a factor.
@@ -10866,6 +10979,9 @@ func (UnimplementedUserAuthFactorServiceServer) Get(context.Context, *UserAuthFa
 }
 func (UnimplementedUserAuthFactorServiceServer) Remove(context.Context, *UserAuthFactorRemoveRequest) (*UserAuthFactorRemoveResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Remove not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) Delete(context.Context, *UserAuthFactorDeleteRequest) (*UserAuthFactorDeleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
 }
 func (UnimplementedUserAuthFactorServiceServer) Rotate(context.Context, *UserAuthFactorRotateRequest) (*UserAuthFactorRotateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Rotate not implemented")
@@ -10969,6 +11085,24 @@ func _UserAuthFactorService_Remove_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserAuthFactorService_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorDeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Delete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Delete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Delete(ctx, req.(*UserAuthFactorDeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _UserAuthFactorService_Rotate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UserAuthFactorRotateRequest)
 	if err := dec(in); err != nil {
@@ -11045,6 +11179,10 @@ var UserAuthFactorService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Remove",
 			Handler:    _UserAuthFactorService_Remove_Handler,
+		},
+		{
+			MethodName: "Delete",
+			Handler:    _UserAuthFactorService_Delete_Handler,
 		},
 		{
 			MethodName: "Rotate",

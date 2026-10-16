@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
 
@@ -42,6 +43,9 @@ func TestIsNodeLocalKey_ReplicatedTablesAreNeverNodeLocal(t *testing.T) {
 		{"a compaction-table record is replicated, not node-local", []byte(compaction.TablePrefix + "p"), false},
 		{"an audit-table head record is replicated, not node-local", []byte(audit.TablePrefix + "h/acme"), false},
 		{"an audit-table event record is replicated, not node-local", []byte(audit.TablePrefix + "e/acme/1"), false},
+		{"an import-staging chunk is replicated, not node-local", importstage.ChunkKey("sess", 3), false},
+		{"an import-staging session record is replicated, not node-local", importstage.MetaKey("sess"), false},
+		{"an import-staging tenant-index entry is replicated, not node-local", importstage.TenantIndexKey("acme", "sess"), false},
 		{"an ordinary user key is not node-local at all", []byte("acme/widget"), false},
 	}
 	for _, tt := range tests {

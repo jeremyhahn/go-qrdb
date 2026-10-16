@@ -1,6 +1,6 @@
 # Leases — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -53,6 +53,22 @@ way, because the binding is decided in the state machine.
 `granted_ttl` by keep-alive. `keys` is base64 and is present where the store
 tracks attachments.
 
+Two timing facts hold on every transport. A keep-alive is answered by the leader
+from its memory and is not replicated, so another replica's deadline does not
+reflect it. `remaining_ttl` is therefore the leader's answer, as in etcd: a
+time-to-live sent to a follower is forwarded to the leader, and the response
+is the leader's. A follower that cannot name a leader answers the not-leader
+refusal (`503` on REST, `Unavailable` on gRPC). The etcd listener does not
+forward and answers `Unavailable`, which clientv3 retries on another endpoint. Only the leader's value decides
+expiry. Every
+`lease.checkpoint_interval` (default `5m`) the leader records the remaining TTL
+of each lease whose TTL is longer than that. After a leader change, the new
+leader reports a `remaining_ttl` of at least that recorded value — or
+`granted_ttl` for a lease with none — plus `lease.failover_grace` (default
+`5s`), so a `remaining_ttl` larger than `granted_ttl` can be seen then. Neither
+changes the wire format or the status mapping below; a keep-alive on a replica
+that is not the leader is forwarded and answered the same way.
+
 Envelopes: `LeaseGrantResponse`, `LeaseKeepAliveResponse`,
 `LeaseTimeToLiveResponse` each carry a single `lease`; `LeaseListResponse`
 carries `leases`.
@@ -74,6 +90,11 @@ carries `leases`.
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
+
+The etcd API (`etcdserverpb.Lease`) answers a keep-alive on a lease that is
+not found as etcd does instead of failing the stream: a
+`LeaseKeepAliveResponse` carrying the lease ID and `TTL: 0`, with the stream
+left open. etcd clients read that as "lease gone".
 
 ## Pagination
 

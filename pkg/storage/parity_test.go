@@ -212,7 +212,22 @@ func runParityScenario(s storage.Storage) []string {
 	_ = b2.Close()
 	rec("after rollback k10=%s", getStr("k10"))
 
-	// 10. Forward iteration over the whole keyspace.
+	// 10. Range delete removes a bounded span but keeps its upper bound.
+	_ = s.DeleteRange([]byte("k04"), []byte("k06"))
+	rec("after range k04=%s k05=%s k06=%s", getStr("k04"), getStr("k05"), getStr("k06"))
+
+	// 11. Batch range delete is applied atomically with adjacent operations.
+	br := s.Batch()
+	_ = br.Set([]byte("k04"), []byte("restored"))
+	_ = br.DeleteRange([]byte("k06"), []byte("k08"))
+	_ = br.Set([]byte("k06"), []byte("after-range"))
+	if err := br.Commit(); err != nil {
+		rec("batch range commit ERR")
+	}
+	_ = br.Close()
+	rec("after batch range k04=%s k06=%s k07=%s", getStr("k04"), getStr("k06"), getStr("k07"))
+
+	// 12. Forward iteration over the whole keyspace.
 	rec("iter forward=%s", iterStr(&storage.IteratorOptions{}, false))
 
 	// 11. Backward iteration (SeekToLast + Prev).

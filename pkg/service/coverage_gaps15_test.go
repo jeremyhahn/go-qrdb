@@ -20,6 +20,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -53,6 +54,19 @@ func (f *failingKV) Put(ctx context.Context, key string, val []byte) error {
 		return f.putErr
 	}
 	return f.afMockKV.Put(ctx, key, val)
+}
+
+// PutIfAbsent counts a factor's primary record as Put does: the record is
+// reserved behind an absence guard, and it is the same write. The factor-set
+// commit is not counted.
+func (f *failingKV) PutIfAbsent(ctx context.Context, key string, val []byte) (bool, error) {
+	if strings.HasPrefix(key, userFactorPrimaryPrefix) {
+		f.putCount++
+		if f.putCount > f.putFailAfter {
+			return false, f.putErr
+		}
+	}
+	return f.afMockKV.PutIfAbsent(ctx, key, val)
 }
 
 // failOnPutN creates a UserAuthFactorServicer backed by a KV that fails

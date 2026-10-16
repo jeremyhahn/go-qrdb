@@ -62,6 +62,10 @@ var (
 	// being written into a SPIFFE ID and parsed back -- a path separator, a
 	// port, or anything else url.URL will not carry as a bare host.
 	ErrTrustDomainInvalid = errors.New("spiffe: trust domain does not round-trip through a spiffe id")
+
+	// ErrIDNotRoundTrip indicates an ID whose URI does not parse back to the
+	// same ID -- a name or tenant carrying a path separator, for one.
+	ErrIDNotRoundTrip = errors.New("spiffe: id does not round-trip through its uri")
 )
 
 // AmbiguousTenantError is returned by TenantFromCert when a certificate
@@ -125,6 +129,26 @@ func (id ID) String() string {
 		Path:   "/tenant/" + id.TenantID + "/" + id.Kind + "/" + id.Name,
 	}
 	return u.String()
+}
+
+// URI builds the URI SAN a certificate authority issues for id. It is the
+// builder TenantFromCert is the parser of: the URI is returned only when
+// ParseID reads it back as exactly id, so a SAN built here is one the
+// authenticator accepts as naming id. A refusal is an *IDError that unwraps
+// to the Validate sentinel for a missing or invalid field, or to
+// ErrIDNotRoundTrip.
+func (id ID) URI() (*url.URL, error) {
+	if err := id.Validate(); err != nil {
+		return nil, &IDError{ID: id, Err: err}
+	}
+	u, err := url.Parse(id.String())
+	if err != nil {
+		return nil, &IDError{ID: id, Err: ErrIDNotRoundTrip}
+	}
+	if got, ok, err := ParseID(u); err != nil || !ok || got != id {
+		return nil, &IDError{ID: id, Err: ErrIDNotRoundTrip}
+	}
+	return u, nil
 }
 
 // ParseID extracts a tenant SPIFFE identity from a URI. It returns false (not
@@ -252,5 +276,27 @@ func (e *TrustDomainError) Error() string {
 
 // Unwrap returns the sentinel classifying the refusal.
 func (e *TrustDomainError) Unwrap() error {
+	return e.Err
+}
+
+// IDError reports an ID that ID.URI refused to build.
+type IDError struct {
+	// ID is the identity as given.
+	ID ID
+
+	// Err is a Validate sentinel or ErrIDNotRoundTrip.
+	Err error
+}
+
+// Error names the refused identity's fields and why.
+func (e *IDError) Error() string {
+	return "spiffe: id (trust domain " + strconv.Quote(e.ID.TrustDomain) +
+		", tenant " + strconv.Quote(e.ID.TenantID) +
+		", kind " + strconv.Quote(e.ID.Kind) +
+		", name " + strconv.Quote(e.ID.Name) + ") refused: " + e.Err.Error()
+}
+
+// Unwrap returns the sentinel classifying the refusal.
+func (e *IDError) Unwrap() error {
 	return e.Err
 }

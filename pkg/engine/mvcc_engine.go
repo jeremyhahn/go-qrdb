@@ -342,6 +342,9 @@ func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, resu
 		var notifs []Notification
 		handler, ok := e.updateHandlers[cmd.Op]
 		if ok {
+			if e.lessor != nil {
+				e.lessor.Applying(entry.Index)
+			}
 			result, notifs, err = handler(e.store, e.lessor, batch, cmd.Payload)
 		} else {
 			err = &protocol.UnknownOpError{Op: cmd.Op}
@@ -513,17 +516,47 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		// A lease absent from the Lessor's table is indistinguishable from
 		// one that expired and was swept: the expiry sweeper
 		// (pkg/lease/expiry.go) deletes an expired lease's entry outright
-		// rather than tombstoning it, so by the time LookupOrNotFound
-		// observes a miss the two cases carry no distinguishing state to
-		// report separately (go-qrdb#387). pkg/store's PebbleStateMachine
-		// answers the same query type against the same Lessor type for the
-		// "pebble" raft.sm_type, and translates the identical
-		// *lease.NotFoundError the identical way -- see its Lookup.
-		l, err := e.lessor.LookupOrNotFound(q.ID)
+		// rather than tombstoning it, so by the time TimeToLive observes a
+		// miss the two cases carry no distinguishing state to report
+		// separately (go-qrdb#387). pkg/store's PebbleStateMachine answers
+		// the same query type against the same Lessor type for the "pebble"
+		// raft.sm_type, and translates the identical *lease.NotFoundError
+		// the identical way -- see its Lookup. A follower's
+		// *lease.StaleTTLError passes through: only the leader knows the
+		// remaining TTL, and the service asks it.
+		l, err := e.lessor.TimeToLive(q.ID)
 		if err != nil {
-			return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
+			var nf *lease.NotFoundError
+			if errors.As(err, &nf) {
+				return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
+			}
+			return nil, err
 		}
 		return l, nil
+
+	case service.LeaseKeepAliveQuery:
+		if e.lessor == nil {
+			return nil, &InvalidQueryError{Reason: "lessor not configured"}
+		}
+		l, err := e.lessor.RenewLocal(q.ID)
+		if err != nil {
+			var nf *lease.NotFoundError
+			if errors.As(err, &nf) {
+				return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
+			}
+			return nil, err
+		}
+		return l, nil
+
+	case service.LeaseCheckpointNowQuery:
+		if e.lessor == nil {
+			return nil, &InvalidQueryError{Reason: "lessor not configured"}
+		}
+		answer, err := e.lessor.RequestCheckpoint()
+		if err != nil {
+			return nil, err
+		}
+		return answer, nil
 
 	case service.LeasesQuery:
 		if e.lessor == nil {
@@ -766,9 +799,11 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpCompareAndSwap:    e.handleCompareAndSwap,
 		protocol.OpGuarded:           e.handleGuarded,
 		protocol.OpBatch:             e.handleBatch,
+		protocol.OpDeleteRange:       e.handleDeleteRange,
 		protocol.OpLeaseGrant:        handleLeaseGrant,
 		protocol.OpLeaseRevoke:       e.handleLeaseRevoke,
 		protocol.OpLeaseKeepAlive:    handleLeaseKeepAlive,
+		protocol.OpLeaseCheckpoint:   handleLeaseCheckpoint,
 		protocol.OpAuditAppend:       e.handleAuditAppend,
 		protocol.OpIndexCreate:       e.handleIndexCreate,
 		protocol.OpIndexDrop:         e.handleIndexDrop,
@@ -1592,6 +1627,49 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	return e.applyDecodedBatch(s, lr, batch, ops)
+}
+
+// handleDeleteRange applies protocol.OpDeleteRange: it deletes every live key
+// in [start, end) -- through the end of the keyspace when end is empty -- at
+// ONE new revision, as a batch of OpMVCCDelete naming exactly those keys
+// would. It goes through applyDecodedBatch rather than writing a storage
+// range tombstone so a range delete keeps every guarantee a delete has: the
+// reserved and vector namespaces refuse, secondary-index entries are removed,
+// each key's history records the delete, and watchers see one delete event
+// per key.
+//
+// The keys are read through batch, so a delete staged by an earlier entry of
+// the same apply is not deleted again and a put staged by one is.
+func (e *MVCCEngine) handleDeleteRange(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	start, end, err := statemachine.DecodeDeleteRange(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(start); refused {
+		return res, nil, nil
+	}
+	iter := batch.NewIterator(&storage.IteratorOptions{
+		LowerBound: mvcc.MetaLowerBound(),
+		UpperBound: mvcc.MetaUpperBound(),
+	})
+	var keys [][]byte
+	err = mvcc.ForEachMetaKeyInRange(iter, start, end, func(userKey []byte) bool {
+		keys = append(keys, append([]byte(nil), userKey...))
+		return true
+	})
+	_ = iter.Close()
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	return e.applyDecodedBatch(s, lr, batch, deleteRangeOps(protocol.OpMVCCDelete, keys))
+}
+
+// applyDecodedBatch applies a decoded operation set atomically at one new
+// revision. Every refusal is asked before anything is staged, so a refused
+// set leaves the batch untouched. It is the single body behind OpBatch and
+// OpDeleteRange.
+func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, ops []protocol.DecodedOp) (sm.Result, []Notification, error) {
 	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
 		return res, nil, nil
 	}
@@ -1828,7 +1906,7 @@ func (e *MVCCEngine) handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch st
 }
 
 // handleLeaseKeepAlive resets a lease's TTL.
-func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	leaseID, err := protocol.DecodeLeaseKeepAlive(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -1838,17 +1916,43 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
-	_, err = lr.KeepAlive(leaseID)
+	// The batch receives the deletion of the lease's checkpoint record, if it
+	// has one (lease.Lessor.KeepAlive).
+	l, err := lr.KeepAlive(batch, leaseID)
 	if err != nil {
 		var nfe *lease.NotFoundError
 		if errors.As(err, &nfe) {
 			// Lease already gone — idempotent success.
-			return sm.Result{Value: 0}, nil, nil
+			return sm.Result{Value: 0, Data: protocol.EncodeLeaseKeepAliveNotFound(leaseID)}, nil, nil
 		}
 		return sm.Result{}, nil, err
 	}
 
-	return sm.Result{Value: uint64(leaseID)}, nil, nil
+	// The apply already computed the lease's post-reset state; carrying it
+	// back in Data lets the service layer answer the caller from this
+	// committed result instead of a second, separately linearized read
+	// (go-qrdb#275).
+	return sm.Result{Value: uint64(leaseID), Data: protocol.EncodeLeaseInfo(l.ID, l.GrantedTTL, l.RemainingTTL, l.Keys)}, nil, nil
+}
+
+// handleLeaseCheckpoint records the leader's checkpoint of the remaining TTL of
+// a batch of leases (lease.Lessor.ApplyCheckpoints), so that a replica that
+// becomes leader counts each lease from what it had left. A storage fault is
+// an apply fault, as for every lease-table write.
+func handleLeaseCheckpoint(_ *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	token, index, cps, err := protocol.DecodeLeaseCheckpoint(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if lr == nil {
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
+	}
+
+	if err := lr.ApplyCheckpoints(batch, token, index, cps); err != nil {
+		return sm.Result{}, nil, err
+	}
+	return sm.Result{Value: uint64(len(cps))}, nil, nil
 }
 
 // ---------------------------------------------------------------------------

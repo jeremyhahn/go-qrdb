@@ -15,6 +15,8 @@
 package role
 
 import (
+	"os"
+	"os/exec"
 	"sort"
 	"testing"
 
@@ -48,7 +50,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.SealInitializeShamir,
 	permission.SealOfficerRegister, permission.SealOfficerList, permission.SealOfficerRevoke,
 	permission.CeremonyInitialize, permission.CeremonySignCSR, permission.CeremonyStatus,
-	permission.CertsIssue, permission.CertsEnroll, permission.CertsRevoke,
+	permission.CertsIssue, permission.CertsEnroll, permission.CertsDelegate, permission.CertsRevoke,
 	permission.CertsList, permission.CertsRead,
 	permission.TrustAnchorsAdd, permission.TrustAnchorsList, permission.TrustAnchorsRemove,
 	permission.RolesCreate, permission.RolesRead, permission.RolesUpdate,
@@ -86,7 +88,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.DEKRotate, permission.DEKRewrap, permission.DEKRetire, permission.DEKStatus,
 	permission.KeysImport, permission.KeysExport,
 	permission.EscrowCreate, permission.EscrowRecover, permission.EscrowList, permission.EscrowRevoke,
-	permission.CertsIssue, permission.CertsEnroll, permission.CertsRevoke,
+	permission.CertsIssue, permission.CertsEnroll, permission.CertsDelegate, permission.CertsRevoke,
 	permission.CertsList, permission.CertsRead,
 	permission.TrustAnchorsAdd, permission.TrustAnchorsList, permission.TrustAnchorsRemove,
 	permission.BackendsList, permission.BackendsRead,
@@ -115,6 +117,9 @@ var goldenAdminPermissions = []permission.Permission{
 	// The node keyspace's compaction policy, ScopeCross: effective only for
 	// system-tenant Admin.
 	permission.AdminNodeCompaction,
+	// Replica state hashes, ScopeCross: effective only for system-tenant
+	// Admin.
+	permission.AdminStateHash,
 	// Minting a cluster join token, ScopeCross: effective only for
 	// system-tenant Admin (owner ruling, 2026-10-06 -- see
 	// pkg/permission/cluster_join_token_scope.go).
@@ -372,12 +377,38 @@ func TestBuiltinRoleGrants_AuditorMatchesGoldenSet(t *testing.T) {
 //
 // permission.Register / permission.RegisterRoleGrant are additive-only by
 // design (mirroring permission.RegisterScope — there is no unregister), so
-// the "test:" probe permission this test adds to the process-global
-// registry is never removed. It cannot corrupt the golden-set exact-match
-// assertions above because it is namespaced under "test:" (it can never
-// collide with a real permission constant) and this test is declared after
-// them in this file, so it runs after they do.
+// the probe runs in a re-executed copy of this test binary: the child's
+// process-global registry takes the "test:" permission and dies with the
+// child, and this process's registry is left exactly as it was found. Run in
+// process, the probe outlived the test and failed the golden-set exact match
+// and this test's own precondition on every -count iteration after the first.
 func TestBuiltInRoles_LateRegistrationLandsInDeclaredRole(t *testing.T) {
+	if os.Getenv(lateRegistrationChildEnv) == "1" {
+		lateRegistrationProbe(t)
+		return
+	}
+
+	args := []string{"-test.run=^TestBuiltInRoles_LateRegistrationLandsInDeclaredRole$", "-test.count=1"}
+	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
+		args = append(args, "-test.gocoverdir="+dir)
+	}
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Env = append(os.Environ(), lateRegistrationChildEnv+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("late-registration probe failed in the child process: %v\n%s", err, out)
+	}
+}
+
+// lateRegistrationChildEnv marks the re-executed child that runs
+// lateRegistrationProbe against its own, disposable, permission registry.
+const lateRegistrationChildEnv = "QRDB_ROLE_LATE_REGISTRATION_CHILD"
+
+// lateRegistrationProbe registers a brand-new permission and Admin grant and
+// asserts BuiltInRoles reports it. It mutates the process-global permission
+// registry irreversibly, so it runs only in the child process.
+func lateRegistrationProbe(t *testing.T) {
+	t.Helper()
 	const late permission.Permission = "test:late-registration-builtinroles"
 
 	before := roleByName(BuiltInRoles("late-reg-tenant"), RoleNameAdmin)

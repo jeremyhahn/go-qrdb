@@ -89,7 +89,9 @@ A read takes the same first three steps -- authorized as `kv:get`, `kv:list`
 or `kv:range` by what it returns, so a caller lacking the permission gets the
 typed denial and never an empty result -- then diverges on consistency level:
 `Strong` goes through consensus, `Linearizable` (the default) uses the ReadIndex
-protocol, `LeaseRead` serves from the leader's local state under a valid lease,
+protocol, `LeaseRead` serves from the leader's local state under a valid monotonic lease
+(still linearizable; the same ReadIndex call, answered without a heartbeat
+round while the lease holds),
 and `Eventual` reads any replica's local state.
 
 Embedded mode collapses steps 1–2 into a Go call -- the embedded transport

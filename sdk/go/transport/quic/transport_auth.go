@@ -924,6 +924,28 @@ func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertReq
 	return t.enrollCall(ctx, "EnrollCert", "cert.Enroll", req.Username, req)
 }
 
+// IssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal, via the QUIC cert.Delegate method.
+// The request's JSON is the wire payload the server reads.
+func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDelegationRequest) (*transport.IssuedDelegation, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "IssueDelegation", Err: &MarshalError{Err: err}}
+	}
+	data, err := t.call(ctx, "cert.Delegate", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "IssueDelegation", Err: err}
+	}
+	var out transport.IssuedDelegation
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, &transport.RequestError{Method: "IssueDelegation", Err: &UnmarshalError{Err: err}}
+	}
+	return &out, nil
+}
+
 // RevokeCert marks a certificate serial as revoked via the QUIC
 // cert.Revoke method, and reports whether the server held a certificate
 // record for it.

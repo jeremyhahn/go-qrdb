@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +129,54 @@ func TestCeremonyInitialize_RetryAgainstFollowerForwardsToLeader(t *testing.T) {
 	}
 	if !strings.Contains(leaderBody, "already holds a certificate binding") {
 		t.Fatalf("leader direct answer %q does not carry AdminAlreadyBoundError; fixture assumption wrong", leaderBody)
+	}
+}
+
+// TestCeremonyInitialize_FollowerForwardBoundedAcrossLeaderDeath kills the
+// leader a follower forwards POST /v1/ceremony/initialize to. A submission
+// through a survivor must come back within the caller's deadline whatever the
+// election is doing -- httpCeremonyInitializeOnce's client timeout is that
+// deadline, and a forward stuck on the dead leader fails the test there --
+// and, once a new leader is elected, a submission through its follower must
+// be forwarded to it and answered by its admin-rebind logic.
+func TestCeremonyInitialize_FollowerForwardBoundedAcrossLeaderDeath(t *testing.T) {
+	adminPorts, _, ca, cmds := startThreeNodeClusterSPIFFENodes(t, "pebble")
+	leader := slices.Index(adminPorts, waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second))
+
+	_, certPath, _ := ca.adminIdentity(t, t.TempDir())
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read admin cert: %v", err)
+	}
+
+	if err := spawnedDaemon(t, cmds[leader]).Kill(); err != nil {
+		t.Fatalf("kill leader node %d: %v", leader+1, err)
+	}
+	survivors := slices.Delete(slices.Clone(adminPorts), leader, leader+1)
+
+	start := time.Now()
+	code, body := httpCeremonyInitializeOnce(t, ca, survivors[0], certPEM)
+	t.Logf("port %d answered %d after %v with the leader just killed: %s", survivors[0], code, time.Since(start), body)
+
+	newLeader := waitForLeaderViaAdmin(t, ca, survivors, 60*time.Second)
+	follower := survivors[0]
+	if follower == newLeader {
+		follower = survivors[1]
+	}
+	// The follower may still name the dead leader for a moment; that answer
+	// is bounded too, and the next submission reaches the new one.
+	deadline := time.Now().Add(60 * time.Second)
+	code, body = httpCeremonyInitializeOnce(t, ca, follower, certPEM)
+	for !strings.Contains(body, "already holds a certificate binding") {
+		if time.Now().After(deadline) {
+			t.Fatalf("POST /v1/ceremony/initialize to follower (port %d) after the new leader (port %d) was elected: status %d, body %s -- want the new leader's AdminAlreadyBoundError",
+				follower, newLeader, code, body)
+		}
+		time.Sleep(500 * time.Millisecond)
+		code, body = httpCeremonyInitializeOnce(t, ca, follower, certPEM)
+	}
+
+	if leaderCode, leaderBody := httpCeremonyInitializeOnce(t, ca, newLeader, certPEM); leaderCode != code {
+		t.Fatalf("new leader status %d (%s) != follower (forwarded) status %d", leaderCode, leaderBody, code)
 	}
 }

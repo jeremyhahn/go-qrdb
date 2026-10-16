@@ -32,6 +32,8 @@ package protocol
 import (
 	"encoding/binary"
 	"math"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,18 @@ const (
 	// Payload: [leaseID:8 LE].
 	OpLeaseKeepAlive byte = 42
 
+	// OpLeaseCheckpoint records the remaining TTL of a batch of leases, so a
+	// replica that becomes leader or restarts counts each one's deadline from
+	// what remained at the checkpoint rather than from a full TTL. A remaining
+	// TTL of zero clears a lease's checkpoint. The token is opaque: the leader
+	// that proposed the batch matches it against its own, and every other
+	// replica ignores it. The index is the applied Raft index the leader
+	// sampled the batch at; a lease renewed through the log after it rejects
+	// its entry. Proposed only once every replica advertises
+	// featuregate.LeaseCheckpoint.
+	// Payload: [token:8 LE][index:8 LE][count:4 LE][(leaseID:8 LE, remainingTTL:8 LE)...].
+	OpLeaseCheckpoint byte = 43
+
 	// Index operations (50-59).
 
 	// OpIndexCreate creates a new secondary index.
@@ -218,6 +232,10 @@ const (
 	// featuregate.TimeSeriesRetention: a replica that does not understand
 	// this opcode must never be sent it.
 	OpTSApplyRetention byte = 80
+
+	// OpDeleteRange deletes keys in [start, end), or from start through the end
+	// of the keyspace when end is empty. Gated behind featuregate.RangeDelete.
+	OpDeleteRange byte = 81
 )
 
 // Range flags (bit mask for OpMVCCRange).
@@ -503,6 +521,21 @@ func EncodeMVCCDelete(key []byte) ([]byte, error) {
 	return buf, nil
 }
 
+// EncodeDeleteRange creates an OpDeleteRange command over [start, end); an
+// empty end runs to the end of the keyspace. It is EncodeOp's framing, with
+// both bounds held to MaxClientKeyLength.
+func EncodeDeleteRange(start, end []byte) ([]byte, error) {
+	if err := CheckKeyLen(start); err != nil {
+		return nil, err
+	}
+	if len(end) > 0 {
+		if err := CheckKeyLen(end); err != nil {
+			return nil, err
+		}
+	}
+	return EncodeOp(OpDeleteRange, start, nil, end, 0)
+}
+
 // EncodeMVCCRange creates a binary MVCC Range command.
 // Format: [op:1][startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1].
 func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOnly bool) ([]byte, error) {
@@ -592,6 +625,40 @@ func EncodeLeaseKeepAlive(leaseID int64) ([]byte, error) {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseKeepAlive
 	binary.LittleEndian.PutUint64(buf[1:], uint64(leaseID))
+	return buf, nil
+}
+
+// MaxLeaseCheckpointBatch bounds the leases one OpLeaseCheckpoint command
+// carries, which bounds the command at 21 + 16*MaxLeaseCheckpointBatch bytes.
+const MaxLeaseCheckpointBatch = 1000
+
+// leaseCheckpointHeader is the size of an OpLeaseCheckpoint payload ahead of
+// its entries: the token, the sampled index and the count.
+const leaseCheckpointHeader = 20
+
+// leaseCheckpointEntry is the size of one OpLeaseCheckpoint entry.
+const leaseCheckpointEntry = 16
+
+// EncodeLeaseCheckpoint creates a binary Lease Checkpoint command carrying the
+// leader's round token, the applied Raft index it sampled them at and its
+// checkpoints. It refuses an empty batch and one larger than
+// MaxLeaseCheckpointBatch.
+// Format: [op:1][token:8 LE][index:8 LE][count:4 LE][(leaseID:8 LE, remainingTTL:8 LE)...].
+func EncodeLeaseCheckpoint(token, index uint64, cps []lease.Checkpoint) ([]byte, error) {
+	if len(cps) == 0 || len(cps) > MaxLeaseCheckpointBatch {
+		return nil, &InvalidCommandError{Reason: "lease checkpoint: batch size out of range"}
+	}
+	buf := make([]byte, headerSize+leaseCheckpointHeader+leaseCheckpointEntry*len(cps))
+	buf[0] = OpLeaseCheckpoint
+	binary.LittleEndian.PutUint64(buf[1:9], token)
+	binary.LittleEndian.PutUint64(buf[9:17], index)
+	binary.LittleEndian.PutUint32(buf[17:21], uint32(len(cps))) //nolint:gosec // G115: bounded by MaxLeaseCheckpointBatch above
+	off := headerSize + leaseCheckpointHeader
+	for _, cp := range cps {
+		binary.LittleEndian.PutUint64(buf[off:], uint64(cp.ID))             //nolint:gosec // G115: two's-complement round trip, decoded back to int64
+		binary.LittleEndian.PutUint64(buf[off+8:], uint64(cp.RemainingTTL)) //nolint:gosec // G115: two's-complement round trip, decoded back to int64
+		off += leaseCheckpointEntry
+	}
 	return buf, nil
 }
 
@@ -1390,6 +1457,34 @@ func DecodeLeaseKeepAlive(payload []byte) (int64, error) {
 		return 0, &InvalidCommandError{Reason: "lease keep-alive: payload too short"}
 	}
 	return int64(binary.LittleEndian.Uint64(payload[0:8])), nil
+}
+
+// DecodeLeaseCheckpoint extracts the token, the sampled Raft index and the
+// entries of a Lease Checkpoint payload. The payload must hold exactly the
+// count it declares, and the count must be within 1..MaxLeaseCheckpointBatch.
+func DecodeLeaseCheckpoint(payload []byte) (token, index uint64, cps []lease.Checkpoint, err error) {
+	if len(payload) < leaseCheckpointHeader {
+		return 0, 0, nil, &InvalidCommandError{Reason: "lease checkpoint: payload too short"}
+	}
+	token = binary.LittleEndian.Uint64(payload[0:8])
+	index = binary.LittleEndian.Uint64(payload[8:16])
+	count := int(binary.LittleEndian.Uint32(payload[16:20]))
+	if count == 0 || count > MaxLeaseCheckpointBatch {
+		return 0, 0, nil, &InvalidCommandError{Reason: "lease checkpoint: batch size out of range"}
+	}
+	if len(payload) != leaseCheckpointHeader+leaseCheckpointEntry*count {
+		return 0, 0, nil, &InvalidCommandError{Reason: "lease checkpoint: count does not match payload"}
+	}
+	cps = make([]lease.Checkpoint, count)
+	off := leaseCheckpointHeader
+	for i := range cps {
+		cps[i] = lease.Checkpoint{
+			ID:           int64(binary.LittleEndian.Uint64(payload[off:])),   //nolint:gosec // G115: two's-complement round trip of the encoded int64
+			RemainingTTL: int64(binary.LittleEndian.Uint64(payload[off+8:])), //nolint:gosec // G115: two's-complement round trip of the encoded int64
+		}
+		off += leaseCheckpointEntry
+	}
+	return token, index, cps, nil
 }
 
 // DecodeIndexCreateOpts extracts the fields of an Index Create payload.

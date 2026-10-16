@@ -216,7 +216,13 @@ func (f *FrameForwarder) ForwardToLeader(ctx context.Context, caller *auth.Ident
 		slog.Warn("admin forwarding: refusal names no leader", "method", method)
 		return 0, nil, false
 	}
-	member, found, err := f.cfg.Locator.MemberByAddress(ctx, leaderAddr)
+	// The deadline covers the leader lookup too: it reads the member
+	// records from the system shard, and a read that does not complete
+	// would otherwise hold this handler -- and the caller -- open with no
+	// bound at all.
+	fctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
+	defer cancel()
+	member, found, err := f.cfg.Locator.MemberByAddress(fctx, leaderAddr)
 	if err != nil || !found {
 		slog.Warn("admin forwarding: leader not found in member records", "leader_raft_addr", leaderAddr, "error", err)
 		return 0, nil, false
@@ -237,8 +243,6 @@ func (f *FrameForwarder) ForwardToLeader(ctx context.Context, caller *auth.Ident
 		return 0, nil, false
 	}
 
-	fctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
-	defer cancel()
 	stream, ok := f.stream(fctx, endpoint)
 	if !ok {
 		slog.Warn("admin forwarding: could not connect to leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint)

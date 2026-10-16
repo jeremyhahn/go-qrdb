@@ -59,6 +59,47 @@ func (f *faultyMVCC) Range(ctx context.Context, start, end []byte, opts ...servi
 	return f.MVCCKVServicer.Range(ctx, start, end, opts...)
 }
 
+// detectionGate holds a table's deadlock check at its read of the whole lock
+// table, once: reached is closed when the check gets there, and the read goes
+// ahead when proceed is closed. Two gated tables let a test order two
+// requests' checks after both requests have enqueued.
+type detectionGate struct {
+	service.MVCCKVServicer
+	fired   atomic.Bool
+	reached chan struct{}
+	proceed chan struct{}
+}
+
+func (g *detectionGate) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	if string(start) == Prefix && g.fired.CompareAndSwap(false, true) {
+		close(g.reached)
+		<-g.proceed
+	}
+	return g.MVCCKVServicer.Range(ctx, start, end, opts...)
+}
+
+// gatedTable returns a table over s whose deadlock check waits on the
+// returned gate.
+func gatedTable(t *testing.T, s *stack) (*Table, *detectionGate) {
+	t.Helper()
+	g := &detectionGate{MVCCKVServicer: s.deps.MVCC, reached: make(chan struct{}), proceed: make(chan struct{})}
+	d := s.deps
+	d.MVCC = g
+	tbl, err := New(d, "acme/shop")
+	require.NoError(t, err)
+	return tbl, g
+}
+
+// mustReach waits for g's check to reach its read.
+func mustReach(t *testing.T, g *detectionGate, what string) {
+	t.Helper()
+	select {
+	case <-g.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s never reached its deadlock check", what)
+	}
+}
+
 // detectionBarrier holds every deadlock-detection read -- a Range over the
 // whole lock table -- until n of them have arrived, so the detectors of n
 // requests all read a table in which every one of them has enqueued. Each
@@ -314,4 +355,34 @@ func TestAcquire_LeaseCheckFailure_IsReturnedAndWithdraws(t *testing.T) {
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)
 	assert.Empty(t, queueOwners(t, s.table(t), keyA), "an unconfirmed request is withdrawn")
 	assert.True(t, a.Active(), "an infrastructure failure is not a lost lock")
+}
+
+// followerTimeToLive answers TimeToLive as a node whose replica does not lead
+// the lease's shard does: a lease it holds is the leader's to time, a missing
+// one is not found.
+type followerTimeToLive struct{ service.LeaseServicer }
+
+func (f followerTimeToLive) TimeToLive(ctx context.Context, id int64) (*lease.Lease, error) {
+	l, err := f.LeaseServicer.TimeToLive(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return nil, &service.LeaseTTLNotLeaderError{NotLeaderError: service.NotLeaderError{ShardID: 1}, Lease: l}
+}
+
+// TestAcquire_OnAFollower_LeaseCheckAsksOnlyExistence pins that the lease
+// check after an enqueue asks only whether the lease exists, which a follower
+// answers: its refusal to answer the remaining TTL is not a lost lock or an
+// infrastructure failure.
+func TestAcquire_OnAFollower_LeaseCheckAsksOnlyExistence(t *testing.T) {
+	s := newStack(t)
+	d := s.deps
+	d.Lease = followerTimeToLive{LeaseServicer: s.deps.Lease}
+	tbl, err := New(d, "acme/shop")
+	require.NoError(t, err)
+	a := NewSession().NewOwner()
+	t.Cleanup(func() { _ = a.Release(context.Background()) })
+	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
+	assert.True(t, a.Active())
+	assert.NotEmpty(t, queueOwners(t, s.table(t), keyA), "the confirmed request stays queued")
 }

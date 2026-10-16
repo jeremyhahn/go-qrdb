@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
+	"github.com/jeremyhahn/go-qrdb/pkg/statedigest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -235,13 +236,7 @@ func (s *MVCCStateMachine) readLastApplied() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if val == nil {
-		return 0, nil
-	}
-	if len(val) != 8 {
-		return 0, nil
-	}
-	return binary.LittleEndian.Uint64(val), nil
+	return decodeLastApplied(val), nil
 }
 
 // Update applies committed entries to the MVCC store using an atomic PebbleDB
@@ -301,8 +296,13 @@ func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results
 }
 
 // Lookup reads state from the MVCC store by delegating to the engine.
-// See engine.MVCCEngine.Lookup for supported query types.
+// See engine.MVCCEngine.Lookup for supported query types. A
+// statedigest.Query is answered here, from a snapshot; see stateDigest.
 func (s *MVCCStateMachine) Lookup(ctx context.Context, query interface{}) (interface{}, error) {
+	if _, ok := query.(statedigest.Query); ok {
+		return s.stateDigest()
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

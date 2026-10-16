@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -728,6 +730,103 @@ func TestKeyspaceReclaim_DeletesEveryKeyIndividually(t *testing.T) {
 	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv))
+}
+
+type countingRangeKV struct {
+	*memoryKVSvc
+	ranges  int
+	deletes int
+}
+
+func (c *countingRangeKV) Delete(ctx context.Context, key string) error {
+	c.deletes++
+	return c.memoryKVSvc.Delete(ctx, key)
+}
+
+func (c *countingRangeKV) DeleteRange(ctx context.Context, start, end []byte) error {
+	c.ranges++
+	return c.memoryKVSvc.DeleteRange(ctx, start, end)
+}
+
+func TestKeyspaceReclaim_UsesRangeDeletePerPrefix(t *testing.T) {
+	kv := &countingRangeKV{memoryKVSvc: populatedStore()}
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	for i := 0; i < reclaimRangeDeleteChunkSize+1; i++ {
+		require.NoError(t, kv.Put(ctx, ns+"bulk/"+strconv.Itoa(i), []byte("v")))
+	}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+
+	assert.Equal(t, survivors(), allKeys(t, kv.memoryKVSvc))
+	assert.Greater(t, kv.ranges, 1)
+	assert.Less(t, kv.ranges, reclaimRangeDeleteChunkSize)
+	assert.Zero(t, kv.deletes)
+}
+
+// refusingRangeKV range-deletes its first allowed calls and then answers err
+// without deleting anything, as a shard that has not activated the gate does.
+type refusingRangeKV struct {
+	countingRangeKV
+	allowed int
+	err     error
+}
+
+func (r *refusingRangeKV) DeleteRange(ctx context.Context, start, end []byte) error {
+	if r.ranges >= r.allowed {
+		return r.err
+	}
+	return r.countingRangeKV.DeleteRange(ctx, start, end)
+}
+
+func populatedRefusingRangeKV(t *testing.T, allowed int, err error) *refusingRangeKV {
+	t.Helper()
+	kv := &refusingRangeKV{countingRangeKV: countingRangeKV{memoryKVSvc: populatedStore()}, allowed: allowed, err: err}
+	ns := tenant.ComposeNamespace("acme", "reports")
+	for i := 0; i < reclaimRangeDeleteChunkSize+1; i++ {
+		require.NoError(t, kv.Put(context.Background(), ns+"bulk/"+strconv.Itoa(i), []byte("v")))
+	}
+	return kv
+}
+
+func TestKeyspaceReclaim_GateNotActiveFallsBackToPerKeyDeletes(t *testing.T) {
+	kv := populatedRefusingRangeKV(t, 0, &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
+	ctx := context.Background()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+
+	assert.Equal(t, survivors(), allKeys(t, kv.memoryKVSvc))
+	assert.Zero(t, kv.ranges)
+	assert.Greater(t, kv.deletes, reclaimRangeDeleteChunkSize)
+}
+
+func TestKeyspaceReclaim_GateNotActiveMidPrefixDeletesTheRest(t *testing.T) {
+	kv := populatedRefusingRangeKV(t, 1, &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
+	ctx := context.Background()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+
+	assert.Equal(t, survivors(), allKeys(t, kv.memoryKVSvc))
+	assert.Equal(t, 1, kv.ranges)
+	assert.Positive(t, kv.deletes)
+	assert.Less(t, kv.deletes, reclaimRangeDeleteChunkSize, "the range-deleted chunk must not be deleted again")
+}
+
+func TestKeyspaceReclaim_RangeDeleteFailureFailsTheDrop(t *testing.T) {
+	boom := errors.New("propose failed")
+	kv := populatedRefusingRangeKV(t, 0, boom)
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
+
+	var prefixErr *ReclaimPrefixError
+	require.ErrorAs(t, err, &prefixErr)
+	assert.Equal(t, "delete_range", prefixErr.Op)
+	assert.ErrorIs(t, err, boom)
+	assert.Zero(t, kv.deletes, "a failure that is not the gate's refusal must not be guessed around")
 }
 
 // ---------------------------------------------------------------------------

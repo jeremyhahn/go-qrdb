@@ -1,6 +1,6 @@
 # Identity and RBAC — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 Two command groups: `qrdb users` and `qrdb roles`. Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
@@ -325,6 +325,15 @@ so they are the same on every node. Their permissions are fixed too — the one
 supported way to change them is `qrdb roles reconcile`, which converges them
 onto the build's own definitions rather than onto anything a caller supplies.
 See [../firstboot/cli.md](../firstboot/cli.md).
+
+## Delegating to an application's service principal
+
+There is no user or role verb for a service principal: it is not an account.
+A tenant lets an embedding application's principal act inside it by issuing a
+delegation certificate with `qrdb ca delegate` — see
+[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate).
+What that principal can then do is the delegated scope intersected with the
+grants the application gives it, so no `roles assign` is involved.
 
 ## A complete enrolment
 

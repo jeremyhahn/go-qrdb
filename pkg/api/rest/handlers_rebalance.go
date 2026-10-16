@@ -69,10 +69,39 @@ type rebalancePlanResponse struct {
 // rebalanceExecutionResponse is the JSON payload returned by
 // POST /v1/rebalance/execute.
 type rebalanceExecutionResponse struct {
-	MovesCompleted int     `json:"moves_completed"`
-	MovesFailed    int     `json:"moves_failed"`
-	DurationMs     int64   `json:"duration_ms"`
-	FinalImbalance float64 `json:"final_imbalance"`
+	MovesCompleted int                            `json:"moves_completed"`
+	MovesFailed    int                            `json:"moves_failed"`
+	Failures       []rebalanceMoveFailureResponse `json:"failures,omitempty"`
+	DurationMs     int64                          `json:"duration_ms"`
+	FinalImbalance float64                        `json:"final_imbalance"`
+}
+
+// rebalanceMoveFailureResponse names a move that failed and why.
+type rebalanceMoveFailureResponse struct {
+	ShardID  uint64 `json:"shard_id"`
+	FromNode string `json:"from_node"`
+	ToNode   string `json:"to_node"`
+	Step     string `json:"step,omitempty"`
+	Error    string `json:"error"`
+}
+
+// rebalanceFailuresToResponse converts the service's per-move failures to
+// their JSON form; no failures convert to nil.
+func rebalanceFailuresToResponse(failures []service.RebalanceMoveFailure) []rebalanceMoveFailureResponse {
+	if len(failures) == 0 {
+		return nil
+	}
+	out := make([]rebalanceMoveFailureResponse, len(failures))
+	for i, f := range failures {
+		out[i] = rebalanceMoveFailureResponse{
+			ShardID:  f.ShardID,
+			FromNode: f.FromNode,
+			ToNode:   f.ToNode,
+			Step:     f.Step,
+			Error:    f.Error,
+		}
+	}
+	return out
 }
 
 // nodeLoadResponse is the JSON representation of a single node's load.
@@ -207,6 +236,7 @@ func (s *Server) handleRebalanceExecute(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, rebalanceExecutionResponse{
 		MovesCompleted: result.MovesCompleted,
 		MovesFailed:    result.MovesFailed,
+		Failures:       rebalanceFailuresToResponse(result.Failures),
 		DurationMs:     result.Duration.Milliseconds(),
 		FinalImbalance: result.FinalImbalance,
 	})

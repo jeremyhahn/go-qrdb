@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -176,39 +177,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	}, nil
 }
 
-// CredentialRetrieveVersion returns the stored credential value for a
-// specific version via the credential.RetrieveVersion handler. Version
-// == 0 means "current version".
-func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*transport.CredentialRetrieveVersionResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &nilCredentialRequestError{Method: "CredentialRetrieveVersion"}}
-	}
-
-	payload, err := proto.Marshal(&pb.CredentialRetrieveVersionRequest{
-		Name:    req.Name,
-		Version: req.Version,
-	})
-	if err != nil {
-		return nil, &marshalError{Err: err}
-	}
-
-	respBytes, err := t.call(ctx, "credential.RetrieveVersion", payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp pb.CredentialRetrieveVersionResponse
-	if err := proto.Unmarshal(respBytes, &resp); err != nil {
-		return nil, &unmarshalError{Err: err}
-	}
-	return &transport.CredentialRetrieveVersionResponse{
-		Value: resp.GetValue(),
-	}, nil
-}
-
 // CredentialListVersions returns the version history (current + grace
 // versions) for a credential via the credential.ListVersions handler.
 // Value bytes are intentionally never returned by this call.
@@ -300,8 +268,10 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	return nil
 }
 
-// CredentialRetrieve returns the credential value via the credential.Retrieve handler.
-func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+// CredentialRetrieveBuffer returns the credential value for name in protected
+// memory. The protobuf response is the wire DTO; it is moved into a buffer and
+// the decoded slice wiped.
+func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -313,9 +283,39 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if err != nil {
 		return nil, err
 	}
+	defer secure.Wipe(respBytes)
 	var resp pb.CredentialRetrieveResponse
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
-	return resp.GetValue(), nil
+	return transport.BufferFromWire(resp.GetValue())
+}
+
+// CredentialRetrieveVersionBuffer returns the stored value for a specific
+// version in protected memory. The protobuf response is the wire DTO; it is
+// moved into a buffer and the decoded slice wiped.
+func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*secure.Buffer, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &nilCredentialRequestError{Method: "CredentialRetrieveVersion"}}
+	}
+	payload, err := proto.Marshal(&pb.CredentialRetrieveVersionRequest{
+		Name:    req.Name,
+		Version: req.Version,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "credential.RetrieveVersion", payload)
+	if err != nil {
+		return nil, err
+	}
+	defer secure.Wipe(respBytes)
+	var resp pb.CredentialRetrieveVersionResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return transport.BufferFromWire(resp.GetValue())
 }

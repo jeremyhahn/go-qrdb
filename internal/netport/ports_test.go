@@ -253,6 +253,44 @@ func TestHoldPort_ReleasesWhatItHeldOnFailure(t *testing.T) {
 	}
 }
 
+// TestHoldPort_LaterProbeFailureAfterAKernelDraw: the first probe draws the
+// port, the second is asked for exactly that number, and its failure surfaces
+// unchanged with no port and the first probe's hold released.
+func TestHoldPort_LaterProbeFailureAfterAKernelDraw(t *testing.T) {
+	released := false
+	probes["netport-test-draws"] = func(string) (net.Addr, io.Closer, error) {
+		return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4242}, closerFunc(func() error { released = true; return nil }), nil
+	}
+	bindErr := errors.New("address already in use")
+	var asked string
+	probes["netport-test-refuses"] = func(addr string) (net.Addr, io.Closer, error) {
+		asked = addr
+		return nil, nil, bindErr
+	}
+	t.Cleanup(func() {
+		delete(probes, "netport-test-draws")
+		delete(probes, "netport-test-refuses")
+	})
+	resolved, err := resolveProbes("127.0.0.1", []string{"netport-test-draws", "netport-test-refuses"})
+	if err != nil {
+		t.Fatalf("resolveProbes: %v", err)
+	}
+
+	port, held, err := holdPort("127.0.0.1", kernelDrawsPort, resolved)
+	if !errors.Is(err, bindErr) {
+		t.Fatalf("holdPort = (%d, %v), want the second probe's bind failure", port, err)
+	}
+	if port != 0 || held != nil {
+		t.Errorf("holdPort = (%d, %v) alongside an error, want (0, nil)", port, held)
+	}
+	if asked != "127.0.0.1:4242" {
+		t.Errorf("second probe asked for %q, want the first probe's drawn port", asked)
+	}
+	if !released {
+		t.Error("the first probe's hold was not released")
+	}
+}
+
 func TestHoldPort_UnreadableAddress(t *testing.T) {
 	released := false
 	probes["netport-test-unix"] = func(string) (net.Addr, io.Closer, error) {
@@ -264,10 +302,13 @@ func TestHoldPort_UnreadableAddress(t *testing.T) {
 		t.Fatalf("resolveProbes: %v", err)
 	}
 
-	_, _, err = holdPort("127.0.0.1", kernelDrawsPort, resolved)
+	port, _, err := holdPort("127.0.0.1", kernelDrawsPort, resolved)
 	var addrErr *ProbeAddrError
 	if !errors.As(err, &addrErr) {
 		t.Fatalf("err = %v, want *ProbeAddrError", err)
+	}
+	if port != 0 {
+		t.Errorf("port = %d alongside an error, want 0", port)
 	}
 	if addrErr.Addr != "no-port" || !released {
 		t.Errorf("ProbeAddrError.Addr = %q, released = %v; want no-port, true", addrErr.Addr, released)

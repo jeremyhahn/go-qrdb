@@ -370,3 +370,13 @@ func (e *CertStoreError) Error() string {
 }
 
 func (e *CertStoreError) Unwrap() error { return e.Err }
+
+// CertProviderConflictError reports an Infra carrying both CertProvider and
+// CertKeyProviderFactory. The factory supplies the built-in provider's
+// per-tenant keys and an injected provider replaces the built-in provider, so
+// one of the two would be silently ignored; BuildServices refuses instead.
+type CertProviderConflictError struct{}
+
+func (e *CertProviderConflictError) Error() string {
+	return "lifecycle: CertProvider and CertKeyProviderFactory are mutually exclusive: the key factory configures only the built-in certificate provider"
+}

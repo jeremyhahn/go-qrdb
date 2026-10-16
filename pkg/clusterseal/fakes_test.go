@@ -47,6 +47,34 @@ type memKV struct {
 	// quorum reads (readErr) fail, as it does on a real node.
 	staleErr   error
 	staleScans int
+
+	// getFaults fail the next Gets, one error each in order, and later Gets
+	// are served: a shard electing answers a read or two with a timeout and
+	// then serves again. gets counts every Get.
+	getFaults []error
+	gets      int
+	// writeFaults fail the next guarded writes the same way. With
+	// faultCommits the write takes effect before its fault is returned, as a
+	// proposal that commits after its caller timed out does. writes counts
+	// every guarded write.
+	writeFaults  []error
+	faultCommits bool
+	writes       int
+	// putFaults fail the next Puts without applying them. puts counts every
+	// Put.
+	putFaults []error
+	puts      int
+}
+
+// takeFault pops the first of *faults, or returns nil when none is queued.
+// The caller holds m.mu.
+func takeFault(faults *[]error) error {
+	if len(*faults) == 0 {
+		return nil
+	}
+	err := (*faults)[0]
+	*faults = (*faults)[1:]
+	return err
 }
 
 var _ KV = (*memKV)(nil)
@@ -56,8 +84,12 @@ func newMemKV() *memKV { return &memKV{data: map[string][]byte{}} }
 func (m *memKV) Get(_ context.Context, key string) ([]byte, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.gets++
 	if m.readErr != nil {
 		return nil, false, m.readErr
+	}
+	if err := takeFault(&m.getFaults); err != nil {
+		return nil, false, err
 	}
 	v, ok := m.data[key]
 	return bytes.Clone(v), ok, nil
@@ -77,29 +109,39 @@ func (m *memKV) PutIfAbsent(_ context.Context, key string, value []byte) (bool, 
 	m.hook()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.writes++
 	if m.writeErr != nil {
 		return false, m.writeErr
 	}
+	fault := takeFault(&m.writeFaults)
+	if fault != nil && !m.faultCommits {
+		return false, fault
+	}
 	if _, ok := m.data[key]; ok {
-		return false, nil
+		return false, fault
 	}
 	m.data[key] = bytes.Clone(value)
-	return true, nil
+	return fault == nil, fault
 }
 
 func (m *memKV) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
 	m.hook()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.writes++
 	if m.writeErr != nil {
 		return false, m.writeErr
 	}
+	fault := takeFault(&m.writeFaults)
+	if fault != nil && !m.faultCommits {
+		return false, fault
+	}
 	cur, ok := m.data[key]
 	if !ok || !bytes.Equal(cur, expected) {
-		return false, nil
+		return false, fault
 	}
 	m.data[key] = bytes.Clone(next)
-	return true, nil
+	return fault == nil, fault
 }
 
 func (m *memKV) Put(ctx context.Context, key string, value []byte) error {
@@ -112,8 +154,12 @@ func (m *memKV) Put(ctx context.Context, key string, value []byte) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.puts++
 	if m.writeErr != nil {
 		return m.writeErr
+	}
+	if err := takeFault(&m.putFaults); err != nil {
+		return err
 	}
 	m.data[key] = bytes.Clone(value)
 	return nil

@@ -39,9 +39,12 @@ type mockUserAuthFactorService struct {
 	getFn                func(ctx context.Context, factorID string) (*auth.AuthFactor, error)
 	lookupByCredentialFn func(ctx context.Context, t auth.AuthFactorType, key []byte) (*auth.AuthFactor, error)
 	removeFn             func(ctx context.Context, factorID string, force bool) error
+	deleteFn             func(ctx context.Context, factorID string, force bool) error
 	rotateFn             func(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error
 	relabelFn            func(ctx context.Context, factorID string, label string) error
 	markUsedFn           func(ctx context.Context, factorID string, ts time.Time) error
+	addConditionalFn     func(ctx context.Context, userID uint64, factor *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error)
+	factorSetVersionFn   func(ctx context.Context, userID uint64) (uint64, error)
 }
 
 var _ service.UserAuthFactorServicer = (*mockUserAuthFactorService)(nil)
@@ -81,6 +84,13 @@ func (m *mockUserAuthFactorService) Remove(ctx context.Context, factorID string,
 	return nil
 }
 
+func (m *mockUserAuthFactorService) Delete(ctx context.Context, factorID string, force bool) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, factorID, force)
+	}
+	return nil
+}
+
 func (m *mockUserAuthFactorService) Rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error {
 	if m.rotateFn != nil {
 		return m.rotateFn(ctx, oldID, newFactor)
@@ -100,4 +110,18 @@ func (m *mockUserAuthFactorService) MarkUsed(ctx context.Context, factorID strin
 		return m.markUsedFn(ctx, factorID, ts)
 	}
 	return nil
+}
+
+func (m *mockUserAuthFactorService) AddConditional(ctx context.Context, userID uint64, factor *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error) {
+	if m.addConditionalFn != nil {
+		return m.addConditionalFn(ctx, userID, factor, cond)
+	}
+	return 0, nil
+}
+
+func (m *mockUserAuthFactorService) FactorSetVersion(ctx context.Context, userID uint64) (uint64, error) {
+	if m.factorSetVersionFn != nil {
+		return m.factorSetVersionFn(ctx, userID)
+	}
+	return 0, nil
 }

@@ -216,6 +216,9 @@ func TestMCPUserAuthFactor_AfterClose(t *testing.T) {
 	if _, err := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{}); !errors.As(err, &ce) {
 		t.Errorf("RemoveAuthFactor: %v", err)
 	}
+	if _, err := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{}); !errors.As(err, &ce) {
+		t.Errorf("DeleteAuthFactor: %v", err)
+	}
 	if _, err := tr.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{}); !errors.As(err, &ce) {
 		t.Errorf("RotateAuthFactor: %v", err)
 	}

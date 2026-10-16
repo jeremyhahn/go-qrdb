@@ -249,7 +249,7 @@ failed. Its watch path stays unused until that interplay is designed.)
 |---|---|---|
 | `*placement.NotAReplicaError` | no target served: none reachable, every one refused, forwarding off, no caller, or a stream | `Unavailable` (503), unchanged |
 | `*replicaforward.NoTargetServedError` | the Locator found no target that served | internal to the forwarding layer, which answers the refusal |
-| `*replicaforward.MemberLookupError` | the member records could not be read | as above |
+| `*replicaforward.MemberLookupError` | the member records could not be read, including a read the forward timeout cut off -- the lookup runs under that timeout on every path, the leader hop included | as above; on the leader hop, the follower's own refusal (`*service.NotLeaderError` or `*service.AdminCredentialNotLeaderError`, `Unavailable`) |
 | `*replicaforward.SendError` | the forward failed after it may have reached a target | `Unavailable` (`DeadlineExceeded` when the caller's deadline passed) |
 | `*forward.ForwardUnsignedError` | no authenticated caller, or no node signing identity | logged; the caller gets the refusal |
 | `*replicaforward.RefusalDecodeError` | refusal metadata that does not decode | the refusal is answered as is |
@@ -260,7 +260,7 @@ failed. Its watch path stays unused until that interplay is designed.)
 | Key | Default | Meaning |
 |---|---|---|
 | `replica_forwarding.enabled` | `true` | forward on a raft-mode node with a placement table; `false` refuses with the replica set |
-| `replica_forwarding.timeout` | `10s` | bound on one forward, connection included; a connection gets half of it, reconnects included, so an unanswered handshake leaves time for the retry |
+| `replica_forwarding.timeout` | `10s` | bound on one forward, leader lookup and connection included; a connection gets half of it, reconnects included, so an unanswered handshake leaves time for the retry |
 
 There is no setting for the hop limit or the retry count. Both are part of
 the contract.

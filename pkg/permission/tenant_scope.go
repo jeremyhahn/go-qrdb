@@ -43,6 +43,9 @@ func tenantOnlyPermissions() []Permission {
 		TenantBarrierOfficerList,
 		TenantBarrierRekey,
 		TenantBarrierOfficerRevoke,
+		// A delegation lets a service act inside the tenant that signs it,
+		// so only that tenant can give one; the platform cannot.
+		CertsDelegate,
 	}
 }
 

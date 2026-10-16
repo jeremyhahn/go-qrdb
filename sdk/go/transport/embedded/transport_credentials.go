@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -144,34 +145,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		resp.GraceUntilUnix = res.GraceUntil.Unix()
 	}
 	return resp, nil
-}
-
-// CredentialRetrieveVersion returns the stored credential value for a
-// specific version by delegating to the injected CredentialServicer.
-// Version == 0 means "current version".
-func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*transport.CredentialRetrieveVersionResponse, error) {
-	if err := t.gate("CredentialRetrieveVersion"); err != nil {
-		return nil, err
-	}
-	if err := t.authorize(ctx, "CredentialRetrieveVersion"); err != nil {
-		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.credentialSvc == nil {
-		return nil, &NilServiceError{Service: "CredentialServicer"}
-	}
-	if req == nil {
-		return nil, &NilRequestError{Method: "CredentialRetrieveVersion"}
-	}
-	value, err := t.credentialSvc.CredentialRetrieveVersion(ctx, req.Name, req.Version)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.CredentialRetrieveVersionResponse{
-		Value: value,
-	}, nil
 }
 
 // CredentialListVersions returns the version history (current + non-expired
@@ -306,21 +279,6 @@ func handleCredentialRotate(ctx context.Context, t *Transport, req, resp any) er
 	return nil
 }
 
-func handleCredentialRetrieveVersion(ctx context.Context, t *Transport, req, resp any) error {
-	r, ok := req.(*transport.CredentialRetrieveVersionRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "CredentialRetrieveVersion"}
-	}
-	result, err := t.CredentialRetrieveVersion(ctx, r)
-	if err != nil {
-		return err
-	}
-	if out, ok := resp.(**transport.CredentialRetrieveVersionResponse); ok {
-		*out = result
-	}
-	return nil
-}
-
 func handleCredentialListVersions(ctx context.Context, t *Transport, req, resp any) error {
 	r, ok := req.(*transport.CredentialListVersionsRequest)
 	if !ok {
@@ -379,12 +337,14 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	return t.credentialSvc.CredentialStore(ctx, name, value)
 }
 
-// CredentialRetrieve returns the credential value via the injected service.
-func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
-	if err := t.gate("CredentialRetrieve"); err != nil {
+// CredentialRetrieveBuffer returns the credential value for name in protected
+// memory by delegating to the injected CredentialServicer. Nothing is copied
+// out: the embedded transport has no wire.
+func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	if err := t.gate("CredentialRetrieveBuffer"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "CredentialRetrieve"); err != nil {
+	if err := t.authorize(ctx, "CredentialRetrieveBuffer"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -393,5 +353,28 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
-	return t.credentialSvc.CredentialRetrieve(ctx, name)
+	return t.credentialSvc.CredentialRetrieveBuffer(ctx, name)
+}
+
+// CredentialRetrieveVersionBuffer returns the stored value for a specific
+// version in protected memory by delegating to the injected
+// CredentialServicer. Nothing is copied out: the embedded transport has no
+// wire.
+func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*secure.Buffer, error) {
+	if err := t.gate("CredentialRetrieveVersionBuffer"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "CredentialRetrieveVersionBuffer"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.credentialSvc == nil {
+		return nil, &NilServiceError{Service: "CredentialServicer"}
+	}
+	if req == nil {
+		return nil, &NilRequestError{Method: "CredentialRetrieveVersion"}
+	}
+	return t.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.Name, req.Version)
 }

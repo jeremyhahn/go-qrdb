@@ -149,6 +149,11 @@ type TenantInfraConfig struct {
 	// "import_session:" in YAML). The zero value resolves to the package
 	// defaults WithImportSessionLimits documents, not unbounded staging.
 	ImportSession qrdbconfig.ImportSessionConfig
+
+	// Lease sets the lease checkpoint interval and failover grace of every
+	// IsolationRaft database (config.Lease, "lease:" in YAML). The zero value
+	// resolves to the lease package defaults.
+	Lease qrdbconfig.LeaseConfig
 }
 
 // BuildTenantInfra assembles the per-tenant isolation stack from cfg and
@@ -198,15 +203,21 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		cfg.BarrierReg.Attach(seal.WithMigrationRecoverer(
 			func(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) error {
 				return database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, nil)
-			}))
+			}),
+			seal.WithStartupReadRetry(WhileSystemShardSettling))
 	}
 
 	// Restore every per-tenant barrier (IsolationVolume + IsolationRaft) from
 	// THIS node's own persisted tenant-root records before re-attaching either
 	// tenant type. RestoreVolumeTenants re-registers and (for auto-unseal
 	// tenants) unseals each barrier using the node-local DataRoot recorded by
-	// RegisterVolumeTenant on a prior run. Failures are logged and deferred to
-	// the reconciler rather than aborting.
+	// RegisterVolumeTenant on a prior run. It is the only pass that does, so
+	// its system-shard reads wait out the shard settling
+	// (WhileSystemShardSettling, attached below): every node of a restarted
+	// cluster comes up together, and a read made before the shard has a
+	// leader would otherwise leave the tenant unrestored on this node until
+	// the next restart. Failures that outlast the wait are logged rather than
+	// aborting.
 	//
 	// Retired tenants are reclaimed FIRST: RestoreVolumeTenants restores a
 	// barrier from any tenant-root record it finds, and a node that missed a
@@ -271,7 +282,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		if cfg.FeatureGate != nil {
 			raftOpts = append(raftOpts, WithFeatureGate(cfg.FeatureGate))
 		}
-		raftOpts = append(raftOpts, WithImportSessionConfig(cfg.ImportSession))
+		raftOpts = append(raftOpts, WithImportSessionConfig(cfg.ImportSession), WithLeaseConfig(cfg.Lease))
 		ti.Raft = NewRaftBackendFactoryFromManager(
 			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, logger, raftOpts...)
 

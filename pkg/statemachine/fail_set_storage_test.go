@@ -47,11 +47,18 @@ type failSetStorage struct {
 	failKey []byte
 	err     error
 
-	// holdSet parks the next Set until it is closed; setHeld announces that
-	// the Set is parked. Both are touched only by the test goroutine and the
-	// single parked writer, in that order.
-	holdSet chan struct{}
-	setHeld chan struct{}
+	// hold, when armed, parks the next Set until its release channel is
+	// closed; its held channel announces that the Set is parked. It is
+	// swapped out atomically, so exactly one Set parks even when another
+	// write -- the state machine's asynchronous applied-index stamp, say --
+	// reaches storage concurrently on a different key.
+	hold atomic.Pointer[setHold]
+}
+
+// setHold is one armed holdFirstSet.
+type setHold struct {
+	held    chan struct{}
+	release chan struct{}
 }
 
 func newFailSetStorage(err error) *failSetStorage {
@@ -59,10 +66,9 @@ func newFailSetStorage(err error) *failSetStorage {
 }
 
 func (s *failSetStorage) Set(key, value []byte) error {
-	if s.holdSet != nil {
-		close(s.setHeld)
-		<-s.holdSet
-		s.holdSet = nil
+	if h := s.hold.Swap(nil); h != nil {
+		close(h.held)
+		<-h.release
 	}
 	if s.failing.Load() && (s.failKey == nil || bytes.Equal(key, s.failKey)) {
 		return s.err
@@ -78,10 +84,9 @@ func (s *failSetStorage) Set(key, value []byte) error {
 // the window a later write has to land in. Racing two goroutines and hoping
 // would test the interleaving only some of the time.
 func (s *failSetStorage) holdFirstSet() (held <-chan struct{}, release func()) {
-	s.setHeld = make(chan struct{})
-	hold := make(chan struct{})
-	s.holdSet = hold
-	return s.setHeld, func() { close(hold) }
+	h := &setHold{held: make(chan struct{}), release: make(chan struct{})}
+	s.hold.Store(h)
+	return h.held, func() { close(h.release) }
 }
 
 func (s *failSetStorage) Delete(key []byte) error {
@@ -89,6 +94,13 @@ func (s *failSetStorage) Delete(key []byte) error {
 		return s.err
 	}
 	return s.memStorage.Delete(key)
+}
+
+func (s *failSetStorage) DeleteRange(start, end []byte) error {
+	if s.failDelete.Load() {
+		return s.err
+	}
+	return s.memStorage.DeleteRange(start, end)
 }
 
 // Batch returns a batch that meets the same faults a direct write would: a
@@ -117,6 +129,13 @@ func (b *failSetBatch) Delete(key []byte) error {
 		return b.owner.err
 	}
 	return b.memBatch.Delete(key)
+}
+
+func (b *failSetBatch) DeleteRange(start, end []byte) error {
+	if b.owner.failDelete.Load() {
+		return b.owner.err
+	}
+	return b.memBatch.DeleteRange(start, end)
 }
 
 var _ storage.Storage = (*failSetStorage)(nil)

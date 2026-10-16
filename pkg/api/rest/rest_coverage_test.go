@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -153,7 +154,7 @@ func (m *coverageCredentialService) CredentialStore(ctx context.Context, name st
 	}
 	return nil
 }
-func (m *coverageCredentialService) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+func (m *coverageCredentialService) retrieveValue(ctx context.Context, name string) ([]byte, error) {
 	if m.retrieveFn != nil {
 		return m.retrieveFn(ctx, name)
 	}
@@ -171,11 +172,27 @@ func (m *coverageCredentialService) CredentialRotate(ctx context.Context, name s
 	}
 	return &credentials.RotateResult{Name: name, PreviousVersion: 0, NewVersion: 1}, nil
 }
-func (m *coverageCredentialService) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (m *coverageCredentialService) retrieveVersionValue(ctx context.Context, name string, version uint64) ([]byte, error) {
 	if m.retrieveVersionFn != nil {
 		return m.retrieveVersionFn(ctx, name, version)
 	}
 	return nil, nil
+}
+
+func (m *coverageCredentialService) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	v, err := m.retrieveValue(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
+}
+
+func (m *coverageCredentialService) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	v, err := m.retrieveVersionValue(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 func (m *coverageCredentialService) CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error) {
 	if m.listVersionsFn != nil {

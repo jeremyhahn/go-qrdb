@@ -30,6 +30,7 @@ type mockCertEnrollmentServicer struct {
 	addTrustAnchorsFn   func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
 	listTrustAnchorsFn  func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeTrustAnchorFn func(ctx context.Context, tenantID, fingerprint string) error
+	issueDelegationFn   func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
 }
 
 var _ service.CertEnrollmentServicer = (*mockCertEnrollmentServicer)(nil)
@@ -52,6 +53,10 @@ func (m *mockCertEnrollmentServicer) ListTrustAnchors(ctx context.Context, tenan
 
 func (m *mockCertEnrollmentServicer) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
 	return m.removeTrustAnchorFn(ctx, tenantID, fingerprint)
+}
+
+func (m *mockCertEnrollmentServicer) IssueDelegation(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	return m.issueDelegationFn(ctx, req)
 }
 
 // mockTenantOnboardingServicer implements service.TenantOnboardingServicer

@@ -406,11 +406,19 @@ func wrapKeyWrapLookupError(err error, tenantID string, version uint64) error {
 // returning the version record fields to store. The plaintext key exists
 // only for the duration of this call and is wiped before returning.
 func (k *Keyring) wrapKey(ctx context.Context, tenantID string) (wrapped []byte, providerID, keyRef string, err error) {
-	key := make([]byte, KeySize)
-	if _, err := io.ReadFull(k.random, key); err != nil {
+	// The new key is generated into protected memory and handed to the
+	// provider from there, so it never exists on the Go heap.
+	key, err := secure.NewBuffer(KeySize)
+	if err != nil {
+		return nil, "", "", &CryptoError{Op: "protect key", Err: err}
+	}
+	defer key.Destroy()
+	if err := key.WithBytes(func(b []byte) error {
+		_, err := io.ReadFull(k.random, b)
+		return err
+	}); err != nil {
 		return nil, "", "", &CryptoError{Op: "generate key", Err: err}
 	}
-	defer secure.Wipe(key)
 
 	providerID = k.providerID
 	keyRef = k.keyRefFunc(tenantID)
@@ -419,8 +427,18 @@ func (k *Keyring) wrapKey(ctx context.Context, tenantID string) (wrapped []byte,
 	if err != nil {
 		return nil, "", "", wrapKeyWrapLookupError(err, tenantID, 0)
 	}
-	wrapped, err = provider.Wrap(ctx, keyRef, key)
-	if err != nil {
+	// The borrow on key is held across Wrap so the provider reads the key in
+	// place. The provider has no handle to key, so it cannot reenter key's own
+	// lock, and go-enclave locks each enclave independently, so any protected
+	// memory the provider allocates for itself cannot contend with this borrow.
+	var wrapErr error
+	if err := key.WithBytes(func(b []byte) error {
+		wrapped, wrapErr = provider.Wrap(ctx, keyRef, b)
+		return nil
+	}); err != nil {
+		return nil, "", "", &CryptoError{Op: "read key", Err: err}
+	}
+	if err := wrapErr; err != nil {
 		return nil, "", "", &KeyWrapFailedError{TenantID: tenantID, Err: err}
 	}
 	return wrapped, providerID, keyRef, nil

@@ -81,14 +81,14 @@ func (e *ProviderError) Unwrap() error {
 }
 
 // NestedBorrowError is what the borrow guard reports: the calling goroutine
-// entered Op while it already held a borrow of protected memory, which risks
-// the self-deadlock the guard exists to catch (see borrowguard.go).
+// entered Op on a Buffer it was already borrowing, which is the self-deadlock
+// the guard exists to catch (see borrowguard.go).
 //
 // It is a diagnostic, not a control-flow error — the operation it names never
 // completes, because a handler that returns is panicked past. BorrowStack is
-// the stack at the OUTER borrow, which is the half a reader cannot recover
-// from the panic's own trace. Neither field can carry key material: Op is a
-// compile-time constant and BorrowStack is a stack trace.
+// the stack at the borrow being reentered, which is the half a reader cannot
+// recover from the panic's own trace. Neither field can carry key material: Op
+// is a compile-time constant and BorrowStack is a stack trace.
 type NestedBorrowError struct {
 	Op          string
 	BorrowStack string
@@ -96,19 +96,19 @@ type NestedBorrowError struct {
 
 // Error implements the error interface.
 func (e *NestedBorrowError) Error() string {
-	return "secure: " + e.Op + " attempted while this goroutine holds a borrow" +
-		" of protected memory; nested calls into this package from inside a" +
-		" borrow are forbidden and risk deadlock. The borrow was taken at:\n" + e.BorrowStack
+	return "secure: " + e.Op + " attempted on a buffer this goroutine is" +
+		" borrowing; reentering a borrowed buffer from inside its own borrow" +
+		" deadlocks. The borrow was taken at:\n" + e.BorrowStack
 }
 
 // EmptyBorrowError is returned by CopyOut when the borrow yields no bytes.
 //
 // It cannot be produced by a live, non-empty Buffer: both constructors reject
 // a zero length and WithBytes refuses a destroyed buffer without calling the
-// callback. The reachable cause is a process-wide purge that has already taken
-// the pages — and the caller must hear about that rather than receive a
-// correctly sized run of zeros, which is the fail-open corruption found in
-// review of go-qrdb#74.
+// callback. It guards the Borrower contract, whose other implementations make
+// no such promise: a caller must hear that the pages are gone rather than
+// receive a correctly sized run of zeros, which is the fail-open corruption
+// found in review of go-qrdb#74.
 //
 // The live empty Buffer NewEmptyBuffer returns is refused too: CopyOut sees
 // only the borrow, and an empty borrow cannot say whether it is empty on

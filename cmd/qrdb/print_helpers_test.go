@@ -259,6 +259,24 @@ func TestPrintRebalanceResult_Table_NoMoves(t *testing.T) {
 	}
 }
 
+func TestPrintRebalanceResult_Table_ListsFailures(t *testing.T) {
+	result := &transport.RebalanceResult{
+		MovesFailed: 1,
+		Failures: []transport.RebalanceMoveFailure{{
+			ShardID: 42, FromNode: "node-a:9100", ToNode: "node-c:9100", Step: "add-observer", Error: "admission refused",
+		}},
+	}
+	out := saveOutput("table", func() {
+		if err := printRebalanceResult(result); err != nil {
+			t.Errorf("printRebalanceResult: %v", err)
+		}
+	})
+	want := "Failed:         shard 42 node-a:9100 -> node-c:9100 step=add-observer: admission refused"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected failure line %q in output, got: %q", want, out)
+	}
+}
+
 func TestPrintRebalanceResult_JSON(t *testing.T) {
 	result := &transport.RebalanceResult{MovesCompleted: 3}
 	out := saveOutput("json", func() {
@@ -269,6 +287,25 @@ func TestPrintRebalanceResult_JSON(t *testing.T) {
 	var decoded map[string]interface{}
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("decode json: %v", err)
+	}
+}
+
+func TestPrintRebalanceResult_JSON_CarriesFailures(t *testing.T) {
+	result := &transport.RebalanceResult{
+		MovesFailed: 1,
+		Failures:    []transport.RebalanceMoveFailure{{ShardID: 42, Step: "remove-node", Error: "boom"}},
+	}
+	out := saveOutput("json", func() {
+		if err := printRebalanceResult(result); err != nil {
+			t.Errorf("printRebalanceResult(json): %v", err)
+		}
+	})
+	var decoded transport.RebalanceResult
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode json: %v", err)
+	}
+	if len(decoded.Failures) != 1 || decoded.Failures[0] != result.Failures[0] {
+		t.Fatalf("failures = %+v, want %+v", decoded.Failures, result.Failures)
 	}
 }
 

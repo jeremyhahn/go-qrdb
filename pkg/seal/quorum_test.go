@@ -21,7 +21,22 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 )
+
+// TestSetClock_NilRestoresTheRealClock pins the default: with no clock
+// installed, or after a nil one, rounds are dated by the wall clock.
+func TestSetClock_NilRestoresTheRealClock(t *testing.T) {
+	f := newHolderFixture(t, 2, 3)
+	f.b.SetClock(clocktest.New())
+	f.b.SetClock(nil)
+	f.b.quorumMu.Lock()
+	defer f.b.quorumMu.Unlock()
+	if d := time.Since(f.b.quorumNowLocked()); d < -time.Minute || d > time.Minute {
+		t.Fatalf("nil clock reads %v from the wall clock", d)
+	}
+}
 
 // TestQuorum_UnsealNeedsThresholdDistinctHolders is the happy path: the
 // barrier stays sealed until M distinct holders submit, then unseals, and a
@@ -205,11 +220,17 @@ func TestQuorum_TamperedRosterFailsTheUnwrap(t *testing.T) {
 func TestQuorum_RoundExpiresAndWipes(t *testing.T) {
 	f := newHolderFixture(t, 2, 3)
 	f.sealWith("h1", "h2")
-	f.b.config.Shamir.QuorumTTL = time.Millisecond
+	fake := clocktest.New()
+	f.b.SetClock(fake)
+	f.b.config.Shamir.QuorumTTL = time.Minute
 	if _, err := f.submit(DomainUnseal, OpUnseal, "h1"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	fake.Advance(time.Minute - time.Second)
+	if st := f.b.openRound(DomainUnseal, OpUnseal); st == nil {
+		t.Fatal("round expired before its TTL")
+	}
+	fake.Advance(2 * time.Second)
 	if st := f.b.openRound(DomainUnseal, OpUnseal); st != nil {
 		t.Fatalf("expired round still reported: %+v", st)
 	}
@@ -599,7 +620,7 @@ func (b *StorageBarrier) openRound(domain QuorumDomain, op QuorumOp) *QuorumRoun
 	b.quorumMu.Lock()
 	defer b.quorumMu.Unlock()
 	r, ok := b.rounds[quorumRoundKey{domain: domain, op: op}]
-	if !ok || !time.Now().Before(r.expiresAt) {
+	if !ok || !b.quorumNowLocked().Before(r.expiresAt) {
 		return nil
 	}
 	return r.info()

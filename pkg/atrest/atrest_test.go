@@ -168,6 +168,16 @@ func TestFS_NilBarrierReturnsBase(t *testing.T) {
 	}
 }
 
+// TestFS_NilReceiverReturnsDefault pins the nil-receiver contract: a nil
+// *Encryptor has no base FS to hand back, so FS falls back to vfs.Default
+// rather than dereferencing the receiver.
+func TestFS_NilReceiverReturnsDefault(t *testing.T) {
+	var e *atrest.Encryptor
+	if fs := e.FS(); fs != vfs.Default {
+		t.Errorf("nil Encryptor FS() = %T, want vfs.Default", fs)
+	}
+}
+
 // TestFS_WithBarrierReturnsEncfsType confirms that FS() on a real-barrier
 // Encryptor returns an *encfs.FS.
 func TestFS_WithBarrierReturnsEncfsType(t *testing.T) {
@@ -179,5 +189,69 @@ func TestFS_WithBarrierReturnsEncfsType(t *testing.T) {
 	}
 	if _, ok := fs.(*encfs.FS); !ok {
 		t.Errorf("FS() = %T, want *encfs.FS", fs)
+	}
+}
+
+// TestWrap_DisabledReturnsBase confirms that Wrap on a nil or nil-barrier
+// Encryptor hands back the base FS itself, so a store that is not Pebble
+// writes plaintext only when there is no barrier.
+func TestWrap_DisabledReturnsBase(t *testing.T) {
+	base := vfs.NewMem()
+	var nilEnc *atrest.Encryptor
+	for name, e := range map[string]*atrest.Encryptor{
+		"nil-receiver": nilEnc,
+		"nil-barrier":  atrest.New(nil),
+	} {
+		if got := e.Wrap(base); got != base {
+			t.Errorf("%s: Wrap = %T, want the base FS", name, got)
+		}
+	}
+}
+
+// TestWrap_WithBarrierEncryptsContents confirms that Wrap installs encfs over
+// the given base FS: bytes written through the wrapper are ciphertext in the
+// base and read back as the plaintext through it.
+func TestWrap_WithBarrierEncryptsContents(t *testing.T) {
+	base := vfs.NewMem()
+	wrapped := atrest.New(newTestBarrier(t)).Wrap(base)
+	if _, ok := wrapped.(*encfs.FS); !ok {
+		t.Fatalf("Wrap = %T, want *encfs.FS", wrapped)
+	}
+	const secret = "wrap-plaintext-must-not-reach-the-base"
+	f, err := wrapped.Create("rec", vfs.WriteCategoryUnspecified)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write([]byte(secret)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	raw, err := base.Open("rec")
+	if err != nil {
+		t.Fatalf("base Open: %v", err)
+	}
+	onDisk, err := io.ReadAll(raw)
+	_ = raw.Close()
+	if err != nil {
+		t.Fatalf("base ReadAll: %v", err)
+	}
+	if strings.Contains(string(onDisk), secret) {
+		t.Fatal("base FS holds the plaintext; Wrap did not encrypt")
+	}
+
+	r, err := wrapped.Open("rec")
+	if err != nil {
+		t.Fatalf("wrapped Open: %v", err)
+	}
+	got, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatalf("wrapped ReadAll: %v", err)
+	}
+	if string(got) != secret {
+		t.Errorf("read back %q, want %q", got, secret)
 	}
 }

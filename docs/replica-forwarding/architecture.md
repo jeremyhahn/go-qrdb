@@ -287,12 +287,17 @@ holds no data for it.
   (a leader is one node, not a set to retry across). The leader's own answer,
   error or not, is the final result; a forward that never reached the leader,
   or a refusal naming no leader or one with no member record, answers with
-  the follower's own refusal. A membership change reaches its transport
-  naming no leader only when none was elected for 10s: `AdminService` waits
-  for a known leader before it proposes (`waitForShardLeaderKnown`, the wait
-  the scale path makes), answering `*service.ShardLeaderTimeoutError`
-  (Unavailable) when none is, and it waits rather than re-proposing, because
-  a change that timed out may still have committed. The Unix socket forwards through the same gRPC
+  the follower's own refusal. `replica_forwarding.timeout` bounds that
+  single hop from the leader lookup on -- the member records are a
+  system-shard read, and one that cannot complete falls back to the
+  follower's own typed refusal (`Unavailable`) when the timeout expires,
+  rather than holding the caller's request open. A membership change reaches
+  its transport naming no leader only when none was elected for 10s:
+  `AdminService` waits for a known leader before it proposes
+  (`waitForShardLeaderKnown`, the wait the scale path makes), answering
+  `*service.ShardLeaderTimeoutError` (Unavailable) when none is, and it waits
+  rather than re-proposing, because a change that timed out may still have
+  committed. The Unix socket forwards through the same gRPC
   interceptor its per-database path uses. The embedded transport forwards
   through its QUIC client transport exactly as it does for a per-database
   refusal. REST resolves the leader through its own `auth.peer_admin_urls`

@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // ---------------------------------------------------------------------------
@@ -182,6 +184,149 @@ func TestAdd_duplicateCredential(t *testing.T) {
 	err := svc.Add(ctx, 2, mtlsFactor("b", 2, []byte("k")))
 	if !errors.Is(err, auth.ErrFactorAlreadyExists) {
 		t.Fatalf("want ErrFactorAlreadyExists, got %v", err)
+	}
+}
+
+// guardedFactorStores names the store shapes a conditional add commits
+// through: one with single-key guards, and one with the multi-guarded batch
+// as well.
+func guardedFactorStores() map[string]func() AuthFactorKV {
+	return map[string]func() AuthFactorKV{
+		"single-key guards": func() AuthFactorKV { return newAFMockKV() },
+		"batch":             func() AuthFactorKV { return kvstoretest.NewGuardedMemoryStore() },
+	}
+}
+
+// factorStores adds to guardedFactorStores the two shapes an unconditional
+// add also runs on: the batch without single-key guards, and a store with no
+// guarded write at all.
+func factorStores() map[string]func() AuthFactorKV {
+	stores := guardedFactorStores()
+	stores["batch only"] = func() AuthFactorKV {
+		store := kvstoretest.NewGuardedMemoryStore()
+		return batchOnlyFactorKV{AuthFactorKV: store, batch: store}
+	}
+	stores["unguarded"] = func() AuthFactorKV { return unguardedFactorKV{newAFMockKV()} }
+	return stores
+}
+
+// unguardedFactorKV hides every guarded write of the store it wraps.
+type unguardedFactorKV struct{ AuthFactorKV }
+
+// batchOnlyFactorKV offers the multi-guarded batch and no single-key guard.
+type batchOnlyFactorKV struct {
+	AuthFactorKV
+	batch factorBatchStore
+}
+
+var _ factorBatchStore = batchOnlyFactorKV{}
+
+func (b batchOnlyFactorKV) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return b.batch.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+// assertFactorIntact fails unless factor id is still the active factor of
+// userID holding credential, and still the one its credential logs in as.
+func assertFactorIntact(t *testing.T, svc UserAuthFactorServicer, id string, userID uint64, credential string) {
+	t.Helper()
+	ctx := context.Background()
+	got, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get %s: %v, want the original factor", id, err)
+	}
+	if got.UserID != userID || string(got.Credential) != credential || got.RevokedAt != nil {
+		t.Fatalf("factor %s = user %d credential %q revoked %v, want user %d credential %q active",
+			id, got.UserID, got.Credential, got.RevokedAt, userID, credential)
+	}
+	login, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte(credential))
+	if err != nil || login.ID != id {
+		t.Fatalf("login with %q = %+v, %v, want factor %s", credential, login, err, id)
+	}
+}
+
+// TestAdd_existingIDIsRefusedAndTheOriginalSurvives covers an in-process
+// caller naming a factor ID already in use: the add is refused with
+// FactorAlreadyExistsError before it writes, so it neither overwrites the
+// original nor, once refused, deletes it.
+func TestAdd_existingIDIsRefusedAndTheOriginalSurvives(t *testing.T) {
+	for storeName, newStore := range factorStores() {
+		for userName, user := range map[string]uint64{"same user": 1, "other user": 2} {
+			t.Run(storeName+"/"+userName, func(t *testing.T) {
+				ctx := context.Background()
+				svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{KV: newStore()})
+				if err != nil {
+					t.Fatalf("NewUserAuthFactorService: %v", err)
+				}
+				if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k1"))); err != nil {
+					t.Fatalf("first Add: %v", err)
+				}
+
+				err = svc.Add(ctx, user, mtlsFactor("a", user, []byte("k2")))
+				var exists *auth.FactorAlreadyExistsError
+				if !errors.As(err, &exists) || exists.FactorID != "a" {
+					t.Fatalf("Add for user %d reusing ID a = %v, want FactorAlreadyExistsError{a}", user, err)
+				}
+				assertFactorIntact(t, svc, "a", 1, "k1")
+				if _, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte("k2")); !errors.Is(err, auth.ErrFactorNotFound) {
+					t.Fatalf("login with the refused credential = %v, want ErrFactorNotFound", err)
+				}
+			})
+		}
+	}
+}
+
+// TestAdd_conditionalReusingAnIDIsRefused is the same refusal through
+// AddConditional: a stale condition used to fail after the add had
+// overwritten the primary record, and its release then deleted the original.
+func TestAdd_conditionalReusingAnIDIsRefused(t *testing.T) {
+	for storeName, newStore := range guardedFactorStores() {
+		t.Run(storeName, func(t *testing.T) {
+			ctx := context.Background()
+			svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{KV: newStore()})
+			if err != nil {
+				t.Fatalf("NewUserAuthFactorService: %v", err)
+			}
+			if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k1"))); err != nil {
+				t.Fatalf("first Add: %v", err)
+			}
+			version, err := svc.FactorSetVersion(ctx, 1)
+			if err != nil {
+				t.Fatalf("FactorSetVersion: %v", err)
+			}
+
+			stale := version + 1
+			_, err = svc.AddConditional(ctx, 1, mtlsFactor("a", 1, []byte("k2")), auth.FactorAddCondition{ExpectedVersion: &stale})
+			if !errors.Is(err, auth.ErrFactorAlreadyExists) {
+				t.Fatalf("AddConditional reusing ID a = %v, want ErrFactorAlreadyExists", err)
+			}
+			assertFactorIntact(t, svc, "a", 1, "k1")
+		})
+	}
+}
+
+// TestRotate_toAnIDInUseIsRefusedWithoutTheBatch covers the rotation a store
+// with only single-key guards writes one record at a time: a new factor that
+// names an ID in use -- another factor's, or the old factor's own -- is
+// refused before anything is written.
+func TestRotate_toAnIDInUseIsRefusedWithoutTheBatch(t *testing.T) {
+	for _, newID := range []string{"b", "a"} {
+		t.Run(newID, func(t *testing.T) {
+			svc, _ := newTestUserAuthFactorService(t, nil)
+			ctx := context.Background()
+			for _, f := range []*auth.AuthFactor{mtlsFactor("a", 1, []byte("k1")), mtlsFactor("b", 1, []byte("k2"))} {
+				if err := svc.Add(ctx, 1, f); err != nil {
+					t.Fatalf("Add %s: %v", f.ID, err)
+				}
+			}
+
+			err := svc.Rotate(ctx, "a", mtlsFactor(newID, 1, []byte("k3")))
+			var exists *auth.FactorAlreadyExistsError
+			if !errors.As(err, &exists) || exists.FactorID != newID {
+				t.Fatalf("Rotate to ID %s = %v, want FactorAlreadyExistsError{%s}", newID, err, newID)
+			}
+			assertFactorIntact(t, svc, "a", 1, "k1")
+			assertFactorIntact(t, svc, "b", 1, "k2")
+		})
 	}
 }
 

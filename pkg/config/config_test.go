@@ -22,6 +22,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
 
 // validYAML is a well-formed configuration that passes all validation rules.
@@ -1120,6 +1123,77 @@ func TestValidate_LeaseZeroValues_Allowed(t *testing.T) {
 	cfg.Lease.CheckInterval = 0
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: Lease zero values should be valid, got %v", err)
+	}
+}
+
+func TestLeaseCheckpointDefaultsAreTheLeasePackagesDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	interval, err := cfg.Lease.CheckpointIntervalDuration()
+	if err != nil || interval != lease.DefaultCheckpointInterval {
+		t.Fatalf("checkpoint interval = %v, %v; want %v", interval, err, lease.DefaultCheckpointInterval)
+	}
+	grace, err := cfg.Lease.FailoverGraceDuration()
+	if err != nil || grace != lease.DefaultFailoverGrace {
+		t.Fatalf("failover grace = %v, %v; want %v", grace, err, lease.DefaultFailoverGrace)
+	}
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("Validate with the defaults: %v", err)
+	}
+}
+
+func TestValidate_LeaseCheckpoint(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		field  string // empty means valid
+	}{
+		{"interval_ok", func(c *Config) { c.Lease.CheckpointInterval = "250ms" }, ""},
+		{"interval_default", func(c *Config) { c.Lease.CheckpointInterval = "5m" }, ""},
+		{"interval_max", func(c *Config) { c.Lease.CheckpointInterval = "1h" }, ""},
+		{"interval_zero", func(c *Config) { c.Lease.CheckpointInterval = "0s" }, "lease.checkpoint_interval"},
+		{"interval_negative", func(c *Config) { c.Lease.CheckpointInterval = "-1s" }, "lease.checkpoint_interval"},
+		{"interval_over_max", func(c *Config) { c.Lease.CheckpointInterval = "61m" }, "lease.checkpoint_interval"},
+		{"interval_garbage", func(c *Config) { c.Lease.CheckpointInterval = "soon" }, "lease.checkpoint_interval"},
+		{"grace_zero_ok", func(c *Config) { c.Lease.FailoverGrace = "0s" }, ""},
+		{"grace_ok", func(c *Config) { c.Lease.FailoverGrace = "30s" }, ""},
+		{"grace_negative", func(c *Config) { c.Lease.FailoverGrace = "-1s" }, "lease.failover_grace"},
+		{"grace_over_max", func(c *Config) { c.Lease.FailoverGrace = "2h" }, "lease.failover_grace"},
+		{"grace_garbage", func(c *Config) { c.Lease.FailoverGrace = "later" }, "lease.failover_grace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.field == "" {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			var ve *ValidationError
+			if !errors.As(err, &ve) || ve.Field != tc.field {
+				t.Fatalf("Validate error = %v, want a ValidationError on %s", err, tc.field)
+			}
+		})
+	}
+}
+
+func TestLoad_LeaseCheckpointKeys(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+lease:
+  checkpoint_interval: 500ms
+  failover_grace: 12s
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, _ := cfg.Lease.CheckpointIntervalDuration(); got != 500*time.Millisecond {
+		t.Fatalf("checkpoint interval = %v, want 500ms", got)
+	}
+	if got, _ := cfg.Lease.FailoverGraceDuration(); got != 12*time.Second {
+		t.Fatalf("failover grace = %v, want 12s", got)
 	}
 }
 

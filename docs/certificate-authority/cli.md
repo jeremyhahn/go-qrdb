@@ -1,6 +1,6 @@
 # Certificate Authority — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 Command group: `qrdb ca` — post-init Certificate Authority operations. **This
 is the canonical CA surface; it replaces the legacy `certs` group.**
@@ -63,6 +63,48 @@ be the username, and it must name your tenant.
 ```bash
 qrdb ca enroll --username alice --cert alice.pem --chain issuing-ca.pem
 ```
+
+## `qrdb ca delegate`
+
+Issue a **delegation**: a short-lived client certificate, signed by your
+tenant's own CA, that lets an embedding application's service principal act
+inside your tenant with the permissions you name. A request made under it holds
+the delegated scope **intersected** with the permissions the application grants
+its principal, so a delegation can narrow that authority but never widen it.
+Needs `certs:delegate`, which the built-in Admin and SO roles grant. The platform
+operator cannot issue one for your tenant: only your own tenant delegates.
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--principal` | string | — | required; the service principal, `[a-z0-9][a-z0-9._-]*`, at most 64 bytes |
+| `--scope` | strings | — | required; permissions delegated, repeated or comma-separated (`kv:get,kv:put`) |
+| `--csr` | string | — | the principal's PEM certificate signing request |
+| `--ttl` | string | `1h` | lifetime; at most `24h` |
+| `--out` | string | — | output directory for `cert.pem` (and `key.pem` when the key is generated here) |
+
+As with `ca issue`, **with `--csr`** the key stays wherever the CSR was made,
+and **without** it the CLI generates an ECDSA P-256 key on this machine and
+writes `key.pem` and `cert.pem` to `--out`, which is then required. Without
+`--out` the certificate is printed with its principal, scope, serial and
+expiry, or as JSON or YAML with `--output json|yaml`.
+
+```bash
+qrdb ca delegate --principal billing --scope kv:get,kv:put --csr billing.csr --out ./billing
+qrdb ca delegate --principal billing --scope kv:get --ttl 15m --out ./billing
+```
+
+Hand `cert.pem` to the application; it presents it as its client certificate.
+The application's node must be configured to accept delegations for that
+principal, and one it does not recognise is refused. A delegation expires on
+its own at the end of `--ttl`; to end it sooner, revoke it by the printed
+serial with `qrdb ca revoke --serial`. It is listed by `qrdb ca list` like any
+certificate your CA issued.
+
+Refused with an invalid-argument error: a principal named for a built-in
+role (`so`, `admin`, `operator`, `user`, `auditor`), a permission the server does not know, a repeated
+permission, more than 64 permissions, or a `--ttl` over `24h`. Refused with a
+permission error: a caller in the `system` tenant, and a caller that is itself
+authenticated by a delegation.
 
 ## `qrdb ca csr`
 
@@ -155,7 +197,7 @@ cannot tell the two apart on its own.
 
 ### Which certificates you may act on
 
-`issue` and `enroll` act on your own tenant and name no other. `revoke` and
+`issue`, `enroll` and `delegate` act on your own tenant and name no other. `revoke` and
 `list` are authorized against the tenant the COMMAND reaches, not the tenant
 your credential is in:
 
@@ -213,7 +255,7 @@ That route exists only when a bootstrap certificate is configured — see
 
 ## When the barrier is sealed
 
-`issue`, `revoke`, `export-bundle` and `list` all fail with a
+`issue`, `delegate`, `revoke`, `export-bundle` and `list` all fail with a
 barrier-sealed error, because the CA private key is destroyed in memory on seal.
 Unseal first: [../barrier-seal/cli.md](../barrier-seal/cli.md).
 

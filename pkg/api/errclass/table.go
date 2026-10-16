@@ -87,6 +87,12 @@ var dominantRules = []rule{
 	// (a lost leader, a missing record), so it wins over the cause it wraps.
 	memberIdentityRule,
 
+	// A database create ran out of the service's own create deadline. Every
+	// step it had completed was rolled back, so it is retryable whatever the
+	// step the deadline cut short reported -- a proposal timeout, or a fence
+	// write's failure in its own type -- and the refusal wins over that cause.
+	as(&service.DatabaseCreateTimeoutError{Name: "app", Err: &database.KeyspaceFenceError{Name: "app", TenantID: "acme", Err: context.DeadlineExceeded}}, Unavailable),
+
 	// A relational table written under a key layout that predates table
 	// generations and index incarnations (v0.20.0 through v0.21.0) is refused
 	// until it is dropped and re-created (go-qrdb#547): a precondition only the
@@ -755,6 +761,7 @@ var clusterJoinTokenRules = []rule{
 	// domain bound): the node was never built or set up for this.
 	as(&service.ClusterJoinTokenNotConfiguredError{}, Unimplemented),
 	as(&service.MemberPromotionUnsupportedError{}, Unimplemented),
+	as(&service.ReplicaStateHashesUnsupportedError{}, Unimplemented),
 	as(&service.ReplicaStateUnsupportedError{}, Unimplemented),
 	as(&service.ReplicaStateReadUnsupportedError{}, Unimplemented),
 	as(&service.StateMachineHashUnsupportedError{}, Unimplemented),
@@ -938,6 +945,11 @@ var onboardingRules = []rule{
 	// way, and every transport renders it as a permission refusal, not an
 	// internal error.
 	as(&service.CertTargetRefusedError{}, PermissionDenied),
+	// A delegation the tenant may not issue is the request's fault; a caller
+	// that may not delegate at all -- the system tenant, or a delegated
+	// caller renewing itself -- is refused permission.
+	as(&service.DelegationRequestError{}, InvalidArgument),
+	as(&service.DelegationDeniedError{}, PermissionDenied),
 	as(&service.TenantOnboardingFieldError{}, InvalidArgument),
 	as(&service.TenantOnboardingNotConfiguredError{}, Unimplemented),
 	as(&bootstrap.MissingAdminCredentialError{}, InvalidArgument),
@@ -1102,6 +1114,12 @@ var userAuthFactorRules = []rule{
 	// caller forces it or enrols another.
 	is(auth.ErrLastFactor, FailedPrecondition),
 	is(auth.ErrFactorAlreadyExists, AlreadyExists),
+	// A conditional add refused because its condition no longer holds is the
+	// same answer as a duplicate: the state the caller wanted to create
+	// already exists in another form. Contention on the factor-set record is
+	// the optimistic-concurrency answer -- nothing changed, retry.
+	is(auth.ErrFactorConditionFailed, AlreadyExists),
+	is(service.ErrFactorSetContended, Aborted),
 	is(auth.ErrFactorTypeUnsupported, InvalidArgument),
 	is(auth.ErrInvalidFactor, InvalidArgument),
 	// No caller may write the server-owned metadata namespace over any
@@ -1298,10 +1316,40 @@ var migrationRules = []rule{
 // its cause is still reported as itself, and before the generic wrappers, so
 // a propose or read that failed BECAUSE the caller gave up is reported as
 // that rather than as a server fault.
+//
+// quicraft reports a proposal or read the caller cancelled as its own
+// sentinel, so that is the same condition and gets the same answer. Its
+// timeout sentinel is not here: dataPlaneRules answers it as Unavailable,
+// because it most often means an election, not the caller's deadline.
 var contextRules = []rule{
 	is(context.Canceled, Canceled),
 	is(context.DeadlineExceeded, DeadlineExceeded),
+	is(quicraft.ErrCanceled, Canceled),
 }
+
+// raftTransientRules are the consensus layer's refusals that clear on their
+// own -- rate limiting, a dropped or aborted proposal, a shard still coming
+// up, a replica that is not the leader -- exactly the set quicraft.Temporary
+// names. dataPlaneRules claims the timeout Temporary also covers, as the same
+// Unavailable. They sit before the generic wrappers they arrive in, so the caller is
+// told to retry instead of being handed a server fault.
+var raftTransientRules = []rule{{
+	name: "quicraft.Temporary",
+	classify: func(err error) (Class, bool) {
+		return Unavailable, quicraft.Temporary(err)
+	},
+	samples: []error{
+		quicraft.ErrBusy,
+		quicraft.ErrSystemBusy,
+		quicraft.ErrAborted,
+		quicraft.ErrDropped,
+		quicraft.ErrShardNotStarted,
+		quicraft.ErrShardNotReady,
+		quicraft.ErrNotLeader,
+		quicraft.ErrReadIndexNotReady,
+		quicraft.ErrSnapshotInProgress,
+	},
+}}
 
 // genericRules are the wrappers a failure is REPORTED THROUGH. Each is a
 // server fault, and each comes last so that whatever more specific condition

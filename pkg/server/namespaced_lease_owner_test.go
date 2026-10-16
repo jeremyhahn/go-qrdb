@@ -291,3 +291,71 @@ func TestNamespacedLease_NoMVCCRefusesGrant(t *testing.T) {
 		t.Fatalf("Grant without an MVCC engine = %v, want *service.CapabilityUnsupportedError", err)
 	}
 }
+
+// followerLessor is sharedLessor seen from a node whose replica does not lead
+// the shard: the lease and its keys are replicated, but only the leader
+// answers the remaining TTL.
+type followerLessor struct{ *sharedLessor }
+
+func (f followerLessor) TimeToLive(ctx context.Context, id int64) (*lease.Lease, error) {
+	l, err := f.sharedLessor.TimeToLive(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return nil, &service.LeaseTTLNotLeaderError{
+		NotLeaderError: service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:9100"},
+		Lease:          l,
+	}
+}
+
+// TestNamespacedLease_FollowerForwardsOnlyItsOwnLeases pins review 5188 at the
+// namespaced view: on a follower, the owner's TimeToLive is the leader's
+// refusal for the transport to forward, with the lease presented within the
+// namespace; another namespace's lease is not found there, as on the leader,
+// so the refusal never says it exists; and ownership, being replicated, still
+// admits the owner's KeepAlive and Revoke.
+func TestNamespacedLease_FollowerForwardsOnlyItsOwnLeases(t *testing.T) {
+	lessor := newSharedLessor()
+	follower := followerLessor{lessor}
+	acme := newNamespacedLeaseService(follower, lessor, "acme/app/")
+	globex := newNamespacedLeaseService(follower, lessor, "globex/app/")
+	ctx := context.Background()
+
+	granted, err := acme.Grant(ctx, 30)
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	id := granted.ID
+	if _, err := lessor.PutWithLease(ctx, "acme/app/k", nil, id); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := acme.TimeToLive(ctx, id)
+	var stale *service.LeaseTTLNotLeaderError
+	if l != nil || !errors.As(err, &stale) {
+		t.Fatalf("owner TimeToLive on a follower = %+v, %v; want *service.LeaseTTLNotLeaderError", l, err)
+	}
+	if stale.LeaderAddress != "10.0.0.2:9100" {
+		t.Fatalf("refusal leader = %q, want 10.0.0.2:9100", stale.LeaderAddress)
+	}
+	if stale.Lease == nil || len(stale.Lease.Keys) != 1 || !bytes.Equal(stale.Lease.Keys[0], []byte("k")) {
+		t.Fatalf("refusal lease = %+v, want the lease with only its key within the namespace", stale.Lease)
+	}
+
+	var notFound *service.LeaseNotFoundError
+	if _, err := globex.TimeToLive(ctx, id); !errors.As(err, &notFound) {
+		t.Fatalf("another tenant's TimeToLive on a follower = %v, want *service.LeaseNotFoundError", err)
+	}
+	if _, err := globex.KeepAlive(ctx, id); !errors.As(err, &notFound) {
+		t.Fatalf("another tenant's KeepAlive on a follower = %v, want *service.LeaseNotFoundError", err)
+	}
+	if _, err := acme.KeepAlive(ctx, id); err != nil {
+		t.Fatalf("owner KeepAlive on a follower: %v", err)
+	}
+	if err := acme.Revoke(ctx, id); err != nil {
+		t.Fatalf("owner Revoke on a follower: %v", err)
+	}
+	if _, err := lessor.TimeToLive(ctx, id); !errors.As(err, &notFound) {
+		t.Fatalf("owner Revoke on a follower left the lease: %v", err)
+	}
+}

@@ -52,7 +52,7 @@ func TestRetrieveCredential_Barrier_EmptyName(t *testing.T) {
 	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.RetrieveCredential(context.Background(), "")
+	_, err = svc.retrieveBytes(context.Background(), "")
 	assert.ErrorIs(t, err, ErrEmptyCredentialName)
 }
 
@@ -82,7 +82,7 @@ func TestSubmitCredential_Barrier_StoresDelegation(t *testing.T) {
 	err = svc.SubmitCredential(ctx, "api-token", []byte("tok123"))
 	require.NoError(t, err)
 
-	got, err := svc.RetrieveCredential(ctx, "api-token")
+	got, err := svc.retrieveBytes(ctx, "api-token")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("tok123"), got)
 }
@@ -97,7 +97,7 @@ func TestRetrieveCredential_Manual_BlocksAndTimesOut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 
-	_, err = svc.RetrieveCredential(ctx, "never-stored-timeout")
+	_, err = svc.retrieveBytes(ctx, "never-stored-timeout")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
@@ -115,6 +115,6 @@ func TestDeleteCredential_Manual_AfterDelete_RetrieveBlocks(t *testing.T) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 	defer cancel()
 
-	_, err = svc.RetrieveCredential(timeoutCtx, "transient")
+	_, err = svc.retrieveBytes(timeoutCtx, "transient")
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }

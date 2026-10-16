@@ -22,8 +22,8 @@ import (
 	"strconv"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -33,7 +33,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -458,30 +457,28 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}()
 
 	// Sequence the boot so the seal barrier is constructed and unsealed
-	// before the data-plane PebbleDB is opened. This is required because
+	// before the data-plane store is opened. This is required because
 	// the encrypting FS in pkg/seal/encfs uses the barrier as a KEK to
-	// wrap each file's per-file DEK; opening the database against a
-	// sealed barrier would surface seal.ErrSealed during sstable
-	// loading. The memory and file backends are unaffected because they
-	// do not interact with vfs.FS at all.
+	// wrap each file's per-file DEK; opening an on-disk store against a
+	// sealed barrier would surface seal.ErrSealed. The memory backend is
+	// unaffected because it holds nothing at rest.
 	var (
 		barrierSvc      service.BarrierServicer
-		dataPlaneFS     vfs.FS
+		enc             *atrest.Encryptor
 		barrierConfigOK = config.Barrier != nil
 	)
 	if barrierConfigOK {
-		svc, fs, err := srv.setupBarrier(ctx, config, backendType, logger)
+		svc, e, err := srv.setupBarrier(ctx, config, backendType, logger)
 		if err != nil {
 			return nil, err
 		}
 		barrierSvc = svc
-		dataPlaneFS = fs
+		enc = e
 	}
 
-	// Create storage backend. dataPlaneFS is non-nil only for the
-	// pebble backend with an unsealed barrier; in every other case the
-	// pebble open path falls back to vfs.Default.
-	stg, pdb, err := createServerStorage(backendType, config.DataDir, dataPlaneFS)
+	// Create storage backend. enc is non-nil only for an on-disk backend
+	// with an unsealed barrier; in every other case the store is plaintext.
+	stg, pdb, err := createServerStorage(backendType, config.DataDir, enc)
 	if err != nil {
 		srv.closeSeal()
 		return nil, err
@@ -720,12 +717,10 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 
 // createServerStorage creates the appropriate storage backend and returns
 // the storage interface along with an optional *pebble.DB handle (non-nil
-// for pebble backends). When dataPlaneFS is non-nil it is wired into the
-// pebble backend's vfs.FS so all on-disk I/O is proxied through it. The
-// memory and file backends ignore dataPlaneFS — encfs is a no-op for an
-// in-memory store, and the file backend does not run through Pebble.
-func createServerStorage(backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS) (storage.Storage, *pebble.DB, error) {
-	stg, pdb, err := lifecycle.NewLocalStorage(backendType, dataDir, dataPlaneFS, qrdbconfig.ObjstoreConfig{})
+// for pebble backends). A non-nil enc encrypts the on-disk backends at rest
+// (see lifecycle.NewLocalStorage).
+func createServerStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor) (storage.Storage, *pebble.DB, error) {
+	stg, pdb, err := lifecycle.NewLocalStorage(backendType, dataDir, enc, qrdbconfig.ObjstoreConfig{})
 	if err != nil {
 		var unsupported *lifecycle.UnsupportedLocalBackendError
 		if errors.As(err, &unsupported) {
@@ -751,8 +746,8 @@ func createServerEngine(backendType database.BackendType, stg storage.Storage, p
 // setupBarrier opens the seal sub-store, builds the seal barrier with
 // the configured strategy chain, writes / validates the format-version
 // sentinel, and (when AutoUnseal is requested) initializes or unseals
-// the barrier so the data-plane PebbleDB can be opened behind the
-// encrypting FS. The returned vfs.FS is non-nil only when the disk
+// the barrier so the data-plane store can be opened behind the
+// encrypting FS. The returned encryptor is non-nil only when an on-disk
 // backend is selected and the barrier ended in the unsealed state.
 //
 // On error the seal sub-store is closed before returning so the caller
@@ -762,7 +757,7 @@ func (s *Server) setupBarrier(
 	config *ServerConfig,
 	backendType database.BackendType,
 	logger *slog.Logger,
-) (service.BarrierServicer, vfs.FS, error) {
+) (service.BarrierServicer, *atrest.Encryptor, error) {
 	sealDir := filepath.Join(config.DataDir, "seal")
 	// SyncWrites is forced on: this store is the sole persisted copy of the
 	// root-key blob and epoch/rotation state, not a Raft-replicated store,
@@ -980,32 +975,28 @@ func (s *Server) setupBarrier(
 		}
 	}
 
-	// Build the data-plane FS only when the pebble backend is in use
-	// and the barrier reached the unsealed state. For memory / file
-	// backends the wrap is a no-op; we return nil so the storage
-	// constructor takes the default path.
-	var dataPlaneFS vfs.FS
-	if backendType == database.BackendPebble {
+	// An on-disk backend writes through the barrier's encrypting file
+	// system, which needs the barrier unsealed; the memory backend holds
+	// nothing at rest and gets no encryptor.
+	var enc *atrest.Encryptor
+	if onDiskBackends[backendType] {
 		if barrier.IsSealed() {
 			_ = sealStore.Close()
 			s.sealStore = nil
 			s.barrier = nil
 			return nil, nil, &embedded.BarrierSealedError{Err: seal.ErrSealed}
 		}
-		dataPlaneFS = encfs.New(vfs.Default, barrier)
-		if dataPlaneFS == nil {
-			// encfs.New returns nil when the barrier is nil, which can
-			// only happen here on a programming error; surface it as
-			// a typed barrier-create failure rather than panicking on
-			// a downstream nil FS.
-			_ = sealStore.Close()
-			s.sealStore = nil
-			s.barrier = nil
-			return nil, nil, &BarrierCreateError{Err: errors.New("encfs.New returned nil")}
-		}
+		enc = atrest.New(barrier)
 	}
 
-	return service.NewBarrierService(barrier), dataPlaneFS, nil
+	return service.NewBarrierService(barrier), enc, nil
+}
+
+// onDiskBackends are the backends whose store lives in files under the data
+// directory, and so is encrypted at rest under the barrier.
+var onDiskBackends = map[database.BackendType]bool{
+	database.BackendPebble: true,
+	database.BackendFile:   true,
 }
 
 // runAutoUnseal initializes (on a fresh seal sub-store) or unseals (on

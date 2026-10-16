@@ -53,7 +53,9 @@ type TenantOnboardingServicer interface {
 	// own Key B CA, or AdminCertPEM verified against the anchors. Every input
 	// that can be refused is judged before anything is written, and a later
 	// failure undoes what was created (bootstrap.ProvisionTenant, exclusive).
-	// It returns the admin's certificate, never a key.
+	// It returns the admin's certificate, never a key. The service bounds
+	// the onboarding itself (DefaultTenantOnboardingTimeout); a caller's
+	// sooner deadline still applies.
 	OnboardTenant(ctx context.Context, req *OnboardTenantRequest) (*OnboardTenantResult, error)
 }
 
@@ -120,9 +122,21 @@ type TenantOnboardingService struct {
 	logger      *slog.Logger
 	audit       audit.AuditLogger
 	auditPolicy audit.FailurePolicy
+	timeout     time.Duration
 	barrierPins bootstrap.FirstAdminPinner
 	clientTrust ClientTrustRefresher
 }
+
+// DefaultTenantOnboardingTimeout bounds an onboarding from the service's
+// side, whatever transport carried it, so a cluster that cannot commit still
+// answers a caller that set no deadline of its own. It is sized for a
+// sequence of consensus rounds, not one: the tenant record, its pool
+// reservation and barrier, then the tenant's roles, its admin's account and
+// the certificate binding. Expiry is not a cheap refusal: exclusive
+// provisioning undoes what it wrote, and undoing deletes the tenant, which
+// retires its id for good, so a budget sized for a single read turns a slow
+// host into a lost tenant id.
+const DefaultTenantOnboardingTimeout = 60 * time.Second
 
 // ClientTrustRefresher rebuilds the client-certificate trust this node's
 // handshakes check, returning once the rebuilt trust is the one they read.
@@ -159,6 +173,9 @@ type TenantOnboardingDeps struct {
 	// AuditPolicy is the node's audit failure posture for OnboardTenant's
 	// gating record. The zero value, audit.FailClosed, is the default.
 	AuditPolicy audit.FailurePolicy
+	// Timeout bounds each OnboardTenant. Zero or negative uses
+	// DefaultTenantOnboardingTimeout.
+	Timeout time.Duration
 	// BarrierAnchors pins a pending first admin's thumbprint as the tenant
 	// barrier's epoch-1 anchor (bootstrap.Dependencies.BarrierAnchors). Nil
 	// pins nothing, which is right only for a node whose tenant service claims
@@ -174,7 +191,12 @@ type TenantOnboardingDeps struct {
 
 // NewTenantOnboardingService returns the production TenantOnboardingServicer.
 func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingService {
+	timeout := deps.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTenantOnboardingTimeout
+	}
 	return &TenantOnboardingService{
+		timeout:     timeout,
 		tenants:     deps.Tenants,
 		users:       deps.Users,
 		roles:       deps.Roles,
@@ -266,7 +288,12 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		TrustDomain:    s.trustDomain,
 		Logger:         s.logger,
 	}
-	result, err := bootstrap.ProvisionTenant(ctx, bootstrap.TenantProvisionConfig{
+	// The service bounds the provisioning; the caller's sooner deadline still
+	// applies. The audit outcome is settled on its own bound, so an
+	// onboarding the deadline cut short is still recorded.
+	provisionCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	result, err := bootstrap.ProvisionTenant(provisionCtx, bootstrap.TenantProvisionConfig{
 		TenantID:        req.ID,
 		DisplayName:     req.Name,
 		Isolation:       isolation,

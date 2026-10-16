@@ -622,7 +622,11 @@ func TestAll_TotalCount(t *testing.T) {
 	//   (docs/audit/architecture.md#cluster-wide-replicated-trail) = 387 total.
 	// + 1 admin:replica_state, the cross-scope read of each replica's applied
 	//   index and state-machine hash on the answering node = 388 total.
-	const expectedTotal = 388
+	// + 1 admin:state_hash, every local replica's applied index and state
+	//   digest (docs/clustering/api.md#replica-state-hashes) = 389 total.
+	// + 1 certs:delegate, a tenant's own CA issuing a delegation certificate
+	//   to a service principal (ScopeTenantOnly) = 390 total.
+	const expectedTotal = 390
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

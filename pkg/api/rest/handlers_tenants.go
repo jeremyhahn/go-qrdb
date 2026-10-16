@@ -34,12 +34,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// tenantRequestTimeout bounds every tenant endpoint so a stalled Raft
-// SyncRead never hangs the GUI. 5s is generous — the underlying kv ops
-// should return in milliseconds on a healthy cluster; if they don't,
-// something is wrong and the UI needs to hear about it, not wait forever.
-const tenantRequestTimeout = 5 * time.Second
-
 // ---------------------------------------------------------------------------
 // Tenant request/response types
 // ---------------------------------------------------------------------------
@@ -247,9 +241,9 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
-	result, err := s.tenantOnboarding.OnboardTenant(ctx, &service.OnboardTenantRequest{
+	// Onboarding is bounded by the service's own deadline, the same on every
+	// transport.
+	result, err := s.tenantOnboarding.OnboardTenant(r.Context(), &service.OnboardTenantRequest{
 		ID:                req.ID,
 		Name:              req.Name,
 		IsolationType:     req.IsolationType,
@@ -290,8 +284,7 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	tenants, err := s.tenantSvc.ListTenants(ctx)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -333,8 +326,7 @@ func (s *Server) handleListDeletedTenants(w http.ResponseWriter, r *http.Request
 		pageSize = n
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	page, err := s.tenantSvc.ListDeletedTenants(ctx, r.URL.Query().Get("page_token"), pageSize)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -352,8 +344,7 @@ func (s *Server) handleReconcileDeletedTenants(w http.ResponseWriter, r *http.Re
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	report, err := s.tenantSvc.ReconcileDeletedTenants(ctx)
 	// A pass that failed only for some ids answers 200 with its report, whose
 	// failed list names them; only a guard failure is an error status.
@@ -552,8 +543,7 @@ func (s *Server) authorizeTenantRequest(w http.ResponseWriter, id string, decide
 
 // handleGetTenant handles GET /v1/tenants/{id} -- retrieves a tenant by ID.
 func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request, id string) {
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsRead) {
 		return
 	}
@@ -568,8 +558,7 @@ func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request, id stri
 
 // handleDeleteTenant handles DELETE /v1/tenants/{id} -- removes a tenant.
 func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request, id string) {
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsDelete) {
 		return
 	}
@@ -591,8 +580,7 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	patch := tenant.TenantPatch{
 		Name:          req.Name,
 		IsolationType: req.IsolationType,
@@ -641,8 +629,7 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 		MaxDedicatedWALGroups: req.MaxDedicatedWALGroups,
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsSetQuotas) {
 		return
 	}
@@ -674,8 +661,7 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 		AllowedVolumePools:        req.AllowedVolumePools,
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsSetEntitlements) {
 		return
 	}
@@ -767,9 +753,7 @@ func writeAuthzErrorJSON(w http.ResponseWriter, err error) {
 // POST /v1/tenants/{id}/barrier/init/begin -- issues the nonce init/complete
 // must sign, bound to this connection's TLS exporter.
 func (s *Server) handleTenantBarrierInitBegin(w http.ResponseWriter, r *http.Request, id string) {
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
-	challenge, err := s.beginTenantBarrierInit(ctx, id)
+	challenge, err := s.beginTenantBarrierInit(r.Context(), id)
 	if err != nil {
 		writeAuthzErrorJSON(w, err)
 		return
@@ -800,8 +784,10 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 	// deferred wipe covers every exit path including the error ones.
 	defer secure.Wipe(req.Passphrase)
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	// Like every tenant endpoint, initialization is bounded by the caller's
+	// deadline alone, as on every other transport: it is a sequence of Raft
+	// proposals that a fixed per-request bound would end part-way.
+	ctx := r.Context()
 	proof := &authmw.TenantBarrierInitProof{Nonce: req.Nonce, PublicKey: req.PublicKey, Signature: req.Signature}
 	if err := s.authorizeTenantBarrierInit(ctx, id, proof); err != nil {
 		writeAuthzErrorJSON(w, err)
@@ -855,8 +841,7 @@ func (s *Server) handleTenantBarrierUnseal(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
 		writeAuthzErrorJSON(w, err)
 		return
@@ -873,8 +858,7 @@ func (s *Server) handleTenantBarrierUnseal(w http.ResponseWriter, r *http.Reques
 // seals the per-tenant barrier. The endpoint takes no body. Returns 204
 // No Content on success.
 func (s *Server) handleTenantBarrierSeal(w http.ResponseWriter, r *http.Request, id string) {
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierSeal); err != nil {
 		writeAuthzErrorJSON(w, err)
 		return
@@ -892,8 +876,7 @@ func (s *Server) handleTenantBarrierSeal(w http.ResponseWriter, r *http.Request,
 // for the per-tenant barrier. Returns 200 OK with a JSON-encoded
 // tenant.TenantBarrierStatus on success.
 func (s *Server) handleTenantBarrierStatus(w http.ResponseWriter, r *http.Request, id string) {
-	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
-	defer cancel()
+	ctx := r.Context()
 	// Reading a tenant's barrier state leaks isolation metadata, so it is gated
 	// by the same tenant-scoped authorizer as init/unseal/seal: a tenant admin
 	// may read only their own tenant's barrier, and the system tenant is denied.

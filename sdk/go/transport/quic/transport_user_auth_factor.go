@@ -79,12 +79,13 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 		return nil, err
 	}
 	var raw struct {
-		Factor quicUserFactorRecord `json:"factor"`
+		Factor           quicUserFactorRecord `json:"factor"`
+		FactorSetVersion uint64               `json:"factor_set_version"`
 	}
 	if err := json.Unmarshal(resp, &raw); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
-	return &transport.AuthFactorAddResponse{Factor: userFactorFromQUICWire(&raw.Factor)}, nil
+	return &transport.AuthFactorAddResponse{Factor: userFactorFromQUICWire(&raw.Factor), FactorSetVersion: raw.FactorSetVersion}, nil
 }
 
 // ListAuthFactors invokes userauthfactor.List via QUIC.
@@ -101,15 +102,17 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 		return nil, err
 	}
 	var raw struct {
-		Factors []quicUserFactorRecord `json:"factors"`
-		Total   int                    `json:"total"`
+		Factors          []quicUserFactorRecord `json:"factors"`
+		Total            int                    `json:"total"`
+		FactorSetVersion uint64                 `json:"factor_set_version"`
 	}
 	if err := json.Unmarshal(resp, &raw); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
 	out := transport.AuthFactorListResponse{
-		Factors: make([]transport.AuthFactorRecord, len(raw.Factors)),
-		Total:   raw.Total,
+		Factors:          make([]transport.AuthFactorRecord, len(raw.Factors)),
+		Total:            raw.Total,
+		FactorSetVersion: raw.FactorSetVersion,
 	}
 	for i := range raw.Factors {
 		out.Factors[i] = userFactorFromQUICWire(&raw.Factors[i])
@@ -161,10 +164,35 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	return &transport.AuthFactorRemoveResponse{Status: raw.Status}, nil
 }
 
+// DeleteAuthFactor sends "userauthfactor.Delete".
+func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	resp, err := t.call(ctx, "userauthfactor.Delete", payload)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(resp, &raw); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.AuthFactorDeleteResponse{Status: raw.Status}, nil
+}
+
 // RotateAuthFactor invokes userauthfactor.Rotate via QUIC.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := req.Validate(); err != nil {
+		return nil, &transport.RequestError{Method: "RotateAuthFactor", Err: err}
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {

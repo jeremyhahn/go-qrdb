@@ -19,9 +19,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
 
 // ---------------------------------------------------------------------------
@@ -151,6 +155,7 @@ func TestOpCodeConstants(t *testing.T) {
 		{"OpLeaseGrant", OpLeaseGrant, 40},
 		{"OpLeaseRevoke", OpLeaseRevoke, 41},
 		{"OpLeaseKeepAlive", OpLeaseKeepAlive, 42},
+		{"OpLeaseCheckpoint", OpLeaseCheckpoint, 43},
 		{"OpIndexCreate", OpIndexCreate, 50},
 		{"OpIndexDrop", OpIndexDrop, 51},
 		{"OpTSWrite", OpTSWrite, 60},
@@ -895,6 +900,87 @@ func TestLeaseKeepAliveRoundtrip(t *testing.T) {
 			}
 			if leaseID != tt.leaseID {
 				t.Errorf("leaseID = %d, want %d", leaseID, tt.leaseID)
+			}
+		})
+	}
+}
+
+func TestLeaseCheckpointRoundtrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		token uint64
+		index uint64
+		cps   []lease.Checkpoint
+	}{
+		{name: "one entry", token: 7, index: 42, cps: []lease.Checkpoint{{ID: 1, RemainingTTL: 3600}}},
+		{name: "a clear", token: 0, index: 1, cps: []lease.Checkpoint{{ID: 9, RemainingTTL: 0}}},
+		{name: "extremes", token: math.MaxUint64, index: math.MaxUint64, cps: []lease.Checkpoint{{ID: math.MaxInt64, RemainingTTL: math.MaxInt64}, {ID: math.MinInt64, RemainingTTL: -1}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := mustEncode(EncodeLeaseCheckpoint(tt.token, tt.index, tt.cps))
+			if encoded[0] != OpLeaseCheckpoint {
+				t.Fatalf("op byte = %d, want %d", encoded[0], OpLeaseCheckpoint)
+			}
+			cmd, err := DecodeCommand(encoded)
+			if err != nil {
+				t.Fatalf("DecodeCommand: %v", err)
+			}
+			token, index, cps, err := DecodeLeaseCheckpoint(cmd.Payload)
+			if err != nil {
+				t.Fatalf("DecodeLeaseCheckpoint: %v", err)
+			}
+			if token != tt.token {
+				t.Errorf("token = %d, want %d", token, tt.token)
+			}
+			if index != tt.index {
+				t.Errorf("index = %d, want %d", index, tt.index)
+			}
+			if !reflect.DeepEqual(cps, tt.cps) {
+				t.Errorf("entries = %v, want %v", cps, tt.cps)
+			}
+		})
+	}
+}
+
+func TestEncodeLeaseCheckpoint_RefusesBatchSize(t *testing.T) {
+	for _, n := range []int{0, MaxLeaseCheckpointBatch + 1} {
+		_, err := EncodeLeaseCheckpoint(1, 2, make([]lease.Checkpoint, n))
+		var ice *InvalidCommandError
+		if !errors.As(err, &ice) {
+			t.Fatalf("batch of %d: err = %v, want *InvalidCommandError", n, err)
+		}
+	}
+	if _, err := EncodeLeaseCheckpoint(1, 2, make([]lease.Checkpoint, MaxLeaseCheckpointBatch)); err != nil {
+		t.Fatalf("full batch: %v", err)
+	}
+}
+
+func TestDecodeLeaseCheckpoint_Errors(t *testing.T) {
+	valid := mustEncode(EncodeLeaseCheckpoint(1, 2, []lease.Checkpoint{{ID: 1, RemainingTTL: 2}}))[headerSize:]
+	zeroCount := make([]byte, leaseCheckpointHeader)
+	overCount := make([]byte, leaseCheckpointHeader)
+	binary.LittleEndian.PutUint32(overCount[16:], MaxLeaseCheckpointBatch+1)
+	tests := []struct {
+		name    string
+		payload []byte
+		wantMsg string
+	}{
+		{name: "short header", payload: valid[:leaseCheckpointHeader-1], wantMsg: "payload too short"},
+		{name: "zero count", payload: zeroCount, wantMsg: "batch size out of range"},
+		{name: "count over the bound", payload: overCount, wantMsg: "batch size out of range"},
+		{name: "truncated entry", payload: valid[:len(valid)-1], wantMsg: "count does not match payload"},
+		{name: "trailing bytes", payload: append(slices.Clone(valid), 0), wantMsg: "count does not match payload"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, _, err := DecodeLeaseCheckpoint(tt.payload)
+			var ice *InvalidCommandError
+			if !errors.As(err, &ice) {
+				t.Fatalf("err = %v, want *InvalidCommandError", err)
+			}
+			if !strings.Contains(ice.Reason, tt.wantMsg) {
+				t.Errorf("reason = %q, want substring %q", ice.Reason, tt.wantMsg)
 			}
 		})
 	}

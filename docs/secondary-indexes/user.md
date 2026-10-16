@@ -1,6 +1,6 @@
 # Secondary Indexes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 An index turns "find every user whose email is X" from a full scan into a
 lookup. Most of the time you do not create one by hand: you tag the field on
@@ -116,6 +116,34 @@ func (m Message) CompoundIndexes() []index.CompoundIndexDef {
 
 Now `ConversationID = ? AND Timestamp > ?` uses one index instead of one index
 plus a post-filter.
+
+**Store a secret key in an entity.** Declare the field as `dao.SecretBytes`
+and build the DAO with the MessagePack codec. The key stays in locked,
+protected memory, and you destroy it when you are done with it.
+
+```go
+type Credential struct {
+	ID    uint64          `msgpack:"id"`
+	Label string          `msgpack:"label"`
+	Key   dao.SecretBytes `msgpack:"key"`
+}
+
+credDAO, err := dao.New[*Credential](store, "creds", newCredential,
+	dao.WithCodec(dao.CodecMsgPack))
+
+key, err := dao.NewSecretBytes(raw) // raw is wiped
+err = credDAO.Save(ctx, &Credential{Label: "signing", Key: key})
+key.Destroy()
+
+got, err := credDAO.Get(ctx, id)
+defer got.Key.Destroy()
+err = got.Key.WithBytes(func(k []byte) error { return sign(k) })
+```
+
+Only MessagePack can carry the field. Every other codec, including the default
+JSON, refuses the entity type when the DAO is built. You also cannot index the
+field or query it through SQL. At rest the record is encrypted by the
+database's barrier, the same as any other value.
 
 ## Troubleshooting
 

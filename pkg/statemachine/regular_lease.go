@@ -115,6 +115,14 @@ func (r *RegularStateMachine) lookupLease(query interface{}) (interface{}, bool,
 		result, err := r.leaseManager.TimeToLive(q.ID)
 		return result, true, err
 
+	case *lease.LeaseKeepAliveQuery, lease.LeaseKeepAliveQuery,
+		*lease.LeaseCheckpointNowQuery, lease.LeaseCheckpointNowQuery:
+		// This state machine delegates leases to its LeaseManager and keeps no
+		// in-memory deadline to renew or checkpoint, so it is never the lease
+		// primary: the caller renews through the log, and has nothing to
+		// checkpoint.
+		return nil, true, &lease.NotPrimaryError{}
+
 	case *lease.LeasesQuery:
 		if r.leaseManager == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "lease"}

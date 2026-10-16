@@ -779,6 +779,19 @@ placement table and converges its assigned replicas — starting on boot,
 following placement changes, stopping on demotion. Replicas survive node
 restarts through the persistent placement table and per-node replica re-attach.
 
+Because leaving the placement stops a replica, a replica leaves its group
+before it leaves the placement. A scale-down and a rebalance move both evict
+the replica from Raft first, then drop it from the placement. The eviction is
+a configuration change committed by a quorum of the configuration it leaves,
+which still counts the departing replica's vote. In a group of two voters,
+that vote is the one the removal needs. *(Corrected: the placement used to be
+dropped first, so the departing node's reconciler stopped and purged its
+replica before the removal committed. The surviving leader then lost quorum
+and the move failed at its last step.)* A failed eviction leaves the
+placement unchanged, so the replica keeps running. The placement write after
+the eviction applies to the entry as it then stands, so a promotion
+committed meanwhile is kept rather than refused.
+
 ## Strict tenant isolation — design
 
 > **Status: RULED — partially implemented.** The owner ruled the design
@@ -831,8 +844,12 @@ restarts through the persistent placement table and per-node replica re-attach.
 > pending admin was never completed: nothing else ever raises
 > `tenant.BarrierReadyHook` for it (its barrier is never sealed, so its own
 > admin never calls barrier-init/-unseal/-status to trigger the hook the way
-> a self-managed tenant's admin does) — `ProvisionTenant` now completes it
-> inline whenever `CreateTenant` reports `BarrierAutoUnseal: true`.
+> a self-managed tenant's admin does) — `ProvisionTenant` reports
+> `AdminCompletionDue` whenever `CreateTenant` reports
+> `BarrierAutoUnseal: true`, and `OnboardTenant` completes the account after
+> it has answered, retried on its own bound rather than the request's. A
+> completion that runs out of that bound leaves the pending record, which the
+> tenant's next barrier unseal or status read completes.
 >
 > **What this slice does NOT do.** No transport or CLI exposes the
 > isolation-policy get/set verbs yet (the table in

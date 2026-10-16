@@ -55,7 +55,7 @@ func registerSOGrants() {
 		// Ceremony (SO-exclusive)
 		CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		// Certificate management
-		CertsIssue, CertsEnroll, CertsRevoke,
+		CertsIssue, CertsEnroll, CertsDelegate, CertsRevoke,
 		CertsList, CertsRead,
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
@@ -130,7 +130,7 @@ func registerAdminGrants() {
 		// tenant Admin escrows and recovers their OWN tenant's keys).
 		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Certificate management
-		CertsIssue, CertsEnroll, CertsRevoke,
+		CertsIssue, CertsEnroll, CertsDelegate, CertsRevoke,
 		CertsList, CertsRead,
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
@@ -186,6 +186,10 @@ func registerAdminGrants() {
 		// (cluster_admin_scope.go): only effective for the system tenant's
 		// Admin, so a tenant Admin cannot compact the node keyspace.
 		AdminNodeCompaction,
+		// Replica state hashes cover every tenant's replicas on the node.
+		// ScopeCross (cluster_admin_scope.go): only effective for the system
+		// tenant's Admin.
+		AdminStateHash,
 		// Minting a member-side CSR join token -- and reviewing the
 		// tokenless approval queue -- admits a new node to the whole
 		// replicated cluster. ClusterJoinToken is ScopeCross

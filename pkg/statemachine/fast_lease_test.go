@@ -431,6 +431,23 @@ func TestLookupLeaseTimeToLive_ManagerError(t *testing.T) {
 	}
 }
 
+// TestLookupLease_NeverThePrimary: this state machine keeps no deadline of its
+// own, so it renews nothing locally and has nothing to checkpoint -- every
+// keep-alive and checkpoint-now query sends the caller to the log.
+func TestLookupLease_NeverThePrimary(t *testing.T) {
+	fsm, _ := newTestFSM(WithLeaseManager(&mockLeaseManager{}))
+
+	for _, q := range []any{
+		lease.LeaseKeepAliveQuery{ID: 1}, &lease.LeaseKeepAliveQuery{ID: 1},
+		lease.LeaseCheckpointNowQuery{}, &lease.LeaseCheckpointNowQuery{},
+	} {
+		var np *lease.NotPrimaryError
+		if _, err := fsm.Lookup(context.Background(), q); !errors.As(err, &np) {
+			t.Fatalf("%T error = %v, want *lease.NotPrimaryError", q, err)
+		}
+	}
+}
+
 func TestLookupLeases_NilLeaseManager(t *testing.T) {
 	fsm, _ := newTestFSM()
 

@@ -32,22 +32,22 @@ const (
 )
 
 // CredentialRetrieveFunc is a function that retrieves a named credential's
-// plaintext value. It is the primitive backing type for CredentialResolver.
+// value in protected memory. It is the primitive backing type for
+// CredentialResolver.
 //
-// Ownership: the returned slice is a fresh plaintext copy that belongs to the
-// CALLER, who must secure.Wipe it once done — on every path, including an
-// error from whatever it does next. An implementation must return a copy it
-// retains no reference to, never an alias of storage it keeps.
-// CredentialResolver.Resolve honours this: it seals the value and wipes the
-// slice whether or not sealing succeeded.
-type CredentialRetrieveFunc func(ctx context.Context, name string) ([]byte, error)
+// Ownership: the returned buffer belongs to the CALLER, who must Destroy it on
+// every path. An implementation must return a buffer that retains no alias to
+// storage it keeps. CredentialResolver.Resolve honours this: it seals the
+// buffer into the SecretValue, which consumes it whether or not sealing
+// succeeded.
+type CredentialRetrieveFunc func(ctx context.Context, name string) (*secure.Buffer, error)
 
 // CredentialRetriever is the minimal interface required to retrieve a named
 // credential. It is satisfied by service.CredentialServicer from pkg/service
 // without creating an import cycle (pkg/service would eventually import
 // pkg/secret for the ResolverRegistry and ConfigProcessor).
 type CredentialRetriever interface {
-	CredentialRetrieve(ctx context.Context, name string) ([]byte, error)
+	CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error)
 }
 
 // CredentialResolver resolves "credential://<name>" URIs to named credential
@@ -96,7 +96,7 @@ func (r *CredentialResolver) Resolve(ctx context.Context, raw string) (*SecretVa
 	if name == "" {
 		return nil, &InvalidSecretURIError{Raw: raw}
 	}
-	b, err := r.retrieve(ctx, name)
+	buf, err := r.retrieve(ctx, name)
 	if err != nil {
 		// A missing credential is a distinct, expected condition; surface it as a
 		// typed SecretNotFoundError so callers can tell "no such credential" apart
@@ -106,11 +106,9 @@ func (r *CredentialResolver) Resolve(ctx context.Context, raw string) (*SecretVa
 		}
 		return nil, &ResolutionFailedError{Scheme: credentialScheme, Raw: raw, Err: err}
 	}
-	// NewSecretValue copies b into the enclave; wipe the heap copy the retrieve
-	// function handed us so the plaintext does not linger in GC memory,
-	// regardless of whether sealing succeeded.
-	sv, sealErr := NewSecretValue(ctx, raw, b, StrategyCredential)
-	secure.Wipe(b)
+	// NewSecretValueFromBuffer seals buf straight out of protected memory and
+	// destroys it, whether or not sealing succeeded.
+	sv, sealErr := NewSecretValueFromBuffer(ctx, raw, buf, StrategyCredential)
 	if sealErr != nil {
 		return nil, &ResolutionFailedError{Scheme: credentialScheme, Raw: raw, Err: sealErr}
 	}
@@ -118,10 +116,10 @@ func (r *CredentialResolver) Resolve(ctx context.Context, raw string) (*SecretVa
 }
 
 // CredentialResolverFromServicer constructs a CredentialResolver backed by
-// svc.CredentialRetrieve. Any concrete type that satisfies CredentialRetriever
+// svc.CredentialRetrieveBuffer. Any concrete type that satisfies CredentialRetriever
 // — including service.CredentialServicer from pkg/service — may be passed.
 func CredentialResolverFromServicer(svc CredentialRetriever) *CredentialResolver {
-	return NewCredentialResolver(svc.CredentialRetrieve)
+	return NewCredentialResolver(svc.CredentialRetrieveBuffer)
 }
 
 // NewTenantScopedCredentialRetrieve returns a CredentialRetrieveFunc that
@@ -141,7 +139,7 @@ func NewTenantScopedCredentialRetrieve(
 	tenantIDFromCtx func(context.Context) (string, bool),
 	logger *slog.Logger,
 ) CredentialRetrieveFunc {
-	return func(ctx context.Context, name string) ([]byte, error) {
+	return func(ctx context.Context, name string) (*secure.Buffer, error) {
 		if tenantIDFromCtx != nil && registry != nil {
 			if tid, ok := tenantIDFromCtx(ctx); ok && tid != "" {
 				tb, err := registry.GetTenant(tid)
@@ -156,17 +154,12 @@ func NewTenantScopedCredentialRetrieve(
 				if err != nil {
 					return nil, err
 				}
-				// The copy goes back to this CredentialRetrieveFunc's caller,
-				// which the analysis cannot follow through a function value:
-				// CredentialResolver.Resolve seals it and wipes it.
-				//
-				//secure:unwiped returned through CredentialRetrieveFunc; CredentialResolver.Resolve wipes it after sealing
-				return svc.RetrieveCredential(ctx, name)
+				return svc.RetrieveCredentialBuffer(ctx, name)
 			}
 		}
 		if systemSvc == nil {
 			return nil, ErrNilSystemCredentialService
 		}
-		return systemSvc.CredentialRetrieve(ctx, name)
+		return systemSvc.CredentialRetrieveBuffer(ctx, name)
 	}
 }

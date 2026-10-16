@@ -1,0 +1,31 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// A service defined outside go-qrdb, annotated with the public permission
+// option. `make check-public-proto` compiles it with only the sdk/go module's
+// proto/ directory added to the include path.
+syntax = "proto3";
+
+package billing.v1;
+
+option go_package = "example.com/billing/gen/billing/v1;billingv1";
+
+import "google/protobuf/empty.proto";
+import "qrdb/v1/permission.proto";
+
+service InvoiceService {
+  rpc Issue(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (qrdb.v1.permission) = "billing:issue";
+  }
+}

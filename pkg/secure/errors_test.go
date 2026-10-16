@@ -126,9 +126,9 @@ func TestErrorTypes_Roundtrip(t *testing.T) {
 // panic's own trace, and a report without it says "something nested" without
 // saying what.
 func TestNestedBorrowError(t *testing.T) {
-	err := &NestedBorrowError{Op: "NewSecret", BorrowStack: "goroutine 7 [running]:\nsome.Frame()"}
+	err := &NestedBorrowError{Op: "Buffer.Destroy", BorrowStack: "goroutine 7 [running]:\nsome.Frame()"}
 	msg := err.Error()
-	for _, want := range []string{"NewSecret", "nested calls into this package", "some.Frame()"} {
+	for _, want := range []string{"Buffer.Destroy", "this goroutine is borrowing", "some.Frame()"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("Error() does not contain %q; got:\n%s", want, msg)
 		}

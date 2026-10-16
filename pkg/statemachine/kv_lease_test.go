@@ -20,12 +20,16 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -161,8 +165,19 @@ func TestKVLease_KeepAlive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if res := s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id))); len(res.Data) != 0 {
+			res := s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id)))
+			if _, refused := protocol.DecodeAppError(res.Data); refused {
 				t.Fatalf("keep-alive refused: %q", res.Data)
+			}
+			gotID, grantedTTL, _, _, ok := protocol.DecodeLeaseInfo(res.Data)
+			if !ok {
+				t.Fatalf("keep-alive did not carry lease info: %q", res.Data)
+			}
+			if gotID != id {
+				t.Fatalf("expected lease ID %d, got %d", id, gotID)
+			}
+			if grantedTTL != 30 {
+				t.Fatalf("expected granted TTL 30, got %d", grantedTTL)
 			}
 			if after, _ := s.k.GetHash(); after != before {
 				t.Fatal("a keep-alive changed the replicated state")
@@ -170,10 +185,214 @@ func TestKVLease_KeepAlive(t *testing.T) {
 			if !lr.Has(id) {
 				t.Fatal("the lease is gone after its keep-alive")
 			}
-			if res := s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id + 99))); len(res.Data) != 0 {
+			res = s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id + 99)))
+			if _, refused := protocol.DecodeAppError(res.Data); refused {
 				t.Fatalf("keep-alive of an unknown lease refused: %q", res.Data)
 			}
+			if notFoundID, nf := protocol.DecodeLeaseKeepAliveNotFound(res.Data); !nf || notFoundID != id+99 {
+				t.Fatalf("expected lease-keep-alive-not-found for unknown lease %d, got ok=%v id=%d", id+99, nf, notFoundID)
+			}
 		})
+	}
+}
+
+// TestKVLease_KeepAliveQuery: the renewal query is answered by the replica's
+// own Lessor -- not primary until its expiry loop runs, renewed after -- and
+// changes no replicated state.
+func TestKVLease_KeepAliveQuery(t *testing.T) {
+	for name, nb := range leaseBackends() {
+		t.Run(name, func(t *testing.T) {
+			fc := clocktest.New()
+			lr := lease.NewLessor(lease.WithClock(fc))
+			s := newLeaseSM(t, nb(), WithKVLessor(lr))
+			id := s.grant(30)
+			before, err := s.k.GetHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var np *lease.NotPrimaryError
+			if _, err := s.k.Lookup(lease.LeaseKeepAliveQuery{ID: id}); !errors.As(err, &np) {
+				t.Fatalf("query before RunExpiry error = %v, want *lease.NotPrimaryError", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				lr.RunExpiry(ctx, time.Hour, func() bool { return true },
+					func(context.Context, int64) error { return nil }, nil)
+			}()
+			defer func() { cancel(); <-done }()
+
+			// The expiry loop records itself as the primary before it arms
+			// its ticker, so an armed ticker means the query may now renew.
+			armCtx, armCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer armCancel()
+			if err := fc.BlockUntil(armCtx, 1); err != nil {
+				t.Fatalf("the expiry loop never armed its ticker: %v", err)
+			}
+			got, err := s.k.Lookup(&lease.LeaseKeepAliveQuery{ID: id})
+			if err != nil {
+				t.Fatalf("query never renewed: %v", err)
+			}
+			if l := got.(*lease.Lease); l.ID != id {
+				t.Fatalf("lease ID = %d, want %d", l.ID, id)
+			}
+			if after, _ := s.k.GetHash(); after != before {
+				t.Fatal("a renewal query changed the replicated state")
+			}
+			var nf *lease.NotFoundError
+			if _, err := s.k.Lookup(lease.LeaseKeepAliveQuery{ID: id + 99}); !errors.As(err, &nf) {
+				t.Fatalf("unknown lease error = %v, want *lease.NotFoundError", err)
+			}
+		})
+	}
+}
+
+// TestKVLease_Checkpoint: a checkpoint of a held lease writes its record into
+// the replicated state, a checkpoint of a lease the replica no longer holds
+// writes nothing, and a replicated keep-alive deletes the record again. A
+// truncated checkpoint command is an apply fault, never a silent no-op.
+func TestKVLease_Checkpoint(t *testing.T) {
+	for name, nb := range leaseBackends() {
+		t.Run(name, func(t *testing.T) {
+			lr := lease.NewLessor()
+			s := newLeaseSM(t, nb(), WithKVLessor(lr))
+			id := s.grant(30)
+			uncheckpointed, err := s.k.GetHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// The group's first checkpoint records the renewal marker and
+			// nothing else: it was sampled before the marker existed.
+			res := s.apply(mustEncode(protocol.EncodeLeaseCheckpoint(0, s.index, []lease.Checkpoint{{ID: id, RemainingTTL: 10}})))
+			if _, refused := protocol.DecodeAppError(res.Data); refused {
+				t.Fatalf("the first checkpoint refused: %q", res.Data)
+			}
+			marked, _ := s.k.GetHash()
+			if marked == uncheckpointed {
+				t.Fatal("the first checkpoint did not record the renewal marker")
+			}
+
+			res = s.apply(mustEncode(protocol.EncodeLeaseCheckpoint(0, s.index, []lease.Checkpoint{{ID: id + 99, RemainingTTL: 10}})))
+			if _, refused := protocol.DecodeAppError(res.Data); refused {
+				t.Fatalf("checkpoint of an unknown lease refused: %q", res.Data)
+			}
+			if after, _ := s.k.GetHash(); after != marked {
+				t.Fatal("a checkpoint of a lease the replica does not hold changed the replicated state")
+			}
+
+			res = s.apply(mustEncode(protocol.EncodeLeaseCheckpoint(0, s.index, []lease.Checkpoint{{ID: id, RemainingTTL: 10}})))
+			if _, refused := protocol.DecodeAppError(res.Data); refused {
+				t.Fatalf("checkpoint refused: %q", res.Data)
+			}
+			if after, _ := s.k.GetHash(); after == marked {
+				t.Fatal("a checkpoint wrote no record into the replicated state")
+			}
+
+			// A checkpoint sampled before a renewal that applied ahead of it
+			// is rejected on every replica (#681).
+			s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id)))
+			renewed, _ := s.k.GetHash()
+			s.apply(mustEncode(protocol.EncodeLeaseCheckpoint(0, s.index-1, []lease.Checkpoint{{ID: id, RemainingTTL: 5}})))
+			if after, _ := s.k.GetHash(); after != renewed {
+				t.Fatal("a checkpoint a renewal superseded changed the replicated state")
+			}
+			s.apply(mustEncode(protocol.EncodeLeaseCheckpoint(0, s.index, []lease.Checkpoint{{ID: id, RemainingTTL: 5}})))
+			if after, _ := s.k.GetHash(); after == renewed {
+				t.Fatal("a checkpoint sampled after the renewal wrote no record")
+			}
+
+			s.index++
+			results := make([]sm.Result, 1)
+			var incomplete *IncompleteDataError
+			truncated := []byte{protocol.OpLeaseCheckpoint, 0x01}
+			if err := s.k.Update([]sm.Entry{{Index: s.index, Cmd: truncated}}, results); !errors.As(err, &incomplete) {
+				t.Fatalf("truncated checkpoint error = %v, want *IncompleteDataError", err)
+			}
+		})
+	}
+}
+
+// kvRecordingCheckpointer is a lease.Checkpointer that records every batch the
+// checkpoint loop proposes and reports it applied.
+type kvRecordingCheckpointer struct {
+	mu  sync.Mutex
+	cps []lease.Checkpoint
+}
+
+var _ lease.Checkpointer = (*kvRecordingCheckpointer)(nil)
+
+func (r *kvRecordingCheckpointer) CheckpointEnabled() bool { return true }
+
+func (r *kvRecordingCheckpointer) Checkpoint(_ context.Context, _, _ uint64, cps []lease.Checkpoint) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cps = append(r.cps, cps...)
+	return nil
+}
+
+func (r *kvRecordingCheckpointer) AwaitApplied(context.Context) error { return nil }
+
+func (r *kvRecordingCheckpointer) recorded() []lease.Checkpoint {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.cps)
+}
+
+// TestKVLease_CheckpointNowQuery: the checkpoint-now query is refused off the
+// primary and, on it, answered once the loop has checkpointed every lease.
+func TestKVLease_CheckpointNowQuery(t *testing.T) {
+	fc := clocktest.New()
+	lr := lease.NewLessor(lease.WithClock(fc))
+	s := newLeaseSM(t, NewStandardBackend(), WithKVLessor(lr))
+	id := s.grant(30)
+
+	var np *lease.NotPrimaryError
+	for _, q := range []any{lease.LeaseCheckpointNowQuery{}, &lease.LeaseCheckpointNowQuery{}} {
+		if _, err := s.k.Lookup(q); !errors.As(err, &np) {
+			t.Fatalf("%T before RunExpiry error = %v, want *lease.NotPrimaryError", q, err)
+		}
+	}
+
+	cp := &kvRecordingCheckpointer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lr.RunExpiry(ctx, time.Hour, func() bool { return true },
+			func(context.Context, int64) error { return nil }, nil,
+			lease.WithCheckpoint(time.Hour, cp))
+	}()
+	defer func() { cancel(); <-done }()
+
+	// The loop marks itself checkpointing before it arms the expiry ticker,
+	// its second, so two armed tickers mean the query is accepted.
+	armCtx, armCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer armCancel()
+	if err := fc.BlockUntil(armCtx, 2); err != nil {
+		t.Fatalf("the expiry loop never armed its tickers: %v", err)
+	}
+	got, err := s.k.Lookup(&lease.LeaseCheckpointNowQuery{})
+	if err != nil {
+		t.Fatalf("query on the primary: %v", err)
+	}
+	answer, ok := got.(<-chan error)
+	if !ok {
+		t.Fatalf("query answered %T, want <-chan error", got)
+	}
+	select {
+	case err := <-answer:
+		if err != nil {
+			t.Fatalf("checkpoint-now answered %v", err)
+		}
+	case <-armCtx.Done():
+		t.Fatal("checkpoint-now was never answered")
+	}
+	if rec := cp.recorded(); len(rec) != 1 || rec[0].ID != id || rec[0].RemainingTTL != 30 {
+		t.Fatalf("checkpointed %+v, want lease %d at 30s", rec, id)
 	}
 }
 
@@ -335,6 +554,153 @@ func TestKVLease_DiskRestartRestore(t *testing.T) {
 	if v, _ := second.Lookup(ctx, []byte("held")); v != nil {
 		t.Fatal("revoke after restart did not delete the bound key")
 	}
+}
+
+// kvSupersededLog is the log of the #681 finding as entries 1..4: a 600s grant
+// (lease 1), the first checkpoint, which starts the group recording renewals,
+// a replicated keep-alive, and a 100s checkpoint the leader sampled before
+// that keep-alive. kvUnsupersededLog ends in the same checkpoint with no
+// keep-alive ahead of it.
+func kvSupersededLog() []sm.Entry {
+	return []sm.Entry{
+		{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(600))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeLeaseCheckpoint(0, 1, []lease.Checkpoint{{ID: 1, RemainingTTL: 600}}))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeLeaseKeepAlive(1))},
+		{Index: 4, Cmd: mustEncode(protocol.EncodeLeaseCheckpoint(0, 2, []lease.Checkpoint{{ID: 1, RemainingTTL: 100}}))},
+	}
+}
+
+func kvUnsupersededLog() []sm.Entry {
+	log := kvSupersededLog()[:2]
+	return append(log, sm.Entry{Index: 3, Cmd: mustEncode(protocol.EncodeLeaseCheckpoint(0, 2, []lease.Checkpoint{{ID: 1, RemainingTTL: 100}}))})
+}
+
+// applyLog applies entries to s one at a time, keeping its index in step.
+func (s *leaseSM) applyLog(entries []sm.Entry) {
+	s.t.Helper()
+	for _, e := range entries {
+		s.index = e.Index - 1
+		s.apply(e.Cmd)
+	}
+}
+
+// A checkpoint sampled before a replicated keep-alive that applied ahead of it
+// is rejected, so the keep-alive's TTL stands on the replica that applied it,
+// on one recovered from a snapshot of it, and on one recovered from a snapshot
+// taken before the checkpoint that then applies it (#681).
+func TestKVLease_ARenewalSupersedesAnEarlierCheckpoint(t *testing.T) {
+	for name, nb := range leaseBackends() {
+		t.Run(name, func(t *testing.T) {
+			lr := lease.NewLessor()
+			s := newLeaseSM(t, nb(), WithKVLessor(lr))
+			s.applyLog(kvSupersededLog())
+			if got := lr.Lookup(1).RemainingTTL; got < 598 {
+				t.Fatalf("remaining after the superseded checkpoint = %d, want 600", got)
+			}
+
+			var after bytes.Buffer
+			if err := s.k.SaveSnapshot(&after, nil); err != nil {
+				t.Fatal(err)
+			}
+			afterLR := lease.NewLessor()
+			if err := newLeaseSM(t, nb(), WithKVLessor(afterLR)).k.RecoverSnapshot(&after, nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := afterLR.Lookup(1).RemainingTTL; got < 598 {
+				t.Fatalf("recovered remaining = %d, want the renewal's 600", got)
+			}
+
+			before := newLeaseSM(t, nb())
+			before.applyLog(kvSupersededLog()[:3])
+			var snap bytes.Buffer
+			if err := before.k.SaveSnapshot(&snap, nil); err != nil {
+				t.Fatal(err)
+			}
+			replayLR := lease.NewLessor()
+			replayed := newLeaseSM(t, nb(), WithKVLessor(replayLR))
+			if err := replayed.k.RecoverSnapshot(&snap, nil); err != nil {
+				t.Fatal(err)
+			}
+			replayed.applyLog(kvSupersededLog()[3:])
+			if got := replayLR.Lookup(1).RemainingTTL; got < 598 {
+				t.Fatalf("replayed remaining = %d, want the renewal's 600", got)
+			}
+			if a, b := mustHash(t, s.k), mustHash(t, replayed.k); a != b {
+				t.Fatal("the replica that replayed from the snapshot diverged")
+			}
+		})
+	}
+}
+
+// A disk replica that restarts after the superseded checkpoint counts from the
+// renewal; one whose checkpoint no renewal superseded counts from it.
+func TestKVLease_DiskRestartJudgesTheCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		log      []sm.Entry
+		min, max int64
+	}{
+		{"superseded", kvSupersededLog(), 598, 600},
+		{"unsuperseded", kvUnsupersededLog(), 98, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			factory := newStorageFactory(StorageConfig{Root: t.TempDir()})
+			first := newDiskAdapter(factory(1, 1), WithKVLessor(lease.NewLessor()))
+			if _, err := first.Open(ctx, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := first.Update(ctx, tc.log, make([]sm.Result, len(tc.log))); err != nil {
+				t.Fatal(err)
+			}
+			if err := first.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			lr := lease.NewLessor()
+			second := newDiskAdapter(factory(1, 1), WithKVLessor(lr))
+			t.Cleanup(func() { _ = second.Close(ctx) })
+			if _, err := second.Open(ctx, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := lr.Lookup(1).RemainingTTL; got < tc.min || got > tc.max {
+				t.Fatalf("restarted remaining = %d, want %d..%d", got, tc.min, tc.max)
+			}
+		})
+	}
+}
+
+// Until a group applies its first checkpoint -- with the lease-checkpoint gate
+// off it never does -- a keep-alive writes nothing to the replicated state,
+// exactly as before the rule; once one has, it records the renewal.
+func TestKVLease_RenewalsAreRecordedOnlyOnceCheckpointing(t *testing.T) {
+	for name, nb := range leaseBackends() {
+		t.Run(name, func(t *testing.T) {
+			s := newLeaseSM(t, nb(), WithKVLessor(lease.NewLessor()))
+			id := s.grant(30)
+			granted := mustHash(t, s.k)
+			s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id)))
+			if mustHash(t, s.k) != granted {
+				t.Fatal("a keep-alive before any checkpoint changed the replicated state")
+			}
+
+			s.apply(mustEncode(protocol.EncodeLeaseCheckpoint(0, s.index, []lease.Checkpoint{{ID: id, RemainingTTL: 30}})))
+			marked := mustHash(t, s.k)
+			s.apply(mustEncode(protocol.EncodeLeaseKeepAlive(id)))
+			if mustHash(t, s.k) == marked {
+				t.Fatal("a keep-alive after the first checkpoint recorded no renewal")
+			}
+		})
+	}
+}
+
+func mustHash(t *testing.T, k *KVStateMachine) uint64 {
+	t.Helper()
+	h, err := k.GetHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
 }
 
 // TestKVLease_CorruptTableFailsOpen: a lease table that does not validate is

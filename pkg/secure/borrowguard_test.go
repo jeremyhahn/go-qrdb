@@ -47,20 +47,14 @@ func recordViolation(dst **NestedBorrowError, done *sync.WaitGroup) BorrowViolat
 	}
 }
 
-// A protected-memory allocation attempted from inside a borrow must be
-// REPORTED, not entered.
+// Reentering the borrowed buffer from inside its own borrow must be REPORTED,
+// not entered.
 //
-// This is the failure the guard exists for. NewSecret here allocates a
-// DIFFERENT enclave than the one buf.WithBytes is borrowing, so under
-// go-enclave's per-object locking this specific call would not actually
-// deadlock — but the guard reports it anyway, by design: it enforces the
-// blanket discipline of never calling back into this package from inside a
-// WithBytes callback at all (see borrowguard.go), so that the real,
-// still-current hazard — reentering the SAME object's lock, which
-// TestBorrowGuard_TheUnguardedShapeReallyHangs demonstrates hangs the process
-// with no error, no panic and no stack — cannot be reintroduced by a future
-// change to how enclave locking works.
-func TestBorrowGuard_ReportsAPurgeClassOperationInsideABorrow(t *testing.T) {
+// This is the failure the guard exists for: Destroy needs buf's lock for
+// writing while this goroutine holds it for reading, which
+// TestBorrowGuard_TheUnguardedShapeReallyHangs shows hangs the process with no
+// error, no panic and no stack.
+func TestBorrowGuard_ReportsADestroyOfTheBorrowedBuffer(t *testing.T) {
 	buf, err := NewBuffer(32)
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
@@ -76,23 +70,20 @@ func TestBorrowGuard_ReportsAPurgeClassOperationInsideABorrow(t *testing.T) {
 	// On its own goroutine because the handler ends the goroutine that hit the
 	// violation, which must not be the test's own.
 	go func() {
-		_ = buf.WithBytes(func(b []byte) error {
+		_ = buf.WithBytes(func([]byte) error {
 			// The offending act. Reached from the real call sites through
 			// injected interfaces, which is why reading the code is not enough.
-			sec, secErr := NewSecret(context.Background(), []byte("allocation inside a borrow"))
-			if secErr == nil {
-				sec.Destroy()
-			}
+			buf.Destroy()
 			return nil
 		})
 	}()
 	done.Wait()
 
 	if got == nil {
-		t.Fatal("no violation reported: the guard did not see the nested purge-class call")
+		t.Fatal("no violation reported: the guard did not see the reentering Destroy")
 	}
-	if got.Op != "NewSecret" {
-		t.Errorf("violation Op = %q, want %q", got.Op, "NewSecret")
+	if got.Op != "Buffer.Destroy" {
+		t.Errorf("violation Op = %q, want %q", got.Op, "Buffer.Destroy")
 	}
 	if !strings.Contains(got.BorrowStack, "WithBytes") {
 		t.Errorf("violation does not name the borrow site; BorrowStack was:\n%s", got.BorrowStack)
@@ -103,63 +94,27 @@ func TestBorrowGuard_ReportsAPurgeClassOperationInsideABorrow(t *testing.T) {
 	}
 }
 
-// Every purge-class entry point must be instrumented, not just the one the
-// first test happens to use.
+// Every entry point that reenters the borrowed buffer must be instrumented,
+// not just the one the first test happens to use.
 //
-// The list is the one purge.go declares, and it is checked exhaustively
-// because the failure mode of an omission is silence: an uninstrumented
-// operation deadlocks exactly as before while the guard reports the suite
-// green.
-func TestBorrowGuard_CoversEveryPurgeClassEntryPoint(t *testing.T) {
+// The list is checked exhaustively because the failure mode of an omission is
+// silence: an uninstrumented operation deadlocks exactly as before while the
+// guard reports the suite green.
+func TestBorrowGuard_CoversEveryReentryOfTheBorrowedBuffer(t *testing.T) {
 	for _, tc := range []struct {
 		op   string
-		call func()
+		call func(*Buffer)
 	}{
-		{"NewBuffer", func() {
-			if b, err := NewBuffer(8); err == nil {
-				b.Destroy()
-			}
-		}},
-		{"NewBufferFromBytes", func() {
-			if b, err := NewBufferFromBytes([]byte("abcdefgh")); err == nil {
-				b.Destroy()
-			}
-		}},
-		{"NewSecret", func() {
-			if s, err := NewSecret(context.Background(), []byte("abcdefgh")); err == nil {
+		{"Buffer.WithBytes", func(b *Buffer) { _ = b.WithBytes(func([]byte) error { return nil }) }},
+		{"Buffer.Size", func(b *Buffer) { _ = b.Size() }},
+		{"Buffer.Destroy", func(b *Buffer) { b.Destroy() }},
+		{"NewSecretFromBuffer", func(b *Buffer) {
+			if s, err := NewSecretFromBuffer(context.Background(), b); err == nil {
 				s.Destroy()
 			}
 		}},
-		{"Secret.Open", func() {
-			s, err := NewSecret(context.Background(), []byte("abcdefgh"))
-			if err != nil {
-				return
-			}
-			defer s.Destroy()
-			if b, openErr := s.Open(context.Background()); openErr == nil {
-				b.Destroy()
-			}
-		}},
-		{"Buffer.Destroy", func() {
-			b, err := NewBuffer(8)
-			if err != nil {
-				return
-			}
-			b.Destroy()
-		}},
-		{"Buffer.Size", func() {
-			b, err := NewBuffer(8)
-			if err != nil {
-				return
-			}
-			defer b.Destroy()
-			_ = b.Size()
-		}},
 	} {
 		t.Run(tc.op, func(t *testing.T) {
-			// The inner operations that construct their own Buffer/Secret are
-			// prepared OUTSIDE the borrow, so the violation reported is the
-			// one named and not an earlier allocation.
 			outer, err := NewBuffer(16)
 			if err != nil {
 				t.Fatalf("NewBuffer: %v", err)
@@ -174,30 +129,84 @@ func TestBorrowGuard_CoversEveryPurgeClassEntryPoint(t *testing.T) {
 
 			go func() {
 				_ = outer.WithBytes(func([]byte) error {
-					tc.call()
+					tc.call(outer)
 					return nil
 				})
 			}()
 			done.Wait()
 
 			if got == nil {
-				t.Fatalf("%s inside a borrow reported nothing; that entry point is not instrumented", tc.op)
+				t.Fatalf("%s on the borrowed buffer reported nothing; that entry point is not instrumented", tc.op)
 			}
-			// The first violation on the goroutine wins, and for the cases
-			// whose call allocates before reaching the named operation that is
-			// the allocation. Either way an uninstrumented entry point reports
-			// NOTHING, which is what the assertion above catches.
-			if got.Op == "" {
-				t.Errorf("%s: violation carries no Op", tc.op)
+			if got.Op != tc.op {
+				t.Errorf("violation Op = %q, want %q", got.Op, tc.op)
 			}
 		})
 	}
 }
 
-// A borrow taken while another is live on the same goroutine is a violation
-// too, and for a subtler reason than the purge-class case: RWMutex admits no
-// NEW reader once a writer is queued, so the inner RLock waits for a purge
-// that is itself waiting for the outer borrow.
+// Operations on OTHER objects from inside a borrow are legitimate
+// (go-qrdb#145): each enclave has its own lock, so a callee handed the borrowed
+// bytes may use protected memory of its own. The armed guard must report none
+// of them, and every one must complete — this is the false-positive half that
+// lets a borrow be held across a barrier, KEK or verifier.
+func TestBorrowGuard_OtherObjectsInsideABorrowAreNotViolations(t *testing.T) {
+	outer, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer outer.Destroy()
+	sealed, err := NewSecret(context.Background(), []byte("opened inside a borrow"))
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	defer sealed.Destroy()
+
+	defer GuardBorrows(t.Fatalf)()
+	if err := outer.WithBytes(func([]byte) error {
+		other, err := NewBuffer(8)
+		if err != nil {
+			return err
+		}
+		if other.Size() != 8 {
+			t.Errorf("other.Size = %d, want 8", other.Size())
+		}
+		if err := other.WithBytes(func(b []byte) error {
+			copy(b, "abcdefgh")
+			return nil
+		}); err != nil {
+			return err
+		}
+		fromBuf, err := NewSecretFromBuffer(context.Background(), other)
+		if err != nil {
+			return err
+		}
+		fromBuf.Destroy()
+		heap, err := NewBufferFromBytes([]byte("abcdefgh"))
+		if err != nil {
+			return err
+		}
+		heap.Destroy()
+		opened, err := sealed.Open(context.Background())
+		if err != nil {
+			return err
+		}
+		opened.Destroy()
+		fresh, err := NewSecret(context.Background(), []byte("sealed inside a borrow"))
+		if err != nil {
+			return err
+		}
+		fresh.Destroy()
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
+	}
+}
+
+// A borrow of the same buffer taken while another is live on the same
+// goroutine is a violation too, and for a subtler reason than Destroy: RWMutex
+// admits no NEW reader once a writer is queued, so the inner borrow waits for a
+// Destroy that is itself waiting for the outer borrow.
 func TestBorrowGuard_ReportsANestedBorrow(t *testing.T) {
 	buf, err := NewBuffer(32)
 	if err != nil {
@@ -227,6 +236,49 @@ func TestBorrowGuard_ReportsANestedBorrow(t *testing.T) {
 	}
 }
 
+// The guard tracks every buffer a goroutine is borrowing, not just the
+// innermost: reentering the OUTER buffer from inside a nested borrow of a
+// different one is still the self-deadlock, and must still be reported with
+// the outer borrow's stack. The reentry comes after the inner borrow has
+// ended, so it also proves that exit removes only its own buffer.
+func TestBorrowGuard_TracksEveryHeldBuffer(t *testing.T) {
+	outer, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer outer.Destroy()
+	inner, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer inner.Destroy()
+
+	var got *NestedBorrowError
+	var done sync.WaitGroup
+	done.Add(1)
+	restore := EnableBorrowGuard(recordViolation(&got, &done))
+	defer restore()
+
+	go func() {
+		_ = outer.WithBytes(func([]byte) error {
+			_ = inner.WithBytes(func([]byte) error { return nil })
+			_ = outer.Size()
+			return nil
+		})
+	}()
+	done.Wait()
+
+	if got == nil {
+		t.Fatal("reentering the outer buffer after a nested borrow of another reported nothing")
+	}
+	if got.Op != "Buffer.Size" {
+		t.Errorf("violation Op = %q, want %q", got.Op, "Buffer.Size")
+	}
+	if !strings.Contains(got.BorrowStack, "TestBorrowGuard_TracksEveryHeldBuffer") {
+		t.Errorf("violation does not carry the outer borrow's stack:\n%s", got.BorrowStack)
+	}
+}
+
 // Borrows on DIFFERENT goroutines are legitimate and concurrent, so the guard
 // must not confuse one goroutine's borrow for another's.
 //
@@ -249,7 +301,7 @@ func TestBorrowGuard_DoesNotFireAcrossGoroutines(t *testing.T) {
 
 	// Two goroutines hold OVERLAPPING borrows, which is the ordinary shape:
 	// borrows are shared and run concurrently with each other, and only
-	// purge-class operations are exclusive. Each waits for the other to be
+	// Destroy is exclusive. Each waits for the other to be
 	// inside its callback, so the overlap is guaranteed rather than hoped for.
 	//
 	// It is deliberately not "one borrows while the other allocates": an
@@ -448,20 +500,34 @@ func TestGoroutineID(t *testing.T) {
 }
 
 // An unbalanced exit — a borrow released while the guard was armed but taken
-// before it was — must be ignored rather than driving the depth negative.
+// before it was — must be ignored rather than corrupting the frame.
 func TestGuardExitBorrow_UnbalancedIsIgnored(t *testing.T) {
 	restore := EnableBorrowGuard(func(*NestedBorrowError) { runtime.Goexit() })
 	defer restore()
 
-	guardExitBorrow() // no frame for this goroutine
-	guardExitBorrow()
-
-	// A borrow must still be admitted afterwards.
 	buf, err := NewBuffer(16)
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer buf.Destroy()
+	other, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer other.Destroy()
+
+	guardExitBorrow(buf) // no frame for this goroutine
+	guardExitBorrow(buf)
+
+	// An exit for a buffer the frame does not hold leaves the frame alone.
+	if err := other.WithBytes(func([]byte) error {
+		guardExitBorrow(buf)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
+	}
+
+	// A borrow must still be admitted afterwards.
 	if err := buf.WithBytes(func(b []byte) error {
 		if len(b) != 16 {
 			t.Errorf("len = %d, want 16", len(b))
@@ -499,7 +565,7 @@ func TestBorrowGuard_TheUnguardedShapeReallyHangs(t *testing.T) {
 		wantInOut string
 	}{
 		{"unguarded", true, ""},
-		{"guarded", false, "attempted while this goroutine holds a borrow"},
+		{"guarded", false, "attempted on a buffer this goroutine is borrowing"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
@@ -517,7 +583,7 @@ func TestBorrowGuard_TheUnguardedShapeReallyHangs(t *testing.T) {
 			if tc.wantInOut != "" && !strings.Contains(string(out), tc.wantInOut) {
 				t.Fatalf("child output does not report the violation.\nwant substring: %q\ngot:\n%s", tc.wantInOut, out)
 			}
-			if tc.wantHang && strings.Contains(string(out), "attempted while this goroutine holds a borrow") {
+			if tc.wantHang && strings.Contains(string(out), "attempted on a buffer this goroutine is borrowing") {
 				t.Fatalf("the UNguarded child reported a violation; the guard is armed when it should not be.\n%s", out)
 			}
 		})
@@ -529,11 +595,8 @@ func TestBorrowGuard_TheUnguardedShapeReallyHangs(t *testing.T) {
 // kills it at the test timeout.
 //
 // The offending act is THIS buffer's own Destroy, called from inside its own
-// WithBytes callback — not an allocation of a DIFFERENT object. go-enclave
-// (go-qrdb#114) gave every Buffer and Secret its own independent lock, so an
-// allocation of an unrelated object no longer shares anything with this
-// borrow and no longer deadlocks; the hazard that survives is the one any
-// sync.RWMutex has: WithBytes holds buf's lock for reading, Destroy needs it
+// WithBytes callback — the one nesting go-enclave's per-object locks cannot
+// survive, and the hazard any sync.RWMutex has: WithBytes holds buf's lock for reading, Destroy needs it
 // for writing, and a write request blocks behind a read only THIS goroutine
 // holds and only THIS goroutine could release — which it never does, because
 // it is the one waiting.
@@ -578,7 +641,7 @@ func TestGuardBorrows_ReportsAViolation(t *testing.T) {
 		<-done
 	}()
 
-	if !strings.Contains(reported, "NESTED BORROW") {
+	if !strings.Contains(reported, "reentered a Buffer it was borrowing") {
 		t.Fatalf("GuardBorrows reported %q, want a nested-borrow report", reported)
 	}
 }

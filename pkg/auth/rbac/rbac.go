@@ -67,12 +67,21 @@ const (
 	defaultCacheTTL = 30 * time.Second
 
 	// resolveSyncTimeout bounds the primary linearizable permission resolve
-	// on EVERY tenant, so a transient ReadIndex slowdown fails over to the
-	// StaleRead fallback (when one is configured for the tenant) in well
-	// under a second, or otherwise still turns into a prompt, retryable
-	// *ResolveError instead of blocking the request on its own outer
-	// deadline. A healthy ReadIndex answers far faster.
+	// when a StaleRead fallback is configured for the tenant, so a transient
+	// ReadIndex slowdown fails over to it in well under a second. A healthy
+	// ReadIndex answers far faster.
 	resolveSyncTimeout = 500 * time.Millisecond
+
+	// resolveTimeout bounds the primary resolve for every tenant with no
+	// fallback to fail over to. It still turns a stall into a retryable
+	// *ResolveError instead of blocking the request on an outer deadline the
+	// caller may not have set, but it is sized to ride out one leader
+	// election on a multi-node shard at go-quicraft's default timing (a 2 s
+	// election timeout, randomized up to twice that) plus the new leader's
+	// first commit: cutting a read with nothing to fail over to any shorter
+	// does not make it faster, it only refuses a request that would have been
+	// answered. Matches the auth user lookup's budget (lookupUser).
+	resolveTimeout = 5 * time.Second
 )
 
 // soDeniedActions is the set of resource-specific cryptographic actions
@@ -453,17 +462,21 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 	// Bound the primary linearizable resolve on EVERY tenant, not only when a
 	// StaleRead fallback is available for it. A SLOW (not just failed)
 	// ReadIndex — cold pipeline, draining host, transient consensus latency —
-	// must fail over within resolveSyncTimeout rather than block the whole
-	// request until an outer deadline the caller may not have set at all. For
-	// a tenant with no fallback (useFallback false) this still turns a stall
-	// into a prompt *ResolveError wrapping context.DeadlineExceeded — a
-	// retryable 503 — instead of a hang. A healthy ReadIndex answers in
-	// microseconds; the only cost of the short budget is a marginally-staler
-	// read on a blip for the system tenant, which is safe for replicated role
-	// data. Mirrors the auth user-lookup guard, lookupUser, which bounds its
-	// primary read the same way regardless of fallback availability (go-qrdb
-	// strict-isolation phase 0 review finding BL2, N4).
-	primaryCtx, cancel := context.WithTimeout(resolveCtx, resolveSyncTimeout)
+	// must not block the whole request until an outer deadline the caller may
+	// not have set at all; it ends in a *ResolveError wrapping
+	// context.DeadlineExceeded — a retryable 503 — instead of a hang (go-qrdb
+	// strict-isolation phase 0 review finding BL2, N4). The budget depends on
+	// whether anything can answer in the primary's place: with a fallback,
+	// resolveSyncTimeout fails over to it within a blip, at the cost of a
+	// marginally-staler read for the system tenant, which is safe for
+	// replicated role data; without one, resolveTimeout lets a read slowed by
+	// a leader election finish rather than refusing it. Mirrors the auth
+	// user-lookup guard, lookupUser.
+	budget := resolveTimeout
+	if useFallback {
+		budget = resolveSyncTimeout
+	}
+	primaryCtx, cancel := context.WithTimeout(resolveCtx, budget)
 	perms, err := a.roles.ResolvePermissions(primaryCtx, roleIDs)
 	cancel()
 	if err != nil {

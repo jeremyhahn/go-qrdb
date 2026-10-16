@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -32,7 +33,7 @@ func TestParseServicePrincipal_AcceptsValidNames(t *testing.T) {
 	if got, err := parseServicePrincipal(nil); got != "" || err != nil {
 		t.Fatalf("unconfigured = (%q, %v), want (\"\", nil)", got, err)
 	}
-	for _, name := range []string{"xkms", "quicbaas", "trusted-platform", "a", "0x.svc_1", strings.Repeat("a", maxServicePrincipalName)} {
+	for _, name := range []string{"xkms", "quicbaas", "trusted-platform", "a", "0x.svc_1", strings.Repeat("a", delegation.MaxPrincipalLen)} {
 		if got, err := parseServicePrincipal(&name); got != name || err != nil {
 			t.Errorf("%q = (%q, %v), want accepted", name, got, err)
 		}
@@ -41,7 +42,7 @@ func TestParseServicePrincipal_AcceptsValidNames(t *testing.T) {
 
 func TestParseServicePrincipal_RefusesInvalidNames(t *testing.T) {
 	for _, name := range []string{
-		"", strings.Repeat("a", maxServicePrincipalName+1),
+		"", strings.Repeat("a", delegation.MaxPrincipalLen+1),
 		"so", "admin", "operator", "user", "auditor",
 		"XKMS", "-xkms", ".xkms", "_xkms", "xk ms", "xkms:", "qrdb-service:xkms", "xkms/ca", "xkmś",
 	} {

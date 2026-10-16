@@ -62,6 +62,9 @@ func TestPebbleSM_RefusesUserKeysInTheReservedNamespace(t *testing.T) {
 		{"base delete", func() ([]byte, error) { return kv.EncodeDelete(lastApplied) }},
 		{"compare-and-swap", func() ([]byte, error) { return protocol.EncodeCompareAndSwap(seqKey, nil, []byte("x")) }},
 		{"compare-and-delete", func() ([]byte, error) { return protocol.EncodeCompareAndDelete(lastApplied, nil) }},
+		// Every reserved record sorts in [0x00, 0x01), so this range names
+		// them all: the last-applied index and the whole lease table.
+		{"range delete", func() ([]byte, error) { return protocol.EncodeDeleteRange([]byte{0x00}, nil) }},
 		{"batch", func() ([]byte, error) { return protocol.EncodeBatch([][]byte{op(protocol.OpMVCCPut, seqKey)}) }},
 		{"transaction", func() ([]byte, error) {
 			return protocol.EncodeTransaction(nil, [][]byte{op(protocol.OpMVCCPut, seqKey)}, nil)

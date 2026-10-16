@@ -115,27 +115,27 @@ func (e *LeaderForwardError) Unwrap() error {
 	return e.Err
 }
 
-// HolderForwardUnsignedError is returned when a request authenticated with a
-// holder certificate must be forwarded to the leader and this node cannot
-// sign the on-behalf assertion for it. Without an assertion the leader would
+// UnsignedForwardRefusedError is returned when a request authenticated with a
+// holder certificate or a tenant-issued delegation must be forwarded to the
+// leader and this node cannot sign the on-behalf assertion for it. Without an assertion the leader would
 // authorize the request as this node, so it is not forwarded at all. Err is
 // the signing failure, or nil when the node has no signing identity.
 //
 // Error is a FIXED message: it is what the client receives, and the signer's
 // error describes this node's key material, not the request. The cause stays
 // reachable through Unwrap (errors.Is / errors.As) and is logged server-side.
-type HolderForwardUnsignedError struct {
+type UnsignedForwardRefusedError struct {
 	Subject string
 	Err     error
 }
 
 // Error returns the fixed client-facing message.
-func (e *HolderForwardUnsignedError) Error() string {
-	return "rest: a holder request cannot be forwarded without a signed on-behalf assertion"
+func (e *UnsignedForwardRefusedError) Error() string {
+	return "rest: a holder or delegated request cannot be forwarded without a signed on-behalf assertion"
 }
 
 // Unwrap returns the signing failure, if any.
-func (e *HolderForwardUnsignedError) Unwrap() error {
+func (e *UnsignedForwardRefusedError) Unwrap() error {
 	return e.Err
 }
 

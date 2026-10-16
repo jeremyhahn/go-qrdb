@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -140,9 +141,9 @@ func (st *importSessionStore) syncPropose(_ context.Context, _ uint64, cmd []byt
 			return sm.Result{}, err
 		}
 		if st.revoked[id] {
-			return sm.Result{}, &LeaseNotFoundError{LeaseID: id}
+			return sm.Result{Value: 0, Data: protocol.EncodeLeaseKeepAliveNotFound(id)}, nil
 		}
-		return sm.Result{Value: 1}, nil
+		return sm.Result{Value: uint64(id), Data: protocol.EncodeLeaseInfo(id, 3600, 3600, nil)}, nil
 
 	default:
 		return sm.Result{}, &protocol.InvalidCommandError{Reason: "importSessionStore: unsupported op code"}
@@ -259,6 +260,14 @@ func (st *importSessionStore) syncRead(_ context.Context, _ uint64, query interf
 	case LeaseTimeToLiveQuery:
 		if st.revoked[q.ID] {
 			return nil, &LeaseNotFoundError{LeaseID: q.ID}
+		}
+		return &Lease{ID: q.ID, GrantedTTL: 3600, RemainingTTL: 3600}, nil
+
+	case LeaseKeepAliveQuery:
+		// The leader-local renewal a keep-alive reads through: a revoked
+		// lease is unknown to the lessor, a live one answers its TTL.
+		if st.revoked[q.ID] {
+			return nil, &lease.NotFoundError{ID: q.ID}
 		}
 		return &Lease{ID: q.ID, GrantedTTL: 3600, RemainingTTL: 3600}, nil
 

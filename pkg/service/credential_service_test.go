@@ -50,6 +50,26 @@ func newTestBarrierCredentialServiceSvc(t *testing.T) CredentialServicer {
 	return NewCredentialService(inner)
 }
 
+// retrieveBytesFrom retrieves the current value through the Buffer API and
+// copies it out for assertions, so tests exercise the supported path rather
+// than the deprecated []byte method.
+func retrieveBytesFrom(ctx context.Context, svc CredentialServicer, name string) ([]byte, error) {
+	buf, err := svc.CredentialRetrieveBuffer(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return CredentialWireValue(buf)
+}
+
+// retrieveVersionFrom is retrieveBytes for a specific version, on any servicer.
+func retrieveVersionFrom(ctx context.Context, svc CredentialServicer, name string, version uint64) ([]byte, error) {
+	buf, err := svc.CredentialRetrieveVersionBuffer(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return CredentialWireValue(buf)
+}
+
 // TestCredentialService_CredentialDelete_RemovesAllVersions_Barrier verifies
 // the service-layer pass-through for the blocker fix: after a rotation with
 // a nonzero grace period, deleting a credential through the
@@ -80,11 +100,11 @@ func TestCredentialService_CredentialDelete_RemovesAllVersions_Barrier(t *testin
 
 	require.NoError(t, svc.CredentialDelete(ctx, "k"))
 
-	_, err = svc.CredentialRetrieve(ctx, "k")
+	_, err = retrieveBytesFrom(ctx, svc, "k")
 	assert.ErrorIs(t, err, credentials.ErrCredentialNotFound)
 
 	for _, v := range []uint64{1, 2, 3} {
-		_, err := svc.CredentialRetrieveVersion(ctx, "k", v)
+		_, err := retrieveVersionFrom(ctx, svc, "k", v)
 		assert.Error(t, err, "version %d must not be retrievable after delete", v)
 	}
 
@@ -159,7 +179,7 @@ func TestCredentialService_CredentialRetrieve_AfterStore(t *testing.T) {
 	err := svc.CredentialStore(ctx, "my-secret", []byte("my-value"))
 	require.NoError(t, err)
 
-	val, err := svc.CredentialRetrieve(ctx, "my-secret")
+	val, err := retrieveBytesFrom(ctx, svc, "my-secret")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("my-value"), val)
 }
@@ -168,7 +188,7 @@ func TestCredentialService_CredentialRetrieve_EmptyName(t *testing.T) {
 	svc := newTestCredentialServiceSvc(t)
 	ctx := context.Background()
 
-	_, err := svc.CredentialRetrieve(ctx, "")
+	_, err := retrieveBytesFrom(ctx, svc, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, credentials.ErrEmptyCredentialName)
 }
@@ -181,7 +201,7 @@ func TestCredentialService_CredentialSubmit_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// After submit, the credential should be retrievable.
-	val, err := svc.CredentialRetrieve(ctx, "submit-cred")
+	val, err := retrieveBytesFrom(ctx, svc, "submit-cred")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("submitted-value"), val)
 }
@@ -261,7 +281,7 @@ func TestCredentialService_CredentialRetrieve_AfterDelete(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	cancel()
 
-	_, err = svc.CredentialRetrieve(cancelCtx, "temp-cred")
+	_, err = retrieveBytesFrom(cancelCtx, svc, "temp-cred")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
@@ -274,7 +294,7 @@ func TestCredentialService_CredentialSubmit_ThenRetrieve(t *testing.T) {
 	err := svc.CredentialSubmit(ctx, "submit-retrieve", []byte("submitted"))
 	require.NoError(t, err)
 
-	val, err := svc.CredentialRetrieve(ctx, "submit-retrieve")
+	val, err := retrieveBytesFrom(ctx, svc, "submit-retrieve")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("submitted"), val)
 }
@@ -290,7 +310,7 @@ func TestCredentialService_CredentialStore_MultipleDifferentNames(t *testing.T) 
 	}
 
 	for _, name := range names {
-		val, err := svc.CredentialRetrieve(ctx, name)
+		val, err := retrieveBytesFrom(ctx, svc, name)
 		require.NoError(t, err)
 		assert.Equal(t, []byte("value-"+name), val)
 	}
@@ -319,7 +339,7 @@ func TestCredentialService_CredentialRetrieve_CancelledContext(t *testing.T) {
 
 	// Retrieve on a non-existent credential with a cancelled context
 	// should return the context error immediately.
-	_, err := svc.CredentialRetrieve(cancelCtx, "never-stored")
+	_, err := retrieveBytesFrom(cancelCtx, svc, "never-stored")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
@@ -332,7 +352,7 @@ func TestCredentialService_CredentialStore_BinaryValue(t *testing.T) {
 	err := svc.CredentialStore(ctx, "binary-cred", binaryVal)
 	require.NoError(t, err)
 
-	val, err := svc.CredentialRetrieve(ctx, "binary-cred")
+	val, err := retrieveBytesFrom(ctx, svc, "binary-cred")
 	require.NoError(t, err)
 	assert.Equal(t, binaryVal, val)
 }

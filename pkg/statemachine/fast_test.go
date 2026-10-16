@@ -74,6 +74,26 @@ func (m *memStorage) Delete(key []byte) error {
 	return nil
 }
 
+func (m *memStorage) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.data {
+		if inDeleteRange([]byte(k), start, end) {
+			delete(m.data, k)
+		}
+	}
+	return nil
+}
+
+// inDeleteRange reports whether key falls in [start, end); a nil end runs to
+// the end of the keyspace, as storage.Storage.DeleteRange defines it.
+func inDeleteRange(key, start, end []byte) bool {
+	return bytes.Compare(key, start) >= 0 && (len(end) == 0 || bytes.Compare(key, end) < 0)
+}
+
 func (m *memStorage) Batch() storage.Batch {
 	return &memBatch{store: m}
 }
@@ -157,6 +177,21 @@ func (b *memBatch) Delete(key []byte) error {
 	copy(k, key)
 	b.ops = append(b.ops, func() {
 		delete(b.store.data, string(k))
+	})
+	return nil
+}
+
+func (b *memBatch) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	s, e := append([]byte(nil), start...), append([]byte(nil), end...)
+	b.ops = append(b.ops, func() {
+		for k := range b.store.data {
+			if inDeleteRange([]byte(k), s, e) {
+				delete(b.store.data, k)
+			}
+		}
 	})
 	return nil
 }
@@ -1322,6 +1357,10 @@ func (e *errStorage) Set(_, _ []byte) error {
 }
 
 func (e *errStorage) Delete(_ []byte) error {
+	return nil
+}
+
+func (e *errStorage) DeleteRange(_, _ []byte) error {
 	return nil
 }
 

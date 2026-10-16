@@ -254,6 +254,40 @@ type TopologyResponse struct {
 	Shards []ShardInfo `json:"shards"`
 }
 
+// StateHashesResponse is one node's replica state hashes.
+type StateHashesResponse struct {
+	// NodeID is the answering node's host ID.
+	NodeID string `json:"node_id" yaml:"node_id"`
+
+	// Replicas holds one entry per selected replica, ordered by TenantID,
+	// then ShardID.
+	Replicas []ReplicaStateHash `json:"replicas" yaml:"replicas"`
+}
+
+// ReplicaStateHash is the state digest of one replica.
+type ReplicaStateHash struct {
+	// TenantID is "" for a shard of the node's own (system) host, otherwise
+	// the isolated tenant whose host runs the shard.
+	TenantID string `json:"tenant_id" yaml:"tenant_id"`
+
+	// ShardID and ReplicaID name the shard and the node's replica of it.
+	ShardID   uint64 `json:"shard_id" yaml:"shard_id"`
+	ReplicaID uint64 `json:"replica_id" yaml:"replica_id"`
+
+	// AppliedIndex is the applied index the digest was computed at.
+	AppliedIndex uint64 `json:"applied_index" yaml:"applied_index"`
+
+	// Records is how many records the digest covers.
+	Records uint64 `json:"records" yaml:"records"`
+
+	// Hash is the SHA-256 state digest, 64 lowercase hex digits.
+	Hash string `json:"hash" yaml:"hash"`
+
+	// Error is empty on success; otherwise it says why this replica has no
+	// digest, and AppliedIndex, Records and Hash are zero.
+	Error string `json:"error" yaml:"error"`
+}
+
 // ShardInfo describes a single shard's topology including its
 // membership and leadership state.
 type ShardInfo struct {
@@ -311,7 +345,9 @@ type OKResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 
-	// Code is the failure's structured reason when the server names one —
-	// SEALED for a sealed node's refusal — and empty otherwise.
-	Code string `json:"code,omitempty"`
+	// Code and Metadata are the structured refusal the server sent beside
+	// Error, if any -- SEALED for a sealed node's refusal; RefusalError
+	// rebuilds the typed error the others name. Both are empty otherwise.
+	Code     string            `json:"code,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }

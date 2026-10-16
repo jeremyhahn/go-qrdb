@@ -1,6 +1,6 @@
 # Leases — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 A lease is a timer with a name. Attach keys to it, keep it alive while you care
 about them, and the server deletes them all when you stop.
@@ -105,6 +105,26 @@ qrdb watch session/ --prefix
 a crashed renewer, a network partition longer than the TTL, or a renewal
 interval too close to the TTL. Lengthen the TTL, renew more often, or both. This
 is the feature working as designed: expiry is what leases are for.
+
+**The lease outlived its TTL after a failover.** The cluster leader renews
+leases in its own memory, and every `lease.checkpoint_interval` (default `5m`)
+records what each lease longer than that has left. When the leader changes, the
+new leader counts every lease from that record — or from its full TTL when it
+has none — plus `lease.failover_grace` (default `5s`) from the moment it takes
+over. A lease renewed since its record was taken was renewed through the log,
+which removed the record, so the new leader never gives a lease less than its
+holder was promised; an abandoned lease can outlive its TTL by up to the grace
+plus the time since its last record. It still expires, and deletes its keys,
+once that has run out. Lower `lease.failover_grace` to reap an abandoned lease
+sooner; keep it longer than leader election plus one renewal interval, or
+holders can lose a lease they were renewing.
+
+**`lease ttl` fails with "not leader" or `Unavailable`.** Only the leader's
+countdown decides expiry, and in-memory renewals reach the leader alone, so a
+node other than the leader does not answer the remaining TTL from its own
+figure: it forwards the call to the leader. It fails instead when it cannot
+name a leader — during an election — or on the etcd listener, which does not
+forward. Retry, or send the call to another node.
 
 **"Reading the key should have kept it alive."** It does not. Only
 `lease keep-alive` renews. Renewal on access would tie expiry to traffic rather

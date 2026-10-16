@@ -103,6 +103,10 @@ version keeps the provider and reference it was wrapped under, and
 `Rewrap` moves a ciphertext's key to the current version, wrapped under
 the CURRENT provider and reference.
 
+While a new version is being minted, its key exists only in protected memory:
+generated into a locked, guard-paged buffer and wrapped from it, never held
+in ordinary memory.
+
 **There is no plaintext escape hatch.** Unlike backup, which may create an
 explicitly plaintext backup, every tenant DEK keyring version is always
 wrapped under a KEK: `Encrypt`/`Rotate` refuse with a typed, server-side

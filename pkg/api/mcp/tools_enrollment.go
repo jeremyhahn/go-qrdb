@@ -38,6 +38,7 @@ func enrollmentTools(svc service.CertEnrollmentServicer, mw *authmw.AuthMiddlewa
 	return []serverTool{
 		{Tool: toolCertIssue(), Perm: permission.CertsIssue, Handler: handleCertIssue(svc, mw)},
 		{Tool: toolCertEnroll(), Perm: permission.CertsEnroll, Handler: handleCertEnroll(svc, mw)},
+		{Tool: toolCertDelegate(), Perm: permission.CertsDelegate, Handler: handleCertDelegate(svc, mw)},
 		{Tool: toolTrustAnchorAdd(), Perm: permission.TrustAnchorsAdd, Handler: handleTrustAnchorAdd(svc, mw)},
 		{Tool: toolTrustAnchorList(), Perm: permission.TrustAnchorsList, Handler: handleTrustAnchorList(svc, mw)},
 		{Tool: toolTrustAnchorRemove(), Perm: permission.TrustAnchorsRemove, Handler: handleTrustAnchorRemove(svc, mw)},
@@ -148,6 +149,66 @@ func handleCertEnroll(svc service.CertEnrollmentServicer, mw *authmw.AuthMiddlew
 			return nil, &ToolError{Tool: "qrdb_cert_enroll", Err: err}
 		}
 		return enrolledResult("qrdb_cert_enroll", enrolled)
+	}
+}
+
+// issuedDelegationResult is a delegation certificate the tenant's CA issued.
+type issuedDelegationResult struct {
+	TenantID  string    `json:"tenantID"`
+	Principal string    `json:"principal"`
+	Scope     []string  `json:"scope"`
+	CertPEM   string    `json:"certPEM"`
+	Serial    string    `json:"serial"`
+	NotAfter  time.Time `json:"notAfter"`
+}
+
+// toolCertDelegate defines the qrdb_cert_delegate tool schema.
+func toolCertDelegate() mcp.Tool {
+	return mcp.NewTool("qrdb_cert_delegate",
+		mcp.WithDescription("Have your tenant's own CA issue a short-lived delegation certificate to a service principal: the principal may act inside your tenant with at most the delegated scope, intersected with its own grants. Revoke it by serial like any certificate."),
+		mcp.WithString("principal", mcp.Required(), mcp.Description("The service principal the delegation names.")),
+		mcp.WithArray("scope", mcp.Required(), mcp.WithStringItems(), mcp.Description("The permissions delegated, e.g. kv:get.")),
+		mcp.WithString("csr_pem", mcp.Required(), mcp.Description("The principal's PEM certificate signing request. Only its key is used.")),
+		mcp.WithString("ttl", mcp.Description(`Lifetime as a Go duration (e.g. "30m"). Empty is one hour; more than 24h is refused.`)),
+	)
+}
+
+func handleCertDelegate(svc service.CertEnrollmentServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var ttl time.Duration
+		if s := mcp.ParseString(req, "ttl", ""); s != "" {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return mcp.NewToolResultError("invalid ttl duration: " + err.Error()), nil
+			}
+			ttl = d
+		}
+		tenantID := callerTenant(ctx)
+		if err := authorizeCertTenantTool(ctx, mw, tenantID, permission.CertsDelegate); err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_delegate", Err: err}
+		}
+		issued, err := svc.IssueDelegation(ctx, &service.IssueDelegationRequest{
+			TenantID:  tenantID,
+			Principal: mcp.ParseString(req, "principal", ""),
+			Scope:     req.GetStringSlice("scope", nil),
+			CSRPEM:    []byte(mcp.ParseString(req, "csr_pem", "")),
+			TTL:       ttl,
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_delegate", Err: err}
+		}
+		data, err := json.Marshal(issuedDelegationResult{
+			TenantID:  issued.TenantID,
+			Principal: issued.Principal,
+			Scope:     issued.Scope,
+			CertPEM:   string(issued.CertPEM),
+			Serial:    issued.Serial,
+			NotAfter:  issued.NotAfter,
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_delegate", Err: err}
+		}
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 

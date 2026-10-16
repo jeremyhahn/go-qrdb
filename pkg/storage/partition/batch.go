@@ -80,6 +80,31 @@ func (b *partitionBatch) Delete(key []byte) error {
 	return batch.Delete(key)
 }
 
+// DeleteRange adds the removal of [start, end) to every partition's batch,
+// since hash routing scatters a key range across all of them.
+func (b *partitionBatch) DeleteRange(start, end []byte) error {
+	if b.closed.Load() {
+		return &storage.BatchError{Op: "delete_range", Err: &storage.ClosedError{}}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return &storage.BatchError{Op: "delete_range", Err: err}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := range b.manager.partitions {
+		partitionID := uint32(i)
+		batch := b.batches[partitionID]
+		if batch == nil {
+			batch = b.manager.partitions[i].Batch()
+			b.batches[partitionID] = batch
+		}
+		if err := batch.DeleteRange(start, end); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Get reads the key through its partition's batch when this batch has already
 // written to that partition, so a read observes this batch's own pending
 // writes; otherwise it reads the partition's committed state directly.

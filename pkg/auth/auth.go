@@ -107,6 +107,13 @@ type Identity struct {
 	// never be read as Metadata: the ABAC decorator exposes it to policies
 	// only in its own user_attrs namespace (see abac.Subject.UserAttributes).
 	Attributes map[string]string
+
+	// delegation is the tenant-issued delegation this identity authenticated
+	// with (see DelegationOf). It is unexported so that only this package's
+	// mTLS authenticator, after verifying the delegation certificate, can
+	// set it: no other authenticator, transport or caller can mark an
+	// identity delegated.
+	delegation *Delegation
 }
 
 // RoleBinding grants Role within a tenant scope (tenant-scoped RBAC). It

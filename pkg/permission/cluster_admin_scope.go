@@ -47,6 +47,10 @@ package permission
 // store's keys outside every database namespace, the node's internal records
 // and the system tenant's raw keyspace among them -- is the platform's, and
 // its compaction policy discards that history for every tenant on the node.
+//
+// admin:state_hash is here because it reads every replica on the node,
+// isolated tenants' included, and reports each one's applied index and
+// record count beside its digest.
 func clusterAdminPermissions() []Permission {
 	return []Permission{
 		AdminAddMember,
@@ -57,6 +61,7 @@ func clusterAdminPermissions() []Permission {
 		AdminShardState,
 		AdminSnapshot,
 		AdminStartShard,
+		AdminStateHash,
 		AdminStopShard,
 		AdminTopology,
 		RebalanceExecute,

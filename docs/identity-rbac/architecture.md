@@ -1,6 +1,6 @@
 # Identity and RBAC — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 Users, roles, the permission vocabulary, and the single policy decision point
 that authorizes every request on every transport.
@@ -539,6 +539,23 @@ The key is tenant-scoped, not global: the same person may legitimately hold an
 account in two tenants, and every login path supplies the tenant alongside the
 handle, so a global index would forbid that while buying nothing.
 
+## The login identity
+
+The unified-login ceremony ends by turning the resolved account and the
+verified factor into the identity the session bearer carries. That step is an
+`IdentityHydrator`, and a composer replaces it with `node.WithIdentityHydrator`
+([api.md](api.md#login-identity-nodewithidentityhydrator)). The account's
+immutable user id reaches it as `Principal.ID`, so a composer whose sessions
+must survive a rename can make the subject the id and not the username. The
+default keeps the username.
+
+There is one hydrator per node because there is one ceremony per node: the
+embedded transport serves it. The network transports never mint a login
+identity. Each request on them carries its own credential, and the
+authentication chain decides who it is, so the subject of a REST, gRPC, QUIC,
+MCP or Unix request is whatever the chain's authenticator produced. The
+authorization layer then resolves that subject to an account by username.
+
 ## Invitation self-enrolment
 
 An invitation is how an ORDINARY account — one certs:issue's strict-subset
@@ -629,6 +646,102 @@ the embedded transport (still gated on the node's seal/boot-state, since a
 sealed barrier can serve no invitation data, but with no identity or
 permission check beyond that).
 
+## Tenant-issued delegations
+
+An embedding host (an HSM front end, a managed-service control plane) runs a
+**service principal**, `qrdb-service:<name>`, for its own in-process work. Some
+of that work is on a tenant's behalf: the host serves the tenant's keys out of
+the tenant's own data. The platform must never be able to grant that, because
+the system owner never reads tenant data. So **the tenant grants it**, and the
+grant is an ordinary X.509 client certificate.
+
+```
+tenant admin ──certs:delegate──▶ tenant's own login CA (Key B)
+                                   │ signs a short-lived client certificate:
+                                   │   CN  qrdb-service:<name>
+                                   │   OU  <tenant>   (or the tenant's service SPIFFE SAN)
+                                   │   critical extension: DelegationGrant{tenant, principal, scope}
+                                   ▼
+service principal ──mTLS, any transport──▶ node
+                                   │ chain → that tenant's login CA, nothing else
+                                   │ principal = the one this node accepts
+                                   │ lifetime ≤ 24h, not revoked, not the system tenant
+                                   ▼
+             permissions = scope ∩ the principal's own grants, audited to the tenant
+```
+
+**The one mechanism.** A delegation certificate the tenant issues is the
+only way an embedder's service principal acts in a tenant's scope. There is
+no tenant-scoped `ServiceContext`, no configuration key or `With*` option that
+turns delegation on or off or changes its scope, and no fallback path.
+`Node.ServiceContext` binds the principal to the system tenant alone, for the
+host's own in-process work, and never reaches tenant data.
+
+**Shape chosen: a certificate, not a token.** A delegation is a short-lived
+client certificate the tenant's login CA issues, in the spirit of RFC 3820
+proxy certificates and SPIFFE X.509-SVIDs. It adds one **critical** extension
+(`DelegationGrant`, DER: version, tenant, principal, scope). Critical, so a
+verifier that does not understand it refuses the certificate (RFC 5280
+§4.2) rather than reading it as a user login. The existing mTLS chain
+authenticates it on every transport, the CA's existing revocation revokes it,
+and `crypto/x509` builds and verifies it. There is no new token format and no
+signature code of its own.
+
+- **Only the tenant issues one.** Issuance is `certs:delegate`, a
+  tenant-only permission: it is confined to the caller's own tenant, the
+  system tenant has none to give, and a caller that is itself delegated cannot
+  issue another (a delegation that could renew itself would have no lifetime).
+  The tenant's Key B may be device-held through the certificate-key seam
+  (`WithCertKeyProviderFactory`); the delegation is signed wherever Key B is.
+- **Only the tenant's own CA speaks for it.** The verifier requires the leaf's
+  direct issuer to be the delegating tenant's registered login CA. A
+  certificate signed by the cluster CA, a static client CA, a trust anchor or
+  another tenant's CA is refused even when it chains.
+- **The node names the one principal it accepts.** That is the principal the
+  host runs as (`node.WithServicePrincipal`); there is no separate setting. A delegation naming
+  any other principal is refused, and a node naming none (`qrdbd`) accepts no
+  delegation at all.
+- **Authority is an intersection.** A delegated request holds the
+  delegation's scope intersected with the grants the host declared for its
+  principal (`sdk.RegisterPermissionRoleGrant`), resolved on every request.
+  The tenant can narrow the principal's authority, never widen it, and a grant
+  the host withdraws stops applying at once. The identity carries no roles,
+  role bindings, attributes or user account.
+- **Short-lived; revocation is the exception.** One hour by default and never
+  more than 24 hours. The cap is one constant, `delegation.MaxLifetime`, not a
+  setting: issuance refuses a longer request and the verifier refuses a longer
+  certificate whatever the issuing CA wrote. The issuer may only ask for less.
+  `ca revoke --serial` refuses one before then.
+- **Every use is audited to the tenant's trail.** Each authorization decision
+  for a delegated request, allowed or denied, is recorded under the
+  delegating tenant with the principal, serial and scope. With no audit logger,
+  or a record that cannot be written, the request is refused (503), whatever
+  the operator's fail-open setting: that setting covers the operator's own
+  trail, not acting on a tenant's behalf unrecorded.
+- **Forwarding re-verifies.** A follower forwarding a delegated request to the
+  leader carries the certificate itself in the signed on-behalf assertion, and
+  the leader verifies it again with its own authenticator. See
+  [engineering.md](engineering.md#invariants).
+
+**Alternatives rejected.**
+
+- **A platform-side switch letting the principal act in a tenant.** The
+  platform would then hold tenant data access, which it must not.
+- **A tenant-scoped `ServiceContext`, or a delegation on/off or scope
+  option.** Each is a second way in beside the certificate, granted by the
+  host rather than the tenant, unaudited to the tenant's trail and
+  unrevocable by it.
+- **A new bearer token (JWT, macaroon).** That is a second credential
+  format, a second verifier and a second revocation path, beside an mTLS
+  chain that already authenticates every transport.
+- **A non-critical extension.** A verifier that did not know it would admit
+  the certificate as a user named `qrdb-service:<name>`.
+
+The extension is named `tp-delegation` and its OID is
+`1.3.6.1.4.1.29377.101.24`. The arc `29377.101` is the company's IANA Private
+Enterprise Number (29377) certificate-extension arc, shared with
+go-trusted-platform and go-xkms.
+
 ## Component boundaries
 
 | Piece | Package | Owner |
@@ -653,7 +766,10 @@ permission check beyond that).
   each of its calls as it decides any caller's. The subject namespace is
   reserved: an identity in it, or one carrying the principal marker, is
   refused as unauthenticated on every network transport, even when a user
-  record of that name exists. See
+  record of that name exists. The one way the principal reaches a request
+  from the network is a delegation its tenant's own CA issued, and it then
+  acts inside that tenant only. See
+  [Tenant-issued delegations](#tenant-issued-delegations) and
   [../api-server/engineering.md](../api-server/engineering.md#service-principal).
 - **No caller mints another tenant's identities or reads another tenant's
   audit trail — the system tenant included.** `certs:issue`, `certs:enroll`,

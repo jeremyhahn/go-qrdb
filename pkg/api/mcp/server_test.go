@@ -682,6 +682,7 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_replica_states",
 		"qrdb_node_compaction",
 		"qrdb_update_node_compaction",
+		"qrdb_state_hashes",
 		"qrdb_mint_join_token",
 		"qrdb_add_observer_member",
 		"qrdb_list_pending_join_requests",

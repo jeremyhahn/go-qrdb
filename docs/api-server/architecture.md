@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
@@ -446,8 +446,12 @@ kernel-assigned port.
   makes no difference whether the claim came from a bearer token, a
   certificate, a cluster peer's on-behalf assertion or a module fallback. A
   call the embedded client forwards to another replica carries the
-  `WithEmbeddedCaller` identity, never the principal. See
-  [engineering.md](engineering.md#service-principal).
+  `WithEmbeddedCaller` identity, never the principal. The one exception is a
+  delegation certificate a tenant's own CA issued to the principal: it acts
+  inside that tenant only, with the delegated scope intersected with the
+  principal's grants (see
+  [../identity-rbac/](../identity-rbac/architecture.md#tenant-issued-delegations)).
+  See [engineering.md](engineering.md#service-principal).
 - **A malformed public gRPC method name is rejected at registration**, so a typo
   fails startup loudly instead of silently leaving a method auth-gated.
 - **A REST route has exactly one owner.** Modules register before the

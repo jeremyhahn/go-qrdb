@@ -15,6 +15,8 @@
 package memory
 
 import (
+	"github.com/tidwall/btree"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
@@ -34,12 +36,23 @@ func (s *MemoryStorage) applyBufferedOps(ops []storage.BufferedOp) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// A batch's writes fall into a few key families told apart by their
+	// leading byte -- an MVCC store's data, metadata and revision-index
+	// records, say -- each written in near-sorted runs. One path hint per
+	// family lets the tree resume each search where that family's last one
+	// ended instead of from the root.
+	var hints [256]btree.PathHint
 	for _, op := range ops {
-		if op.Deleted {
-			s.tree.Delete(entry{key: op.Key})
+		if op.Range {
+			s.deleteRangeLocked(op.Key, op.RangeEnd)
 			continue
 		}
-		s.tree.Set(entry{key: op.Key, value: op.Value})
+		hint := &hints[op.Key[0]]
+		if op.Deleted {
+			s.tree.DeleteHint(entry{key: op.Key}, hint)
+			continue
+		}
+		s.tree.SetHint(entry{key: op.Key, value: op.Value}, hint)
 	}
 	return nil
 }

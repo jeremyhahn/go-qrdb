@@ -66,6 +66,24 @@ func TestSortQueue_OrdersByCreateRevisionThenKey(t *testing.T) {
 	assert.Equal(t, []string{ownerC, ownerA, ownerB}, []string{q[0].owner, q[1].owner, q[2].owner})
 }
 
+func TestWaitsFor_AndClosesCycle(t *testing.T) {
+	recs := []record{
+		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
+		{key: "y", owner: ownerB, mode: ModeExclusive, createRev: 2},
+		{key: "y", owner: ownerA, mode: ModeExclusive, createRev: 3},
+		{key: "x", owner: ownerB, mode: ModeExclusive, createRev: 4},
+		{key: "z", owner: ownerC, mode: ModeShared, createRev: 5},
+		{key: "z", owner: ownerA, mode: ModeShared, createRev: 6},
+	}
+	edges := waitsFor(recs)
+	assert.Equal(t, int64(3), edges[ownerA][ownerB], "an edge appears with its waiter's record")
+	assert.Equal(t, int64(4), edges[ownerB][ownerA])
+	assert.NotContains(t, edges[ownerA], ownerC, "shared behind shared is no edge")
+	assert.False(t, closesCycle(edges, ownerA), "A is on the cycle but did not close it")
+	assert.True(t, closesCycle(edges, ownerB), "B's edge is the cycle's newest")
+	assert.False(t, closesCycle(edges, ownerC))
+}
+
 func TestWaitsFor_LabelsEachEdgeWithTheRevisionThatCreatedIt(t *testing.T) {
 	edges := waitsFor([]record{
 		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 1},
@@ -135,6 +153,43 @@ func TestClosesCycle_AChainIsNoCycle(t *testing.T) {
 		assert.False(t, closesCycle(chain, o), "a chain is not a cycle")
 	}
 	assert.False(t, closesCycle(chain, "nobody"), "an owner with no edges closes nothing")
+}
+
+func TestWaitsFor_EdgeIsDatedByTheWaitersOldestRecord(t *testing.T) {
+	edges := waitsFor([]record{
+		{key: "x", owner: ownerB, mode: ModeExclusive, createRev: 1},
+		{key: "y", owner: ownerB, mode: ModeExclusive, createRev: 2},
+		{key: "y", owner: ownerA, mode: ModeExclusive, createRev: 3},
+		{key: "x", owner: ownerA, mode: ModeExclusive, createRev: 5},
+	})
+	assert.Equal(t, int64(3), edges[ownerA][ownerB])
+}
+
+// Exactly one owner closes a cycle, wherever the newest edge sits in it, and
+// an owner that closed one cycle is its victim even if it lies on an older
+// cycle as well.
+func TestClosesCycle_OneVictimPerCycle(t *testing.T) {
+	ring := map[string]map[string]int64{
+		ownerA: {ownerB: 1},
+		ownerB: {ownerC: 7},
+		ownerC: {ownerA: 4},
+	}
+	var victims []string
+	for _, o := range []string{ownerA, ownerB, ownerC} {
+		if closesCycle(ring, o) {
+			victims = append(victims, o)
+		}
+	}
+	assert.Equal(t, []string{ownerB}, victims)
+
+	twoCycles := map[string]map[string]int64{
+		ownerA: {ownerB: 2, ownerC: 9},
+		ownerB: {ownerA: 5},
+		ownerC: {ownerA: 3},
+	}
+	assert.True(t, closesCycle(twoCycles, ownerA), "A closed A-C, though B closed A-B")
+	assert.True(t, closesCycle(twoCycles, ownerB))
+	assert.False(t, closesCycle(twoCycles, ownerC))
 }
 
 func TestRecord_RoundTrip(t *testing.T) {

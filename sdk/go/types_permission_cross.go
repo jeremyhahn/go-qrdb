@@ -259,6 +259,10 @@ const (
 	// the platform's node-keyspace compaction policy.
 	PermissionAdminNodeCompaction = permission.AdminNodeCompaction
 
+	// PermissionAdminStateHash ("admin:state_hash") reads every local
+	// replica's applied index and SHA-256 state digest.
+	PermissionAdminStateHash = permission.AdminStateHash
+
 	// PermissionRebalanceExecute ("rebalance:execute") moves shards between
 	// nodes.
 	PermissionRebalanceExecute = permission.RebalanceExecute

@@ -59,6 +59,8 @@ func TestClusterAdminScope(t *testing.T) {
 		{"admin.SetNodeCompaction", marshal(&pb.SetNodeCompactionRequest{
 			Compaction: &pb.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 10},
 		})},
+		// Replica state hashes cover every tenant's replicas on the node.
+		{"admin.GetStateHashes", marshal(&pb.GetStateHashesRequest{})},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

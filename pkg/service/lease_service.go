@@ -17,9 +17,13 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
@@ -91,29 +95,54 @@ func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 }
 
 // KeepAlive resets the TTL on an existing lease, preventing it from
-// expiring. Returns the refreshed lease with updated TTL.
+// expiring. Returns the refreshed lease with updated TTL. On the leader the
+// renewal is made in memory, as etcd's is; anywhere else, and for a lease the
+// leader has checkpointed, it is a replicated command.
+//
+// Until every replica of the shard can apply a lease checkpoint
+// (CheckpointEnabled), every renewal is a replicated command, the leader's
+// included: a replica that predates the lease-checkpoint feature counts a
+// lease only from the log, so on becoming leader it would revoke a lease
+// whose renewals had been made in its predecessor's memory.
 func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, error) {
-	cmd, err := protocol.EncodeLeaseKeepAlive(leaseID)
-	if err != nil {
-		return nil, &EncodeRequestError{Err: err}
+	if !s.CheckpointEnabled() {
+		return s.keepAliveReplicated(ctx, leaseID)
 	}
-	result, err := propose(ctx, s.host, s.shardID, cmd)
-	if err != nil {
-		return nil, translateProposeError(err)
-	}
-	if resultErr := checkResultError(result); resultErr != nil {
-		return nil, &ProposeError{Err: resultErr}
+	l, err := s.renewLocal(ctx, leaseID)
+	var notPrimary *lease.NotPrimaryError
+	var checkpointed *lease.CheckpointedError
+	if !errors.As(err, &notPrimary) && !errors.As(err, &checkpointed) {
+		return l, err
 	}
 
-	// Read back the lease to get current state.
-	return s.TimeToLive(ctx, leaseID)
+	// The replica that answered is not the lease primary (a follower, or a
+	// state machine that does not renew in memory), or the lease has a
+	// checkpoint that only a replicated renewal clears: renew through the log,
+	// which Raft forwards to the leader.
+	return s.keepAliveReplicated(ctx, leaseID)
 }
 
-// TimeToLive returns the current state of a lease including its
-// remaining TTL and attached keys.
-func (s *LeaseService) TimeToLive(ctx context.Context, leaseID int64) (*Lease, error) {
-	result, err := s.host.SyncRead(ctx, s.shardID, LeaseTimeToLiveQuery{ID: leaseID})
+// renewLocal renews the lease in the memory of the replica a linearizable read
+// lands on, which is the leader when the read is confirmed there. The renewal
+// never reaches the Raft log; what a new leader learns of it is bounded by the
+// leader's checkpoints (see lease.Lessor). A *lease.NotPrimaryError or
+// *lease.CheckpointedError comes back unwrapped so KeepAlive can fall back to
+// the log.
+func (s *LeaseService) renewLocal(ctx context.Context, leaseID int64) (*Lease, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, LeaseKeepAliveQuery{ID: leaseID})
 	if err != nil {
+		var notPrimary *lease.NotPrimaryError
+		if errors.As(err, &notPrimary) {
+			return nil, notPrimary
+		}
+		var checkpointed *lease.CheckpointedError
+		if errors.As(err, &checkpointed) {
+			return nil, checkpointed
+		}
+		var notFound *lease.NotFoundError
+		if errors.As(err, &notFound) {
+			return nil, &LeaseNotFoundError{LeaseID: notFound.ID}
+		}
 		return nil, s.translateReadError(err)
 	}
 
@@ -122,6 +151,207 @@ func (s *LeaseService) TimeToLive(ctx context.Context, leaseID int64) (*Lease, e
 		return nil, &unexpectedResultTypeError{}
 	}
 	return l, nil
+}
+
+// keepAliveReplicated renews the lease with a replicated keep-alive command,
+// which every replica applies.
+//
+// The apply that resets the lease already computes its post-reset state
+// (go-qrdb#275): the state machine carries it back in the proposal's
+// Result.Data, so this builds the response directly from that committed
+// result instead of issuing a second, separately linearized read. That
+// second read was this path's tail latency -- a ReadIndex round trip
+// whenever the leader's local read lease was not valid when the follow-up
+// landed -- on top of the proposal's own round trip.
+func (s *LeaseService) keepAliveReplicated(ctx context.Context, leaseID int64) (*Lease, error) {
+	result, err := s.proposeKeepAlive(ctx, leaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	// A KeepAlive against a lease the lessor does not (or no longer) hold is
+	// an idempotent apply success, not an application error (see
+	// protocol.EncodeLeaseKeepAliveNotFound), so proposeKeepAlive's
+	// checkResultError never sees it; it is decoded here instead and reported to the caller
+	// the same way TimeToLive's not-found case is -- unwrapped, so every
+	// transport's typed classifier still sees *LeaseNotFoundError.
+	if id, notFound := protocol.DecodeLeaseKeepAliveNotFound(result.Data); notFound {
+		return nil, &LeaseNotFoundError{LeaseID: id}
+	}
+
+	id, grantedTTL, remainingTTL, keys, ok := protocol.DecodeLeaseInfo(result.Data)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return &lease.Lease{
+		ID:           id,
+		TTL:          grantedTTL,
+		GrantedTTL:   grantedTTL,
+		RemainingTTL: remainingTTL,
+		Keys:         keys,
+	}, nil
+}
+
+// CheckpointEnabled reports whether every replica of the shard can apply a
+// lease checkpoint (the lease-checkpoint cluster feature). Until it can, the
+// leader checkpoints nothing, and a new leader counts every lease from its
+// full TTL, as it always has.
+func (s *LeaseService) CheckpointEnabled() bool {
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.LeaseCheckpoint) {
+		return false
+	}
+	return true
+}
+
+// Checkpoint proposes the leader's checkpoints, carrying its round token and
+// the Raft index they were sampled at, in commands of at most
+// protocol.MaxLeaseCheckpointBatch leases each, and returns once this replica
+// has applied them, or with the first error.
+func (s *LeaseService) Checkpoint(ctx context.Context, token, index uint64, cps []lease.Checkpoint) error {
+	for batch := range slices.Chunk(cps, protocol.MaxLeaseCheckpointBatch) {
+		cmd, err := protocol.EncodeLeaseCheckpoint(token, index, batch)
+		if err != nil {
+			return &EncodeRequestError{Err: err}
+		}
+		result, err := propose(ctx, s.host, s.shardID, cmd)
+		if err != nil {
+			return translateProposeError(err)
+		}
+		if resultErr := checkResultError(result); resultErr != nil {
+			return &ProposeError{Err: resultErr}
+		}
+	}
+	return nil
+}
+
+// AwaitApplied returns once this replica has applied every entry the shard
+// committed before the call. It is a linearizable read, and the leader serves
+// one only once it has committed an entry of its own term, so a new leader
+// that returns from it has applied every checkpoint its predecessor committed.
+// The read is the lease listing, which every lease-serving state machine
+// answers; its result is discarded.
+func (s *LeaseService) AwaitApplied(ctx context.Context) error {
+	if _, err := s.host.SyncRead(ctx, s.shardID, LeasesQuery{}); err != nil {
+		return s.translateReadError(err)
+	}
+	return nil
+}
+
+// CheckpointAll asks this node's replica, if it is the shard's lease primary,
+// to checkpoint every live lease now, and waits until the checkpoint has been
+// applied here. A leader calls it before handing leadership to another
+// replica, as etcd does, so the next leader counts each lease from what it has
+// left rather than from its full TTL. A replica that is not the lease primary
+// answers *lease.NotPrimaryError, unwrapped: there is nothing on it to
+// checkpoint.
+func (s *LeaseService) CheckpointAll(ctx context.Context) error {
+	result, err := s.host.StaleRead(ctx, s.shardID, LeaseCheckpointNowQuery{})
+	if err != nil {
+		var notPrimary *lease.NotPrimaryError
+		if errors.As(err, &notPrimary) {
+			return notPrimary
+		}
+		return s.translateReadError(err)
+	}
+	answer, ok := result.(<-chan error)
+	if !ok {
+		return &unexpectedResultTypeError{}
+	}
+	select {
+	case err := <-answer:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// proposeKeepAlive proposes a replicated keep-alive of the lease and returns
+// the committed result, whose Data carries the lease's post-reset state.
+func (s *LeaseService) proposeKeepAlive(ctx context.Context, leaseID int64) (sm.Result, error) {
+	cmd, err := protocol.EncodeLeaseKeepAlive(leaseID)
+	if err != nil {
+		return sm.Result{}, &EncodeRequestError{Err: err}
+	}
+	result, err := propose(ctx, s.host, s.shardID, cmd)
+	if err != nil {
+		return sm.Result{}, translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return sm.Result{}, &ProposeError{Err: resultErr}
+	}
+	return result, nil
+}
+
+// NewLeaseCheckpointer returns the lease.Checkpointer that replicates, for the
+// named shard, its leader's checkpoints of the remaining TTL of its leases.
+// Composers pass it to lease.WithCheckpoint.
+func NewLeaseCheckpointer(host Host, shardID uint64) lease.Checkpointer {
+	return &LeaseService{host: host, shardID: shardID}
+}
+
+// LeaseExpiryOptions returns the lease.RunExpiry options of a replicated
+// shard: the checkpointer that replicates the leader's checkpoints through
+// host, at the configured interval, and the failover grace. It fails with the
+// config's typed error when either duration does not parse, which Validate
+// already rejects at load.
+func LeaseExpiryOptions(host Host, shardID uint64, cfg config.LeaseConfig) ([]lease.ExpiryOption, error) {
+	interval, err := cfg.CheckpointIntervalDuration()
+	if err != nil {
+		return nil, err
+	}
+	grace, err := cfg.FailoverGraceDuration()
+	if err != nil {
+		return nil, err
+	}
+	return []lease.ExpiryOption{
+		lease.WithCheckpoint(interval, NewLeaseCheckpointer(host, shardID)),
+		lease.WithFailoverGrace(grace),
+	}, nil
+}
+
+// TimeToLive returns the current state of a lease including its
+// remaining TTL and attached keys.
+//
+// The leader renews leases in memory (KeepAlive), so a follower's deadline for
+// a lease lags the leader's: only the leader answers the remaining TTL, as
+// etcd's does. On a node whose replica follows, a lease it holds is answered
+// with *LeaseTTLNotLeaderError naming the leader, which the transports forward
+// the request to; a lease it does not hold is not found here as it is there.
+func (s *LeaseService) TimeToLive(ctx context.Context, leaseID int64) (*Lease, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, LeaseTimeToLiveQuery{ID: leaseID})
+	if err != nil {
+		var stale *lease.StaleTTLError
+		if errors.As(err, &stale) {
+			return nil, s.ttlNotLeader(ctx, stale.Lease)
+		}
+		return nil, s.translateReadError(err)
+	}
+
+	l, ok := result.(*Lease)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return l, nil
+}
+
+// ttlNotLeader returns the refusal of a TimeToLive the shard's leader must
+// answer, carrying this replica's view of lease l and naming the leader when
+// this node knows it: its replica ID, and the Raft address the shard's
+// membership records for it. A leader not yet known, or one the membership
+// cannot be read for, leaves the address empty: the refusal is then answered
+// as unavailable, as every not-leader refusal without a leader is, and the
+// caller retries.
+func (s *LeaseService) ttlNotLeader(ctx context.Context, l *Lease) error {
+	refusal := &LeaseTTLNotLeaderError{NotLeaderError: NotLeaderError{ShardID: s.shardID}, Lease: l}
+	leaderID, known, err := s.host.GetLeaderID(s.shardID)
+	if err != nil || !known {
+		return refusal
+	}
+	refusal.LeaderID = leaderID
+	if m, err := s.host.SyncGetShardMembership(ctx, s.shardID); err == nil && m != nil {
+		refusal.LeaderAddress = m.Nodes[leaderID]
+	}
+	return refusal
 }
 
 // Leases returns all active leases.

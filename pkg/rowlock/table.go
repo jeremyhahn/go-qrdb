@@ -193,9 +193,11 @@ func (t *Table) enqueue(ctx context.Context, keys []string, owner string, mode M
 // went with the lease, and the caller deletes them explicitly as well (see
 // Owner.lostAtEnqueue). The state machine refuses an enqueue naming a lease
 // it no longer holds, so a record is never attached to nothing. A missing
-// lease is *service.LeaseNotFoundError.
+// lease is *service.LeaseNotFoundError. Only existence is asked, which every
+// replica answers, so a follower's refusal to answer the remaining TTL is
+// the lease being present.
 func (t *Table) leaseAlive(ctx context.Context, leaseID int64) error {
-	_, err := t.deps.Lease.TimeToLive(ctx, leaseID)
+	_, err := service.LeaseExists(t.deps.Lease.TimeToLive(ctx, leaseID))
 	return err
 }
 

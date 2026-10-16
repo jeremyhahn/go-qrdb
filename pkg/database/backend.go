@@ -58,6 +58,10 @@ type Backend interface {
 	// Delete removes a key.
 	Delete(ctx context.Context, key []byte) error
 
+	// DeleteRange removes keys in [start, end). A nil end removes keys from
+	// start through the end of the keyspace.
+	DeleteRange(ctx context.Context, start, end []byte) error
+
 	// List returns all keys matching the given prefix as strings.
 	List(ctx context.Context, prefix string) ([]string, error)
 

@@ -968,6 +968,10 @@ func (b *errBackend) Delete(_ context.Context, _ []byte) error {
 	return b.deleteErr
 }
 
+func (b *errBackend) DeleteRange(_ context.Context, _, _ []byte) error {
+	return b.deleteErr
+}
+
 func (b *errBackend) List(_ context.Context, _ string) ([]string, error) {
 	return nil, b.listErr
 }
@@ -1081,6 +1085,8 @@ func (b *hybridErrBackend) Get(_ context.Context, _ []byte) ([]byte, error) {
 func (b *hybridErrBackend) Put(_ context.Context, _, _ []byte) error { return nil }
 
 func (b *hybridErrBackend) Delete(_ context.Context, _ []byte) error { return nil }
+
+func (b *hybridErrBackend) DeleteRange(_ context.Context, _, _ []byte) error { return nil }
 
 func (b *hybridErrBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	return b.listFn(ctx, prefix)

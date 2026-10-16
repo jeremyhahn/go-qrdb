@@ -389,3 +389,126 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	}
 	return string(body), AppErrorCorrupt, true
 }
+
+// leaseInfoTag marks a state-machine Result.Data payload as the refreshed
+// state of a lease, returned from the SAME apply that changed it (go-qrdb#275).
+// KeepAlive used to answer every caller with a second, separately
+// linearized read of the lease it had just reset, and that read's tail
+// latency -- a ReadIndex round trip whenever the leader's local read lease
+// was not valid -- was the keepalive path's heavy tail. The apply already
+// computes the lease's post-update state; this lets the caller be
+// answered from the committed result instead of asking the cluster again.
+//
+// The tag's first byte is non-zero, so no decoder gated on appErrorPrefix
+// (which always begins 0x00) can mistake this for an application error.
+var leaseInfoTag = byte('L')
+
+// EncodeLeaseInfo encodes a lease's post-apply state for a state machine's
+// Result.Data. Format:
+// [tag:1='L'][id:8 LE][grantedTTL:8 LE][remainingTTL:8 LE][keyCount:4 LE]
+// then, for each of keyCount keys: [keyLen:4 LE][key].
+func EncodeLeaseInfo(id, grantedTTL, remainingTTL int64, keys [][]byte) []byte {
+	size := 1 + 8 + 8 + 8 + 4
+	for _, k := range keys {
+		size += 4 + len(k)
+	}
+	buf := make([]byte, size)
+	off := 0
+	buf[off] = leaseInfoTag
+	off++
+	binary.LittleEndian.PutUint64(buf[off:], uint64(id))
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], uint64(grantedTTL))
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], uint64(remainingTTL))
+	off += 8
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(keys))) //nolint:gosec // G115: bound by in-memory slice length
+	off += 4
+	for _, k := range keys {
+		binary.LittleEndian.PutUint32(buf[off:], uint32(len(k))) //nolint:gosec // G115: bound by in-memory slice length
+		off += 4
+		off += copy(buf[off:], k)
+	}
+	return buf
+}
+
+// DecodeLeaseInfo decodes a payload written by EncodeLeaseInfo. ok is false
+// for any payload EncodeLeaseInfo did not produce, including a truncated or
+// over-long one, one whose key count exceeds what it holds, or an
+// application-error payload (which never carries leaseInfoTag).
+func DecodeLeaseInfo(data []byte) (id, grantedTTL, remainingTTL int64, keys [][]byte, ok bool) {
+	const fixed = 1 + 8 + 8 + 8 + 4
+	if len(data) < fixed || data[0] != leaseInfoTag {
+		return 0, 0, 0, nil, false
+	}
+	off := 1
+	id = int64(binary.LittleEndian.Uint64(data[off:])) //nolint:gosec // G115: two's-complement round trip
+	off += 8
+	grantedTTL = int64(binary.LittleEndian.Uint64(data[off:])) //nolint:gosec // G115: two's-complement round trip
+	off += 8
+	remainingTTL = int64(binary.LittleEndian.Uint64(data[off:])) //nolint:gosec // G115: two's-complement round trip
+	off += 8
+	count := binary.LittleEndian.Uint32(data[off:])
+	off += 4
+	// Every key carries at least its 4-byte length, so a count the
+	// remaining bytes cannot hold is refused before it sizes anything.
+	if uint64(count) > uint64(len(data)-off)/4 {
+		return 0, 0, 0, nil, false
+	}
+	keys = make([][]byte, 0, count)
+	for i := uint32(0); i < count; i++ {
+		if off+4 > len(data) {
+			return 0, 0, 0, nil, false
+		}
+		klen := int(binary.LittleEndian.Uint32(data[off:]))
+		off += 4
+		if klen < 0 || off+klen > len(data) {
+			return 0, 0, 0, nil, false
+		}
+		key := make([]byte, klen)
+		copy(key, data[off:off+klen])
+		keys = append(keys, key)
+		off += klen
+	}
+	if off != len(data) {
+		return 0, 0, 0, nil, false
+	}
+	return id, grantedTTL, remainingTTL, keys, true
+}
+
+// leaseKeepAliveNotFoundTag marks a state-machine Result.Data payload as a
+// KeepAlive naming a lease the lessor does not (or no longer) hold.
+//
+// This is deliberately NOT EncodeLeaseNotFoundError's appErrorPrefix-gated
+// encoding: a KeepAlive against an unknown lease is an idempotent apply
+// success (replaying or duplicating a late keepalive must never stall Raft
+// by refusing the apply, and must not be classified as an application
+// error either -- see TestLeaseBinding_KeepAliveUnknownLeaseIsIdempotentSuccess
+// and docs/leases/engineering.md's error-semantics table). The not-found
+// outcome is still useful to the caller, so it travels back in Data for the
+// service layer (go-qrdb#275) to translate into LeaseNotFoundError -- but
+// only the service layer looks for this tag; DecodeAppError never matches
+// it, the same way it never matches leaseInfoTag.
+//
+// The tag's first byte is non-zero, so no decoder gated on appErrorPrefix
+// (which always begins 0x00) can mistake this for an application error.
+var leaseKeepAliveNotFoundTag = byte('K')
+
+// EncodeLeaseKeepAliveNotFound encodes a KeepAlive's not-found outcome for a
+// state machine's Result.Data. Format: [tag:1='K'][id:8 LE].
+func EncodeLeaseKeepAliveNotFound(id int64) []byte {
+	buf := make([]byte, 1+8)
+	buf[0] = leaseKeepAliveNotFoundTag
+	binary.LittleEndian.PutUint64(buf[1:], uint64(id))
+	return buf
+}
+
+// DecodeLeaseKeepAliveNotFound decodes a payload written by
+// EncodeLeaseKeepAliveNotFound. ok is false for any payload this function
+// did not produce, including a truncated one.
+func DecodeLeaseKeepAliveNotFound(data []byte) (id int64, ok bool) {
+	if len(data) != 1+8 || data[0] != leaseKeepAliveNotFoundTag {
+		return 0, false
+	}
+	return int64(binary.LittleEndian.Uint64(data[1:])), true //nolint:gosec // G115: two's-complement round trip
+}

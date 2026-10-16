@@ -461,6 +461,12 @@ func (s *reorderingStorage) record(op string) {
 }
 
 func (s *reorderingStorage) Set(key, value []byte) error {
+	if string(key) == diskMetaKeyLastApplied {
+		// The applied-index stamp is a different key from the one under
+		// test; its write order against that key is not what these tests
+		// pin, so it neither takes the hold nor joins the record.
+		return s.memStorage.Set(key, value)
+	}
 	s.hold()
 	s.record("set:" + string(key))
 	return s.memStorage.Set(key, value)
@@ -470,6 +476,12 @@ func (s *reorderingStorage) Delete(key []byte) error {
 	s.hold()
 	s.record("delete:" + string(key))
 	return s.memStorage.Delete(key)
+}
+
+func (s *reorderingStorage) DeleteRange(start, end []byte) error {
+	s.hold()
+	s.record("delete_range:" + string(start) + ".." + string(end))
+	return s.memStorage.DeleteRange(start, end)
 }
 
 // closer is the state machine half these tests need to drain.

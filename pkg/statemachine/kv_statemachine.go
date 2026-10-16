@@ -102,6 +102,10 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 		// position -- the drop fence rides on it. See guarded_write.go.
 		protocol.OpGuarded: k.handleGuarded,
 
+		// A replicated delete of every key in [start, end), gated by the
+		// range-delete feature. See delete_range.go.
+		protocol.OpDeleteRange: k.handleDeleteRange,
+
 		// MVCC
 		protocol.OpMVCCPut:    k.handleMVCCPut,
 		protocol.OpMVCCDelete: k.handleMVCCDelete,
@@ -111,9 +115,10 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 		protocol.OpTransaction: k.handleTransaction,
 
 		// Leases
-		protocol.OpLeaseGrant:     k.handleLeaseGrant,
-		protocol.OpLeaseRevoke:    k.handleLeaseRevoke,
-		protocol.OpLeaseKeepAlive: k.handleLeaseKeepAlive,
+		protocol.OpLeaseGrant:      k.handleLeaseGrant,
+		protocol.OpLeaseRevoke:     k.handleLeaseRevoke,
+		protocol.OpLeaseKeepAlive:  k.handleLeaseKeepAlive,
+		protocol.OpLeaseCheckpoint: k.handleLeaseCheckpoint,
 
 		// Chunked import session staging (pkg/importstage), lease-bound and
 		// never reachable from a client KV verb -- see kv_import_stage.go.
@@ -154,7 +159,21 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 	k.batch.RLock()
 	defer k.batch.RUnlock()
-	return k.applyEntries(entries, results)
+	if err := k.applyEntries(entries, results); err != nil {
+		return err
+	}
+	return k.stampApplied(entries)
+}
+
+// stampApplied records the index of the last entry in the batch under
+// diskMetaKeyLastApplied, so the applied index travels with the records in
+// snapshots and the state digest reads both under one lock. The disk
+// adapter stamps its own marker durably and does not come through here.
+func (k *KVStateMachine) stampApplied(entries []sm.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return k.backend.Put([]byte(diskMetaKeyLastApplied), encodeAppliedIndex(entries[len(entries)-1].Index))
 }
 
 // applyEntries is Update's dispatch loop without the batch lock: the caller
@@ -179,6 +198,7 @@ func (k *KVStateMachine) applyEntries(entries []sm.Entry, results []sm.Result) e
 		var result sm.Result
 		var err error
 		if handler, ok := k.handlers[op]; ok {
+			k.lessor.Applying(entries[i].Index)
 			revision := k.revision.Add(1)
 			result, err = handler(cmd[1:], revision)
 		} else {

@@ -27,11 +27,12 @@ func TestNewClosedBatchRefusesEveryOperation(t *testing.T) {
 	b := storage.NewClosedBatch()
 
 	cases := map[string]func() error{
-		"Get":      func() error { _, err := b.Get([]byte("k")); return err },
-		"Set":      func() error { return b.Set([]byte("k"), []byte("v")) },
-		"Delete":   func() error { return b.Delete([]byte("k")) },
-		"Commit":   func() error { return b.Commit() },
-		"Rollback": func() error { return b.Rollback() },
+		"Get":         func() error { _, err := b.Get([]byte("k")); return err },
+		"Set":         func() error { return b.Set([]byte("k"), []byte("v")) },
+		"Delete":      func() error { return b.Delete([]byte("k")) },
+		"DeleteRange": func() error { return b.DeleteRange([]byte("a"), []byte("b")) },
+		"Commit":      func() error { return b.Commit() },
+		"Rollback":    func() error { return b.Rollback() },
 	}
 	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {

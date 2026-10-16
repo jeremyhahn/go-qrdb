@@ -100,7 +100,7 @@ func TestTransport_CredentialRotate_Closed(t *testing.T) {
 
 func TestTransport_CredentialRetrieveVersion_Closed(t *testing.T) {
 	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1})
+	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected *ClosedError, got %T", err)
@@ -159,7 +159,7 @@ func TestTransport_CredentialRotate_NilRequest(t *testing.T) {
 
 func TestTransport_CredentialRetrieveVersion_NilRequest(t *testing.T) {
 	tr := newOpenCredentialTransport(t)
-	_, err := tr.CredentialRetrieveVersion(context.Background(), nil)
+	_, err := tr.retrieveVersionResponse(context.Background(), nil)
 	var nre *nilCredentialRequestError
 	if !errors.As(err, &nre) {
 		t.Fatalf("expected *nilCredentialRequestError, got %T", err)

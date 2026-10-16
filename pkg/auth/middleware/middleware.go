@@ -107,6 +107,11 @@ type AuthMiddleware struct {
 	// forged node SPIFFE SAN can present an honored on-behalf assertion.
 	issuerVerifier auth.IssuerVerifier
 
+	// delegations re-verifies the delegation certificate a forwarded
+	// on-behalf assertion carries (see WithDelegationVerifier). Nil refuses
+	// every such assertion.
+	delegations DelegationVerifier
+
 	// limiter and limits together are go-qrdb#201's centralized rate-limit
 	// enforcement: limiter is the engine (see ratelimit.Limiter), limits is
 	// the single-source per-permission Policy declaration (see
@@ -131,11 +136,12 @@ type AuthMiddleware struct {
 	lookupSettleBudget time.Duration
 }
 
-// authLookupSyncTimeout bounds the per-request linearizable user lookup. A
-// healthy ReadIndex answers far faster; on a transient consensus slowdown the
-// lookup fails over to the StaleRead fallback within this budget rather than
-// stalling the request. Kept sub-second so a brief blip cannot cascade into
-// multi-second per-request latency.
+// authLookupSyncTimeout bounds the per-request linearizable user lookup when a
+// fallback store can answer in its place. A healthy ReadIndex answers far
+// faster; on a transient consensus slowdown the lookup fails over to the
+// StaleRead fallback within this budget rather than stalling the request.
+// Kept sub-second so a brief blip cannot cascade into multi-second
+// per-request latency.
 const authLookupSyncTimeout = 500 * time.Millisecond
 
 // authLookupSettleBudget bounds how long one request's user lookup waits out
@@ -149,6 +155,21 @@ const authLookupSettleBudget = 10 * time.Second
 // authLookupSettlePoll paces the user lookup's attempts while it waits out an
 // election.
 const authLookupSettlePoll = 100 * time.Millisecond
+
+// authLookupTimeout bounds the linearizable user lookup for every tenant the
+// fallback does not hold, where there is nothing to fail over to. Cutting such
+// a read short does not make it faster, it turns a slow ReadIndex into a 503
+// on a request that would have been answered. It is sized to ride out one
+// leader election on a multi-node shard at go-quicraft's default timing (a
+// 2 s election timeout, randomized up to twice that) plus the new leader's
+// first commit, which a ReadIndex waits for. The role resolve that follows
+// uses the same budget (rbac resolveTimeout). It bounds one attempt:
+// lookupUser retries an attempt that fails with an election error within
+// authLookupSettleBudget.
+const authLookupTimeout = 5 * time.Second
+
+// authFallbackTimeout bounds the StaleRead fallback lookup.
+const authFallbackTimeout = 2 * time.Second
 
 // Option configures an AuthMiddleware.
 type Option func(*AuthMiddleware)
@@ -437,6 +458,14 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// forwarded on-behalf assertion, every capability module's fallback --
 	// came from a request, so one that claims the principal is refused here,
 	// before anything else reads it, whatever credential produced the claim.
+	//
+	// The one exception is a tenant-issued delegation the mTLS authenticator
+	// verified in full (auth.DelegationOf): the tenant's own CA naming the
+	// principal and the scope it may act with inside that tenant. No other
+	// authenticator can produce one.
+	if d, ok := auth.DelegationOf(identity); ok {
+		return m.finalizeDelegated(ctx, identity, d)
+	}
 	if auth.IsServicePrincipal(identity) {
 		return ctx, nil, &ServicePrincipalPresentedError{Subject: identity.Subject}
 	}
@@ -777,15 +806,26 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID string, key us
 // lookupUserOnce is one attempt of lookupUser: the user store, then, for the
 // system tenant only, its fallback.
 func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID string, key userKey) (*user.User, error) {
-	// Bound the linearizable (SyncRead) lookup tightly so a transient
-	// ReadIndex slowdown fails over to the StaleRead fallback in well under a
-	// second instead of stalling every authenticated request for seconds. A
-	// healthy ReadIndex answers in microseconds; the only cost of a short
-	// budget is a marginally-staler read on a blip, which is safe for
-	// auth (user/role data is replicated before servers start and changes
-	// rarely). This is the key guard against a brief consensus blip
-	// cascading into per-request latency that trips client/connect timeouts.
-	lookupCtx, cancel := context.WithTimeout(ctx, authLookupSyncTimeout)
+	// Bound the linearizable (SyncRead) lookup tightly when a fallback can
+	// answer instead, so a transient ReadIndex slowdown fails over to the
+	// StaleRead fallback in well under a second instead of stalling every
+	// authenticated request for seconds. A healthy ReadIndex answers in
+	// microseconds; the only cost of a short budget is a marginally-staler
+	// read on a blip, which is safe for auth (user/role data is replicated
+	// before servers start and changes rarely). This is the key guard
+	// against a brief consensus blip cascading into per-request latency that
+	// trips client/connect timeouts.
+	//
+	// The fallback holds the system tenant only (see below). For every other
+	// tenant there is nothing to fail over to, so the short budget would only
+	// turn a slow read into a 503 for a correctly enrolled caller: those
+	// lookups get authLookupTimeout instead.
+	hasFallback := m.usersFallback != nil && tenantid.IsSystem(tenantID)
+	budget := authLookupTimeout
+	if hasFallback {
+		budget = authLookupSyncTimeout
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, budget)
 	u, err := key.get(lookupCtx, m.users, tenantID)
 	cancel()
 	if err == nil {
@@ -815,8 +855,8 @@ func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID string, ke
 	// as authoritative turned a slow ReadIndex into a definitive 403 for a
 	// correctly enrolled user. For those tenants the primary's transient error
 	// stands, and the caller gets the retryable 503 it describes.
-	if m.usersFallback != nil && tenantid.IsSystem(tenantID) {
-		fallbackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	if hasFallback {
+		fallbackCtx, cancel := context.WithTimeout(ctx, authFallbackTimeout)
 		u, ferr := key.get(fallbackCtx, m.usersFallback, tenantID)
 		cancel()
 		if ferr == nil {
@@ -908,6 +948,12 @@ func (m *AuthMiddleware) decide(ctx context.Context, identity *auth.Identity, pe
 	if perm == permission.IdentityGated {
 		if identity == nil {
 			return errUnauditedUnauthenticated
+		}
+		// A delegation confers its scope and nothing else: the ceremony and
+		// bootstrap verbs behind the sentinel are a holder's or an
+		// administrator's, never a delegated service's.
+		if _, delegated := auth.DelegationOf(identity); delegated {
+			return auth.ErrUnauthorized
 		}
 		return nil
 	}
@@ -1036,7 +1082,16 @@ var tenantAdminCrossFallback = map[permission.Permission]permission.Permission{
 // visible and measurable rather than silent, and the hash chain guarantees
 // the gap cannot be back-filled with forged records.
 func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Identity, perm permission.Permission, err error) error {
+	// Every use of a delegation is recorded in the delegating tenant's
+	// trail, whatever the configured policy: a delegated request is refused
+	// when there is no logger to record it, or when the record cannot be
+	// written. FailOpen is an operator's choice about the operator's own
+	// trail; it does not extend to acting on a tenant's behalf unrecorded.
+	delegationMeta, delegated := delegationAuditMetadata(identity)
 	if m.audit == nil {
+		if delegated {
+			return &audit.GateError{Component: authorizeComponent, Err: &DelegationUnauditedError{}}
+		}
 		return nil
 	}
 
@@ -1076,6 +1131,7 @@ func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Ident
 		Action:    "auth.authorize",
 		Resource:  perm.String(),
 		Result:    result,
+		Metadata:  delegationMeta,
 	}
 
 	auditErr := m.audit.Log(ctx, entry)
@@ -1083,17 +1139,21 @@ func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Ident
 		return nil
 	}
 
-	auditWriteFailures().With(auditFailureOutcomes[m.auditFailure]).Inc()
+	policy := m.auditFailure
+	if delegated {
+		policy = audit.FailClosed
+	}
+	auditWriteFailures().With(auditFailureOutcomes[policy]).Inc()
 
 	slog.Error("auth/middleware: audit log failed",
 		"error", auditErr,
 		"subject", subject,
 		"tenant", tenantID,
 		"permission", perm.String(),
-		"policy", m.auditFailure.String(),
+		"policy", policy.String(),
 	)
 
-	if m.auditFailure == audit.FailOpen {
+	if policy == audit.FailOpen {
 		return nil
 	}
 	return &audit.GateError{Component: authorizeComponent, Err: auditErr}

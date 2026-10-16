@@ -171,6 +171,31 @@ var ErrFactorNotFound = auth.ErrFactorNotFound
 // enrolled for the user.
 var ErrFactorAlreadyExists = auth.ErrFactorAlreadyExists
 
+// ErrFactorConditionFailed is returned when a conditional factor add is
+// refused because its condition did not hold; errors.As recovers the
+// *FactorConditionFailedError carrying the factor-set state that refused it.
+var ErrFactorConditionFailed = auth.ErrFactorConditionFailed
+
+// FactorConditionFailedError reports which condition refused a conditional
+// factor add and the factor-set version it was decided against.
+type FactorConditionFailedError = auth.FactorConditionFailedError
+
+// FactorAddCondition is the condition a conditional factor add commits under.
+type FactorAddCondition = auth.FactorAddCondition
+
+// FactorConditionKind names the condition a conditional factor add carried.
+type FactorConditionKind = auth.FactorConditionKind
+
+const (
+	// FactorConditionNoActiveOfType holds while the user has no active factor
+	// of the added factor's type.
+	FactorConditionNoActiveOfType = auth.FactorConditionNoActiveOfType
+
+	// FactorConditionExpectedVersion holds while the user's factor set is at
+	// the expected version.
+	FactorConditionExpectedVersion = auth.FactorConditionExpectedVersion
+)
+
 // ErrFactorTypeUnsupported is returned for an unrecognized factor type.
 var ErrFactorTypeUnsupported = auth.ErrFactorTypeUnsupported
 

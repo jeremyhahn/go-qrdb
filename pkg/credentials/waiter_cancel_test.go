@@ -38,7 +38,7 @@ func TestRetrieveManual_CancelDeregistersWaiter(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, e := svc.RetrieveCredential(ctx, "db")
+		_, e := svc.retrieveBytes(ctx, "db")
 		done <- e
 	}()
 
@@ -68,7 +68,7 @@ func TestRetrieveManual_CancelDeregistersWaiter(t *testing.T) {
 	if e := svc.SubmitCredential(context.Background(), "db", []byte("secret")); e != nil {
 		t.Fatalf("SubmitCredential: %v", e)
 	}
-	got, e := svc.RetrieveCredential(context.Background(), "db")
+	got, e := svc.retrieveBytes(context.Background(), "db")
 	if e != nil {
 		t.Fatalf("RetrieveCredential: %v", e)
 	}

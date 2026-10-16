@@ -60,6 +60,9 @@ type genericDAO[E Entity] struct {
 	// other: lifecycle.kvStoreAdapter maintains real single-field indexes
 	// through the engine but has no compound verb at all.
 	compoundIndexesUnsupported bool
+	// holdsSecrets records that E can contain a SecretBytes, so discard
+	// walks only entities that can hold protected memory.
+	holdsSecrets bool
 }
 
 // Ensure genericDAO implements GenericDAO.
@@ -106,13 +109,14 @@ func New[E Entity](
 	}
 
 	dao := &genericDAO[E]{
-		store:      store,
-		entityType: entityType,
-		newEntity:  newEntity,
-		codec:      codec,
-		timeout:    cfg.Timeout,
-		idGen:      idGen,
-		database:   cfg.Database,
+		store:        store,
+		entityType:   entityType,
+		newEntity:    newEntity,
+		codec:        codec,
+		timeout:      cfg.Timeout,
+		idGen:        idGen,
+		database:     cfg.Database,
+		holdsSecrets: holdsSecretBytes(reflect.TypeFor[E]()),
 	}
 
 	// Parse struct tags for index definitions and register them.
@@ -133,8 +137,18 @@ func New[E Entity](
 		return nil, err
 	}
 	hasCompoundIndexes := false
+	var indexedFields []string
+	for fieldName := range indexMeta {
+		indexedFields = append(indexedFields, fieldName)
+	}
 	if cr, ok := any(entity).(index.CompoundIndexRegisterer); ok {
 		hasCompoundIndexes = len(cr.CompoundIndexes()) > 0
+		for _, def := range cr.CompoundIndexes() {
+			indexedFields = append(indexedFields, def.Fields...)
+		}
+	}
+	if err := refuseSecretIndexes(entityType, eType, indexedFields); err != nil {
+		return nil, err
 	}
 	if len(indexMeta) > 0 || hasCompoundIndexes {
 		// Convert IndexMetadata to EntityIndex definitions. IndexName is set
@@ -229,16 +243,36 @@ func New[E Entity](
 			}
 			return codec.Marshal(e)
 		},
+		// The SQL bridge reads an entity's columns and drops it, and a
+		// SecretBytes field is never a column (buildRegistrationFields),
+		// so the secrets of an entity decoded for it are destroyed here
+		// rather than held in locked memory nothing releases.
 		UnmarshalFunc: func(data []byte) (any, error) {
 			e := newEntity()
 			if err := codec.Unmarshal(data, &e); err != nil {
 				return nil, err
 			}
+			dao.discard(e)
 			return e, nil
 		},
 	})
 
 	return dao, nil
+}
+
+// discard destroys the secrets of entities the DAO decoded for its own use
+// and does not return to its caller: a natural-key check, a record a query
+// filters out or pages past, what a call collected before it failed. Only an
+// entity handed to the caller may hold protected memory, since nothing else
+// would ever destroy it. It is a no-op for an entity type holding no
+// SecretBytes.
+func (d *genericDAO[E]) discard(entities ...E) {
+	if !d.holdsSecrets {
+		return
+	}
+	for _, e := range entities {
+		destroySecrets(e)
+	}
 }
 
 // Save persists an entity to storage.
@@ -361,7 +395,9 @@ func (d *genericDAO[E]) saveDeterministic(ctx context.Context, entity E, gen Det
 		if unmarshalErr := d.codec.Unmarshal(existingData, &existing); unmarshalErr != nil {
 			return DeserializationFailedError{EntityType: d.entityType, Cause: unmarshalErr}
 		}
-		if mismatch := VerifyNaturalKey(existing, d.entityType, gen.FieldName(), expectedValue); mismatch != nil {
+		mismatch := VerifyNaturalKey(existing, d.entityType, gen.FieldName(), expectedValue)
+		d.discard(existing)
+		if mismatch != nil {
 			return &IDCollisionError{EntityType: d.entityType, ID: entity.EntityID()}
 		}
 
@@ -582,6 +618,7 @@ func (d *genericDAO[E]) GetByNaturalKey(ctx context.Context, value string) (E, e
 	}
 
 	if err := VerifyNaturalKey(entity, d.entityType, namedGen.FieldName(), value); err != nil {
+		d.discard(entity)
 		return zero, err
 	}
 
@@ -656,6 +693,7 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 			return nil
 		})
 		if err != nil {
+			d.discard(all...)
 			return result, err
 		}
 
@@ -663,6 +701,7 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 
 		result.Total = len(all)
 		if offset >= len(all) {
+			d.discard(all...)
 			return result, nil
 		}
 
@@ -670,6 +709,8 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 		if end > len(all) {
 			end = len(all)
 		}
+		d.discard(all[:offset]...)
+		d.discard(all[end:]...)
 		result.Entities = append(result.Entities, all[offset:end]...)
 		result.HasMore = end < len(all)
 		return result, nil
@@ -712,6 +753,8 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 	})
 
 	if err != nil && !errors.Is(err, ErrStopIteration) {
+		d.discard(result.Entities...)
+		result.Entities = result.Entities[:0]
 		return result, err
 	}
 
@@ -875,6 +918,7 @@ func (d *genericDAO[E]) QueryByIndex(ctx context.Context, fieldName string, valu
 			if isNotFoundError(getErr) || IsNotFound(getErr) {
 				continue
 			}
+			d.discard(entities...)
 			return nil, getErr
 		}
 		entities = append(entities, entity)
@@ -896,6 +940,7 @@ func (d *genericDAO[E]) QueryOneByIndex(ctx context.Context, fieldName string, v
 	if len(entities) == 0 {
 		return zero, NotFoundError{EntityType: d.entityType, ID: 0}
 	}
+	d.discard(entities[1:]...)
 
 	return entities[0], nil
 }
@@ -936,6 +981,7 @@ func (d *genericDAO[E]) ScanByIndex(ctx context.Context, fieldName string, start
 				if isNotFoundError(getErr) || IsNotFound(getErr) {
 					continue
 				}
+				d.discard(entities...)
 				return nil, getErr
 			}
 			entities = append(entities, entity)
@@ -997,6 +1043,8 @@ func (d *genericDAO[E]) PageByIndex(ctx context.Context, fieldName string, value
 			if isNotFoundError(getErr) || IsNotFound(getErr) {
 				continue
 			}
+			d.discard(result.Entities...)
+			result.Entities = result.Entities[:0]
 			return result, getErr
 		}
 		result.Entities = append(result.Entities, entity)
@@ -1097,6 +1145,7 @@ func (d *genericDAO[E]) loadEntities(ctx context.Context, keys [][]byte) ([]E, e
 			if isNotFoundError(getErr) || IsNotFound(getErr) {
 				continue
 			}
+			d.discard(entities...)
 			return nil, getErr
 		}
 		entities = append(entities, entity)
@@ -1174,7 +1223,9 @@ func buildRegistrationFields(eType reflect.Type, indexMeta map[string]*index.Ind
 	fields := make([]entitypkg.FieldMeta, 0, eType.NumField())
 	for i := 0; i < eType.NumField(); i++ {
 		sf := eType.Field(i)
-		if !sf.IsExported() {
+		// A SecretBytes field is no SQL column: the bridge would read the
+		// secret out of protected memory into a result row.
+		if !sf.IsExported() || holdsSecretBytes(sf.Type) {
 			continue
 		}
 		fm := entitypkg.FieldMeta{
@@ -1193,6 +1244,17 @@ func buildRegistrationFields(eType reflect.Type, indexMeta map[string]*index.Ind
 		fields = append(fields, fm)
 	}
 	return fields
+}
+
+// refuseSecretIndexes refuses an index over a field that holds a
+// SecretBytes, since the index would keep a copy of the secret as its term.
+func refuseSecretIndexes(entityType string, eType reflect.Type, fieldNames []string) error {
+	for _, name := range fieldNames {
+		if sf, ok := eType.FieldByName(name); ok && holdsSecretBytes(sf.Type) {
+			return SecretFieldIndexedError{EntityType: entityType, Field: name}
+		}
+	}
+	return nil
 }
 
 // idSentinel is the value used to detect which struct field holds the

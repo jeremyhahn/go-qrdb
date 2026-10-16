@@ -51,6 +51,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -888,6 +889,9 @@ func (s *stubCertEnroll) ListTrustAnchors(_ context.Context, _ string) ([]trusta
 	return nil, nil
 }
 func (s *stubCertEnroll) RemoveTrustAnchor(_ context.Context, _, _ string) error { return nil }
+func (s *stubCertEnroll) IssueDelegation(_ context.Context, _ *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	return nil, nil
+}
 
 var _ service.CertEnrollmentServicer = (*stubCertEnroll)(nil)
 
@@ -1243,8 +1247,12 @@ type stubCredentialSvc struct{}
 func (s *stubCredentialSvc) CredentialStore(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
-func (s *stubCredentialSvc) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
-	return nil, nil
+func (s *stubCredentialSvc) CredentialRetrieveBuffer(_ context.Context, _ string) (*secure.Buffer, error) {
+	return secure.NewBufferFromBytes([]byte("stub-credential"))
+}
+
+func (s *stubCredentialSvc) CredentialRetrieveVersionBuffer(_ context.Context, _ string, _ uint64) (*secure.Buffer, error) {
+	return secure.NewBufferFromBytes([]byte("stub-credential"))
 }
 func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []byte) error {
 	return nil
@@ -1256,9 +1264,6 @@ func (s *stubCredentialSvc) CredentialList(_ context.Context) ([]string, error) 
 }
 func (s *stubCredentialSvc) CredentialRotate(_ context.Context, _ string, _ credentials.RotateOptions) (*credentials.RotateResult, error) {
 	return &credentials.RotateResult{}, nil
-}
-func (s *stubCredentialSvc) CredentialRetrieveVersion(_ context.Context, _ string, _ uint64) ([]byte, error) {
-	return nil, nil
 }
 func (s *stubCredentialSvc) CredentialListVersions(_ context.Context, _ string) ([]credentials.CredentialVersion, error) {
 	return nil, nil

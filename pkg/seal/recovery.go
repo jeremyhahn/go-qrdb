@@ -117,6 +117,9 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 
 	b.activeStrategy.Store(active)
 	b.state.Store(stateUnsealed)
+	// The other rounds this unseal ends (a recovery round racing an unseal
+	// quorum, or the reverse) can never complete: their shares go now.
+	b.destroyUnrunnableRounds()
 	b.notifyUnsealed(ctx)
 	b.restoreInitializedAt(ctx)
 	emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
@@ -167,21 +170,13 @@ func (r *recoveryStrategy) SealRootKey(_ context.Context, _ []byte, _ Credential
 }
 
 func (r *recoveryStrategy) UnsealRootKey(ctx context.Context, _ *SealedRootKey, _ Credentials) ([]byte, error) {
-	// Borrow the protected key only for the moment it takes to hand a copy to
-	// Barrier.Unseal, which owns and wipes the returned slice. The enclave is
-	// re-sealed the instant the buffer is destroyed.
-	//
-	// The copy runs inside a COORDINATED borrow (go-qrdb#74): the earlier
-	// Size-then-Bytes pair took two separate borrows with a gap between, and a
-	// concurrent destroy (a shutdown enclave.WipeAll) landing in that gap would
-	// have handed Barrier.Unseal a correctly sized run of zeros. secure.CopyOut
-	// holds one borrow across the copy and refuses an empty source, so a
-	// destroyed enclave fails the unseal instead of silently unsealing with
-	// nothing.
-	//
-	// Traced callees: CopyOut's callback is make + copy. Nothing here reaches a
-	// SealingStrategy or the store, which is what makes THIS site convertible
-	// while Recover's own rootKey read (recovery.go, above) is not.
+	// The SealingStrategy contract returns the root key as a caller-owned
+	// []byte, which Barrier.Unseal takes ownership of and wipes, so this is the
+	// one place the key leaves protected memory — a contract boundary, not a
+	// callee handed a copy. secure.CopyOut holds one borrow across the copy and
+	// refuses an empty source, so a destroyed enclave fails the unseal instead
+	// of silently unsealing with zeros. Destroy runs after the borrow ends: it
+	// would deadlock against the buffer's own borrow (go-qrdb#145).
 	buf, err := r.rootKey.Open(ctx)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "open recovery key", Cause: err}
@@ -202,8 +197,9 @@ func (r *recoveryStrategy) BarrierEncryptor(ctx context.Context, rootKey []byte)
 }
 
 // DeleteRecoveryKeys removes the recovery-key domain. The recovery shares
-// already distributed become useless: their key wraps nothing any more. The
-// barrier must be unsealed.
+// already distributed become useless: their key wraps nothing any more, and
+// any round open on them is destroyed with its shares. The barrier must be
+// unsealed.
 func (b *StorageBarrier) DeleteRecoveryKeys(ctx context.Context) error {
 	if b.IsSealed() {
 		return ErrSealed
@@ -211,6 +207,7 @@ func (b *StorageBarrier) DeleteRecoveryKeys(ctx context.Context) error {
 	if err := b.base.Delete(ctx, b.wrappedKeyPath(DomainRecovery)); err != nil && !isSecretNotFound(err) {
 		return err
 	}
+	b.destroyDomainRounds(DomainRecovery)
 	return nil
 }
 

@@ -176,6 +176,21 @@ func (m *memoryKVSvc) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+func (m *memoryKVSvc) DeleteRange(_ context.Context, start, end []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.data {
+		if key < string(start) {
+			continue
+		}
+		if len(end) > 0 && key >= string(end) {
+			continue
+		}
+		delete(m.data, key)
+	}
+	return nil
+}
+
 // List is the USER-FACING enumeration and applies the internal-key discovery
 // guard, exactly as every production KVServicer does.
 //

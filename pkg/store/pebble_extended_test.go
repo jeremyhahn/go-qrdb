@@ -20,6 +20,8 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,10 +30,12 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -75,10 +79,10 @@ func readBatch(t *testing.T, s *PebbleStateMachine) *pebble.Batch {
 }
 
 // openStoreWithLessor creates a PebbleStateMachine with a Lessor attached.
-func openStoreWithLessor(t *testing.T) (*PebbleStateMachine, *lease.Lessor) {
+func openStoreWithLessor(t *testing.T, opts ...lease.Option) (*PebbleStateMachine, *lease.Lessor) {
 	t.Helper()
 	s := NewPebbleStateMachine(nil)
-	lr := lease.NewLessor()
+	lr := lease.NewLessor(opts...)
 	s.SetLessor(lr)
 	dir := filepath.Join(t.TempDir(), "db")
 	_, err := s.Open(context.Background(), dir, nil)
@@ -90,6 +94,171 @@ func openStoreWithLessor(t *testing.T) (*PebbleStateMachine, *lease.Lessor) {
 		_ = s.Close(context.Background())
 	})
 	return s, lr
+}
+
+func TestPebbleStateMachine_Lookup_LeaseKeepAlive(t *testing.T) {
+	s, lr := openStoreWithLessor(t)
+	results := make([]sm.Result, 1)
+	grant := []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(30))}}
+	if err := s.Update(context.Background(), grant, results); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	leaseID := int64(results[0].Value)
+
+	var np *lease.NotPrimaryError
+	if _, err := s.Lookup(context.Background(), lease.LeaseKeepAliveQuery{ID: leaseID}); !errors.As(err, &np) {
+		t.Fatalf("Lookup before RunExpiry error = %v, want *lease.NotPrimaryError", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lr.RunExpiry(ctx, time.Hour, func() bool { return true },
+			func(context.Context, int64) error { return nil }, nil)
+	}()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := s.Lookup(context.Background(), lease.LeaseKeepAliveQuery{ID: leaseID})
+		if err == nil {
+			if l := got.(*lease.Lease); l.ID != leaseID {
+				t.Fatalf("lease ID = %d, want %d", l.ID, leaseID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Lookup never renewed: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var lnf *service.LeaseNotFoundError
+	if _, err := s.Lookup(context.Background(), lease.LeaseKeepAliveQuery{ID: leaseID + 99}); !errors.As(err, &lnf) {
+		t.Fatalf("unknown lease error = %v, want *service.LeaseNotFoundError", err)
+	}
+}
+
+func TestPebbleStateMachine_Lookup_LeaseKeepAliveWithoutLessor(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
+	if _, err := s.Open(context.Background(), filepath.Join(t.TempDir(), "db"), nil); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	var iq *InvalidQueryError
+	if _, err := s.Lookup(context.Background(), lease.LeaseKeepAliveQuery{ID: 1}); !errors.As(err, &iq) {
+		t.Fatalf("error = %v, want *InvalidQueryError", err)
+	}
+}
+
+// recordingCheckpointer is a lease.Checkpointer that records every batch the
+// checkpoint loop proposes and reports it applied.
+type recordingCheckpointer struct {
+	mu  sync.Mutex
+	cps []lease.Checkpoint
+}
+
+var _ lease.Checkpointer = (*recordingCheckpointer)(nil)
+
+func (r *recordingCheckpointer) CheckpointEnabled() bool { return true }
+
+func (r *recordingCheckpointer) Checkpoint(_ context.Context, _, _ uint64, cps []lease.Checkpoint) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cps = append(r.cps, cps...)
+	return nil
+}
+
+func (r *recordingCheckpointer) AwaitApplied(context.Context) error { return nil }
+
+func (r *recordingCheckpointer) recorded() []lease.Checkpoint {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.cps)
+}
+
+func TestPebbleStateMachine_Lookup_LeaseCheckpointNow(t *testing.T) {
+	fc := clocktest.New()
+	s, lr := openStoreWithLessor(t, lease.WithClock(fc))
+	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(30))}})
+	leaseID := int64(results[0].Value)
+
+	var np *lease.NotPrimaryError
+	if _, err := s.Lookup(context.Background(), lease.LeaseCheckpointNowQuery{}); !errors.As(err, &np) {
+		t.Fatalf("Lookup before RunExpiry error = %v, want *lease.NotPrimaryError", err)
+	}
+
+	cp := &recordingCheckpointer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lr.RunExpiry(ctx, time.Hour, func() bool { return true },
+			func(context.Context, int64) error { return nil }, nil,
+			lease.WithCheckpoint(time.Hour, cp))
+	}()
+	defer func() { cancel(); <-done }()
+
+	// The loop marks itself checkpointing before it arms the expiry ticker,
+	// its second, so two armed tickers mean the request is accepted.
+	armCtx, armCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer armCancel()
+	if err := fc.BlockUntil(armCtx, 2); err != nil {
+		t.Fatalf("the expiry loop never armed its tickers: %v", err)
+	}
+	got, err := s.Lookup(context.Background(), lease.LeaseCheckpointNowQuery{})
+	if err != nil {
+		t.Fatalf("Lookup on the primary: %v", err)
+	}
+	answer, ok := got.(<-chan error)
+	if !ok {
+		t.Fatalf("Lookup answered %T, want <-chan error", got)
+	}
+	select {
+	case err := <-answer:
+		if err != nil {
+			t.Fatalf("checkpoint-now answered %v", err)
+		}
+	case <-armCtx.Done():
+		t.Fatal("checkpoint-now was never answered")
+	}
+	if rec := cp.recorded(); len(rec) != 1 || rec[0].ID != leaseID || rec[0].RemainingTTL != 30 {
+		t.Fatalf("checkpointed %+v, want lease %d at 30s", rec, leaseID)
+	}
+}
+
+func TestPebbleStateMachine_Lookup_LeaseCheckpointNowWithoutLessor(t *testing.T) {
+	s := openExtendedStore(t) // no lessor
+
+	var iq *InvalidQueryError
+	if _, err := s.Lookup(context.Background(), lease.LeaseCheckpointNowQuery{}); !errors.As(err, &iq) {
+		t.Fatalf("error = %v, want *InvalidQueryError", err)
+	}
+}
+
+func TestPebbleStateMachine_LeaseCheckpoint_NoLessor(t *testing.T) {
+	s := openExtendedStore(t) // no lessor
+
+	cmd := mustEncode(protocol.EncodeLeaseCheckpoint(0, 0, []lease.Checkpoint{{ID: 1, RemainingTTL: 5}}))
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
+	}
+}
+
+func TestPebbleStateMachine_LeaseCheckpoint_InvalidPayload(t *testing.T) {
+	s, _ := openStoreWithLessor(t)
+
+	results := make([]sm.Result, 1)
+	cmd := []byte{protocol.OpLeaseCheckpoint, 0x01}
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err == nil {
+		t.Fatal("a truncated checkpoint command applied")
+	}
 }
 
 // openStoreWithHub creates a PebbleStateMachine with a watch Hub attached.
@@ -142,6 +311,23 @@ func applyExtEntries(t *testing.T, s *PebbleStateMachine, entries []sm.Entry) []
 		t.Fatalf("Update: unexpected error: %v", err)
 	}
 	return results
+}
+
+func lookupExtKey(t *testing.T, s *PebbleStateMachine, key string) []byte {
+	t.Helper()
+	got, err := s.Lookup(context.Background(), []byte(key))
+	if err != nil {
+		var keyNotFound *kv.KeyNotFoundError
+		if errors.As(err, &keyNotFound) {
+			return nil
+		}
+		t.Fatalf("Lookup %s: %v", key, err)
+	}
+	value, ok := got.([]byte)
+	if !ok {
+		t.Fatalf("Lookup %s returned %T", key, got)
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +474,89 @@ func TestPebbleStateMachine_MVCCDelete(t *testing.T) {
 	_, err := s.Lookup(context.Background(), []byte("del-key"))
 	if err == nil {
 		t.Fatal("expected error for deleted key")
+	}
+}
+
+func TestPebbleStateMachine_DeleteRange_RemovesRangeAndHashesDeterministically(t *testing.T) {
+	left := openExtendedStore(t)
+	right := openExtendedStore(t)
+	entries := []sm.Entry{
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("app/a"), []byte("1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("app/b"), []byte("2"), 0))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("app/c"), []byte("3"), 0))},
+		{Index: 4, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("other/a"), []byte("4"), 0))},
+		{Index: 5, Cmd: mustEncode(protocol.EncodeDeleteRange([]byte("app/"), storage.PrefixEnd([]byte("app/"))))},
+	}
+	applyExtEntries(t, left, entries)
+	applyExtEntries(t, right, entries)
+
+	if got := lookupExtKey(t, left, "app/a"); got != nil {
+		t.Fatalf("app/a survived range delete: %q", got)
+	}
+	if got := lookupExtKey(t, left, "other/a"); string(got) != "4" {
+		t.Fatalf("other/a = %q, want 4", got)
+	}
+	lh, err := left.GetHash()
+	if err != nil {
+		t.Fatalf("left hash: %v", err)
+	}
+	rh, err := right.GetHash()
+	if err != nil {
+		t.Fatalf("right hash: %v", err)
+	}
+	if lh != rh {
+		t.Fatalf("hash mismatch after range delete")
+	}
+
+	snapCtx, err := left.PrepareSnapshot()
+	if err != nil {
+		t.Fatalf("PrepareSnapshot: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := left.SaveSnapshot(context.Background(), snapCtx, &buf, nil); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	snapshotDst := openExtendedStore(t)
+	applyExtEntries(t, snapshotDst, []sm.Entry{
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("app/stale"), []byte("stale"), 0))},
+	})
+	if err := snapshotDst.RecoverFromSnapshot(context.Background(), &buf, nil); err != nil {
+		t.Fatalf("RecoverFromSnapshot: %v", err)
+	}
+	if got := lookupExtKey(t, snapshotDst, "app/stale"); got != nil {
+		t.Fatalf("app/stale survived snapshot install: %q", got)
+	}
+	if got := lookupExtKey(t, snapshotDst, "other/a"); string(got) != "4" {
+		t.Fatalf("snapshot other/a = %q, want 4", got)
+	}
+
+	restartDir := filepath.Join(t.TempDir(), "db")
+	restart := NewPebbleStateMachine(nil)
+	if idx, err := restart.Open(context.Background(), restartDir, nil); err != nil || idx != 0 {
+		t.Fatalf("restart Open fresh: index=%d err=%v", idx, err)
+	}
+	applyExtEntries(t, restart, entries)
+	if err := restart.Close(context.Background()); err != nil {
+		t.Fatalf("Close before restart: %v", err)
+	}
+	restarted := NewPebbleStateMachine(nil)
+	idx, err := restarted.Open(context.Background(), restartDir, nil)
+	if err != nil {
+		t.Fatalf("Open after restart: %v", err)
+	}
+	if idx != uint64(len(entries)) {
+		t.Fatalf("Open after restart index=%d, want %d", idx, len(entries))
+	}
+	t.Cleanup(func() {
+		if err := restarted.Close(context.Background()); err != nil {
+			t.Errorf("Close restarted: %v", err)
+		}
+	})
+	if got := lookupExtKey(t, restarted, "app/b"); got != nil {
+		t.Fatalf("app/b survived restart: %q", got)
+	}
+	if got := lookupExtKey(t, restarted, "other/a"); string(got) != "4" {
+		t.Fatalf("restarted other/a = %q, want 4", got)
 	}
 }
 

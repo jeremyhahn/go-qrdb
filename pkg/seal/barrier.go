@@ -713,6 +713,9 @@ func (b *StorageBarrier) Seal() error {
 
 	b.state.Store(stateSealed)
 
+	// Shares held toward a quorum round do not outlive the unsealed session.
+	b.destroyRounds()
+
 	emitAudit(b.config.AuditLogger, "seal", "barrier", b.config.RootKeyPath,
 		"allow", nil)
 
@@ -1193,6 +1196,9 @@ func (b *StorageBarrier) Exists(ctx context.Context, key string) (bool, error) {
 // Close seals the barrier and closes the underlying storage backend.
 func (b *StorageBarrier) Close() error {
 	_ = b.Seal()
+	// Seal returns early on an already sealed barrier, which is exactly when
+	// an unseal round holds shares.
+	b.destroyRounds()
 	return b.base.Close()
 }
 

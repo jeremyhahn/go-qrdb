@@ -75,6 +75,15 @@ func (e *Engine) Delete(key []byte) error {
 	return e.inner.Delete(append(e.prefix, key...))
 }
 
+// DeleteRange removes the namespaced keys in [start, end). A nil end reaches
+// the end of the namespace, never past it.
+func (e *Engine) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	return e.inner.DeleteRange(append(append([]byte(nil), e.prefix...), start...), appendRangeEnd(e.prefix, end))
+}
+
 // List returns all keys matching the given prefix within the namespace.
 // The namespace prefix is stripped from the returned keys.
 func (e *Engine) List(prefix []byte) ([][]byte, error) {
@@ -110,6 +119,16 @@ func (e *Engine) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 		inner:  e.inner.NewIterator(scopeIterOptions(e.prefix, opts)),
 		prefix: e.prefix,
 	}
+}
+
+// appendRangeEnd translates a range end into the namespace's key range. An
+// empty end, unbounded to the caller, becomes the end of the namespace, so a
+// range delete never reaches the keys of a namespace that sorts after it.
+func appendRangeEnd(prefix, end []byte) []byte {
+	if len(end) == 0 {
+		return storage.PrefixEnd(prefix)
+	}
+	return append(append([]byte(nil), prefix...), end...)
 }
 
 // scopeIterOptions rewrites iterator options into the namespace's key range,
@@ -170,6 +189,15 @@ func (b *namespacedBatch) Set(key, value []byte) error {
 // Delete removes a key in the batch with the namespace prefix.
 func (b *namespacedBatch) Delete(key []byte) error {
 	return b.inner.Delete(append(b.prefix, key...))
+}
+
+// DeleteRange removes the namespaced keys in [start, end) in the batch. A nil
+// end reaches the end of the namespace, never past it.
+func (b *namespacedBatch) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	return b.inner.DeleteRange(append(append([]byte(nil), b.prefix...), start...), appendRangeEnd(b.prefix, end))
 }
 
 // Get reads through the batch's own pending writes, then the namespaced

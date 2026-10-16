@@ -330,7 +330,7 @@ func TestCredentialRetrieveVersion_Success(t *testing.T) {
 	rt, srv := newCredentialsTestTransport(t)
 	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: []byte("secret")})
 
-	resp, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	resp, err := rt.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "apikey",
 		Version: 3,
 	})
@@ -355,7 +355,7 @@ func TestCredentialRetrieveVersion_CurrentVersionZero(t *testing.T) {
 	rt, srv := newCredentialsTestTransport(t)
 	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: []byte("current")})
 
-	_, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	_, err := rt.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "k",
 		Version: 0,
 	})
@@ -369,7 +369,7 @@ func TestCredentialRetrieveVersion_CurrentVersionZero(t *testing.T) {
 
 func TestCredentialRetrieveVersion_NilRequest(t *testing.T) {
 	rt, _ := newCredentialsTestTransport(t)
-	_, err := rt.CredentialRetrieveVersion(context.Background(), nil)
+	_, err := rt.retrieveVersionResponse(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -377,7 +377,7 @@ func TestCredentialRetrieveVersion_NilRequest(t *testing.T) {
 
 func TestCredentialRetrieveVersion_EmptyName(t *testing.T) {
 	rt, _ := newCredentialsTestTransport(t)
-	_, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: ""})
+	_, err := rt.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: ""})
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -387,7 +387,7 @@ func TestCredentialRetrieveVersion_Gone(t *testing.T) {
 	rt, srv := newCredentialsTestTransport(t)
 	srv.retrieveFailCode.Store(int64(http.StatusGone))
 
-	_, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	_, err := rt.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "k",
 		Version: 1,
 	})
@@ -406,7 +406,7 @@ func TestCredentialRetrieveVersion_Gone(t *testing.T) {
 func TestCredentialRetrieveVersion_AfterClose(t *testing.T) {
 	rt, _ := newCredentialsTestTransport(t)
 	_ = rt.Close()
-	_, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1})
+	_, err := rt.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1})
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError, got %v", err)
@@ -577,7 +577,7 @@ func TestCredential_BinaryRoundTrip(t *testing.T) {
 		t.Fatalf("server decoded NewValue = %#v, want %#v", body.NewValue, nonUTF8CredentialValue)
 	}
 
-	resp, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	resp, err := rt.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "bin",
 		Version: 0,
 	})

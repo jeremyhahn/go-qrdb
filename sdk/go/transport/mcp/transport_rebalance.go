@@ -103,21 +103,34 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 	if err != nil {
 		return nil, &transport.RequestError{Method: "ExecuteRebalance", Err: err}
 	}
+	// The tool returns service.RebalanceExecutionResult, untagged, so its
+	// members decode by Go field name.
 	var wire struct {
 		MovesCompleted int
 		MovesFailed    int
+		Failures       []struct {
+			ShardID  uint64
+			FromNode string
+			ToNode   string
+			Step     string
+			Error    string
+		}
 		Duration       time.Duration
 		FinalImbalance float64
 	}
 	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "ExecuteRebalance", Err: &jsonDecodeError{Err: jsonErr}}
 	}
-	return &transport.RebalanceResult{
+	result := &transport.RebalanceResult{
 		MovesCompleted: wire.MovesCompleted,
 		MovesFailed:    wire.MovesFailed,
 		Duration:       wire.Duration,
 		FinalImbalance: wire.FinalImbalance,
-	}, nil
+	}
+	for _, f := range wire.Failures {
+		result.Failures = append(result.Failures, transport.RebalanceMoveFailure(f))
+	}
+	return result, nil
 }
 
 // GetImbalanceReport returns the cluster balance report via the

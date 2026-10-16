@@ -183,6 +183,7 @@ type Config struct {
 	Lease        time.Duration              // default 15s
 	PollInterval time.Duration              // default 1s; at most a third of Lease
 	AckTimeout   time.Duration              // default 5s
+	Retryable    func(error) bool           // KV errors waited out (the system shard electing); nil: none
 	Clock        Clock
 	Logger       *slog.Logger
 	Streams      *Streams                   // nil builds one; a Deferred composer passes Deferred.Streams()
@@ -447,6 +448,24 @@ services and to the server, which wraps the node's sealed-window probe with
 - **The receiving node writes the record before it seals itself.** If the write
   cannot be confirmed, the node still seals itself — sealing is the safe
   direction — and returns `RecordNotConfirmedError`.
+- **A seal or clear waits out an election, once, within a bound.** The
+  system store answers a read or a proposal with a timeout, or a not-leader
+  refusal, while the system shard elects a leader — every node in turn during
+  a rolling `enable-encryption`. `Seal` and `Clear` retry such an error, every
+  100 ms, within one `clusterseal.SettleBudget` (15 s) for the whole request:
+  its read, its write and the read-back after a lost race share the one
+  deadline. They stop at once on cancellation of the request's context, and on
+  any other error. What is transient is the composer's call,
+  `Config.Retryable`; `pkg/server`'s `ClusterSealRetryable` names the quicraft
+  timeout, dropped, aborted, busy, not-leader, shard-not-ready and
+  ReadIndex-not-ready errors and both not-leader error types, whether or not
+  they name a leader. An epoch conflict, a sealed store, a refused permission
+  and a cancelled request are final. A write that timed out may still have
+  committed: its retry finds the record changed, reads it back, finds its own
+  write and succeeds, as an idempotent race does. Only after the budget does
+  the request return `RecordNotConfirmedError`, with the node-seal semantics
+  above unchanged. The node-seal acknowledgement is retried the same way within
+  `seal.cluster_ack_timeout`.
 - **Enforcement order is fixed:** close the gate, end streams, stop the
   barrier's shards, wipe the key. It is idempotent and keyed by epoch, so the
   monitor never enforces one epoch twice.
@@ -540,8 +559,9 @@ services and to the server, which wraps the node's sealed-window probe with
   leaves its record to its lease rather than withdrawing it; a
   `MembershipManager` composed with `WithMembershipSealProbe` does the same.
   A `volume.Reporter` composed with `WithReporterSealProbe` skips its
-  five-second refresh while sealed and refuses `Report` with
-  `*volume.NodeSealedError`; its report rides the held lease and is renewed by
+  five-second refresh while sealed, refuses `Report` with
+  `*volume.NodeSealedError`, and on `Close` leaves the report to its lease
+  rather than revoking it; its report rides the held lease and is renewed by
   the first refresh after the unseal.
   `Lessor.RunExpiry` composed with `WithExpiryHold` proposes no revoke while
   sealed, and on the unseal gives every lease a full TTL before it sweeps
@@ -551,8 +571,14 @@ services and to the server, which wraps the node's sealed-window probe with
   still takes entries, and its records must stay alive for it to be found
   again. The check and the proposal are
   not atomic, so a seal landing between them still sends one entry to the
-  sealed log; that the log refuses such an entry without halting the shard is
-  the consensus library's side of the contract.
+  sealed log. The consensus library does not refuse such an entry
+  harmlessly: the WAL write fails against the sealed barrier, the library
+  retries it for under a second and then trips the shard's failure latch,
+  which the unseal does not clear (see *The node barrier waits for every
+  node before wiping* in [architecture.md](architecture.md)). Gating every
+  writer narrows that window to the check-then-propose race; it does not
+  close it. (Corrected: this paragraph used to say the library refuses the
+  entry without halting the shard; it does not.)
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -575,23 +601,33 @@ services and to the server, which wraps the node's sealed-window probe with
   and drops the reference. After sealing, every `Signer`/`Certificate` call
   returns `BarrierSealedError`.
 - **Reads of protected key material hold the borrow across the read**, not just
-  across the accessor. A tenant DEK served from cache and the recovery
-  strategy's root key are both copied inside one coordinated borrow
-  (`secure.CopyOut`), and both **fail closed** when the enclave yields nothing
-  rather than handing back zeros of the right length.
-- **A read whose material crosses into an injected interface is the exception,
-  and is marked as one.** `EncryptionBarrier.Encrypt`, `SealingStrategy` unseal
-  and the ceremony's barrier unseal are supplied by consumers, and any
-  conforming implementation may allocate protected memory of its own. Under
-  go-enclave that allocation no longer deadlocks a borrow held across the call
-  (the go-enclave migration removed the process-wide lock that made it), but
-  `pkg/secure` still forbids reaching consumer code from inside a borrow. Those
-  sites take a heap copy with `secure.CopyOut` and wipe it as soon as the call
-  returns — go-enclave offers no accessor that reads without a borrow — and are
-  covered by a regression test that fails if a borrow is held across the call.
+  across the accessor. Where a contract needs the bytes to outlive the borrow
+  — the recovery strategy returns the root key to `Barrier.Unseal` as a
+  caller-owned slice — the copy is taken inside one borrow (`secure.CopyOut`)
+  and **fails closed** when the enclave yields nothing rather than handing back
+  zeros of the right length.
+- **Protected material crosses into an injected interface in place.** The
+  borrow is held across the call, so the callee is handed the locked pages and
+  never a heap copy: the reconstructed unseal key into the `AEADProvider` when
+  an unseal quorum completes, the ceremony's system-barrier secret into the
+  credentials the barrier is initialized with, a new tenant DEK into its
+  `keywrap.Provider`, and a presented SO PIN into the `SOPINVerifier`. The
+  callee may allocate, open, borrow and destroy protected memory of its own —
+  every go-enclave object carries its own lock — and the one thing that would
+  deadlock, reentering the buffer it was handed, it cannot do, because it never
+  holds that buffer. Each site has a test that compares the address the callee
+  receives with the protected buffer's own and fails under a transient heap
+  copy, and a double that uses protected memory inside the call and must
+  complete under a bounded wait.
+- **Output runs the other way round.** A protected destination is allocated
+  before the source is borrowed and written in place inside the borrow, so
+  plaintext moves from one protected region to another without touching the
+  heap — the root key unwrapped from a quorum's unseal key lands directly in
+  the buffer allocated for it.
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
-  tests drive each converted path and report a nested borrow as a test failure
-  naming both sites, instead of a process that stops with no diagnostic.
+  tests drive each path and report a reentry of the borrowed buffer — the one
+  nesting that deadlocks — as a test failure naming both sites, instead of a
+  process that stops with no diagnostic.
 - **Nodes never exchange shares.** Custody is per node; a Shamir barrier opens
   only through its own authenticated holder quorum.
 
@@ -674,6 +710,28 @@ embedded node's `MigrationNotSupportedError` carries the reason and matches
 that sentinel through `errors.Is`. A failure after the node has accepted the
 migration is a different error, `MigrationReopenError`, and is not reported as
 "not available".
+
+### What a system-scope migration re-encrypts
+
+Every store the node barrier encrypts at rest is copied under the new key into
+a keyed sibling, verified, and swapped in under one journal. A `pebble` store is
+copied by the chosen `--mechanism`. A `file` store is copied through the file
+engine, record by record, under either mechanism, and verified record by
+record (`database.ReencryptFileStore`, `database.VerifyReencryptedFileStore`).
+
+| Node | Stores |
+|---|---|
+| standalone | `<data-dir>/pebble` or `<data-dir>/file` by `storage.backend`, and the vector store |
+| raft, `sm_type: pebble` or `mvcc` | the state machine's Pebble store under the host snapshot directory, the vector store, the WAL |
+| raft, any other `sm_type` | each `<data-dir>/sm/shard-<S>-replica-<R>` store in its `sm_storage` backend (none for `memory`), the vector store, the WAL |
+
+`cmd/qrdbd`'s `systemMigrationStores` and `sdk/go/node`'s
+`nodeMigrationProvider.StoreDirs` name these. A snapshot data file under a
+swapped store rides that store's swap. Any other snapshot data file is
+re-encrypted with the WAL into a keyed sibling, recorded in the journal's
+`StagedSnapshots`, and renamed into place once the swaps commit. A
+verification mismatch rolls the migration back before any swap, leaving every
+store under the old key.
 
 ### A tenant-scope migration right after a system-scope recycle
 
@@ -1011,6 +1069,7 @@ key.
 | tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
 | `enable-encryption` queued on an embedded node when `Close` begins | refused, not queued: `service.ErrNodeClosed`, `503` / `Unavailable` | **yes** |
 | Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
+| System shard electing during a seal or clear | retried within one 15 s `SettleBudget`; succeeds once a leader serves | **yes** |
 | Seal record not confirmed | the receiving node is sealed; `RecordNotConfirmedError` | **yes** |
 | Tenant or database unseal whose clear record cannot be written | the barrier is sealed again; `RecordNotConfirmedError` | **yes** |
 | Two seal/clear requests race | the loser re-reads; opposite intent → `SealEpochConflictError` | **yes** |
@@ -1217,9 +1276,10 @@ under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
 There is no rule about reading a `secure.Buffer` without a borrow, because it
 cannot be written: go-enclave scopes every borrow to a callback, so
 `WithBytes` and `secure.CopyOut` are the only ways to read a buffer and the
-compiler rejects anything else. A read whose material must cross an interface
-a consumer implements takes a `CopyOut` copy, which the lifetime analyzer
-below then requires to be wiped.
+compiler rejects anything else. A read whose material crosses into an
+interface a consumer implements holds the borrow across the call; only a
+contract that returns or transmits the bytes takes a `CopyOut` copy, which the
+lifetime analyzer below then requires to be wiped.
 
 Both the sweep and its module coverage matter. `./...` does not cross a module
 boundary, so `sdk/go` needs its own pass; and a single tag combination reports
@@ -1465,13 +1525,13 @@ inferable.
 ### Seal enabled, storage not encrypted
 
 Enabling seal does not by itself encrypt every byte the node writes. The
-barrier's encrypted filesystem wraps Pebble's file system. On a raft node it
-covers every state machine that persists anything -- `mvcc` and `pebble`, and
-`disk` and `fast` over pebble storage -- and a state machine whose storage
-would persist plaintext (`disk` or `fast` over `file`) is refused at start
-(see [../storage-engines/](../storage-engines/engineering.md)), so a raft node reports no
-gap. On a standalone node it covers the `pebble` backend, not the `file` or
-`objstore` backend.
+barrier's encrypted filesystem wraps Pebble's file system and the file
+engine's. On a raft node it covers every state machine that persists anything
+-- `mvcc` and `pebble`, and `disk` and `fast` over pebble or file storage (see
+[../storage-engines/](../storage-engines/engineering.md)) -- so a raft node
+reports no gap. On a standalone node it covers the `pebble` backend and the `file`
+backend, whose record files the same encrypting filesystem writes; it does not
+cover the `objstore` backend.
 
 Such a node still runs. It says so in two places, both computed once at boot
 from the configuration (`config.Config.EffectiveCapabilities`):
@@ -1480,7 +1540,7 @@ from the configuration (`config.Config.EffectiveCapabilities`):
   and `sdk/go/node`) before the node serves traffic:
 
   ```
-  seal is enabled but data is stored unencrypted at rest  where="standalone backend \"file\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\""
+  seal is enabled but data is stored unencrypted at rest  where="standalone backend \"objstore\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\" or \"file\""
   ```
 
 - **The capability report**: `UnencryptedAtRest` (`unencryptedAtRest` in JSON,

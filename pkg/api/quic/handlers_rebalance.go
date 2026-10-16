@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/rebalancepb"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -140,12 +141,7 @@ func (s *Server) handleRebalanceExecute(ctx context.Context, payload []byte) ([]
 		return nil, err
 	}
 
-	resp, err := proto.Marshal(&pb.RebalanceExecutionResponse{
-		MovesCompleted: int32(result.MovesCompleted),
-		MovesFailed:    int32(result.MovesFailed),
-		DurationNs:     int64(result.Duration),
-		FinalImbalance: result.FinalImbalance,
-	})
+	resp, err := proto.Marshal(rebalancepb.ExecutionToProto(result))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

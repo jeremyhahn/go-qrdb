@@ -22,6 +22,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/rebalanceconv"
 )
 
 // Compile-time interface assertion.
@@ -106,12 +107,7 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &transport.RequestError{Method: "ExecuteRebalance", Err: err}
 	}
-	return &transport.RebalanceResult{
-		MovesCompleted: int(resp.GetMovesCompleted()),
-		MovesFailed:    int(resp.GetMovesFailed()),
-		Duration:       time.Duration(resp.GetDurationNs()),
-		FinalImbalance: resp.GetFinalImbalance(),
-	}, nil
+	return rebalanceconv.ResultFromProto(&resp), nil
 }
 
 // GetImbalanceReport returns the cluster balance report via the QUIC

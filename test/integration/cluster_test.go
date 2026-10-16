@@ -142,6 +142,16 @@ func peerAdminURLsYAML(peerAdminURLs map[string]string) string {
 // (unprivileged) identity.
 func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *testCA) {
 	t.Helper()
+	adminPorts, grpcPorts, ca, _ := startThreeNodeClusterSPIFFENodes(t, smType)
+	return adminPorts, grpcPorts, ca
+}
+
+// startThreeNodeClusterSPIFFENodes is startThreeNodeClusterSPIFFE that also
+// returns each node's process, indexed like adminPorts, for a test that
+// kills one.
+func startThreeNodeClusterSPIFFENodes(t *testing.T, smType string) ([]int, []int, *testCA, []*exec.Cmd) {
+	t.Helper()
+	cmds := make([]*exec.Cmd, 3)
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
 	ports := allocatePorts(t, 3)
@@ -194,7 +204,7 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *te
 		}
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)
-		startNode(t, bin, args, prefix)
+		cmds[i] = startNode(t, bin, args, prefix)
 	}
 
 	bootstrapNodes(t, ca, adminPorts...)
@@ -206,7 +216,7 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *te
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
-	return adminPorts, grpcPorts, ca
+	return adminPorts, grpcPorts, ca, cmds
 }
 
 // startThreeNodeClusterAllTransports is startThreeNodeClusterSPIFFE with

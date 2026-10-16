@@ -352,3 +352,42 @@ func TestSDK_GetByNaturalKeyIsTestableByConsumers(t *testing.T) {
 	var unsupported *sdk.DAOUnsupportedIDGeneratorError
 	require.ErrorAs(t, err, &unsupported)
 }
+
+// reexportKey is a consumer's key entity: its key material is a
+// DAOSecretBytes, held in protected memory.
+type reexportKey struct {
+	ID  uint64             `json:"id" msgpack:"id"`
+	Key sdk.DAOSecretBytes `json:"key" msgpack:"key"`
+}
+
+// EntityID implements sdk.Entity.
+func (k *reexportKey) EntityID() uint64 { return k.ID }
+
+// SetEntityID implements sdk.Entity.
+func (k *reexportKey) SetEntityID(id uint64) { k.ID = id }
+
+// TestSDK_SecretBytesCrossesTheBoundary: a consumer can build a secret
+// field, wipe it, and recognise the JSON codec's refusal of an entity
+// holding one without importing pkg/dao.
+func TestSDK_SecretBytesCrossesTheBoundary(t *testing.T) {
+	src := []byte("consumer-key-material")
+	s, err := sdk.NewDAOSecretBytes(src)
+	require.NoError(t, err)
+	require.Equal(t, make([]byte, len(src)), src, "the heap source must be wiped")
+	require.Equal(t, len("consumer-key-material"), s.Len())
+	require.Same(t, s.Buffer(), sdk.DAOSecretBytesFromBuffer(s.Buffer()).Buffer())
+	s.Destroy()
+	require.Zero(t, s.Len())
+
+	_, err = sdk.NewDAO(sdk.NewMemoryKVStore(), "key",
+		func() *reexportKey { return &reexportKey{} },
+		sdk.DAOWithCodec(sdk.DAOCodecJSON),
+	)
+	var created sdk.DAOCodecCreationError
+	var refusal sdk.DAOSecretCodecUnsupportedError
+	require.ErrorAs(t, err, &created)
+	require.ErrorAs(t, err, &refusal)
+
+	var _ error = sdk.DAOSecretEncodingSizeError{}
+	var _ error = sdk.DAOSecretFieldIndexedError{}
+}

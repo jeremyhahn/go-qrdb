@@ -513,7 +513,7 @@ func TestMCP_Credential_Retrieve_Success(t *testing.T) {
 	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
 	defer cleanup()
 
-	val, err := tr.CredentialRetrieve(context.Background(), "db-pass")
+	val, err := tr.retrieveBytes(context.Background(), "db-pass")
 	if err != nil {
 		t.Fatalf("CredentialRetrieve: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestMCP_Credential_Retrieve_UnregisteredTool(t *testing.T) {
 	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
 	// The tool may or may not be registered; just ensure no panic.
-	_, _ = tr.CredentialRetrieve(context.Background(), "missing")
+	_, _ = tr.retrieveBytes(context.Background(), "missing")
 }
 
 // ---------------------------------------------------------------------------

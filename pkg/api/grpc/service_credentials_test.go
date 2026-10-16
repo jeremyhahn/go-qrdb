@@ -26,6 +26,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ func (f *fakeCredentialServicerProto) CredentialStore(ctx context.Context, name 
 	return nil
 }
 
-func (f *fakeCredentialServicerProto) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+func (f *fakeCredentialServicerProto) retrieveValue(ctx context.Context, name string) ([]byte, error) {
 	if f.retrieveFn != nil {
 		return f.retrieveFn(ctx, name)
 	}
@@ -95,11 +96,27 @@ func (f *fakeCredentialServicerProto) CredentialRotate(ctx context.Context, name
 	return nil, nil
 }
 
-func (f *fakeCredentialServicerProto) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (f *fakeCredentialServicerProto) retrieveVersionValue(ctx context.Context, name string, version uint64) ([]byte, error) {
 	if f.retrieveVersFn != nil {
 		return f.retrieveVersFn(ctx, name, version)
 	}
 	return nil, nil
+}
+
+func (f *fakeCredentialServicerProto) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	v, err := f.retrieveValue(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
+}
+
+func (f *fakeCredentialServicerProto) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	v, err := f.retrieveVersionValue(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 
 func (f *fakeCredentialServicerProto) CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error) {

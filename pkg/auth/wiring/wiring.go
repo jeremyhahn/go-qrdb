@@ -203,6 +203,15 @@ type AuthMiddlewareConfig struct {
 	// tenant it names, unchecked.
 	IssuerVerifier auth.IssuerVerifier
 
+	// DelegatedPrincipal names the service principal the node accepts
+	// tenant-issued delegations for (auth.WithDelegatedPrincipal): a client
+	// certificate a tenant's own login CA signed, naming this principal and
+	// the scope it may act with inside that tenant. Empty -- the default --
+	// refuses every delegation. A delegation is also refused unless
+	// IssuerVerifier, CertProvider (revocation) and AuditLogger are wired:
+	// each is a check it cannot be admitted without.
+	DelegatedPrincipal string
+
 	// PendingTenantAdmins, when non-nil, confines the trust-on-first-init
 	// window of a tenant barrier (middleware.WithPendingTenantAdmins): a
 	// dedicated-isolation tenant onboarded with a first admin may have its
@@ -396,6 +405,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	if cfg.IssuerVerifier != nil {
 		mtlsOpts = append(mtlsOpts, auth.WithIssuerVerifier(cfg.IssuerVerifier))
 	}
+	if cfg.DelegatedPrincipal != "" {
+		mtlsOpts = append(mtlsOpts, auth.WithDelegatedPrincipal(cfg.DelegatedPrincipal))
+	}
 	mtlsAuthenticator := auth.NewMTLSAuthenticator(mtlsOpts...)
 	if cfg.SPIFFETrustDomain != "" {
 		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain, mtlsOpts...)
@@ -433,6 +445,11 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		// entirely and so does not inherit the mTLS authenticator's own
 		// check above (go-qrdb#560 review, B2-1).
 		opts = append(opts, middleware.WithIssuerVerifier(cfg.IssuerVerifier))
+	}
+	if cfg.DelegatedPrincipal != "" {
+		// A forwarded delegated request is verified by the same
+		// authenticator a presented delegation is, on this node.
+		opts = append(opts, middleware.WithDelegationVerifier(mtlsAuthenticator))
 	}
 	if cfg.CertTargetGuard != nil {
 		opts = append(opts, middleware.WithCertTargetGuard(cfg.CertTargetGuard))

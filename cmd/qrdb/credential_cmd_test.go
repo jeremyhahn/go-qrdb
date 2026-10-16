@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -72,7 +73,7 @@ func (m *mockCredSvc) CredentialStore(_ context.Context, name string, value []by
 	return nil
 }
 
-func (m *mockCredSvc) CredentialRetrieve(_ context.Context, name string) ([]byte, error) {
+func (m *mockCredSvc) retrieveValue(_ context.Context, name string) ([]byte, error) {
 	if m.retrieveErr != nil {
 		return nil, m.retrieveErr
 	}
@@ -127,7 +128,7 @@ func (m *mockCredSvc) CredentialRotate(_ context.Context, name string, opts cred
 	}, nil
 }
 
-func (m *mockCredSvc) CredentialRetrieveVersion(_ context.Context, name string, _ uint64) ([]byte, error) {
+func (m *mockCredSvc) retrieveVersionValue(_ context.Context, name string, _ uint64) ([]byte, error) {
 	if m.retrieveErr != nil {
 		return nil, m.retrieveErr
 	}
@@ -136,6 +137,22 @@ func (m *mockCredSvc) CredentialRetrieveVersion(_ context.Context, name string, 
 		return nil, fmt.Errorf("credential %q not found", name)
 	}
 	return v, nil
+}
+
+func (m *mockCredSvc) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	v, err := m.retrieveValue(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
+}
+
+func (m *mockCredSvc) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	v, err := m.retrieveVersionValue(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 
 func (m *mockCredSvc) CredentialListVersions(_ context.Context, name string) ([]credentials.CredentialVersion, error) {

@@ -12,7 +12,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -155,63 +154,12 @@ func (b *StorageBarrier) masterKeyBuffer(ctx context.Context) (*secure.Buffer, e
 	return secure.NewBufferFromBytes(raw)
 }
 
-// copyEnclaveToBufferHook runs, still inside both enclaves' held borrows,
-// immediately after the copy lands and before either WithBytes call returns.
-// It is a no-op in production — this is a direct assignment, not a
-// conditional, so there is no branch to skip — and exists purely so a test
-// can inject a delay: the copy itself completes in nanoseconds, far too fast
-// to reliably race enclave.WipeAll against without instrumentation, which
-// would otherwise leave a regression that released dst's borrow before the
-// copy finished passing every existing test right up until a real WipeAll
-// actually landed in the (now unguarded) gap in production.
-var copyEnclaveToBufferHook = func() {}
-
-// copyEnclaveToBuffer copies the reconstructed secret out of enc into a freshly
-// allocated PROTECTED (mlock'd, guard-paged) buffer the caller MUST Destroy. The
-// secret therefore never lands in an ordinary garbage-collected heap allocation
-// — the layered protected-memory rule holds across the whole downstream
-// operation, not just until a wipe.
-//
-// The destination is allocated BEFORE the source is borrowed, so no protected
-// ALLOCATION runs while any enclave borrow is held. Historically (go-quicraft
-// pre-v0.11.0-alpha, before it consumed github.com/jeremyhahn/go-enclave
-// directly) that ordering was load-bearing for a real deadlock:
-// MemoryEnclave.WithBytes held that package's OWN internal purgeMu as a READ
-// lock across its callback, and taking it EXCLUSIVELY for an allocation from
-// inside an already-held read self-deadlocked. go-enclave has no such
-// package-wide lock — every enclave, in pkg/secure and in go-quicraft's
-// pkg/crypto/shamir alike, carries its own per-instance lock (see
-// pkg/secure/doc.go and pkg/secure/borrowguard.go's own "go-enclave, not
-// memguard" sections) — so allocating dst while enc's borrow is held could no
-// longer deadlock against it. The ordering is kept anyway as allocation
-// hygiene, and because it costs nothing to keep.
-//
-// The copy itself holds BOTH enclaves' borrows for its whole duration. Releasing
-// dst's before the write finished would leave the exact gap SecretValue.WithBytes's own round-3 fix closed (go-qrdb#114 review):
-// dst is freshly allocated and already registered on go-enclave's shutdown
-// ledger the moment secure.NewBuffer returns, so a concurrent enclave.WipeAll
-// needs no external reference to dst to destroy it mid-copy — an unguarded
-// write could fault against pages WipeAll had already unmapped.
-// Nesting the two borrows is safe: go-enclave gives every enclave its own
-// independent lock, so holding dst's and enc's at once cannot deadlock either
-// against the other or against anything else in the process.
-func copyEnclaveToBuffer(enc *enclave.MemoryEnclave) (*secure.Buffer, error) {
-	dst, err := secure.NewBuffer(enc.Size())
-	if err != nil {
-		return nil, err
-	}
-	if err := dst.WithBytes(func(view []byte) error {
-		return enc.WithBytes(func(src []byte) error {
-			copy(view, src)
-			copyEnclaveToBufferHook()
-			return nil
-		})
-	}); err != nil {
-		dst.Destroy()
-		return nil, err
-	}
-	return dst, nil
-}
+// combineProtected indirects shamir.CombineProtected so a test can record the
+// address of the enclave a quorum reconstructs its key into, and prove that the
+// AEADProvider is handed those locked pages rather than a copy of them
+// (go-qrdb#145). Production behavior is unchanged — this is a direct copy of the
+// function value.
+var combineProtected = shamir.CombineProtected
 
 // Compile-time interface check.
 var _ ShareSplitter = (*shamirShareSplitter)(nil)

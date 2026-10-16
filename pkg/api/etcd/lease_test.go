@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // mockLeaseServicer implements lease.LeaseServicer with function fields
@@ -361,6 +362,45 @@ func TestLeaseKeepAlive_ServiceError(t *testing.T) {
 	}
 }
 
+// TestLeaseKeepAlive_GoneLeaseAnswersTTLZero: a lease that no longer exists is
+// answered as etcd answers it -- its ID with TTL 0, the stream left open for
+// the next request -- so clientv3 closes its keep-alive channel instead of
+// retrying a lease that cannot come back.
+func TestLeaseKeepAlive_GoneLeaseAnswersTTLZero(t *testing.T) {
+	svc := &mockLeaseServicer{
+		keepAliveFn: func(_ context.Context, id int64) (*lease.Lease, error) {
+			switch id {
+			case 42:
+				return nil, &service.LeaseNotFoundError{LeaseID: id}
+			case 43:
+				return nil, &lease.NotFoundError{ID: id}
+			}
+			return &lease.Lease{ID: id, TTL: 30}, nil
+		},
+	}
+	srv := newTestLeaseServer(svc)
+
+	stream := newMockKeepAliveStream(context.Background(), []*pb.LeaseKeepAliveRequest{
+		{ID: 42},
+		{ID: 43},
+		{ID: 7},
+	})
+	if err := srv.LeaseKeepAlive(stream); err != io.EOF {
+		t.Fatalf("expected io.EOF after every request, got %v", err)
+	}
+	if len(stream.sent) != 3 {
+		t.Fatalf("sent %d responses, want 3", len(stream.sent))
+	}
+	for i, id := range []int64{42, 43} {
+		if gone := stream.sent[i]; gone.ID != id || gone.TTL != 0 || gone.Header == nil {
+			t.Fatalf("response for gone lease %d = %+v, want its ID, TTL 0 and a header", id, gone)
+		}
+	}
+	if live := stream.sent[2]; live.ID != 7 || live.TTL != 30 {
+		t.Fatalf("response after the gone leases = %+v, want ID 7, TTL 30", live)
+	}
+}
+
 func TestLeaseKeepAlive_RecvError(t *testing.T) {
 	svc := &mockLeaseServicer{}
 	srv := newTestLeaseServer(svc)
@@ -485,29 +525,69 @@ func TestLeaseTimeToLive_SuccessWithoutKeys(t *testing.T) {
 	}
 }
 
-func TestLeaseTimeToLive_NotFoundError(t *testing.T) {
+func TestLeaseTimeToLive_MissingLeaseAnswersMinusOne(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"lease package", &lease.NotFoundError{ID: 999}},
+		{"service layer", &service.LeaseNotFoundError{LeaseID: 999}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockLeaseServicer{
+				timeToLiveFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
+					return nil, tt.err
+				},
+			}
+			srv := newTestLeaseServer(svc)
+
+			resp, err := srv.LeaseTimeToLive(context.Background(), &pb.LeaseTimeToLiveRequest{ID: 999})
+			if err != nil {
+				t.Fatalf("LeaseTimeToLive() error = %v, want none: etcd answers a missing lease with TTL -1", err)
+			}
+			if resp.ID != 999 || resp.TTL != -1 {
+				t.Fatalf("LeaseTimeToLive() = id %d ttl %d, want id 999 ttl -1", resp.ID, resp.TTL)
+			}
+		})
+	}
+}
+
+func TestLeaseTimeToLive_BackendErrorIsInternal(t *testing.T) {
 	svc := &mockLeaseServicer{
 		timeToLiveFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
-			return nil, errors.New("lease 999 not found")
+			return nil, errors.New("storage unavailable")
 		},
 	}
 	srv := newTestLeaseServer(svc)
 
-	resp, err := srv.LeaseTimeToLive(context.Background(), &pb.LeaseTimeToLiveRequest{
-		ID: 999,
-	})
+	resp, err := srv.LeaseTimeToLive(context.Background(), &pb.LeaseTimeToLiveRequest{ID: 999})
 	if resp != nil {
 		t.Fatal("expected nil response on error")
 	}
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if st, ok := status.FromError(err); !ok || st.Code() != codes.Internal {
+		t.Fatalf("LeaseTimeToLive() error = %v, want code Internal", err)
 	}
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got %T", err)
-	}
-	if st.Code() != codes.NotFound {
-		t.Fatalf("code = %v, want NotFound", st.Code())
+}
+
+// A follower knows a lease exists but not its remaining TTL: its refusal --
+// bare, or the lease-carrying form the lease service returns -- is
+// Unavailable, which clientv3 retries on another endpoint, and never a TTL.
+func TestLeaseTimeToLive_FollowerRefusalIsUnavailable(t *testing.T) {
+	notLeader := service.NotLeaderError{ShardID: 3, LeaderID: 2, LeaderAddress: "192.0.2.2:7000"}
+	for name, refusal := range map[string]error{
+		"not leader":            &notLeader,
+		"lease ttl on follower": &service.LeaseTTLNotLeaderError{NotLeaderError: notLeader, Lease: &lease.Lease{ID: 7, TTL: 10}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestLeaseServer(&mockLeaseServicer{
+				timeToLiveFn: func(_ context.Context, _ int64) (*lease.Lease, error) { return nil, refusal },
+			})
+			resp, err := srv.LeaseTimeToLive(context.Background(), &pb.LeaseTimeToLiveRequest{ID: 7})
+			if st, ok := status.FromError(err); resp != nil || !ok || st.Code() != codes.Unavailable {
+				t.Fatalf("LeaseTimeToLive() = %v, %v; want no answer and code Unavailable", resp, err)
+			}
+		})
 	}
 }
 

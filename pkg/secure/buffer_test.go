@@ -324,7 +324,8 @@ func TestWipe(t *testing.T) {
 // Buffer retryable rather than falsely marked destroyed (go-qrdb#114 review,
 // round 4). The abandonment is driven through the one exit this package
 // controls end to end: an armed borrow guard whose violation handler ends the
-// call from inside checkNoBorrow, AFTER the destroyed CAS has already fired.
+// call from inside checkNotBorrowed — victim's Destroy reentering victim's own
+// borrow — AFTER the destroyed CAS has already fired.
 // The two ways a handler can end it — panic (EnableBorrowGuard's default) and
 // runtime.Goexit (GuardBorrows') — are both covered, because a reset keyed on
 // recover() alone would miss the second.
@@ -337,15 +338,15 @@ func TestBuffer_DestroyErr_AbandonedAttemptDoesNotLatchDestroyed(t *testing.T) {
 	tests := []struct {
 		name    string
 		handler BorrowViolationFunc
-		// attempt runs victim.DestroyErr inside outer's borrow and returns once
-		// the attempt has been abandoned.
-		attempt func(outer, victim *Buffer)
+		// attempt runs victim.DestroyErr inside victim's own borrow and returns
+		// once the attempt has been abandoned.
+		attempt func(victim *Buffer)
 	}{
 		{
 			name:    "handler panics",
 			handler: nil, // EnableBorrowGuard's default: panic
-			attempt: func(outer, victim *Buffer) {
-				_ = outer.WithBytes(func([]byte) error {
+			attempt: func(victim *Buffer) {
+				_ = victim.WithBytes(func([]byte) error {
 					func() {
 						defer func() { _ = recover() }()
 						_ = victim.DestroyErr()
@@ -357,11 +358,11 @@ func TestBuffer_DestroyErr_AbandonedAttemptDoesNotLatchDestroyed(t *testing.T) {
 		{
 			name:    "handler calls runtime.Goexit",
 			handler: func(*NestedBorrowError) { runtime.Goexit() },
-			attempt: func(outer, victim *Buffer) {
+			attempt: func(victim *Buffer) {
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					_ = outer.WithBytes(func([]byte) error {
+					_ = victim.WithBytes(func([]byte) error {
 						_ = victim.DestroyErr()
 						return nil
 					})
@@ -372,11 +373,6 @@ func TestBuffer_DestroyErr_AbandonedAttemptDoesNotLatchDestroyed(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			outer, err := NewBuffer(size)
-			if err != nil {
-				t.Fatalf("NewBuffer(outer): %v", err)
-			}
-			defer outer.Destroy()
 			victim, err := NewBuffer(size)
 			if err != nil {
 				t.Fatalf("NewBuffer(victim): %v", err)
@@ -384,7 +380,7 @@ func TestBuffer_DestroyErr_AbandonedAttemptDoesNotLatchDestroyed(t *testing.T) {
 			defer victim.Destroy()
 
 			restore := EnableBorrowGuard(tc.handler)
-			tc.attempt(outer, victim)
+			tc.attempt(victim)
 			restore()
 
 			if got := victim.Size(); got != size {

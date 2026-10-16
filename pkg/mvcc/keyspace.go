@@ -332,12 +332,6 @@ func RevIndexUpperBound(endRevision int64) []byte {
 	return buf
 }
 
-// RevIndexKeyspaceEnd returns the exclusive upper bound for the entire revision
-// index keyspace (used to drop the whole index).
-func RevIndexKeyspaceEnd() []byte {
-	return []byte{prefixRevIndex + 1}
-}
-
 // EncodeChangeRecord serializes a ChangeRecord's fixed fields (25 bytes). The
 // key is carried in the index key, not the record body.
 func EncodeChangeRecord(r *ChangeRecord) []byte {

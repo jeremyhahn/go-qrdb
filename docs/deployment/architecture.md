@@ -18,13 +18,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-What a host must grant `qrdbd` to run as configured — locked memory — and
+What a host must grant `qrdbd` to run as configured — locked memory, and for
+lease reads a disciplined clock with Raft timing alike on every replica
+([user.md](user.md#keep-replica-clocks-disciplined)) — and
 what `qrdbd` takes away from the host in return: the ability of other
-processes to read its memory — and the clock and Raft timing every replica
-must share for lease reads to stay linearizable. Ports, TLS and cluster formation are covered by
+processes to read its memory. Ports, TLS and cluster formation are covered by
 [../configuration/](../configuration/) and [../clustering/](../clustering/);
 the ports a host's firewall must open are the pinned port set in
-[../cluster-verification/user.md](../cluster-verification/user.md#pinned-port-set).
+[../cluster-verification/user.md](../cluster-verification/user.md#pinned-port-set),
+and a firewall recipe built on it is in
+[user.md](user.md#network-ports-and-firewall).
 
 ## Problem
 
@@ -79,6 +82,32 @@ caps"):
 - `Dockerfile`, `.devcontainer/docker-compose.yml`,
   `.devcontainer/devcontainer.json` and `test/integration/api/docker-compose.yml`
   carry the caps.
+
+## Listeners
+
+A host must also let `qrdbd` open its listeners; the table of ports is the
+[pinned port set](../cluster-verification/user.md#pinned-port-set) and the
+firewall recipe is in [user.md](user.md#network-ports-and-firewall). Each one
+has a single owner in the code:
+
+- **Raft** (UDP): `cmd/qrdbd` `buildHostConfig` hands the bind address to
+  go-quicraft's host transport. A single-node cluster is built without a
+  transport and opens none.
+- **REST and HTTP/3, gRPC, QUIC, MCP and Unix**: `pkg/server` (`startREST`,
+  `startGRPC`, `startQUIC`, `startMCP`). Each one joins `server.host` with its
+  port. The sealed window (`server.ServeSealedWindow`) runs the same set,
+  gated to the seal APIs. HTTP/3 shares the REST port on UDP and lives in
+  `pkg/api/rest`.
+- **MySQL, PostgreSQL and etcd**: `pkg/server`'s `server_mysql.go`,
+  `server_pgsql.go` and `server_etcd.go`. These compile only under `qrdb_mysql`,
+  `qrdb_pgsql` and `qrdb_etcd`, and none of them opens in the sealed window.
+  etcd binds each database's own `listen_addr`.
+- **Noise NK enrollment**: `pkg/clusterenroll`, using go-truststrap's Noise
+  server. `cmd/qrdbd` starts it on the first node during TLS resolution and on
+  every other member after start, wherever the node holds qrdb's self-issued
+  cluster CA.
+- **Noise NK member join**: `lifecycle.StartClusterJoin` →
+  `clusterenroll.JoinServer`, when `cluster_join.enabled` is set.
 
 ## Trust boundaries
 

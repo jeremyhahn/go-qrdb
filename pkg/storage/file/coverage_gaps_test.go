@@ -16,10 +16,13 @@ package file
 
 import (
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
@@ -34,10 +37,10 @@ import (
 
 // TestSet_CreateTempErrorPropagates covers Set's own os.CreateTemp error
 // path, distinct from TestSet_MkdirAllError which fails one step earlier.
+// The memoized shard directory is replaced by a regular file, so CreateTemp
+// fails with ENOTDIR -- a fault no permission bit grants, so it holds when
+// the suite runs as root.
 func TestSet_CreateTempErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
 	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
@@ -49,13 +52,30 @@ func TestSet_CreateTempErrorPropagates(t *testing.T) {
 		t.Fatalf("seed Set: %v", err)
 	}
 	shardDir, _ := e.recordPaths(key)
-	if err := os.Chmod(shardDir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
+	if err := os.RemoveAll(shardDir); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
+	if err := os.WriteFile(shardDir, []byte("blocker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := e.Set(key, []byte("v2")); err == nil {
-		t.Fatal("expected Set to fail creating a temp file in a read-only shard directory")
+		t.Fatal("expected Set to fail creating a temp file under a shard path that is a file")
+	}
+}
+
+// replaceRecordWithDirLink swaps key's record file for a symlink to a
+// directory. The walks see a hash-named non-directory entry (they Lstat) and
+// then fail reading it with EISDIR, which no permission bit grants -- the
+// non-ENOENT read failure, reachable when the suite runs as root.
+func replaceRecordWithDirLink(t *testing.T, e *Engine, key []byte) {
+	t.Helper()
+	_, path := e.recordPaths(key)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(memdir.TempDir(t), path); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -90,12 +110,9 @@ func TestGet_DecodeRecordErrorPropagates(t *testing.T) {
 }
 
 // TestList_ReadFileErrorPropagates covers List's non-ENOENT os.ReadFile
-// branch: the shard directory is listable, but the record file itself
-// denies read.
+// branch: the shard directory is listable, but the record entry cannot be
+// read as a file.
 func TestList_ReadFileErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
 	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
@@ -106,14 +123,14 @@ func TestList_ReadFileErrorPropagates(t *testing.T) {
 	if err := e.Set(key, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	_, path := e.recordPaths(key)
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	replaceRecordWithDirLink(t, e, key)
 
-	if _, err := e.List(nil); err == nil {
-		t.Fatal("expected List to fail reading a permission-denied record")
+	_, err = e.List(nil)
+	if err == nil {
+		t.Fatal("expected List to fail reading a record that is a directory")
+	}
+	if os.IsNotExist(err) {
+		t.Fatalf("List = %v, want a read error other than ENOENT", err)
 	}
 }
 
@@ -142,9 +159,6 @@ func TestList_DecodeRecordErrorPropagates(t *testing.T) {
 // TestIterator_ReadFileErrorPropagates is TestList_ReadFileErrorPropagates
 // for the iterator's own load, surfaced through Error().
 func TestIterator_ReadFileErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
 	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
@@ -155,18 +169,18 @@ func TestIterator_ReadFileErrorPropagates(t *testing.T) {
 	if err := e.Set(key, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	_, path := e.recordPaths(key)
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	replaceRecordWithDirLink(t, e, key)
 
 	it := e.NewIterator(nil)
 	defer func() { _ = it.Close() }()
 	for it.SeekToFirst(); it.Valid(); it.Next() {
 	}
-	if err := it.Error(); err == nil {
-		t.Fatal("expected the iterator to report a permission error reading the record")
+	err = it.Error()
+	if err == nil {
+		t.Fatal("expected the iterator to report an error reading a record that is a directory")
+	}
+	if os.IsNotExist(err) {
+		t.Fatalf("iterator error = %v, want a read error other than ENOENT", err)
 	}
 }
 
@@ -242,62 +256,60 @@ func TestNew_CleanupTempSetFilesErrorPropagates(t *testing.T) {
 // that would otherwise fail first.
 // ---------------------------------------------------------------------------
 
+// regularFileRoot returns the path of a regular file, for an engine root that
+// os.ReadDir and os.CreateTemp refuse with ENOTDIR -- a fault no permission
+// bit grants, so it holds when the suite runs as root.
+func regularFileRoot(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(memdir.TempDir(t), "not-a-directory")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // TestEnsureFormatMarker_ReadDirErrorPropagates covers ensureFormatMarker's
 // first os.ReadDir error path.
 func TestEnsureFormatMarker_ReadDirErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
+	e := &Engine{dir: regularFileRoot(t), fs: vfs.Default, atRest: atRestPlaintext}
+	err := e.ensureFormatMarker()
+	if err == nil {
+		t.Fatal("expected an error reading an engine root that is a file")
 	}
-	dir := memdir.TempDir(t)
-	if err := os.Chmod(dir, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
-
-	e := &Engine{dir: dir}
-	if err := e.ensureFormatMarker(); err == nil {
-		t.Fatal("expected a permission error reading the engine directory")
+	if os.IsNotExist(err) {
+		t.Fatalf("ensureFormatMarker = %v, want a read error other than ENOENT", err)
 	}
 }
 
 // TestRecoverJournal_ReadDirErrorPropagates covers recoverJournal's own
 // os.ReadDir error path.
 func TestRecoverJournal_ReadDirErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
+	e := &Engine{dir: regularFileRoot(t), fs: vfs.Default, atRest: atRestPlaintext}
+	err := e.recoverJournal()
+	if err == nil {
+		t.Fatal("expected an error reading an engine root that is a file")
 	}
-	dir := memdir.TempDir(t)
-	if err := os.Chmod(dir, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
-
-	e := &Engine{dir: dir}
-	if err := e.recoverJournal(); err == nil {
-		t.Fatal("expected a permission error reading the engine directory")
+	if os.IsNotExist(err) {
+		t.Fatalf("recoverJournal = %v, want a read error other than ENOENT", err)
 	}
 }
 
 // TestRecoverJournal_ReadFileErrorPropagates covers recoverJournal's
 // non-ENOENT os.ReadFile branch: the engine root is listable, but the
-// committed journal file itself denies read.
+// committed journal path is a directory and cannot be read as a file.
 func TestRecoverJournal_ReadFileErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
 	dir := memdir.TempDir(t)
-	journalPath := filepath.Join(dir, journalFileName)
-	if err := os.WriteFile(journalPath, []byte("x"), 0o600); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, journalFileName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(journalPath, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(journalPath, 0o600) })
 
-	e := &Engine{dir: dir}
-	if err := e.recoverJournal(); err == nil {
-		t.Fatal("expected a permission error reading the journal file")
+	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	err := e.recoverJournal()
+	if err == nil {
+		t.Fatal("expected an error reading a journal that is a directory")
+	}
+	if os.IsNotExist(err) {
+		t.Fatalf("recoverJournal = %v, want a read error other than ENOENT", err)
 	}
 }
 
@@ -311,7 +323,7 @@ func TestRecoverJournal_ApplyBufferedOpsErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Engine{dir: dir}
+	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
 	if err := e.recoverJournal(); err == nil {
 		t.Fatal("expected the empty-key refusal from applyBufferedOps to propagate")
 	}
@@ -371,34 +383,42 @@ func TestDecodeJournal_RejectsTruncatedRecords(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // commitBufferedOps — the journal-write failure path, reached only through a
-// real Batch.Commit against a read-only engine root.
+// real Batch.Commit whose filesystem refuses to create the journal.
 // ---------------------------------------------------------------------------
+
+// errCreateRefused is what createRefusingFS returns from Create.
+var errCreateRefused = errors.New("create refused")
+
+// createRefusingFS is a vfs.FS that refuses every Create and passes every
+// other operation through. A commit reads the journal left by a crashed
+// commit before it writes its own, so the fault has to spare reads: a root
+// that is not a directory fails that read first and never reaches the write.
+type createRefusingFS struct{ vfs.FS }
+
+// Create refuses the file.
+func (createRefusingFS) Create(string, vfs.DiskWriteCategory) (vfs.File, error) {
+	return nil, errCreateRefused
+}
 
 // TestCommitBufferedOps_WriteJournalErrorPropagates covers commitBufferedOps'
 // own error return when writeJournal fails, distinct from
 // TestWriteJournal_CreateTempErrorPropagates which calls writeJournal
 // directly rather than through a batch commit.
 func TestCommitBufferedOps_WriteJournalErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
-	dir := memdir.TempDir(t)
-	e, err := New(dir)
+	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = e.Close() }()
-
-	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
+	e.fs = createRefusingFS{FS: e.fs}
 
 	b := e.Batch()
 	if err := b.Set([]byte("a"), []byte("1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Commit(); err == nil {
-		t.Fatal("expected Commit to fail writing the journal into a read-only engine root")
+	err = b.Commit()
+	var jwe *JournalWriteError
+	if !errors.As(err, &jwe) || !errors.Is(err, errCreateRefused) {
+		t.Fatalf("Commit = %v, want *JournalWriteError wrapping the refused create", err)
 	}
 }

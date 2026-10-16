@@ -22,6 +22,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -30,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -588,6 +590,24 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func (s *KVService) DeleteRange(ctx context.Context, start, end []byte) error {
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.RangeDelete) {
+		return &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: s.shardID}
+	}
+	cmd, err := protocol.EncodeDeleteRange(start, end)
+	if err != nil {
+		return &EncodeRequestError{Err: err}
+	}
+	result, err := propose(ctx, s.host, s.shardID, cmd)
+	if err != nil {
+		return translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
+	}
+	return nil
+}
+
 // List returns sorted keys matching the given prefix with a linearizable
 // read. An empty prefix returns all user keys: keys in the internal namespace
 // (see IsInternalKey) are excluded from the results.
@@ -1131,6 +1151,12 @@ type AdminService struct {
 	// replicated KV store exists) and must be safe to read concurrently
 	// with that bind.
 	joinToken clusterJoinTokenState
+
+	// tenantReplicaHosts lists the started isolated-tenant hosts whose
+	// replicas StateHashes reports beside this host's (see
+	// SetTenantReplicaHosts). It is bound late, after the server's tenant
+	// host registry exists, so it is read atomically.
+	tenantReplicaHosts atomic.Pointer[tenantReplicaHostsBox]
 
 	// leaderWaitTimeout and leaderWaitInterval bound awaitShardLeader, the
 	// wait every membership change makes for a known leader before it

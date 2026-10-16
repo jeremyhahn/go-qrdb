@@ -100,9 +100,9 @@ func (it *fileIterator) load(e *Engine) {
 		if info.IsDir() || !isHashFileName(info.Name()) {
 			return nil
 		}
-		record, readErr := os.ReadFile(path) // #nosec G122 -- internal storage directory
+		record, readErr := readFile(e.fs, path)
 		if readErr != nil {
-			if os.IsNotExist(readErr) {
+			if isNotExist(readErr) {
 				// Same race, caught one step later: Walk's own stat saw the
 				// record, but a concurrent Delete removed it before this
 				// read reached it.

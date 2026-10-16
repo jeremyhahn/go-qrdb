@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,8 +28,8 @@ import (
 //
 // All frames use JSON-encoded payloads. Frame method names:
 //   userauthfactor.Add, userauthfactor.List, userauthfactor.Get,
-//   userauthfactor.Remove, userauthfactor.Rotate, userauthfactor.Relabel,
-//   userauthfactor.Login
+//   userauthfactor.Remove, userauthfactor.Delete, userauthfactor.Rotate,
+//   userauthfactor.Relabel, userauthfactor.Login
 // ---------------------------------------------------------------------------
 
 // quicUserFactorRecord is the wire shape of an auth.AuthFactor.
@@ -54,6 +55,14 @@ type quicUserFactorAddRequest struct {
 	SPKICredential []byte            `json:"spki_credential,omitempty"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
 	CreatedBy      string            `json:"created_by,omitempty"`
+	// IfNoActiveType and ExpectedFactorSetVersion name an add condition;
+	// a rotation's new factor that names one is refused.
+	IfNoActiveType           bool    `json:"if_no_active_type,omitempty"`
+	ExpectedFactorSetVersion *uint64 `json:"expected_factor_set_version,omitempty"`
+}
+
+func (r *quicUserFactorAddRequest) condition() *auth.FactorAddCondition {
+	return auth.FactorAddConditionOf(r.IfNoActiveType, r.ExpectedFactorSetVersion)
 }
 
 type quicUserFactorListRequest struct {
@@ -65,6 +74,11 @@ type quicUserFactorGetRequest struct {
 }
 
 type quicUserFactorRemoveRequest struct {
+	FactorID string `json:"factor_id"`
+	Force    bool   `json:"force,omitempty"`
+}
+
+type quicUserFactorDeleteRequest struct {
 	FactorID string `json:"factor_id"`
 	Force    bool   `json:"force,omitempty"`
 }
@@ -130,10 +144,11 @@ func (s *Server) handleUserAuthFactorAdd(ctx context.Context, payload []byte) ([
 		return nil, &UnmarshalError{Err: err}
 	}
 	factor := userFactorFromQUIC(&req)
-	if err := s.userAuthFactorSvc.Add(ctx, req.UserID, factor); err != nil {
+	version, err := service.AddAuthFactor(ctx, s.userAuthFactorSvc, req.UserID, factor, req.condition())
+	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"factor": userFactorToQUIC(factor)})
+	return json.Marshal(map[string]any{"factor": userFactorToQUIC(factor), "factor_set_version": version})
 }
 
 func (s *Server) handleUserAuthFactorList(ctx context.Context, payload []byte) ([]byte, error) {
@@ -144,7 +159,7 @@ func (s *Server) handleUserAuthFactorList(ctx context.Context, payload []byte) (
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	factors, err := s.userAuthFactorSvc.List(ctx, req.UserID)
+	factors, version, err := service.ListAuthFactors(ctx, s.userAuthFactorSvc, req.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +168,9 @@ func (s *Server) handleUserAuthFactorList(ctx context.Context, payload []byte) (
 		wire[i] = userFactorToQUIC(f)
 	}
 	return json.Marshal(map[string]any{
-		"factors": wire,
-		"total":   len(wire),
+		"factors":            wire,
+		"total":              len(wire),
+		"factor_set_version": version,
 	})
 }
 
@@ -187,6 +203,21 @@ func (s *Server) handleUserAuthFactorRemove(ctx context.Context, payload []byte)
 	return json.Marshal(map[string]string{"status": "revoked"})
 }
 
+// handleUserAuthFactorDelete hard-deletes a factor and frees its indexes.
+func (s *Server) handleUserAuthFactorDelete(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userAuthFactorSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user_authfactor"}
+	}
+	var req quicUserFactorDeleteRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if err := s.userAuthFactorSvc.Delete(ctx, req.FactorID, req.Force); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]string{"status": "deleted"})
+}
+
 func (s *Server) handleUserAuthFactorRotate(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.userAuthFactorSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "user_authfactor"}
@@ -194,6 +225,9 @@ func (s *Server) handleUserAuthFactorRotate(ctx context.Context, payload []byte)
 	var req quicUserFactorRotateRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+	if err := auth.RefuseRotationCondition(req.NewFactor.condition()); err != nil {
+		return nil, err
 	}
 	newFactor := userFactorFromQUIC(&req.NewFactor)
 	if err := s.userAuthFactorSvc.Rotate(ctx, req.OldFactorID, newFactor); err != nil {

@@ -78,6 +78,14 @@ Every data-plane capability in every other feature carries a database scope:
 
 Absent, the server's default database (`system`) is used.
 
+A DAO is placed in a named database the same way:
+`sdk.NewDatabaseDAO(sdk.NewClientDAOFactory(client), name, ...)` (and
+`sdk.NewDatabaseDAOTransactional`) builds it over
+`client.DatabaseScoped(name).KVStore()`, and refuses with
+`sdk.DAODatabaseStoreUnresolvedError` rather than fall back to the default
+database. The DAO surface is in
+[../secondary-indexes/engineering.md](../secondary-indexes/engineering.md).
+
 ## Schemas
 
 `POST /v1/databases` — `CreateDatabaseRequest`:
@@ -400,6 +408,7 @@ with `DatabaseNameRequiredError` before it is sent.
 | `DROP DATABASE` of the default database (`system`) | 400 | `INVALID_ARGUMENT` — `database.DefaultDatabaseDropError`; it can never be dropped |
 | A create or Raft update that names a shard ID (reachable only through a library call; no transport carries one) | 400 | `INVALID_ARGUMENT` — `database.CallerShardIDError` |
 | A cluster-wide shard ID could not be claimed (store unavailable, sustained contention) | 503 | `UNAVAILABLE` — `database.ShardIDClaimError` / `shard.ClaimContentionError`; nothing was created, retry |
+| A create that did not finish within the server's create deadline (10 s, or the caller's own deadline when that is sooner) -- a consensus step met no leader or no quorum | 503 | `UNAVAILABLE` — `service.DatabaseCreateTimeoutError`; everything the create had done is rolled back, retry. A caller whose own deadline ran out first gets 504 / `DEADLINE_EXCEEDED` |
 | The replicated shard high-water mark is corrupt | 500 | `INTERNAL` — `shard.HighWaterCorruptError` |
 | Invalid compaction policy (unknown mode, a field of another mode, `retainRevisions < 1`, `retainPeriod` unparseable or under `1s`) | 400 | `INVALID_ARGUMENT` — `compaction.InvalidPolicyError` |
 | Compaction policy on another tenant's database (the system tenant included) | 404 | `NOT_FOUND` — indistinguishable from a missing database |

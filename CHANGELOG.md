@@ -13,6 +13,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A user auth factor add or rotate naming an id already in use is refused
+  instead of overwriting it.** The new factor's primary record was written
+  unconditionally, so an add reusing an existing id replaced that factor's
+  record (another user's included), and an add rolled back afterwards deleted
+  it. The record is now reserved behind an absence guard: the add or rotate
+  returns `ErrFactorAlreadyExists` (`409` / `ALREADY_EXISTS`) before anything
+  is written, the original factor keeps authenticating, and a rollback only
+  removes a record its own add created.
 - **Reads wait out a new leader's first commit** (go-qrdb#668). A leader
   elected a moment ago refuses a ReadIndex with `quicraft.ErrReadIndexNotReady`
   until its no-op commits in its term; the Raft host adapter now holds a
@@ -29,6 +37,104 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **A hard Delete for a user auth factor, so a rolled-back add frees its
+  credential** (go-qrdb#684). `Remove` revokes and keeps the factor's
+  credential and SPKI claims, so a caller undoing an add it had just made
+  could never bind the same certificate again. `Delete` removes the factor,
+  its user index entry, every claim naming it and its place in the factor set
+  in one multi-key guarded batch (one Raft proposal), after which the same
+  credential binds to the same user again. It refuses a revoked factor
+  (`ErrFactorRevoked`, `410` / `FAILED_PRECONDITION`), so no revocation can be
+  undone, needs `force` for the user's last active factor as `Remove` does,
+  and returns not-found for a factor already deleted. Exposed as REST
+  `POST /v1/users/factors/delete`, gRPC/Unix `UserAuthFactorService/Delete`,
+  QUIC `userauthfactor.Delete`, MCP `qrdb_user_authfactor_delete`, the SDK's
+  `UserAuthFactorClient.DeleteAuthFactor` on all six transports, and
+  `qrdb auth factor delete <factor-id> [--force]`; it carries the
+  `user_authfactors:add` permission and is audited as `delete`. The tenant
+  barrier's encrypted store now implements the multi-key guarded batch, so
+  Delete commits there as it does on the plaintext store.
+- **Replica state hashes.** A node reports, for every replica it runs
+  (isolated tenants' included), the applied index and a SHA-256 digest of the
+  state machine at exactly that index, answered locally without a proposal:
+  two replicas of a shard at the same applied index must report the same
+  hash, on every storage backend. Exposed as REST `GET /admin/state-hashes`
+  (repeatable `shard`), gRPC/Unix `GetStateHashes`, QUIC
+  `admin.GetStateHashes`, MCP `qrdb_state_hashes`, the SDK capability
+  `transport.ReplicaStateHasher` on all six transports, and
+  `qrdb admin state-hash [--shard N]...`. Gated by the new `admin:state_hash`
+  permission (system tenant only), granted to the built-in Admin role. The
+  digest is defined in `pkg/statedigest` and documented in
+  `docs/clustering/`.
+- **An embedder composes every key and identity seam through `sdk/go` alone**
+  (go-qrdb#626). The SDK re-exports the CA-key types (`sdk.CAKeyProvider`,
+  `sdk.CAKeyProviderFactory`, `sdk.CAKeyAdapter`) and the volume types
+  (`sdk.VolumeKeyProvider`, `sdk.VolumeKey`). `node.WithCertProvider` replaces
+  the built-in login CA with the embedder's own (`sdk.ClientCertProvider`), and
+  `node.WithCertKeyProviderFactory` keeps it but signs each tenant's client
+  certificates with a key the embedder holds; a node given both fails with
+  `sdk.CertProviderConflictError`. `sdk.NewDatabaseDAO` and
+  `sdk.NewDatabaseDAOTransactional` build DAOs over a named database and never
+  fall back to the default store (`sdk.DAODatabaseStoreUnresolvedError`);
+  `sdk.NewClientDAOFactory` resolves names through a client.
+  `sdk.SpiffeID.URI` builds the tenant SPIFFE SAN that `sdk.TenantFromCert`
+  parses, and refuses one that would not read back identical. A build gate
+  compiles and tests an embedder module outside this one, `GOWORK=off`, that
+  imports nothing but `sdk/go/...`.
+
+- **A tenant delegates to an embedder's service principal** (go-qrdb#626).
+  `qrdb ca delegate` (REST `POST /certs/delegate`, gRPC `IssueDelegation`,
+  QUIC `cert.Delegate`, MCP `qrdb_cert_delegate`, and the SDK's
+  `CertClient.IssueDelegation` on every transport) has the tenant's own login CA certify the
+  principal's CSR as a short-lived client certificate (one hour by default, at
+  most 24) naming the principal and the delegated permissions in a critical
+  extension. The new `certs:delegate` permission is tenant-only and held by the
+  built-in SO and Admin roles: the system tenant cannot issue one, nor can a
+  delegated caller. The mTLS authenticator verifies the certificate on every
+  transport -- issued by that tenant's CA, within its lifetime, not revoked,
+  naming the principal the node set with `node.WithServicePrincipal` -- and the
+  request holds the delegated scope intersected with the principal's own
+  grants, re-verified when forwarded to the leader and audited to the tenant's
+  trail on every use. A node with no service principal, `qrdbd` included,
+  accepts none. The SDK re-exports the grant (`sdk.DelegationGrant`,
+  `sdk.DelegationFromCertificate`, `sdk.DelegationCheckLifetime`). The
+  extension is `tp-delegation`, OID `1.3.6.1.4.1.29377.101.24`.
+- **`RetrieveCredentialBuffer` / `RetrieveCredentialVersionBuffer`** on
+  `credentials.CredentialService`, and `CredentialRetrieveBuffer` /
+  `CredentialRetrieveVersionBuffer` on `service.CredentialServicer` and on the
+  SDK's `transport.CredentialClient` (all six transports). A retrieved
+  credential travels as a go-enclave-backed `*secure.Buffer` the caller
+  `Destroy`s, from the store through the service, the embedded transport and the
+  `credential://` resolver (`secret.NewSecretValueFromBuffer`) to the CLI's
+  output. The secret-bearing wire DTO of each transport is the one documented
+  place bytes leave protected memory
+  (`service.CredentialWireValue`; on the SDK side `transport.WireValue` /
+  `transport.BufferFromBase64` decode REST and MCP responses directly into
+  protected memory, and `transport.BufferFromWire` moves the protobuf-owned
+  slice in for gRPC, Unix and QUIC); see
+  `docs/credentials/architecture.md`, "Protected-memory boundary". The wire
+  contract is unchanged (#22).
+- **`make check-no-deprecated-credential-retrieve`** (Lint job): no Go file in
+  the repository may reintroduce a deleted `[]byte` credential retrieval method
+  declaration, and the unambiguous store-level removed selectors are blocked.
+  Protobuf wire RPC methods with the same names are allowed because they return
+  protobuf response messages, not credential heap slices (#22).
+- **`node.WithIdentityHydrator`.** A composer supplies the
+  `embedded.IdentityHydrator` the unified-login ceremony uses to turn the
+  resolved account and verified factor into the session identity, for example
+  to make the login Subject the immutable user id (`Principal.ID`). Without it
+  the Subject stays the username. Only the login ceremony is affected; network
+  requests still take their identity from the authentication chain. See
+  `docs/identity-rbac/api.md`, "Login identity".
+- **`lease.checkpoint_interval` (default `5m`, at most `1h`) and
+  `lease.failover_grace` (default `5s`)** configure the lease checkpoints and
+  the extra life a new leader gives every lease (see Changed).
+- **`protocol.OpLeaseCheckpoint`**, gated by the `lease-checkpoint` cluster
+  feature, replicates a batch of leases' remaining TTLs together with the
+  applied Raft index they were sampled at. Each renewal through the log
+  records its own applied index, and every replica discards a lease's
+  checkpoint when a renewal applied after the sample, so a restarted replica
+  never restores a TTL shorter than the holder's last renewal (#681).
 - **Numeric secondary indexes with a documented total order** (go-qrdb#35).
   A numeric index stores exact, order-preserving decimal terms
   (`index.EncodeNumericValue`): `-Inf` < negatives < `0` < positives < `+Inf`,
@@ -84,6 +190,16 @@ are not reconstructed here — their history is in the git log.
   `storage.Exclusive`, which runs a read-check-write under that lock.
 
 ### Changed
+
+- **The `(qrdb.v1.permission)` method option is public** (**BREAKING**,
+  go-qrdb#626). Its file moved to `qrdb/v1/permission.proto` under the sdk/go
+  module's `proto/` directory, with Go package
+  `github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1`, so a service module
+  built outside go-qrdb can annotate its RPCs and be authorized by the shared
+  interceptor. The option's name and field number (51000) are unchanged, and so
+  is every annotated RPC. `pkg/api/grpc/proto/qrdbv1/authz.proto` and its
+  `E_Permission` are deleted; import the SDK package instead. `make proto`
+  puts `sdk/go/proto` first on the include path.
 
 - **Sealing a node's barrier pauses every shard on it first, and unsealing
   resumes them.** After the seal record commits and before the keys leave
@@ -182,6 +298,22 @@ are not reconstructed here — their history is in the git log.
   and `TenantBarrierInitWithStrategy` takes variadic
   `tenant.TenantBarrierInitOption`s. See `docs/barrier-seal/architecture.md`,
   "The barrier key seam".
+- **Lease keep-alive is answered by the leader from memory** (go-qrdb#275).
+  A renewal no longer waits on a Raft log write: the leader renews in memory,
+  following etcd's lessor. Every `lease.checkpoint_interval` (default `5m`)
+  it checkpoints the remaining TTL of each lease longer than the interval, and
+  it checkpoints every lease before a scale-down or replica move transfers
+  leadership away. A renewal of a checkpointed lease goes through the log and
+  clears the checkpoint. A new leader first applies its predecessor's log, then
+  counts every lease from its checkpoint (or full TTL) plus the failover grace;
+  a restarted replica counts from the checkpoint too. A new leader therefore
+  never grants a lease more than its holder was renewed to, plus the grace.
+  When the leader cannot answer locally, the replicated renewal is answered
+  from its apply result rather than a second linearized read. The etcd
+  `LeaseKeepAlive` stream answers TTL 0 for a lease that is gone, as etcd does.
+  `TestRaft_LeaseKeepAliveLatencyTail` holds p90/median under 3x on real disk,
+  including under a disk-sync writer; test/performance/lease-keepalive.md
+  records the before/after table.
 
 - **Deleting a role takes it away from everyone who holds it** (go-qrdb#697).
   `qrdb roles delete` strips the role from every account holding it before it
@@ -237,6 +369,24 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A submitted Shamir share no longer outlives its quorum round**
+  (go-qrdb#79). Shares were already held in go-enclave protected memory, but
+  an expired round was destroyed only when the next share for the same
+  operation arrived, and nothing destroyed a round on seal, close, unseal or a
+  change of share set. Now a round arms an expiry timer when it opens. Seal and
+  close destroy every open round. Redistributing a domain (rekey, revocation,
+  recovery-key generation) or deleting its recovery keys destroys the rounds
+  opened on the old share set. An unseal destroys the unseal and recovery
+  rounds it ends. Admission re-checks the barrier's state under the round
+  lock, so a submission racing a seal or unseal cannot open a round after the
+  sweep.
+- **A rebalance move or scale-down no longer strands a two-voter group without
+  quorum.** The departing replica was dropped from the placement before its
+  Raft removal committed, so its node's reconciler stopped and purged it while
+  the removal still needed its vote. The surviving leader then lost quorum,
+  and the move failed at `remove-node`. Now the replica is evicted from Raft
+  first, after a compare-and-swap confirms the caller's placement snapshot.
+  The new `placement.Store.RemoveReplica` then drops it from the placement.
 - **A membership change no longer fails because it arrived mid-election.**
   `admin member add`, `add-observer`, `promote` and `remove` were refused
   with `not leader for shard N, leader unknown` -- a refusal no transport can
@@ -424,6 +574,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **Breaking: the `[]byte` credential retrieve methods** (#22):
+  `credentials.CredentialService.RetrieveCredential`,
+  `RetrieveCredentialVersion`, `service.CredentialServicer.CredentialRetrieve`,
+  `CredentialRetrieveVersion`, and the SDK transport `CredentialClient` /
+  transport implementations' `CredentialRetrieve` and
+  `CredentialRetrieveVersion`. Go callers use `RetrieveCredentialBuffer`,
+  `RetrieveCredentialVersionBuffer`, `CredentialRetrieveBuffer`, or
+  `CredentialRetrieveVersionBuffer` and `Destroy` the returned
+  `*secure.Buffer`. `secret.CredentialRetrieveFunc` and
+  `secret.CredentialRetriever` take the Buffer form. REST, gRPC, QUIC, MCP and
+  Unix wire operations keep their endpoint/RPC/tool names and payloads; only
+  the exported Go byte-returning surface is removed.
 - **`ceremony.IssuedCert.KeyPEM`.** A CA no longer generates or returns a leaf
   private key; the caller holds it.
 - **`lifecycle.RaftTenantClusterConfig.CertPEM` and `KeyPEM`.** Replaced by

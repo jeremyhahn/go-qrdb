@@ -15,6 +15,7 @@
 package netport
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -41,24 +42,49 @@ const (
 	// reserveHelperMode makes the re-exec'd binary reserve helperPorts ports
 	// through Reserve, print them, and exit holding nothing.
 	reserveHelperMode = "reserve"
-	helperPorts       = 4
+	// reserveHoldHelperMode is reserveHelperMode, but the process keeps its
+	// reservations until its stdin closes.
+	reserveHoldHelperMode = "reserve-hold"
+	helperPorts           = 4
 )
 
-// TestMain runs the second process of the cross-process disjointness test when
-// helperEnv asks for it, and the tests otherwise.
+// TestMain runs the other processes of the cross-process tests when helperEnv
+// asks for one, and the tests otherwise.
 func TestMain(m *testing.M) {
-	if os.Getenv(helperEnv) == reserveHelperMode {
-		ports, err := Reserve(testHost, helperPorts)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		for _, port := range ports {
-			fmt.Fprintln(os.Stdout, port)
-		}
-		os.Exit(0)
+	mode := os.Getenv(helperEnv)
+	if mode != reserveHelperMode && mode != reserveHoldHelperMode {
+		os.Exit(m.Run())
 	}
-	os.Exit(m.Run())
+	ports, err := Reserve(testHost, helperPorts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for _, port := range ports {
+		fmt.Fprintln(os.Stdout, port)
+	}
+	if mode == reserveHoldHelperMode {
+		// The reservations live as long as this process does.
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	}
+	os.Exit(0)
+}
+
+// helperCommand re-executes this test binary in the given helper mode. The
+// binary is the one running, as the kernel resolves it, never os.Args[0],
+// which the parent process chose.
+func helperCommand(mode string) (*exec.Cmd, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if !filepath.IsAbs(self) {
+		return nil, errors.New("netport: test binary path " + strconv.Quote(self) + " is not absolute")
+	}
+	// #nosec G204,G702 -- self is this process's own executable, resolved by the kernel (os.Executable) and checked absolute above; no argument is passed and no shell is involved. The only other input, mode, goes into the environment, never the command line.
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), helperEnv+"="+mode)
+	return cmd, nil
 }
 
 // unlocked is a lock that always succeeds and holds nothing.
@@ -114,9 +140,10 @@ func TestReserve_DisjointAcrossProcesses(t *testing.T) {
 		ours[p] = struct{}{}
 	}
 
-	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, with no arguments; the helper mode travels in a compile-time-literal environment entry. No shell is involved.
-	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), helperEnv+"="+reserveHelperMode)
+	cmd, err := helperCommand(reserveHelperMode)
+	if err != nil {
+		t.Fatalf("second process: %v", err)
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -138,6 +165,97 @@ func TestReserve_DisjointAcrossProcesses(t *testing.T) {
 		}
 		if _, taken := ours[port]; taken {
 			t.Errorf("port %d was handed out by this process AND by a concurrent one", port)
+		}
+	}
+}
+
+// TestReserve_ManyConcurrentProcesses runs the CI shape that broke the cluster
+// jobs: many test processes on one host, reserving at once, after their peers
+// already hold more of the window's bottom than one reservation's bind budget.
+// Every process must still get its ports, and no port may be handed to two of
+// them.
+func TestReserve_ManyConcurrentProcesses(t *testing.T) {
+	const processes = 8
+
+	// The peers' reservations, held by an allocator this test releases on
+	// exit so that repeated runs do not drain the window.
+	peers := newWindowAllocator(ephemeralRangePath, portWindow, lowestReservablePort, lockAcrossProcesses)
+	t.Cleanup(func() {
+		peers.mu.Lock()
+		defer peers.mu.Unlock()
+		for _, l := range peers.locks {
+			_ = l.Close()
+		}
+		peers.locks = nil
+	})
+	taken := make(map[int]string)
+	for len(taken) <= windowReservationAttempts {
+		ports, err := peers.reserve(testHost, 100, reserveNetworks...)
+		if err != nil {
+			t.Fatalf("holding the peers' ports: %v", err)
+		}
+		for _, p := range ports {
+			taken[p] = "the peers"
+		}
+	}
+
+	// Every process holds its reservations until all have reported, so the
+	// ports they print must be disjoint: a port is only reusable once the
+	// process holding it has exited.
+	type child struct {
+		cmd    *exec.Cmd
+		stdin  io.Closer
+		stdout *bufio.Scanner
+		stderr strings.Builder
+	}
+	children := make([]*child, processes)
+	for i := range processes {
+		cmd, err := helperCommand(reserveHoldHelperMode)
+		if err != nil {
+			t.Fatalf("process %d: %v", i, err)
+		}
+		c := &child{cmd: cmd}
+		c.cmd.Stderr = &c.stderr
+		stdin, err := c.cmd.StdinPipe()
+		if err != nil {
+			t.Fatalf("stdin of process %d: %v", i, err)
+		}
+		stdout, err := c.cmd.StdoutPipe()
+		if err != nil {
+			t.Fatalf("stdout of process %d: %v", i, err)
+		}
+		if err := c.cmd.Start(); err != nil {
+			t.Fatalf("starting process %d: %v", i, err)
+		}
+		c.stdin, c.stdout = stdin, bufio.NewScanner(stdout)
+		children[i] = c
+		t.Cleanup(func() {
+			_ = c.stdin.Close()
+			_ = c.cmd.Wait()
+		})
+	}
+
+	for i, c := range children {
+		var fields []string
+		for len(fields) < helperPorts && c.stdout.Scan() {
+			fields = append(fields, c.stdout.Text())
+		}
+		if len(fields) != helperPorts {
+			_ = c.stdin.Close()
+			err := c.cmd.Wait()
+			t.Errorf("process %d reserved %v, want %d ports: %v: %s", i, fields, helperPorts, err, c.stderr.String())
+			continue
+		}
+		owner := "process " + strconv.Itoa(i)
+		for _, s := range fields {
+			port, err := strconv.Atoi(s)
+			if err != nil {
+				t.Fatalf("%s printed %q: %v", owner, s, err)
+			}
+			if prev, dup := taken[port]; dup {
+				t.Errorf("port %d was handed out to %s AND to %s", port, prev, owner)
+			}
+			taken[port] = owner
 		}
 	}
 }
@@ -306,6 +424,35 @@ func TestWindowAllocator_LockCollisionsEndAtWindowExhaustion(t *testing.T) {
 	var exhausted *PortExhaustedError
 	if !errors.As(err, &exhausted) {
 		t.Fatalf("err = %v, want *PortExhaustedError", err)
+	}
+}
+
+// TestWindowAllocator_BindFailuresSpendTheBudgetPastLockCollisions checks the
+// budget that remains: a port that binds nowhere is busy outside every
+// reserving process, and those are what windowReservationAttempts bounds,
+// however many locked ports precede them.
+func TestWindowAllocator_BindFailuresSpendTheBudgetPastLockCollisions(t *testing.T) {
+	const lockedElsewhere = 100
+	a := newTestAllocator(t, func(port int) (io.Closer, error) {
+		if port < testWindowBase+lockedElsewhere {
+			return nil, errors.New("address already in use")
+		}
+		return unlocked(port)
+	})
+	bindErr := errors.New("bind: address already in use")
+	probed := 0
+	network := fakeNetwork(t, func(string) (io.Closer, error) {
+		probed++
+		return nil, bindErr
+	})
+
+	_, err := a.reserve(testHost, 1, network)
+	var reservationErr *PortReservationError
+	if !errors.As(err, &reservationErr) || !errors.Is(err, bindErr) {
+		t.Fatalf("err = %v, want *PortReservationError wrapping the bind failure", err)
+	}
+	if probed != windowReservationAttempts {
+		t.Errorf("probed %d ports, want exactly the %d-attempt budget", probed, windowReservationAttempts)
 	}
 }
 

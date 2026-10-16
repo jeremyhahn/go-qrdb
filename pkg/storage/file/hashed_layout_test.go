@@ -95,8 +95,8 @@ func TestNew_FreshAndEmptyDirectoriesWriteTheMarker(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read marker: %v", err)
 			}
-			if string(data) != formatVersion {
-				t.Errorf("marker = %q, want %q", data, formatVersion)
+			if want := formatMarker(atRestPlaintext); string(data) != want {
+				t.Errorf("marker = %q, want %q", data, want)
 			}
 
 			// Reopening the now-marked directory must succeed.

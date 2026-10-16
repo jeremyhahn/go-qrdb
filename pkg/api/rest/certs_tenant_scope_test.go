@@ -228,6 +228,7 @@ func newCertScopeFixture(t *testing.T) *certScopeFixture {
 			return []permission.Permission{
 				permission.CertsIssue,
 				permission.CertsEnroll,
+				permission.CertsDelegate,
 				permission.CertsRevoke,
 				permission.CertsRevokeCross,
 				permission.CertsList,

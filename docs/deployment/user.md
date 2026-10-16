@@ -74,6 +74,47 @@ level=INFO msg="secure memory budget installed" budget_bytes=67108864 source=def
 RLIMIT_MEMLOCK"` means the host limit sized it; grant one of the settings above
 to lift it.
 
+## Network ports and firewall
+
+Every socket `qrdbd` opens — port, protocol, flag and YAML key, build tag,
+whether it is on by default and who must reach it — is the
+[pinned port set](../cluster-verification/user.md#pinned-port-set), which a
+test keeps exactly true. Every port can be moved, and every key can also be set
+through its `QRDB_` environment variable (`server.host` → `QRDB_SERVER_HOST`).
+
+**Every node must open the same set.** Every node serves every endpoint, and a
+node that holds no replica of a database forwards the call to a replica's
+leader over the same transport: REST to REST, gRPC to gRPC (the Unix socket
+forwards over gRPC too), QUIC to QUIC and MCP to MCP. So each API port that is
+enabled must be reachable from the other voters as well as from clients.
+
+### Firewall recipe: three voters
+
+Take voters at 192.0.2.11, 192.0.2.12 and 192.0.2.13, with clients on
+198.51.100.0/24.
+
+Peer-only rules. Allow these from the other two voters only:
+
+- UDP 63001: Raft.
+- TCP 63006: enrollment. Open it also to a new node while that node joins.
+- TCP 63007: needed only when `cluster_join.enabled` is set, and only from a
+  joining node.
+- UDP 63777: needed only with `--discovery multicast`, on the voters' segment.
+
+Client-facing rules. Allow these from clients **and** from the other two voters:
+
+- TCP and UDP 63002: REST and HTTP/3. Metrics scrapers use this port too.
+- TCP 63003: gRPC.
+- UDP 63004 and TCP 63005: open these only if QUIC or MCP is enabled.
+
+Client-only rules. Allow these from clients only, when the feature is on:
+
+- TCP 3306 and TCP 5432.
+- Each database's etcd `listen_addr`.
+
+Deny everything else inbound. The Unix socket needs no rule; protect it with
+file permissions.
+
 ## Attaching a debugger
 
 `qrdbd start` makes itself unreadable to other processes before it holds any
@@ -104,13 +145,18 @@ node:
 
 - **Run chrony on every replica.** The bound is on clock *rate*, not on the
   time of day: a wall-clock step does not affect the lease, which runs on the
-  monotonic clock.
+  monotonic clock, and clock offset between nodes does not matter. A VM
+  whose clock rate wanders after live migration or a long pause is the case
+  to watch.
 - **Run the same `ElectionRTT` and `RTTMillisecond` on every replica.**
   `qrdbd` exposes no setting for either; it takes them from go-quicraft's
   defaults. A program that embeds the engine and sets them must set the same
-  values on every replica.
+  values on every replica. A replica with a shorter
+  election window backs no lease — still safe — but reads then take the
+  heartbeat round.
 
-See [../05-consistency.md](../05-consistency.md#3-leaseread) for why.
+Near or after lease expiry a read falls back to the heartbeat round on its own;
+nothing needs configuring for that. See [../05-consistency.md](../05-consistency.md#3-leaseread) for why.
 
 ## Troubleshooting
 

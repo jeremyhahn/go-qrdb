@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/statedigest"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -75,6 +76,8 @@ func (k *KVStateMachine) Lookup(query interface{}) (interface{}, error) {
 		return k.lookupPrefix(q)
 	case kv.ListQuery:
 		return k.listKeys(q.Prefix)
+	case statedigest.Query:
+		return k.stateDigest()
 	default:
 		return nil, &IncompleteDataError{Reason: "unsupported query type"}
 	}

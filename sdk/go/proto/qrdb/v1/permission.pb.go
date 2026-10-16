@@ -16,7 +16,7 @@
 // versions:
 // 	protoc-gen-go v1.36.12
 // 	protoc        v7.36.2
-// source: pkg/api/grpc/proto/qrdbv1/authz.proto
+// source: qrdb/v1/permission.proto
 
 package qrdbv1
 
@@ -35,36 +35,36 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-var file_pkg_api_grpc_proto_qrdbv1_authz_proto_extTypes = []protoimpl.ExtensionInfo{
+var file_qrdb_v1_permission_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.MethodOptions)(nil),
 		ExtensionType: (*string)(nil),
 		Field:         51000,
 		Name:          "qrdb.v1.permission",
 		Tag:           "bytes,51000,opt,name=permission",
-		Filename:      "pkg/api/grpc/proto/qrdbv1/authz.proto",
+		Filename:      "qrdb/v1/permission.proto",
 	},
 }
 
 // Extension fields to descriptorpb.MethodOptions.
 var (
 	// optional string permission = 51000;
-	E_Permission = &file_pkg_api_grpc_proto_qrdbv1_authz_proto_extTypes[0]
+	E_Permission = &file_qrdb_v1_permission_proto_extTypes[0]
 )
 
-var File_pkg_api_grpc_proto_qrdbv1_authz_proto protoreflect.FileDescriptor
+var File_qrdb_v1_permission_proto protoreflect.FileDescriptor
 
-const file_pkg_api_grpc_proto_qrdbv1_authz_proto_rawDesc = "" +
+const file_qrdb_v1_permission_proto_rawDesc = "" +
 	"\n" +
-	"%pkg/api/grpc/proto/qrdbv1/authz.proto\x12\aqrdb.v1\x1a google/protobuf/descriptor.proto:@\n" +
+	"\x18qrdb/v1/permission.proto\x12\aqrdb.v1\x1a google/protobuf/descriptor.proto:@\n" +
 	"\n" +
 	"permission\x12\x1e.google.protobuf.MethodOptions\x18\xb8\x8e\x03 \x01(\tR\n" +
-	"permissionB9Z7github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1b\x06proto3"
+	"permissionB;Z9github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1;qrdbv1b\x06proto3"
 
-var file_pkg_api_grpc_proto_qrdbv1_authz_proto_goTypes = []any{
+var file_qrdb_v1_permission_proto_goTypes = []any{
 	(*descriptorpb.MethodOptions)(nil), // 0: google.protobuf.MethodOptions
 }
-var file_pkg_api_grpc_proto_qrdbv1_authz_proto_depIdxs = []int32{
+var file_qrdb_v1_permission_proto_depIdxs = []int32{
 	0, // 0: qrdb.v1.permission:extendee -> google.protobuf.MethodOptions
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
@@ -73,26 +73,26 @@ var file_pkg_api_grpc_proto_qrdbv1_authz_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_pkg_api_grpc_proto_qrdbv1_authz_proto_init() }
-func file_pkg_api_grpc_proto_qrdbv1_authz_proto_init() {
-	if File_pkg_api_grpc_proto_qrdbv1_authz_proto != nil {
+func init() { file_qrdb_v1_permission_proto_init() }
+func file_qrdb_v1_permission_proto_init() {
+	if File_qrdb_v1_permission_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_api_grpc_proto_qrdbv1_authz_proto_rawDesc), len(file_pkg_api_grpc_proto_qrdbv1_authz_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_qrdb_v1_permission_proto_rawDesc), len(file_qrdb_v1_permission_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   0,
 			NumExtensions: 1,
 			NumServices:   0,
 		},
-		GoTypes:           file_pkg_api_grpc_proto_qrdbv1_authz_proto_goTypes,
-		DependencyIndexes: file_pkg_api_grpc_proto_qrdbv1_authz_proto_depIdxs,
-		ExtensionInfos:    file_pkg_api_grpc_proto_qrdbv1_authz_proto_extTypes,
+		GoTypes:           file_qrdb_v1_permission_proto_goTypes,
+		DependencyIndexes: file_qrdb_v1_permission_proto_depIdxs,
+		ExtensionInfos:    file_qrdb_v1_permission_proto_extTypes,
 	}.Build()
-	File_pkg_api_grpc_proto_qrdbv1_authz_proto = out.File
-	file_pkg_api_grpc_proto_qrdbv1_authz_proto_goTypes = nil
-	file_pkg_api_grpc_proto_qrdbv1_authz_proto_depIdxs = nil
+	File_qrdb_v1_permission_proto = out.File
+	file_qrdb_v1_permission_proto_goTypes = nil
+	file_qrdb_v1_permission_proto_depIdxs = nil
 }

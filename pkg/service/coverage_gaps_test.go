@@ -699,7 +699,7 @@ func TestCredentialService_CredentialRetrieveVersion_ExplicitVersion(t *testing.
 	}
 
 	// Version 1 retrieves the credential stored above (legacy untracked path).
-	val, err := svc.CredentialRetrieveVersion(ctx, "ver-cred", 1)
+	val, err := retrieveVersionFrom(ctx, svc, "ver-cred", 1)
 	if err != nil {
 		t.Fatalf("CredentialRetrieveVersion returned unexpected error: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestCredentialService_CredentialRetrieveVersion_VersionNotFound(t *testing.
 		t.Fatalf("CredentialStore: %v", err)
 	}
 
-	_, err := svc.CredentialRetrieveVersion(ctx, "ghost", 99)
+	_, err := retrieveVersionFrom(ctx, svc, "ghost", 99)
 	if err == nil {
 		t.Fatal("expected error for non-existent version, got nil")
 	}

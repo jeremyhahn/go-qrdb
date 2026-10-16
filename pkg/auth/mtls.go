@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 )
 
@@ -74,6 +75,11 @@ type MTLSAuthenticator struct {
 	// design (go-qrdb#560 review, B2-2), so Key B is never trusted at the
 	// TLS layer without this check also being enforceable here.
 	issuerVerifier IssuerVerifier
+
+	// delegatedPrincipal is the service principal this node accepts
+	// tenant-issued delegations for (WithDelegatedPrincipal). Empty refuses
+	// every delegation.
+	delegatedPrincipal string
 }
 
 // IssuerVerifier binds a verified client certificate's claimed tenant
@@ -304,6 +310,18 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	}
 
 	cert := chains[0][0]
+
+	// A certificate carrying a tenant-issued delegation is judged as a
+	// delegation or refused; it is never read as the user login it would
+	// otherwise look like. That is what its critical extension promises, and
+	// what lets the trust pool hand crypto/x509 a copy with the extension
+	// marked handled (delegation.Verifiable).
+	if g, found, derr := delegation.FromCertificate(cert); found {
+		if derr != nil {
+			return nil, &DelegationRefusedError{Reason: "malformed delegation", Err: derr}
+		}
+		return a.authenticateDelegation(ctx, chains[0], g)
+	}
 
 	// Revocation is enforced HERE, on every request, before any identity is
 	// derived from the certificate. A TLS handshake callback would not do: it

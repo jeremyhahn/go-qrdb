@@ -344,6 +344,12 @@ type ReclaimSweeper struct {
 	// cycleSeen collects the job IDs seen since the cursor last wrapped, so
 	// progress can be pruned of jobs another sweeper finished.
 	cycleSeen map[string]struct{}
+
+	// indexUnlistable is set once the system store refuses the index
+	// listing with MVCCBackendRequiredError: its raft.sm_type keeps no MVCC
+	// keyspace, which does not change while the process runs. The refusal
+	// is logged once and the sweep stops asking.
+	indexUnlistable bool
 }
 
 // reclaimProgress is one job's in-memory sweep state; see
@@ -443,7 +449,7 @@ func (rs *ReclaimSweeper) SweepOnce(ctx context.Context, isLeader func() bool, l
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if rs.index == nil {
+	if rs.index == nil || rs.indexUnlistable {
 		return
 	}
 	resolver := rs.storeResolver()
@@ -454,6 +460,14 @@ func (rs *ReclaimSweeper) SweepOnce(ctx context.Context, isLeader func() bool, l
 
 	page, err := rs.nextIndexPage(ctx)
 	if err != nil {
+		var mvccRequired *MVCCBackendRequiredError
+		if errors.As(err, &mvccRequired) {
+			rs.indexUnlistable = true
+			logger.Warn("reclaim sweep: the system shard cannot list the reclaim index; "+
+				"keyspace orphaned by TRUNCATE TABLE, DROP TABLE and DROP INDEX is not reclaimed on this node",
+				"error", err)
+			return
+		}
 		logger.Warn("reclaim sweep: list pending index entries failed", "error", err)
 		return
 	}

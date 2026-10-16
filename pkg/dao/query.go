@@ -144,6 +144,7 @@ func (q *QueryBuilder[E]) Execute() ([]E, error) {
 
 	// Apply limit.
 	if q.limit > 0 && len(entities) > q.limit {
+		q.dao.discard(entities[q.limit:]...)
 		entities = entities[:q.limit]
 	}
 
@@ -188,6 +189,7 @@ func (q *QueryBuilder[E]) ExecutePage() (PageResult[E], error) {
 
 	offset := (page - 1) * pageSize
 	if offset >= len(entities) {
+		q.dao.discard(entities...)
 		return result, nil
 	}
 
@@ -195,6 +197,8 @@ func (q *QueryBuilder[E]) ExecutePage() (PageResult[E], error) {
 	if end > len(entities) {
 		end = len(entities)
 	}
+	q.dao.discard(entities[:offset]...)
+	q.dao.discard(entities[end:]...)
 	result.HasMore = end < len(entities)
 	result.Entities = entities[offset:end]
 
@@ -230,6 +234,7 @@ func (q *QueryBuilder[E]) Count() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	q.dao.discard(entities...)
 	return len(entities), nil
 }
 
@@ -429,6 +434,7 @@ func (q *QueryBuilder[E]) executeIndexIntersection(plan *planner.Plan) ([]E, err
 		for _, e := range entities {
 			keySet[fmt.Sprintf("%v", any(e))] = struct{}{}
 		}
+		q.dao.discard(entities...)
 		sets = append(sets, keySet)
 	}
 
@@ -474,7 +480,9 @@ func (q *QueryBuilder[E]) executeIndexIntersection(plan *planner.Plan) ([]E, err
 		}
 		if inAll {
 			result = append(result, e)
+			continue
 		}
+		q.dao.discard(e)
 	}
 
 	if len(plan.PostFilters) > 0 {
@@ -515,6 +523,7 @@ func (q *QueryBuilder[E]) fullScan() ([]E, error) {
 		return nil
 	})
 	if err != nil {
+		q.dao.discard(entities...)
 		return nil, err
 	}
 	return entities, nil
@@ -537,7 +546,9 @@ func (q *QueryBuilder[E]) applyPostFilters(entities []E, predicates []planner.Pr
 	for _, e := range entities {
 		if evaluator.Matches(e, predicates) {
 			filtered = append(filtered, e)
+			continue
 		}
+		q.dao.discard(e)
 	}
 	return filtered
 }

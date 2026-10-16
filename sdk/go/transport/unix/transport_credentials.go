@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -140,27 +141,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	}, nil
 }
 
-// CredentialRetrieveVersion returns the stored credential value for a
-// specific version via the QRDBService/CredentialRetrieveVersion RPC
-// over the Unix socket. Use Version == 0 to retrieve the current version.
-func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*transport.CredentialRetrieveVersionResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &transport.NilRequestError{}}
-	}
-
-	resp, err := t.client.CredentialRetrieveVersion(ctx, &pb.CredentialRetrieveVersionRequest{
-		Name:    req.Name,
-		Version: req.Version,
-	})
-	if err != nil {
-		return nil, mapGRPCError("CredentialRetrieveVersion", err)
-	}
-	return &transport.CredentialRetrieveVersionResponse{Value: resp.GetValue()}, nil
-}
-
 // CredentialListVersions returns the version history (current + grace)
 // for a credential via the QRDBService/CredentialListVersions RPC over
 // the Unix socket. Each returned entry is metadata-only; values are
@@ -222,8 +202,10 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	return nil
 }
 
-// CredentialRetrieve returns the credential value via the CredentialRetrieve RPC.
-func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+// CredentialRetrieveBuffer returns the credential value for name in protected
+// memory. The gRPC response is the wire DTO; it is moved into a buffer and the
+// decoded slice wiped.
+func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -231,5 +213,25 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if err != nil {
 		return nil, mapGRPCError("CredentialRetrieve", err)
 	}
-	return resp.GetValue(), nil
+	return transport.BufferFromWire(resp.GetValue())
+}
+
+// CredentialRetrieveVersionBuffer returns the stored value for a specific
+// version in protected memory. The gRPC response is the wire DTO; it is moved
+// into a buffer and the decoded slice wiped.
+func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*secure.Buffer, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &transport.NilRequestError{}}
+	}
+	resp, err := t.client.CredentialRetrieveVersion(ctx, &pb.CredentialRetrieveVersionRequest{
+		Name:    req.Name,
+		Version: req.Version,
+	})
+	if err != nil {
+		return nil, mapGRPCError("CredentialRetrieveVersion", err)
+	}
+	return transport.BufferFromWire(resp.GetValue())
 }

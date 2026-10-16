@@ -45,10 +45,6 @@ const (
 	// journalFileName is the committed (renamed-into-place) journal.
 	journalFileName = ".commit-journal"
 
-	// journalTmpPattern names in-flight journal writes; leftovers are
-	// removed at Open.
-	journalTmpPattern = ".tmp-journal-*"
-
 	// journalMagic identifies journal format version 1.
 	journalMagic = "QRDBFJ1\x00"
 
@@ -150,27 +146,7 @@ func decodeJournal(data []byte) ([]storage.BufferedOp, error) {
 // fsync. After it returns nil the batch WILL be applied — by the caller
 // now, or by recovery after a crash.
 func (e *Engine) writeJournal(image []byte) error {
-	tmp, err := os.CreateTemp(e.dir, journalTmpPattern)
-	if err != nil {
-		return &JournalWriteError{Err: err}
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(image); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return &JournalWriteError{Err: err}
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return &JournalWriteError{Err: err}
-	}
-	if err := tmp.Close(); err != nil {
-		e.discardTemp(tmpName)
-		return &JournalWriteError{Err: err}
-	}
-	if err := fsync.Rename(tmpName, filepath.Join(e.dir, journalFileName)); err != nil {
-		e.discardTemp(tmpName)
+	if err := e.writeDurable(e.fs, filepath.Join(e.dir, journalFileName), tmpJournalPrefix, image); err != nil {
 		return &JournalWriteError{Err: err}
 	}
 	return nil
@@ -197,7 +173,7 @@ func (e *Engine) recoverJournal() error {
 		return err
 	}
 	for _, ent := range entries {
-		if !ent.IsDir() && strings.HasPrefix(ent.Name(), ".tmp-journal-") {
+		if !ent.IsDir() && strings.HasPrefix(ent.Name(), tmpJournalPrefix) {
 			_ = os.Remove(filepath.Join(e.dir, ent.Name()))
 		}
 	}
@@ -212,9 +188,9 @@ func (e *Engine) recoverJournal() error {
 // applying it, and the next writer must finish that commit before it journals
 // or writes anything of its own.
 func (e *Engine) replayJournal() error {
-	data, err := os.ReadFile(filepath.Join(e.dir, journalFileName))
+	data, err := readFile(e.fs, filepath.Join(e.dir, journalFileName))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if isNotExist(err) {
 			return nil
 		}
 		return err

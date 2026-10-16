@@ -43,6 +43,8 @@ func TestClusterAdminScope(t *testing.T) {
 		// compaction discards every tenant's raw history on the node.
 		{http.MethodGet, "/admin/node-compaction", ``},
 		{http.MethodPut, "/admin/node-compaction", `{"compaction":{"mode":"revision","retainRevisions":10}}`},
+		// Replica state hashes cover every tenant's replicas on the node.
+		{http.MethodGet, "/admin/state-hashes", ``},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

@@ -220,6 +220,13 @@ func (b *BarrierBackend) Delete(ctx context.Context, key []byte) error {
 	return b.inner.Delete(ctx, key)
 }
 
+func (b *BarrierBackend) DeleteRange(ctx context.Context, start, end []byte) error {
+	if b.barrier.IsSealed() {
+		return &SealedError{}
+	}
+	return b.inner.DeleteRange(ctx, start, end)
+}
+
 // List returns all keys matching the given prefix. Keys are not encrypted.
 func (b *BarrierBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	if b.barrier.IsSealed() {

@@ -45,7 +45,7 @@ func TestEffectiveCapabilities_UnencryptedAtRest(t *testing.T) {
 		{"standalone pebble", "standalone", true, "", "pebble", ""},
 		{"standalone default", "standalone", true, "", "", ""},
 		{"standalone memory", "standalone", true, "", "memory", ""},
-		{"standalone file", "standalone", true, "", "file", `"file"`},
+		{"standalone file", "standalone", true, "", "file", ""},
 		{"standalone objstore", "standalone", true, "", "objstore", `"objstore"`},
 		{"standalone file, seal off", "standalone", false, "", "file", ""},
 	}

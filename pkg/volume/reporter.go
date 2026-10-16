@@ -90,8 +90,9 @@ type SealProbe interface {
 }
 
 // WithReporterSealProbe makes the Reporter consult p before every write it
-// would propose: while the node barrier is sealed a refresh is skipped and
-// Report is refused with *NodeSealedError. The lease expiry sweep holds while
+// would propose: while the node barrier is sealed a refresh is skipped,
+// Report is refused with *NodeSealedError, and Close leaves the report to its
+// lease instead of proposing a revoke. The lease expiry sweep holds while
 // sealed, so the report survives until the first refresh after the unseal
 // renews it. A nil p writes unconditionally.
 func WithReporterSealProbe(p SealProbe) ReporterOption {
@@ -269,7 +270,9 @@ func (r *Reporter) leaseIDFor(ctx context.Context) (int64, error) {
 
 // Close stops the refresh loop and revokes the lease, which deletes the
 // published report immediately rather than leaving it to expire on its
-// own. Idempotent.
+// own. Idempotent. While the node barrier is sealed the revoke is not
+// proposed: the loop still stops, the report is left to its lease, and the
+// result is *NodeSealedError.
 func (r *Reporter) Close() error {
 	r.mu.Lock()
 	if r.closed {
@@ -292,6 +295,9 @@ func (r *Reporter) Close() error {
 
 	if !granted {
 		return nil
+	}
+	if r.sealed() {
+		return &NodeSealedError{Op: "revoke"}
 	}
 	return r.leases.Revoke(context.Background(), leaseID)
 }

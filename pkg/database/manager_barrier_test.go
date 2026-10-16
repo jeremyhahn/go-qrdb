@@ -33,6 +33,8 @@ func newNoopBackend() *noopBackend { return &noopBackend{} }
 func (b *noopBackend) Get(_ context.Context, _ []byte) ([]byte, error) { return nil, nil }
 func (b *noopBackend) Put(_ context.Context, _, _ []byte) error        { return nil }
 func (b *noopBackend) Delete(_ context.Context, _ []byte) error        { return nil }
+
+func (b *noopBackend) DeleteRange(_ context.Context, _, _ []byte) error { return nil }
 func (b *noopBackend) List(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }

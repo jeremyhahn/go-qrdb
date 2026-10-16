@@ -36,86 +36,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // ---------------------------------------------------------------------------
 // Local mocks (not tag-gated)
 // ---------------------------------------------------------------------------
-
-// fullMockUserAuthFactorSvc implements service.UserAuthFactorServicer.
-type fullMockUserAuthFactorSvc struct {
-	addErr       error
-	listResult   []*auth.AuthFactor
-	listErr      error
-	getResult    *auth.AuthFactor
-	getErr       error
-	removeErr    error
-	rotateErr    error
-	relabelErr   error
-	lookupResult *auth.AuthFactor
-	lookupErr    error
-}
-
-var _ service.UserAuthFactorServicer = (*fullMockUserAuthFactorSvc)(nil)
-
-func (m *fullMockUserAuthFactorSvc) Add(_ context.Context, _ uint64, _ *auth.AuthFactor) error {
-	return m.addErr
-}
-func (m *fullMockUserAuthFactorSvc) List(_ context.Context, _ uint64) ([]*auth.AuthFactor, error) {
-	if m.listErr != nil {
-		return nil, m.listErr
-	}
-	return m.listResult, nil
-}
-func (m *fullMockUserAuthFactorSvc) Get(_ context.Context, _ string) (*auth.AuthFactor, error) {
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
-	return m.getResult, nil
-}
-func (m *fullMockUserAuthFactorSvc) LookupByCredentialKey(_ context.Context, _ auth.AuthFactorType, _ []byte) (*auth.AuthFactor, error) {
-	if m.lookupErr != nil {
-		return nil, m.lookupErr
-	}
-	return m.lookupResult, nil
-}
-func (m *fullMockUserAuthFactorSvc) Remove(_ context.Context, _ string, _ bool) error {
-	return m.removeErr
-}
-func (m *fullMockUserAuthFactorSvc) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
-	return m.rotateErr
-}
-func (m *fullMockUserAuthFactorSvc) Relabel(_ context.Context, _ string, _ string) error {
-	return m.relabelErr
-}
-func (m *fullMockUserAuthFactorSvc) MarkUsed(_ context.Context, _ string, _ time.Time) error {
-	return nil
-}
-
-func newFullMockUserAuthFactorSvc() *fullMockUserAuthFactorSvc {
-	now := time.Now()
-	return &fullMockUserAuthFactorSvc{
-		getResult: &auth.AuthFactor{
-			ID:           "factor-1",
-			UserID:       42,
-			Type:         auth.AuthFactorType("totp"),
-			Label:        "my-totp",
-			Credential:   []byte("secret"),
-			RegisteredAt: now,
-		},
-		lookupResult: &auth.AuthFactor{
-			ID:           "factor-1",
-			UserID:       42,
-			Type:         auth.AuthFactorType("totp"),
-			RegisteredAt: now,
-		},
-		listResult: []*auth.AuthFactor{
-			{ID: "factor-1", UserID: 42, Type: "totp", RegisteredAt: now},
-		},
-	}
-}
 
 // fullMockAuditLogger is a minimal audit.AuditLogger with configurable errors.
 type fullMockAuditLogger struct {
@@ -167,28 +93,6 @@ func (m *certThumbprintErrUserSvc) UserByCertThumbprint(_ context.Context, _ str
 // ---------------------------------------------------------------------------
 // Helpers for starting gRPC test servers
 // ---------------------------------------------------------------------------
-
-// startServerWithUserAuthFactorFull starts a gRPC server wired with the
-// UserAuthFactor service. It is equivalent to startServerWithUserAuthFactor
-// in grpc_coverage2_test.go but has no build tag restriction.
-func startServerWithUserAuthFactorFull(t *testing.T, svc service.UserAuthFactorServicer) (*grpc.ClientConn, func()) {
-	t.Helper()
-	tlsCfg := testServerTLSConfig(t)
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithTLS(tlsCfg), WithUserAuthFactorService(svc))
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
-	if err != nil {
-		srv.Stop()
-		t.Fatalf("grpc.NewClient failed: %v", err)
-	}
-	return conn, func() {
-		_ = conn.Close()
-		srv.Stop()
-	}
-}
 
 // startServerWithAuditFull starts a gRPC server that includes the AuditService.
 func startServerWithAuditFull(t *testing.T, logger audit.AuditLogger) (*grpc.ClientConn, func()) {

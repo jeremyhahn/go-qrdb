@@ -110,6 +110,7 @@ func TestLessor_RunExpiry_LeavesAnUnexpiredLeaseAlone(t *testing.T) {
 		revoked.Store(true)
 		return nil
 	})
+	waitForPoll(t, polled) // RunExpiry's start-up leadership test
 
 	fake.Advance(9 * time.Second)
 	waitForPoll(t, polled)
@@ -133,13 +134,16 @@ func TestLessor_RunExpiry_NoSweepOnFollower(t *testing.T) {
 
 	var called atomic.Bool
 	isLeader, polled := recordLeaderPolls(false)
-	stop := startSweeper(t, lr, fake, 50*time.Millisecond, isLeader, func(context.Context, int64) error {
+	// One interval is well past the 1s TTL, so the single tick one Advance
+	// fires finds the lease expired.
+	const interval = 2 * time.Second
+	stop := startSweeper(t, lr, fake, interval, isLeader, func(context.Context, int64) error {
 		called.Store(true)
 		return nil
 	})
+	waitForPoll(t, polled) // RunExpiry's start-up leadership test
 
-	// Well past the 1s TTL, so the lease is expired when the sweeper looks.
-	fake.Advance(2 * time.Second)
+	fake.Advance(interval)
 	waitForPoll(t, polled)
 	stop()
 
@@ -158,6 +162,7 @@ func TestLessor_RunExpiry_ZeroIntervalUsesTheDefault(t *testing.T) {
 	isLeader, polled := recordLeaderPolls(true)
 	stop := startSweeper(t, lr, fake, 0, isLeader, func(context.Context, int64) error { return nil })
 	defer stop()
+	waitForPoll(t, polled) // RunExpiry's start-up leadership test
 
 	fake.Advance(DefaultExpiryInterval - time.Millisecond)
 	select {

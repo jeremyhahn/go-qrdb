@@ -79,6 +79,25 @@ func (e *FormatVersionMismatchError) Error() string {
 		" — there is no migration between on-disk formats"
 }
 
+// AtRestMismatchError refuses to open a data directory whose format marker
+// records the other at-rest posture: a plaintext store opened under the seal
+// barrier's encryption, which would serve its plaintext records beside new
+// ciphertext ones, or an encrypted store opened without it. There is no
+// conversion in place; move the data through a backup and restore.
+type AtRestMismatchError struct {
+	// Dir is the data directory that was refused.
+	Dir string
+	// Found is the posture the marker records.
+	Found string
+	// Want is the posture the engine was opened in.
+	Want string
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *AtRestMismatchError) Error() string {
+	return "file storage: " + e.Dir + " was written " + e.Found + " and cannot be opened " + e.Want
+}
+
 // RecordCorruptError reports that a stored record could not be parsed back
 // into its key and value: the on-disk content is shorter than its own
 // declared key-length header, or the header names a length the record

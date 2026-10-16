@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -267,5 +268,98 @@ func testLeaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	}
 	if !strings.Contains(out, "OK") {
 		t.Fatalf("[%s] lease revoke %s (already revoked): expected idempotent OK, got: %s", proto.name, leaseID, out)
+	}
+}
+
+// leaseRenewTTL is the short TTL the keep-alive and expiry test grants: long
+// enough for a CLI round trip on every transport, short enough that renewing
+// past it and then waiting for the sweeper stays within seconds.
+const leaseRenewTTL = 3
+
+// TestLease_CLI_KeepAliveAndExpiry_PerProtocol drives renewal and expiry
+// through the CLI binary on every transport: `lease keep-alive` keeps a short
+// lease -- and the key bound to it -- alive well past the TTL it was granted
+// with, and once keep-alives stop the leader's sweeper revokes the lease and
+// deletes the key, after which `lease ttl` reports the lease not found and
+// `lease keep-alive` cannot revive it.
+func TestLease_CLI_KeepAliveAndExpiry_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testLeaseKeepAliveAndExpiryOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testLeaseKeepAliveAndExpiryOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	key := "leasecli/" + proto.name + "/renewed"
+	out, err := runCLIProto(t, node, proto, "--output", "json", "lease", "grant", "--ttl", strconv.Itoa(leaseRenewTTL))
+	if err != nil {
+		t.Fatalf("[%s] lease grant --ttl %d: %v\noutput: %s", proto.name, leaseRenewTTL, err, out)
+	}
+	var granted leaseInfoDisplay
+	if jerr := json.Unmarshal([]byte(out), &granted); jerr != nil {
+		t.Fatalf("[%s] decode `lease grant` JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	leaseID := strconv.FormatInt(granted.ID, 10)
+	if out, err = runCLIProto(t, node, proto, "kv", "put", key, "renewed-value", "--lease-id", leaseID); err != nil {
+		t.Fatalf("[%s] kv put %s --lease-id %s: %v\noutput: %s", proto.name, key, leaseID, err, out)
+	}
+
+	// Renew every second for twice the granted TTL. Each keep-alive must
+	// report the lease back at its full TTL, to the second.
+	renewEvery := time.NewTicker(time.Second)
+	defer renewEvery.Stop()
+	renewUntil := time.After(2 * leaseRenewTTL * time.Second)
+renewing:
+	for {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "lease", "keep-alive", leaseID)
+		if err != nil {
+			t.Fatalf("[%s] lease keep-alive %s: %v\noutput: %s", proto.name, leaseID, err, out)
+		}
+		var renewed leaseInfoDisplay
+		if jerr := json.Unmarshal([]byte(out), &renewed); jerr != nil {
+			t.Fatalf("[%s] decode `lease keep-alive` JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		if renewed.ID != granted.ID || renewed.RemainingTTL < leaseRenewTTL-1 {
+			t.Fatalf("[%s] lease keep-alive %s = %+v, want lease %d back at its full %ds",
+				proto.name, leaseID, renewed, granted.ID, leaseRenewTTL)
+		}
+		select {
+		case <-renewEvery.C:
+		case <-renewUntil:
+			break renewing
+		}
+	}
+	out, err = runCLIProto(t, node, proto, "kv", "exists", key)
+	if err != nil || strings.TrimSpace(out) != "true" {
+		t.Fatalf("[%s] kv exists %s after renewing past the granted TTL = %q, err=%v, want %q",
+			proto.name, key, out, err, "true")
+	}
+
+	// Stop renewing: the sweeper revokes the lease and deletes its key.
+	awaitClusterCondition(t, 4*leaseRenewTTL*time.Second, proto.name+" expiry of the unrenewed lease's key", func() error {
+		got, existsErr := runCLIProto(t, node, proto, "kv", "exists", key)
+		if existsErr != nil {
+			return existsErr
+		}
+		if strings.TrimSpace(got) != "false" {
+			return &leaseKeyPresentError{Key: key}
+		}
+		return nil
+	})
+
+	out, err = runCLIProto(t, node, proto, "lease", "ttl", leaseID)
+	wantNotFound := (&transport.LeaseNotFoundError{LeaseID: granted.ID}).Error()
+	if err == nil || strings.TrimSpace(out) != wantNotFound {
+		t.Fatalf("[%s] lease ttl %s (expired) = %q, err=%v, want exactly %q", proto.name, leaseID, out, err, wantNotFound)
+	}
+	out, err = runCLIProto(t, node, proto, "lease", "keep-alive", leaseID)
+	if err == nil || !strings.Contains(out, "not found") {
+		t.Fatalf("[%s] lease keep-alive %s (expired) = %q, err=%v, want a lease-not-found failure", proto.name, leaseID, out, err)
 	}
 }

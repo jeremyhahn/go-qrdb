@@ -239,19 +239,11 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 		return ErrSOPINAlreadySet
 	}
 
-	// The borrow spans the KDF, not just the slice-header read: Bytes() would
-	// leave the PIN's pages unmapped-able by a concurrent Destroy (or, before
-	// the go-enclave adoption, a memguard failure anywhere in the process)
-	// while the hash was still running over them (go-qrdb#74).
-	//
-	// Safe to hold across the whole call because hashPIN and verifyPIN are
-	// pure KDFs in this file — PBKDF2 or Argon2 over ordinary heap slices,
-	// with cryptoRandRead for the salt. Neither allocates or reads protected
-	// memory of its own, so nothing here can reenter this SAME buffer's
-	// go-enclave lock (which would deadlock) or need a lock any other
-	// enclave holds — go-enclave gives every enclave its own independent
-	// lock, so there is no cross-enclave contention to avoid in the first
-	// place.
+	// The borrow spans the KDF, not just the read that fetches the slice, so a
+	// concurrent Destroy cannot unmap the PIN's pages while the hash still runs
+	// over them (go-qrdb#74). Holding it across the KDF is safe: nothing in
+	// hashPIN or verifyPIN reenters this buffer, the one thing that deadlocks
+	// inside a borrow (go-qrdb#145).
 	var record string
 	err = pinBuf.WithBytes(func(pin []byte) error {
 		var herr error
@@ -332,19 +324,11 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return ErrSOPINNotSet
 	}
 
-	// The borrow spans the KDF, not just the slice-header read: Bytes() would
-	// leave the PIN's pages unmapped-able by a concurrent Destroy (or, before
-	// the go-enclave adoption, a memguard failure anywhere in the process)
-	// while the hash was still running over them (go-qrdb#74).
-	//
-	// Safe to hold across the whole call because hashPIN and verifyPIN are
-	// pure KDFs in this file — PBKDF2 or Argon2 over ordinary heap slices,
-	// with cryptoRandRead for the salt. Neither allocates or reads protected
-	// memory of its own, so nothing here can reenter this SAME buffer's
-	// go-enclave lock (which would deadlock) or need a lock any other
-	// enclave holds — go-enclave gives every enclave its own independent
-	// lock, so there is no cross-enclave contention to avoid in the first
-	// place.
+	// The borrow spans the KDF, not just the read that fetches the slice, so a
+	// concurrent Destroy cannot unmap the PIN's pages while the hash still runs
+	// over them (go-qrdb#74). Holding it across the KDF is safe: nothing in
+	// hashPIN or verifyPIN reenters this buffer, the one thing that deadlocks
+	// inside a borrow (go-qrdb#145).
 	//
 	// The comparison runs under the tenant's SO PIN lockout, on the counter
 	// of the caller (CallerPrincipal): once the free failures are
@@ -436,19 +420,11 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 	}
 	defer newBuf.Destroy()
 
-	// The borrow spans the KDF, not just the slice-header read: Bytes() would
-	// leave the PIN's pages unmapped-able by a concurrent Destroy (or, before
-	// the go-enclave adoption, a memguard failure anywhere in the process)
-	// while the hash was still running over them (go-qrdb#74).
-	//
-	// Safe to hold across the whole call because hashPIN and verifyPIN are
-	// pure KDFs in this file — PBKDF2 or Argon2 over ordinary heap slices,
-	// with cryptoRandRead for the salt. Neither allocates or reads protected
-	// memory of its own, so nothing here can reenter this SAME buffer's
-	// go-enclave lock (which would deadlock) or need a lock any other
-	// enclave holds — go-enclave gives every enclave its own independent
-	// lock, so there is no cross-enclave contention to avoid in the first
-	// place.
+	// The borrow spans the KDF, not just the read that fetches the slice, so a
+	// concurrent Destroy cannot unmap the PIN's pages while the hash still runs
+	// over them (go-qrdb#74). Holding it across the KDF is safe: nothing in
+	// hashPIN or verifyPIN reenters this buffer, the one thing that deadlocks
+	// inside a borrow (go-qrdb#145).
 	var record string
 	err = newBuf.WithBytes(func(pin []byte) error {
 		var herr error

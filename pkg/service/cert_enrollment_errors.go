@@ -76,6 +76,38 @@ func (e *CertTargetRefusedError) Error() string {
 	return "service: " + e.Username + " of tenant " + e.TenantID + " holds a role certificate issuance may not target"
 }
 
+// DelegationRequestError is returned by IssueDelegation for a grant a tenant
+// may not issue: Field names what is wrong with it, and Err, when set, is the
+// delegation package's own judgement.
+type DelegationRequestError struct {
+	Field  string
+	Reason string
+	Err    error
+}
+
+// Error names the field and the reason.
+func (e *DelegationRequestError) Error() string {
+	msg := "service: delegation " + e.Field + " " + e.Reason
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the delegation package's refusal, if any.
+func (e *DelegationRequestError) Unwrap() error { return e.Err }
+
+// DelegationDeniedError is returned by IssueDelegation when the caller may not
+// delegate at all: the system tenant, or a caller that is itself delegated.
+type DelegationDeniedError struct {
+	Reason string
+}
+
+// Error states the reason.
+func (e *DelegationDeniedError) Error() string {
+	return "service: delegation denied: " + e.Reason
+}
+
 // TenantOnboardingNotConfiguredError is returned by a TenantOnboardingService
 // built without one of its required collaborators.
 type TenantOnboardingNotConfiguredError struct{}

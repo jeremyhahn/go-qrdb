@@ -21,14 +21,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// openSecretCopy's coordinated borrow must not reach an allocation of
+// secure.CopyOut's coordinated borrow must not reach an allocation of
 // protected memory.
 //
 // This is the EXECUTED half of go-qrdb#74's callee trace for this site. The
 // callback is secure.CopyOut's make + copy, and the destroy of the transient
 // buffer is deliberately outside the borrow; if either moved inside, this
 // would hang rather than fail without the guard.
-func TestOpenSecretCopy_TakesNoNestedBorrow(t *testing.T) {
+func TestSecureCopyOut_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
 	const material = "a credential worth protecting"
@@ -38,12 +38,17 @@ func TestOpenSecretCopy_TakesNoNestedBorrow(t *testing.T) {
 	}
 	defer sec.Destroy()
 
-	out, err := openSecretCopy(t.Context(), sec)
+	buf, err := sec.Open(t.Context())
 	if err != nil {
-		t.Fatalf("openSecretCopy: %v", err)
+		t.Fatalf("Open: %v", err)
+	}
+	out, err := secure.CopyOut(buf)
+	buf.Destroy()
+	if err != nil {
+		t.Fatalf("secure.CopyOut: %v", err)
 	}
 	if !bytes.Equal(out, []byte(material)) {
-		t.Error("openSecretCopy returned different bytes than were sealed")
+		t.Error("secure.CopyOut returned different bytes than were sealed")
 	}
 }
 
@@ -53,7 +58,7 @@ func TestOpenSecretCopy_TakesNoNestedBorrow(t *testing.T) {
 // The failure path is checked separately because it is where a Destroy is
 // easiest to misplace: a cleanup added inside the borrow is invisible on the
 // success path and deadlocks only when something has already gone wrong.
-func TestOpenSecretCopy_DestroyedSecretDoesNotBorrowNested(t *testing.T) {
+func TestOpenDestroyedSecret_DoesNotBorrowNested(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
 	sec, err := newSecretCopy(t.Context(), []byte("about to be destroyed"))
@@ -62,11 +67,11 @@ func TestOpenSecretCopy_DestroyedSecretDoesNotBorrowNested(t *testing.T) {
 	}
 	sec.Destroy()
 
-	out, err := openSecretCopy(t.Context(), sec)
+	buf, err := sec.Open(t.Context())
 	if err == nil {
-		t.Fatal("openSecretCopy on a destroyed secret returned no error")
+		t.Fatal("Open on a destroyed secret returned no error")
 	}
-	if out != nil {
-		t.Errorf("openSecretCopy returned %d bytes from a destroyed secret", len(out))
+	if buf != nil {
+		t.Error("Open returned a buffer from a destroyed secret")
 	}
 }

@@ -1,6 +1,6 @@
 # Identity and RBAC — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -151,6 +151,30 @@ either.
 trust domain and exists for tests. A composer passes the trust domain its CA
 issues under, the same value it configures the node with.
 
+A composer whose own CA issues tenant certificates builds the SAN with
+`sdk.SpiffeID.URI`, the builder the node's certificate provider uses, rather
+than formatting the string itself:
+
+```go
+san, err := sdk.SpiffeID{
+	TrustDomain: "db.example.com",
+	TenantID:    "acme",
+	Kind:        sdk.SpiffeKindUser, // or sdk.SpiffeKindService
+	Name:        "alice",
+}.URI()
+// san == spiffe://db.example.com/tenant/acme/user/alice
+template.URIs = []*url.URL{san}
+```
+
+It returns the URI only when `sdk.TenantFromCert` reads it back as exactly the
+identity it was built from. Otherwise it refuses with a `*sdk.SpiffeIDError`
+that matches one of the following:
+
+- a field sentinel (`sdk.ErrSpiffeTrustDomainEmpty`, `ErrSpiffeTenantEmpty`,
+  `ErrSpiffeKindInvalid`, `ErrSpiffeNameEmpty`);
+- `sdk.ErrSpiffeIDNotRoundTrip`, for a tenant or name carrying a path
+  separator, which would otherwise authenticate as a different identity.
+
 **Once an account has at least one binding, only a certificate matching one of
 them authenticates as it** — the CN and OU select the account, the thumbprint
 proves the holder. A certificate naming an enrolled account that matches none
@@ -217,6 +241,100 @@ Construction refuses an invalid chain, wrapped in `*node.AuthMiddlewareWiringErr
 
 With auth disabled (`auth.enabled: false`) there is no chain, and the option
 has no effect.
+
+### Delegation certificates
+
+A certificate carrying the delegation extension authenticates as a service
+principal acting inside a tenant, never as a user. Issuing one is
+`certs:delegate` on every transport; see
+[../certificate-authority/api.md](../certificate-authority/api.md#issuing-a-delegation).
+Why it is shaped this way is in
+[architecture.md](architecture.md#tenant-issued-delegations).
+
+The extension is `tp-delegation`, OID `1.3.6.1.4.1.29377.101.24`, marked
+**critical**. Its value is DER:
+
+```
+DelegationGrant ::= SEQUENCE {
+    version    INTEGER (1),
+    tenant     UTF8String,
+    principal  UTF8String,
+    scope      SEQUENCE SIZE (1..64) OF UTF8String }
+```
+
+`principal` is `[a-z0-9][a-z0-9._-]*`, at most 64 bytes, and never a built-in
+role name. Each `scope` entry is a `resource:action` permission, with no
+duplicates. A Go host reads one with `sdk.DelegationFromCertificate`
+(`sdk.DelegationGrant`, `sdk.DelegationCheckLifetime` and `sdk.DelegationOID`
+beside it), which reports an extension that is not critical or does not parse
+as a `*sdk.DelegationExtensionError`, never as "no delegation".
+
+The mTLS authenticator admits the certificate only when **all** of these hold.
+It never falls back to reading a delegation certificate as a user login.
+
+| Check | Refused when | REST | gRPC / Unix |
+|---|---|---|---|
+| Chain | it does not verify, including after `NotAfter` | 401 | `UNAUTHENTICATED` |
+| Principal | it is not the principal this node accepts, or the node accepts none | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Lifetime | `NotAfter - NotBefore` exceeds 24 hours, whatever the issuer wrote | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Revocation | its serial is revoked | 401 | `UNAUTHENTICATED` — `auth.ErrCertificateRevoked` |
+| Revocation | revocation state cannot be read: a delegation is never admitted unchecked | 503 | `UNAVAILABLE` — `*auth.RevocationCheckError` |
+| Tenant | the SPIFFE SAN (or, with none, the first Subject OU) does not name the grant's tenant, or the SAN does not name the principal as a service | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Not the platform | the grant's tenant is the system tenant | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Issuer | the leaf's direct issuer is not that tenant's own registered login CA | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+
+`DelegationRefusedError` matches `auth.ErrInvalidCertificate`, so QUIC and MCP
+classify it as they classify any unusable certificate. A revocation takes
+effect within `auth.revocation_cache_ttl`, exactly as for a user's
+certificate.
+
+The identity it yields is subject `qrdb-service:<principal>` in the grant's
+tenant. Its permissions are the grant's `scope` intersected with the
+permissions the host registered for the principal. Anything else is **403**
+like any other missing permission.
+
+Each delegated request's authorization record goes to the delegating tenant's
+trail, carrying `delegation_principal`, `delegation_serial` and
+`delegation_scope`. A node with no audit logger refuses every delegated request
+with **503** (`*audit.GateError` wrapping
+`*middleware.DelegationUnauditedError`).
+
+### Login identity: `node.WithIdentityHydrator`
+
+The unified-login ceremony (`LoginClient.BeginLogin` / `FinishLogin`) turns
+the account it resolved and the factor that verified into the identity its
+session bearer carries. A composer supplies that step:
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, serverOpts,
+	node.WithSessionIssuer(sessions),
+	node.WithIdentityHydrator(hydrator),
+)
+```
+
+```go
+func WithIdentityHydrator(h embedded.IdentityHydrator) NodeOption
+
+type IdentityHydrator interface {
+	Hydrate(ctx context.Context, principal *auth.Principal, factor *auth.AuthFactor) (*auth.Identity, error)
+}
+```
+
+`principal.ID` is the account's immutable user id; a hydrator that sets
+`Subject` to it gives every session a subject that survives a rename. The
+parameter and result types are aliased as `sdk.Principal`, `sdk.AuthFactor`
+and `sdk.Identity`, so an implementation imports no `pkg/` package. A hydrator
+error aborts the login: no session is issued and `FinishLogin` returns the
+error.
+
+Without the option the identity's `Subject` is the account's username, its
+`TenantID` and `Roles` are the account's, and its metadata names the factor.
+`nil` is ignored and leaves an earlier hydrator in place.
+
+The ceremony is served by the embedded transport, so this is the one place a
+node mints a login identity. A request on REST, gRPC, QUIC, MCP or Unix runs no
+ceremony: its identity is whatever the authentication chain above produced,
+and the hydrator does not see it.
 
 ### Permitted authentication methods
 
@@ -594,7 +712,7 @@ of its own, and the listing never contains one.
 | Unregistered permission string | 400 | `INVALID_ARGUMENT` |
 | Deleting a `system` user or a built-in role | 403 | `PERMISSION_DENIED` |
 | Certificate with no matching binding | 401 | `UNAUTHENTICATED` |
-| A request authenticated with a holder (officer or custodian) certificate must be forwarded to the leader, and this node cannot sign the on-behalf assertion (`HolderForwardUnsignedError`) | 502 | — (REST leader forwarding only) |
+| A request authenticated with a holder (officer or custodian) certificate or a tenant-issued delegation must be forwarded to the leader, and this node cannot sign the on-behalf assertion (`UnsignedForwardRefusedError`) | 502 | — (REST leader forwarding only) |
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |

@@ -78,3 +78,61 @@ func TestSystemShardServingError(t *testing.T) {
 		t.Fatal("SystemShardServingError does not unwrap to the wait's error")
 	}
 }
+
+// TestStartErrors_MessageNamesWhatToAct carries each start-path error's
+// message: it names the value the operator supplied and the remedy, since the
+// message is all a failed start leaves on the console.
+func TestStartErrors_MessageNamesWhatToAct(t *testing.T) {
+	cause := errors.New("permission denied")
+	cases := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"missing bind host", &MissingBindHostError{}, []string{"no bind host", "server.host", "QRDB_SERVER_HOST", "--host"}},
+		{"sm storage mismatch", &SMStorageTypeMismatchError{Storage: "file", SMType: "standard"},
+			[]string{`sm-storage "file"`, "--sm disk or --sm fast", `got "standard"`}},
+		{"data dir", &DataDirError{Path: "/srv/qrdb", Err: cause}, []string{"data directory /srv/qrdb", "permission denied"}},
+		{"restore source required", &RestoreBackupSourceRequiredError{}, []string{"--restore-backup-id requires --backup-dir"}},
+		{"restore service type", &RestoreBackupServiceTypeError{}, []string{"internal error", "*service.BackupService"}},
+		{"restore phase", &RestoreBackupError{Phase: "verify", BackupID: "b-7", ShardID: 3, Err: cause},
+			[]string{`backup "b-7"`, "into shard 3", `during "verify"`, "permission denied"}},
+		{"restore verify", &RestoreBackupVerifyError{BackupID: "b-7"}, []string{`backup "b-7"`, "checksum_match=false", "refusing to restore"}},
+		{"restore shard absent", &RestoreBackupShardNotInArtifactError{BackupID: "b-7", ShardID: 9}, []string{`backup "b-7"`, "no data for shard 9"}},
+		{"system migration seal disabled", &SystemMigrationSealDisabledError{}, []string{"cannot enable encryption", "seal.enabled is false"}},
+		{"secure memory mismatch", &SecureMemoryBudgetMismatchError{ConfiguredBytes: 2048, InstalledBytes: 1024},
+			[]string{"(1024 bytes)", "configured budget (2048 bytes)", "--secure-memory-budget-mib"}},
+		{"inspection opt-out audit", &InspectionOptOutAuditError{Err: cause}, []string{"inspection hardening is disabled", "refused the record", "permission denied"}},
+		{"cluster CA persist", &ClusterCAPersistError{Err: cause}, []string{"cluster CA persistence check failed", "permission denied"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.err.Error()
+			for _, w := range tc.want {
+				if !strings.Contains(msg, w) {
+					t.Errorf("message %q lacks %q", msg, w)
+				}
+			}
+		})
+	}
+}
+
+// TestStartErrors_UnwrapReachesTheCause: the wrapping start errors keep their
+// cause reachable, so a caller can still match the underlying failure.
+func TestStartErrors_UnwrapReachesTheCause(t *testing.T) {
+	cause := errors.New("disk full")
+	for name, err := range map[string]error{
+		"data dir":           &DataDirError{Path: "/srv/qrdb", Err: cause},
+		"restore phase":      &RestoreBackupError{Phase: "import", Err: cause},
+		"inspection opt-out": &InspectionOptOutAuditError{Err: cause},
+		"cluster CA persist": &ClusterCAPersistError{Err: cause},
+	} {
+		if !errors.Is(err, cause) {
+			t.Errorf("%s: errors.Is does not reach the cause", name)
+		}
+	}
+	var svcType *RestoreBackupServiceTypeError
+	if !errors.As(&RestoreBackupError{Phase: "open-backup-store", Err: &RestoreBackupServiceTypeError{}}, &svcType) {
+		t.Error("RestoreBackupError does not unwrap to *RestoreBackupServiceTypeError")
+	}
+}

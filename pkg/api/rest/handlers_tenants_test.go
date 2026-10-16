@@ -455,29 +455,6 @@ func TestHandleUpdateTenant_SameIsolationIsANoOp(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK)
 }
 
-// TestHandleSetTenantQuotas_BoundsRequestContext proves the quotas handler
-// passes a deadline-bounded context to the service (regression for the handlers
-// that previously forwarded the unbounded r.Context()).
-func TestHandleSetTenantQuotas_BoundsRequestContext(t *testing.T) {
-	var hadDeadline bool
-	svc := &mockTenantService{
-		updateQuotasFn: func(ctx context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
-			_, hadDeadline = ctx.Deadline()
-			return testTenantInfo(), nil
-		},
-	}
-	srv := newTenantServer(svc)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/quotas", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusOK)
-	if !hadDeadline {
-		t.Fatal("UpdateQuotas received an unbounded context — request not time-limited")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -538,6 +515,33 @@ func TestHandleCreateTenant_Success(t *testing.T) {
 	}
 	if resp.CreatedAt != tenantTimeStr {
 		t.Fatalf("createdAt = %q, want %q", resp.CreatedAt, tenantTimeStr)
+	}
+}
+
+// TestHandleCreateTenant_OnboardingFollowsTheRequestContext: the longer bound
+// does not detach onboarding from its request; a caller that has gone away
+// still cancels it.
+func TestHandleCreateTenant_OnboardingFollowsTheRequestContext(t *testing.T) {
+	var onboardErr error
+	svc := &mockTenantService{
+		createTenantFn: func(ctx context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+			onboardErr = ctx.Err()
+			return nil, ctx.Err()
+		},
+	}
+	srv := newTenantServer(svc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/tenants", strings.NewReader(`{"id":"acme","name":"Acme Corp"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if !errors.Is(onboardErr, context.Canceled) {
+		t.Fatalf("OnboardTenant context err = %v, want %v", onboardErr, context.Canceled)
+	}
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("status = %d for a canceled request, want an error", rec.Code)
 	}
 }
 
@@ -628,6 +632,29 @@ func TestHandleCreateTenant_StoreError(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+// TestHandleCreateTenant_LeavesDeadlineToOnboardingService pins that the
+// handler does not cut onboarding short with a deadline of its own: the
+// onboarding service bounds it, the same on every transport.
+func TestHandleCreateTenant_LeavesDeadlineToOnboardingService(t *testing.T) {
+	var sawDeadline bool
+	svc := &mockTenantService{
+		createTenantFn: func(ctx context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+			_, sawDeadline = ctx.Deadline()
+			return testTenantInfo(), nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants", strings.NewReader(`{"id":"acme","name":"Acme Corp"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+	if sawDeadline {
+		t.Fatal("onboarding ran under a handler deadline, want the request's own context")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1201,57 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 	}
 	if sawPassphrase != "super-secret" {
 		t.Fatalf("passphrase = %q, want %q", sawPassphrase, "super-secret")
+	}
+}
+
+// TestHandleTenantBarrierInit_LeavesDeadlineToCaller pins that the handler
+// does not cut initialization short with a deadline of its own. Init is a
+// sequence of Raft proposals (holder registration, barrier initialization,
+// share distribution), bounded on every other transport by the caller's own
+// deadline; REST alone ending it at 5s failed a CLI init the other four
+// transports completed under the same 10s client timeout.
+func TestHandleTenantBarrierInit_LeavesDeadlineToCaller(t *testing.T) {
+	var sawDeadline bool
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(ctx context.Context, _ string, _ []byte, _, _ int) error {
+			_, sawDeadline = ctx.Deadline()
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if sawDeadline {
+		t.Fatal("barrier init ran under a handler deadline, want the request's own context")
+	}
+}
+
+// TestHandleTenantBarrierInit_KeepsCallerDeadline pins the other half: a
+// caller's deadline, however long, reaches the service unshortened.
+func TestHandleTenantBarrierInit_KeepsCallerDeadline(t *testing.T) {
+	want := time.Now().Add(time.Minute)
+	var got time.Time
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(ctx context.Context, _ string, _ []byte, _, _ int) error {
+			got, _ = ctx.Deadline()
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	ctx, cancel := context.WithDeadline(context.Background(), want)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/tenants/acme/barrier/init/complete", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if !got.Equal(want) {
+		t.Fatalf("service deadline = %v, want the caller's %v", got, want)
 	}
 }
 

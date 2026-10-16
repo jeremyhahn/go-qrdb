@@ -69,6 +69,7 @@ type RemoteTransport interface {
 	Get(ctx context.Context, key []byte) ([]byte, error)
 	Put(ctx context.Context, key, value []byte) error
 	Delete(ctx context.Context, key []byte) error
+	DeleteRange(ctx context.Context, start, end []byte) error
 	List(ctx context.Context, prefix string) ([]string, error)
 	Range(ctx context.Context, start, end []byte, limit int) ([]KeyValue, error)
 	Batch(ctx context.Context, ops []BatchOp) error
@@ -94,6 +95,10 @@ func (b *RemoteBackend) Put(ctx context.Context, key, value []byte) error {
 // Delete removes a key from the remote server.
 func (b *RemoteBackend) Delete(ctx context.Context, key []byte) error {
 	return b.transport.Delete(ctx, key)
+}
+
+func (b *RemoteBackend) DeleteRange(ctx context.Context, start, end []byte) error {
+	return b.transport.DeleteRange(ctx, start, end)
 }
 
 // List returns all keys matching the prefix from the remote server.

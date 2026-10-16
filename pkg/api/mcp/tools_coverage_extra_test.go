@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -92,11 +93,27 @@ func (m *covMockCredentialSvc) CredentialStore(ctx context.Context, name string,
 	}
 	return nil
 }
-func (m *covMockCredentialSvc) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+func (m *covMockCredentialSvc) retrieveValue(ctx context.Context, name string) ([]byte, error) {
 	if m.retrieveFn != nil {
 		return m.retrieveFn(ctx, name)
 	}
 	return []byte("secret-value"), nil
+}
+
+func (m *covMockCredentialSvc) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	v, err := m.retrieveValue(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
+}
+
+func (m *covMockCredentialSvc) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	v, err := m.retrieveVersionValue(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 func (m *covMockCredentialSvc) CredentialSubmit(ctx context.Context, name string, value []byte) error {
 	if m.submitFn != nil {
@@ -132,7 +149,7 @@ func (m *covMockCredentialSvc) CredentialRotate(ctx context.Context, name string
 		NewVersion:      2,
 	}, nil
 }
-func (m *covMockCredentialSvc) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (m *covMockCredentialSvc) retrieveVersionValue(ctx context.Context, name string, version uint64) ([]byte, error) {
 	if m.retrieveVersionFn != nil {
 		return m.retrieveVersionFn(ctx, name, version)
 	}

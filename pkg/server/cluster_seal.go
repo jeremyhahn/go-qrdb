@@ -21,6 +21,8 @@ import (
 	"slices"
 	"strconv"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -30,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // This file is the server's half of cluster sealing
@@ -154,6 +157,40 @@ func (o *serverOptions) applyClusterSeal() {
 }
 
 // clusterSealKV adapts the system shard's KVServicer to clusterseal.KV.
+// clusterSealTransient are the Raft errors of a system shard electing a
+// leader or moving it: a request that timed out or was dropped, aborted by
+// the leadership change, refused by a replica that is not, or not yet, the
+// leader, or rate-limited while a backlog drains.
+var clusterSealTransient = []error{
+	quicraft.ErrTimeout,
+	quicraft.ErrDropped,
+	quicraft.ErrAborted,
+	quicraft.ErrBusy,
+	quicraft.ErrNotLeader,
+	quicraft.ErrShardNotReady,
+	quicraft.ErrReadIndexNotReady,
+}
+
+// ClusterSealRetryable is the clusterseal.Config Retryable of a raft node: it
+// reports whether err, from the system store under a seal record, is the
+// system shard electing a leader or its leader moving, which a seal or clear
+// waits out. Anything else -- a lost race, a sealed or unconfigured store, a
+// refused permission, a cancelled request -- is final.
+//
+// Unlike SystemShardSettling, a not-leader answer naming a leader is
+// transient too: leadership moved under the request, and the next attempt
+// reaches the new leader.
+func ClusterSealRetryable(err error) bool {
+	for _, transient := range clusterSealTransient {
+		if errors.Is(err, transient) {
+			return true
+		}
+	}
+	var nl *service.NotLeaderError
+	var tnl *transport.NotLeaderError
+	return errors.As(err, &nl) || errors.As(err, &tnl)
+}
+
 type clusterSealKV struct {
 	kv service.KVServicer
 }
@@ -284,6 +321,7 @@ func NewClusterSealMonitor(p ClusterSealParts) (*clusterseal.Monitor, error) {
 	}
 	cfg := clusterseal.Config{
 		KV:           NewClusterSealKV(p.KV),
+		Retryable:    ClusterSealRetryable,
 		Enforcer:     enforcer,
 		Self:         strconv.FormatUint(p.ReplicaID, 10),
 		Node:         p.RaftAddress,

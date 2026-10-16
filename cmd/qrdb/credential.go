@@ -93,12 +93,11 @@ func newCredentialRetrieveCmd() *cobra.Command {
 		Short: "Retrieve the current credential value",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			value, err := client.Credentials().CredentialRetrieve(cmd.Context(), args[0])
+			buf, err := client.Credentials().CredentialRetrieveBuffer(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			printValue(string(value))
-			return nil
+			return printSecretBuffer(buf)
 		},
 	}
 }
@@ -225,13 +224,12 @@ func newCredentialRetrieveVersionCmd() *cobra.Command {
 		Short: "Retrieve a specific credential version (0 = current)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client.Credentials().CredentialRetrieveVersion(cmd.Context(),
+			buf, err := client.Credentials().CredentialRetrieveVersionBuffer(cmd.Context(),
 				&transport.CredentialRetrieveVersionRequest{Name: args[0], Version: version})
 			if err != nil {
 				return err
 			}
-			printValue(string(resp.Value))
-			return nil
+			return printSecretBuffer(buf)
 		},
 	}
 	cmd.Flags().Uint64Var(&version, "version", 0, "Version number to retrieve (0 means current)")

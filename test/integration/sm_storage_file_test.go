@@ -23,8 +23,14 @@
 package integration_test
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +121,76 @@ func TestRaftSMOverFileStorage_ServesAndSurvivesRestart(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 	t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
+}
+
+// TestRaftSMOverFileStorage_SealedLeavesNoPlaintextOnDisk is the at-rest
+// acceptance for file replica storage: a sealed 3-node raft group running
+// --sm disk --sm-storage file applies a write on every replica, and no file
+// under any replica's state machine directory holds the key or the value in
+// the clear -- each replica's record files go through the barrier's
+// encrypting filesystem exactly as a standalone file store's do.
+func TestRaftSMOverFileStorage_SealedLeavesNoPlaintextOnDisk(t *testing.T) {
+	const (
+		key   = "sealed-sm-file-sentinel-key"
+		value = "sealed-sm-file-sentinel-value"
+	)
+	adminPorts, dataDirs, ca := startThreeNodeCluster(t, "disk", "--sm-storage", "file")
+	leader := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	httpPut(t, ca, leader, key, []byte(value))
+
+	client := mtlsHTTPClient(t, ca, 10*time.Second)
+	for i, port := range adminPorts {
+		awaitLocalValue(t, client, port, key, value, 60*time.Second)
+
+		smDir := filepath.Join(dataDirs[i], "sm")
+		files := 0
+		err := filepath.WalkDir(smDir, func(p string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() {
+				return walkErr
+			}
+			files++
+			// #nosec G304 -- the tree walked is this test's own t.TempDir().
+			body, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			for _, plain := range []string{key, value} {
+				if bytes.Contains(body, []byte(plain)) {
+					t.Errorf("node %d: %s holds %q in the clear", i+1, p, plain)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("node %d: walk %s: %v", i+1, smDir, err)
+		}
+		if files == 0 {
+			t.Fatalf("node %d: no replica storage under %s", i+1, smDir)
+		}
+	}
+}
+
+// awaitLocalValue polls the node's own state machine (consistency=eventual),
+// which answers only once that replica has applied the write, until it holds
+// want or the timeout passes.
+func awaitLocalValue(t *testing.T, client *http.Client, port int, key, want string, timeout time.Duration) {
+	t.Helper()
+	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s?consistency=eventual", port, key)
+	var last string
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		resp, err := client.Get(url)
+		if err != nil {
+			last = err.Error()
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err == nil && resp.StatusCode == http.StatusOK && string(body) == want {
+			return
+		}
+		last = fmt.Sprintf("status %d, body %q, err %v", resp.StatusCode, body, err)
+	}
+	t.Fatalf("port %d: %s never read %q: %s", port, key, want, last)
 }
 
 // TestRaftSMOverFileStorage_PrefixKeyPairSurvivesEitherOrder is the

@@ -62,6 +62,24 @@ const (
 	RoleAuditor = "auditor"
 )
 
+// builtinRoles is the set of the five built-in role names.
+var builtinRoles = map[string]struct{}{
+	RoleSO:       {},
+	RoleAdmin:    {},
+	RoleOperator: {},
+	RoleUser:     {},
+	RoleAuditor:  {},
+}
+
+// IsBuiltinRole reports whether name is one of the five built-in role names.
+// A service principal's authority is the role grants registered under its
+// name, so a principal may never be named for a built-in role: it would hold
+// that whole role.
+func IsBuiltinRole(name string) bool {
+	_, ok := builtinRoles[name]
+	return ok
+}
+
 var (
 	roleGrantMu sync.RWMutex
 

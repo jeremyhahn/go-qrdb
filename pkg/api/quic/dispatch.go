@@ -144,6 +144,7 @@ func (s *Server) buildHandlers() {
 	s.handleIf(adminOn, "admin.GetReplicaStates", permission.AdminReplicaState, s.handleGetReplicaStates)
 	s.handleIf(adminOn, "admin.GetNodeCompaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
 	s.handleIf(adminOn, "admin.SetNodeCompaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
+	s.handleIf(adminOn, "admin.GetStateHashes", permission.AdminStateHash, s.handleGetStateHashes)
 	s.handleIf(adminOn, "admin.MintJoinToken", permission.ClusterJoinToken, s.handleMintJoinToken)
 	s.handleIf(adminOn, "admin.AddObserverMember", permission.AdminAddMember, s.handleAddObserverMember)
 	s.handleIf(adminOn, "admin.ListPendingJoinRequests", permission.ClusterJoinToken, s.handleListPendingJoinRequests)
@@ -267,6 +268,7 @@ func (s *Server) buildHandlers() {
 	// Certificate management
 	s.handle("cert.Issue", permission.CertsIssue, s.handleIssueCert)
 	s.handle("cert.Enroll", permission.CertsEnroll, s.handleEnrollCert)
+	s.handle("cert.Delegate", permission.CertsDelegate, s.handleIssueDelegation)
 	s.handle("cert.Revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.handle("cert.List", permission.CertsList, s.handleListCerts)
 
@@ -470,6 +472,7 @@ func (s *Server) buildHandlers() {
 	s.handleIf(userFactorOn, "userauthfactor.List", permission.UserAuthFactorsList, s.handleUserAuthFactorList)
 	s.handleIf(userFactorOn, "userauthfactor.Get", permission.UserAuthFactorsGet, s.handleUserAuthFactorGet)
 	s.handleIf(userFactorOn, "userauthfactor.Remove", permission.UserAuthFactorsRemove, s.handleUserAuthFactorRemove)
+	s.handleIf(userFactorOn, "userauthfactor.Delete", permission.UserAuthFactorsAdd, s.handleUserAuthFactorDelete)
 	s.handleIf(userFactorOn, "userauthfactor.Rotate", permission.UserAuthFactorsRotate, s.handleUserAuthFactorRotate)
 	s.handleIf(userFactorOn, "userauthfactor.Relabel", permission.UserAuthFactorsRelabel, s.handleUserAuthFactorRelabel)
 	s.handleIf(userFactorOn, "userauthfactor.Login", permission.UserAuthFactorsLogin, s.handleUserAuthFactorLogin)

@@ -231,7 +231,12 @@ func (f *ReplicaForwarder) forwardAdminWrite(ctx context.Context, fullMethod str
 		slog.Warn("admin forwarding: request is not a proto.Message", "method", fullMethod, "type", fmt.Sprintf("%T", req))
 		return nil, nil, false
 	}
-	member, found, err := f.cfg.Locator.MemberByAddress(ctx, leaderAddr)
+	// The deadline covers the leader lookup too: it reads the member
+	// records from the system shard, and a read that does not complete
+	// would otherwise hold this call open for as long as the caller waits.
+	fctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
+	defer cancel()
+	member, found, err := f.cfg.Locator.MemberByAddress(fctx, leaderAddr)
 	if err != nil || !found {
 		slog.Warn("admin forwarding: leader not found in member records", "leader_raft_addr", leaderAddr, "error", err)
 		return nil, nil, false
@@ -260,8 +265,6 @@ func (f *ReplicaForwarder) forwardAdminWrite(ctx context.Context, fullMethod str
 	out.Set(forward.MetadataAssertion, assertion)
 	out.Set(forward.MetadataSignature, sig)
 
-	fctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
-	defer cancel()
 	cc, ok := f.conn(fctx, endpoint)
 	if !ok {
 		slog.Warn("admin forwarding: could not connect to leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint)

@@ -22,6 +22,8 @@ import (
 	"text/tabwriter"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
 // outputWriter is the destination for all CLI output. It defaults to
@@ -73,6 +75,21 @@ func printTable(headers []string, rows [][]string) {
 // printValue writes a single value to outputWriter.
 func printValue(v string) {
 	_, _ = fmt.Fprintln(outputWriter, v)
+}
+
+// printSecretBuffer writes the value held in buf, followed by a newline, to
+// outputWriter and destroys buf on every path. The CLI is the output boundary
+// for a retrieved credential: the value goes from protected memory straight to
+// the writer without being converted to a string, which Go cannot wipe.
+func printSecretBuffer(buf *secure.Buffer) error {
+	defer buf.Destroy()
+	return buf.WithBytes(func(b []byte) error {
+		if _, err := outputWriter.Write(b); err != nil {
+			return err
+		}
+		_, err := io.WriteString(outputWriter, "\n")
+		return err
+	})
 }
 
 // printOK writes "OK" to outputWriter for void operations.

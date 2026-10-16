@@ -657,6 +657,92 @@ after its workload has stopped. qrdb does not work around it:
 the pair belongs to go-quicraft, which is the one place it can be read
 atomically.
 
+### Replica state hashes
+
+```go
+// sdk/go/transport — implemented by all six transports; a caller
+// type-asserts client.Admin().(transport.ReplicaStateHasher).
+type ReplicaStateHasher interface {
+	StateHashes(ctx context.Context, shardIDs []uint64) (*StateHashesResponse, error)
+}
+
+// pkg/service — implemented by AdminService; every transport type-asserts.
+type ReplicaStateHasher interface {
+	StateHashes(ctx context.Context, shardIDs []uint64) (*StateHashesResponse, error)
+}
+```
+
+Both are capability interfaces apart from `AdminClient` / `AdminServicer`
+for `MemberPromoter`'s reason. The wire shape is in
+[api.md](api.md#replica-state-hashes).
+
+**Digest definition — `pkg/statedigest`, version 1.** SHA-256 from the Go
+standard library (`crypto/sha256`) over:
+
+1. the domain-separation header: the 20 bytes `qrdb-state-digest-v1`
+   followed by one zero byte;
+2. then, for each record in strictly ascending bytewise key order, the key's
+   length as an unsigned 64-bit big-endian integer, the key, the value's
+   length the same way, and the value.
+
+The length prefixes make the encoding injective: no two record sets produce
+the same byte stream. `statedigest.Builder` refuses a key that is not strictly
+greater than the one before it (`*statedigest.KeyOrderError`), so a state
+machine that iterates out of order fails loudly rather than producing a hash
+that merely differs. The applied index and the record count are reported
+beside the digest, not hashed into it. A future change to any of this is a new
+header version, never a silent redefinition of `v1`.
+
+**Records covered.** Every record the shard replicates, which is exactly the
+set a snapshot of the shard carries:
+
+- user keys;
+- the replicated system tables: lease grants and key bindings, the compaction
+  record, the audit chain, and chunked-import staging.
+
+Two kinds of record are excluded:
+
+- node-local bookkeeping that never travels in a snapshot (the `pebble` and
+  `mvcc` state machines' node-local keys, the same set their `GetHash`
+  already skips);
+- the applied-index marker itself, which is reported as `applied_index`
+  instead.
+
+Keys and values are hashed as the state machine reads them, after at-rest
+decryption, so no node's at-rest key enters the digest and replicas encrypted
+under different keys still compare.
+
+**Pinned to the reported index.** Each state machine answers a
+`statedigest.Query` through `Lookup`, reached by `Host.StaleRead` with no
+proposal:
+
+| State machine | How the read is pinned |
+|---|---|
+| `pebble`, `mvcc` | takes the read lock `Update` excludes, opens a Pebble snapshot, and releases the lock. The applied index and every record are read from that one snapshot. The applied index commits in the same batch as each entry's writes, so the snapshot holds both or neither. Apply waits only while the snapshot is opened, not for the scan. |
+| `memory`, `standard`, `concurrent`, `highperf`, `fast`, `disk` | holds the batch lock exclusively for the whole read (the lock `GetHash` already takes), so no entry applies mid-scan. The applied index is the reserved applied-index record. The `disk` state machine has always stamped it. Every other KV state machine now stamps it at the end of each applied batch, so it travels in snapshots and survives recovery. |
+| any other (`regular`, the vector state machine, a witness) | no digest; that entry's `error` says why |
+
+**Identical across `sm_storage`.** For the storage-generic types (`disk`,
+`fast`), the record set and its order are the same whichever of `memory`,
+`file` or `pebble` backs them, so the digest is too.
+`TestStateDigest_BackendEquivalence` applies one log to each and compares.
+Digests compare between replicas of the same state-machine type, which every
+replica of a shard already is (see
+[../storage-engines/architecture.md](../storage-engines/architecture.md)).
+
+**Tenant hosts.** `AdminService.SetTenantReplicaHosts` binds the server's
+isolated-tenant host registry through `service.TenantReplicaHosts`, which
+lists only the hosts already started and never starts one; the server makes
+that bind in `server.New` through `service.TenantReplicaHostsWiring` when it
+is given a tenant host registry. Each tenant host
+answers the same `statedigest.Query` against its own state machines, which
+read through that tenant's barrier.
+
+**Cost.** One full scan of each selected replica's records per call. The
+`pebble` and `mvcc` scans stream from the snapshot. The in-memory KV backends
+sort their keys first, as `GetHash` does. This is a diagnostic, not a
+data-path read; a caller narrows it with the shard filter.
+
 ### SDK `Cluster()` facade
 
 A thin facade over the already-wired control-plane operations — **it adds no new
@@ -714,6 +800,15 @@ type RebalanceResult struct {
 	MovesFailed    int           `json:"moves_failed"`
 	Duration       time.Duration `json:"duration"`
 	FinalImbalance float64       `json:"final_imbalance"`
+	// Failures has one entry per failed move, in plan order.
+	Failures []RebalanceMoveFailure `json:"failures,omitempty"`
+}
+type RebalanceMoveFailure struct {
+	ShardID  uint64 `json:"shard_id"`
+	FromNode string `json:"from_node"`
+	ToNode   string `json:"to_node"`
+	Step     string `json:"step,omitempty"` // dedicated-group phase; empty for a generic move
+	Error    string `json:"error"`
 }
 type NodeLoad struct {
 	NodeID      string `json:"node_id"`
@@ -789,9 +884,19 @@ type ImbalanceReport struct {
   system shard settles (`server.WhileSystemShardSettling`, 15s): the
   feature-gate start (its activation check and its self-advertisement), the
   boot tenant list, the encryption migrator's entitlement and isolation-mode
-  reads, and `qrdbd`'s dynamic-membership start (its registration and first
-  membership snapshot). `sdk/go/node` bounds each feature-gate start attempt
-  the same way and retries it in the background. `qrdbd`'s member-record
+  reads, `qrdbd`'s dynamic-membership start (its registration and first
+  membership snapshot), and the volume-tenant restore's reads
+  (`BarrierRegistry.RestoreVolumeTenants`, wired through
+  `seal.WithStartupReadRetry`): the catalog listing, each tenant's barrier
+  posture, and the Assignment each re-attach resolves, each step waited out on
+  its own. The restore is the only pass that re-registers a tenant barrier this
+  node did not create, so a read it lost to a leaderless window left that
+  tenant unrestored until the next restart. It does not fail the boot: a
+  listing that outlasts the wait is logged, a posture read restores the tenant
+  self-managed (sealed), and a re-attach leaves the tenant unrestored. The
+  re-attach opens the tenant's store and persists its posture, so it keeps the
+  boot's context. `sdk/go/node` bounds each feature-gate start attempt the
+  same way and retries it in the background. `qrdbd`'s member-record
   publisher, which runs in the background after the API servers start,
   bounds each registration the same way and retries until it lands. Settling,
   for these reads, includes a not-leader answer that names no leader, and one
@@ -920,6 +1025,7 @@ type ImbalanceReport struct {
 | `admin:add_member` / `admin:remove_member` | Raft reconfiguration — gated apart from reading peers | cross |
 | `admin:start_shard` / `admin:stop_shard` / `admin:shard_state` | shard lifecycle and state | cross |
 | `admin:topology` | every shard's replicas and addresses | cross |
+| `admin:state_hash` | every local replica's applied index and state digest, isolated tenants' included | cross |
 | `admin:replica_state` | this node's replicas' applied index and state-machine hash — a diagnostic that holds each state machine's read lock while it hashes; held by no built-in role but Owner | cross |
 | `admin:node_compaction` | the node keyspace's scheduled-compaction policy (see [../key-value/engineering.md](../key-value/engineering.md) "Node-keyspace compaction") | cross |
 | `rebalance:stats` / `rebalance:plan` / `rebalance:report` | read-only | cross |
@@ -973,6 +1079,8 @@ database's owning tenant.
 | `RemoveMember` for an absent replica | skipped (idempotent) | n/a |
 | Reconfiguration transient failure | retried with capped exponential backoff | — |
 | Unknown shard on state/snapshot | not-found | yes |
+| State hashes: one replica cannot produce a digest (unsupported state machine, witness, not loaded) | that entry's `error` is set and its index, count and hash are zero; every other entry is returned | n/a |
+| State hashes: a state machine iterates keys out of order | `*statedigest.KeyOrderError` in that entry's `error`; no digest is reported | **yes** |
 | Replica states on a standalone node | `*service.ReplicaStateUnsupportedError` (`requires mode: raft`); REST 501, gRPC/MCP `UNIMPLEMENTED` | **yes** |
 | Replica states naming a shard this node holds no replica of, or holds only as a witness | `*service.ReplicaNotHostedError`; REST 404, gRPC/MCP `NOT_FOUND` | **yes** |
 | Replica states for a shard whose state machine cannot hash itself | `*service.StateMachineHashUnsupportedError`; REST 501, gRPC/MCP `UNIMPLEMENTED` — never a zero hash that could agree with another | **yes** |
@@ -1061,6 +1169,14 @@ and neither opens a listener there — see
   that started reading the key file in FIPS mode fails it. `assertAdvertises`
   and `assertNoiseFaultUnreachable` in `pkg/clusterenroll`, and
   `assertAdvertisesWithoutNoise` in `cmd/qrdbd`, express this once each.
+- **State digests are proven equal where they must be and different where
+  they must not be.** `TestStateDigest_BackendEquivalence` applies one log to
+  the `disk` and `fast` state machines over each `sm_storage` backend and
+  requires one digest. `TestStateDigest_DivergenceInjection` applies one log
+  to three replicas, changes one record on one of them, and requires that
+  replica's digest, and only that one, to change. The builder's own tests pin
+  the encoding against a hand-computed vector, so a change to the definition
+  cannot pass unnoticed.
 - **Replica states are tested on every transport against one service
   double.** Each binding — REST, gRPC, Unix, QUIC, MCP, the embedded client and
   the CLI — has a test for the answer and one for each typed refusal, and the
@@ -1086,6 +1202,8 @@ and neither opens a listener there — see
   are the operational views. `admin replica-states` is the diagnostic one:
   whether this node's replicas agree with their peers' at an equal applied
   index.
+- `admin state-hash` is the replica-consistency view: equal applied indexes
+  with different hashes on two nodes is replica divergence.
 - `rebalance report` gives per-node load and names hotspots;
   `ImbalanceScore` is the single number to alert on.
 - Membership changes are audited through [../audit/](../audit/).

@@ -149,6 +149,38 @@ func (s *MemoryStorage) Delete(key []byte) error {
 	return nil
 }
 
+// DeleteRange removes every key in [start, end); a nil end reaches the end of
+// the keyspace. Deleting an empty range is a no-op.
+func (s *MemoryStorage) DeleteRange(start, end []byte) error {
+	if s.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.deleteRangeLocked(start, end)
+	s.mu.Unlock()
+	return nil
+}
+
+// deleteRangeLocked removes every key in [start, end) from the tree; an empty
+// end is unbounded. The caller holds s.mu for writing.
+func (s *MemoryStorage) deleteRangeLocked(start, end []byte) {
+	var keys [][]byte
+	s.tree.Ascend(entry{key: start}, func(item entry) bool {
+		if len(end) > 0 && bytes.Compare(item.key, end) >= 0 {
+			return false
+		}
+		keys = append(keys, item.key)
+		return true
+	})
+	for _, key := range keys {
+		s.tree.Delete(entry{key: key})
+	}
+}
+
 // List returns all keys matching the given prefix. An empty or nil prefix
 // returns all keys. Keys are returned in sorted order as defensive copies.
 func (s *MemoryStorage) List(prefix []byte) ([][]byte, error) {

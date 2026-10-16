@@ -152,9 +152,12 @@ import exactly as `sm_type: mvcc` does. They are:
   design closes that: see `pkg/engine/mvcc_import_stage.go` and
   `pkg/statemachine/kv_import_stage.go`.
 - **Replicated, not node-local**: the write still commits through the same
-  Raft proposal path as any other write, so it is included in snapshots —
-  nothing new to teach the snapshot code, because the lease table's own
-  raw keys already exercise this path.
+  Raft proposal path as any other write, so it is included in snapshots and
+  covered by the replica hash and state digest. The `pebble` and `mvcc` state
+  machines treat every other `\x00`-prefixed record as node-local, so
+  `store.isNodeLocalKey` names this table beside the lease, compaction and
+  audit tables. (It once did not, and those two state machines' snapshots
+  silently dropped staged sessions; a test now pins the recovery.)
 - **Lease-bound**, every one of them, to the session's single lease ID
   (`pkg/lease.Lessor.Bind`), so revoking or expiring that lease deletes the
   metadata record, every staged chunk, and the tenant-index entry below

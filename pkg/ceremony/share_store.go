@@ -136,36 +136,22 @@ func (s *sealedShareStore) Claim(ctx context.Context, username string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	// Copy out before we destroy the buffer & secret, with the copy INSIDE a
-	// coordinated borrow: Bytes() covers only the slice-header read and
-	// releases go-enclave's lock the instant it returns, so a concurrent
-	// Destroy of THIS SAME buffer — under memguard, a process-wide purge
-	// anywhere in the process; under go-enclave, any other caller with a
-	// handle to buf — could unmap the share's pages midway through the copy
-	// (go-qrdb#74; see also SecretValue.WithBytes's identical fix, go-qrdb#114
-	// review round 3).
+	// Copy out before we destroy the buffer & secret, with the copy INSIDE one
+	// borrow: Bytes() would cover only the slice-header read, so a concurrent
+	// Destroy by any other holder of buf could unmap the share's pages midway
+	// through the copy (go-qrdb#74; see also SecretValue.WithBytes's identical
+	// fix, go-qrdb#114 review round 3).
 	//
-	// The copy itself is unavoidable — this function returns []byte — so this
-	// is the issue's remedy 1, narrowing the window rather than closing it.
-	// Destroy stays OUTSIDE the borrow, and that placement is load-bearing:
-	// go-enclave's per-object lock is not reentrant, so calling buf.Destroy()
-	// from inside buf's own WithBytes callback would deadlock this buffer
-	// against itself (it would NOT affect any other Buffer or Secret in the
-	// process — go-enclave gives every enclave its own independent lock,
-	// unlike memguard's process-wide purgeMu this replaced).
+	// The copy itself is unavoidable — Claim returns the share to the
+	// transport as []byte. Destroy stays OUTSIDE the borrow: go-enclave's
+	// per-object lock is not reentrant, so buf.Destroy() from inside buf's own
+	// WithBytes callback would deadlock this buffer against itself (go-qrdb#145).
 	// The destination is allocated INSIDE the callback from len(src), never
-	// from buf.Size() beforehand.
-	//
-	// Sizing via buf.Size() and then reading in a second borrow as two separate
-	// calls would leave a gap between them in which the buffer could be
-	// destroyed — under memguard, by a process-wide purge landing in that gap;
-	// under go-enclave, by any concurrent Destroy with a handle to buf. Either
-	// way that gives a correctly sized destination and an empty source: copy
-	// becomes a no-op, and Claim returns a zero-filled slice of the right
-	// length while marking the real share consumed. That is fail-open
-	// corruption of one-time recovery material — the share is spent and the
-	// caller holds zeros (found in review of go-qrdb#74). copyShareOut's
-	// single held borrow removes the gap entirely rather than narrowing it.
+	// from buf.Size() beforehand: a Destroy landing between a size read and a
+	// second borrow would leave a correctly sized destination and an empty
+	// source, and Claim would return zeros while marking the real share
+	// consumed — fail-open corruption of one-time recovery material (found in
+	// review of go-qrdb#74). copyShareOut's single held borrow removes the gap.
 	//
 	// An empty source is rejected for the same reason: nothing here should
 	// destroy the secret and record the claim on material it did not actually
@@ -249,7 +235,7 @@ func (s *sealedShareStore) Reset() {
 // the identical four lines, so it was hoisted rather than copied. The two
 // properties that make it correct are stated on CopyOut and are not restated
 // here — the destination is allocated INSIDE the callback from len(src) so no
-// purge can land between a size read and the copy, and an empty source is
+// Destroy can land between a size read and the copy, and an empty source is
 // refused rather than returned as zeros.
 //
 // The refusal keeps this package's own error. A caller of Claim distinguishes

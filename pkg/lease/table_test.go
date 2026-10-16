@@ -160,6 +160,39 @@ func TestRestore_CorruptTableIsRefusedAndLeavesStateUnchanged(t *testing.T) {
 		{"binding to an absent lease", func(st *memory.MemoryStorage) error {
 			return st.Set(bindingKey([]byte("orphan")), encodeInt64(3))
 		}},
+		{"malformed checkpoint", func(st *memory.MemoryStorage) error {
+			return st.Set(checkpointRecordKey(1), []byte{1})
+		}},
+		{"short checkpoint key", func(st *memory.MemoryStorage) error {
+			return st.Set([]byte(checkpointRecordPrefix+"x"), encodeInt64(5))
+		}},
+		{"checkpoint of an absent lease", func(st *memory.MemoryStorage) error {
+			return st.Set(checkpointRecordKey(3), encodeInt64(5))
+		}},
+		{"zero checkpoint", func(st *memory.MemoryStorage) error {
+			return st.Set(checkpointRecordKey(1), encodeInt64(0))
+		}},
+		{"checkpoint above the TTL", func(st *memory.MemoryStorage) error {
+			return st.Set(checkpointRecordKey(1), encodeInt64(31))
+		}},
+		{"malformed renewal marker", func(st *memory.MemoryStorage) error {
+			return st.Set([]byte(recordFromKey), []byte{1})
+		}},
+		{"zero renewal marker", func(st *memory.MemoryStorage) error {
+			return st.Set([]byte(recordFromKey), encodeIndex(0))
+		}},
+		{"malformed renewal record", func(st *memory.MemoryStorage) error {
+			return errors.Join(st.Set([]byte(recordFromKey), encodeIndex(2)), st.Set(renewalRecordKey(1), []byte{1}))
+		}},
+		{"short renewal key", func(st *memory.MemoryStorage) error {
+			return errors.Join(st.Set([]byte(recordFromKey), encodeIndex(2)), st.Set([]byte(renewalRecordPrefix+"x"), encodeIndex(5)))
+		}},
+		{"renewal of an absent lease", func(st *memory.MemoryStorage) error {
+			return errors.Join(st.Set([]byte(recordFromKey), encodeIndex(2)), st.Set(renewalRecordKey(3), encodeIndex(5)))
+		}},
+		{"renewal without a marker", func(st *memory.MemoryStorage) error {
+			return st.Set(renewalRecordKey(1), encodeIndex(5))
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,6 +285,8 @@ func TestTableErrorMessages(t *testing.T) {
 		&TableWriteError{Err: errWriteFault},
 		&TableReadError{Err: errReadFault},
 		&CorruptTableError{Key: sequenceKey, Reason: "bad"},
+		&CheckpointedError{ID: 7},
+		&CheckpointsDisabledError{},
 	} {
 		if err.Error() == "" {
 			t.Errorf("%T has an empty message", err)

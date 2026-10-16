@@ -20,11 +20,34 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // testLogger returns a silent logger for testing.
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// retrieveBytes retrieves the current value through the Buffer API and copies it
+// out for assertions, so tests exercise the supported path rather than the
+// deprecated []byte method.
+func (s *CredentialService) retrieveBytes(ctx context.Context, name string) ([]byte, error) {
+	buf, err := s.RetrieveCredentialBuffer(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer buf.Destroy()
+	return secure.CopyOut(buf)
+}
+
+// retrieveVersionBytes is retrieveBytes for a specific version.
+func (s *CredentialService) retrieveVersionBytes(ctx context.Context, name string, version uint64) ([]byte, error) {
+	buf, err := s.RetrieveCredentialVersionBuffer(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	defer buf.Destroy()
+	return secure.CopyOut(buf)
 }
 
 // newTestBarrier creates an initialized and unsealed StorageBarrier
@@ -100,7 +123,7 @@ func TestStoreCredential_Manual_Success(t *testing.T) {
 	err = svc.StoreCredential(ctx, "api-key", []byte("secret-value"))
 	require.NoError(t, err)
 
-	got, err := svc.RetrieveCredential(ctx, "api-key")
+	got, err := svc.retrieveBytes(ctx, "api-key")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("secret-value"), got)
 }
@@ -145,7 +168,7 @@ func TestStoreCredential_Manual_Overwrite(t *testing.T) {
 	require.NoError(t, svc.StoreCredential(ctx, "key", []byte("v1")))
 	require.NoError(t, svc.StoreCredential(ctx, "key", []byte("v2")))
 
-	got, err := svc.RetrieveCredential(ctx, "key")
+	got, err := svc.retrieveBytes(ctx, "key")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("v2"), got)
 }
@@ -161,7 +184,7 @@ func TestStoreCredential_Manual_ValueIsolation(t *testing.T) {
 	// Mutate the original slice after storing.
 	original[0] = 'X'
 
-	got, err := svc.RetrieveCredential(ctx, "key")
+	got, err := svc.retrieveBytes(ctx, "key")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("original-value"), got, "stored value should be isolated from caller mutations")
 }
@@ -183,7 +206,7 @@ func TestStoreCredential_Barrier_Success(t *testing.T) {
 	err = svc.StoreCredential(ctx, "db-password", []byte("s3cret"))
 	require.NoError(t, err)
 
-	got, err := svc.RetrieveCredential(ctx, "db-password")
+	got, err := svc.retrieveBytes(ctx, "db-password")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("s3cret"), got)
 }
@@ -197,7 +220,7 @@ func TestRetrieveCredential_Manual_AlreadyStored(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, svc.StoreCredential(ctx, "key", []byte("val")))
 
-	got, err := svc.RetrieveCredential(ctx, "key")
+	got, err := svc.retrieveBytes(ctx, "key")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("val"), got)
 }
@@ -214,7 +237,7 @@ func TestRetrieveCredential_Manual_BlocksUntilSubmitted(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		got, retrieveErr = svc.RetrieveCredential(ctx, "deferred")
+		got, retrieveErr = svc.retrieveBytes(ctx, "deferred")
 	}()
 
 	// Give the goroutine time to register as a waiter.
@@ -241,7 +264,7 @@ func TestRetrieveCredential_Manual_ContextCancellation(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, retrieveErr = svc.RetrieveCredential(ctx, "never-submitted")
+		_, retrieveErr = svc.retrieveBytes(ctx, "never-submitted")
 	}()
 
 	// Give the goroutine time to register as a waiter.
@@ -257,7 +280,7 @@ func TestRetrieveCredential_Manual_EmptyName(t *testing.T) {
 	svc, err := NewCredentialService(nil, nil, testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.RetrieveCredential(context.Background(), "")
+	_, err = svc.retrieveBytes(context.Background(), "")
 	assert.ErrorIs(t, err, ErrEmptyCredentialName)
 }
 
@@ -268,13 +291,13 @@ func TestRetrieveCredential_Manual_ReturnsIsolatedCopy(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, svc.StoreCredential(ctx, "key", []byte("value")))
 
-	got1, err := svc.RetrieveCredential(ctx, "key")
+	got1, err := svc.retrieveBytes(ctx, "key")
 	require.NoError(t, err)
 
 	// Mutate the returned slice.
 	got1[0] = 'X'
 
-	got2, err := svc.RetrieveCredential(ctx, "key")
+	got2, err := svc.retrieveBytes(ctx, "key")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("value"), got2, "subsequent retrieval must return unmodified copy")
 }
@@ -295,7 +318,7 @@ func TestRetrieveCredential_Barrier_Success(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, svc.StoreCredential(ctx, "token", []byte("abc123")))
 
-	got, err := svc.RetrieveCredential(ctx, "token")
+	got, err := svc.retrieveBytes(ctx, "token")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("abc123"), got)
 }
@@ -311,7 +334,7 @@ func TestRetrieveCredential_Barrier_NotFound(t *testing.T) {
 	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.RetrieveCredential(context.Background(), "nonexistent")
+	_, err = svc.retrieveBytes(context.Background(), "nonexistent")
 	assert.ErrorIs(t, err, ErrCredentialNotFound)
 }
 
@@ -325,7 +348,7 @@ func TestSubmitCredential_Manual_Success(t *testing.T) {
 	err = svc.SubmitCredential(ctx, "key", []byte("value"))
 	require.NoError(t, err)
 
-	got, err := svc.RetrieveCredential(ctx, "key")
+	got, err := svc.retrieveBytes(ctx, "key")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("value"), got)
 }
@@ -339,7 +362,7 @@ func TestSubmitCredential_Manual_UnblocksWaiter(t *testing.T) {
 	errs := make(chan error, 1)
 
 	go func() {
-		val, err := svc.RetrieveCredential(ctx, "pending")
+		val, err := svc.retrieveBytes(ctx, "pending")
 		errs <- err
 		results <- val
 	}()
@@ -403,7 +426,7 @@ func TestDeleteCredential_Manual_Success(t *testing.T) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 
-	_, err = svc.RetrieveCredential(timeoutCtx, "key")
+	_, err = svc.retrieveBytes(timeoutCtx, "key")
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
@@ -440,7 +463,7 @@ func TestDeleteCredential_Barrier_Success(t *testing.T) {
 	require.NoError(t, svc.StoreCredential(ctx, "key", []byte("value")))
 	require.NoError(t, svc.DeleteCredential(ctx, "key"))
 
-	_, err = svc.RetrieveCredential(ctx, "key")
+	_, err = svc.retrieveBytes(ctx, "key")
 	assert.ErrorIs(t, err, ErrCredentialNotFound)
 }
 
@@ -527,7 +550,7 @@ func TestStoreCredential_Manual_ConcurrentAccess(t *testing.T) {
 			name := "key"
 			value := []byte("value")
 			_ = svc.StoreCredential(ctx, name, value)
-			_, _ = svc.RetrieveCredential(ctx, name)
+			_, _ = svc.retrieveBytes(ctx, name)
 			_ = n
 		}(i)
 	}
@@ -549,7 +572,7 @@ func TestSubmitCredential_Manual_MultipleWaiters(t *testing.T) {
 	for i := range numWaiters {
 		go func(idx int) {
 			defer wg.Done()
-			results[idx], errs[idx] = svc.RetrieveCredential(ctx, "shared")
+			results[idx], errs[idx] = svc.retrieveBytes(ctx, "shared")
 		}(i)
 	}
 

@@ -37,6 +37,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/refusalinfo"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/retryinfo"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealedinfo"
@@ -963,6 +964,9 @@ func mapGRPCError(method string, err error) error {
 		// embedded, instead of matching message text (go-qrdb#141).
 		return &transport.CapabilityUnsupportedError{Message: st.Message()}
 	default:
+		if typed := refusalinfo.Error(st); typed != nil {
+			err = typed
+		}
 		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err, RetryAfter: retryinfo.Delay(st)}
 	}
 }

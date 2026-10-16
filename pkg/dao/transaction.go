@@ -416,6 +416,7 @@ func (tx *daoTransaction[E]) evaluateCondition(ctx context.Context, entity E, co
 	// Try to get existing entity
 	existing, err := tx.dao.Get(ctx, id)
 	existsInStorage := err == nil
+	defer tx.dao.discard(existing)
 
 	// For version checks on new entities
 	if !existsInStorage && cond.Target == ConditionVersion {

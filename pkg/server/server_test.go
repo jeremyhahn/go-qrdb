@@ -1151,6 +1151,10 @@ func (mockCertEnrollmentServicer) RemoveTrustAnchor(context.Context, string, str
 	return nil
 }
 
+func (mockCertEnrollmentServicer) IssueDelegation(context.Context, *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	return nil, nil
+}
+
 func TestWithCertEnrollment_Nil(t *testing.T) {
 	var opts serverOptions
 	opt := WithCertEnrollment(nil)

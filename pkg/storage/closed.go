@@ -57,6 +57,10 @@ func (b *closedBatch) Delete(_ []byte) error {
 	return &BatchError{Op: "delete", Err: &ClosedError{}}
 }
 
+func (b *closedBatch) DeleteRange(_, _ []byte) error {
+	return &BatchError{Op: "delete_range", Err: &ClosedError{}}
+}
+
 // Commit reports the closure.
 func (b *closedBatch) Commit() error {
 	return &BatchError{Op: "commit", Err: &ClosedError{}}

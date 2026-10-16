@@ -163,6 +163,7 @@ func newCertScopeGRPCFixture(t *testing.T) *certScopeGRPCFixture {
 		resolveResult: []permission.Permission{
 			permission.CertsIssue,
 			permission.CertsEnroll,
+			permission.CertsDelegate,
 			permission.CertsRevoke,
 			permission.CertsRevokeCross,
 			permission.CertsList,

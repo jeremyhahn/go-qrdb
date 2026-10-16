@@ -18,26 +18,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
 
 // fakeMigrationProvider drives the real migration engine over temp store dirs,
 // minting a keyed target over a caller-supplied seal backend. It records the
 // Quiesce/Reopen lifecycle calls so tests can assert the online sequence.
 type fakeMigrationProvider struct {
-	dirs        []string
+	stores      MigrationStores
 	sealBackend seal.StorageBackend
 	quiesced    int
 	reopened    int
 }
 
-func (p *fakeMigrationProvider) StoreDirs(_ context.Context, _ BarrierScope) ([]string, error) {
-	return p.dirs, nil
+func (p *fakeMigrationProvider) StoreDirs(_ context.Context, _ BarrierScope) (MigrationStores, error) {
+	return p.stores, nil
 }
 
 func (p *fakeMigrationProvider) MintKeyedTarget(ctx context.Context, _ BarrierScope, opts seal.MigrationOptions) (*seal.StorageBarrier, error) {
@@ -87,20 +90,63 @@ func initNoneSystemRegistry(t *testing.T) (*seal.BarrierRegistry, seal.StorageBa
 	return reg, backend
 }
 
-// writeNoneStore writes a none-encrypted Pebble store at dir for migration.
-func writeNoneStore(t *testing.T, dir string, pairs map[string]string) {
+// newNoneBarrier returns an initialized none barrier over its own backend.
+func newNoneBarrier(t *testing.T) *seal.StorageBarrier {
 	t.Helper()
-	ctx := context.Background()
 	nb, err := seal.NewStorageBarrier(testLogger(), seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "n", DeploymentID: 1}, seal.NewNoneStrategy())
 	if err != nil {
 		t.Fatalf("none barrier: %v", err)
 	}
-	if err := nb.Initialize(ctx, seal.Credentials{}); err != nil {
+	if err := nb.Initialize(context.Background(), seal.Credentials{}); err != nil {
 		t.Fatalf("init none: %v", err)
 	}
+	return nb
+}
+
+// writeNoneFileStore writes a file-backend store at dir under a none barrier
+// for migration.
+func writeNoneFileStore(t *testing.T, dir string, pairs map[string]string) {
+	t.Helper()
+	st, err := file.New(dir, file.WithEncryptor(atrest.New(newNoneBarrier(t))))
+	if err != nil {
+		t.Fatalf("open none file store: %v", err)
+	}
+	for k, v := range pairs {
+		if err := st.Set([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("set: %v", err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+// readFileStore returns every record of the file store at dir read under enc.
+func readFileStore(t *testing.T, dir string, enc *atrest.Encryptor) map[string]string {
+	t.Helper()
+	st, err := file.New(dir, file.WithEncryptor(enc))
+	if err != nil {
+		t.Fatalf("open file store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	out := map[string]string{}
+	it := st.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+	for valid := it.SeekToFirst(); valid; valid = it.Next() {
+		out[string(it.Key())] = string(it.Value())
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate file store: %v", err)
+	}
+	return out
+}
+
+// writeNoneStore writes a none-encrypted Pebble store at dir for migration.
+func writeNoneStore(t *testing.T, dir string, pairs map[string]string) {
+	t.Helper()
 	opts := &pebble.Options{}
-	atrest.New(nb).Apply(opts)
+	atrest.New(newNoneBarrier(t)).Apply(opts)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open none store: %v", err)
@@ -135,7 +181,7 @@ func TestEncryptionMigration_System(t *testing.T) {
 	}
 	writeNoneStore(t, dir, data)
 
-	prov := &fakeMigrationProvider{dirs: []string{dir}, sealBackend: backend}
+	prov := &fakeMigrationProvider{stores: MigrationStores{Pebble: []string{dir}}, sealBackend: backend}
 	svc := NewEncryptionMigrationService(reg, prov, testLogger())
 
 	if err := svc.EnableSystemEncryption(ctx, validSwapOpts()); err != nil {
@@ -152,10 +198,54 @@ func TestEncryptionMigration_System(t *testing.T) {
 	}
 }
 
+// TestEncryptionMigration_SystemMovesFileStores migrates a node holding a
+// Pebble store and a file-backend store, by each mechanism: both read back
+// whole under the keyed root key afterwards.
+func TestEncryptionMigration_SystemMovesFileStores(t *testing.T) {
+	for _, mech := range []seal.MigrationMechanism{seal.MechanismSwap, seal.MechanismInPlace} {
+		t.Run(string(mech), func(t *testing.T) {
+			ctx := context.Background()
+			reg, backend := initNoneSystemRegistry(t)
+			root := t.TempDir()
+			pebbleDir, fileDir := root+"/pebble", root+"/file"
+			data := map[string]string{"a": "1", "b": "2", "c": "3"}
+			writeNoneStore(t, pebbleDir, data)
+			writeNoneFileStore(t, fileDir, data)
+
+			prov := &fakeMigrationProvider{
+				stores:      MigrationStores{Pebble: []string{pebbleDir}, File: []string{fileDir}},
+				sealBackend: backend,
+			}
+			opts := validSwapOpts()
+			opts.Mechanism = mech
+			if err := NewEncryptionMigrationService(reg, prov, testLogger()).EnableSystemEncryption(ctx, opts); err != nil {
+				t.Fatalf("EnableSystemEncryption: %v", err)
+			}
+			enc := atrest.New(initReopenKeyedService(t, backend, "root-key", "migrate-pass"))
+			if got := readStore(t, pebbleDir, enc); !maps.Equal(got, data) {
+				t.Errorf("pebble store after migration = %v, want %v", got, data)
+			}
+			if got := readFileStore(t, fileDir, enc); !maps.Equal(got, data) {
+				t.Errorf("file store after migration = %v, want %v", got, data)
+			}
+		})
+	}
+}
+
+func TestMigrationStores_Dirs(t *testing.T) {
+	if dirs := (MigrationStores{}).Dirs(); len(dirs) != 0 {
+		t.Fatalf("empty Dirs = %v, want none", dirs)
+	}
+	s := MigrationStores{Pebble: []string{"/p"}, File: []string{"/f"}}
+	if got, want := s.Dirs(), []string{"/p", "/f"}; !slices.Equal(got, want) {
+		t.Fatalf("Dirs = %v, want %v", got, want)
+	}
+}
+
 func TestEncryptionMigration_TenantSharedBarrierRejected(t *testing.T) {
 	ctx := context.Background()
 	reg, backend := initNoneSystemRegistry(t)
-	prov := &fakeMigrationProvider{dirs: []string{t.TempDir()}, sealBackend: backend}
+	prov := &fakeMigrationProvider{stores: MigrationStores{Pebble: []string{t.TempDir()}}, sealBackend: backend}
 	svc := NewEncryptionMigrationService(reg, prov, testLogger())
 
 	// "shared-tenant" was never registered as a dedicated barrier → it is on
@@ -188,7 +278,7 @@ func TestEncryptionMigration_TenantDedicatedBarrier(t *testing.T) {
 	data := map[string]string{"x": "1", "y": "2", "z": "3"}
 	writeNoneStore(t, dir, data)
 
-	prov := &fakeMigrationProvider{dirs: []string{dir}, sealBackend: backend}
+	prov := &fakeMigrationProvider{stores: MigrationStores{Pebble: []string{dir}}, sealBackend: backend}
 	svc := NewEncryptionMigrationService(reg, prov, testLogger())
 
 	if err := svc.EnableTenantEncryption(ctx, "acme", validSwapOpts()); err != nil {
@@ -209,7 +299,7 @@ func TestEncryptionMigration_NilProvider(t *testing.T) {
 
 func TestEncryptionMigration_InvalidOptionsRejected(t *testing.T) {
 	reg, backend := initNoneSystemRegistry(t)
-	prov := &fakeMigrationProvider{dirs: []string{t.TempDir()}, sealBackend: backend}
+	prov := &fakeMigrationProvider{stores: MigrationStores{Pebble: []string{t.TempDir()}}, sealBackend: backend}
 	svc := NewEncryptionMigrationService(reg, prov, testLogger())
 	bad := seal.MigrationOptions{TargetStrategy: seal.StrategyNone, Mechanism: seal.MechanismSwap, Availability: seal.AvailabilityQuiesced}
 	if err := svc.EnableSystemEncryption(context.Background(), bad); !errors.Is(err, seal.ErrMigrationInvalidTarget) {

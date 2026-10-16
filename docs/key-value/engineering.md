@@ -84,7 +84,10 @@ heartbeat send time, for `ElectionRTT - 2` ticks less 1 %
 heartbeat quorum round. Reads are linearizable while the clock rate drift
 between replicas stays under 1 % and every replica runs the same `ElectionRTT`
 and `RTTMillisecond`. A wall-clock step does not affect the lease. `Eventual`
-reads local state with no bound on a partitioned node.
+reads local state with no bound on a partitioned node. The deployment
+requirement is in
+[../deployment/user.md](../deployment/user.md#keep-replica-clocks-disciplined),
+the mechanism in [../05-consistency.md](../05-consistency.md#3-leaseread).
 
 ### Write durability — `pkg/writemode`
 
@@ -212,7 +215,19 @@ sweep becoming an enumeration of the internal keyspace.
   or half-recovered state — a stall this package is willing to risk on this
   one diagnostic path specifically because it is not the kind of apply-path
   stall this project otherwise designs against. `Lookup` takes no part in
-  this lock at all, so reads are unaffected either way.
+  this lock at all, so reads are unaffected either way. The one exception is
+  the replica state digest (`statedigest.Query`, see
+  [../clustering/engineering.md](../clustering/engineering.md#replica-state-hashes)):
+  it is answered through `Lookup` but takes the batch lock exclusively, as
+  `GetHash` does, for the same reason and at the same cost.
+- **Every KV state machine records its applied index.** The reserved
+  applied-index record (`diskMetaKeyLastApplied`) is stamped at the end of
+  every applied batch: by `DiskAdapter` directly on its storage, as it always
+  has been, and by `KVStateMachine.Update` through the backend for every
+  other KV state machine. It is replicated state like any record, so it
+  travels in snapshots and is restored with them. A client can neither read
+  nor write it (`isStateMachineKey`), and the state digest reports it as the
+  applied index rather than hashing it.
 
 ### Refusal and fault at the apply seam
 

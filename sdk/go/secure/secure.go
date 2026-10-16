@@ -231,9 +231,10 @@ type Allocator = enclave.Allocator
 func CopyOut(b Borrower) ([]byte, error) { return secure.CopyOut(b) }
 
 // EnableBorrowGuard is the SDK re-export of secure.EnableBorrowGuard. It arms
-// nested-borrow detection so a callback that reaches an allocation of
-// protected memory REPORTS instead of deadlocking, and returns a function that
-// restores the previous state.
+// nested-borrow detection so a callback that reenters the Buffer it is
+// borrowing REPORTS instead of deadlocking, and returns a function that
+// restores the previous state. Protected memory of any other object is free to
+// use inside a borrow and is not reported.
 //
 // It is a test facility: arming it costs a runtime.Stack call per borrow. It
 // is re-exported because a consumer wiring its own protected-memory code

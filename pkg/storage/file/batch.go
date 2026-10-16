@@ -15,6 +15,8 @@
 package file
 
 import (
+	"slices"
+
 	"golang.org/x/sync/errgroup"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -89,16 +91,38 @@ const applyConcurrency = 32
 
 // applyBufferedOps writes a batch's operations to the engine. Each Set/Delete
 // is individually durable (see Engine.Set). The caller holds the write lock
-// -- a commit, or open-time recovery -- so the unlocked set and del are used,
-// and nothing returns until every write has finished, so no write outlives
-// the lock or the journal that covers it.
+// -- a commit, or open-time recovery -- so the unlocked set, del and
+// deleteRange are used, and nothing returns until every write has finished,
+// so no write outlives the lock or the journal that covers it.
 //
-// Order only matters between operations on the same key, so the batch is
-// reduced to the last operation per key -- the state applying every operation
-// in order would leave -- and the distinct keys, which share no file, are
-// written concurrently. A failure leaves the journal in place exactly as a
-// failure midway through a serial apply did: recovery replays the whole batch.
+// A range delete is ordered against every point write: the point writes
+// before it finish first, then the range is removed, then the point writes
+// after it start. Between two range deletes order only matters between
+// operations on the same key, so that run is applied by applyPointOps. A
+// failure leaves the journal in place exactly as a failure midway through a
+// serial apply did: recovery replays the whole batch.
 func (e *Engine) applyBufferedOps(ops []storage.BufferedOp) error {
+	for len(ops) > 0 {
+		i := slices.IndexFunc(ops, func(op storage.BufferedOp) bool { return op.Range })
+		if i < 0 {
+			return e.applyPointOps(ops)
+		}
+		if err := e.applyPointOps(ops[:i]); err != nil {
+			return err
+		}
+		if err := e.deleteRange(ops[i].Key, ops[i].RangeEnd); err != nil {
+			return err
+		}
+		ops = ops[i+1:]
+	}
+	return nil
+}
+
+// applyPointOps writes a run of Set/Delete operations that holds no range
+// delete. The run is reduced to the last operation per key -- the state
+// applying every operation in order would leave -- and the distinct keys,
+// which share no file, are written concurrently.
+func (e *Engine) applyPointOps(ops []storage.BufferedOp) error {
 	var g errgroup.Group
 	g.SetLimit(applyConcurrency)
 	for _, op := range lastOpPerKey(ops) {

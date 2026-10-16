@@ -116,11 +116,51 @@ type RebalanceExecutionResult struct {
 	// MovesFailed is the number of moves that failed.
 	MovesFailed int
 
+	// Failures carries one entry per failed move, in plan order, naming the
+	// move and why it failed. len(Failures) == MovesFailed.
+	Failures []RebalanceMoveFailure
+
 	// Duration is the actual time taken to execute all moves.
 	Duration time.Duration
 
 	// FinalImbalance is the imbalance score after rebalancing.
 	FinalImbalance float64
+}
+
+// RebalanceMoveFailure reports a single move that ExecuteRebalance could not
+// complete.
+type RebalanceMoveFailure struct {
+	// ShardID is the shard the move targeted.
+	ShardID uint64
+
+	// FromNode is the move's source node address.
+	FromNode string
+
+	// ToNode is the move's destination node address.
+	ToNode string
+
+	// Step names the phase of a dedicated-group move that failed (see
+	// RebalanceMoveError.Step); it is empty for a generic shard move.
+	Step string
+
+	// Error is the failure's message.
+	Error string
+}
+
+// newRebalanceMoveFailure describes the failed move and the error it failed
+// with.
+func newRebalanceMoveFailure(move RebalanceMovePlan, err error) RebalanceMoveFailure {
+	f := RebalanceMoveFailure{
+		ShardID:  move.ShardID,
+		FromNode: move.FromNode,
+		ToNode:   move.ToNode,
+		Error:    err.Error(),
+	}
+	var mErr *RebalanceMoveError
+	if errors.As(err, &mErr) {
+		f.Step = mErr.Step
+	}
+	return f
 }
 
 // NodeLoadInfo describes the load distribution on a single node.
@@ -443,7 +483,7 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 
 	start := time.Now()
 	completed := 0
-	failed := 0
+	var failures []RebalanceMoveFailure
 
 	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
@@ -471,7 +511,7 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 					slog.String("from_node", move.FromNode),
 					slog.String("to_node", move.ToNode),
 					slog.Any("error", err))
-				failed++
+				failures = append(failures, newRebalanceMoveFailure(move, err))
 				continue
 			}
 			completed++
@@ -485,7 +525,7 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 				slog.String("from_node", move.FromNode),
 				slog.String("to_node", move.ToNode),
 				slog.Any("error", err))
-			failed++
+			failures = append(failures, newRebalanceMoveFailure(move, err))
 			continue
 		}
 
@@ -505,7 +545,8 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 
 	return &RebalanceExecutionResult{
 		MovesCompleted: completed,
-		MovesFailed:    failed,
+		MovesFailed:    len(failures),
+		Failures:       failures,
 		Duration:       duration,
 		FinalImbalance: finalImbalance,
 	}, nil
@@ -613,8 +654,10 @@ func (s *RebalanceService) buildShardPlacementIndex(ctx context.Context) (map[ui
 //  4. addObserverReplica: persist placement (dst added) -> best-effort key
 //     delivery -> RaftHost.AddObserver. Placement MUST be persisted before
 //     key delivery -- see addObserverReplica.
-//  5. removeReplicaFromGroup: persist placement (src removed) ->
-//     RaftHost.RemoveFollowerNode.
+//  5. removeReplicaFromGroup: RaftHost.RemoveFollowerNode -> persist
+//     placement (src removed). The source is evicted from Raft before its
+//     placement entry goes, because the placement is what stops it -- see
+//     removeReplicaFromGroup.
 //
 // The destination is promoted from observer to a full voting member
 // asynchronously, off this request path, by TenantShardReconciler's
@@ -813,7 +856,7 @@ func (s *RebalanceService) resolveMoveLeader(ctx context.Context, move Rebalance
 		return true, ""
 	}
 
-	if terr := transferLeadershipAwayFromRemoved(ctx, s.raftHost, p, p.ShardID, srcReplica.ReplicaID); terr != nil {
+	if terr := transferLeadershipAwayFromRemoved(ctx, s.raftHost, s.host, s.logger, p, p.ShardID, srcReplica.ReplicaID); terr != nil {
 		// Transfer failed or timed out -- degrade to executing locally so
 		// the ordinary AddObserver/RemoveFollowerNode error paths surface
 		// the definitive failure, mirroring resolveGroupLeader's own
@@ -884,21 +927,6 @@ func clonePlacementWithReplica(p *placement.Placement, r placement.Replica) *pla
 	replicas := make([]placement.Replica, len(p.Replicas)+1)
 	copy(replicas, p.Replicas)
 	replicas[len(p.Replicas)] = r
-	clone := *p
-	clone.Replicas = replicas
-	clone.RF = len(replicas)
-	return &clone
-}
-
-// dropReplicaFromPlacement returns a copy of p with the replica identified by
-// replicaID removed. RF is updated accordingly.
-func dropReplicaFromPlacement(p *placement.Placement, replicaID uint64) *placement.Placement {
-	replicas := make([]placement.Replica, 0, len(p.Replicas))
-	for _, r := range p.Replicas {
-		if r.ReplicaID != replicaID {
-			replicas = append(replicas, r)
-		}
-	}
 	clone := *p
 	clone.Replicas = replicas
 	clone.RF = len(replicas)

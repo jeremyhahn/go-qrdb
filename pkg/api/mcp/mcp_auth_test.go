@@ -1888,9 +1888,14 @@ type fakeCertEnrollTool struct {
 	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
+	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollTool)(nil)
+
+func (f *fakeCertEnrollTool) IssueDelegation(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	return f.delegFn(ctx, req)
+}
 
 func (f *fakeCertEnrollTool) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 	return f.signFn(ctx, req)
@@ -2236,6 +2241,7 @@ func TestEnrollmentTools_Registration(t *testing.T) {
 	expectedNames := []string{
 		"qrdb_cert_issue",
 		"qrdb_cert_enroll",
+		"qrdb_cert_delegate",
 		"qrdb_trust_anchor_add",
 		"qrdb_trust_anchor_list",
 		"qrdb_trust_anchor_remove",

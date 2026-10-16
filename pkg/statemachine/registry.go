@@ -149,22 +149,12 @@ type StorageConfig struct {
 	Kind string
 
 	// Encryptor is the node's at-rest encryptor. When it is enabled — the
-	// seal barrier is on — every byte a replica's storage persists must be
-	// encrypted: pebble storage is opened on the encryptor's barrier-driven
-	// encfs, exactly as the pebble and mvcc state machines are, and a storage
-	// that cannot be encrypted is refused at resolution
-	// (SMStorageUnencryptedError) rather than opened. nil means the barrier
-	// is off.
+	// seal barrier is on — every byte a replica's storage persists is
+	// encrypted: pebble and file storage are opened on the encryptor's
+	// barrier-driven encfs, exactly as the pebble and mvcc state machines and
+	// a standalone file store are, and memory storage persists nothing. nil
+	// means the barrier is off.
 	Encryptor *atrest.Encryptor
-}
-
-// persistsPlaintext reports whether a replica's storage under this config
-// would write unencrypted bytes to disk while the seal barrier is on. Pebble
-// storage is encrypted through the encryptor's FS and "memory" persists
-// nothing; "file" storage writes through the OS directly and has no
-// encrypting seam.
-func (c StorageConfig) persistsPlaintext() bool {
-	return c.Encryptor.Enabled() && c.Kind == "file"
 }
 
 // storageKinds are the raft.sm_storage values a storage-generic state
@@ -320,9 +310,6 @@ func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageC
 		}
 		return e.factory(), nil
 	}
-	if sc.persistsPlaintext() {
-		return nil, &SMStorageUnencryptedError{SMType: name, Kind: sc.Kind}
-	}
 	return e.generic(newStorageFactory(sc), opts...), nil
 }
 
@@ -420,25 +407,6 @@ type SMStorageNotApplicableError struct {
 func (e *SMStorageNotApplicableError) Error() string {
 	return "statemachine: sm_storage " + strconv.Quote(e.Kind) + " does not apply to sm_type " +
 		strconv.Quote(e.SMType) + ", which carries its own storage; use a storage-generic sm_type (disk or fast)"
-}
-
-// SMStorageUnencryptedError is returned when the seal barrier is enabled and
-// the storage a storage-generic state machine would compose cannot be
-// encrypted at rest — "file" storage, which writes through the OS directly: the replica's data would sit on disk in plaintext beside
-// a barrier the operator enabled to prevent exactly that.
-type SMStorageUnencryptedError struct {
-	SMType string
-	Kind   string
-}
-
-// Error returns a human-readable description of the refusal.
-func (e *SMStorageUnencryptedError) Error() string {
-	kind := e.Kind
-	if kind == "" {
-		kind = "pebble"
-	}
-	return "statemachine: sm_type " + strconv.Quote(e.SMType) + " over sm_storage " + strconv.Quote(kind) +
-		" would store plaintext while the seal barrier is enabled; use sm_storage pebble (encrypted at rest) or memory"
 }
 
 // UnknownSMTypeError is returned when a state machine type name cannot
@@ -600,8 +568,11 @@ func newStorageFactory(sc StorageConfig) StorageFactory {
 			test = true
 		}
 
+		// Under the seal barrier every record file the file engine writes —
+		// key and value, commit journal included — goes through the same
+		// barrier-driven encfs, exactly as a standalone file store does.
 		if sc.Kind == "file" {
-			s, err := filestore.New(dir)
+			s, err := filestore.New(dir, filestore.WithEncryptor(sc.Encryptor))
 			if err != nil {
 				panic("statemachine: failed to create file storage: " + err.Error())
 			}

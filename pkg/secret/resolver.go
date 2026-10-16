@@ -127,6 +127,20 @@ func NewSecretValue(ctx context.Context, raw string, value []byte, strategy Reso
 	return sv, nil
 }
 
+// NewSecretValueFromBuffer seals buf into a new SecretValue, consuming buf: it
+// is destroyed on every return path, so the caller must not use or Destroy it
+// afterwards. Unlike NewSecretValue the plaintext is sealed straight out of
+// buf's protected pages and never exists as a plain []byte.
+//
+// A nil or destroyed buf, or a sealing failure, returns *SealFailedError.
+func NewSecretValueFromBuffer(ctx context.Context, raw string, buf *secure.Buffer, strategy ResolvedStrategy) (*SecretValue, error) {
+	s, err := secure.NewSecretFromBuffer(ctx, buf)
+	if err != nil {
+		return nil, &SealFailedError{Ref: redactRaw(raw, strategy), Err: err}
+	}
+	return &SecretValue{Raw: raw, Strategy: strategy, secret: s}, nil
+}
+
 // WithBytes opens the enclave into a transient mlocked buffer, invokes fn with
 // the plaintext, then destroys the buffer before returning. The slice handed to
 // fn is valid only for the duration of the call and must not be retained. fn

@@ -91,7 +91,6 @@ func NewSecret(ctx context.Context, src []byte) (*Secret, error) {
 	if len(src) == 0 {
 		return nil, &InvalidSizeError{Size: len(src)}
 	}
-	checkNoBorrow("NewSecret")
 	// enclave.NewSealed takes ownership of src and wipes it on every path,
 	// including failure.
 	sealed, err := newSealed(ctx, src)
@@ -135,7 +134,7 @@ func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
 	if buf == nil {
 		return nil, &NilBufferError{}
 	}
-	checkNoBorrow("NewSecretFromBuffer")
+	checkNotBorrowed("NewSecretFromBuffer", buf)
 	if buf.destroyed.Load() {
 		return nil, &NilBufferError{}
 	}
@@ -190,7 +189,6 @@ func (s *Secret) Open(ctx context.Context) (*Buffer, error) {
 	if s == nil {
 		return nil, &NilSecretError{}
 	}
-	checkNoBorrow("Secret.Open")
 	sealed := s.enclave.Load()
 	if sealed == nil {
 		if s.empty.Load() {
@@ -255,11 +253,12 @@ func (s *Secret) IsAlive() bool {
 // writable Buffer and destroys frozen, logging any non-fatal release report
 // at WARN. frozen is consumed on every return path, including failure.
 //
-// dst is allocated BEFORE frozen is borrowed, matching copyEnclaveToBuffer's
-// ordering (pkg/seal/shamir.go) and pkg/secure's own rule 6: no protected
-// allocation runs while an enclave borrow is held. The copy itself holds BOTH
-// enclaves' borrows for its whole duration, so a concurrent WipeAll cannot
-// unmap dst mid-copy.
+// This is the output direction of the nesting rule (pkg/secure's doc, rule 6):
+// dst is allocated BEFORE frozen is borrowed and written in place inside the
+// borrow, so the plaintext moves from one protected region to the other and
+// never through the heap. The copy holds BOTH enclaves' borrows for its whole
+// duration — different objects, independent locks — so a concurrent WipeAll
+// cannot unmap either mid-copy.
 func copyFrozenToWritable(frozen *enclave.MemoryEnclave) (*Buffer, error) {
 	size := frozen.Size()
 	buf, err := NewBuffer(size)
@@ -288,7 +287,6 @@ func (s *Secret) Destroy() {
 	if s == nil {
 		return
 	}
-	checkNoBorrow("Secret.Destroy")
 	s.empty.Store(false)
 	sealed := s.enclave.Swap(nil)
 	if sealed == nil {

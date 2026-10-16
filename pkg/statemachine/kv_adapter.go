@@ -133,11 +133,13 @@ func (a *ConcurrentAdapter) GetHash() (uint64, error) {
 // ---------------------------------------------------------------------------
 
 // diskMetaKeyLastApplied is the reserved storage key under which the
-// DiskAdapter persists the last applied Raft index. The leading NUL keeps
-// it out of every legitimate user keyspace, and its value is identical on
-// every replica at the same applied index (the same log produces the same
-// sequence of writes), so its presence in snapshots and state hashes is
-// deterministic.
+// DiskAdapter persists the last applied Raft index, and every other KV state
+// machine records it at the end of each batch (KVStateMachine.Update). The
+// leading NUL keeps it out of every legitimate user keyspace, and its value
+// is identical on every replica at the same applied index (the same log
+// produces the same sequence of writes), so its presence in snapshots is
+// deterministic. GetHash and the state digest report it beside the records
+// rather than hashing it.
 const diskMetaKeyLastApplied = "\x00__qrdb_sm_last_applied__"
 
 // DiskAdapter wraps a KVStateMachine to implement sm.DiskStateMachine,

@@ -740,7 +740,7 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 			time.Sleep(200 * time.Millisecond)
 		}
 		if status != http.StatusOK {
-			t.Fatalf("peer node (port %d) key %q: status %d", adminPorts[peerIdx], key, status)
+			t.Fatalf("peer node (port %d) key %q: status %d, body: %s", adminPorts[peerIdx], key, status, got)
 		}
 		if string(got) != values[i] {
 			t.Fatalf("peer node (port %d) key %q: got %q, want %q", adminPorts[peerIdx], key, got, values[i])

@@ -32,7 +32,8 @@ or needs raw key bytes.
 | `server.ResolveCryptoOptions` / `CryptoOptions` | Lets a caller read the resolved options and forward them into `Infra`. | Only options surfaced here can be forwarded. |
 | `lifecycle.Infra` | The dependency bag consumed by `BuildServices` and `BuildSealServicesOnly`. | `qrdbd` builds it directly; `sdk/go/node` builds it from its options. |
 | `sdk/go/node` `NodeOption`s | The embedder entry point. | Options the caller passes as server options come last and win over the node's own. |
-| Embedded transport | In-process calls with a caller identity. | The embedder has no node-sanctioned service principal yet (see the scope note). |
+| Embedded transport | In-process calls with a caller identity. | The node-sanctioned service principal acts in the system tenant only (see the scope note). |
+| `sdk/go` re-exports | The seam types an embedder implements (`sdk.CAKeyProvider`, `sdk.CAKeyProviderFactory`, `sdk.ClientCertProvider`, `sdk.VolumeKeyProvider`, ...) and the SDK constructors over them. | An embedder imports only `sdk/go/...`; every row below marked `Y` is reachable that way, and `test/buildgates/sdk_external_composer_test.go` builds an embedder in a module of its own to prove it. |
 
 ## Capability inventory
 
@@ -47,8 +48,8 @@ remaining gap, listed under [Open gaps](#open-gaps).
 | Cluster enrolment, CSR join | `cakey.Provider` on the server; a caller-built CSR on the joiner, so the key can sit behind a `crypto.Signer` | `StartJoinServer`, `MintJoinToken`, `JoinCSR`, `JoinCSRHTTP` in `sdk/go/clusterenroll` | Y | none |
 | Cluster enrolment, convenience join | None. `Resolve`, `ResolveCA` and `Join` generate the node key in process and return PEM | `sdk/go/clusterenroll` | software path only | none: it is the default, and a composer uses the CSR join |
 | Server TLS identity | `crypto.Signer` leaf key; `ceremony.CeremonyCA`, `cert.Provider`, explicit `tls.Config` | `WithServerTLSKey`, `WithCertProvider`, `WithCeremonyCA`, `WithTLS` | Y | none. `ceremony.ServerTLSConfig` takes the leaf key as a `crypto.Signer`, sends only its public half to the CA, and signs handshakes through it. Unset, each transport's leaf gets a fresh in-memory P-256 key. |
-| CA signing | `cakey.Provider` (`crypto.Signer` plus certificate), `cakey.CertOnlyProvider` | `WithCABootstrap`, `Infra.ClusterCAKeyProvider` | Y | none. `ceremony.CeremonyCA.IssueCertificate` certifies a caller-held `IssueCertRequest.PublicKey`; `IssuedCert.KeyPEM` is deleted. No path returns the CA key. |
-| Per-tenant signing | `cakey.ProviderFactory` | `WithCertKeyProviderFactory` | Y | none |
+| CA signing | `cakey.Provider` (`crypto.Signer` plus certificate), `cakey.CertOnlyProvider`; in the SDK `sdk.CAKeyProvider`, `sdk.CAKeyAdapter`, `sdk.CAKeyCertOnlyProvider` | `node.WithClusterCAKeyProvider`, `WithCABootstrap`, `Infra.ClusterCAKeyProvider` | Y | none. `ceremony.CeremonyCA.IssueCertificate` certifies a caller-held `IssueCertRequest.PublicKey`; `IssuedCert.KeyPEM` is deleted. No path returns the CA key. |
+| Per-tenant signing (login CA Key B) | `cakey.ProviderFactory` (`sdk.CAKeyProviderFactory`) | `WithCertKeyProviderFactory` on `pkg/server` and `sdk/go/node`, forwarded in both boot paths | Y | none. Mutually exclusive with `WithCertProvider`, which replaces the login CA the factory keys: a node given both fails to build with `CertProviderConflictError`. |
 | Holder signing (share claims) | `ceremony.SignShareClaim(crypto.Signer, ...)` | caller supplies the signer | Y | none |
 | Holder envelope decryption | `keydelivery.Decrypter` (`hpke.PrivateKey`); `keydelivery.NewDecrypter` over an `ecdh.KeyExchanger` (and a `crypto.Decapsulator` for the hybrid KEM) | caller: `ShareEnvelope.Open(keydelivery.Decrypter)` | Y | none. A device-held key opens through `keydelivery.NewDecrypter`, which sends the key agreement to the device; `OpenWithKey` remains the software path. |
 | Node key delivery (HPKE receiver) | `keydelivery.NewReceiver(keydelivery.Decrypter, nodeID, ...)` | `WithKeyDeliveryDecrypter`; `RaftTenantClusterConfig.Decrypter` | Y | none. The receiver opens through the decrypter, which must be the DHKEM(P-256) key of the node's mTLS certificate; a mismatch turns the key plane off. Unset, the default composition converts the node's software key. |
@@ -73,8 +74,14 @@ remaining gap, listed under [Open gaps](#open-gaps).
 | Rate limiter, auth middleware | `ratelimit.Limiter` | `WithRateLimiter` | Y | none |
 | Rate limiter, invitation redeem | `ratelimit.Limiter` | `WithInvitationRedeemLimiter` | Y | none |
 | Rate limiter, holder act | `ratelimit.Limiter` | `WithHolderActLimiter` | Y | none |
-| Cert provider | `cert.Provider` | `WithCertProvider` | Y | none |
-| Service identity (embedder in-process calls) | none in this tree | none | N | out of scope |
+| Login CA (client certificates) | `cert.CertProvider` (`sdk.ClientCertProvider`); `clienttrust.CertSource` (`sdk.ClientCertSource`) for the client-trust pool | `WithCertProvider` on `pkg/server` and `sdk/go/node`, forwarded into `Infra.CertProvider` in both boot paths | Y | none. It replaces the built-in login CA for every transport. A provider that is not also a `ClientCertSource` issues certificates no node trusts. |
+| Volume key custody | `volume.KeyProvider` (`sdk.VolumeKeyProvider`) | `node.WithVolumeKeyProvider` | Y | none |
+| Volume backend | `volume.Provider` (`sdk.VolumeProvider`) | `node.WithVolumeProvider` | Y | none |
+| DAOs over a named database | `dao.Factory` (`sdk.DAOFactory`) partitioned by database name | `sdk.NewDatabaseDAO`, `sdk.NewDatabaseDAOTransactional`, `sdk.NewClientDAOFactory` | Y | none. A name the factory cannot resolve is refused, never served from the default store. |
+| Tenant SPIFFE identity in issued certificates | `spiffe.ID.URI` (`sdk.SpiffeID.URI`) | the composer's own CA calls it | Y | none. It builds only a SAN `TenantFromCert` reads back as the same identity. |
+| Authorization of a service module's RPCs | the `(qrdb.v1.permission)` method option, `qrdb/v1/permission.proto` under `sdk/go/proto` | the module's own `.proto` imports it | Y | none |
+| Service identity (embedder in-process calls) | `node.WithServicePrincipal`, `Node.ServiceContext` | `sdk/go/node` | Y, system tenant | see the scope note |
+| Service identity inside a tenant (tenant-issued delegation) | `sdk.DelegationGrant`, `sdk.DelegationFromCertificate`, `sdk.DelegationCheckLifetime`; issued by `CertClient.IssueDelegation` | `node.WithServicePrincipal` names the one principal a node accepts delegations for | Y | none. Only the tenant's own CA issues one; see the scope note. |
 
 ## What the seams guarantee
 
@@ -144,6 +151,36 @@ composer-held time source does not yet reach.
 
 ## Scope note: service identity
 
-A node-sanctioned service principal for an embedder's own in-process calls is
-owned by the go-xkms composer. This document records that the capability is
-absent in go-qrdb today and does not propose a design for it.
+`node.WithServicePrincipal` sanctions one principal for the embedder's own
+in-process work. Its identity is `qrdb-service:<name>` in the **system
+tenant**, its permissions are exactly those registered for it, and no network
+transport accepts it on its own say-so. See
+[api-server engineering](../api-server/engineering.md#service-principal).
+
+It cannot act in an isolated tenant on the platform's authority, and that is
+deliberate. The system owner and the platform never read tenant data, so no
+platform-side setting may let a service principal act as a tenant. It acts
+inside a tenant only under a delegation the **tenant** issues. That
+certificate is the one mechanism: there is no tenant-scoped `ServiceContext`,
+no option that turns delegation on or off or changes its scope, and no
+fallback. A delegation is:
+
+- a short-lived X.509 client certificate from the tenant's own login CA (which
+  may be hardware-held through `WithCertKeyProviderFactory`), at most 24 hours;
+- naming the principal and the delegated permissions in a **critical**
+  extension, so a verifier that does not understand it rejects it;
+- issued only through the tenant's own `certs:delegate` path — the system
+  tenant cannot issue one, and neither can a delegated caller;
+- verified by the existing mTLS chain on every transport, re-verified when
+  forwarded to the leader, and audited to the tenant's trail on every use;
+- holding the delegated scope intersected with the permissions registered
+  under the principal's name;
+- withdrawn early through ordinary revocation by serial.
+
+An embedder reads a grant with `sdk.DelegationFromCertificate` and
+`sdk.DelegationCheckLifetime` without importing anything outside `sdk/go`. See
+[identity-rbac](../identity-rbac/architecture.md#tenant-issued-delegations) and
+[certificate-authority](../certificate-authority/architecture.md#delegations-to-a-service-principal).
+
+The extension is named `tp-delegation`, object identifier
+`1.3.6.1.4.1.29377.101.24`.

@@ -263,9 +263,10 @@ type ErrorPayload struct {
 
 	// Reason and Metadata are the failure's structured reason -- gRPC's
 	// google.rpc.ErrorInfo on this transport: a replica refusal's
-	// NOT_A_REPLICA with the replica set, or NOT_LEADER with the leader --
-	// so a forwarding node classifies the answer, and a client redials,
-	// without parsing Message.
+	// NOT_A_REPLICA with the replica set, NOT_LEADER with the leader, or a
+	// conditional factor add's FACTOR_CONDITION_FAILED with the failed
+	// condition -- so a forwarding node classifies the answer, and a client
+	// redials or rebuilds the typed error, without parsing Message.
 	Reason   string            `json:"reason,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }

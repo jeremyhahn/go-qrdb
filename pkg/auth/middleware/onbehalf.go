@@ -191,6 +191,12 @@ func (m *AuthMiddleware) authenticateOnBehalfBinding(ctx context.Context, peerCe
 		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
 	}
 
+	// A caller that authenticated with a tenant-issued delegation is rebuilt
+	// from the delegation certificate itself, verified again on this node.
+	if assertion.Delegation != "" {
+		return m.authenticateForwardedDelegation(ctx, assertion)
+	}
+
 	// Build the caller identity from the VERIFIED assertion. Roles are left
 	// empty here and re-resolved from the authorization store by
 	// finalizeIdentity -- asserted roles do not exist and are never trusted.

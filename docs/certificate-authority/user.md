@@ -1,6 +1,6 @@
 # Certificate Authority — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 Every caller authenticates with a client certificate. This is where they come
 from.
@@ -158,6 +158,21 @@ Both `assign` flags take **IDs**, not names; `qrdb roles get-by-name Operator`
 resolves a role name to its ID.
 
 See [../identity-rbac/user.md](../identity-rbac/user.md).
+
+**Let an application act inside your tenant.** An application embedding this
+store acts under its own service principal. Your tenant can hand it a
+short-lived, narrowly scoped certificate from your own CA:
+
+```bash
+qrdb ca delegate --principal billing --scope kv:get --scope kv:put --ttl 1h --out ./billing
+```
+
+Only your tenant can issue one — the platform cannot — and it lasts at most 24
+hours. Inside your tenant the application may do only what is both
+in the scope you named and granted to its own role. Withdraw it early with
+`qrdb ca revoke --serial <serial>`. See
+[../identity-rbac/user.md](../identity-rbac/user.md#letting-an-application-act-inside-your-tenant)
+and [cli.md](cli.md#qrdb-ca-delegate).
 
 ## Troubleshooting
 

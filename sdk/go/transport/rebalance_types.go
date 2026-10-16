@@ -92,11 +92,34 @@ type RebalanceResult struct {
 	// MovesFailed is the number of moves that failed.
 	MovesFailed int `json:"moves_failed"`
 
+	// Failures carries one entry per failed move, in plan order, naming the
+	// move and why it failed.
+	Failures []RebalanceMoveFailure `json:"failures,omitempty"`
+
 	// Duration is the actual time taken to execute all moves.
 	Duration time.Duration `json:"duration"`
 
 	// FinalImbalance is the imbalance score after rebalancing.
 	FinalImbalance float64 `json:"final_imbalance"`
+}
+
+// RebalanceMoveFailure reports a single move the server could not complete.
+type RebalanceMoveFailure struct {
+	// ShardID is the shard the move targeted.
+	ShardID uint64 `json:"shard_id"`
+
+	// FromNode is the move's source node address.
+	FromNode string `json:"from_node"`
+
+	// ToNode is the move's destination node address.
+	ToNode string `json:"to_node"`
+
+	// Step names the phase of a dedicated-group move that failed; it is
+	// empty for a generic shard move.
+	Step string `json:"step,omitempty"`
+
+	// Error is the failure's message.
+	Error string `json:"error"`
 }
 
 // NodeLoad describes the load distribution on a single node.

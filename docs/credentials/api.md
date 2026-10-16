@@ -1,6 +1,6 @@
 # Credentials — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -86,4 +86,16 @@ paginated. Both are bounded by operator action.
 
 ## Versioning
 
-Credential REST paths are under `/v1/`. Nothing here is deprecated.
+Credential REST paths are under `/v1/`. **No wire endpoint is deprecated and no
+wire schema changed.**
+
+The Go surface is Buffer-only after the OWNER's 2026-10-07 ruling:
+`CredentialRetrieveBuffer` and `CredentialRetrieveVersionBuffer` return a
+protected-memory `*secure.Buffer` the caller must `Destroy`, and the former
+`[]byte` methods (`CredentialRetrieve`, `CredentialRetrieveVersion`,
+`RetrieveCredential`, `RetrieveCredentialVersion`) are deleted from exported Go
+interfaces and implementations. The Buffer forms ride the same wire operations
+and the same `credentials:retrieve` / `credentials:retrieve_version`
+permissions as the forms they replace. The retrieve responses are the one place
+on the wire where a credential value travels as bytes; see
+[Protected-memory boundary](architecture.md#protected-memory-boundary).

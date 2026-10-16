@@ -13,7 +13,7 @@ unchanged.
 |---|---|
 | Protocol | etcd v3 gRPC (`etcdserverpb`) |
 | Scope | **one listener per database** with `etcd: enabled` |
-| Listen address | `databases[].etcd.listen_addr`, required when enabled (no server default; `qrdb database create --etcd` uses `localhost:2379`) |
+| Listen address | `databases[].etcd.listen_addr`, required when enabled (no daemon default; `qrdb database create --etcd` defaults it to `localhost:2379`) |
 | Advertised URLs | `databases[].etcd.advertise_client_urls` |
 | Authentication | **mTLS only**, per RPC, through the node's authenticator chain; the caller must belong to the database's owning tenant; the system tenant is no exception (there is no cross-tenant database access) |
 | Build tag | `qrdb_etcd` |

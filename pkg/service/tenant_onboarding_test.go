@@ -87,6 +87,19 @@ func newOnboardingDeps(t *testing.T) TenantOnboardingDeps {
 	}
 }
 
+// onboardingFailingGetTenant wraps a real tenant.TenantServicer, delegating
+// every method except GetTenant, which it faithfully fails -- modeling a
+// tenant read that times out after bootstrap.ProvisionTenant has committed
+// the tenant, as a linearizable read does on a loaded cluster.
+type onboardingFailingGetTenant struct {
+	tenant.TenantServicer
+	err error
+}
+
+func (f *onboardingFailingGetTenant) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	return nil, f.err
+}
+
 // errOnboardingReadBack is what committedOnlyTenants answers every GetTenant
 // with.
 var errOnboardingReadBack = errors.New("tenant read back after its create")
@@ -406,6 +419,43 @@ func TestOnboardTenant_SettlesFailureFromProvisioning(t *testing.T) {
 	}
 }
 
+// TestOnboardTenant_AnswersFromCommittedRecordWhenReadsFail covers a tenant
+// read that fails once bootstrap.ProvisionTenant has committed the tenant, as
+// a linearizable read does on a loaded cluster. The onboarding has happened:
+// it must answer with the record it created and the admin's one-time
+// certificate, not with the read's error -- a retry of an exclusive
+// provisioning is refused as a duplicate, so that certificate could never be
+// delivered again.
+func TestOnboardTenant_AnswersFromCommittedRecordWhenReadsFail(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	deps.Tenants = &onboardingFailingGetTenant{TenantServicer: deps.Tenants, err: errors.New("read index not ready")}
+	ring := audit.NewRingBuffer(16)
+	deps.Audit = ring
+
+	svc := NewTenantOnboardingService(deps)
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{ID: "acme", Name: "Acme", AdminUsername: "admin", AdminCSRPEM: csrPEM})
+	if err != nil {
+		t.Fatalf("OnboardTenant = %v, want the committed onboarding answered", err)
+	}
+	if result.Tenant == nil || result.Tenant.ID != "acme" || result.Tenant.Name != "Acme" {
+		t.Fatalf("result.Tenant = %+v, want the created acme record", result.Tenant)
+	}
+	if len(result.Admin.CertPEM) == 0 {
+		t.Fatal("result.Admin.CertPEM is empty, want the admin's one-time certificate")
+	}
+
+	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
+	if ev == nil || ev.Outcome != audit.OutcomeSuccess {
+		t.Fatalf("event = %+v, want a recorded success outcome", ev)
+	}
+}
+
 // TestOnboardTenant_RefreshesClientTrustBeforeAnswering pins that a create
 // rebuilds this node's client trust once the tenant is committed and before
 // it answers, so the handshake that follows the answer admits the admin
@@ -515,6 +565,97 @@ func TestOnboardTenant_AnswersWithTheCommittedRecord(t *testing.T) {
 	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
 	if ev == nil || ev.Outcome != audit.OutcomeSuccess {
 		t.Fatalf("event = %+v, want a recorded success outcome", ev)
+	}
+}
+
+// onboardingStallingCreate wraps a real tenant.TenantServicer and stalls
+// CreateTenant until its context ends, as a tenant-record proposal does while
+// the system shard has no leader.
+type onboardingStallingCreate struct {
+	tenant.TenantServicer
+}
+
+func (f *onboardingStallingCreate) CreateTenant(ctx context.Context, _, _ string, _ tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// onboardWithin runs OnboardTenant and fails the test if it does not answer
+// within createDeadlineWatchdog.
+func onboardWithin(t *testing.T, svc *TenantOnboardingService, ctx context.Context) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{ID: "acme", AdminUsername: "admin", AdminCSRPEM: onboardingCSR(t)})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(createDeadlineWatchdog):
+		t.Fatalf("OnboardTenant did not answer within %v: it is not bounded by the service's deadline", createDeadlineWatchdog)
+		return nil
+	}
+}
+
+// onboardingCSR returns a fresh admin CSR.
+func onboardingCSR(t *testing.T) []byte {
+	t.Helper()
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return csrPEM
+}
+
+func TestOnboardTenant_StalledConsensus_AnswersWithinServiceDeadline(t *testing.T) {
+	deps := newOnboardingDeps(t)
+	deps.Tenants = &onboardingStallingCreate{TenantServicer: deps.Tenants}
+	deps.Timeout = 50 * time.Millisecond
+	ring := audit.NewRingBuffer(16)
+	deps.Audit = ring
+
+	err := onboardWithin(t, NewTenantOnboardingService(deps), context.Background())
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the service deadline's context.DeadlineExceeded", err)
+	}
+	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
+	if ev == nil || ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
+		t.Fatalf("event = %+v, want the cut-short onboarding recorded as a failure", ev)
+	}
+}
+
+func TestOnboardTenant_CallerSoonerDeadlineApplies(t *testing.T) {
+	deps := newOnboardingDeps(t)
+	deps.Tenants = &onboardingStallingCreate{TenantServicer: deps.Tenants}
+	deps.Timeout = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+
+	err := onboardWithin(t, NewTenantOnboardingService(deps), ctx)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's context.Canceled", err)
+	}
+}
+
+func TestNewTenantOnboardingService_TimeoutDefaultsAndOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{"default", 0, DefaultTenantOnboardingTimeout},
+		{"negative ignored", -time.Second, DefaultTenantOnboardingTimeout},
+		{"override", 3 * time.Second, 3 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewTenantOnboardingService(TenantOnboardingDeps{Timeout: tc.timeout})
+			if svc.timeout != tc.want {
+				t.Fatalf("timeout = %v, want %v", svc.timeout, tc.want)
+			}
+		})
 	}
 }
 

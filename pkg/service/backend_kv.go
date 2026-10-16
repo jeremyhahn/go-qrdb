@@ -209,6 +209,13 @@ func (s *BackendKVService) Delete(ctx context.Context, key string) error {
 	return s.translateSealed(s.backend.Delete(ctx, []byte(key)))
 }
 
+func (s *BackendKVService) DeleteRange(ctx context.Context, start, end []byte) error {
+	if err := s.refuseIfDropping(); err != nil {
+		return err
+	}
+	return s.translateSealed(s.backend.DeleteRange(ctx, start, end))
+}
+
 // List returns sorted keys matching the given prefix.
 func (s *BackendKVService) List(ctx context.Context, prefix string) ([]string, error) {
 	keys, err := s.backend.List(ctx, prefix)

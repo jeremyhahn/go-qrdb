@@ -108,6 +108,24 @@ func (m *Manager) Delete(key []byte) error {
 	return m.partition(key).Delete(key)
 }
 
+// DeleteRange removes the keys in [start, end) from every partition, since
+// hash routing scatters a key range across all of them. A nil end reaches the
+// end of the keyspace.
+func (m *Manager) DeleteRange(start, end []byte) error {
+	if m.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	for i := range m.partitions {
+		if err := m.partitions[i].DeleteRange(start, end); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // List returns all keys matching the given prefix across all partitions.
 // Results are collected from all partitions since hash-based routing does not
 // preserve key ordering across partitions.

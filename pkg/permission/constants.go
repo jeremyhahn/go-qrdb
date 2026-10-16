@@ -317,6 +317,12 @@ const (
 	// chains to a trust anchor the caller's own tenant registered -- on an
 	// existing account of that tenant.
 	CertsEnroll Permission = "certs:enroll"
+	// CertsDelegate grants issuing a delegation, from a certificate signing
+	// request: a short-lived client certificate, signed by the caller's own
+	// tenant's Key B CA, that lets a named service principal act inside that
+	// tenant with at most a stated scope. It is ScopeTenantOnly: the system
+	// tenant has no delegation to give.
+	CertsDelegate Permission = "certs:delegate"
 	// CertsRevoke grants access to revoke TLS certificates.
 	CertsRevoke Permission = "certs:revoke"
 	// CertsList grants access to list TLS certificates.
@@ -824,6 +830,9 @@ const (
 	// compaction policy: the scheduled compaction of the shared store's
 	// keys outside every database namespace.
 	AdminNodeCompaction Permission = "admin:node_compaction"
+	// AdminStateHash reads every local replica's applied index and SHA-256
+	// state digest, isolated tenants' replicas included.
+	AdminStateHash Permission = "admin:state_hash"
 )
 
 // Per-user authentication-factor permissions (the user-side factor lifecycle:
@@ -1045,7 +1054,7 @@ var categories = []Category{
 		Name:  "Certificate Management",
 		Group: "Management Services",
 		Permissions: []Permission{
-			CertsIssue, CertsEnroll, CertsRevoke, CertsList, CertsRead,
+			CertsIssue, CertsEnroll, CertsDelegate, CertsRevoke, CertsList, CertsRead,
 			TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		},
 	},
@@ -1204,7 +1213,7 @@ var categories = []Category{
 		Group: "Admin Services",
 		Permissions: []Permission{
 			AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
-			AdminReplicaState, AdminNodeCompaction,
+			AdminReplicaState, AdminNodeCompaction, AdminStateHash,
 		},
 	},
 	{

@@ -328,6 +328,13 @@ jobs:
       - name: Every feature has an integration-test target, every integration test is selected
         run: make check-integration-feature-coverage
 
+      # #22. No Go file reintroduces a deleted []byte credential retrieval
+      # method; a retrieved credential is a *secure.Buffer. A property of the
+      # whole tree, like the guards above; the detector's self-test runs in the
+      # same step.
+      - name: No deleted []byte credential retrieval reintroduced
+        run: make check-no-deprecated-credential-retrieve
+
       # #627. An embedder of a standalone file-backend node (sdk/go/node, the
       # embedded transport, an entity DAO) must not compile features it does
       # not use. The import graph is a property of the whole tree -- one

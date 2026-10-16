@@ -134,10 +134,42 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	return &out, nil
 }
 
+// DeleteAuthFactor issues POST /v1/users/factors/delete.
+func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "DeleteAuthFactor", Err: &jsonEncodeError{Err: err}}
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/v1/users/factors/delete", bytes.NewReader(body))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "DeleteAuthFactor", Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "DeleteAuthFactor", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("DeleteAuthFactor", resp)
+	}
+	var out transport.AuthFactorDeleteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, &transport.RequestError{Method: "DeleteAuthFactor", Err: err}
+	}
+	return &out, nil
+}
+
 // RotateAuthFactor invokes POST /v1/users/factors/rotate.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := req.Validate(); err != nil {
+		return nil, &transport.RequestError{Method: "RotateAuthFactor", Err: err}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

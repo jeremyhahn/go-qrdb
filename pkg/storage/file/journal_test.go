@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2/vfs"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -85,7 +87,7 @@ func TestOpen_RecoversPublishedJournal(t *testing.T) {
 	// Simulate a crash on an already-initialised data directory: the format
 	// marker was committed in an earlier (crash-free) Open, and a batch
 	// commit got as far as publishing its journal before the process died.
-	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatVersion), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatMarker(atRestPlaintext)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,7 +194,7 @@ func TestOpen_CorruptJournalFailsClosed(t *testing.T) {
 	dir := memdir.TempDir(t)
 	// As in TestOpen_RecoversPublishedJournal: the directory was already
 	// initialised before the crash that left this corrupt journal behind.
-	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatVersion), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatMarker(atRestPlaintext)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	image := encodeJournal([]storage.BufferedOp{{Key: []byte("k"), Value: []byte("v")}})
@@ -287,37 +289,53 @@ func TestSet_LeavesNoTempFiles(t *testing.T) {
 }
 
 // TestWriteJournal_CreateTempErrorPropagates covers writeJournal's first
-// error path directly: the engine root cannot be written into.
+// error path directly: the engine root no longer exists, so the temp file
+// cannot be created in it.
 func TestWriteJournal_CreateTempErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
-	dir := memdir.TempDir(t)
-	e, err := New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = e.Close() }()
+	e := &Engine{dir: filepath.Join(memdir.TempDir(t), "gone"), fs: vfs.Default, atRest: atRestPlaintext}
 
-	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
-
-	err = e.writeJournal([]byte("x"))
+	err := e.writeJournal([]byte("x"))
 	var jwe *JournalWriteError
 	if !errors.As(err, &jwe) {
 		t.Fatalf("writeJournal = %v, want *JournalWriteError", err)
 	}
 }
 
-// TestClearJournal_RemoveErrorPropagates covers clearJournal's error path:
-// a committed journal is present, but the engine root denies write, so
-// removing it fails for a reason other than "already gone".
-func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
+// TestWriteJournal_RenameErrorPropagates covers writeJournal's publish step
+// failing: the journal's path is occupied by a non-empty directory, so the
+// rename cannot land. The error is typed, and the temp file is removed rather
+// than left for recovery to sweep.
+func TestWriteJournal_RenameErrorPropagates(t *testing.T) {
+	dir := memdir.TempDir(t)
+	journalPath := filepath.Join(dir, journalFileName)
+	if err := os.Mkdir(journalPath, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(journalPath, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	err := e.writeJournal(encodeJournal([]storage.BufferedOp{{Key: []byte("k"), Value: []byte("v")}}))
+	var jwe *JournalWriteError
+	if !errors.As(err, &jwe) {
+		t.Fatalf("writeJournal = %v, want *JournalWriteError", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ent := range entries {
+		if ent.Name() != journalFileName {
+			t.Fatalf("failed publish left %q behind", ent.Name())
+		}
+	}
+}
+
+// TestClearJournal_RemoveErrorPropagates covers clearJournal's error path:
+// the journal's path cannot be removed, for a reason other than "already
+// gone".
+func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
 	dir := memdir.TempDir(t)
 	e, err := New(dir)
 	if err != nil {
@@ -325,13 +343,16 @@ func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	if err := os.WriteFile(filepath.Join(dir, journalFileName), []byte("x"), 0o600); err != nil {
+	// A non-empty directory at the journal's path makes os.Remove fail with
+	// ENOTEMPTY -- not ENOENT, and not a fault any permission bit grants, so
+	// it holds when the suite runs as root.
+	journalPath := filepath.Join(dir, journalFileName)
+	if err := os.Mkdir(journalPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
+	if err := os.WriteFile(filepath.Join(journalPath, "occupied"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	err = e.clearJournal()
 	var jwe *JournalWriteError

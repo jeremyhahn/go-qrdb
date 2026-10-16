@@ -61,10 +61,10 @@ const (
 // WithBytes holds the transient buffer's borrow for fn's entire call — a
 // behaviour change in go-qrdb#114. Previously fn received an alias whose
 // borrow had already been released. Now a concurrent WipeAll skips the buffer
-// (counting it in WipeAll's remaining total) instead of unmapping it under fn,
-// and, with the borrow guard armed (secure.GuardBorrows /
-// secure.EnableBorrowGuard), a callback that calls back into sdk/go/secure is
-// reported as a nested borrow. fn must still not retain the slice, and must
+// (counting it in WipeAll's remaining total) instead of unmapping it under fn.
+// fn may use sdk/go/secure freely: the transient buffer is private to the
+// call, so fn cannot reenter the one buffer it is borrowing, and every other
+// protected object has its own lock. fn must still not retain the slice, and must
 // not block for longer than the caller is willing to delay a shutdown sweep of
 // that buffer.
 type SecretValue = secret.SecretValue

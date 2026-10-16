@@ -78,7 +78,7 @@ func TestUnixCredentialStorageOps_AfterClose(t *testing.T) {
 	if err := tr.CredentialStore(context.Background(), "k", []byte("v")); !errors.As(err, &ce) {
 		t.Errorf("CredentialStore: expected ClosedError, got %T: %v", err, err)
 	}
-	if _, err := tr.CredentialRetrieve(context.Background(), "k"); !errors.As(err, &ce) {
+	if _, err := tr.retrieveBytes(context.Background(), "k"); !errors.As(err, &ce) {
 		t.Errorf("CredentialRetrieve: expected ClosedError, got %T: %v", err, err)
 	}
 }
@@ -227,7 +227,7 @@ func TestUnixRT_CredentialRetrieve(t *testing.T) {
 	tr, cleanup := connectTransportWithCredentials(t, svc)
 	defer cleanup()
 
-	val, err := tr.CredentialRetrieve(context.Background(), "mykey")
+	val, err := tr.retrieveBytes(context.Background(), "mykey")
 	if err != nil {
 		t.Fatalf("CredentialRetrieve: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestUnixRT_CredentialRetrieve_ServerError(t *testing.T) {
 	tr, cleanup := connectTransportWithCredentials(t, svc)
 	defer cleanup()
 
-	if _, err := tr.CredentialRetrieve(context.Background(), "missing"); err == nil {
+	if _, err := tr.retrieveBytes(context.Background(), "missing"); err == nil {
 		t.Fatal("expected error from server")
 	}
 }

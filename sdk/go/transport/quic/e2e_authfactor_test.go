@@ -199,6 +199,29 @@ func TestE2E_RemoveAuthFactor_HappyPath(t *testing.T) {
 	}
 }
 
+func TestE2E_DeleteAuthFactor_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	// Handed off over a channel; see TestE2E_IssueCert_HappyPath.
+	gotReq := make(chan transport.AuthFactorDeleteRequest, 1)
+	srv.SetResponder("userauthfactor.Delete", func(payload []byte) (uint16, []byte) {
+		var req transport.AuthFactorDeleteRequest
+		_ = json.Unmarshal(payload, &req)
+		gotReq <- req
+		b, _ := json.Marshal(transport.AuthFactorDeleteResponse{Status: "deleted"})
+		return wire.StatusOK, b
+	})
+	resp, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "f1", Force: true})
+	if err != nil {
+		t.Fatalf("DeleteAuthFactor: %v", err)
+	}
+	if resp.Status != "deleted" {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if got := <-gotReq; got.FactorID != "f1" || !got.Force {
+		t.Fatalf("server saw %+v, want factor f1 with force", got)
+	}
+}
+
 func TestE2E_RotateAuthFactor_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("userauthfactor.Rotate", func(_ []byte) (uint16, []byte) {

@@ -17,6 +17,8 @@ package sdk
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
 // Certificate revocation is enforced on the authentication path of every
@@ -24,12 +26,72 @@ import (
 // when it assembles its own authentication chain; a node built through
 // node.NewStandaloneNode / NewClusteredNode wires enforcement itself from its
 // certificate provider and DaemonAuthConfig.RevocationCacheTTL.
+
+// ---------------------------------------------------------------------------
+// Login CA seam
 //
-// The full pkg/cert.CertProvider contract is deliberately NOT aliased here:
-// the SDK already binds the name CertProvider to firstboot.CertProvider (the
-// admin-mTLS Path A seam), and silently rebinding a published name would break
-// every consumer that uses it. Closing that gap needs a naming decision, not a
-// second alias.
+// The login CA (pkg/cert.CertProvider) issues, revokes and lists the
+// client certificates users authenticate with. An embedder with its own CA --
+// one that publishes CRLs and answers OCSP -- implements ClientCertProvider and
+// passes it to node.WithCertProvider. The SDK name CertProvider is the
+// first-boot admin-credential seam (firstboot.CertProvider), so this contract
+// is published under the ClientCert prefix.
+// ---------------------------------------------------------------------------
+
+// ClientCertProvider is the login CA contract. (Aliases
+// pkg/cert.CertProvider.)
+type ClientCertProvider = cert.CertProvider
+
+// ClientCertIssueRequest asks a ClientCertProvider to sign a requester's own
+// public key; the provider never generates a client key. (Aliases
+// pkg/cert.IssueRequest.)
+type ClientCertIssueRequest = cert.IssueRequest
+
+// ClientCertIssued is a signed client certificate, without a private key.
+// (Aliases pkg/cert.IssuedCert.)
+type ClientCertIssued = cert.IssuedCert
+
+// ClientCertRevokeResult reports what a revocation found. (Aliases
+// pkg/cert.RevokeResult.)
+type ClientCertRevokeResult = cert.RevokeResult
+
+// ClientCertRevokeOutcome distinguishes a revoked certificate the provider
+// holds a record for from a deny-by-serial revocation; both are successes.
+// (Aliases pkg/cert.RevokeOutcome.)
+type ClientCertRevokeOutcome = cert.RevokeOutcome
+
+// Revocation outcomes.
+const (
+	// ClientCertRevokeRecordUpdated says the provider held a record for the
+	// serial.
+	ClientCertRevokeRecordUpdated = cert.RevokeOutcomeRecordUpdated
+	// ClientCertRevokeDenyBySerial says no record matched and the serial was
+	// denied anyway.
+	ClientCertRevokeDenyBySerial = cert.RevokeOutcomeDenyBySerial
+)
+
+// ClientCertRecord is the metadata of one issued client certificate.
+// (Aliases pkg/cert.CertRecord.)
+type ClientCertRecord = cert.CertRecord
+
+// ClientCertSource is the capability a ClientCertProvider must also offer for
+// the node's client-trust pool to admit the certificates it issues: every
+// tenant CA's certificate, and whether an issuer is a given tenant's CA. A
+// provider without it issues certificates no node accepts. (Aliases
+// pkg/clienttrust.CertSource.)
+type ClientCertSource = clienttrust.CertSource
+
+// ClientCertInvalidationSource is the capability a ClientCertProvider may
+// offer to tell the client-trust pool its tenants' CAs changed, so a new or
+// rotated CA is trusted without waiting for the pool's cache to expire.
+// (Aliases pkg/clienttrust.InvalidationSource.)
+type ClientCertInvalidationSource = clienttrust.InvalidationSource
+
+// CertProviderConflictError is returned when a node is built with both
+// node.WithCertProvider and node.WithCertKeyProviderFactory: the factory keys
+// the built-in login CA the provider replaces, so the pair has no meaning.
+// (Aliases pkg/server/lifecycle.CertProviderConflictError.)
+type CertProviderConflictError = lifecycle.CertProviderConflictError
 
 // EncodePKCS12 bundles a certificate, its private key and the CA certificate
 // into a passphrase-protected PKCS#12 archive, for importing an issued

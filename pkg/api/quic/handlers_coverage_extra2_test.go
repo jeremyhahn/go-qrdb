@@ -866,11 +866,20 @@ func (m *mockUserAuthFactorSvc) LookupByCredentialKey(_ context.Context, _ auth.
 	return nil, nil
 }
 func (m *mockUserAuthFactorSvc) Remove(_ context.Context, _ string, _ bool) error { return nil }
+func (m *mockUserAuthFactorSvc) Delete(_ context.Context, _ string, _ bool) error { return nil }
 func (m *mockUserAuthFactorSvc) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
 	return nil
 }
 func (m *mockUserAuthFactorSvc) Relabel(_ context.Context, _ string, _ string) error     { return nil }
 func (m *mockUserAuthFactorSvc) MarkUsed(_ context.Context, _ string, _ time.Time) error { return nil }
+
+func (m *mockUserAuthFactorSvc) AddConditional(_ context.Context, _ uint64, _ *auth.AuthFactor, _ auth.FactorAddCondition) (uint64, error) {
+	return 0, nil
+}
+
+func (m *mockUserAuthFactorSvc) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) {
+	return 0, nil
+}
 
 func TestWithUserAuthFactorService_SetsField(t *testing.T) {
 	svc := &mockUserAuthFactorSvc{}

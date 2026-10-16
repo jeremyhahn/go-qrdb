@@ -24,7 +24,7 @@ import (
 
 // newCACmd builds the "ca" command group. It exposes:
 //
-//	info | bundle | list | issue | revoke | export-bundle
+//	info | bundle | list | issue | enroll | csr | delegate | revoke | export-bundle
 //
 // per the locked canonical CLI surface.
 //
@@ -42,7 +42,7 @@ import (
 func newCACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ca",
-		Short: "CA operations (info, bundle, list, issue, enroll, csr, revoke, export-bundle)",
+		Short: "CA operations (info, bundle, list, issue, enroll, csr, delegate, revoke, export-bundle)",
 		Long: `Post-init Certificate Authority operations.
 
 The ca command group is the canonical surface for CA management per
@@ -62,6 +62,8 @@ docs/08-bootstrap-auth-architecture.md §6. It replaces the legacy
   enroll         Enrol a bring-your-own certificate on an account of your
                  tenant (it must chain to one of the tenant's trust anchors)
   csr            Generate a key and a CSR locally (no server involved)
+  delegate       Issue a short-lived delegation certificate naming a service
+                 principal of your tenant and the permissions delegated to it
   revoke         Revoke an issued certificate by serial
   export-bundle  Export a cert+key bundle as PKCS#12`,
 	}
@@ -72,6 +74,7 @@ docs/08-bootstrap-auth-architecture.md §6. It replaces the legacy
 	cmd.AddCommand(newCAIssueCmd())
 	cmd.AddCommand(newCAEnrollCmd())
 	cmd.AddCommand(newCACSRCmd())
+	cmd.AddCommand(newCADelegateCmd())
 	cmd.AddCommand(newCARevokeCmd())
 	cmd.AddCommand(newCAExportBundleCmd())
 	return cmd

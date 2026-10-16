@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 ## Exported surface
 
@@ -16,7 +16,7 @@ func (c *Client) Credentials() transport.CredentialClient
 type CredentialServicer interface {
     // Classic CRUD
     CredentialStore(ctx context.Context, name string, value []byte) error
-    CredentialRetrieve(ctx context.Context, name string) ([]byte, error)
+    CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error)
     CredentialSubmit(ctx context.Context, name string, value []byte) error
     CredentialDelete(ctx context.Context, name string) error
     CredentialStrategy() string
@@ -24,7 +24,7 @@ type CredentialServicer interface {
     // Versioned rotation (the new 5 methods added in Phase 8e)
     CredentialList(ctx context.Context) ([]string, error)
     CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
-    CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error)
+    CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error)
     CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
     CredentialGCExpired(ctx context.Context, name string) (int, error)
 }
@@ -34,6 +34,54 @@ type CredentialServicer interface {
 
 `CredentialService` (`pkg/service/credential_service.go`) is the canonical
 implementation and a thin pass-through to `credentials.CredentialService`.
+
+`transport.CredentialClient` (the SDK surface) carries the same pair:
+`CredentialRetrieveBuffer(ctx, name)` and
+`CredentialRetrieveVersionBuffer(ctx, req)`, each returning a
+`*secure.Buffer` the caller must `Destroy`. The OWNER ruled on 2026-10-07 that
+the `[]byte` forms (`CredentialRetrieve`, `CredentialRetrieveVersion`, and the
+`credentials.CredentialService` `RetrieveCredential` /
+`RetrieveCredentialVersion`) are removed now, with no compatibility code; the
+wire contract does not change.
+
+`make check-no-deprecated-credential-retrieve`
+(`test/buildgates/no_deprecated_credential_retrieve_test.go`, in the Lint job)
+fails if any Go file reintroduces a deleted credential retrieval declaration
+that returns `[]byte`, or uses the unambiguous removed store-level selectors.
+The protobuf `QRDBService` methods of the same names are allowed because they
+return protobuf response messages, not heap credential bytes. A test that needs
+the bytes uses its package's `retrieveBytes` helper, which goes through the
+Buffer method and copies out.
+
+**Protected-memory handle, end to end.** Retrieval returns a go-enclave-backed
+`*secure.Buffer`. The architecture document's
+[Protected-memory boundary](architecture.md#protected-memory-boundary) section
+is the contract for where bytes may leave it. The rules a contributor works to:
+
+- A handler that must put the value on the wire does so through
+  `service.CredentialWireValue(buf)` and nowhere else. It copies out under a
+  held borrow and destroys the Buffer; the returned slice is the wire DTO.
+  REST, QUIC and MCP handlers wipe it after encoding; gRPC cannot, because it
+  marshals after the handler returns.
+- An SDK remote transport builds its Buffer from its own wire response. REST and
+  MCP decode base64
+  directly into protected memory (`transport.WireValue` as the JSON field type,
+  `transport.BufferFromBase64`); gRPC, Unix and QUIC move the protobuf-owned
+  slice in with `transport.BufferFromWire`, which wipes it. An empty
+  wire value is refused with `*secure.InvalidSizeError` — the service never
+  returns an empty credential, so an empty one is a fault, not a value.
+- `secret.NewSecretValueFromBuffer` seals a Buffer into a `SecretValue`
+  directly from protected pages and consumes the Buffer (including on failure,
+  as `*secret.SealFailedError`). `CredentialResolver` calls it; there is no
+  copy through a heap slice.
+- The embedded SDK transport passes the Buffer through untouched. Its Buffer
+  methods are declared in the embedded authorization registry under their own
+  names, mapped to the same `credentials:retrieve` /
+  `credentials:retrieve_version` permissions as the `[]byte` forms, so an
+  embedded caller is authorized identically whichever form it calls.
+- A test double that wraps a `[]byte` hook must clone it before
+  `secure.NewBufferFromBytes`, which wipes its source; the real service never
+  returns an empty value, and a double must not either.
 
 `pkg/secret` provides the secret-reference resolver SPI: `SecretValue`,
 `ConfigProcessor`, and the `credential://` / `literal://` schemes.
@@ -73,6 +121,15 @@ the interface.
   borrow for its callback's entire duration rather than releasing it before
   the callback runs — a concurrent destroy blocks against that borrow instead
   of racing it.
+- **A resolved value is handed on in place.** `NewSecretValueFromBuffer` seals
+  the Buffer's own locked pages, never a heap copy of them, and a `WithBytes`
+  callback is the place to hand the plaintext to a KEK, barrier or verifier:
+  the callback may allocate, open, borrow and destroy any other protected
+  memory, because every go-enclave object carries its own lock, and the only
+  nesting that deadlocks — reentering the buffer being borrowed — is out of
+  its reach: the callback sees the bytes of a transient buffer, never the
+  buffer. Output runs the other way round: a protected destination is
+  allocated first and written in place inside the source's borrow.
 - **A sealing failure is `*secret.SealFailedError`, and it fails closed rather
   than returning an empty `SecretValue`.** `NewSecretValue` seals a resolved
   value into a `secure.Secret` before returning it; if that seal fails (most
@@ -180,6 +237,13 @@ expiry implied by the rotation's grace period.
   strategies, across a simulated process restart (a fresh `StorageBarrier`
   unsealing the same durable backend), through `CredentialServicer`, and
   through every CLI-exposed transport (REST, gRPC, QUIC, MCP, Unix).
+- **The Buffer path is tested at every hop**: the store (both strategies,
+  borrow tracing so no read holds a borrow past its callback), the service
+  (`CredentialWireValue` copies out and destroys, and fails closed on a nil or
+  already-destroyed Buffer), the resolver (the retrieved Buffer is consumed and
+  destroyed; a nil Buffer without an error fails closed), `BufferFromWire`
+  (moves, wipes, refuses empty), and each of the six SDK transports (success,
+  server error, nil request, closed transport).
 - **Fail-closed tests** for the protected-config-field rule and for an
   unresolvable reference at boot.
 - **No `time.Sleep`** — grace-period expiry is driven through the clock seam.

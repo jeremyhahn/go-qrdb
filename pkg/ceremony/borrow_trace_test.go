@@ -21,13 +21,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// Claiming a share must not take a nested borrow.
+// Claiming a share must not reenter a buffer it is borrowing.
 //
-// The share path was converted ahead of go-qrdb#74's remaining sites and its
-// copy now runs through secure.CopyOut, so the trace is re-executed here rather
-// than inherited: Claim destroys the Secret and the transient buffer either
-// side of the borrow, both purge-class, and a Destroy that drifted inside would
-// deadlock every custodian claim.
+// Claim destroys the Secret and the transient buffer either side of the copy's
+// borrow, and a Destroy of the buffer that drifted inside its own borrow would
+// deadlock every custodian claim (go-qrdb#145); the armed guard reports it.
 func TestShareStoreClaim_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
@@ -52,8 +50,8 @@ func TestShareStoreClaim_TakesNoNestedBorrow(t *testing.T) {
 	}
 }
 
-// Storing a share allocates protected memory and must do so outside every
-// borrow, which is the ordering the whole subsystem depends on.
+// Storing shares and resetting the store allocate and destroy protected memory,
+// and none of it may reenter a buffer it is borrowing.
 func TestShareStoreStore_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
@@ -63,6 +61,6 @@ func TestShareStoreStore_TakesNoNestedBorrow(t *testing.T) {
 			t.Fatalf("Store(%s): %v", officer, err)
 		}
 	}
-	// Reset destroys every Secret it holds — purge-class, in a loop.
+	// Reset destroys every Secret it holds, in a loop.
 	store.Reset()
 }

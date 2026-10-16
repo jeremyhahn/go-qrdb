@@ -92,6 +92,15 @@ func (e *Engine) applyBufferedOps(ops []storage.BufferedOp) error {
 		if e.closed.Load() {
 			return &storage.ClosedError{}
 		}
+		if op.Range {
+			if err := storage.ValidateRange(op.Key, op.RangeEnd); err != nil {
+				return err
+			}
+			if err := e.deleteRange(op.Key, op.RangeEnd); err != nil {
+				return err
+			}
+			continue
+		}
 		if len(op.Key) == 0 {
 			return storage.ErrEmptyKey
 		}

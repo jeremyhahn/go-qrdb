@@ -158,7 +158,9 @@ func RegisterSave[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) error 
 					if unmarshalErr := gDAO.codec.Unmarshal(existingData, &existing); unmarshalErr != nil {
 						return false, DeserializationFailedError{EntityType: gDAO.entityType, Cause: unmarshalErr}
 					}
-					return VerifyNaturalKey(existing, gDAO.entityType, gen.FieldName(), expectedValue) == nil, nil
+					mismatch := VerifyNaturalKey(existing, gDAO.entityType, gen.FieldName(), expectedValue)
+					gDAO.discard(existing)
+					return mismatch == nil, nil
 				},
 			}
 		} else {

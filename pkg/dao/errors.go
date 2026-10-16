@@ -96,6 +96,44 @@ func (e CodecCreationError) Unwrap() error {
 	return e.Cause
 }
 
+// SecretCodecUnsupportedError is the refusal of a codec that cannot carry a
+// SecretBytes field without leaving a plaintext copy on the Go heap that
+// nothing can wipe. NewCodec and New return it wrapped in a
+// CodecCreationError for an entity type holding a SecretBytes field;
+// SecretBytes returns it directly from encoding/json and
+// encoding.TextMarshaler, where CodecType is "json" or "text".
+type SecretCodecUnsupportedError struct {
+	CodecType string
+}
+
+func (e SecretCodecUnsupportedError) Error() string {
+	return fmt.Sprintf("dao: codec %s cannot carry a SecretBytes field without an unwipeable plaintext copy", e.CodecType)
+}
+
+// SecretEncodingSizeError is the refusal of an entity whose encoding changed
+// length between the pass that measured its record and the pass that wrote
+// it, which happens only when the entity is mutated concurrently with
+// Marshal. The partly written record is wiped.
+type SecretEncodingSizeError struct {
+	Measured int
+	Encoded  int
+}
+
+func (e SecretEncodingSizeError) Error() string {
+	return fmt.Sprintf("dao: entity encoding changed size while it was encoded (measured %d bytes, encoded %d)", e.Measured, e.Encoded)
+}
+
+// SecretFieldIndexedError is New's refusal of an index over a SecretBytes
+// field: an index term is a copy of the field's value kept in the index.
+type SecretFieldIndexedError struct {
+	EntityType string
+	Field      string
+}
+
+func (e SecretFieldIndexedError) Error() string {
+	return fmt.Sprintf("dao: %s cannot index SecretBytes field %s", e.EntityType, e.Field)
+}
+
 // InvalidConfigError indicates invalid DAO configuration.
 type InvalidConfigError struct {
 	Field  string
@@ -104,6 +142,20 @@ type InvalidConfigError struct {
 
 func (e InvalidConfigError) Error() string {
 	return fmt.Sprintf("dao: invalid config %s: %s", e.Field, e.Reason)
+}
+
+// DatabaseStoreUnresolvedError indicates a Factory could not resolve the
+// store of the database a DAO was built for. Nothing was built: a named
+// database never falls back to the factory's default store, because the
+// entities would then be written somewhere other than the database the
+// caller named.
+type DatabaseStoreUnresolvedError struct {
+	Database string
+	Reason   string
+}
+
+func (e DatabaseStoreUnresolvedError) Error() string {
+	return fmt.Sprintf("dao: cannot resolve the store of database %q: %s", e.Database, e.Reason)
 }
 
 // TransactionClosedError indicates an operation was attempted on a closed transaction.

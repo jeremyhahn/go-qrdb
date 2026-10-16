@@ -1,6 +1,6 @@
 # Credentials — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 Command group: `qrdb credential` — named-credential operations. All verbs
 accept the root persistent flags documented in
@@ -64,6 +64,12 @@ qrdb credential retrieve-version smtp-password --version 3
 ```
 
 A version past its grace period is gone; the call returns not-found.
+
+`retrieve` and `retrieve-version` print the value followed by a newline. The
+CLI receives it as a protected-memory buffer and writes it straight to
+standard output from inside the buffer's borrow, then destroys the buffer; the
+terminal or pipe is where the value leaves protected memory (see
+[Protected-memory boundary](architecture.md#protected-memory-boundary)).
 
 ## `qrdb credential rotate <name>`
 

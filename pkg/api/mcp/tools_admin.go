@@ -112,6 +112,11 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Handler: handleUpdateNodeCompaction(adminSvc),
 		},
 		{
+			Tool:    toolStateHashes(),
+			Perm:    permission.AdminStateHash,
+			Handler: handleStateHashes(adminSvc),
+		},
+		{
 			Tool:    toolMintJoinToken(),
 			Perm:    permission.ClusterJoinToken,
 			Handler: handleMintJoinToken(adminSvc),

@@ -1707,6 +1707,66 @@ func TestHandleLeaseTimeToLive_Success(t *testing.T) {
 	}
 }
 
+// TestHandleLeaseTimeToLive_FollowerForwardsToTheLeader pins review 5188 on
+// REST: a follower's TimeToLive names the leader, the only node that knows
+// the remaining TTL after in-memory renewals, and the request is answered
+// there.
+func TestHandleLeaseTimeToLive_FollowerForwardsToTheLeader(t *testing.T) {
+	var forwarded string
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":100,"ttl":10,"granted_ttl":10,"remaining_ttl":9}`))
+	}))
+	defer leaderSrv.Close()
+
+	leaseSvc := &mockLeaseService{
+		timeToLiveFn: func(_ context.Context, id int64) (*lease.Lease, error) {
+			return nil, &service.LeaseTTLNotLeaderError{
+				NotLeaderError: service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "127.0.0.1:9001"},
+				Lease:          &lease.Lease{ID: id, TTL: 10, RemainingTTL: 1},
+			}
+		},
+	}
+	registry := NewPeerAdminRegistry("")
+	registry.Register("127.0.0.1:9001", leaderSrv.URL)
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithLease(leaseSvc), WithLeaderForwarding(registry))
+
+	req := httptest.NewRequest(http.MethodGet, "/lease/ttl?lease_id=100", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if forwarded != "GET /lease/ttl?lease_id=100" {
+		t.Fatalf("leader received %q, want the TimeToLive request", forwarded)
+	}
+	var resp leaseResponse
+	decodeJSON(t, rec, &resp)
+	if resp.RemainingTTL != 9 {
+		t.Fatalf("remaining_ttl = %d, want the leader's 9", resp.RemainingTTL)
+	}
+}
+
+func TestHandleLeaseTimeToLive_FollowerWithoutLeaderIsUnavailable(t *testing.T) {
+	leaseSvc := &mockLeaseService{
+		timeToLiveFn: func(_ context.Context, id int64) (*lease.Lease, error) {
+			return nil, &service.LeaseTTLNotLeaderError{
+				NotLeaderError: service.NotLeaderError{ShardID: 1},
+				Lease:          &lease.Lease{ID: id},
+			}
+		},
+	}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithLease(leaseSvc), WithLeaderForwarding(NewPeerAdminRegistry("")))
+
+	req := httptest.NewRequest(http.MethodGet, "/lease/ttl?lease_id=100", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
 func TestHandleLeaseTimeToLive_NilService(t *testing.T) {
 	// Route not registered without lease service — 404 from dispatcher.
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")

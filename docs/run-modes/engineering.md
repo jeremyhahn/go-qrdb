@@ -413,13 +413,11 @@ target. The gate works as follows:
   non-pebble `sm_storage` for any other type is refused at resolution
   (`SMStorageNotApplicableError`) rather than ignored.
 - **Under the seal barrier, storage-generic state machines are encrypted at
-  rest or refused.** `StorageConfig.Encryptor` carries the node's at-rest
-  encryptor. When it is enabled, `pebble` storage is opened on the barrier's
-  encfs — the same wrapping the `pebble` and `mvcc` state machines get — and
-  `file` storage, which has no encrypting seam, is refused at resolution
-  (`SMStorageUnencryptedError`), at `qrdbd start` and in the SDK alike.
-  `memory` storage persists nothing and is allowed. The factory opens storage
-  when the replica starts, after the barrier is unsealed.
+  rest.** `StorageConfig.Encryptor` carries the node's at-rest encryptor. When
+  it is enabled, `pebble` and `file` storage are opened on the barrier's encfs
+  — the same wrapping the `pebble` and `mvcc` state machines and a standalone
+  `file` store get. `memory` storage persists nothing. The factory opens
+  storage when the replica starts, after the barrier is unsealed.
 - **Every `sm_type` passes the start-time guarded-batch probe**
   (`requireGuardedBatch` in `cmd/qrdbd/start.go` over
   `kvstore.ProbeGuardedBatch`). The probe stays: it is what refuses a state

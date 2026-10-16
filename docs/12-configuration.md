@@ -118,6 +118,8 @@ lease:
   min_ttl: 5
   max_ttl: 0
   check_interval: 1
+  checkpoint_interval: 5m
+  failover_grace: 5s
 
 index:
   max_indexes: 0
@@ -337,27 +339,50 @@ Configures the QuicRaft consensus layer.
 | `peers`                     | string | `1=127.0.0.1:63001` | no       | `--peers`                       | Comma-separated initial cluster members                      |
 | `member_identities`         | string | `""`                | multi-node | `--member-identities`         | Comma-separated `replicaID=spki:<hex>` Raft identities of the other replicas |
 | `join`                      | bool   | `false`             | no       | `--join`                        | Join an existing cluster instead of forming a new one         |
-| `snapshot_entries`          | uint64 | `0`                 | no       | `--snapshot-entries`            | Applied entries between automatic snapshots                  |
-| `compaction_overhead`       | uint64 | `0`                 | no       | `--compaction-overhead`         | Log entries to keep after a snapshot for follower catch-up    |
-| `max_in_mem_log_size`       | uint64 | `0`                 | no       | `--max-in-mem-log-size`         | Per-shard in-memory Raft log size limit in bytes             |
-| `max_total_in_mem_log_size` | uint64 | `0`                 | no       | `--max-total-in-mem-log-size`   | Total in-memory Raft log size across all shards in bytes     |
+| `snapshot_entries`          | uint64 | `0` (100000) | no       | `--snapshot-entries`            | Applied entries between automatic snapshots |
+| `compaction_overhead`       | uint64 | `0` (5000)  | no       | `--compaction-overhead`         | Log entries to keep after a snapshot for follower catch-up    |
+| `max_in_mem_log_size`       | uint64 | `0` (none)  | no       | `--max-in-mem-log-size`         | Per-shard in-memory Raft log size limit in bytes; above it proposals are rate-limited |
+| `max_total_in_mem_log_size` | uint64 | `0` (none)  | no       | `--max-total-in-mem-log-size`   | Total in-memory Raft log size across all shards in bytes; above it proposals fail with `ErrSystemBusy` |
 | `sm_type`                   | string | `pebble`            | no       | `--sm`                          | Raft state machine wrapper type                              |
+| `sm_backend`                | string | `""`                | no       | `--sm-backend`                  | Backend variant: `standard`, `concurrent`, `fast`, `disk`    |
+| `sm_storage`                | string | `""` (`pebble`)     | no       | `--sm-storage`                  | Storage under the storage-generic state machines             |
+| `lease_read`                | bool   | `true`              | no       | `--lease-read`                  | Serve linearizable reads from the leader lease; requires `check_quorum` |
+| `check_quorum`              | bool   | `true`              | no       | `--check-quorum`                | Leader steps down without a quorum; `false` requires `lease_read: false` |
 
+Every key is also read from `QRDB_RAFT_<KEY>` when `--config` is given. The
+per-key bounds and what lease reads guarantee are in
+[configuration/user.md](configuration/user.md#raft-settings).
 **Validation rules:**
 
 - `data_dir` must not be empty.
-- `shard_id` must be greater than 0.
-- `replica_id` must be greater than 0.
-- `raft_address` must not be empty.
-- `sm_type`, when non-empty, must be one of: `pebble`, `memory`, `mvcc`.
+- In raft mode, `shard_id` must be greater than 0 and below 1000
+  (`shard.UserMin`); IDs from 1000 up are issued to databases.
+- In raft mode, `replica_id` must be greater than 0.
+- In raft mode, `raft_address` must not be empty.
+- `sm_type`, when non-empty, must be one of: `pebble`, `memory`, `mvcc`,
+  `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular`. `regular`
+  passes validation and is refused when the shard starts.
+- `sm_backend`, when non-empty, must be one of: `standard`, `concurrent`,
+  `fast`, `disk`.
+- `sm_storage`, when non-empty, must be one of: `pebble`, `file`, `memory`
+  (`objstore` is refused). A value other than `pebble` requires `sm_type` or
+  `sm_backend` to be `disk` or `fast`.
+- These checks apply to values from the file and the environment. go-quicraft
+  refuses the shard at start when `lease_read` is on without `check_quorum`,
+  or when the effective `snapshot_entries` does not exceed the effective
+  `compaction_overhead`.
 
-**Valid `sm_type` values:**
+*(Corrected: this list named only `pebble`, `memory` and `mvcc` as valid
+`sm_type` values and omitted the `shard_id` upper bound.)*
+
+**`sm_type` values:**
 
 | Value    | Description                                              |
 |----------|----------------------------------------------------------|
 | `pebble` | PebbleDB-backed persistent disk state machine (default)  |
 | `memory` | In-memory state machine (data lost on restart)           |
 | `mvcc`   | MVCC versioned key-value engine with revision history    |
+| `standard`, `concurrent`, `fast`, `disk`, `highperf` | Raft state machine variants; see [run-modes/architecture.md](run-modes/architecture.md#raft--single--or-multi-node) |
 
 The `sm_type` field selects which Raft state machine wrapper to use for
 distributed (Raft) mode. The state machine is a thin wrapper that delegates
@@ -391,9 +416,13 @@ omitted. Ignored for a single-node cluster.
 **Notes:**
 
 - When `listen_address` is empty, `raft_address` is used as the bind address.
-- Setting `snapshot_entries` to `0` disables automatic snapshots.
+- Setting `snapshot_entries` to `0` uses go-quicraft's default of 100000
+  entries; it does not disable snapshots. `18446744073709551615`
+  (go-quicraft's `SnapshotsDisabled`) disables automatic snapshots.
+  *(Corrected: this said `0` disables automatic snapshots.)*
 - Setting `compaction_overhead` to `0` uses the system default of 5000 entries.
-- Setting `max_in_mem_log_size` or `max_total_in_mem_log_size` to `0` uses the system defaults.
+- Setting `max_in_mem_log_size` or `max_total_in_mem_log_size` to `0` means no
+  limit, which is go-quicraft's default.
 - go-quicraft's own `TransportConfig` (stream pool sizing, snapshot receive
   limits, and the inbound message-receive budget) has no field here:
   `buildHostConfig` sets only the mTLS material, so those knobs run at
@@ -620,11 +649,13 @@ Configures the real-time watch notification system for key change events.
 
 Configures the distributed lease management system.
 
-| Field            | Type  | Default | Description                                             |
-|------------------|-------|---------|---------------------------------------------------------|
-| `min_ttl`        | int64 | `5`     | Minimum lease TTL in seconds                            |
-| `max_ttl`        | int64 | `0`     | Maximum lease TTL in seconds                            |
-| `check_interval` | int64 | `1`     | Interval in seconds between lease expiry checks         |
+| Field                 | Type     | Default | Description                                                                 |
+|-----------------------|----------|---------|-----------------------------------------------------------------------------|
+| `min_ttl`             | int64    | `5`     | Minimum lease TTL in seconds                                                |
+| `max_ttl`             | int64    | `0`     | Maximum lease TTL in seconds                                                |
+| `check_interval`      | int64    | `1`     | Interval in seconds between lease expiry checks                             |
+| `checkpoint_interval` | duration | `5m`    | How often the leader checkpoints the remaining TTL of every lease longer than it |
+| `failover_grace`      | duration | `5s`    | Extra life a new leader gives every lease beyond its checkpointed (or full) TTL after a leader change |
 
 **Validation rules:**
 
@@ -632,9 +663,12 @@ Configures the distributed lease management system.
 - `max_ttl` must not be negative (>= 0).
 - When `max_ttl` is greater than 0, `min_ttl` must not exceed `max_ttl`.
 - `check_interval` must not be negative (>= 0).
+- `checkpoint_interval` must parse as a duration, be greater than zero and not exceed `1h`.
+- `failover_grace` must parse as a duration, not be negative and not exceed `1h`.
 
 **Notes:**
 
+- A keep-alive is renewed in the leader's memory, as in etcd. Every `checkpoint_interval` the leader records the remaining TTL of each lease whose TTL is longer than the interval; the next renewal of a checkpointed lease goes through the log and clears the record. After a leader change, or on a restart, a lease counts from its recorded remaining TTL (or its full TTL when it has none); a new leader adds `failover_grace`. Checkpoints need the `lease-checkpoint` cluster feature. An empty value takes the default. A standalone node has no other replica and ignores both. See [leases](leases/engineering.md#configuration).
 - Requests for TTLs shorter than `min_ttl` are clamped to `min_ttl`.
 - Requests for TTLs longer than `max_ttl` are clamped to `max_ttl`.
 - Setting `max_ttl` to `0` allows unlimited lease durations.
@@ -942,7 +976,7 @@ entry, not nested under anything else.
 | Field                   | Type     | Default  | Required | Description                                      |
 |-------------------------|----------|----------|----------|--------------------------------------------------|
 | `enabled`               | bool     | `false`  | no       | Enable etcd v3 gRPC endpoint for this database   |
-| `listen_addr`           | string   | --       | when enabled | Listen address for the etcd gRPC server      |
+| `listen_addr`           | string   | --       | when `enabled` | Listen address for the etcd gRPC server (bound as given, not via `server.host`) |
 | `advertise_client_urls` | []string | --       | no       | URLs advertised to clients for endpoint discovery |
 
 **Validation rules:**
@@ -1482,6 +1516,8 @@ lease:
   min_ttl: 5
   max_ttl: 86400          # 24 hours
   check_interval: 1
+  checkpoint_interval: 5m
+  failover_grace: 5s
 
 index:
   max_indexes: 64
@@ -1525,12 +1561,17 @@ precedence. The following table maps CLI flags to their YAML equivalents.
 | `--raft-address`                | `raft.raft_address`                |
 | `--listen`                      | `raft.listen_address`              |
 | `--peers`                       | `raft.peers`                       |
+| `--member-identities`           | `raft.member_identities`           |
 | `--join`                        | `raft.join`                        |
 | `--snapshot-entries`            | `raft.snapshot_entries`            |
 | `--compaction-overhead`         | `raft.compaction_overhead`         |
 | `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
 | `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
 | `--sm`                          | `raft.sm_type`                     |
+| `--sm-backend`                  | `raft.sm_backend`                  |
+| `--sm-storage`                  | `raft.sm_storage`                  |
+| `--lease-read`                  | `raft.lease_read`                  |
+| `--check-quorum`                | `raft.check_quorum`                |
 | `--tls-ca-file`                 | `tls.ca_file`                      |
 | `--tls-cert-file`               | `tls.cert_file`                    |
 | `--tls-key-file`                | `tls.key_file`                     |

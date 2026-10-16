@@ -195,12 +195,14 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 
 	// A PIN the node cannot open is a node-side fault, refused before any
 	// verification outcome is audited: the officer's PIN was never judged.
-	pin, err := openSOPIN(ctx, factor.PIN)
-	if err != nil {
+	var verifyErr error
+	if err := withSOPIN(ctx, factor.PIN, func(pin []byte) error {
+		verifyErr = g.verifier.VerifySOPIN(ctx, identity.TenantID, pin)
+		return nil
+	}); err != nil {
 		return err
 	}
-	defer secure.Wipe(pin)
-	if err := g.verifier.VerifySOPIN(ctx, identity.TenantID, pin); err != nil {
+	if err := verifyErr; err != nil {
 		// The verifier's OWN audit gate (auth.SOAuthenticator fails closed on
 		// its unrecordable outcome, go-qrdb#445) is a node-side fault, not a
 		// bad PIN: it is returned as is, so it maps to 503 / Unavailable and
@@ -232,23 +234,35 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 	return emit(audit.OutcomeSuccess)
 }
 
-// openSOPIN returns a plaintext copy of the sealed PIN for the verifier,
-// whose signature takes []byte; the caller wipes it as soon as the verifier
-// returns. The copy is taken with secure.CopyOut, which holds one borrow
-// across it, so the verifier -- an injected implementation that may itself
-// use protected memory -- never runs inside a borrow. A PIN that cannot be
-// opened is *SOPINUnavailableError.
-func openSOPIN(ctx context.Context, sealed *secure.Secret) ([]byte, error) {
-	buf, err := sealed.Open(ctx)
+// openSealedPIN opens the sealed PIN. A variable so a test can record the
+// address of the buffer the PIN is opened into, and prove the verifier is
+// handed those locked pages rather than a copy of them (go-qrdb#145).
+var openSealedPIN = (*secure.Secret).Open
+
+// withSOPIN opens the sealed PIN and calls fn with its plaintext read in
+// place: the borrow on the opened buffer is held across fn, so the verifier
+// is handed the PIN's locked pages, never a heap copy (go-qrdb#145). fn may
+// use protected memory of its own -- every buffer has its own lock -- and may
+// overwrite pin, which is destroyed when fn returns; it must not retain it.
+// A PIN that cannot be opened, or opens empty, is *SOPINUnavailableError;
+// fn's own error is returned as is.
+func withSOPIN(ctx context.Context, sealed *secure.Secret, fn func(pin []byte) error) error {
+	buf, err := openSealedPIN(sealed, ctx)
 	if err != nil {
-		return nil, &SOPINUnavailableError{Err: err}
+		return &SOPINUnavailableError{Err: err}
 	}
 	defer buf.Destroy()
-	pin, err := secure.CopyOut(buf)
-	if err != nil {
-		return nil, &SOPINUnavailableError{Err: err}
+	var fnErr error
+	if err := buf.WithBytes(func(pin []byte) error {
+		if len(pin) == 0 {
+			return &secure.EmptyBorrowError{}
+		}
+		fnErr = fn(pin)
+		return nil
+	}); err != nil {
+		return &SOPINUnavailableError{Err: err}
 	}
-	return pin, nil
+	return fnErr
 }
 
 // SOFactorReason is why the SO second factor was refused.

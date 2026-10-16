@@ -49,6 +49,19 @@ func (f *failAfterNKV) Put(ctx context.Context, key string, val []byte) error {
 	return f.afMockKV.Put(ctx, key, val)
 }
 
+// PutIfAbsent counts a factor's primary record as Put does: the record is
+// reserved behind an absence guard, and it is the same write. The factor-set
+// commit is not counted.
+func (f *failAfterNKV) PutIfAbsent(ctx context.Context, key string, val []byte) (bool, error) {
+	if strings.HasPrefix(key, userFactorPrimaryPrefix) {
+		f.count++
+		if f.count > f.failAfter {
+			return false, errors.New("kv: put failed")
+		}
+	}
+	return f.afMockKV.PutIfAbsent(ctx, key, val)
+}
+
 // makeAuthSvcWithKV creates a UserAuthFactorServicer with the given KV.
 func makeAuthSvcWithKV(t *testing.T, kv KVServicer) UserAuthFactorServicer {
 	t.Helper()

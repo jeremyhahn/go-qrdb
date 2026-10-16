@@ -76,7 +76,7 @@ func selfScopedPermissions() []Permission {
 		//
 		// AdminAddMember, AdminRemoveMember, AdminDrain, AdminSnapshot,
 		// AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
-		// AdminReplicaState and AdminNodeCompaction are ScopeCross
+		// AdminReplicaState, AdminNodeCompaction and AdminStateHash are ScopeCross
 		// (cluster_admin_scope.go): they change or expose the node's Raft
 		// membership, its shards or its node keyspace, which no tenant owns.
 		// AdminPeers stays here because the etcd listener's Cluster.MemberList

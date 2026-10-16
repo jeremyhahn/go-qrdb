@@ -45,6 +45,33 @@ Show the full cluster topology as seen from this node. No flags.
 qrdb admin topology --output json
 ```
 
+## `qrdb admin state-hash`
+
+Show, for every shard the connected node replicates, the replica's applied
+index and the SHA-256 digest of its state at exactly that index, with
+isolated tenants' shards listed under their tenant. The node answers from its
+own state machines without a proposal. Run it against each node and compare:
+two replicas of one shard at the same applied index must show the same hash.
+Requires `admin:state_hash`, which only the system tenant can hold.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--shard` | uint, repeatable | only these shard IDs; default every shard |
+
+The table has one row per replica: `TENANT` (`-` for the node's own shards),
+`SHARD_ID`, `REPLICA_ID`, `APPLIED_INDEX`, `RECORDS`, `HASH` and `ERROR`
+(`-` when the digest was computed). A replica that cannot produce a digest
+shows its reason in `ERROR`, `-` in `HASH` and zero index and records, and
+the command still succeeds. A `--shard` value that is not an unsigned
+integer is refused before anything is sent. `--output json`
+and `--output yaml` print the response documented in
+[api.md](api.md#replica-state-hashes).
+
+```bash
+qrdb admin state-hash
+qrdb admin state-hash --shard 1 --output json
+```
+
 ## `qrdb admin replica-states`
 
 Show, for every replica the connected node holds, the shard, replica ID,
@@ -258,7 +285,8 @@ Plan and apply are separable on purpose: review the moves before they happen.
 physically moves shards.
 
 The result reports moves completed, moves failed, duration and the final
-imbalance.
+imbalance, then one `Failed:` line per failed move naming the shard, the
+source and destination, the phase that failed and the cause.
 
 ## Cluster formation
 

@@ -576,7 +576,10 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 }
 
 // WithCertProvider configures the certificate provider for all protocol
-// servers that support it.
+// servers that support it. The SDK node builders, which build their services
+// through lifecycle.BuildServices, also read it back
+// through ResolveCryptoOptions into lifecycle.Infra.CertProvider, where it
+// replaces the built-in login CA for the whole node.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(o *serverOptions) { o.certProv = svc }
 }
@@ -1272,8 +1275,11 @@ type CryptoOptions struct {
 	PINBackend             pin.PINBackend
 	FactorRegistry         *authfactors.FactorRegistry
 	CertKeyProviderFactory cakey.ProviderFactory
-	TrustAnchors           trustanchor.Registry
-	AuditLogger            audit.AuditLogger
+	// CertProvider is the WithCertProvider value. A composer forwards it into
+	// lifecycle.Infra.CertProvider, where it replaces the built-in login CA.
+	CertProvider cert.CertProvider
+	TrustAnchors trustanchor.Registry
+	AuditLogger  audit.AuditLogger
 	// ReplicatedAuditLogger is the cluster-wide, per-tenant-opt-in replicated
 	// audit chain passed through WithReplicatedAuditLogger; nil when none was.
 	ReplicatedAuditLogger *service.OptInAuditLogger
@@ -1327,6 +1333,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		PINBackend:             o.pinBackend,
 		FactorRegistry:         o.factorRegistry,
 		CertKeyProviderFactory: o.certKeyProviderFactory,
+		CertProvider:           o.certProv,
 		TrustAnchors:           o.trustAnchors,
 		AuditLogger:            o.auditLogger,
 		ReplicatedAuditLogger:  o.replicatedAudit,
@@ -1401,8 +1408,22 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireReclaimStoreResolver()
 	s.wireCompactionPolicies()
 	s.wireProvisioningAuthorization()
+	s.wireTenantReplicaHosts()
 
 	return s
+}
+
+// wireTenantReplicaHosts gives the admin service the isolated-tenant hosts
+// this node runs, so its replica state hashes cover them beside the node's
+// own host. The registry lists only hosts already started; the read never
+// starts one.
+func (s *Server) wireTenantReplicaHosts() {
+	if s.opts.tenantHosts == nil {
+		return
+	}
+	if w, ok := s.adminSvc.(service.TenantReplicaHostsWiring); ok {
+		w.SetTenantReplicaHosts(s.opts.tenantHosts)
+	}
 }
 
 // wireProvisioningAuthorization gives the database service every network

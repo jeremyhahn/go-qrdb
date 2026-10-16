@@ -51,7 +51,8 @@ type ErrorPayload struct {
 	HasRetryAfter bool
 
 	// Info is the failure's structured reason, a google.rpc.ErrorInfo detail
-	// -- a replica refusal's replica set, for one -- or nil.
+	// -- a replica refusal's replica set, a failed factor-add condition --
+	// or nil.
 	Info *ErrorInfo
 }
 

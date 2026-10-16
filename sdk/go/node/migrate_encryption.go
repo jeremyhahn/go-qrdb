@@ -295,26 +295,30 @@ type nodeMigrationProvider struct {
 // handled here; tenant scope is routed by the scoped router in Node.encMigrator
 // to TenantHostRegistry.MigrateEncryption before nodeMigrationProvider is
 // consulted, so the tenant branch below is defensive dead code.
-func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.BarrierScope) ([]string, error) {
+func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.BarrierScope) (service.MigrationStores, error) {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
-		return nil, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
+		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
 	}
 	if n.retainedStandalone == nil {
-		return nil, &MigrationNotSupportedError{Reason: "data-plane boot params not retained (clustered or sealed node)"}
+		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "data-plane boot params not retained (clustered or sealed node)"}
 	}
 	dataDir := n.retainedStandalone.dataDir
-	candidates := []string{
-		filepath.Join(dataDir, "pebble"),
-		filepath.Join(dataDir, "vector"),
-	}
+	return service.MigrationStores{
+		Pebble: existingDirs(filepath.Join(dataDir, "pebble"), filepath.Join(dataDir, "vector")),
+		File:   existingDirs(filepath.Join(dataDir, "file")),
+	}, nil
+}
+
+// existingDirs returns those of candidates that are existing directories.
+func existingDirs(candidates ...string) []string {
 	var dirs []string
 	for _, d := range candidates {
 		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
 			dirs = append(dirs, d)
 		}
 	}
-	return dirs, nil
+	return dirs
 }
 
 // MintKeyedTarget creates an initialized+unsealed keyed barrier over the seal

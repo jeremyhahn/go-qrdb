@@ -52,6 +52,64 @@ func (e *LessorClosedError) Error() string {
 	return "lessor is closed"
 }
 
+// NotPrimaryError is returned by RenewLocal when this replica is not the one
+// that may renew leases in memory: it is not the Raft leader, or its lessor is
+// not running the expiry loop with checkpointing. It is the instruction to
+// renew through the replicated log instead, not a failure of the lease.
+type NotPrimaryError struct{}
+
+func (e *NotPrimaryError) Error() string {
+	return "lease renewal: this replica is not the lease primary"
+}
+
+// StaleTTLError is returned by TimeToLive on a replica that holds the lease
+// but does not lead its group. The lease primary renews leases in its own
+// memory, and those renewals reach no other replica, so the remaining TTL this
+// replica could report would understate the lease; only the primary's is
+// current, and the query must be answered there. Lease is this replica's view:
+// that the lease exists and the keys attached to it are current, both being
+// replicated, while its remaining TTL is not.
+type StaleTTLError struct {
+	Lease *Lease
+}
+
+func (e *StaleTTLError) Error() string {
+	return "lease time-to-live: lease " + strconv.FormatInt(e.Lease.ID, 10) + " is held here, but only the lease primary knows its remaining TTL"
+}
+
+// CheckpointedError is returned by RenewLocal when lease ID has a checkpoint
+// recorded, or one in flight, that a renewal changes. A renewal in memory
+// would leave that checkpoint claiming less time than the lease now has, so
+// the renewal must go through the replicated log, whose apply clears it. Like
+// NotPrimaryError it is an instruction, not a failure of the lease.
+type CheckpointedError struct {
+	ID int64
+}
+
+func (e *CheckpointedError) Error() string {
+	return "lease renewal: lease " + strconv.FormatInt(e.ID, 10) + " is checkpointed; renew through the log"
+}
+
+// ApplyIndexUnsetError is returned by ApplyCheckpoints when the state machine
+// applying the checkpoint has not reported the Raft index it is applying
+// through Applying. The index is what a checkpoint is judged against, so a
+// checkpoint applied without one is refused rather than judged against zero.
+type ApplyIndexUnsetError struct{}
+
+func (e *ApplyIndexUnsetError) Error() string {
+	return "lease checkpoint: the applied Raft index is not set"
+}
+
+// CheckpointsDisabledError is returned by an on-demand checkpoint (see
+// RequestCheckpoint) when the lessor's Checkpointer reports that checkpoints
+// may not be proposed yet, because not every replica of the group can apply
+// them.
+type CheckpointsDisabledError struct{}
+
+func (e *CheckpointsDisabledError) Error() string {
+	return "lease checkpoint: checkpoints are not enabled for this group"
+}
+
 // TableWriteError is returned when a lease-table mutation could not be staged
 // into the apply batch. It is a storage fault, not a refusal: the state
 // machine must surface it as an apply failure, never as a per-command answer,

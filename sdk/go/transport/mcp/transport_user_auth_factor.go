@@ -97,17 +97,24 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 		mj, _ := json.Marshal(req.Metadata)
 		args["metadata_json"] = string(mj)
 	}
+	if req.IfNoActiveType {
+		args["if_no_active_type"] = true
+	}
+	if req.ExpectedFactorSetVersion != nil {
+		args["expected_factor_set_version"] = strconv.FormatUint(*req.ExpectedFactorSetVersion, 10)
+	}
 	text, err := t.callTool(ctx, "qrdb_user_authfactor_add", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "AddAuthFactor", Err: err}
 	}
 	var raw struct {
-		Factor mcpFactorRecord `json:"factor"`
+		Factor           mcpFactorRecord `json:"factor"`
+		FactorSetVersion uint64          `json:"factor_set_version"`
 	}
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
 		return nil, &transport.RequestError{Method: "AddAuthFactor", Err: &jsonDecodeError{Err: err}}
 	}
-	return &transport.AuthFactorAddResponse{Factor: mcpRecordToTransport(&raw.Factor)}, nil
+	return &transport.AuthFactorAddResponse{Factor: mcpRecordToTransport(&raw.Factor), FactorSetVersion: raw.FactorSetVersion}, nil
 }
 
 // ListAuthFactors invokes qrdb_user_authfactor_list.
@@ -122,15 +129,17 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 		return nil, &transport.RequestError{Method: "ListAuthFactors", Err: err}
 	}
 	var raw struct {
-		Factors []mcpFactorRecord `json:"factors"`
-		Total   int               `json:"total"`
+		Factors          []mcpFactorRecord `json:"factors"`
+		Total            int               `json:"total"`
+		FactorSetVersion uint64            `json:"factor_set_version"`
 	}
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
 		return nil, &transport.RequestError{Method: "ListAuthFactors", Err: &jsonDecodeError{Err: err}}
 	}
 	out := transport.AuthFactorListResponse{
-		Factors: make([]transport.AuthFactorRecord, len(raw.Factors)),
-		Total:   raw.Total,
+		Factors:          make([]transport.AuthFactorRecord, len(raw.Factors)),
+		Total:            raw.Total,
+		FactorSetVersion: raw.FactorSetVersion,
 	}
 	for i := range raw.Factors {
 		out.Factors[i] = mcpRecordToTransport(&raw.Factors[i])
@@ -179,10 +188,34 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	return &transport.AuthFactorRemoveResponse{Status: raw.Status}, nil
 }
 
+// DeleteAuthFactor calls qrdb_user_authfactor_delete.
+func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, "qrdb_user_authfactor_delete", map[string]any{
+		"factor_id": req.FactorID,
+		"force":     req.Force,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "DeleteAuthFactor", Err: err}
+	}
+	var raw struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return nil, &transport.RequestError{Method: "DeleteAuthFactor", Err: &jsonDecodeError{Err: err}}
+	}
+	return &transport.AuthFactorDeleteResponse{Status: raw.Status}, nil
+}
+
 // RotateAuthFactor invokes qrdb_user_authfactor_rotate.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := req.Validate(); err != nil {
+		return nil, &transport.RequestError{Method: "RotateAuthFactor", Err: err}
 	}
 	args := map[string]any{
 		"old_factor_id":  req.OldFactorID,

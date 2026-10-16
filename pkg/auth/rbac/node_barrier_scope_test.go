@@ -53,6 +53,8 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 		permission.AdminReplicaState,
 		// The node keyspace, which holds every tenant's raw history.
 		permission.AdminNodeCompaction,
+		// Every tenant's replicas on the node.
+		permission.AdminStateHash,
 	}
 	exercised := 0
 	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator} {

@@ -15,9 +15,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -651,6 +653,48 @@ func TestReclaimSweeper_ListFailuresAreRetried(t *testing.T) {
 
 	rs.SweepOnce(ctx, nil, discardLogger())
 	assert.Empty(t, store.keysWithPrefix(tableDataPrefixFor("shop", def.TableID, 0)))
+}
+
+// A system shard whose state machine keeps no MVCC keyspace refuses the
+// index listing on every pass, permanently: raft.sm_type does not change
+// while the process runs. The sweeper says so ONCE and stops asking, rather
+// than logging an operator-unactionable WARN every interval.
+func TestReclaimSweeper_UnlistableIndexWarnsOnceAndStopsListing(t *testing.T) {
+	store, _ := truncatedTable(t, 1)
+	clk := newFakeReclaimClock()
+	rs := newTestSweeper(store, newFakeReclaimResolver().route("acme", "shop", store), clk)
+	ctx := context.Background()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	before := len(store.rangeLimits)
+	for range 3 {
+		// The fake's injected error is one-shot; the refusal is not.
+		store.injectRangeErr = &MVCCBackendRequiredError{Err: errors.New("unsupported query type")}
+		rs.SweepOnce(ctx, nil, logger)
+	}
+
+	assert.Equal(t, 1, strings.Count(logs.String(), "level=WARN"), logs.String())
+	assert.Contains(t, logs.String(), "raft.sm_type")
+	assert.Len(t, store.rangeLimits, before+1, "a permanent refusal must not be re-listed every pass")
+}
+
+// A transient listing failure is still reported on every pass: only the
+// permanent MVCC refusal is reported once.
+func TestReclaimSweeper_TransientListFailureWarnsEveryPass(t *testing.T) {
+	store, _ := truncatedTable(t, 1)
+	clk := newFakeReclaimClock()
+	rs := newTestSweeper(store, newFakeReclaimResolver().route("acme", "shop", store), clk)
+	ctx := context.Background()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	for range 2 {
+		store.injectRangeErr = errors.New("index unavailable")
+		rs.SweepOnce(ctx, nil, logger)
+	}
+
+	assert.Equal(t, 2, strings.Count(logs.String(), "level=WARN"), logs.String())
 }
 
 func failNextRangeAfter(store *fakeCatalogStore, n int) {

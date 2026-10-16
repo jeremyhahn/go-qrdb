@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/rebalancepb"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -119,12 +120,7 @@ func (s *qrdbServiceServer) RebalanceExecute(ctx context.Context, req *pb.Rebala
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &pb.RebalanceExecutionResponse{
-		MovesCompleted: int32(result.MovesCompleted),
-		MovesFailed:    int32(result.MovesFailed),
-		DurationNs:     int64(result.Duration),
-		FinalImbalance: result.FinalImbalance,
-	}, nil
+	return rebalancepb.ExecutionToProto(result), nil
 }
 
 // RebalanceGetImbalanceReport returns the cluster's current load distribution.

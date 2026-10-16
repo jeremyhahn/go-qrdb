@@ -579,6 +579,50 @@ func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertReque
 	return enrolledToTransport(enrolled), nil
 }
 
+// IssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal. certs:delegate's ScopeTenantOnly is
+// enforced through AuthMiddleware.AuthorizeCertTenant, the same shared gate
+// every network transport authorizes this verb through.
+func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDelegationRequest) (*transport.IssuedDelegation, error) {
+	if err := t.gate("IssueDelegation"); err != nil {
+		return nil, err
+	}
+	if t.certEnroll == nil {
+		return nil, &transport.NotImplementedError{Method: "IssueDelegation"}
+	}
+	tenantID, err := tenant.Confine(ctx, "", "issue a delegation")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeCertTenant(ctx, tenantID, permission.CertsDelegate); err != nil {
+		return nil, err
+	}
+	var ttl time.Duration
+	if req.TTL != "" {
+		if ttl, err = time.ParseDuration(req.TTL); err != nil {
+			return nil, err
+		}
+	}
+	issued, err := t.certEnroll.IssueDelegation(ctx, &service.IssueDelegationRequest{
+		TenantID:  tenantID,
+		Principal: req.Principal,
+		Scope:     req.Scope,
+		CSRPEM:    []byte(req.CSRPEM),
+		TTL:       ttl,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.IssuedDelegation{
+		TenantID:  issued.TenantID,
+		Principal: issued.Principal,
+		Scope:     issued.Scope,
+		CertPEM:   string(issued.CertPEM),
+		Serial:    issued.Serial,
+		NotAfter:  issued.NotAfter,
+	}, nil
+}
+
 // EnrollCert binds a bring-your-own certificate to an existing account of the
 // caller's own tenant, verified against the tenant's trust anchors.
 // certs:enroll's ScopeSelfStrict is enforced through

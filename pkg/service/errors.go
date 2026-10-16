@@ -629,6 +629,39 @@ func (e *LeaseNotFoundError) Error() string {
 	return "service: lease not found: " + strconv.FormatInt(e.LeaseID, 10)
 }
 
+// LeaseTTLNotLeaderError is returned by LeaseService.TimeToLive on a node
+// whose replica holds the lease but does not lead the shard. The leader renews
+// leases in memory, so only it knows a lease's remaining TTL; the request is
+// answered there, as etcd's leader answers it. It unwraps to the
+// *NotLeaderError naming the leader, so every transport that forwards a
+// not-leader refusal forwards this one, and one that does not answers it as
+// unavailable.
+//
+// Lease is this replica's view: the lease exists and its attached keys are
+// current, both being replicated, but its RemainingTTL is not. A caller that
+// needs only the lease's existence or its keys -- an ownership check -- may
+// use it.
+type LeaseTTLNotLeaderError struct {
+	NotLeaderError
+	Lease *Lease
+}
+
+// Unwrap returns the not-leader refusal naming the shard's leader.
+func (e *LeaseTTLNotLeaderError) Unwrap() error { return &e.NotLeaderError }
+
+// LeaseExists returns the lease err reports as held on this node: nil when err
+// is nil, the replica's view of the lease when err is a
+// *LeaseTTLNotLeaderError, and err otherwise. A caller asking TimeToLive only
+// whether a lease exists, or which keys it holds, needs no answer from the
+// leader.
+func LeaseExists(l *Lease, err error) (*Lease, error) {
+	var stale *LeaseTTLNotLeaderError
+	if errors.As(err, &stale) {
+		return stale.Lease, nil
+	}
+	return l, err
+}
+
 // LeaseExpiredError is returned when an operation targets a lease that
 // has already expired.
 type LeaseExpiredError struct {
@@ -1162,6 +1195,29 @@ func (e *LeaderTransferTimeoutError) Error() string {
 		": leadership transfer away from replica " + strconv.FormatUint(e.FromReplicaID, 10) +
 		" did not complete after " + e.Timeout.String()
 }
+
+// DatabaseCreateTimeoutError is returned when a database create does not
+// finish within the service's create deadline (DefaultDatabaseCreateTimeout).
+// A step that waits on consensus -- a proposal or a linearizable read while
+// the shard has no leader -- would otherwise block for as long as the caller
+// is willing to wait. Every step the create had completed is rolled back
+// before this is returned, so the create is retryable. A caller whose own
+// context ended first gets that context's error, not this one. Err is the
+// error of the step the deadline cut short.
+type DatabaseCreateTimeoutError struct {
+	Name    string
+	Timeout time.Duration
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseCreateTimeoutError) Error() string {
+	return "service: create database " + strconv.Quote(e.Name) +
+		": not finished within " + e.Timeout.String() + ": " + e.Err.Error()
+}
+
+// Unwrap returns the error of the step the deadline cut short.
+func (e *DatabaseCreateTimeoutError) Unwrap() error { return e.Err }
 
 // CompactScopeRequiredError is returned when Compact reaches a raw MVCC
 // service rather than a database's namespaced view. There is no store-global

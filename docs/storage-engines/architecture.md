@@ -140,10 +140,12 @@ content:
   content-addressed layout.
 
 **Format version marker.** `New` writes a marker (`.qrdb-file-format`,
-naming the current format version) into a directory it finds empty, and
+naming the current format version and the store's at-rest posture,
+`3/encrypted` or `3/plaintext`) into a directory it finds empty, and
 refuses to open a NON-empty directory that lacks one or names a different
 version (`FormatMarkerMissingError`, `FormatVersionMismatchError`) — a
-validity check, not migration code. A directory written by the shipped
+validity check, not migration code. A marker naming the other posture is
+refused too (`AtRestMismatchError`); see "At-rest encryption" below. A directory written by the shipped
 one-file-per-key layout, the never-shipped one-directory-per-key design, or
 a future format this binary predates, is refused rather than silently
 misread. "Non-empty" ignores `lost+found`: a filesystem's own mount-root
@@ -229,8 +231,76 @@ so replicas composing different backends still apply the identical command
 sequence and are not unsafe by construction — but nothing today verifies
 this at cluster join, and a backend-specific defect (the exact shape this
 section is about) is the kind of thing a mismatch would surface only
-indirectly, through a `StateMachineHash` divergence. There is no
+indirectly, through a state-hash divergence (`qrdb admin state-hash`, see
+[../clustering/api.md](../clustering/api.md#replica-state-hashes)). There is no
 operational reason to mix it.
+
+### At-rest encryption: one mechanism for every on-disk backend
+
+**Owner ruling, 2026-10-09: the file engine does its I/O through the
+barrier's encrypting file system, the same one Pebble writes through.** There
+is one at-rest mechanism for every backend that writes files, and no
+file-specific cipher.
+
+The mechanism is go-quicraft's `seal/encfs`, reached through
+`pkg/atrest.Encryptor`. Each file it creates starts with a header carrying a
+fresh per-file data key wrapped by the barrier, and its contents are sealed
+with AES-GCM under that key. `atrest.Encryptor.FS` hands Pebble the encrypting
+file system as `Options.FS`; `atrest.Encryptor.Wrap` layers it over the file
+engine's own base file system, which `file.WithEncryptor` installs. A
+`storage.backend: file` node store opens the engine this way
+(`lifecycle.NewLocalStorage`) on the standalone daemon, the SDK node and the
+embedded server alike, and so does a raft replica's `raft.sm_storage: file`.
+
+What a `file` store leaves on disk under the seal:
+
+| Artefact | At rest |
+|---|---|
+| record file, `[keyLen:4 BE][key][value]` | ciphertext: the key and the value alike |
+| record file name | the hex SHA-256 digest of the key, sharded two levels deep: reveals no key |
+| commit journal | ciphertext |
+| `.qrdb-file-format` | plaintext, `3/encrypted`: it says how every other file is read, so it is readable before that choice is made, and holds nothing about the data |
+| record count and sizes | visible, as Pebble's file count and sizes are |
+
+**Posture is fixed per directory.** The marker records whether the store was
+written through the barrier. Opening a `3/plaintext` store with an encryptor,
+or a `3/encrypted` store without one, fails with `AtRestMismatchError`
+naming both. Pebble's encrypting file system passes a pre-existing plaintext
+file through on read; the file engine refuses the whole store instead, so a
+store never serves plaintext records beside encrypted ones. A store created
+under strategy `none` is `3/encrypted`: the format is the encrypted one and
+only the key is credential-free. A store written by an earlier format version
+is refused at open; per the no-backward-compatibility policy there is no
+migration code.
+
+**Sealed.** A store can be opened while the barrier is sealed: `New` reads
+only the plaintext marker. Every record read or write then fails with the
+barrier's error, `seal.ErrSealed`. `Exists` is the exception: it answers from
+the hashed record file name and reads no record, so it does not consult the
+barrier.
+
+**Re-encryption.** A node encryption migration — `barrier enable-encryption`,
+or any recycle of the node's key — moves a `file` node store to the new key
+the way it moves a Pebble one: in the same journaled swap. Each record is
+read through the old key and written to a sibling store opened under the new
+key. The copy is then verified record by record against the source, and the
+directories are swapped. A record left under the old key is unreadable once
+the old key is gone, so under either `--mechanism` (`swap` or `in-place`) the
+copy goes through the file engine itself, record by record.
+`NodeStoreMigration.FileStoreDirs` names the stores moved this way on a
+standalone node, where the migration provider classifies each node store
+directory by its backend. In raft mode `qrdbd` classifies the state machine's
+stores the same way, by `sm_type` and `sm_storage`, so `sm_storage: file` is
+moved record by record beside the WAL.
+
+**Per backend:**
+
+| Backend | Under the seal |
+|---|---|
+| `pebble` | every file through the encrypting file system |
+| `file` | every record and journal file through the encrypting file system |
+| `objstore` | no file system to encrypt: object names encode the keys; a standalone node store is unencrypted and the capabilities report names it (`unencryptedAtRest`) |
+| `memory` | nothing persisted |
 
 ### The objstore engine: encoded object names (BREAKING)
 
@@ -365,8 +435,11 @@ go-xkms, not only for this repo.
 - **Tenant isolation is the namespace wrapper's job**, applied by composition.
   An engine handed to a tenant-scoped consumer is already wrapped; the raw
   engine is not tenant-safe and is not meant to be.
-- **At-rest encryption is the barrier's job**, above this layer — see
-  [../barrier-seal/](../barrier-seal/). Engines store what they are given.
+- **At-rest encryption is the barrier's job** — see
+  [../barrier-seal/](../barrier-seal/). An engine that writes files writes
+  them through the file system it is given; under the seal that is the
+  barrier's encrypting file system, so the engine holds no key and implements
+  no cipher. Engines store what they are given.
 - Volume pool paths are filesystem paths on the node; a pool registration is a
   privileged operation.
 
@@ -374,7 +447,8 @@ go-xkms, not only for this repo.
 
 - **No revision history.** That belongs to the MVCC state machine — see
   [../key-value/](../key-value/architecture.md).
-- **No encryption.** The barrier sits above.
+- **No cipher of its own.** The barrier supplies the encrypting file system
+  (and, for `objstore`, the value cipher).
 - **No remote volume pools.** `LocalOnly` is deliberate.
 - **No cloud object-storage backends of its own.** Those are go-objstore's, and
   are build-tag gated (`awss3`, `gcpstorage`, `azureblob`, `glacier`,

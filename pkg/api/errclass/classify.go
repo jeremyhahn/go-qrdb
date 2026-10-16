@@ -118,7 +118,10 @@ var authRule = rule{
 //     wrapped (a closed store, a sealed tenant, a failed rollback, an
 //     authorization refusal).
 //  2. the per-family blocks — leaf conditions, one block per domain, so a
-//     change to one family is a one-line edit to one block.
+//     change to one family is a one-line edit to one block. The context
+//     conditions and go-quicraft's temporary refusals (raftTransientRules)
+//     close this band, so a consensus step that could not finish is
+//     retryable unless a family said otherwise.
 //  3. genericRules — the wrappers a failure is reported through ("propose
 //     failed", "store error"). They come LAST so they can only ever classify
 //     what nothing more specific recognised.
@@ -158,6 +161,7 @@ var rules = slices.Concat(
 	ceremonyRules,
 	migrationRules,
 	contextRules,
+	raftTransientRules,
 	genericRules,
 )
 

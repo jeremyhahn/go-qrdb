@@ -79,8 +79,18 @@ func (e *Encryptor) Apply(o *pebble.Options) {
 // Encryptor is disabled (nil receiver or nil barrier), the base FS is
 // returned so callers that need a concrete vfs.FS always get a usable value.
 func (e *Encryptor) FS() vfs.FS {
-	if !e.Enabled() {
-		return e.baseFS
+	if e == nil {
+		return vfs.Default
 	}
-	return encfs.New(e.baseFS, e.barrier)
+	return e.Wrap(e.baseFS)
+}
+
+// Wrap returns base wrapped in the barrier-driven encrypting FS, or base
+// itself when the Encryptor is disabled. It is how a store that is not Pebble
+// (the file backend) writes through the same encryption as one that is.
+func (e *Encryptor) Wrap(base vfs.FS) vfs.FS {
+	if !e.Enabled() {
+		return base
+	}
+	return encfs.New(base, e.barrier)
 }

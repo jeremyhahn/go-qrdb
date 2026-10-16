@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // fakeRetriever implements CredentialRetriever for unit tests.
@@ -32,9 +33,37 @@ type fakeRetriever struct {
 	called bool
 }
 
-func (f *fakeRetriever) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+func (f *fakeRetriever) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	f.called = true
-	return f.fn(ctx, name)
+	v, err := f.fn(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(v)
+}
+
+// mustBuffer returns a protected buffer holding s.
+func mustBuffer(t *testing.T, s string) *secure.Buffer {
+	t.Helper()
+	buf, err := secure.NewBufferFromBytes([]byte(s))
+	if err != nil {
+		t.Fatalf("NewBufferFromBytes: %v", err)
+	}
+	return buf
+}
+
+// bufferString reads buf's value and destroys it.
+func bufferString(t *testing.T, buf *secure.Buffer) string {
+	t.Helper()
+	defer buf.Destroy()
+	var s string
+	if err := buf.WithBytes(func(b []byte) error {
+		s = string(b)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
+	}
+	return s
 }
 
 func testDiscardLogger() *slog.Logger {
@@ -44,9 +73,9 @@ func testDiscardLogger() *slog.Logger {
 // ---------- CredentialResolver ----------
 
 func TestCredentialResolver_Resolves(t *testing.T) {
-	retrieve := func(_ context.Context, name string) ([]byte, error) {
+	retrieve := func(_ context.Context, name string) (*secure.Buffer, error) {
 		if name == "db-password" {
-			return []byte("super-secret"), nil
+			return mustBuffer(t, "super-secret"), nil
 		}
 		return nil, errors.New("not found")
 	}
@@ -65,8 +94,8 @@ func TestCredentialResolver_Resolves(t *testing.T) {
 }
 
 func TestCredentialResolver_EmptyName(t *testing.T) {
-	res := secret.NewCredentialResolver(func(_ context.Context, _ string) ([]byte, error) {
-		return []byte("v"), nil
+	res := secret.NewCredentialResolver(func(_ context.Context, _ string) (*secure.Buffer, error) {
+		return mustBuffer(t, "v"), nil
 	})
 
 	_, err := res.Resolve(context.Background(), "credential://")
@@ -78,7 +107,7 @@ func TestCredentialResolver_EmptyName(t *testing.T) {
 
 func TestCredentialResolver_RetrieveError(t *testing.T) {
 	backendErr := errors.New("vault sealed")
-	res := secret.NewCredentialResolver(func(_ context.Context, _ string) ([]byte, error) {
+	res := secret.NewCredentialResolver(func(_ context.Context, _ string) (*secure.Buffer, error) {
 		return nil, backendErr
 	})
 
@@ -96,7 +125,7 @@ func TestCredentialResolver_RetrieveError(t *testing.T) {
 }
 
 func TestCredentialResolver_NotFound(t *testing.T) {
-	res := secret.NewCredentialResolver(func(_ context.Context, _ string) ([]byte, error) {
+	res := secret.NewCredentialResolver(func(_ context.Context, _ string) (*secure.Buffer, error) {
 		return nil, credentials.ErrCredentialNotFound
 	})
 
@@ -111,8 +140,8 @@ func TestCredentialResolver_NotFound(t *testing.T) {
 }
 
 func TestCredentialResolver_NilCtx(t *testing.T) {
-	res := secret.NewCredentialResolver(func(_ context.Context, _ string) ([]byte, error) {
-		return []byte("v"), nil
+	res := secret.NewCredentialResolver(func(_ context.Context, _ string) (*secure.Buffer, error) {
+		return mustBuffer(t, "v"), nil
 	})
 	_, err := res.Resolve(nil, "credential://x") //nolint:staticcheck
 	if !errors.Is(err, secret.ErrNilContext) {
@@ -176,8 +205,8 @@ func TestNewTenantScopedCredentialRetrieve_NoTenantContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if string(val) != "system-val" {
-		t.Errorf("got %q, want system-val", val)
+	if got := bufferString(t, val); got != "system-val" {
+		t.Errorf("got %q, want system-val", got)
 	}
 	if !systemSvc.called {
 		t.Error("systemSvc must be called when no tenant context is present")
@@ -198,8 +227,8 @@ func TestNewTenantScopedCredentialRetrieve_NilTenantIDFunc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if string(val) != "system-val" {
-		t.Errorf("got %q, want system-val", val)
+	if got := bufferString(t, val); got != "system-val" {
+		t.Errorf("got %q, want system-val", got)
 	}
 }
 
@@ -223,8 +252,8 @@ func TestNewTenantScopedCredentialRetrieve_NilRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if string(val) != "system-val" {
-		t.Errorf("got %q, want system-val", val)
+	if got := bufferString(t, val); got != "system-val" {
+		t.Errorf("got %q, want system-val", got)
 	}
 }
 
@@ -287,8 +316,8 @@ func TestNewTenantScopedCredentialRetrieve_TenantPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if string(val) != "tenant-secret" {
-		t.Errorf("got %q, want tenant-secret", val)
+	if got := bufferString(t, val); got != "tenant-secret" {
+		t.Errorf("got %q, want tenant-secret", got)
 	}
 	if systemSvc.called {
 		t.Error("systemSvc must NOT be called when tenant context is present")
@@ -331,5 +360,71 @@ func TestNewTenantScopedCredentialRetrieve_UnknownTenant(t *testing.T) {
 	_, err = retrieve(ctx, "key")
 	if err == nil {
 		t.Error("expected an error for an unknown tenant")
+	}
+}
+
+// ---------- Protected-memory hand-off ----------
+
+func TestNewSecretValueFromBuffer_SealsAndConsumesBuffer(t *testing.T) {
+	buf := mustBuffer(t, "hunter2")
+
+	sv, err := secret.NewSecretValueFromBuffer(context.Background(), "credential://x", buf, secret.StrategyCredential)
+	if err != nil {
+		t.Fatalf("NewSecretValueFromBuffer: %v", err)
+	}
+	defer sv.Clear()
+
+	if got := plaintextOf(t, sv); got != "hunter2" {
+		t.Errorf("plaintext = %q, want hunter2", got)
+	}
+	if sv.Strategy != secret.StrategyCredential {
+		t.Errorf("strategy = %s, want credential", sv.Strategy)
+	}
+	if err := buf.WithBytes(func([]byte) error { return nil }); err == nil {
+		t.Error("the source buffer must be consumed (destroyed) by NewSecretValueFromBuffer")
+	}
+}
+
+func TestNewSecretValueFromBuffer_NilBufferFailsClosed(t *testing.T) {
+	sv, err := secret.NewSecretValueFromBuffer(context.Background(), "credential://x", nil, secret.StrategyCredential)
+	var sfe *secret.SealFailedError
+	if !errors.As(err, &sfe) {
+		t.Fatalf("expected SealFailedError, got %T: %v", err, err)
+	}
+	if sv != nil {
+		t.Error("a failed seal must not return a SecretValue")
+	}
+}
+
+func TestCredentialResolver_DestroysRetrievedBuffer(t *testing.T) {
+	var retrieved *secure.Buffer
+	res := secret.NewCredentialResolver(func(_ context.Context, _ string) (*secure.Buffer, error) {
+		retrieved = mustBuffer(t, "once")
+		return retrieved, nil
+	})
+
+	sv, err := res.Resolve(context.Background(), "credential://k")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	defer sv.Clear()
+
+	if got := plaintextOf(t, sv); got != "once" {
+		t.Errorf("plaintext = %q, want once", got)
+	}
+	if err := retrieved.WithBytes(func([]byte) error { return nil }); err == nil {
+		t.Error("Resolve must destroy the buffer the retrieve function returned")
+	}
+}
+
+func TestCredentialResolver_NilBufferWithoutErrorFailsClosed(t *testing.T) {
+	res := secret.NewCredentialResolver(func(_ context.Context, _ string) (*secure.Buffer, error) {
+		return nil, nil
+	})
+
+	_, err := res.Resolve(context.Background(), "credential://k")
+	var rfe *secret.ResolutionFailedError
+	if !errors.As(err, &rfe) {
+		t.Fatalf("expected ResolutionFailedError, got %T: %v", err, err)
 	}
 }

@@ -568,34 +568,29 @@ func (b *FastBackend) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) erro
 }
 
 // GetHash computes a deterministic xxhash64 hash over non-tombstone
-// cache entries in sorted key order.
+// key-value pairs, visited in ascending key order.
 func (b *FastBackend) GetHash() (uint64, error) {
-	h := xxhash.New()
+	return xxhashRecords(b.Records)
+}
 
-	var allKeys []string
+// Records visits every non-tombstone key-value pair in the cache in
+// ascending key order: the cache is the authoritative keyspace and the set
+// SaveSnapshot carries. Each shard is read under its own read lock; a view
+// consistent across shards needs the state machine's batch lock held
+// exclusively.
+func (b *FastBackend) Records(fn RecordVisitor) error {
+	var recs []kvRecord
 	for i := range b.shards {
 		s := &b.shards[i]
 		s.mu.RLock()
 		for k, v := range s.data {
 			if v != nil {
-				allKeys = append(allKeys, k)
+				recs = append(recs, kvRecord{key: k, value: v})
 			}
 		}
 		s.mu.RUnlock()
 	}
-	sort.Strings(allKeys)
-
-	for _, k := range allKeys {
-		s := b.shardFor(k)
-		s.mu.RLock()
-		_, _ = h.Write([]byte(k))
-		if v := s.data[k]; v != nil {
-			_, _ = h.Write(v)
-		}
-		s.mu.RUnlock()
-	}
-
-	return h.Sum64(), nil
+	return visitSorted(recs, fn)
 }
 
 // Close waits for async persistence and releases resources.

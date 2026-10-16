@@ -128,6 +128,26 @@ func (f *Factory) KVStoreForPartition(partitionName string, shardID uint64) kvst
 	return nil
 }
 
+// DatabaseKVStore returns the store of the named database for shardID. A
+// database is the partition of its own name: the factory's
+// PartitionedKVStoreProvider answers it. Unlike KVStoreForPartition it never
+// falls back to the default provider, and it refuses with
+// DatabaseStoreUnresolvedError when the name is empty, the factory has no
+// partitioned provider, or the provider has no store for the database.
+func (f *Factory) DatabaseKVStore(database string, shardID uint64) (kvstore.KVStore, error) {
+	if database == "" {
+		return nil, DatabaseStoreUnresolvedError{Reason: "no database named"}
+	}
+	if f.partitionedProvider == nil {
+		return nil, DatabaseStoreUnresolvedError{Database: database, Reason: "the factory has no partitioned provider"}
+	}
+	store := f.partitionedProvider(database, shardID)
+	if store == nil {
+		return nil, DatabaseStoreUnresolvedError{Database: database, Reason: "the partitioned provider has no store for it"}
+	}
+	return store, nil
+}
+
 // SetEntityPartition maps an entity type to a partition name.
 // This mapping is used when creating DAOs to determine which partition to use.
 func (f *Factory) SetEntityPartition(entityType, partition string) {
@@ -218,6 +238,50 @@ func NewDAO[E Entity](
 	}
 
 	return New(kvStore, entityType, newEntity, opts...)
+}
+
+// NewDatabaseDAO creates a GenericDAO for the given entity type in the named
+// database, its store resolved by factory.DatabaseKVStore for the shard the
+// options select. It refuses with DatabaseStoreUnresolvedError rather than
+// build a DAO over any other store.
+//
+// The database selects the store only. WithDatabase is a different setting:
+// it qualifies index names, for databases that share one store.
+func NewDatabaseDAO[E Entity](
+	factory *Factory,
+	database string,
+	entityType string,
+	newEntity func() E,
+	opts ...Option,
+) (GenericDAO[E], error) {
+	store, err := databaseStore(factory, database, opts)
+	if err != nil {
+		return nil, err
+	}
+	return New(store, entityType, newEntity, opts...)
+}
+
+// NewDatabaseTransactional is NewDatabaseDAO for a TransactionalDAO.
+func NewDatabaseTransactional[E Entity](
+	factory *Factory,
+	database string,
+	entityType string,
+	newEntity func() E,
+	opts ...Option,
+) (TransactionalDAO[E], error) {
+	store, err := databaseStore(factory, database, opts)
+	if err != nil {
+		return nil, err
+	}
+	return NewTransactional(store, entityType, newEntity, opts...)
+}
+
+// databaseStore resolves the store a NewDatabase* constructor builds over.
+func databaseStore(factory *Factory, database string, opts []Option) (kvstore.KVStore, error) {
+	if factory == nil {
+		return nil, InvalidConfigError{Field: "factory", Reason: "cannot be nil"}
+	}
+	return factory.DatabaseKVStore(database, ParseOptions(opts...).ShardID)
 }
 
 // TypedFactory provides type-safe DAO creation for a specific entity type.

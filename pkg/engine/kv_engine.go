@@ -357,6 +357,7 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 		protocol.OpIndexCreate:      e.handleIndexCreate,
 		protocol.OpIndexDrop:        e.handleIndexDrop,
 		protocol.OpBatch:            e.handleBatch,
+		protocol.OpDeleteRange:      e.handleDeleteRange,
 		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
 		protocol.OpTransaction:      e.handleTransaction,
@@ -1098,6 +1099,50 @@ func (e *KVEngine) handleBatch(payload []byte) (sm.Result, error) {
 	if err != nil {
 		return sm.Result{Value: 1}, err
 	}
+	return e.applyBatchOps(ops)
+}
+
+// handleDeleteRange applies protocol.OpDeleteRange: it deletes every key in
+// [start, end) -- through the end of the keyspace when end is empty -- that
+// listKeys would report, as a batch of OpFSMDelete naming exactly those keys
+// would. It goes through applyBatchOps rather than a storage range tombstone
+// so a range delete keeps every guarantee a delete has: a reserved start
+// refuses, secondary-index entries are removed, and watchers see one delete
+// event per key. The vector engine's records sort among client keys but are
+// not client data, so a range over them leaves them in place, as
+// PebbleStateMachine's does.
+func (e *KVEngine) handleDeleteRange(payload []byte) (sm.Result, error) {
+	start, end, err := statemachine.DecodeDeleteRange(payload)
+	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(start); refused {
+		return res, nil
+	}
+	iter := e.stg.NewIterator(&storage.IteratorOptions{
+		LowerBound: start,
+		UpperBound: end,
+		OnlyKeys:   true,
+	})
+	var keys [][]byte
+	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
+		if vector.IsForgedKey(iter.Key()) {
+			continue
+		}
+		keys = append(keys, append([]byte(nil), iter.Key()...))
+	}
+	iterErr := iter.Error()
+	_ = iter.Close()
+	if iterErr != nil {
+		return sm.Result{Value: 1}, iterErr
+	}
+	return e.applyBatchOps(deleteRangeOps(protocol.OpFSMDelete, keys))
+}
+
+// applyBatchOps applies a decoded operation set and its index updates
+// atomically in one storage batch, then emits watch notifications after the
+// commit. It is the single body behind OpBatch and OpDeleteRange.
+func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
 		return res, nil
 	}

@@ -555,7 +555,8 @@ A node that cannot read the records would never see a seal. To bound that,
   barrier was sealed in the meantime, it enforces that seal first, before it
   serves anything.
 
-Under the bounded clock-drift assumption Raft lease reads already make, no
+Under the bounded clock-rate assumption Raft lease reads already make (any two
+replicas' clocks run within 1 % of each other; wall-clock steps do not count), no
 node serves a barrier later than `seal.cluster_lease` after its seal record
 commits.
 
@@ -901,6 +902,70 @@ holds only its own binary and gates nothing.
 
 Every node composes the watcher: a clustered node with its tenant placements
 as the barriers it serves, a standalone node with every tenant barrier.
+
+## Protected key material across the barrier — parked
+
+> **Status: PARKED (ruled 2026-10-14).** go-qrdb keeps go-enclave as its
+> protected-memory library and does not change `seal.EncryptionBarrier`. The
+> question below waits for go-enclave's rebuilt interface (v0.9.0); go-qrdb
+> binds to that interface, never to a concrete go-enclave type, once it ships.
+
+`seal.EncryptionBarrier` (`pkg/seal/types.go`) takes and returns `[]byte`:
+`Encrypt(plaintext)` and `Decrypt(ciphertext)`. Key material that is wrapped
+under the barrier therefore leaves protected memory for the call, and the
+unwrapped result arrives on the Go heap. The parked question is whether the
+interface should carry protected material instead (a borrowed buffer in, a
+protected buffer out). It is not answered here, because the answer depends on
+the shape of the go-enclave interface it would carry.
+
+### go-enclave bindings today
+
+go-enclave v0.8.0-alpha exports interfaces only for providers
+(`KeyProtector`, `RootUnsealer`, `HealthReporter`); go-qrdb implements none of
+them. Every operation go-qrdb performs on protected memory goes through a
+concrete type, because no interface exists for it yet:
+
+| Site | Concrete binding | Operations used |
+|---|---|---|
+| `pkg/secure/buffer.go:56` | `Buffer.enc *enclave.MemoryEnclave` | `WithBytes`, `Size`, `Destroy` |
+| `pkg/secure/buffer.go:134` | `processAllocator() (*enclave.Allocator, error)` | `NewSized` |
+| `pkg/secure/secret.go:49` | `Secret.enclave atomic.Pointer[enclave.SealedEnclave]` | `Open`, `Destroy` |
+| `pkg/secure/secret.go:80` | `newSealed = enclave.NewSealed` (returns `*enclave.SealedEnclave`) | construction |
+| `pkg/secure/secret.go:150` | `var sealed *enclave.SealedEnclave` | construction |
+| `pkg/secure/secret.go:262` | `copyFrozenToWritable(frozen *enclave.MemoryEnclave)` | `WithBytes`, `Destroy` |
+| `sdk/go/secure/secure.go:226` | `type Allocator = enclave.Allocator` | re-export |
+| `pkg/seal/shamir.go:161` | `combineProtected = shamir.CombineProtected` (returns `*enclave.MemoryEnclave`, go-quicraft) | `WithBytes`, `Destroy` |
+| `pkg/seal/strategy.go:78` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Destroy` |
+| `pkg/clustermig/credentials.go:146` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Open` |
+| `pkg/seal/sealtest/sealtest.go:48`, `:79` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Open` |
+
+`pkg/clusterkeys`, `pkg/keydelivery` and `pkg/secure` also call the free
+function `enclave.Wipe`, which is not a type binding. The last four rows name
+types that go-quicraft's exported API returns, so they convert when
+go-quicraft binds to the same interface.
+
+### Follow-on set
+
+`secure.Buffer` has no accessor that returns its bytes outside a borrow:
+`WithBytes` and `secure.CopyOut` are the only ways to read it. What remains is
+the set of places where key material leaves protected memory for ordinary
+memory. They convert after the interface ships, not before:
+
+- `pkg/seal/encfs/header.go:69` — the per-file DEK is a `[32]byte` heap field,
+  wrapped through `EncryptionBarrier.Encrypt` at `:87` and unwrapped through
+  `EncryptionBarrier.Decrypt` at `:167` (copied in at `:174`), then keyed into
+  the block cipher at `pkg/seal/encfs/encfile.go:58` and `:73`. This is the
+  barrier crossing the parked question is about.
+- `pkg/seal/recovery.go:185` — `secure.CopyOut` of the recovered key.
+- `pkg/ceremony/share_store.go:247` — `secure.CopyOut` of a share for delivery.
+- `pkg/secret/resolver.go:214` — `secure.CopyOut` of a resolved secret.
+- `pkg/service/credential_service.go:109` — `secure.CopyOut` of a retrieved
+  credential.
+- `sdk/go/transport/sopin.go:117` — `secure.CopyOut` of the SO PIN for the
+  wire.
+- `pkg/api/grpc/service_credentials.go:126`, `:207` and
+  `cmd/qrdb/bindings_credential.go:34` — copies a framework encodes after the
+  handler returns (`//secure:unwiped`).
 
 ## Trust boundaries
 

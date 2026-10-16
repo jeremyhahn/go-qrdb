@@ -26,7 +26,6 @@ import (
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
 // codeByGRPCCode is the correspondence between gRPC's status codes and this
@@ -136,7 +135,7 @@ func toolErrorResult(tool string, code wire.Code, message string) *mcpgo.CallToo
 // REST's Retry-After and gRPC's RetryInfo.
 func classifiedToolError(tool string, err error) *mcpgo.CallToolResult {
 	res := withRetryAfter(toolErrorResult(tool, ServiceErrorCode(err), err.Error()), err)
-	if reason, md, ok := replicaforward.Refusal(err); ok {
+	if reason, md, ok := errclass.Refusal(err); ok {
 		if env, isEnvelope := res.StructuredContent.(*wire.ErrorEnvelope); isEnvelope {
 			env.Error.Reason, env.Error.Metadata = reason, md
 		}

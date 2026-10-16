@@ -305,6 +305,106 @@ must hold, at the entry's own log position, for it to apply:
   to it would otherwise read storage for the marker; the first miss is
   cached as the tombstone the cache already uses for a deleted key.
 
+## Range delete command
+
+A range delete removes every key in `[start, end)` in one Raft entry:
+
+```
+[OpDeleteRange:1] DecodeOp payload: Key = start, RangeEnd = end
+```
+
+- **Encoding**: `protocol.EncodeDeleteRange(start, end)`; an empty `end` is
+  unbounded above (through the end of the keyspace). Every handler decodes
+  it with `statemachine.DecodeDeleteRange`. Bounds that do not describe a
+  range — an empty start, an end at or below start — are a
+  `*statemachine.InvalidRangeError`, a refusal in the result; a start in the
+  reserved `0x00` namespace is a `*statemachine.ReservedKeyError` refusal.
+  Neither halts apply, and neither deletes anything. Any other start sorts
+  above the whole reserved namespace, so no state machine record is ever in
+  a range.
+- **It is the batch of single deletes over the live keys in the range when
+  the entry applies** — not a storage range tombstone, which would leave
+  index entries and lease bindings behind and tell no watcher. Each handler
+  lists the keys in the range (seeing earlier entries of the same apply),
+  then applies them through the path its own `OpBatch` uses.
+- **Listing the range costs the range, on every backend.** The listing reads
+  through the apply batch. Pebble's batch is natively indexed; the memory,
+  file and objstore backends share `storage.BufferedBatch`, whose iterator
+  merges the batch's pending writes, sorted, with a live iterator over the
+  committed store, as an LSM merges a memtable with the levels below it. A
+  pending range delete is skipped with one seek, never walked, and nothing
+  outside the iterator's bounds is read. Inside one batch a range delete
+  hides the committed keys it covers and the keys written before it, not
+  those written after it; `pkg/storage/batch_range_parity_test.go` holds
+  every `Batch` implementation to that against a model, in both directions
+  (forward only on the partition manager, whose merge iterator does not
+  move backward). The memory backend commits the batch under one write lock
+  with a B-tree path hint per leading key byte, so the runs of tombstones,
+  metadata deletes and revision-index records an MVCC range delete writes
+  each resume their search where the previous write of their family ended.
+- **Served by**: `KVStateMachine` on every backend an `sm_type` selects
+  (`memory`/`standard`, `concurrent`, `highperf`, `fast`, and `disk` over
+  every `sm_storage`), `RegularStateMachine`, `FastStateMachine`,
+  `ConcurrentStateMachine`, `pkg/store`'s `PebbleStateMachine` and
+  `MVCCStateMachine`, and `pkg/engine`'s `KVEngine` and `MVCCEngine` on every
+  storage backend. `pkg/statemachine/delete_range_test.go` drives the same
+  contract through every state machine and backend, so an `sm_type` that
+  does not dispatch the opcode fails there rather than in a drop;
+  `pkg/engine/delete_range_backends_test.go` does the same for both engines
+  over memory, file, pebble and objstore. `pkg/backend`'s
+  `SimpleStateMachine`, which no `sm_type` selects, does not serve it and
+  refuses it in the result, as it refuses `OpGuarded`.
+- **What a reader or watcher observes is what the same single deletes would
+  leave, applied together**: each deleted key is gone, and loses whatever
+  that state machine's single delete takes away — its MVCC tombstone is
+  written, its lease binding released, its secondary index entries removed;
+  every watcher of a deleted key receives one `DELETE`
+  event, with the previous value where the state machine keeps one, in key
+  order. An empty range succeeds, notifies nobody and, on `MVCCEngine`, does
+  not advance the revision.
+- **The whole range commits at one revision.** This is the one observable
+  difference from issuing the single deletes one at a time, and it is
+  deliberate: a range delete is one entry, applied as an `OpBatch` or a
+  transaction is, so every key's tombstone and every `DELETE` event carries
+  the same revision, and no reader at any revision sees some keys of the
+  range deleted and others not. It is the semantics etcd gives a
+  `DeleteRange`. On a state machine that keeps revisions, a read at a
+  revision before the range delete still returns every key in it, and one
+  at or after it returns none of them. A caller
+  that needs a revision per key issues the single deletes itself.
+- **Vector engine records are not client data.** They sort among client
+  keys under the `__vec:` prefix, and a range that spans them leaves them —
+  and the index built from them — in place on `KVEngine` and
+  `PebbleStateMachine` alike; the result counts only the client keys it
+  deleted. `MVCCEngine` keeps them outside the revisioned keyspace, so no
+  range reaches them. The vector engine drops its own namespaces.
+- **Who uses it.** The keyspace reclaim of a dropped database does: range
+  deletes of at most 1,024 listed keys each over every prefix it owns,
+  through `KVService.DeleteRange`. Two
+  other bulk deletes deliberately do not:
+  - **TRUNCATE TABLE, DROP TABLE and DROP INDEX** orphan the old keyspace
+    in O(1) — a new table generation or index incarnation committed in one
+    transaction — and leave its deletion to the `ReclaimSweeper`. The
+    sweeper already deletes a page of keys per transaction, one proposal
+    per page, and it paces itself: each pass has a key budget, waits out
+    the reclaim quiescence period, and resumes from the last key it
+    deleted. An unbounded range delete would trade that pacing for one
+    entry whose size grows with the table.
+  - **DropCollection** deletes each document with a `CompareAndDelete` of
+    the value it scanned, because that is the only way to know that this
+    drop, and not a racing `DeleteDocument`, removed the document — and so
+    to release each document's bytes against the storage quota exactly
+    once. A range delete reports how many keys it removed, not which ones
+    or their sizes, so it cannot meter the drop.
+- **`OpDeleteRange` is only sent to a group that can apply it.**
+  `KVService.DeleteRange` asks a `service.FeatureGatedHost` whether
+  `featuregate.RangeDelete` is enabled for the shard and returns
+  `*featuregate.NotActiveError` without proposing when it is not; a
+  `LocalBackend` has every replica in this process and always proposes. The
+  keyspace reclaim falls back to one delete per proposal for the rest of the
+  prefix on that error (see [architecture.md](architecture.md), "What a drop
+  reclaims").
+
 ## Invariants
 
 ### Shipped
@@ -570,7 +670,12 @@ must hold, at the entry's own log position, for it to apply:
     own observer-promotion writes. Each reads a snapshot, computes its
     update, and CASes against that exact snapshot; a write that lands in
     between is retried against the fresh value rather than discarding it or
-    being discarded by it. A KV with no `AtomicKV` support returns
+    being discarded by it. `removeReplicaFromGroup` CASes its snapshot onto
+    itself before `RemoveFollowerNode`, so a stale snapshot never reaches
+    Raft. It then drops the evicted replica with `Store.RemoveReplica`. Raft
+    goes first because a replica that leaves the placement is stopped on its
+    node, and the eviction needs that replica's vote to commit in a group of
+    two voters. A KV with no `AtomicKV` support returns
     `*placement.AtomicWriteUnsupportedError` (the inner error of a
     `*placement.StoreError`) rather than falling back to an unconditional
     `Put` — an earlier version of this fence fell back, which let two
@@ -882,6 +987,7 @@ How a claim works:
 | The drop fence cannot be written, or cleared on create | `database.KeyspaceFenceError` wrapping the cause; a drop fails before anything is reclaimed and clears its local fence only once the marker is confirmed restored (`RolledBack`), a create creates nothing | **yes** |
 | The local drop fence cannot be persisted | `database.LocalFenceError`; nothing else was touched, and a placement fence the call set is rolled back | **yes** |
 | A create names a database live on another node | `database.AlreadyExistsError` with `Elsewhere` set; the other node's marker is untouched | **yes** |
+| A create does not finish within the service's create deadline (`service.DefaultDatabaseCreateTimeout`, 10 s, bounding `CreateWithCredentials` and `CreateForTenantWithCredentials` and so every transport) because a consensus step has no leader or quorum | `service.DatabaseCreateTimeoutError` wrapping the step's error, 503 / `UNAVAILABLE`; the quota reservations, the half-created database and its placement are rolled back under a context detached from the expired one (`database.DropRollbackContext`), so the create is retryable. A caller's own deadline or cancellation that ends the create first is returned as it is. A dedicated shard started on the way waits for its leader under the same context, so the deadline bounds that wait too | **yes** |
 | A create names a database this node dropped, with no keyspace reclaimer attached | `database.ReclaimerRequiredError`; nothing is created | **yes** |
 | The placement table cannot be read while resolving a dedicated-raft fence | the read error surfaces; it is never reported as an unknown database | **yes** |
 | A key, index or vector namespace cannot be reclaimed | `database.KeyspaceReclaimError` wrapping the cause; the drop fails and both fences clear (Status was never touched) | **yes** |

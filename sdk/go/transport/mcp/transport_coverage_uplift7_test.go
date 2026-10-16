@@ -132,7 +132,7 @@ func TestMCP_Credential_Retrieve_WithValue(t *testing.T) {
 	tr, cleanup := connectCredentialInProcess(t, svc)
 	defer cleanup()
 
-	val, err := tr.CredentialRetrieve(context.Background(), "mykey")
+	val, err := tr.retrieveBytes(context.Background(), "mykey")
 	if err != nil {
 		t.Logf("CredentialRetrieve: %v", err)
 	} else {

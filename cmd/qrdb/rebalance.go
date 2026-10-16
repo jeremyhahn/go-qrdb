@@ -266,6 +266,10 @@ func printRebalanceResult(result *transport.RebalanceResult) error {
 		_, _ = fmt.Fprintf(outputWriter, "MovesFailed:    %d\n", result.MovesFailed)
 		_, _ = fmt.Fprintf(outputWriter, "Duration:       %s\n", result.Duration)
 		_, _ = fmt.Fprintf(outputWriter, "FinalImbalance: %.4f\n", result.FinalImbalance)
+		for _, f := range result.Failures {
+			_, _ = fmt.Fprintf(outputWriter, "Failed:         shard %d %s -> %s step=%s: %s\n",
+				f.ShardID, f.FromNode, f.ToNode, f.Step, f.Error)
+		}
 		return nil
 	}
 }

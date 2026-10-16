@@ -190,6 +190,247 @@ func TestDurableLease_SurvivesRestartAndStillExpiresItsKeys(t *testing.T) {
 	}
 }
 
+// A checkpointed lease restarts from what it had left, not from a full TTL:
+// that is what stops a replica that restarts -- or becomes leader -- from
+// handing a dead holder's lease more time than it was renewed for. A replicated
+// keep-alive deletes the record, so the next restart is back to a full TTL.
+func TestDurableLease_RestartCountsFromTheCheckpoint(t *testing.T) {
+	for _, kind := range leaseSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+
+			n := openNode(t, kind, dir)
+			l, err := n.lease.Grant(ctx, 60)
+			if err != nil {
+				t.Fatalf("grant: %v", err)
+			}
+			// Entry 1 granted the lease. The first checkpoint, entry 2, starts
+			// the group recording renewals and is itself rejected; the second,
+			// sampled once entry 2 applied, records the 20s.
+			cp := service.NewLeaseCheckpointer(n.host, 1)
+			for _, sampled := range []uint64{1, 2} {
+				if err := cp.Checkpoint(ctx, 0, sampled, []lease.Checkpoint{{ID: l.ID, RemainingTTL: 20}}); err != nil {
+					t.Fatalf("checkpoint sampled at %d: %v", sampled, err)
+				}
+			}
+			n.stop(t)
+
+			n = openNode(t, kind, dir)
+			got, err := n.lease.TimeToLive(ctx, l.ID)
+			if err != nil {
+				t.Fatalf("lease %d did not survive the restart: %v", l.ID, err)
+			}
+			if got.GrantedTTL != 60 {
+				t.Fatalf("granted TTL after restart = %d, want 60", got.GrantedTTL)
+			}
+			if got.RemainingTTL > 20 || got.RemainingTTL < 18 {
+				t.Fatalf("remaining TTL after restart = %d, want the checkpointed 20", got.RemainingTTL)
+			}
+
+			if _, err := n.lease.KeepAlive(ctx, l.ID); err != nil {
+				t.Fatalf("keep-alive: %v", err)
+			}
+			n.stop(t)
+
+			n = openNode(t, kind, dir)
+			defer n.stop(t)
+			got, err = n.lease.TimeToLive(ctx, l.ID)
+			if err != nil {
+				t.Fatalf("lease %d did not survive the second restart: %v", l.ID, err)
+			}
+			if got.RemainingTTL < 58 {
+				t.Fatalf("remaining TTL after a keep-alive and restart = %d, want a full TTL (~60): the keep-alive left the checkpoint behind", got.RemainingTTL)
+			}
+		})
+	}
+}
+
+// leaseEntries encodes cmds as consecutive Raft log entries from index first,
+// the way a group's log delivers them, so a test sets every applied index the
+// checkpoint rule judges by.
+func leaseEntries(t *testing.T, first uint64, cmds ...func() ([]byte, error)) []sm.Entry {
+	t.Helper()
+	entries := make([]sm.Entry, len(cmds))
+	for i, encode := range cmds {
+		cmd, err := encode()
+		if err != nil {
+			t.Fatalf("encode entry %d: %v", first+uint64(i), err)
+		}
+		entries[i] = sm.Entry{Index: first + uint64(i), Cmd: cmd}
+	}
+	return entries
+}
+
+// supersededLog is the log of the #681 finding: a 600s grant (lease 1), the
+// first checkpoint, which starts the group recording renewals, a replicated
+// keep-alive, and a 100s checkpoint the leader sampled before that keep-alive.
+func supersededLog(t *testing.T) []sm.Entry {
+	t.Helper()
+	return leaseEntries(t, 1,
+		func() ([]byte, error) { return protocol.EncodeLeaseGrant(600) },
+		func() ([]byte, error) {
+			return protocol.EncodeLeaseCheckpoint(0, 1, []lease.Checkpoint{{ID: 1, RemainingTTL: 600}})
+		},
+		func() ([]byte, error) { return protocol.EncodeLeaseKeepAlive(1) },
+		func() ([]byte, error) {
+			return protocol.EncodeLeaseCheckpoint(0, 2, []lease.Checkpoint{{ID: 1, RemainingTTL: 100}})
+		},
+	)
+}
+
+// apply applies entries to the node's state machine in one batch.
+func (n *node) apply(t *testing.T, entries []sm.Entry) {
+	t.Helper()
+	results := make([]sm.Result, len(entries))
+	if err := n.sm.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+}
+
+// remaining is the TTL lease id has left on the node.
+func (n *node) remaining(t *testing.T, id int64) int64 {
+	t.Helper()
+	got, err := n.lease.TimeToLive(context.Background(), id)
+	if err != nil {
+		t.Fatalf("lease %d: %v", id, err)
+	}
+	return got.RemainingTTL
+}
+
+// A checkpoint sampled before a replicated keep-alive that applied ahead of it
+// is rejected, so the keep-alive's TTL stands -- on the replica that applied
+// it, after that replica restarts, on a replica recovered from a snapshot
+// taken before the checkpoint that then applies it, and on one that replays
+// the whole log (#681).
+func TestDurableLease_ARenewalSupersedesAnEarlierCheckpoint(t *testing.T) {
+	for _, kind := range leaseSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			ctx := context.Background()
+			log := supersededLog(t)
+
+			dir := t.TempDir()
+			n := openNode(t, kind, dir)
+			n.apply(t, log)
+			if got := n.remaining(t, 1); got != 600 {
+				t.Fatalf("remaining after the superseded checkpoint = %d, want 600", got)
+			}
+			n.stop(t)
+			n = openNode(t, kind, dir)
+			if got := n.remaining(t, 1); got < 598 {
+				t.Fatalf("restarted remaining = %d, want the renewal's 600", got)
+			}
+			n.stop(t)
+
+			leader := openNode(t, kind, t.TempDir())
+			defer leader.stop(t)
+			leader.apply(t, log[:3])
+			var buf bytes.Buffer
+			snap, err := leader.sm.PrepareSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := leader.sm.SaveSnapshot(ctx, snap, &buf, make(chan struct{})); err != nil {
+				t.Fatal(err)
+			}
+			recoveredDir := t.TempDir()
+			recovered := openNode(t, kind, recoveredDir)
+			if err := recovered.sm.RecoverFromSnapshot(ctx, &buf, make(chan struct{})); err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			recovered.apply(t, log[3:])
+			recovered.stop(t)
+			recovered = openNode(t, kind, recoveredDir)
+			defer recovered.stop(t)
+			if got := recovered.remaining(t, 1); got < 598 {
+				t.Fatalf("snapshot-recovered remaining = %d, want the renewal's 600", got)
+			}
+
+			replayed := openNode(t, kind, t.TempDir())
+			defer replayed.stop(t)
+			for _, e := range log {
+				replayed.apply(t, []sm.Entry{e})
+			}
+			if got := replayed.remaining(t, 1); got != 600 {
+				t.Fatalf("replayed remaining = %d, want the renewal's 600", got)
+			}
+		})
+	}
+}
+
+// A checkpoint no keep-alive superseded applies, and a restart counts from it.
+func TestDurableLease_AnUnsupersededCheckpointApplies(t *testing.T) {
+	for _, kind := range leaseSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			log := supersededLog(t)
+			unsuperseded := append(log[:2:2], leaseEntries(t, 3, func() ([]byte, error) {
+				return protocol.EncodeLeaseCheckpoint(0, 2, []lease.Checkpoint{{ID: 1, RemainingTTL: 100}})
+			})...)
+
+			dir := t.TempDir()
+			n := openNode(t, kind, dir)
+			n.apply(t, unsuperseded)
+			n.stop(t)
+			n = openNode(t, kind, dir)
+			defer n.stop(t)
+			if got := n.remaining(t, 1); got > 100 || got < 98 {
+				t.Fatalf("restarted remaining = %d, want the checkpointed 100", got)
+			}
+		})
+	}
+}
+
+// With the lease-checkpoint gate off no checkpoint is ever proposed, so the
+// group never starts recording renewals: a keep-alive writes nothing beyond
+// what it wrote before the rule, and a restart is back to a full TTL.
+func TestDurableLease_WithoutACheckpointRenewalsAreNotRecorded(t *testing.T) {
+	for _, kind := range leaseSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			n := openNode(t, kind, dir)
+			n.apply(t, supersededLog(t)[:1])
+			n.apply(t, leaseEntries(t, 2, func() ([]byte, error) { return protocol.EncodeLeaseKeepAlive(1) }))
+
+			var buf bytes.Buffer
+			snap, err := n.sm.PrepareSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := n.sm.SaveSnapshot(ctx, snap, &buf, make(chan struct{})); err != nil {
+				t.Fatal(err)
+			}
+			// The control: a group that did apply a checkpoint carries both
+			// records in its snapshot, so their absence above is a finding.
+			control := openNode(t, kind, t.TempDir())
+			defer control.stop(t)
+			control.apply(t, supersededLog(t)[:3])
+			var controlBuf bytes.Buffer
+			controlSnap, err := control.sm.PrepareSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := control.sm.SaveSnapshot(ctx, controlSnap, &controlBuf, make(chan struct{})); err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range []string{lease.TablePrefix + "r/", lease.TablePrefix + "rfrom"} {
+				if bytes.Contains(buf.Bytes(), []byte(k)) {
+					t.Fatalf("snapshot carries %q with no checkpoint applied", k)
+				}
+				if !bytes.Contains(controlBuf.Bytes(), []byte(k)) {
+					t.Fatalf("control snapshot lacks %q: the absence check cannot fail", k)
+				}
+			}
+			n.stop(t)
+			n = openNode(t, kind, dir)
+			defer n.stop(t)
+			if got := n.remaining(t, 1); got < 598 {
+				t.Fatalf("restarted remaining = %d, want a full 600", got)
+			}
+		})
+	}
+}
+
 func TestDurableLease_IDsAreNotReusedAfterRestart(t *testing.T) {
 	for _, kind := range leaseSMKinds {
 		t.Run(kind.name, func(t *testing.T) {

@@ -740,7 +740,8 @@ func WithCertProvider(svc cert.CertProvider) ServerOption {
 }
 
 // WithCertEnrollment attaches the certificate enrolment service behind
-// POST /certs/issue, POST /certs/enroll and the tenant trust-anchor routes.
+// POST /certs/issue, POST /certs/enroll, POST /certs/delegate and the tenant
+// trust-anchor routes.
 func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(s *Server) { s.certEnrollment = svc }
 }
@@ -1833,6 +1834,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(adminOn, http.MethodGet, "/admin/replica-states", permission.AdminReplicaState, s.handleGetReplicaStates)
 	s.routeIf(adminOn, http.MethodGet, "/admin/node-compaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
 	s.routeIf(adminOn, http.MethodPut, "/admin/node-compaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
+	s.routeIf(adminOn, http.MethodGet, "/admin/state-hashes", permission.AdminStateHash, s.handleGetStateHashes)
 
 	// Admin per-shard path-param routes (always attached; the handler
 	// nil-checks the admin service).
@@ -2252,6 +2254,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/v1/users/factors/list", permission.UserAuthFactorsList, s.handleUserAuthFactorList)
 	s.route(http.MethodPost, "/v1/users/factors/login", permission.UserAuthFactorsLogin, s.handleUserAuthFactorLogin)
 	s.route(http.MethodPost, "/v1/users/factors/rotate", permission.UserAuthFactorsRotate, s.handleUserAuthFactorRotate)
+	s.route(http.MethodPost, "/v1/users/factors/delete", permission.UserAuthFactorsAdd, s.handleUserAuthFactorDelete)
 	s.route(http.MethodGet, "/v1/users/factors/{id}", permission.UserAuthFactorsGet, s.handleUserAuthFactorByPath)
 	s.route(http.MethodDelete, "/v1/users/factors/{id}", permission.UserAuthFactorsRemove, s.handleUserAuthFactorByPath)
 	s.route(http.MethodPut, "/v1/users/factors/{id}/label", permission.UserAuthFactorsRelabel, s.handleUserAuthFactorByPath)
@@ -2261,6 +2264,7 @@ func (s *Server) registerRoutes() {
 	enrollOn := s.certEnrollment != nil
 	s.routeIf(enrollOn, http.MethodPost, "/certs/issue", permission.CertsIssue, s.handleIssueCert)
 	s.routeIf(enrollOn, http.MethodPost, "/certs/enroll", permission.CertsEnroll, s.handleEnrollCert)
+	s.routeIf(enrollOn, http.MethodPost, "/certs/delegate", permission.CertsDelegate, s.handleIssueDelegation)
 	s.routeIf(certsOn, http.MethodPost, "/certs/revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.routeIf(certsOn, http.MethodGet, "/certs/list", permission.CertsList, s.handleListCerts)
 

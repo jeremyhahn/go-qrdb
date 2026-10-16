@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -311,33 +312,6 @@ func TestClonePlacementWithReplica_AddsReplicaAndUpdatesRF(t *testing.T) {
 	// Original must be unchanged.
 	if p.RF != 2 {
 		t.Fatalf("original RF modified, got %d", p.RF)
-	}
-}
-
-func TestDropReplicaFromPlacement_RemovesReplicaAndUpdatesRF(t *testing.T) {
-	p := newTestPlacement("t", "db", 1)
-	result := dropReplicaFromPlacement(p, 1)
-
-	if result.RF != 1 {
-		t.Fatalf("expected RF 1, got %d", result.RF)
-	}
-	if len(result.Replicas) != 1 {
-		t.Fatalf("expected 1 replica, got %d", len(result.Replicas))
-	}
-	if result.Replicas[0].ReplicaID != 2 {
-		t.Fatalf("expected remaining replica ID 2, got %d", result.Replicas[0].ReplicaID)
-	}
-	// Original must be unchanged.
-	if p.RF != 2 {
-		t.Fatalf("original RF modified")
-	}
-}
-
-func TestDropReplicaFromPlacement_UnknownIDIsNoop(t *testing.T) {
-	p := newTestPlacement("t", "db", 1)
-	result := dropReplicaFromPlacement(p, 999)
-	if result.RF != 2 {
-		t.Fatalf("expected RF 2, got %d", result.RF)
 	}
 }
 
@@ -956,7 +930,7 @@ func TestMoveTenantGroupShard_RemovePlacementFailure(t *testing.T) {
 	if putErr := store.Put(context.Background(), p); putErr != nil { // put #1: initial seed
 		t.Fatalf("initial Put: %v", putErr)
 	}
-	kv.failOnPutN = 3 // put #2 (add dst) succeeds; put #3 (remove src) fails.
+	kv.failOnPutN = 3 // put #2 (add dst) succeeds; put #3 (the snapshot fence before evicting src) fails.
 
 	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
 	svc := &RebalanceService{
@@ -987,14 +961,108 @@ func TestMoveTenantGroupShard_RemovePlacementFailure(t *testing.T) {
 	}
 }
 
+// TestMoveTenantGroupShard_RemovePlacementFailureAfterEviction verifies a
+// placement write failing after the source's Raft eviction still fails the
+// MOVE with step "remove-placement": the eviction ran exactly once, and the
+// source is left listed for the caller to retry rather than reported moved.
+func TestMoveTenantGroupShard_RemovePlacementFailureAfterEviction(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+
+	kv := &failingPutKV{inner: newMemPlacementKV()}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	if putErr := store.Put(context.Background(), p); putErr != nil { // put #1: initial seed
+		t.Fatalf("initial Put: %v", putErr)
+	}
+	kv.failOnPutN = 4 // #2 add dst, #3 snapshot fence, #4 drop src after the eviction.
+
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err = svc.moveTenantGroupShard(context.Background(), move, p)
+	var mve *RebalanceMoveError
+	if !errors.As(err, &mve) {
+		t.Fatalf("expected *RebalanceMoveError, got %T (%v)", err, err)
+	}
+	if mve.Step != "remove-placement" {
+		t.Fatalf("expected step remove-placement, got %q", mve.Step)
+	}
+	if len(host.removeCalls) != 1 || host.removeCalls[0].replicaID != 1 {
+		t.Fatalf("removeCalls = %+v, want exactly 1 eviction of src replica 1", host.removeCalls)
+	}
+	current, getErr := store.Get(context.Background(), p.TenantID, p.Database)
+	if getErr != nil {
+		t.Fatalf("store.Get: %v", getErr)
+	}
+	if _, ok := current.ReplicaForNode("node-a:9100"); !ok {
+		t.Error("src must still be listed when its placement drop failed")
+	}
+}
+
+// TestMoveTenantGroupShard_EvictsSourceBeforeDroppingPlacement verifies the
+// MOVE evicts the source from Raft while the placement still lists it. The
+// placement is what stops the source's shard, and in a two-voter group the
+// removal commits only with the source's own vote.
+func TestMoveTenantGroupShard_EvictsSourceBeforeDroppingPlacement(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+
+	srcListed := false
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	host.onRemove = func() {
+		current, err := store.Get(context.Background(), p.TenantID, p.Database)
+		if err != nil {
+			t.Errorf("store.Get during eviction: %v", err)
+			return
+		}
+		_, srcListed = current.ReplicaForNode("node-a:9100")
+	}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
+		t.Fatalf("moveTenantGroupShard: %v", err)
+	}
+	if len(host.removeCalls) != 1 {
+		t.Fatalf("removeCalls = %+v, want exactly 1", host.removeCalls)
+	}
+	if !srcListed {
+		t.Error("src was dropped from the placement before its Raft eviction")
+	}
+	current, err := store.Get(context.Background(), p.TenantID, p.Database)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if _, ok := current.ReplicaForNode("node-a:9100"); ok {
+		t.Error("src must be dropped from the placement once evicted")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // moveTenantGroupShard: RemoveFollowerNode failure
 // ---------------------------------------------------------------------------
 
 // TestMoveTenantGroupShard_RemoveNodeFailure verifies a failing
-// RemoveFollowerNode fails the whole MOVE with step "remove-node", but the
-// placement already reflects the intended post-move state (dst in, src out)
-// -- mirroring DatabaseService.scaleDown's identical contract.
+// RemoveFollowerNode fails the whole MOVE with step "remove-node" and leaves
+// the source in the placement: the placement is what stops the source's
+// shard, and the source must keep running -- and voting -- while it is still
+// a member of the group (see removeReplicaFromGroup). Mirrors
+// DatabaseService.scaleDown's identical contract.
 func TestMoveTenantGroupShard_RemoveNodeFailure(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
@@ -1025,26 +1093,30 @@ func TestMoveTenantGroupShard_RemoveNodeFailure(t *testing.T) {
 		t.Fatal("expected underlying removeErr")
 	}
 
-	// Placement MUST have been updated (dst added, src removed) even though
-	// the Raft RemoveFollowerNode call failed.
+	// The destination is admitted, and the source is still listed: Raft
+	// never evicted it, so dropping it from the placement would stop a
+	// replica the group still counts toward its quorum.
 	current, getErr := store.Get(context.Background(), p.TenantID, p.Database)
 	if getErr != nil {
 		t.Fatalf("store.Get: %v", getErr)
 	}
-	if len(current.Replicas) != 2 {
-		t.Fatalf("expected 2 replicas after placement update, got %d", len(current.Replicas))
+	if len(current.Replicas) != 3 {
+		t.Fatalf("expected 3 replicas (src kept, dst added), got %d", len(current.Replicas))
 	}
-	foundDst := false
+	foundDst, foundSrc := false, false
 	for _, r := range current.Replicas {
-		if r.NodeID == "node-c:9100" {
+		switch r.NodeID {
+		case "node-c:9100":
 			foundDst = true
-		}
-		if r.NodeID == "node-a:9100" {
-			t.Error("src replica should have been removed from placement")
+		case "node-a:9100":
+			foundSrc = true
 		}
 	}
 	if !foundDst {
 		t.Error("dst replica should be present in updated placement")
+	}
+	if !foundSrc {
+		t.Error("src replica must stay in the placement while it is still a Raft member")
 	}
 }
 
@@ -1295,6 +1367,16 @@ func TestExecuteRebalance_DedicatedTenantShard_FailureCounted(t *testing.T) {
 	if result.MovesCompleted != 0 {
 		t.Fatalf("expected 0 completed, got %d", result.MovesCompleted)
 	}
+	// The report names the failed move, the phase it failed in and why, so
+	// an operator reading moves_failed=1 is not left guessing.
+	if len(result.Failures) != 1 {
+		t.Fatalf("expected 1 failure entry, got %+v", result.Failures)
+	}
+	f := result.Failures[0]
+	if f.ShardID != 10 || f.FromNode != "node-a:9100" || f.ToNode != "node-c:9100" ||
+		f.Step != "add-observer" || !strings.Contains(f.Error, "add failed") {
+		t.Fatalf("failure entry = %+v, want shard 10 node-a -> node-c step add-observer carrying the cause", f)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1416,6 +1498,51 @@ func TestExecuteRebalance_PlacementListFailure_FailsClosed(t *testing.T) {
 	var storeErr *placement.StoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("expected the cause to unwrap to *placement.StoreError, got %v", err)
+	}
+}
+
+// TestExecuteRebalance_PlacementListFailure_FailsWithoutMoving pins that a
+// plan is not executed against a placement index that could not be read. A
+// dedicated-tenant shard missing from the index would take the generic path:
+// on a node outside its group that fails as "shard not found", and on a
+// member it would add a Raft replica with no placement record and no keys.
+func TestExecuteRebalance_PlacementListFailure_FailsWithoutMoving(t *testing.T) {
+	store := newScanFailingPlacementStore(t)
+
+	addCalls := 0
+	host := &mockHost{
+		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				ShardInfoList: []quicraft.ShardInfo{
+					{ShardID: 5, Nodes: map[uint64]string{1: "node-a:9100"}},
+				},
+			}
+		},
+		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
+			addCalls++
+			return newCompletedRequestState(quicraft.RequestResult{}), nil
+		},
+	}
+	svc := NewRebalanceService(host, WithRebalancePlacementStore(store))
+
+	result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{
+		Moves: []RebalanceMovePlan{
+			{ShardID: 5, FromNode: "node-a:9100", ToNode: "node-b:9100"},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected an error, got result %+v", result)
+	}
+	var readErr *RebalancePlacementReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("error = %v, want *RebalancePlacementReadError", err)
+	}
+	var storeErr *placement.StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("error = %v, want it to wrap *placement.StoreError", err)
+	}
+	if addCalls != 0 {
+		t.Fatalf("RequestAddNode called %d time(s); no move may run without the placement index", addCalls)
 	}
 }
 

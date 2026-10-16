@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -28,7 +29,7 @@ import (
 // hangingRoleService never answers on its own: ResolvePermissions blocks
 // until the context passed to it is done, then reports the context's own
 // error. It is the faithful double for a stalled ReadIndex pipeline -- the
-// condition resolveSyncTimeout exists to bound -- rather than one that
+// condition resolveSyncTimeout and resolveTimeout exist to bound -- rather than one that
 // returns an error immediately, which would never exercise the timeout at
 // all. The embedded nil role.RoleServicer panics if any other method is
 // called, which no path under test should reach.
@@ -53,6 +54,8 @@ func (hangingRoleService) ResolvePermissions(ctx context.Context, _ []string) ([
 // deadline of its own, so the test can only pass if resolvePermissionSet
 // applies its OWN bound.
 func TestResolvePermissionSet_BoundsThePrimaryResolveForANonSystemTenant(t *testing.T) {
+	// Waits out resolveTimeout; parallel so the package pays it once.
+	t.Parallel()
 	identity := &auth.Identity{Subject: "reader", TenantID: "acme", Roles: []string{"acme-reader-role"}}
 
 	// No fallback configured at all: useFallback is false for every tenant,
@@ -69,7 +72,7 @@ func TestResolvePermissionSet_BoundsThePrimaryResolveForANonSystemTenant(t *test
 		t.Fatalf("err = %v (%T), want *ResolveError wrapping context.DeadlineExceeded", err, err)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ResolveError should carry context.DeadlineExceeded from resolveSyncTimeout firing, got %v", err)
+		t.Fatalf("ResolveError should carry context.DeadlineExceeded from the resolve's own bound firing, got %v", err)
 	}
 }
 
@@ -79,6 +82,8 @@ func TestResolvePermissionSet_BoundsThePrimaryResolveForANonSystemTenant(t *test
 // a.rolesFallback != nil, which is nil here) -- the budget is no longer tied
 // to fallback availability at all.
 func TestResolvePermissionSet_SystemTenantStillBoundedWithoutFallback(t *testing.T) {
+	// Waits out resolveTimeout; parallel so the package pays it once.
+	t.Parallel()
 	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"admin"}}
 
 	err := New(hangingRoleService{}).
@@ -92,6 +97,54 @@ func TestResolvePermissionSet_SystemTenantStillBoundedWithoutFallback(t *testing
 		t.Fatalf("err = %v (%T), want *ResolveError wrapping context.DeadlineExceeded", err, err)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ResolveError should carry context.DeadlineExceeded from resolveSyncTimeout firing, got %v", err)
+		t.Fatalf("ResolveError should carry context.DeadlineExceeded from the resolve's own bound firing, got %v", err)
+	}
+}
+
+// budgetRecordingRoleService records how long the context it was handed had
+// left to run and answers with err, so a test can tell which budget
+// resolvePermissionSet applied without waiting it out.
+type budgetRecordingRoleService struct {
+	role.RoleServicer
+	perms  []permission.Permission
+	err    error
+	budget time.Duration
+}
+
+func (s *budgetRecordingRoleService) ResolvePermissions(ctx context.Context, _ []string) ([]permission.Permission, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.budget = time.Until(deadline)
+	}
+	return s.perms, s.err
+}
+
+// TestResolvePermissionSet_BudgetFollowsTheFallback pins which bound the
+// primary resolve gets. With nothing to fail over to, the sub-second
+// fail-over budget only refused requests that a read slowed by a leader
+// election would have answered; with a fallback, the short budget is what
+// makes the failover prompt.
+func TestResolvePermissionSet_BudgetFollowsTheFallback(t *testing.T) {
+	stalled := errors.New("quicraft: timeout")
+	for name, tc := range map[string]struct {
+		tenantID string
+		fallback bool
+		min, max time.Duration
+	}{
+		"non-system tenant, no fallback":               {tenantID: "acme", min: resolveSyncTimeout, max: resolveTimeout},
+		"non-system tenant, fallback holds another":    {tenantID: "acme", fallback: true, min: resolveSyncTimeout, max: resolveTimeout},
+		"system tenant, no fallback configured":        {tenantID: tenantid.System, min: resolveSyncTimeout, max: resolveTimeout},
+		"system tenant, fallback answers in its place": {tenantID: tenantid.System, fallback: true, max: resolveSyncTimeout},
+	} {
+		t.Run(name, func(t *testing.T) {
+			primary := &budgetRecordingRoleService{err: stalled}
+			var opts []Option
+			if tc.fallback {
+				opts = append(opts, WithRoleServiceFallback(&budgetRecordingRoleService{perms: []permission.Permission{permission.KVGet}}))
+			}
+			_, _ = New(primary, opts...).resolvePermissionSet(context.Background(), tc.tenantID, "alice", []string{"r"})
+			if primary.budget <= tc.min || primary.budget > tc.max {
+				t.Fatalf("primary resolve budget = %v, want in (%v, %v]", primary.budget, tc.min, tc.max)
+			}
+		})
 	}
 }

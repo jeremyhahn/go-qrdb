@@ -80,7 +80,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [capabilities](capabilities/) | the effective runtime feature profile: build tags, run mode and configuration |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
-| [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
+| [deployment](deployment/) | host requirements — locked memory, container and systemd caps, the listener and firewall table |
 | [release](release/) | cutting a release: `make release-alpha`, VERSION as the release record, lockstep module tags, the Release workflow's post-publish validation |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
 | [replica-forwarding](replica-forwarding/) | a node that holds no replica of a database forwards the request to its replica leader, on the caller's behalf, on REST, gRPC, QUIC, MCP and embedded; Unix is the documented coverage gap |

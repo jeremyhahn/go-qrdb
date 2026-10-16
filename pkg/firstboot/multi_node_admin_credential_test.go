@@ -167,43 +167,35 @@ func TestMultiNode_ExactlyOneCredentialWinsAndIsBound(t *testing.T) {
 	// SAME replicated pending-cert record via ResolveAdminCertForFirstBoot
 	// would do. In a real deployment "only the leader may create" bounds
 	// this to one writer at a time; raw N-way concurrency on the SAME
-	// record is a strictly HARDER case than that, and the underlying
-	// store's own optimistic-concurrency guard legitimately refuses a
-	// write that raced another -- not a correctness bug, the same reason
-	// every other crash/retry path in this package converges on a retry
-	// rather than succeeding unconditionally on the first attempt. Each
-	// node retries its OWN transient conflict (bounded) until it converges
-	// or genuinely fails for a reason that is not a race.
+	// record is a strictly HARDER case than that.
+	//
+	// Each node runs Initialize ONCE and must succeed: a node that loses the
+	// admin create converges on the winner's admin inside Initialize
+	// (go-qrdb#668). A retry loop here would hide exactly that failure -- a
+	// loser refusing the winner's in-flight create -- behind a later attempt
+	// that finds the record written.
 	binder := UserCertBinder{Users: userSvc}
-	runNode := func(i int) error {
-		const attempts = 20
-		var lastErr error
-		for attempt := 0; attempt < attempts; attempt++ {
-			_, err := Initialize(context.Background(), Dependencies{
-				Tenants: tenantSvc, Users: userSvc, Roles: &fakeRoles{}, Logger: discardLogger(),
-				AdminCertPEM: winningCertPEM, AdminCertPool: ca.pool,
-				Binder: binder,
-			})
-			if err == nil {
-				return nil
-			}
-			lastErr = err
-		}
-		return lastErr
+	runNode := func() error {
+		_, err := Initialize(context.Background(), Dependencies{
+			Tenants: tenantSvc, Users: userSvc, Roles: &fakeRoles{}, Logger: discardLogger(),
+			AdminCertPEM: winningCertPEM, AdminCertPool: ca.pool,
+			Binder: binder,
+		})
+		return err
 	}
 	initErrs := make([]error, nodes)
 	for i := 0; i < nodes; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			initErrs[i] = runNode(i)
+			initErrs[i] = runNode()
 		}(i)
 	}
 	wg.Wait()
 
 	for i, err := range initErrs {
 		if err != nil {
-			t.Fatalf("node %d Initialize (after retries): %v", i, err)
+			t.Fatalf("node %d Initialize: %v", i, err)
 		}
 	}
 

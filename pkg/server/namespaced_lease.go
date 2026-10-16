@@ -107,21 +107,29 @@ func (s *namespacedLeaseService) stripLease(l *lease.Lease) *lease.Lease {
 }
 
 // owned returns lease id when this namespace owns it, and
-// service.LeaseNotFoundError otherwise.
-func (s *namespacedLeaseService) owned(ctx context.Context, id int64) (*lease.Lease, error) {
+// service.LeaseNotFoundError otherwise. Ownership is replicated, so it is
+// decided here even on a node whose replica does not lead the shard; the
+// lease's remaining TTL is not, and such a node also returns the
+// *service.LeaseTTLNotLeaderError its TimeToLive answered, for TimeToLive to
+// pass on. A lease another namespace owns is not found whichever node answers.
+func (s *namespacedLeaseService) owned(ctx context.Context, id int64) (*lease.Lease, *service.LeaseTTLNotLeaderError, error) {
 	l, err := s.inner.TimeToLive(ctx, id)
+	var stale *service.LeaseTTLNotLeaderError
+	if errors.As(err, &stale) {
+		l, err = stale.Lease, nil
+	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !s.owns(l) {
-		return nil, &service.LeaseNotFoundError{LeaseID: id}
+		return nil, nil, &service.LeaseNotFoundError{LeaseID: id}
 	}
-	return l, nil
+	return l, stale, nil
 }
 
 // requireOwned implements leaseOwnership.
 func (s *namespacedLeaseService) requireOwned(ctx context.Context, leaseID int64) error {
-	_, err := s.owned(ctx, leaseID)
+	_, _, err := s.owned(ctx, leaseID)
 	return err
 }
 
@@ -164,7 +172,7 @@ func (s *namespacedLeaseService) Grant(ctx context.Context, ttl int64) (*lease.L
 // allocated in sequence and a not-yet-granted ID passed through could revoke
 // another namespace's lease granted in between.
 func (s *namespacedLeaseService) Revoke(ctx context.Context, leaseID int64) error {
-	if _, err := s.owned(ctx, leaseID); err != nil {
+	if _, _, err := s.owned(ctx, leaseID); err != nil {
 		var notFound *service.LeaseNotFoundError
 		if errors.As(err, &notFound) {
 			return nil
@@ -176,7 +184,7 @@ func (s *namespacedLeaseService) Revoke(ctx context.Context, leaseID int64) erro
 
 // KeepAlive resets the TTL on a lease this namespace owns.
 func (s *namespacedLeaseService) KeepAlive(ctx context.Context, leaseID int64) (*lease.Lease, error) {
-	if _, err := s.owned(ctx, leaseID); err != nil {
+	if _, _, err := s.owned(ctx, leaseID); err != nil {
 		return nil, err
 	}
 	l, err := s.inner.KeepAlive(ctx, leaseID)
@@ -187,11 +195,16 @@ func (s *namespacedLeaseService) KeepAlive(ctx context.Context, leaseID int64) (
 }
 
 // TimeToLive returns the current state of a lease this namespace owns, with
-// attached keys presented within the namespace.
+// attached keys presented within the namespace. On a node whose replica does
+// not lead the shard it answers the leader's refusal, carrying the lease as
+// presented within the namespace, for the transport to forward.
 func (s *namespacedLeaseService) TimeToLive(ctx context.Context, leaseID int64) (*lease.Lease, error) {
-	l, err := s.owned(ctx, leaseID)
+	l, stale, err := s.owned(ctx, leaseID)
 	if err != nil {
 		return nil, err
+	}
+	if stale != nil {
+		return nil, &service.LeaseTTLNotLeaderError{NotLeaderError: stale.NotLeaderError, Lease: s.stripLease(l)}
 	}
 	return s.stripLease(l), nil
 }

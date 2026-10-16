@@ -39,6 +39,7 @@ type mockUserAuthFactorSvc struct {
 	getErr      error
 	lookupErr   error
 	removeErr   error
+	deleteErr   error
 	rotateErr   error
 	relabelErr  error
 	markUsedErr error
@@ -51,10 +52,14 @@ type mockUserAuthFactorSvc struct {
 	lastLookupKey []byte
 	lastRemoveID  string
 	lastRemoveF   bool
+	lastDeleteID  string
+	lastDeleteF   bool
 	lastRotateOld string
 	lastRotateNew *auth.AuthFactor
 	lastRelabelID string
 	lastRelabel   string
+	lastCond      *auth.FactorAddCondition
+	setVersion    uint64
 
 	getResp    *auth.AuthFactor
 	listResp   []*auth.AuthFactor
@@ -138,6 +143,14 @@ func (m *mockUserAuthFactorSvc) Remove(_ context.Context, factorID string, force
 	return m.removeErr
 }
 
+func (m *mockUserAuthFactorSvc) Delete(_ context.Context, factorID string, force bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastDeleteID = factorID
+	m.lastDeleteF = force
+	return m.deleteErr
+}
+
 func (m *mockUserAuthFactorSvc) Rotate(_ context.Context, oldID string, newFactor *auth.AuthFactor) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -163,6 +176,25 @@ func (m *mockUserAuthFactorSvc) Relabel(_ context.Context, factorID string, labe
 
 func (m *mockUserAuthFactorSvc) MarkUsed(_ context.Context, _ string, _ time.Time) error {
 	return m.markUsedErr
+}
+
+// AddConditional records the condition it was handed and adds like Add; it
+// decides nothing, so a test asserts what crossed the wire, not the guard.
+func (m *mockUserAuthFactorSvc) AddConditional(ctx context.Context, userID uint64, factor *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error) {
+	if err := m.Add(ctx, userID, factor); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastCond = &cond
+	m.setVersion++
+	return m.setVersion, nil
+}
+
+func (m *mockUserAuthFactorSvc) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.setVersion, nil
 }
 
 // connectUserAuthFactorInProcess builds an in-process MCP server with both
@@ -225,6 +257,108 @@ func TestAddAuthFactor_ServiceError(t *testing.T) {
 		UserID: 1, Type: "mtls", Credential: []byte("x"),
 	}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestAddAuthFactor_forwardsTheCondition(t *testing.T) {
+	version := uint64(7)
+	for name, tc := range map[string]struct {
+		req  transport.AuthFactorAddRequest
+		want auth.FactorAddCondition
+	}{
+		"if-no-active-type": {
+			req:  transport.AuthFactorAddRequest{IfNoActiveType: true},
+			want: auth.FactorAddCondition{NoActiveOfType: true},
+		},
+		"expected-version": {
+			req:  transport.AuthFactorAddRequest{ExpectedFactorSetVersion: &version},
+			want: auth.FactorAddCondition{ExpectedVersion: &version},
+		},
+		"both": {
+			req:  transport.AuthFactorAddRequest{IfNoActiveType: true, ExpectedFactorSetVersion: &version},
+			want: auth.FactorAddCondition{NoActiveOfType: true, ExpectedVersion: &version},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockUserAuthFactorSvc()
+			tr, cleanup := connectUserAuthFactorInProcess(t, svc)
+			defer cleanup()
+
+			req := tc.req
+			req.UserID, req.Type, req.Label, req.Credential = 42, "piv", "card", []byte("cred")
+			resp, err := tr.AddAuthFactor(context.Background(), &req)
+			if err != nil {
+				t.Fatalf("AddAuthFactor: %v", err)
+			}
+			if resp.FactorSetVersion != 1 || resp.Factor.ID == "" {
+				t.Fatalf("resp = %+v, want the record at factor-set version 1", resp)
+			}
+			svc.mu.Lock()
+			defer svc.mu.Unlock()
+			got := svc.lastCond
+			if got == nil || got.NoActiveOfType != tc.want.NoActiveOfType ||
+				(got.ExpectedVersion == nil) != (tc.want.ExpectedVersion == nil) ||
+				(got.ExpectedVersion != nil && *got.ExpectedVersion != *tc.want.ExpectedVersion) {
+				t.Fatalf("service saw condition %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAddAuthFactor_unconditionalSendsNoCondition(t *testing.T) {
+	svc := newMockUserAuthFactorSvc()
+	tr, cleanup := connectUserAuthFactorInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.AddAuthFactor(context.Background(), &transport.AuthFactorAddRequest{UserID: 42, Type: "piv", Credential: []byte("cred")})
+	if err != nil {
+		t.Fatalf("AddAuthFactor: %v", err)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastCond != nil || resp.FactorSetVersion != 0 {
+		t.Fatalf("unconditional add reached AddConditional (%+v) or reported version %d", svc.lastCond, resp.FactorSetVersion)
+	}
+}
+
+func TestListAuthFactors_reportsTheFactorSetVersion(t *testing.T) {
+	svc := newMockUserAuthFactorSvc()
+	svc.setVersion = 5
+	tr, cleanup := connectUserAuthFactorInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.ListAuthFactors(context.Background(), &transport.AuthFactorListRequest{UserID: 42})
+	if err != nil {
+		t.Fatalf("ListAuthFactors: %v", err)
+	}
+	if resp.FactorSetVersion != 5 {
+		t.Fatalf("FactorSetVersion = %d, want 5", resp.FactorSetVersion)
+	}
+}
+
+// TestRotateAuthFactor_refusesAnAddCondition pins that a rotation naming an
+// add condition is refused before any tool call reaches the server.
+func TestRotateAuthFactor_refusesAnAddCondition(t *testing.T) {
+	version := uint64(3)
+	for name, newFactor := range map[string]transport.AuthFactorAddRequest{
+		"if-no-active-type": {Type: "piv", IfNoActiveType: true},
+		"expected-version":  {Type: "piv", ExpectedFactorSetVersion: &version},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockUserAuthFactorSvc()
+			tr, cleanup := connectUserAuthFactorInProcess(t, svc)
+			defer cleanup()
+
+			_, err := tr.RotateAuthFactor(context.Background(), &transport.AuthFactorRotateRequest{OldFactorID: "f-1", NewFactor: newFactor})
+			if _, ok := errors.AsType[*auth.InvalidFactorError](err); !ok {
+				t.Fatalf("err = %v, want an InvalidFactorError", err)
+			}
+			svc.mu.Lock()
+			defer svc.mu.Unlock()
+			if svc.lastRotateOld != "" {
+				t.Fatalf("the rotation reached the service for %q", svc.lastRotateOld)
+			}
+		})
 	}
 }
 
@@ -315,6 +449,42 @@ func TestRemoveAuthFactor_ServiceError(t *testing.T) {
 
 	if _, err := tr.RemoveAuthFactor(context.Background(), &transport.AuthFactorRemoveRequest{FactorID: "x"}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteAuthFactor
+// ---------------------------------------------------------------------------
+
+func TestDeleteAuthFactor_Success(t *testing.T) {
+	svc := newMockUserAuthFactorSvc()
+	tr, cleanup := connectUserAuthFactorInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "f-1", Force: true})
+	if err != nil {
+		t.Fatalf("DeleteAuthFactor: %v", err)
+	}
+	if resp.Status != "deleted" {
+		t.Errorf("Status = %q, want deleted", resp.Status)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastDeleteID != "f-1" || !svc.lastDeleteF {
+		t.Errorf("service saw (%q, %v), want (f-1, true)", svc.lastDeleteID, svc.lastDeleteF)
+	}
+}
+
+func TestDeleteAuthFactor_ServiceError(t *testing.T) {
+	svc := newMockUserAuthFactorSvc()
+	svc.deleteErr = errors.New("delete failed")
+	tr, cleanup := connectUserAuthFactorInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "x"})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.Method != "DeleteAuthFactor" {
+		t.Fatalf("err = %v, want a DeleteAuthFactor RequestError", err)
 	}
 }
 

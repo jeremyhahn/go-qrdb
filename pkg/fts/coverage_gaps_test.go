@@ -3,6 +3,7 @@
 package fts
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"sort"
@@ -29,12 +30,13 @@ type errBatch struct {
 	commitErr error
 }
 
-func (b *errBatch) Set(_, _ []byte) error        { return b.setErr }
-func (b *errBatch) Delete(_ []byte) error        { return b.deleteErr }
-func (b *errBatch) Get(_ []byte) ([]byte, error) { return nil, nil }
-func (b *errBatch) Commit() error                { return b.commitErr }
-func (b *errBatch) Rollback() error              { return nil }
-func (b *errBatch) Close() error                 { return nil }
+func (b *errBatch) Set(_, _ []byte) error         { return b.setErr }
+func (b *errBatch) Delete(_ []byte) error         { return b.deleteErr }
+func (b *errBatch) DeleteRange(_, _ []byte) error { return b.deleteErr }
+func (b *errBatch) Get(_ []byte) ([]byte, error)  { return nil, nil }
+func (b *errBatch) Commit() error                 { return b.commitErr }
+func (b *errBatch) Rollback() error               { return nil }
+func (b *errBatch) Close() error                  { return nil }
 func (b *errBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
 	return newStaticIterator(nil)
 }
@@ -43,12 +45,13 @@ func (b *errBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
 // empty batch, for the same reason as errBatch above.
 type nopBatch struct{}
 
-func (b *nopBatch) Set(_, _ []byte) error        { return nil }
-func (b *nopBatch) Delete(_ []byte) error        { return nil }
-func (b *nopBatch) Get(_ []byte) ([]byte, error) { return nil, nil }
-func (b *nopBatch) Commit() error                { return nil }
-func (b *nopBatch) Rollback() error              { return nil }
-func (b *nopBatch) Close() error                 { return nil }
+func (b *nopBatch) Set(_, _ []byte) error         { return nil }
+func (b *nopBatch) Delete(_ []byte) error         { return nil }
+func (b *nopBatch) DeleteRange(_, _ []byte) error { return nil }
+func (b *nopBatch) Get(_ []byte) ([]byte, error)  { return nil, nil }
+func (b *nopBatch) Commit() error                 { return nil }
+func (b *nopBatch) Rollback() error               { return nil }
+func (b *nopBatch) Close() error                  { return nil }
 func (b *nopBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
 	return newStaticIterator(nil)
 }
@@ -134,6 +137,23 @@ func (s *baseStorage) Delete(key []byte) error {
 	delete(s.data, string(key))
 	return nil
 }
+func (s *baseStorage) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	for k := range s.data {
+		if inDeleteRange([]byte(k), start, end) {
+			delete(s.data, k)
+		}
+	}
+	return nil
+}
+
+// inDeleteRange reports whether key falls in [start, end); a nil end runs to
+// the end of the keyspace, as storage.Storage.DeleteRange defines it.
+func inDeleteRange(key, start, end []byte) bool {
+	return bytes.Compare(key, start) >= 0 && (len(end) == 0 || bytes.Compare(key, end) < 0)
+}
 func (s *baseStorage) List(_ []byte) ([][]byte, error) { return nil, nil }
 func (s *baseStorage) Exists(key []byte) (bool, error) { _, ok := s.data[string(key)]; return ok, nil }
 func (s *baseStorage) Batch() storage.Batch            { return &nopBatch{} }
@@ -189,6 +209,25 @@ func (b *mapBatch) Set(key, value []byte) error {
 func (b *mapBatch) Delete(key []byte) error {
 	b.dels[string(key)] = struct{}{}
 	delete(b.sets, string(key))
+	return nil
+}
+
+// DeleteRange buffers a delete of every key in [start, end) the batch can
+// see: its pending sets and the committed keys beneath them.
+func (b *mapBatch) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	for k := range b.sets {
+		if inDeleteRange([]byte(k), start, end) {
+			delete(b.sets, k)
+		}
+	}
+	for k := range b.store.data {
+		if inDeleteRange([]byte(k), start, end) {
+			b.dels[k] = struct{}{}
+		}
+	}
 	return nil
 }
 

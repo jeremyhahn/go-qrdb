@@ -50,10 +50,8 @@ type Borrower interface {
 // unsealing with a key — must not act on zeros.
 //
 // fn-free by construction: the callback allocates ordinary heap memory and
-// calls copy, and reaches nothing in this package. That matters, because a
-// callback that destroyed the borrowed buffer would deadlock against the
-// borrow this function is holding, and any other call back into this package
-// breaks the rule the borrow guard enforces (see borrowguard.go).
+// calls copy, and reaches nothing in this package, so it cannot reenter the
+// buffer it is borrowing (see "Nesting" in the package doc).
 func CopyOut(b Borrower) ([]byte, error) {
 	if b == nil {
 		return nil, &NilBufferError{}

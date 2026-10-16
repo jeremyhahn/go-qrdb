@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/refusalinfo"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv"
 )
 
@@ -1157,8 +1158,9 @@ var wireStatusPrefixes = map[uint16]string{
 // mapWireError translates a QUIC wire status code and error frame body into
 // the appropriate SDK transport error type.
 //
-// The body is a wire.ErrorPayload; only its message is read here, because the
-// frame's status alone classifies the failure. A body that does not decode is
+// The body is a wire.ErrorPayload. A structured refusal in its Info that this
+// client decodes (transport.RefusalError) becomes the typed error; otherwise
+// the frame's status alone classifies the failure. A body that does not decode is
 // reported as such on a RequestError carrying the status, rather than shown to
 // the caller as if it were the server's message.
 //
@@ -1176,14 +1178,21 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 		return &transport.BarrierSealedError{Message: msg}
 	}
 
-	if build, ok := typedWireErrors[statusCode]; ok {
+	var typed error
+	if info := decoded.Info; info != nil && info.Domain == refusalinfo.ErrorDomain {
+		typed = transport.RefusalError(info.Reason, info.Metadata)
+	}
+	if build, ok := typedWireErrors[statusCode]; ok && typed == nil {
 		return build(msg)
+	}
+	if typed == nil {
+		typed = errors.New(wireStatusPrefixes[statusCode] + msg)
 	}
 
 	reqErr := &transport.RequestError{
 		Method:     method,
 		StatusCode: int(statusCode),
-		Err:        errors.New(wireStatusPrefixes[statusCode] + msg),
+		Err:        typed,
 	}
 	if decoded.HasRetryAfter {
 		reqErr.RetryAfter = decoded.RetryAfter

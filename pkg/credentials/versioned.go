@@ -191,21 +191,22 @@ func (s *CredentialService) RotateCredential(ctx context.Context, name string, o
 	return result, nil
 }
 
-// RetrieveCredentialVersion returns the stored credential value for a
-// specific version. Use version == 0 to mean "current version" (same
-// as RetrieveCredential).
+// RetrieveCredentialVersionBuffer returns the stored credential value for a
+// specific version in protected memory. Use version == 0 to mean "current
+// version" (same as RetrieveCredentialBuffer). The caller owns the returned
+// buffer and MUST Destroy it, on every path.
 //
 // Returns ErrVersionNotFound when the version was never written and
 // ErrVersionExpired when the version was once present but its grace
 // period has elapsed (GC may or may not have reaped the storage yet —
 // either way the caller is denied).
-func (s *CredentialService) RetrieveCredentialVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
 
 	if version == 0 {
-		return s.RetrieveCredential(ctx, name)
+		return s.RetrieveCredentialBuffer(ctx, name)
 	}
 
 	switch s.strategy {
@@ -220,7 +221,7 @@ func (s *CredentialService) RetrieveCredentialVersion(ctx context.Context, name 
 
 // ListCredentialVersions returns the version history (current + all
 // non-expired grace versions) for name. Each entry's Value field is
-// nil — use RetrieveCredentialVersion to read a specific value.
+// nil; use RetrieveCredentialVersionBuffer to read a specific value.
 //
 // Returns ErrCredentialNotFound when name does not exist.
 func (s *CredentialService) ListCredentialVersions(ctx context.Context, name string) ([]CredentialVersion, error) {
@@ -358,7 +359,7 @@ func (s *CredentialService) rotateManual(ctx context.Context, name string, opts 
 	}, nil
 }
 
-func (s *CredentialService) retrieveManualVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (s *CredentialService) retrieveManualVersion(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -367,7 +368,7 @@ func (s *CredentialService) retrieveManualVersion(ctx context.Context, name stri
 		// Legacy untracked credential = v1 only.
 		if version == 1 {
 			if sec, ok := s.manualCreds[name]; ok {
-				return openSecretCopy(ctx, sec)
+				return sec.Open(ctx)
 			}
 			return nil, ErrCredentialNotFound
 		}
@@ -376,7 +377,7 @@ func (s *CredentialService) retrieveManualVersion(ctx context.Context, name stri
 
 	if version == meta.CurrentVersion {
 		if sec, ok := s.manualCreds[name]; ok {
-			return openSecretCopy(ctx, sec)
+			return sec.Open(ctx)
 		}
 		return nil, ErrCredentialNotFound
 	}
@@ -391,7 +392,7 @@ func (s *CredentialService) retrieveManualVersion(ctx context.Context, name stri
 			return nil, ErrVersionExpired
 		}
 		if sec, ok := s.manualVersions[name][version]; ok {
-			return openSecretCopy(ctx, sec)
+			return sec.Open(ctx)
 		}
 		return nil, ErrVersionExpired
 	}
@@ -552,7 +553,7 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	}, nil
 }
 
-func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
 		return nil, err
@@ -567,7 +568,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if err != nil {
 			return nil, ErrCredentialNotFound
 		}
-		return value, nil
+		return bufferFromHeap(value)
 	}
 
 	if version == meta.CurrentVersion {
@@ -575,7 +576,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if err != nil {
 			return nil, ErrCredentialNotFound
 		}
-		return value, nil
+		return bufferFromHeap(value)
 	}
 	now := time.Now().UTC()
 	for _, h := range meta.History {
@@ -589,7 +590,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if err != nil {
 			return nil, ErrVersionExpired
 		}
-		return value, nil
+		return bufferFromHeap(value)
 	}
 	return nil, ErrVersionNotFound
 }

@@ -126,6 +126,11 @@ func (f *refusingMCPCertEnroll) RemoveTrustAnchor(context.Context, string, strin
 	return nil
 }
 
+func (f *refusingMCPCertEnroll) IssueDelegation(context.Context, *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	f.t.Fatal("IssueDelegation ran although the tenancy gate refused")
+	return nil, nil
+}
+
 // certToolCall builds a CallToolRequest carrying the given arguments.
 func certToolCall(name string, args map[string]any) mcp.CallToolRequest {
 	var req mcp.CallToolRequest
@@ -165,6 +170,23 @@ func TestMCPCertEnroll_ConsultsTheTenancyGate(t *testing.T) {
 		t.Fatalf("err = %v, want the gate's refusal", err)
 	}
 	assertMCPGateAsked(t, authz, permission.CertsEnroll)
+}
+
+// TestMCPCertDelegate_ConsultsTheTenancyGate is qrdb_cert_issue's twin for a
+// delegation, which likewise names no tenant of its own.
+func TestMCPCertDelegate_ConsultsTheTenancyGate(t *testing.T) {
+	mw, authz := newMCPCertGate()
+	handler := handleCertDelegate(&refusingMCPCertEnroll{t: t}, mw)
+
+	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_delegate", map[string]any{
+		"principal": "billing",
+		"scope":     []any{"kv:get"},
+		"csr_pem":   "csr-pem",
+	}))
+	if !errors.Is(err, errMCPCertGateRefused) {
+		t.Fatalf("err = %v, want the gate's refusal", err)
+	}
+	assertMCPGateAsked(t, authz, permission.CertsDelegate)
 }
 
 // TestMCPTrustAnchorAdd_ConsultsTheTenancyGate is the cross-tenant case

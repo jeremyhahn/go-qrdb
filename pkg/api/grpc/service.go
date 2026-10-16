@@ -25,6 +25,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/statehashpb"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -726,6 +727,26 @@ func (s *qrdbServiceServer) SetNodeCompaction(ctx context.Context, req *pb.SetNo
 		return nil, mapServiceError(err)
 	}
 	return &pb.NodeCompactionResponse{Compaction: compactionpb.ToProto(policy.Normalized())}, nil
+}
+
+// GetStateHashes returns the applied index and SHA-256 state digest of every
+// replica this node runs, or of those whose shard is in shard_ids. It is
+// answered locally, with no proposal, so a caller compares replicas by asking
+// every node. The RPC requires admin:state_hash (ScopeCross: system tenant
+// only).
+func (s *qrdbServiceServer) GetStateHashes(ctx context.Context, req *pb.GetStateHashesRequest) (*pb.GetStateHashesResponse, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	hasher, ok := s.adminSvc.(service.ReplicaStateHasher)
+	if !ok {
+		return nil, mapServiceError(&service.ReplicaStateHashesUnsupportedError{})
+	}
+	resp, err := hasher.StateHashes(ctx, req.GetShardIds())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return statehashpb.ToProto(resp), nil
 }
 
 // GetTopology returns the full cluster topology.

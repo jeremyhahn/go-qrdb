@@ -335,6 +335,35 @@ func TestForwardToLeader_UnreachableLeaderDoesNotForward(t *testing.T) {
 	}
 }
 
+// TestForwardToLeader_StalledLeaderLookupDoesNotForward proves the forward
+// timeout bounds the leader lookup as well as the call: a member-record read
+// that never completes, under a caller context with no deadline, falls back
+// within the timeout instead of holding the call open forever.
+func TestForwardToLeader_StalledLeaderLookupDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	f := newReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.StalledMembers{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: 100 * time.Millisecond,
+	}, ca.TLS(t, "node-a"))
+	defer f.close()
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	done := make(chan bool, 1)
+	go func() {
+		_, _, ok := f.forwardToLeader(ctx, mcpgo.CallToolRequest{}, "raft-leader")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("forwardToLeader forwarded with no member records")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("forwardToLeader did not return: the leader lookup is not bounded by the forward timeout")
+	}
+}
+
 func TestReplicaForwardMCP_ForwardsAsTheCallerAndRelaysTheAnswer(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startMCPTarget(t, ca, "node-1", "raft-b")

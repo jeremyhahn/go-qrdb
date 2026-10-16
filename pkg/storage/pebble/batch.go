@@ -167,6 +167,44 @@ func (b *pebbleBatch) Delete(key []byte) error {
 	return nil
 }
 
+// DeleteRange adds a range tombstone over [start, end) to the batch. An empty
+// end is unbounded, and is closed past the last key the batch sees, pending
+// writes included; finding that key reads the database, so the unbounded form
+// enters the store's close gate where a bounded one, like Set, does not.
+func (b *pebbleBatch) DeleteRange(start, end []byte) error {
+	if b.closed.Load() {
+		return &storage.BatchError{Op: "delete_range", Err: &storage.ClosedError{}}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return &storage.BatchError{Op: "delete_range", Err: err}
+	}
+
+	if len(end) == 0 {
+		b.store.gate.RLock()
+		defer b.store.gate.RUnlock()
+		if b.storeClosed() {
+			return &storage.BatchError{Op: "delete_range", Err: &storage.ClosedError{}}
+		}
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(end) == 0 {
+		var err error
+		if end, err = unboundedRangeEnd(b.batch, start); err != nil {
+			return &storage.BatchError{Op: "delete_range", Err: err}
+		}
+		if end == nil {
+			return nil
+		}
+	}
+	if err := b.batch.DeleteRange(start, end, pebble.NoSync); err != nil {
+		return &storage.BatchError{Op: "delete_range", Err: err}
+	}
+	return nil
+}
+
 // Commit atomically applies all batched operations. The batch is
 // considered closed after a successful commit.
 func (b *pebbleBatch) Commit() error {

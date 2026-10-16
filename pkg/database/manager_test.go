@@ -33,9 +33,11 @@ func (e *failingCloseBackendError) Error() string {
 // failingCloseBackend implements Backend but returns an error on Close.
 type failingCloseBackend struct{}
 
-func (b *failingCloseBackend) Get(_ context.Context, _ []byte) ([]byte, error)    { return nil, nil }
-func (b *failingCloseBackend) Put(_ context.Context, _, _ []byte) error           { return nil }
-func (b *failingCloseBackend) Delete(_ context.Context, _ []byte) error           { return nil }
+func (b *failingCloseBackend) Get(_ context.Context, _ []byte) ([]byte, error) { return nil, nil }
+func (b *failingCloseBackend) Put(_ context.Context, _, _ []byte) error        { return nil }
+func (b *failingCloseBackend) Delete(_ context.Context, _ []byte) error        { return nil }
+
+func (b *failingCloseBackend) DeleteRange(_ context.Context, _, _ []byte) error   { return nil }
 func (b *failingCloseBackend) List(_ context.Context, _ string) ([]string, error) { return nil, nil }
 func (b *failingCloseBackend) Range(_ context.Context, _, _ []byte, _ int) ([]KeyValue, error) {
 	return nil, nil

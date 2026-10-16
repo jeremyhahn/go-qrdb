@@ -41,7 +41,9 @@
 // Deadlocks are detected by the requester, right after it enqueues and before
 // it waits, from a linearizable read of the lock table: edges are only ever
 // created by an enqueue, so the request that closes a cycle is the newest one
-// in it, and it is the victim.
+// in it, and it is the victim. An older request on the cycle whose check runs
+// late enough to find the cycle too waits for that victim to release: each
+// cycle has exactly one victim.
 //
 // The package locks opaque keys and knows nothing about SQL; pkg/sql/provider
 // decides which keys a statement locks. See docs/row-locking/.

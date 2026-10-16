@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -37,6 +38,10 @@ type RoutingUserAuthFactorServiceConfig struct {
 	// UserStateUpdater is threaded into every per-tenant service; see
 	// UserAuthFactorServiceConfig. May be nil.
 	UserStateUpdater UserStateUpdater
+
+	// AuditLogger is threaded into every per-tenant service; see
+	// UserAuthFactorServiceConfig. May be nil.
+	AuditLogger audit.AuditLogger
 
 	// LegacyStore is the UNCONFINED root store holding records written
 	// before factor storage was tenant-routed. When set, the service
@@ -102,6 +107,7 @@ type routingUserAuthFactorService struct {
 	resolver tenant.StoreResolver
 	identity tenant.IdentityIndex
 	users    UserStateUpdater
+	audit    audit.AuditLogger
 	services sync.Map // map[kvstore.KVStore]*userAuthFactorService
 
 	// legacy, logger, migrated and migrateMu carry the one-shot migration of
@@ -146,6 +152,7 @@ func NewRoutingUserAuthFactorService(cfg RoutingUserAuthFactorServiceConfig) (Us
 		resolver: cfg.Resolver,
 		identity: index,
 		users:    cfg.UserStateUpdater,
+		audit:    cfg.AuditLogger,
 		legacy:   cfg.LegacyStore,
 		logger:   logger,
 	}, nil
@@ -332,7 +339,7 @@ func (r *routingUserAuthFactorService) serviceFor(ctx context.Context) (*userAut
 // one call. Every store this repository resolves is comparable; the branch
 // exists so a caller's representation cannot crash the process.
 func (r *routingUserAuthFactorService) serviceForKV(kv kvstore.KVStore) (*userAuthFactorService, error) {
-	cfg := UserAuthFactorServiceConfig{KV: kv, UserStateUpdater: r.users}
+	cfg := UserAuthFactorServiceConfig{KV: kv, UserStateUpdater: r.users, AuditLogger: r.audit}
 	if !kvstore.UsableAsMapKey(kv) {
 		return newUserAuthFactorService(cfg)
 	}
@@ -364,6 +371,27 @@ func (r *routingUserAuthFactorService) AddAttested(ctx context.Context, userID u
 		return err
 	}
 	return svc.AddAttested(ctx, userID, factor, attestation)
+}
+
+// AddConditional routes on the tenant that owns the user, exactly as Add
+// does: the factor set the condition is decided on lives beside the factors
+// it counts.
+func (r *routingUserAuthFactorService) AddConditional(ctx context.Context, userID uint64, factor *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error) {
+	svc, err := r.serviceForOwnerWrite(ctx, userID, "conditionally enroll auth factor")
+	if err != nil {
+		return 0, err
+	}
+	return svc.AddConditional(ctx, userID, factor, cond)
+}
+
+// FactorSetVersion routes on the tenant that owns the user, exactly as List
+// does.
+func (r *routingUserAuthFactorService) FactorSetVersion(ctx context.Context, userID uint64) (uint64, error) {
+	svc, err := r.serviceForOwnerRead(ctx, userID, "read auth factor set version")
+	if err != nil {
+		return 0, err
+	}
+	return svc.FactorSetVersion(ctx, userID)
 }
 
 // List routes to the tenant that owns the user.
@@ -403,6 +431,15 @@ func (r *routingUserAuthFactorService) Remove(ctx context.Context, factorID stri
 		return err
 	}
 	return svc.Remove(ctx, factorID, force)
+}
+
+// Delete routes to the caller's tenant, exactly as Remove does.
+func (r *routingUserAuthFactorService) Delete(ctx context.Context, factorID string, force bool) error {
+	svc, err := r.serviceFor(ctx)
+	if err != nil {
+		return err
+	}
+	return svc.Delete(ctx, factorID, force)
 }
 
 // Rotate routes to the caller's tenant. Both the old and the new factor live

@@ -505,11 +505,13 @@ type failingStorage struct {
 	batchCommitErr   error
 	batchRollbackErr error
 	batchCloseErr    error
+	deleteRangeErr   error
 }
 
 func (f *failingStorage) Get(key []byte) ([]byte, error)  { return nil, nil }
 func (f *failingStorage) Set(key, value []byte) error     { return nil }
 func (f *failingStorage) Delete(key []byte) error         { return nil }
+func (f *failingStorage) DeleteRange(_, _ []byte) error   { return f.deleteRangeErr }
 func (f *failingStorage) Exists(key []byte) (bool, error) { return false, nil }
 func (f *failingStorage) List(prefix []byte) ([][]byte, error) {
 	if f.listErr != nil {
@@ -519,9 +521,10 @@ func (f *failingStorage) List(prefix []byte) ([][]byte, error) {
 }
 func (f *failingStorage) Batch() storage.Batch {
 	return &failingBatch{
-		commitErr:   f.batchCommitErr,
-		rollbackErr: f.batchRollbackErr,
-		closeErr:    f.batchCloseErr,
+		commitErr:      f.batchCommitErr,
+		rollbackErr:    f.batchRollbackErr,
+		closeErr:       f.batchCloseErr,
+		deleteRangeErr: f.deleteRangeErr,
 	}
 }
 func (f *failingStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
@@ -537,14 +540,16 @@ func (f *failingStorage) Close() error { return f.closeErr }
 
 // failingBatch returns errors for configured operations.
 type failingBatch struct {
-	commitErr   error
-	rollbackErr error
-	closeErr    error
-	closed      bool
+	commitErr      error
+	rollbackErr    error
+	closeErr       error
+	deleteRangeErr error
+	closed         bool
 }
 
 func (b *failingBatch) Set(key, value []byte) error    { return nil }
 func (b *failingBatch) Delete(key []byte) error        { return nil }
+func (b *failingBatch) DeleteRange(_, _ []byte) error  { return b.deleteRangeErr }
 func (b *failingBatch) Get(key []byte) ([]byte, error) { return nil, nil }
 func (b *failingBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	return &errorIter{}

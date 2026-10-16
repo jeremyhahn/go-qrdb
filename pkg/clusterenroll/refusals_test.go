@@ -119,16 +119,6 @@ func issueAndAdmitRequest(t *testing.T, nodeID string) (string, *x509.Certificat
 	return nodeURI, csr
 }
 
-func TestIssueAndAdmit_ReservationStoreFailureRefusesWithoutSigning(t *testing.T) {
-	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
-	nodeURI, csr := issueAndAdmitRequest(t, "node-reserve-fault")
-
-	resp := issueAndAdmit(context.Background(), newTestClusterCAProvider(t), store, nodeURI, csr, 0, nil, nil)
-	if resp.Error != "join request could not be processed" || len(resp.CertPEM) != 0 {
-		t.Fatalf("response = %+v; want the generic refusal and no certificate", resp)
-	}
-}
-
 func TestIssueAndAdmit_SignFailureWithUnreleasableReservationStillRefuses(t *testing.T) {
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())

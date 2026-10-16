@@ -1083,7 +1083,7 @@ func TestGRPCCredential_Retrieve_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
 
-	val, err := tr.CredentialRetrieve(context.Background(), "db-pass")
+	val, err := tr.retrieveBytes(context.Background(), "db-pass")
 	if err != nil {
 		t.Fatalf("CredentialRetrieve: %v", err)
 	}
@@ -1093,7 +1093,7 @@ func TestGRPCCredential_Retrieve_Success(t *testing.T) {
 }
 
 func TestGRPCCredential_Retrieve_Closed(t *testing.T) {
-	_, err := newUpliftClosed().CredentialRetrieve(context.Background(), "n")
+	_, err := newUpliftClosed().retrieveBytes(context.Background(), "n")
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
@@ -1109,7 +1109,7 @@ func TestGRPCCredential_Retrieve_RPCError(t *testing.T) {
 	tr, cleanup := startTestServer(t, svc)
 	defer cleanup()
 
-	_, err := tr.CredentialRetrieve(context.Background(), "missing")
+	_, err := tr.retrieveBytes(context.Background(), "missing")
 	if err == nil {
 		t.Fatal("expected error")
 	}

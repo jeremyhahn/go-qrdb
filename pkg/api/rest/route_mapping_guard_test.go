@@ -278,6 +278,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/admin/replica-states", permission.AdminReplicaState},
 		{"GET", "/admin/node-compaction", permission.AdminNodeCompaction},
 		{"PUT", "/admin/node-compaction", permission.AdminNodeCompaction},
+		{"GET", "/admin/state-hashes", permission.AdminStateHash},
 		{"DELETE", "/admin/shards/1", permission.AdminStopShard},
 		{"GET", "/admin/shards/1/state", permission.AdminShardState},
 
@@ -345,6 +346,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		// Certificates.
 		{"POST", "/certs/issue", permission.CertsIssue},
 		{"POST", "/certs/enroll", permission.CertsEnroll},
+		{"POST", "/certs/delegate", permission.CertsDelegate},
 		{"POST", "/certs/revoke", permission.CertsRevoke},
 		{"GET", "/certs/list", permission.CertsList},
 
@@ -491,6 +493,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/v1/users/factors/list", permission.UserAuthFactorsList},
 		{"POST", "/v1/users/factors/login", permission.UserAuthFactorsLogin},
 		{"POST", "/v1/users/factors/rotate", permission.UserAuthFactorsRotate},
+		{"POST", "/v1/users/factors/delete", permission.UserAuthFactorsAdd},
 		{"GET", "/v1/users/factors/factor-1", permission.UserAuthFactorsGet},
 		{"DELETE", "/v1/users/factors/factor-1", permission.UserAuthFactorsRemove},
 		{"PUT", "/v1/users/factors/factor-1/label", permission.UserAuthFactorsRelabel},

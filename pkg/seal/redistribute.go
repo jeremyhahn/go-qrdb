@@ -129,6 +129,10 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 	if err := target.base.Put(ctx, target.wrappedKeyPath(domain), blob); err != nil {
 		return nil, err
 	}
+	// The previous share set wraps nothing now: the rounds open on it hold
+	// shares no quorum can use, so they are destroyed rather than left to
+	// their TTL. A completing rekey round is already detached.
+	target.destroyDomainRounds(domain)
 	// The blob is durable: the staged shares go live before anything else
 	// can fail.
 	if err := b.distributor.Committed(ctx, roster, remove); err != nil {

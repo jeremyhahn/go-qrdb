@@ -666,6 +666,44 @@ func (s *qrdbServiceServer) EnrollCert(ctx context.Context, req *pb.EnrollCertRe
 	return enrolledToProto(enrolled), nil
 }
 
+// IssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal. The principal keeps its key.
+func (s *qrdbServiceServer) IssueDelegation(ctx context.Context, req *pb.IssueDelegationRequest) (*pb.IssuedDelegationResponse, error) {
+	if s.certEnroll == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert enrollment"})
+	}
+	var ttl time.Duration
+	if req.GetTtl() != "" {
+		d, err := time.ParseDuration(req.GetTtl())
+		if err != nil {
+			return nil, mapServiceError(&TTLParseError{Value: req.GetTtl(), Err: err})
+		}
+		ttl = d
+	}
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsDelegate); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+	issued, err := s.certEnroll.IssueDelegation(ctx, &service.IssueDelegationRequest{
+		TenantID:  tenantID,
+		Principal: req.GetPrincipal(),
+		Scope:     req.GetScope(),
+		CSRPEM:    []byte(req.GetCsrPem()),
+		TTL:       ttl,
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.IssuedDelegationResponse{
+		TenantId:  issued.TenantID,
+		Principal: issued.Principal,
+		Scope:     issued.Scope,
+		CertPem:   string(issued.CertPEM),
+		Serial:    issued.Serial,
+		NotAfter:  issued.NotAfter.UTC().Format(time.RFC3339),
+	}, nil
+}
+
 func anchorsToProto(anchors []trustanchor.Anchor) *pb.TrustAnchorListResponse {
 	out := &pb.TrustAnchorListResponse{Anchors: make([]*pb.TrustAnchor, 0, len(anchors))}
 	for _, a := range anchors {

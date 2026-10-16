@@ -171,6 +171,25 @@ const DAOCodecMsgPack = dao.CodecMsgPack
 const DAOCodecCBOR = dao.CodecCBOR
 
 // ---------------------------------------------------------------------------
+// DAO secret entity fields
+// ---------------------------------------------------------------------------
+
+// DAOSecretBytes is an entity field holding secret key material in
+// protected memory, carried by the DAO codec with no plaintext copy on the
+// heap that cannot be wiped. Only DAOCodecMsgPack carries it; every other
+// codec refuses the entity with DAOSecretCodecUnsupportedError. See
+// dao.SecretBytes.
+type DAOSecretBytes = dao.SecretBytes
+
+// NewDAOSecretBytes moves src into protected memory, wiping src on every
+// return path.
+var NewDAOSecretBytes = dao.NewSecretBytes
+
+// DAOSecretBytesFromBuffer wraps a protected secure.Buffer, taking ownership
+// of it, for material that never touched the heap.
+var DAOSecretBytesFromBuffer = dao.SecretBytesFromBuffer
+
+// ---------------------------------------------------------------------------
 // DAO sort order
 // ---------------------------------------------------------------------------
 
@@ -320,8 +339,26 @@ type DAOUnsupportedIDGeneratorError = dao.UnsupportedIDGeneratorError
 // DAOCodecCreationError is returned when codec creation fails.
 type DAOCodecCreationError = dao.CodecCreationError
 
+// DAOSecretCodecUnsupportedError is the refusal of a codec that cannot carry
+// a DAOSecretBytes field without an unwipeable plaintext copy, wrapped in
+// DAOCodecCreationError when a DAO or codec is built.
+type DAOSecretCodecUnsupportedError = dao.SecretCodecUnsupportedError
+
+// DAOSecretEncodingSizeError is the refusal of an entity holding a
+// DAOSecretBytes whose encoding changed length while it was encoded, which
+// only a concurrent mutation causes.
+type DAOSecretEncodingSizeError = dao.SecretEncodingSizeError
+
+// DAOSecretFieldIndexedError is the refusal of an index over a
+// DAOSecretBytes field.
+type DAOSecretFieldIndexedError = dao.SecretFieldIndexedError
+
 // DAOInvalidConfigError is returned when DAO configuration is invalid.
 type DAOInvalidConfigError = dao.InvalidConfigError
+
+// DAODatabaseStoreUnresolvedError is NewDatabaseDAO's refusal when the
+// DAOFactory cannot resolve the named database's store. Nothing was built.
+type DAODatabaseStoreUnresolvedError = dao.DatabaseStoreUnresolvedError
 
 // DAOTransactionClosedError is returned when an operation is attempted on
 // a closed transaction.

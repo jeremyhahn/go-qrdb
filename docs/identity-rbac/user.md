@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 Who someone is, and what they may do. There are no passwords: a certificate is
 the identity, and roles carry the permissions.
@@ -264,6 +264,41 @@ An attribute set with `--attribute` is visible to ABAC policies as
 a certificate or token attribute: setting `--attribute organization=acme`
 cannot satisfy a policy that trusts the organization in the caller's
 certificate. See [../auth/abac.md](../auth/abac.md).
+
+## Letting an application act inside your tenant
+
+Some applications embed qrdb and run their own **service principal** — for
+example a key-management front end that serves your keys out of your tenant's
+data. The platform operator cannot let that principal into your tenant; only
+you can, by issuing it a **delegation**: a short-lived certificate signed by
+your tenant's own CA that names the principal and the permissions you hand
+it.
+
+```bash
+qrdb ca delegate --principal billing --scope kv:get,kv:put --csr billing.csr --out ./billing
+```
+
+Give `cert.pem` to the application. Then:
+
+- **It can do no more than you delegated, and no more than the application
+  itself allows its principal.** Its permissions are the overlap of the two;
+  anything else is refused with a permission error.
+- **It expires on its own** — after one hour unless you pass `--ttl`, and never
+  later than 24 hours. Issue a fresh one before it lapses.
+- **You can end it sooner** with `qrdb ca revoke --serial <serial>`, using the
+  serial `ca delegate` printed. It stops working within the node's revocation
+  cache window (`auth.revocation_cache_ttl`, 30 seconds by default).
+- **Every request it makes is recorded in your tenant's audit trail**, with the
+  principal, the certificate serial and the delegated scope. A node that cannot
+  record it refuses the request instead.
+- **Only a certificate from your own CA works.** One signed by another
+  tenant's CA, or by the platform's CA, is refused, as is one naming a
+  principal the application does not run.
+
+Issuing a delegation needs `certs:delegate`, which your Admin role grants.
+Your Admin role grants no data permissions (`kv:get` and the like) of its own,
+so the application's own grants are what bound the delegation, not yours.
+Full reference: [../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate).
 
 ## Seeing whether someone has a second factor
 

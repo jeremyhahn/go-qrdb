@@ -86,7 +86,7 @@ func TestMCP_Credential_Retrieve_Success_WithService(t *testing.T) {
 	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
 	defer cleanup()
 
-	_, err := tr.CredentialRetrieve(context.Background(), "mykey")
+	_, err := tr.retrieveBytes(context.Background(), "mykey")
 	// nil,nil from mock = success path with empty body → json decode error
 	// or success if tool returns empty string
 	_ = err
@@ -118,7 +118,7 @@ func TestMCP_ExtraClosed_Backup(t *testing.T) {
 	if err := tr.CredentialStore(context.Background(), "k", []byte("v")); err == nil && tr.closed.Load() {
 		t.Error("expected CredentialStore to fail on closed transport")
 	}
-	_ = tr.CredentialRetrieve // just ensure it's accessible
+	_ = tr.CredentialRetrieveBuffer // just ensure it's accessible
 }
 
 // ---------------------------------------------------------------------------

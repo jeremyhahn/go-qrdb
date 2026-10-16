@@ -28,105 +28,178 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
-// TestEmbeddedServerWithBarrier_PebbleEncrypted asserts the disk-backed
-// embedded server boots with the encrypting FS attached, persists KV
-// data through a restart cycle, and never leaks plaintext to disk.
-func TestEmbeddedServerWithBarrier_PebbleEncrypted(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	passphrase := barrierPassphrase(t, "encfs-embedded-test-passphrase")
+// onDiskTestBackends are the backends whose store is files under the data
+// directory, each encrypted at rest under the barrier the same way.
+var onDiskTestBackends = []database.BackendType{database.BackendPebble, database.BackendFile}
 
-	const (
-		key       = "ribosome-key"
-		plaintext = "RIBOSOME-PLAINTEXT-MUST-NEVER-LEAK"
-	)
+// TestEmbeddedServerWithBarrier_OnDiskEncrypted asserts that each disk-backed
+// embedded server boots with the encrypting FS attached, persists KV data
+// through a restart cycle, and never leaks plaintext to disk.
+func TestEmbeddedServerWithBarrier_OnDiskEncrypted(t *testing.T) {
+	for _, backend := range onDiskTestBackends {
+		t.Run(string(backend), func(t *testing.T) {
+			ctx := context.Background()
+			dataDir := t.TempDir()
+			passphrase := barrierPassphrase(t, "encfs-embedded-test-passphrase")
 
-	// First boot: initialize barrier + write a value.
-	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
-		DataDir: dataDir,
-		Barrier: &BarrierConfig{
-			Strategy:   seal.StrategyPassphrase,
-			AutoUnseal: true,
-			Passphrase: passphrase,
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewServer (first boot): %v", err)
-	}
-	if err := srv.Client().KV().Put(ctx, key, []byte(plaintext)); err != nil {
-		_ = srv.Shutdown(ctx)
-		t.Fatalf("Put: %v", err)
-	}
-	got, err := srv.Client().KV().Get(ctx, key)
-	if err != nil {
-		_ = srv.Shutdown(ctx)
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != plaintext {
-		_ = srv.Shutdown(ctx)
-		t.Fatalf("Get: got %q, want %q", got, plaintext)
-	}
-	if err := srv.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown (first boot): %v", err)
-	}
+			const (
+				key       = "ribosome-key"
+				plaintext = "RIBOSOME-PLAINTEXT-MUST-NEVER-LEAK"
+			)
 
-	// Confirm no plaintext leaks anywhere on disk except the LOCK file
-	// and seal sub-store, which are intentionally plaintext.
-	scanForPlaintext(t, filepath.Join(dataDir, "pebble"), []byte(plaintext))
-	scanForPlaintext(t, filepath.Join(dataDir, "pebble"), []byte(key))
+			// First boot: initialize barrier + write a value.
+			srv, err := NewServer(ctx, &ServerConfig{
+				Backend: backend,
+				DataDir: dataDir,
+				Barrier: &BarrierConfig{
+					Strategy:   seal.StrategyPassphrase,
+					AutoUnseal: true,
+					Passphrase: passphrase,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewServer (first boot): %v", err)
+			}
+			if err := srv.Client().KV().Put(ctx, key, []byte(plaintext)); err != nil {
+				_ = srv.Shutdown(ctx)
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := srv.Client().KV().Get(ctx, key)
+			if err != nil {
+				_ = srv.Shutdown(ctx)
+				t.Fatalf("Get: %v", err)
+			}
+			if string(got) != plaintext {
+				_ = srv.Shutdown(ctx)
+				t.Fatalf("Get: got %q, want %q", got, plaintext)
+			}
+			if err := srv.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown (first boot): %v", err)
+			}
 
-	// Second boot: same passphrase; AutoUnseal takes the
-	// already-initialized branch and the value must read back intact.
-	srv2, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
-		DataDir: dataDir,
-		Barrier: &BarrierConfig{
-			Strategy:   seal.StrategyPassphrase,
-			AutoUnseal: true,
-			Passphrase: passphrase,
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewServer (second boot): %v", err)
-	}
-	defer func() {
-		if err := srv2.Shutdown(ctx); err != nil {
-			t.Fatalf("Shutdown (second boot): %v", err)
-		}
-	}()
+			// Confirm no plaintext leaks anywhere in the store; the seal
+			// sub-store beside it is intentionally plaintext.
+			storeDir := filepath.Join(dataDir, string(backend))
+			scanForPlaintext(t, storeDir, []byte(plaintext))
+			scanForPlaintext(t, storeDir, []byte(key))
 
-	got, err = srv2.Client().KV().Get(ctx, key)
-	if err != nil {
-		t.Fatalf("Get (after restart): %v", err)
-	}
-	if string(got) != plaintext {
-		t.Fatalf("Get (after restart): got %q, want %q", got, plaintext)
+			// Second boot: same passphrase; AutoUnseal takes the
+			// already-initialized branch and the value must read back intact.
+			srv2, err := NewServer(ctx, &ServerConfig{
+				Backend: backend,
+				DataDir: dataDir,
+				Barrier: &BarrierConfig{
+					Strategy:   seal.StrategyPassphrase,
+					AutoUnseal: true,
+					Passphrase: passphrase,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewServer (second boot): %v", err)
+			}
+			defer func() {
+				if err := srv2.Shutdown(ctx); err != nil {
+					t.Fatalf("Shutdown (second boot): %v", err)
+				}
+			}()
+
+			got, err = srv2.Client().KV().Get(ctx, key)
+			if err != nil {
+				t.Fatalf("Get (after restart): %v", err)
+			}
+			if string(got) != plaintext {
+				t.Fatalf("Get (after restart): got %q, want %q", got, plaintext)
+			}
+		})
 	}
 }
 
-// TestEmbeddedServerWithBarrier_PebbleSealedRejected asserts that
-// configuring a disk-backed pebble server with a barrier but without
-// AutoUnseal returns BarrierSealedError so the daemon can never open
-// PebbleDB against a sealed barrier.
-func TestEmbeddedServerWithBarrier_PebbleSealedRejected(t *testing.T) {
+// TestEmbeddedServerWithBarrier_OnDiskSealedRejected asserts that
+// configuring a disk-backed server with a barrier but without AutoUnseal
+// returns BarrierSealedError, so its store is never opened against a sealed
+// barrier.
+func TestEmbeddedServerWithBarrier_OnDiskSealedRejected(t *testing.T) {
+	for _, backend := range onDiskTestBackends {
+		t.Run(string(backend), func(t *testing.T) {
+			_, err := NewServer(context.Background(), &ServerConfig{
+				Backend: backend,
+				DataDir: t.TempDir(),
+				Barrier: &BarrierConfig{
+					Strategy: seal.StrategyPassphrase,
+				},
+			})
+			if err == nil {
+				t.Fatal("expected BarrierSealedError, got nil")
+			}
+			var sealedErr *embedded.BarrierSealedError
+			if !errors.As(err, &sealedErr) {
+				t.Fatalf("expected *embedded.BarrierSealedError, got %T: %v", err, err)
+			}
+			if !errors.Is(err, seal.ErrSealed) {
+				t.Fatalf("expected wrapped seal.ErrSealed, got %v", err)
+			}
+		})
+	}
+}
+
+// TestEmbeddedServerWithBarrier_FileResealedReadsFailSealed seals the
+// barrier under a running file-backed server: the file engine reads every
+// record through the encrypting file system, so each record read of its store
+// fails with seal.ErrSealed until the barrier is unsealed again, and the data
+// reads back after. Exists is not a record read: it answers from the hashed
+// file name alone and touches no record bytes.
+func TestEmbeddedServerWithBarrier_FileResealedReadsFailSealed(t *testing.T) {
 	ctx := context.Background()
-	_, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
+	const passphrase = "reseal-embedded-test-passphrase"
+	srv, err := NewServer(ctx, &ServerConfig{
+		Backend: database.BackendFile,
 		DataDir: t.TempDir(),
 		Barrier: &BarrierConfig{
-			Strategy: seal.StrategyPassphrase,
+			Strategy:   seal.StrategyPassphrase,
+			AutoUnseal: true,
+			Passphrase: barrierPassphrase(t, passphrase),
 		},
 	})
-	if err == nil {
-		t.Fatal("expected BarrierSealedError, got nil")
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
 	}
-	var sealedErr *embedded.BarrierSealedError
-	if !errors.As(err, &sealedErr) {
-		t.Fatalf("expected *embedded.BarrierSealedError, got %T: %v", err, err)
+	defer func() { _ = srv.Shutdown(ctx) }()
+	if err := srv.Client().KV().Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
-	if !errors.Is(err, seal.ErrSealed) {
-		t.Fatalf("expected wrapped seal.ErrSealed, got %v", err)
+	// The engine stores "k" under its own record key; read that one, so a
+	// sealed read is a real record read and not a not-found lookup.
+	stored, err := srv.stg.List(nil)
+	if err != nil || len(stored) == 0 {
+		t.Fatalf("List before seal = %d keys, %v; want records", len(stored), err)
+	}
+	record := stored[0]
+	if err := srv.barrier.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	reads := map[string]func() error{
+		"Get": func() error {
+			_, err := srv.stg.Get(record)
+			return err
+		},
+		"List": func() error {
+			_, err := srv.stg.List(nil)
+			return err
+		},
+	}
+	for name, read := range reads {
+		if err := read(); !errors.Is(err, seal.ErrSealed) {
+			t.Errorf("%s while sealed = %v, want seal.ErrSealed", name, err)
+		}
+	}
+
+	if err := srv.barrier.Unseal(ctx, seal.MustCredentials(ctx, []byte(passphrase))); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	got, err := srv.Client().KV().Get(ctx, "k")
+	if err != nil || string(got) != "v" {
+		t.Fatalf("Get after unseal = %q, %v; want %q", got, err, "v")
 	}
 }
 

@@ -14,6 +14,8 @@
 package dao
 
 import (
+	"reflect"
+
 	"github.com/jeremyhahn/go-codec"
 	"github.com/jeremyhahn/go-codec/pkg/bson"
 	"github.com/jeremyhahn/go-codec/pkg/json"
@@ -85,6 +87,12 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 			CodecType: string(ct),
 			Cause:     codec.ErrCodecNotSupported{CodecType: ct},
 		}
+	}
+
+	// An entity holding a SecretBytes field gets the codec's
+	// SecretBytes-carrying encoding, or a refusal; see SecretBytes.
+	if holdsSecretBytes(reflect.TypeFor[E]()) {
+		return newSecretCodec[E](ct)
 	}
 
 	var c codec.Codec[E]

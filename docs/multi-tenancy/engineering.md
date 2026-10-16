@@ -63,7 +63,13 @@ type TenantAdminCredential struct {
 `AdminEnrollment: AdminEnrollCert`, `Exclusive: true` and
 `Signer: &bootstrap.KeyBSigner{Certs: certProvider}` — the tenant's own Key B
 CA signs the admin's CSR (`cert.CertProvider.IssueClientCert`, through
-`certenroll.IssueFromCSR`).
+`certenroll.IssueFromCSR`). It answers with `TenantProvisionResult.Tenant`,
+the record the provisioning committed, and does not read the tenant back: once
+`ProvisionTenant` returns, the tenant exists and the admin's certificate has
+been issued, so a read that failed afterwards (a linearizable read timing out
+on a loaded cluster) would report a created tenant as a failure and lose that
+one-time certificate, and the retry would be refused as a duplicate because
+the provisioning is exclusive.
 
 `pkg/bootstrap`:
 
@@ -978,6 +984,8 @@ it leaves the key plane off, with a warning.
 | Trust anchors unparseable or not CA certificates | `*bootstrap.InvalidTrustAnchorsError`, 400; nothing written | **yes** |
 | A seam the request needs is not wired (signer, binder, anchor registry, pending-admin store, delete seams for an exclusive run) | `*bootstrap.MissingProvisioningSeamError`, 501; checked before any write | **yes** |
 | Exclusive provisioning failed after a write | `*bootstrap.ProvisioningUndoneError` (`Cause`, `UndoFailures`); writes undone in reverse, id retired | **yes** |
+| Onboarding not finished within the service's deadline (`service.DefaultTenantOnboardingTimeout`, 60 s, on every transport; the caller's sooner deadline still applies) | the step cut short fails with `context.DeadlineExceeded`, undone as above, 504 / `DEADLINE_EXCEEDED`. The REST handler applies no bound of its own to create, as on every tenant endpoint (next row) | **yes** |
+| Any other tenant operation not finished within the caller's deadline: get, list, list deleted, reconcile deleted, update, delete, quotas, entitlements, barrier init, unseal, seal and status, and every tenant barrier share-holder route | `context.DeadlineExceeded`, 504 / `DEADLINE_EXCEEDED`. Each is bounded by the caller's deadline alone, on every transport. The REST handlers once applied a fixed 5 s bound of their own, sized for one read or write: it failed operations that gRPC, QUIC, MCP and the Unix socket completed under the same CLI `--timeout` (10 s by default), and init, a sequence of proposals (holder registration, barrier initialization, share distribution), it ended part-way | **yes** |
 | Trust-on-first-init with a certificate other than the pending admin's | `*middleware.FirstInitCertificateMismatchError`, 403 | **yes** |
 | Trust-on-first-init under `required` with no pending admin | `*middleware.FirstInitNotOnboardedError`, 403 | **yes** |
 | Pending-admin record unreadable during the first-init check | `*middleware.StoreUnavailableError`, refused | **yes** |

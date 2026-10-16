@@ -501,7 +501,6 @@ var requestHandlers = map[string]requestHandler{
 	"CredentialDelete":            handleCredentialDelete,
 	"CredentialList":              handleCredentialList,
 	"CredentialRotate":            handleCredentialRotate,
-	"CredentialRetrieveVersion":   handleCredentialRetrieveVersion,
 	"CredentialListVersions":      handleCredentialListVersions,
 	"CredentialGCExpired":         handleCredentialGCExpired,
 	"IndexCreate":                 handleIndexCreate,

@@ -32,6 +32,10 @@ type loginFactorSvc struct{}
 var _ service.UserAuthFactorServicer = (*loginFactorSvc)(nil)
 
 func (loginFactorSvc) Add(_ context.Context, _ uint64, _ *auth.AuthFactor) error { return nil }
+func (loginFactorSvc) AddConditional(_ context.Context, _ uint64, _ *auth.AuthFactor, _ auth.FactorAddCondition) (uint64, error) {
+	return 0, nil
+}
+func (loginFactorSvc) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) { return 0, nil }
 func (loginFactorSvc) List(_ context.Context, _ uint64) ([]*auth.AuthFactor, error) {
 	return nil, nil
 }
@@ -40,6 +44,7 @@ func (loginFactorSvc) LookupByCredentialKey(_ context.Context, ty auth.AuthFacto
 	return &auth.AuthFactor{ID: "factor-1", UserID: 42, Type: ty}, nil
 }
 func (loginFactorSvc) Remove(_ context.Context, _ string, _ bool) error { return nil }
+func (loginFactorSvc) Delete(_ context.Context, _ string, _ bool) error { return nil }
 func (loginFactorSvc) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
 	return nil
 }

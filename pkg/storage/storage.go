@@ -14,7 +14,10 @@
 
 package storage
 
-import "context"
+import (
+	"bytes"
+	"context"
+)
 
 // Reader is the read half of a key-value view: point lookups and ordered
 // range scans. Storage, Snapshot, and Batch all provide it, so code that only
@@ -48,6 +51,10 @@ type Storage interface {
 
 	// Delete removes a key.
 	Delete(key []byte) error
+
+	// DeleteRange removes keys in [start, end). A nil end removes keys from
+	// start through the end of the keyspace.
+	DeleteRange(start, end []byte) error
 
 	// List returns all keys matching the given prefix.
 	// An empty prefix returns all keys.
@@ -115,6 +122,10 @@ type Batch interface {
 	// Delete removes a key in the batch.
 	Delete(key []byte) error
 
+	// DeleteRange removes keys in [start, end) in the batch. A nil end removes
+	// keys from start through the end of the keyspace.
+	DeleteRange(start, end []byte) error
+
 	// Commit applies all batched operations atomically.
 	Commit() error
 
@@ -166,6 +177,35 @@ type Snapshot interface {
 
 	// Close releases resources held by the snapshot.
 	Close() error
+}
+
+// ValidateRange reports whether [start, end) is a range DeleteRange accepts:
+// start must be non-empty, and a non-empty end must sort after it. A nil or
+// empty end is unbounded.
+func ValidateRange(start, end []byte) error {
+	if len(start) == 0 {
+		return ErrEmptyKey
+	}
+	if len(end) > 0 && bytes.Compare(start, end) >= 0 {
+		return ErrInvalidRange
+	}
+	return nil
+}
+
+// PrefixEnd returns the smallest key that sorts after every key carrying
+// prefix, for use as the exclusive end of a range over that prefix. It returns
+// nil, an unbounded end, when no such key exists because the prefix is empty
+// or every byte of it is 0xff. The input is never modified.
+func PrefixEnd(prefix []byte) []byte {
+	end := make([]byte, len(prefix))
+	copy(end, prefix)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] < 0xff {
+			end[i]++
+			return end[:i+1]
+		}
+	}
+	return nil
 }
 
 // IteratorOptions configures iterator behavior.

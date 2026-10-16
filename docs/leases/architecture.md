@@ -1,6 +1,6 @@
 # Leases — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 ## Problem
 
@@ -18,7 +18,8 @@ deleted, in one place, by the leader.
 - `LeaseGrant(ttl)` returns a `LeaseInfo` with an `ID`.
 - `Put(key, value, leaseID)` — or `MVCC().PutWithLease` — attaches the key.
 - `LeaseKeepAlive(id)` resets the TTL; a client that stops calling it lets the
-  keys go.
+  keys go. The leader renews it in memory; a periodic checkpoint records
+  what is left of it, for the next leader.
 - `LeaseRevoke(id)` expires it immediately.
 
 **A key belongs to the lease its latest write named, and to no other.** Writing
@@ -33,7 +34,8 @@ the new registration. A compare-and-swap is a value edit, not a re-attachment,
 so the key keeps the lease it had.
 
 The lease table is replicated state like the keys it governs. Each lease's
-granted TTL, every key's binding and the lease-ID sequence are written in the
+granted TTL and checkpointed remaining TTL, every key's binding and the
+lease-ID sequence are written in the
 same atomic apply batch as the data write that changed them, carried in
 snapshots, and restored when a node restarts or recovers from a snapshot.
 
@@ -50,6 +52,18 @@ operation, so every replica sees the deletions at the same point in the log.
 - **Wall-clock expiry evaluated independently on each node.** Rejected: clock
   skew makes replicas disagree about whether a key exists, which is a
   consistency violation, not a rounding error. Expiry goes through the log.
+- **Every keep-alive through the log.** This was the behaviour until it was
+  replaced. Rejected because each renewal paid a Raft-log fsync, and under CPU
+  contention that fsync gave renewals a heavy latency tail (p90 12x the median
+  on a loaded 2-core host) that a holder with a short TTL experiences as a
+  spurious loss. Renewal needs the leader's word, not the group's.
+- **Replicating every renewed lease each second.** This was the behaviour until
+  it was replaced by etcd's checkpoints. Rejected because those proposals kept
+  a commit-to-apply window open almost all the time, and a renewal's
+  linearizable read waits behind it: under disk-sync contention renewals
+  stalled for 0.2 to 5 seconds. It also bought nothing a failover needed — a
+  new leader still had to grant a fresh TTL, since the deadline it learned was
+  up to a second old.
 - **A key stays in every lease any of its values named.** This was the
   behaviour until it was corrected. Rejected because it makes a lease delete
   data written after the key left it: the old lease's revoke or expiry deleted
@@ -59,6 +73,87 @@ operation, so every replica sees the deletions at the same point in the log.
   readable from the stored value, which the non-MVCC state machine does not
   keep. The binding record answers "which lease holds this key" on both state
   machines from one place.
+
+## Keep-alive: leader-local renewal
+
+A keep-alive is the hottest lease operation — every holder issues one per TTL
+fraction, forever — and it carries no information the group must agree on
+*before* it answers. So it follows etcd's lessor model rather than writing the
+log on every renewal:
+
+- **Renewal is leader-local.** The leader resets the lease's deadline in memory.
+  The reply is a heartbeat-quorum read (`SyncRead`), which is what proves the
+  replica still leads when it answers; a deposed leader cannot renew. Nothing
+  waits for a log fsync. A replica that is not the leader proposes the renewal
+  through the log instead, and so does the leader until every replica of the
+  group runs a binary with the lease-checkpoint feature: a replica that
+  predates it counts leases only from the log, and on winning an election
+  would revoke a lease whose renewals were made in its predecessor's memory.
+- **Checkpoints record what is left, not what was renewed.** Every
+  `lease.checkpoint_interval` (default `5m`) the leader proposes one
+  `LeaseCheckpoint` entry per batch of up to 1000 leases, carrying each lease's
+  remaining TTL rounded up to a whole second. Only leases whose TTL is longer
+  than the interval are checkpointed — a lease that cannot outlive one interval
+  gains nothing from it. Every replica persists the value as the lease's
+  checkpoint; a checkpoint never moves a deadline.
+- **A renewal clears a checkpoint, through the log.** A lease with a checkpoint
+  recorded is not renewed in memory: the leader renews it with a replicated
+  `LeaseKeepAlive`, whose apply deletes the checkpoint on every replica. So a
+  checkpoint never understates a lease its holder has renewed since, and a
+  checkpointed lease costs one replicated renewal per checkpoint, not one per
+  renewal. This is the on-demand checkpoint etcd proposes on a renewal.
+- **A checkpoint a renewal overtook is discarded.** The leader samples a
+  checkpoint at one applied index and it applies at a later one, so a
+  replicated renewal can land in between. The checkpoint therefore carries
+  the applied index it was sampled at, and every renewal through the log
+  records the index it applied at. On every replica, the apply ignores a
+  lease's checkpoint when a renewal of that lease applied after the sample,
+  so the renewal's full TTL stands. A restart, a log replay or a snapshot
+  restore reaches the same verdict, because both indexes are part of the
+  replicated table.
+- **A leader hands over with a checkpoint.** Before a scale-down or a replica
+  move transfers leadership away, the leader checkpoints every live lease and
+  waits for it to apply, as etcd does, so the next leader counts each one from
+  what it has left. It is best-effort and bounded: a checkpoint that fails is
+  logged and the transfer goes ahead.
+- **A new leader counts from the checkpoint.** A replica that wins an election
+  first waits until it has applied every entry its predecessor committed (a
+  linearizable read, which Raft serves only once the new leader has committed
+  an entry of its own term), then sets each lease's deadline to at least
+  *now + effective TTL + `lease.failover_grace`* (default `5s`), where the
+  effective TTL is the checkpointed remaining TTL, or the granted TTL when the
+  lease has none. Only then does it sweep. Every renewal since a lease's
+  checkpoint went through the log and cleared it, so **a new leader never grants
+  a lease more TTL than its holder was last renewed to, plus the grace**. A
+  deadline already later than the floor is kept; promotion never shortens a
+  lease.
+- **A restarted replica counts from the checkpoint too.** It restores each
+  lease with *now + effective TTL*, for the same reason.
+
+`LeaseCheckpoint` is a new Raft opcode, so it is behind the `lease-checkpoint`
+cluster feature gate: until every replica of the group can apply it, the leader
+proposes no checkpoints and a new leader counts every lease from its full TTL.
+The same gate covers the renewal indexes. They are recorded only after a
+group's first checkpoint has applied, so a group whose gate is off keeps
+exactly the replicated state it kept before. That first checkpoint starts the
+recording and is itself discarded; the leader samples again at once, so a
+group pays for this with one extra entry over its lifetime.
+
+What this costs, stated plainly:
+
+- After a leader change an abandoned lease lives up to `failover_grace` longer
+  than it would have, plus the time between its checkpoint and the failover; a
+  lease with no checkpoint — one whose TTL is not longer than the interval —
+  starts its full TTL again. It still expires and still deletes its keys.
+- A follower's deadline does not track the leader's in-memory renewals; only
+  checkpoints, replicated renewals and its own promotion move it. Whether a
+  lease has expired is the leader's call alone, so a follower lists every lease
+  it holds until the leader's revoke applies.
+- Standalone mode has no other replica, so it renews in memory with no
+  checkpoint and no grace to give.
+
+The measured effect on the renewal round trip is in
+[../../test/performance/lease-keepalive.md](../../test/performance/lease-keepalive.md).
 
 ## Component boundaries
 
@@ -109,15 +204,32 @@ without anybody asking.
    write moves the key's binding to that lease, or releases it when the write
    names none, in the same batch as the value. A write naming a lease that no
    longer exists at apply time is refused and writes nothing.
-3. `LeaseKeepAlive` resets the remaining TTL, again through the log.
+3. `LeaseKeepAlive` is answered by the leader from its own memory: it resets
+   the remaining TTL there, after a quorum-confirmed read proves the answering
+   replica still leads. It is **not** a log entry. A lease with a checkpoint
+   recorded, and any renewal reaching a replica that is not the leader, is
+   renewed through the log instead (a replicated `LeaseKeepAlive`, which clears
+   the checkpoint). See
+   [Keep-alive: leader-local renewal](#keep-alive-leader-local-renewal).
 4. The leader detects expiry and proposes the cascade delete. Followers apply it
    from the log, so no follower expires anything on its own clock. The delete
    covers the keys bound to the lease at that log position.
 5. `LeaseTimeToLive` reports `TTL`, `GrantedTTL`, `RemainingTTL` and the keys
-   currently bound to the lease (`Keys`).
-6. On restart or snapshot recovery the node rebuilds its leases and bindings
-   from the persisted lease table. Every restored lease starts a full TTL, since
-   the remaining TTL was never replicated.
+   currently bound to the lease (`Keys`). The remaining TTL is the leader's to
+   answer, as in etcd: a follower's deadline lags the leader's in-memory
+   renewals, so a follower that holds the lease refuses with the leader's
+   address instead, and the call is forwarded there — by the gRPC, unix, QUIC
+   and MCP listeners like any not-leader refusal, by the REST handler, and by
+   a database-scoped embedded transport configured to forward. The etcd
+   listener does not forward; it answers `Unavailable`, which clientv3 retries
+   on another endpoint. A lease a follower does not hold is not found there as
+   on the leader, and a caller that needs only to know a lease exists — a row
+   lock checking its holder, a database view checking it owns the lease —
+   takes the follower's answer.
+6. On restart or snapshot recovery the node rebuilds its leases, bindings and
+   checkpoints from the persisted lease table. Every restored lease counts from
+   its checkpointed remaining TTL, or its full TTL when it has none. After a
+   leader change the new leader does the same, plus the failover grace.
 
 ## Trust boundaries
 

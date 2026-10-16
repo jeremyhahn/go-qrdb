@@ -43,6 +43,7 @@ type mockUserAuthFactorSvc struct {
 	getResult    *auth.AuthFactor
 	getErr       error
 	removeErr    error
+	deleteErr    error
 	rotateErr    error
 	relabelErr   error
 	lookupResult *auth.AuthFactor
@@ -104,6 +105,9 @@ func (m *mockUserAuthFactorSvc) LookupByCredentialKey(_ context.Context, _ auth.
 func (m *mockUserAuthFactorSvc) Remove(_ context.Context, _ string, _ bool) error {
 	return m.removeErr
 }
+func (m *mockUserAuthFactorSvc) Delete(_ context.Context, _ string, _ bool) error {
+	return m.deleteErr
+}
 func (m *mockUserAuthFactorSvc) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
 	return m.rotateErr
 }
@@ -112,6 +116,14 @@ func (m *mockUserAuthFactorSvc) Relabel(_ context.Context, _ string, _ string) e
 }
 func (m *mockUserAuthFactorSvc) MarkUsed(_ context.Context, _ string, _ time.Time) error {
 	return nil
+}
+
+func (m *mockUserAuthFactorSvc) AddConditional(_ context.Context, _ uint64, _ *auth.AuthFactor, _ auth.FactorAddCondition) (uint64, error) {
+	return 0, nil
+}
+
+func (m *mockUserAuthFactorSvc) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) {
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +236,34 @@ func TestUnixRT_RemoveAuthFactor_Error(t *testing.T) {
 	defer cleanup()
 
 	if _, err := tr.RemoveAuthFactor(context.Background(), &transport.AuthFactorRemoveRequest{FactorID: "factor-1"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteAuthFactor
+// ---------------------------------------------------------------------------
+
+func TestUnixRT_DeleteAuthFactor(t *testing.T) {
+	tr, cleanup := startAuthServer(t, unixserver.WithUserAuthFactorService(newMockUserAuthFactorSvc()))
+	defer cleanup()
+
+	resp, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "factor-1", Force: true})
+	if err != nil {
+		t.Fatalf("DeleteAuthFactor: %v", err)
+	}
+	if resp.Status != "deleted" {
+		t.Errorf("Status = %q, want deleted", resp.Status)
+	}
+}
+
+func TestUnixRT_DeleteAuthFactor_Error(t *testing.T) {
+	svc := newMockUserAuthFactorSvc()
+	svc.deleteErr = errServiceFailed
+	tr, cleanup := startAuthServer(t, unixserver.WithUserAuthFactorService(svc))
+	defer cleanup()
+
+	if _, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "factor-1"}); err == nil {
 		t.Fatal("expected error")
 	}
 }

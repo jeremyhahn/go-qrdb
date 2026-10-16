@@ -406,7 +406,14 @@ has to reclaim the keyspace. `DROP DATABASE` therefore reclaims, in this order:
    starts, and no write already in flight can land after it.
 1. **The data the database owns in the store it shares with other databases**
    — done next, against a database no caller can reach and no write can
-   enter anymore.
+   enter anymore. Keys go in range-delete proposals of at most 1,024 listed
+   keys each (`protocol.OpDeleteRange`, which every engine and every `sm_type`
+   applies as a batch of deletes over the live keys in the range: indexes,
+   history, lease bindings and per-key watch events match one-at-a-time
+   deletes, committed at one revision rather than one each — see
+   [engineering.md](engineering.md), "Range delete command"). On a shard that has not activated the
+   `range-delete` cluster feature, the rest of the prefix is deleted one key
+   per proposal instead.
 2. Its barrier, if it had one.
 3. Its configuration directory, which for a database with a dedicated store
    also holds that store's files.
@@ -617,7 +624,10 @@ membership change (`addObserverReplica`/`removeReplicaFromGroup`), and the
 reconciler's own observer-promotion writes all read-then-CAS against the
 exact snapshot they read, so a write that lands between that read and the
 CAS is retried against the fresh value instead of silently discarding it or
-being silently discarded itself. A KV backend with no `AtomicKV` support
+being silently discarded itself. A replica removal confirms its snapshot
+with a CAS before evicting the replica from Raft, and records the eviction
+afterwards with `Store.RemoveReplica`, which applies to the entry as it then
+stands. A KV backend with no `AtomicKV` support
 is refused with `*placement.AtomicWriteUnsupportedError` (inside the
 `*placement.StoreError` naming the entry) rather than falling back to an
 unconditional `Put`: an early version of this fence degraded that way,

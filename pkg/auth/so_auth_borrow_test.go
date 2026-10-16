@@ -28,21 +28,11 @@ import (
 // window it covers — which is why the three call sites passed pinBuf.Bytes()
 // to the KDF for as long as they did, with every success and error test in
 // this package still green. Bytes() returns and releases; the hash then runs
-// over pages a memguard failure anywhere in the process is free to unmap
-// (go-qrdb#74).
+// over pages a concurrent Destroy is free to unmap (go-qrdb#74).
 //
-// The observation is DETERMINISTIC, and deliberately so. An earlier version
-// proved the point by ordering: suspend the KDF, start a purge-class
-// allocation on another goroutine, and assert it could not finish first. That
-// asserts the right thing but rests on the allocation goroutine having
-// actually reached the lock, which no number of runtime.Gosched calls
-// establishes — against the vulnerable implementation it could simply remain
-// unscheduled, and the test would pass. A scheduling opportunity is not a
-// synchronisation point.
-//
-// Instead the buffer itself reports whether its borrow callback is running.
-// The KDF asks, at the moment it is called. No goroutines, no timing, and the
-// answer is the property itself.
+// The observation is DETERMINISTIC: the buffer itself reports whether its
+// borrow callback is running, and the KDF asks at the moment it is called. No
+// goroutines, no timing, and the answer is the property itself.
 func TestSOAuthenticator_PINBorrowIsHeldAcrossTheKDF(t *testing.T) {
 	const tenant = "tenant-1"
 
@@ -114,7 +104,7 @@ func TestSOAuthenticator_PINBorrowIsHeldAcrossTheKDF(t *testing.T) {
 			}
 			if !borrowHeld {
 				t.Fatal("the KDF ran OUTSIDE the buffer's borrow: the PIN's pages are " +
-					"unmappable by a process-wide memguard purge while it is being hashed")
+					"unmappable by a concurrent Destroy while it is being hashed")
 			}
 		})
 	}

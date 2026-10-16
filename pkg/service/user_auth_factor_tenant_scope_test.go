@@ -339,6 +339,7 @@ func TestRoutedFactorServiceFailsClosedOnSealedTenant(t *testing.T) {
 		"List":                  func() error { _, err := svc.List(ctx, 1); return err },
 		"LookupByCredentialKey": func() error { _, e := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte("c")); return e },
 		"Remove":                func() error { return svc.Remove(ctx, "x", true) },
+		"Delete":                func() error { return svc.Delete(ctx, "x", true) },
 		"Rotate":                func() error { return svc.Rotate(ctx, "x", mtlsFactor("y", 1, []byte("d"))) },
 		"Relabel":               func() error { return svc.Relabel(ctx, "x", "l") },
 		"MarkUsed":              func() error { return svc.MarkUsed(ctx, "x", time.Now()) },

@@ -140,6 +140,10 @@ func (f *fakeUserAuthFactorServicer) Remove(_ context.Context, _ string, _ bool)
 	return nil
 }
 
+func (f *fakeUserAuthFactorServicer) Delete(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+
 func (f *fakeUserAuthFactorServicer) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
 	return nil
 }
@@ -150,6 +154,14 @@ func (f *fakeUserAuthFactorServicer) Relabel(_ context.Context, _ string, _ stri
 
 func (f *fakeUserAuthFactorServicer) MarkUsed(_ context.Context, _ string, _ time.Time) error {
 	return nil
+}
+
+func (f *fakeUserAuthFactorServicer) AddConditional(_ context.Context, _ uint64, _ *auth.AuthFactor, _ auth.FactorAddCondition) (uint64, error) {
+	return 0, nil
+}
+
+func (f *fakeUserAuthFactorServicer) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) {
+	return 0, nil
 }
 
 // ===========================================================================
@@ -294,6 +306,15 @@ func TestGRPCUserAuthFactor_AllMethods_Success(t *testing.T) {
 	t.Run("RemoveAuthFactor", func(t *testing.T) {
 		if _, err := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{FactorID: "f1"}); err != nil {
 			t.Fatalf("RemoveAuthFactor: %v", err)
+		}
+	})
+	t.Run("DeleteAuthFactor", func(t *testing.T) {
+		resp, err := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{FactorID: "f1", Force: true})
+		if err != nil {
+			t.Fatalf("DeleteAuthFactor: %v", err)
+		}
+		if resp.Status != "deleted" {
+			t.Fatalf("Status = %q, want deleted", resp.Status)
 		}
 	})
 	t.Run("RotateAuthFactor", func(t *testing.T) {

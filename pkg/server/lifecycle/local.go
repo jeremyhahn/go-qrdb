@@ -20,8 +20,8 @@ import (
 	"path/filepath"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -46,17 +46,20 @@ import (
 
 // NewLocalStorage creates the node-local storage backend for a raft-free
 // composition and returns the storage interface plus an optional *pebble.DB
-// handle (non-nil only for the pebble backend). When dataPlaneFS is non-nil
-// it is wired into the pebble backend's vfs.FS so all on-disk I/O routes
-// through it (the seal barrier's encfs). The memory, file, and objstore
-// backends ignore dataPlaneFS — encfs wraps Pebble's vfs specifically.
-func NewLocalStorage(backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+// handle (non-nil only for the pebble backend). enc is the at-rest encryption
+// every on-disk backend writes through: the pebble backend installs its file
+// system and the file backend does its record I/O through it, so both are
+// encrypted under the same barrier by the same mechanism (the seal barrier's
+// encfs). A nil or disabled enc leaves them plaintext. The memory backend
+// holds nothing on disk and the objstore backend is not a local file system,
+// so both ignore enc.
+func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
 	switch backendType {
 	case database.BackendMemory:
 		return memory.NewStorage(), nil, nil
 
 	case database.BackendFile:
-		stg, err := file.New(filepath.Join(dataDir, "file"))
+		stg, err := file.New(filepath.Join(dataDir, "file"), file.WithEncryptor(enc))
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
@@ -73,8 +76,8 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, dataPlane
 	case database.BackendPebble:
 		pebbleDir := filepath.Join(dataDir, "pebble")
 		cfg := pebbleStorage.DefaultConfig(pebbleDir)
-		if dataPlaneFS != nil {
-			cfg.FS = dataPlaneFS
+		if enc.Enabled() {
+			cfg.FS = enc.FS()
 		}
 		stg, err := pebbleStorage.New(cfg)
 		if err != nil {

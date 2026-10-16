@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 A user can hold several authentication factors — a client certificate, a FIDO2
 token, a PIV card — and log in with any of them.
@@ -41,6 +41,30 @@ qrdb auth factor add --user 42 --type piv --label "badge" \
      --credential-hex d4e5f6... --reader "Generic Reader 00 00" --slot 9a
 ```
 
+**Hand out a one-time enrolment.** When a user may enrol their first card
+and only one — an onboarding link, a recovery token — make the add
+conditional, and the server refuses every add after the first that succeeds,
+however many arrive at once:
+
+```bash
+qrdb auth factor add --user 42 --type piv --label "badge" \
+     --credential-hex d4e5f6... --if-no-active-type
+```
+
+**Add only if nothing changed since you looked.** `list` prints the user's
+factor-set version; pass it back, and the add is refused if any factor was
+added, removed, deleted or rotated in between:
+
+```bash
+qrdb auth factor list --user 42            # ... Factor set version: 3
+qrdb auth factor add --user 42 --type fido2 --label "spare" \
+     --credential-hex a1b2c3... --expected-version 3
+```
+
+From Go, set `IfNoActiveType` or `ExpectedFactorSetVersion` on the add
+request and match a refusal with
+`errors.Is(err, sdk.ErrFactorConditionFailed)`.
+
 **Rename one** so you can tell your two tokens apart later:
 
 ```bash
@@ -61,7 +85,22 @@ qrdb auth factor remove 7
 ```
 
 Removing somebody's **last** factor is refused unless you pass `--force`,
-because it locks them out.
+because it locks them out. A removed factor is revoked, not erased: it stays
+listed, and its certificate or token can never be enrolled again.
+
+**Undo an add that did not complete.** If you enrolled a factor as one step
+of something that then failed, delete it rather than removing it, and the
+same certificate or token can be enrolled again:
+
+```bash
+qrdb auth factor delete 7
+qrdb auth factor add --user 42 --type mtls --label "laptop" \
+     --cert ./alice/cert.pem
+```
+
+`delete` refuses a factor that has been removed, so it never brings back a
+revoked credential, and it needs `--force` for somebody's last factor just as
+`remove` does.
 
 **Enroll a second factor before you need it.** One token, lost, is an account
 you cannot reach. Two is a bad day instead.
@@ -147,6 +186,20 @@ resolves the `(method, lookup key)` tuple only. Use `xkmsctl auth login` or
 
 **Removing a factor was refused.** It was the user's last one. `--force`
 overrides it; be sure you have another way in first.
+
+**A conditional add was refused.** The condition did not hold, and nothing
+was enrolled. With `--if-no-active-type` the error names the active factor
+that already holds the type; remove or revoke it first if a replacement is
+intended, or use `rotate`. With `--expected-version` the user's factors
+changed since your `list`: list again, check the change, and retry with the
+new version.
+
+**"factor set of user N contended" / `ABORTED`.** Many changes to one
+user's factors landed while yours was committing. Nothing was enrolled; retry.
+
+**A conditional add fails with an internal error about an atomic store.**
+The node's store has no guarded writes, so it cannot decide a condition
+safely and refuses rather than guessing. Unconditional adds still work.
 
 **"PIN too short".** Six characters, minimum, enforced before any backend sees
 it.

@@ -158,6 +158,30 @@ func TestClassify_DominantRulesWinThroughWrappers(t *testing.T) {
 	}
 }
 
+// TestClassify_RaftTransientConditionsAreRetryable pins that a propose or
+// read the consensus layer refused for a condition that clears on its own is
+// answered as retryable rather than as a server fault.
+func TestClassify_RaftTransientConditionsAreRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"a propose canceled", &service.ProposeError{Err: quicraft.ErrCanceled}, Canceled},
+		{"a placement list whose read timed out", &placement.StoreError{Op: "list", Err: &service.ReadError{Err: quicraft.ErrTimeout}}, Unavailable},
+		{"a propose under rate limiting", &service.ProposeError{Err: quicraft.ErrSystemBusy}, Unavailable},
+		{"a propose dropped before the log", &service.ProposeError{Err: quicraft.ErrDropped}, Unavailable},
+		{"a read on a shard still starting", &service.ReadError{Err: quicraft.ErrShardNotReady}, Unavailable},
+		{"a read before the leader committed in its term", &service.ReadError{Err: quicraft.ErrReadIndexNotReady}, Unavailable},
+		{"a propose on a replica that is not the leader", &service.ProposeError{Err: quicraft.ErrNotLeader}, Unavailable},
+		{"a permanent consensus failure stays a fault", &service.ProposeError{Err: quicraft.ErrShardNotFound}, Internal},
+	} {
+		if got := Classify(tc.err); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestClassify_RaftTimeoutIsUnavailable: a request Raft timed out -- most
 // often a proposal or read that met an election, or a leader still settling
 // its term -- is retryable, whatever wrapper carried it. Before, the wrapper's
@@ -183,6 +207,22 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 	} {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestClassify_DatabaseCreateTimeoutIsRetryableWhateverItWraps(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{"a propose that timed out", &service.ProposeError{Err: quicraft.ErrTimeout}},
+		{"a step that met the deadline itself", context.DeadlineExceeded},
+		{"a permanent consensus failure met after the deadline", &service.ProposeError{Err: quicraft.ErrShardNotFound}},
+	} {
+		err := &service.DatabaseCreateTimeoutError{Name: "app", Err: tc.cause}
+		if got := Classify(err); got != Unavailable {
+			t.Errorf("%s: got %s, want %s", tc.name, got, Unavailable)
 		}
 	}
 }

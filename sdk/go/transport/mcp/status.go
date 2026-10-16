@@ -99,17 +99,21 @@ func mapToolError(tool string, payload *wire.ErrorPayload) error {
 	if payload.Code == wire.CodeUnavailable && payload.Reason == sealedwindow.ReasonSealed {
 		return &transport.BarrierSealedError{Message: payload.Message}
 	}
-	if build, ok := typedToolErrors[payload.Code]; ok {
+	typed := transport.RefusalError(payload.Reason, payload.Metadata)
+	if build, ok := typedToolErrors[payload.Code]; ok && typed == nil {
 		return build(payload.Message)
+	}
+	if typed == nil {
+		typed = &toolResultError{
+			Tool:    tool,
+			Message: toolCodePrefixes[payload.Code] + payload.Message,
+		}
 	}
 
 	return &transport.RequestError{
 		Method:     tool,
 		StatusCode: int(payload.Code),
-		Err: &toolResultError{
-			Tool:    tool,
-			Message: toolCodePrefixes[payload.Code] + payload.Message,
-		},
+		Err:        typed,
 		RetryAfter: time.Duration(payload.RetryAfterSeconds) * time.Second,
 	}
 }

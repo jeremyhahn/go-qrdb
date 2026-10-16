@@ -23,6 +23,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2/vfs"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -587,6 +589,177 @@ func TestExists_OSError(t *testing.T) {
 	}
 }
 
+// seedKeys stores each key with its own name as the value.
+func seedKeys(t *testing.T, eng *Engine, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set(%q): %v", k, err)
+		}
+	}
+}
+
+// listStrings returns every key in eng, in order, as strings.
+func listStrings(t *testing.T, eng *Engine) []string {
+	t.Helper()
+	keys, err := eng.List(nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = string(k)
+	}
+	return out
+}
+
+// TestFileEngine_DeleteRange pins DeleteRange's [start, end) bounds against
+// the engine itself: hashed filenames carry no key order, so the range is
+// found by filtering a full listing, and both bounds must be exact.
+func TestFileEngine_DeleteRange(t *testing.T) {
+	cases := []struct {
+		name       string
+		start, end string
+		want       []string
+	}{
+		{"start inclusive, end exclusive", "b", "d", []string{"a", "d", "e"}},
+		{"empty end is unbounded", "c", "", []string{"a", "b"}},
+		{"range below every key", "0", "1", []string{"a", "b", "c", "d", "e"}},
+		{"range covering every key", "a", "z", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng, err := New(memdir.TempDir(t))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = eng.Close() }()
+			seedKeys(t, eng, "a", "b", "c", "d", "e")
+
+			var end []byte
+			if tc.end != "" {
+				end = []byte(tc.end)
+			}
+			if err := eng.DeleteRange([]byte(tc.start), end); err != nil {
+				t.Fatalf("DeleteRange: %v", err)
+			}
+			got := listStrings(t, eng)
+			if len(got) != len(tc.want) {
+				t.Fatalf("keys after DeleteRange = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("keys after DeleteRange = %q, want %q", got, tc.want)
+				}
+			}
+			for _, k := range tc.want {
+				v, err := eng.Get([]byte(k))
+				if err != nil || string(v) != k {
+					t.Fatalf("surviving Get(%q) = (%q, %v), want (%q, nil)", k, v, err, k)
+				}
+			}
+		})
+	}
+}
+
+// TestFileEngine_DeleteRange_Refusals covers the refusals DeleteRange makes
+// before touching a record: a closed engine, an empty start, and an inverted
+// or empty range -- each leaving the stored keys intact.
+func TestFileEngine_DeleteRange_Refusals(t *testing.T) {
+	eng, err := New(memdir.TempDir(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	seedKeys(t, eng, "a", "b")
+
+	if err := eng.DeleteRange(nil, []byte("b")); !errors.Is(err, storage.ErrEmptyKey) {
+		t.Fatalf("DeleteRange(empty start) = %v, want %v", err, storage.ErrEmptyKey)
+	}
+	if err := eng.DeleteRange([]byte("b"), []byte("a")); !errors.Is(err, storage.ErrInvalidRange) {
+		t.Fatalf("DeleteRange(inverted) = %v, want %v", err, storage.ErrInvalidRange)
+	}
+	if err := eng.DeleteRange([]byte("a"), []byte("a")); !errors.Is(err, storage.ErrInvalidRange) {
+		t.Fatalf("DeleteRange(empty range) = %v, want %v", err, storage.ErrInvalidRange)
+	}
+	if got := listStrings(t, eng); len(got) != 2 {
+		t.Fatalf("a refused DeleteRange removed keys: %q", got)
+	}
+
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	var closedErr *storage.ClosedError
+	if err := eng.DeleteRange([]byte("a"), nil); !errors.As(err, &closedErr) {
+		t.Fatalf("DeleteRange on a closed engine = %v, want *storage.ClosedError", err)
+	}
+}
+
+// TestFileEngine_DeleteRange_ListErrorPropagates covers the listing that
+// finds the range failing: a corrupt record makes List refuse, and
+// DeleteRange must return that refusal rather than delete a partial range.
+func TestFileEngine_DeleteRange_ListErrorPropagates(t *testing.T) {
+	eng, err := New(memdir.TempDir(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+	seedKeys(t, eng, "a")
+
+	dir, path := eng.recordPaths([]byte("corrupt"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte{0, 0}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var rce *RecordCorruptError
+	if err := eng.DeleteRange([]byte("a"), nil); !errors.As(err, &rce) {
+		t.Fatalf("DeleteRange = %v, want List's *RecordCorruptError", err)
+	}
+	if ok, err := eng.Exists([]byte("a")); err != nil || !ok {
+		t.Fatalf("Exists(a) after a refused DeleteRange = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestFileEngine_DeleteRange_DeleteErrorPropagates covers a delete inside the
+// range failing. List recovers a key from the record it finds, not from the
+// file's name, so a record misplaced under another key's hash -- the
+// corruption Get refuses as KeyMismatchError -- lists as "b" while Delete
+// targets "b"'s own path. A non-empty directory there makes os.Remove fail
+// with ENOTEMPTY, and DeleteRange must report it rather than succeed.
+func TestFileEngine_DeleteRange_DeleteErrorPropagates(t *testing.T) {
+	eng, err := New(memdir.TempDir(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	misplacedDir, misplacedPath := eng.recordPaths([]byte("x"))
+	if err := os.MkdirAll(misplacedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(misplacedPath, encodeRecord([]byte("b"), []byte("v")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, ownPath := eng.recordPaths([]byte("b"))
+	if err := os.MkdirAll(ownPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ownPath, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = eng.DeleteRange([]byte("a"), nil)
+	if err == nil {
+		t.Fatal("DeleteRange: expected the failed delete to propagate, got nil")
+	}
+	var closedErr *storage.ClosedError
+	if errors.Is(err, storage.ErrInvalidRange) || errors.As(err, &closedErr) {
+		t.Fatalf("DeleteRange = %v, want the OS remove error", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Batch tests
 // ---------------------------------------------------------------------------
@@ -655,6 +828,45 @@ func TestFileEngine_BatchDeleteAndCommit(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("Get after batch delete: expected nil, got %q", got)
+	}
+}
+
+// TestFileEngine_BatchRangeDeleteKeepsOrder pins that a batch range delete
+// applies in its place between the point writes around it: a write the batch
+// made before the range inside it is deleted, and one it made after survives.
+func TestFileEngine_BatchRangeDeleteKeepsOrder(t *testing.T) {
+	eng, err := New(memdir.TempDir(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+	seedKeys(t, eng, "a", "b", "c", "d")
+
+	batch := eng.Batch()
+	steps := []func() error{
+		func() error { return batch.Set([]byte("a"), []byte("a2")) },
+		func() error { return batch.Set([]byte("b2"), []byte("b2")) },
+		func() error { return batch.DeleteRange([]byte("b"), []byte("d")) },
+		func() error { return batch.Set([]byte("c"), []byte("c2")) },
+	}
+	for i, step := range steps {
+		if err := step(); err != nil {
+			t.Fatalf("batch step %d: %v", i, err)
+		}
+	}
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("batch Commit: %v", err)
+	}
+
+	want := map[string]string{"a": "a2", "c": "c2", "d": "d"}
+	got := listStrings(t, eng)
+	if len(got) != len(want) {
+		t.Fatalf("keys after commit = %q, want the keys of %v", got, want)
+	}
+	for k, v := range want {
+		if val, err := eng.Get([]byte(k)); err != nil || string(val) != v {
+			t.Fatalf("Get(%q) = (%q, %v), want (%q, nil)", k, val, err, v)
+		}
 	}
 }
 
@@ -1282,28 +1494,20 @@ func TestFileEngine_SnapshotIteratorReverse(t *testing.T) {
 
 // TestMkdirAllDurable_StatErrorPropagates covers the branch where os.Stat
 // fails with something other than ENOENT (a real fault, not "does not
-// exist yet"): denying execute on the PARENT makes Stat on the child fail
-// with a permission error.
+// exist yet"): the PARENT is a regular file, so Stat on the child fails
+// with ENOTDIR -- a fault no permission bit grants, so it holds as root.
 func TestMkdirAllDurable_StatErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
-	base := memdir.TempDir(t)
-	parent := filepath.Join(base, "parent")
-	if err := os.Mkdir(parent, 0o700); err != nil {
+	parent := filepath.Join(memdir.TempDir(t), "parent")
+	if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(parent, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
 	err := mkdirAllDurable(filepath.Join(parent, "child"))
 	if err == nil {
-		t.Fatal("expected a permission error, got nil")
+		t.Fatal("expected ENOTDIR stat'ing under a regular file, got nil")
 	}
 	if os.IsNotExist(err) {
-		t.Fatalf("expected a permission error, got IsNotExist: %v", err)
+		t.Fatalf("expected a stat error other than ENOENT, got IsNotExist: %v", err)
 	}
 }
 
@@ -1332,20 +1536,41 @@ func TestMkdirAllDurable_MkdirErrorPropagates(t *testing.T) {
 }
 
 // TestWriteFormatMarker_CreateTempErrorPropagates covers writeFormatMarker's
-// own first error path: a directory New finds empty but cannot write into.
+// own first error path: an engine root that no longer exists, so the temp
+// file cannot be created in it.
 func TestWriteFormatMarker_CreateTempErrorPropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
+	e := &Engine{dir: filepath.Join(memdir.TempDir(t), "gone"), fs: vfs.Default, atRest: atRestPlaintext}
+	if err := e.writeFormatMarker(); err == nil {
+		t.Fatal("expected an error creating the marker's temp file in a missing root, got nil")
 	}
+}
+
+// TestWriteFormatMarker_RenameErrorPropagates covers writeFormatMarker's
+// publish step failing: the marker's path is occupied by a non-empty
+// directory, so the rename cannot land, and the temp file it wrote is
+// removed rather than left for the next Open to find.
+func TestWriteFormatMarker_RenameErrorPropagates(t *testing.T) {
 	dir := memdir.TempDir(t)
-	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
+	markerPath := filepath.Join(dir, formatMarkerFileName)
+	if err := os.Mkdir(markerPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
+	if err := os.WriteFile(filepath.Join(markerPath, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := New(dir)
-	if err == nil {
-		t.Fatal("expected a permission error writing the format marker, got nil")
+	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	if err := e.writeFormatMarker(); err == nil {
+		t.Fatal("expected writeFormatMarker to fail renaming onto a non-empty directory")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ent := range entries {
+		if ent.Name() != formatMarkerFileName {
+			t.Fatalf("failed publish left %q behind", ent.Name())
+		}
 	}
 }
 
@@ -1672,25 +1897,23 @@ func TestEnsureFormatMarker_ReadFileErrorPropagates(t *testing.T) {
 // a load the underlying iterator could not complete must fail the
 // Snapshot call, not return a silently truncated snapshot (go-qrdb#592 F2).
 func TestSnapshot_PropagatesIteratorError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission denial cannot be exercised")
-	}
 	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = e.Close() }()
 
-	shardDir, _ := e.recordPaths([]byte("k"))
-	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+	dir, path := e.recordPaths([]byte("corrupt"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(shardDir, 0); err != nil {
+	if err := os.WriteFile(path, []byte{0, 0}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
-	if _, err := e.Snapshot(); err == nil {
-		t.Fatal("expected Snapshot to propagate the permission error")
+	_, err = e.Snapshot()
+	var rce *RecordCorruptError
+	if !errors.As(err, &rce) {
+		t.Fatalf("Snapshot = %v, want the iterator's *RecordCorruptError", err)
 	}
 }

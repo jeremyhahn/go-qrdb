@@ -185,6 +185,12 @@ node's data plane in process, so the command returns once the migration has
 or until it fails with `transport: barrier sealed` when the migration brings
 the node back sealed.
 
+A system-scope migration re-encrypts every store the node barrier covers: the
+`pebble` or `file` data store, the vector store, and in raft mode the WAL and
+the state machine's storage, including `sm_storage: file`. A `file` store is
+copied record by record under either `--mechanism`. See
+[engineering.md](engineering.md#what-a-system-scope-migration-re-encrypts).
+
 A tenant on the shared system barrier cannot change its encryption; the server
 rejects it. A migration to `shamir` splits the new unseal key to the holders
 already enrolled on the barrier, `--shamir-total` of them. The node comes back

@@ -262,6 +262,14 @@ when the request carries a tenant ID, and to the system store otherwise; a
 system-scope request with no system store configured fails closed with
 `ErrNilSystemCredentialService`.
 
+The resolver's retriever (`CredentialRetriever` / `CredentialRetrieveFunc`)
+returns a protected-memory `*secure.Buffer`, not a `[]byte`. `Resolve` hands the
+Buffer to `NewSecretValueFromBuffer`, which seals it into the `SecretValue`
+straight from protected pages and consumes it — on success and on failure
+(`*SealFailedError`). A retriever that returns a nil Buffer with no error fails
+closed. See
+[Protected-memory boundary](architecture.md#protected-memory-boundary).
+
 `literal://<value>` forces a value to be treated as a verbatim literal, which is
 how an operator quotes a value that would otherwise look like a reference. The
 prefix is stripped during resolution.

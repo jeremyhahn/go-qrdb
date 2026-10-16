@@ -225,7 +225,7 @@ The Makefile sets its budget:
 
 The budget is on the compose service: that container holds the `go test`
 process and every qrdbd and qrdb process the tests spawn, and under the CPU cap
-each of those Go processes sizes `GOMAXPROCS` to 8. The other compose stages
+each of those Go processes sizes `GOMAXPROCS` to the cap. The other compose stages
 leave the budget variables unset, which docker reads as no limit.
 
 `CLUSTER_CPUS` is an upper bound, not a requirement. dockerd refuses a
@@ -240,9 +240,10 @@ cluster-cpus: capping the cluster stage at 4 CPUs (CLUSTER_CPUS=8, docker host h
 ```
 
 A daemon whose count cannot be read fails the stage rather than running
-uncapped. Nothing else assumes 8 CPUs: `CLUSTER_PARALLEL` is 1 regardless.
-`make test-cluster-cpus` (Lint) runs the script against a stub docker for the
-lowering, the pass-through and every refusal.
+uncapped. Nothing else assumes 8 CPUs: `CLUSTER_PARALLEL` is 1 regardless, and
+the suite's timings that size `INTEGRATION_GO_TIMEOUT` were measured on a
+4-CPU budget. `make test-cluster-cpus` (Lint) runs the script against a stub
+docker for the lowering, the pass-through and every refusal.
 
 ### Batch workflow
 

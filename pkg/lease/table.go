@@ -31,13 +31,29 @@ import (
 // Layout, under TablePrefix in the state machine's raw keyspace:
 //
 //	TablePrefix + "l/" + id (8 bytes BE)  ->  granted TTL in seconds (8 bytes BE)
+//	TablePrefix + "c/" + id (8 bytes BE)  ->  checkpointed remaining TTL in seconds (8 bytes BE)
+//	TablePrefix + "r/" + id (8 bytes BE)  ->  Raft index of the lease's last replicated renewal (8 bytes BE)
 //	TablePrefix + "b/" + key              ->  lease id the key is bound to (8 bytes BE)
 //	TablePrefix + "seq"                   ->  highest lease id ever granted (8 bytes BE)
+//	TablePrefix + "rfrom"                 ->  Raft index renewals are recorded from (8 bytes BE)
+//
+// The renewal records and the "rfrom" marker are how a checkpoint apply tells
+// whether a replicated renewal superseded the checkpoint (see
+// Lessor.ApplyCheckpoints). Neither exists until the group applies its first
+// checkpoint, which sets the marker to that entry's index: a group that has
+// never checkpointed -- one whose members do not all advertise
+// featuregate.LeaseCheckpoint -- writes exactly the records it wrote before
+// checkpoints existed. A renewal record exists only for a lease renewed
+// through the log since the marker, and a revoke deletes it.
 //
 // There is one binding record per key, keyed by the key, so "which lease does
 // this key belong to" is a point read and a key can never be bound to two
 // leases at once. The lease -> keys direction is rebuilt in memory from the
 // bindings rather than stored twice.
+//
+// A checkpoint record exists only while a lease has one: a checkpoint of zero,
+// a replicated keep-alive and a revoke all delete it. Its value is never zero
+// and never above the lease's granted TTL.
 //
 // The prefix begins with 0x00, the byte both state machines reserve for their
 // own records, so it sorts ahead of every user key and is hidden from user
@@ -50,11 +66,14 @@ import (
 // under.
 const TablePrefix = "\x00qrdb.lease/"
 
-// The three record families under TablePrefix.
+// The record families under TablePrefix.
 const (
-	leaseRecordPrefix = TablePrefix + "l/"
-	bindingPrefix     = TablePrefix + "b/"
-	sequenceKey       = TablePrefix + "seq"
+	leaseRecordPrefix      = TablePrefix + "l/"
+	checkpointRecordPrefix = TablePrefix + "c/"
+	renewalRecordPrefix    = TablePrefix + "r/"
+	bindingPrefix          = TablePrefix + "b/"
+	sequenceKey            = TablePrefix + "seq"
+	recordFromKey          = TablePrefix + "rfrom"
 )
 
 // int64Size is the encoded width of every integer in the table.
@@ -83,6 +102,20 @@ func leaseRecordKey(id int64) []byte {
 	return binary.BigEndian.AppendUint64(k, uint64(id))
 }
 
+// checkpointRecordKey returns the key of lease id's checkpoint record.
+func checkpointRecordKey(id int64) []byte {
+	k := make([]byte, 0, len(checkpointRecordPrefix)+int64Size)
+	k = append(k, checkpointRecordPrefix...)
+	return binary.BigEndian.AppendUint64(k, uint64(id))
+}
+
+// renewalRecordKey returns the key of lease id's renewal record.
+func renewalRecordKey(id int64) []byte {
+	k := make([]byte, 0, len(renewalRecordPrefix)+int64Size)
+	k = append(k, renewalRecordPrefix...)
+	return binary.BigEndian.AppendUint64(k, uint64(id))
+}
+
 // bindingKey returns the key of key's binding record.
 func bindingKey(key []byte) []byte {
 	k := make([]byte, 0, len(bindingPrefix)+len(key))
@@ -104,23 +137,45 @@ func decodeInt64(b []byte) (v int64, ok bool) {
 	return int64(binary.BigEndian.Uint64(b)), true
 }
 
+// encodeIndex encodes a Raft index as 8 big-endian bytes.
+func encodeIndex(index uint64) []byte {
+	return binary.BigEndian.AppendUint64(make([]byte, 0, int64Size), index)
+}
+
+// decodeIndex decodes an 8-byte big-endian Raft index; ok is false for any
+// other width.
+func decodeIndex(b []byte) (index uint64, ok bool) {
+	if len(b) != int64Size {
+		return 0, false
+	}
+	return binary.BigEndian.Uint64(b), true
+}
+
 // tableSnapshot is the lease table as read from storage, before it replaces
 // the Lessor's in-memory state.
 type tableSnapshot struct {
-	seq      int64
-	ttls     map[int64]int64
-	bindings map[string]int64
+	seq         int64
+	ttls        map[int64]int64
+	checkpoints map[int64]int64
+	renewals    map[int64]uint64
+	bindings    map[string]int64
+	recordFrom  uint64
 }
 
 // readTable reads and validates the whole lease table from r. A record that
-// does not decode, a binding to a lease the table does not hold, or a lease id
-// above the recorded sequence is a CorruptTableError: the table is the only
-// durable record of which keys a lease deletes, so guessing past a damaged one
-// would either delete keys that should live or keep keys that should expire.
+// does not decode, a binding, checkpoint or renewal naming a lease the table
+// does not hold, a checkpoint outside 1..the lease's TTL, a renewal recorded
+// before the marker (or with no marker at all), or a lease id above the
+// recorded sequence is a CorruptTableError: the table is the only durable
+// record of which keys a lease deletes and of how long it has left, so
+// guessing past a damaged one would either delete keys that should live or
+// keep keys that should expire.
 func readTable(r storage.Reader) (*tableSnapshot, error) {
 	t := &tableSnapshot{
-		ttls:     make(map[int64]int64),
-		bindings: make(map[string]int64),
+		ttls:        make(map[int64]int64),
+		checkpoints: make(map[int64]int64),
+		renewals:    make(map[int64]uint64),
+		bindings:    make(map[string]int64),
 	}
 
 	raw, err := r.Get([]byte(sequenceKey))
@@ -135,6 +190,18 @@ func readTable(r storage.Reader) (*tableSnapshot, error) {
 		t.seq = seq
 	}
 
+	raw, err = r.Get([]byte(recordFromKey))
+	if err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	if raw != nil {
+		from, ok := decodeIndex(raw)
+		if !ok || from == 0 {
+			return nil, &CorruptTableError{Key: recordFromKey, Reason: "malformed renewal marker"}
+		}
+		t.recordFrom = from
+	}
+
 	err = scanPrefix(r, []byte(leaseRecordPrefix), func(k, v []byte) error {
 		id, idOK := decodeInt64(k[len(leaseRecordPrefix):])
 		ttl, ttlOK := decodeInt64(v)
@@ -145,6 +212,49 @@ func readTable(r storage.Reader) (*tableSnapshot, error) {
 			return &CorruptTableError{Key: string(k), Reason: "lease id is above the recorded sequence"}
 		}
 		t.ttls[id] = ttl
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	err = scanPrefix(r, []byte(checkpointRecordPrefix), func(k, v []byte) error {
+		id, idOK := decodeInt64(k[len(checkpointRecordPrefix):])
+		remaining, remainingOK := decodeInt64(v)
+		if !idOK || !remainingOK {
+			return &CorruptTableError{Key: string(k), Reason: "malformed checkpoint record"}
+		}
+		ttl, held := t.ttls[id]
+		if !held {
+			return &CorruptTableError{Key: string(k), Reason: "checkpoint names a lease the table does not hold"}
+		}
+		if remaining <= 0 || remaining > ttl {
+			return &CorruptTableError{Key: string(k), Reason: "checkpoint is outside the lease's TTL"}
+		}
+		t.checkpoints[id] = remaining
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	err = scanPrefix(r, []byte(renewalRecordPrefix), func(k, v []byte) error {
+		id, idOK := decodeInt64(k[len(renewalRecordPrefix):])
+		index, indexOK := decodeIndex(v)
+		if !idOK || !indexOK {
+			return &CorruptTableError{Key: string(k), Reason: "malformed renewal record"}
+		}
+		if _, held := t.ttls[id]; !held {
+			return &CorruptTableError{Key: string(k), Reason: "renewal names a lease the table does not hold"}
+		}
+		// A renewal is recorded only once the marker is, so one without it is
+		// corrupt. Its index is not compared with the marker's: that order is
+		// a property of the host's log, and a host whose entry index restarts
+		// with the process must not make the table unreadable.
+		if t.recordFrom == 0 {
+			return &CorruptTableError{Key: string(k), Reason: "renewal is recorded without the renewal marker"}
+		}
+		t.renewals[id] = index
 		return nil
 	})
 	if err != nil {

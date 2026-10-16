@@ -612,3 +612,29 @@ func TestForwardToLeader_UnreachableLeaderDoesNotForward(t *testing.T) {
 		t.Fatal("ForwardToLeader forwarded to an unreachable leader")
 	}
 }
+
+// TestForwardToLeader_StalledLeaderLookupDoesNotForward proves the forward
+// timeout bounds the leader lookup as well as the exchange: a member-record
+// read that never completes, under a caller context with no deadline -- a
+// QUIC handler's -- falls back within the timeout instead of holding the
+// handler, and its caller, open forever.
+func TestForwardToLeader_StalledLeaderLookupDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	f := NewFrameForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(replicaforwardtest.StalledMembers{}, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool, Timeout: 100 * time.Millisecond}, ca.TLS(t, "node-a"))
+	t.Cleanup(f.Close)
+
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	done := make(chan bool, 1)
+	go func() {
+		_, _, ok := f.ForwardToLeader(context.Background(), caller, "ceremony.Initialize", "", nil, "raft-leader")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("ForwardToLeader forwarded with no member records")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ForwardToLeader did not return: the leader lookup is not bounded by the forward timeout")
+	}
+}

@@ -62,7 +62,7 @@ func TestLessor_KeepAliveVsExpirySweep_NoRace(t *testing.T) {
 				return
 			default:
 			}
-			if _, err := lr.KeepAlive(l.ID); err != nil {
+			if _, err := lr.KeepAlive(nopWriter{}, l.ID); err != nil {
 				return
 			}
 		}

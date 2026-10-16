@@ -856,6 +856,28 @@ func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertReq
 	return t.enrollTool(ctx, "EnrollCert", "qrdb_cert_enroll", req.Username, args)
 }
 
+// IssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal. Calls the qrdb_cert_delegate MCP tool,
+// whose JSON is transport.IssuedDelegation's.
+func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDelegationRequest) (*transport.IssuedDelegation, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	args := map[string]any{"principal": req.Principal, "scope": req.Scope, "csr_pem": req.CSRPEM}
+	if req.TTL != "" {
+		args["ttl"] = req.TTL
+	}
+	text, err := t.callTool(ctx, "qrdb_cert_delegate", args)
+	if err != nil {
+		return nil, err
+	}
+	var out transport.IssuedDelegation
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "IssueDelegation", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &out, nil
+}
+
 // RevokeCert marks a certificate serial as revoked, and reports whether
 // the server held a certificate record for it. Calls the qrdb_cert_revoke
 // MCP tool.

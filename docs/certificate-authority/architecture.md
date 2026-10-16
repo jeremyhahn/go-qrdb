@@ -1,6 +1,6 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 Issuing, exporting and revoking the client certificates that authenticate every
 caller. Authentication is mTLS throughout the store, so this is the feature that
@@ -262,6 +262,7 @@ the target comes from differs per verb:
 | Verb | Where the target tenant comes from | Gate |
 |---|---|---|
 | `certs:issue`, `certs:enroll` | **the caller's own tenant** — no request names one | authorized against it |
+| `certs:delegate` | **the caller's own tenant**, never the system tenant | authorized against it; refused for a delegated caller |
 | `certs:list` | the request's `tenantID` | authorized against that tenant |
 | `certs:revoke` | **resolved from the serial** | authorized against the owning tenant |
 | `certs:export` | nowhere — none is named | none needed (see below) |
@@ -371,6 +372,44 @@ On MCP, `qrdb_cert_list` deserves a note: its `tenant_id` argument defaults to
 the **system tenant** when omitted, so the least deliberate call an agent can
 make is also the most privileged one. It is gated exactly like an explicit
 cross-tenant request.
+
+## Delegations to a service principal
+
+A **delegation** is a short-lived client certificate a tenant's own login CA
+(its Key B, which may be hardware-held through `WithCertKeyProviderFactory`)
+issues to an embedding application's service principal. It names the
+principal and the permissions it may exercise inside the tenant in a
+**critical** X.509 extension, in the spirit of RFC 3820 proxy certificates and
+SPIFFE SVIDs, and lives at most 24 hours (one hour by default). What the
+authenticator does with one is described in
+[../identity-rbac/](../identity-rbac/architecture.md#tenant-issued-delegations).
+
+Decisions, and why:
+
+- **The one mechanism.** A delegation certificate is the only way an
+  embedder's service principal acts in a tenant's scope; no option, context
+  variant or fallback does the same.
+- **Only the tenant mints one.** `certs:delegate` is tenant-only: it acts on
+  the caller's own tenant, the system tenant is refused, and so is a caller
+  that is itself authenticated by a delegation. The issuer is that tenant's
+  Key B and no other key, so no platform identity — not a system-tenant Admin,
+  not a node — can produce a certificate the tenant did not ask for.
+- **A named, registered extension.** The critical extension is `tp-delegation`,
+  OID `1.3.6.1.4.1.29377.101.24`, under the company's IANA Private Enterprise
+  Number certificate-extension arc (29377.101).
+- **The requester's key, as for issue.** The application sends a CSR; the CA
+  certifies its key and takes nothing else from it. The Subject is
+  `CN=qrdb-service:<principal>`, `OU=<tenant>`, so a delegation can never be
+  mistaken for, or resolve to, a user account.
+- **Audited before it is signed.** The `cert.delegate` event is written to the
+  tenant's trail first; a node that cannot write it signs nothing.
+- **Withdrawn through ordinary revocation.** A delegation is an issued
+  certificate with a record like any other, listed by `certs:list` and revoked
+  by serial through `certs:revoke`; the per-request revocation check above
+  applies to it unchanged.
+- **No new token format and no new crypto.** The extension is DER read and
+  written with `golang.org/x/crypto/cryptobyte`; signing is `crypto/x509` through the same
+  `cakey.Provider` every other issuance uses.
 
 ## Cryptographic properties
 
@@ -514,7 +553,7 @@ identity, so it resolves to no account there either. An assertion naming a
 profile the leader does not recognise is refused. A holder request is never
 forwarded unsigned — an unsigned forward is authorized as the forwarding node
 — so a follower that cannot sign the assertion refuses it with 502
-(`HolderForwardUnsignedError`).
+(`UnsignedForwardRefusedError`).
 
 **The trust domain is validated when configuration loads.** A value that does
 not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,

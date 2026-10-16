@@ -266,9 +266,41 @@ roster is re-read under the lock:
 
 At M the round is detached, the key is combined and must open the domain's
 blob (`ErrUnsealKeyMismatch` otherwise), and the op's finisher runs with the
-authenticated root key, which it must not retain. Every accumulated share is
-destroyed when the round completes, fails or expires (`seal.share_ttl`,
-default 15m, `ErrShamirQuorumExpired`).
+authenticated root key, which it must not retain.
+
+A share is custodied from the moment the round accepts it to the moment the
+round ends, and the round has no exit that leaves it behind.
+`shamir.NewProtectedShare` (go-quicraft, over go-enclave) moves the share
+into a locked, guard-paged enclave and wipes the value it was given;
+`SubmitHolderShare` wipes `HolderSubmission.Share` before it returns, whatever
+the outcome, refusals included. The x-coordinate check decodes four base64
+characters into a stack buffer that is wiped. `shamir.CombineProtected`
+reconstructs into an enclave, and the key is copied out only into a
+`secure.Buffer` that is destroyed on return. Every accumulated share is
+destroyed when the round:
+
+| Exit | Where |
+|---|---|
+| completes, or fails to reconstruct or to open the blob | `submitAgainst`, `finishRound` |
+| expires (`seal.share_ttl`, default 15m, `ErrShamirQuorumExpired`) | the round's expiry timer |
+| is replaced: its roster changed, or an expired rekey round is reopened | `roundLocked`, `StartRekey` |
+| loses its share set: the domain is redistributed (rekey, revocation, recovery-key generation) or the recovery keys are deleted | `redistributeTo`, `DeleteRecoveryKeys` |
+| can no longer run: a quorum unseals the barrier, which ends every unseal and recovery round | `unsealFromRootKey` |
+| outlives the session: the barrier is sealed or closed | `Seal`, `Close` |
+
+Expiry is eager: opening a round arms a timer for its TTL, and the timer
+destroys the round's share buffers whether or not another share ever arrives.
+A round that completes or is replaced stops its timer, and a timer never
+touches a round that has left the open set. `Seal` and `Close` destroy every
+open round (`Close` does so even on an already sealed barrier, which is when an
+unseal round holds shares). Seal and unseal change the barrier's state before
+they sweep, and admission re-checks the state under the round lock, so a
+submission racing the change cannot open a round behind the sweep. The rounds'
+time source is `StorageBarrier.SetClock`, so tests expire a round without
+sleeping.
+
+There is no operation that cancels an open round: a round ends by one of the
+exits above, and the TTL bounds how long an abandoned one holds shares.
 
 ## Holder verification
 
@@ -503,8 +535,12 @@ and policy are per distribution, not configuration.
 **Integration target:** `make integration-test-shamir-custody` (no Docker; selection in `test/integration/features.mk`). It runs the tenant barrier holder CLI suite per protocol; the system barrier's holder flows run under `make integration-test-barrier-seal` and `make integration-test-ceremony`. Per-transport accounting is the `shamir-custody` row of `test/integration/COVERAGE.md`.
 
 - **Unit** (`pkg/seal`, `pkg/ceremony`): roster validation and tamper
-  detection, each admission refusal, factor policies, round expiry and
-  replacement, rekey and revocation refusal, envelope binding, one-time claim,
+  detection, each admission refusal, factor policies, round expiry (swept eagerly,
+  with no further share) and replacement, destruction of every round's shares
+  on each exit in the table above (`quorum_sweep_test.go`,
+  `quorum_custody_test.go`, asserted through the protected share's destroyed
+  state) and of the submitted plain buffer on every outcome, rekey and
+  revocation refusal, envelope binding, one-time claim,
   share TTL. Zeroization is asserted, not assumed.
 - **Transport** (`pkg/api/{rest,grpc,quic,mcp,unix}`, embedded): every holder
   route, its authorization, its error classes, and that submitted share bytes
@@ -527,7 +563,12 @@ and policy are per distribution, not configuration.
   the trail is open in the sealed window, that start fails before the window
   when it cannot be opened, and that an unseal quorum gathered there is
   recorded.
-- No `time.Sleep`: expiry is driven through the clock seam.
+- No `time.Sleep`: quorum round expiry is driven through the clock seam.
+  `StorageBarrier.SetClock` installs the clock rounds are dated and expired
+  on (the real clock by default), and the expiry tests advance a
+  `clocktest.Fake` past the round TTL. The one remaining sleep is the
+  `copyEnclaveToBuffer` race child, which holds a real enclave borrow against
+  a real `WipeAll` timeout and so cannot run on virtual time.
 
 ## Observability
 

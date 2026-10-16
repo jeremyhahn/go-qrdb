@@ -592,6 +592,36 @@ func TestForwardAdminWrite_EmptyLeaderAddressDoesNotForward(t *testing.T) {
 	}
 }
 
+// TestForwardAdminWrite_StalledLeaderLookupDoesNotForward proves the forward
+// timeout bounds the leader lookup as well as the call: a member-record read
+// that never completes, under a caller context with no deadline, falls back
+// within the timeout instead of holding the call open forever.
+func TestForwardAdminWrite_StalledLeaderLookupDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	ingressTLS := ca.TLS(t, "node-a")
+	fwd := NewReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.StalledMembers{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: 100 * time.Millisecond,
+	}, ingressTLS)
+	t.Cleanup(fwd.Close)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	done := make(chan bool, 1)
+	go func() {
+		_, _, ok := fwd.forwardAdminWrite(ctx, pb.QRDBService_CeremonyInitialize_FullMethodName, &pb.CeremonyInitializeRequest{}, "raft-leader")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("forwardAdminWrite forwarded with no member records")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("forwardAdminWrite did not return: the leader lookup is not bounded by the forward timeout")
+	}
+}
+
 // TestForwardAdminWrite_RelaysTheLeadersOwnError is the regression guard for
 // the bug this gate caught: a leader that actually answered -- with its own
 // application error, here the SO-PIN refusal CeremonyInitialize's admin-

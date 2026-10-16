@@ -29,6 +29,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -119,6 +120,22 @@ func (m *mockUserAuthFactorTransport) RemoveAuthFactor(_ context.Context, req *t
 	now := time.Date(2026, 4, 25, 1, 0, 0, 0, time.UTC)
 	rec.RevokedAt = &now
 	return &transport.AuthFactorRemoveResponse{Status: "revoked"}, nil
+}
+
+// DeleteAuthFactor hard-deletes a factor, refusing a revoked one as the
+// service does.
+func (m *mockUserAuthFactorTransport) DeleteAuthFactor(_ context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.factors[req.FactorID]
+	if !ok {
+		return nil, &transport.FactorNotFoundError{FactorID: req.FactorID}
+	}
+	if rec.RevokedAt != nil {
+		return nil, &auth.FactorRevokedError{FactorID: req.FactorID}
+	}
+	delete(m.factors, req.FactorID)
+	return &transport.AuthFactorDeleteResponse{Status: "deleted"}, nil
 }
 
 // RotateAuthFactor revokes the old factor and adds a new one.
@@ -425,6 +442,61 @@ func TestAuthFactorRemove_success(t *testing.T) {
 	}
 	if mock.factors["rm-1"].RevokedAt == nil {
 		t.Fatal("expected RevokedAt to be set")
+	}
+}
+
+func TestAuthFactorDelete_success(t *testing.T) {
+	root, mock := newTestRootCmdAuthFactor(t)
+	mock.factors["del-1"] = &transport.AuthFactorRecord{ID: "del-1", UserID: 1, Type: "mtls", Credential: []byte("k")}
+
+	out, err := executeCommand(root, "auth", "factor", "delete", "del-1", "--force")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if strings.TrimSpace(out) != "OK" {
+		t.Fatalf("output = %q, want OK", out)
+	}
+	if _, ok := mock.factors["del-1"]; ok {
+		t.Fatal("factor still present after delete")
+	}
+}
+
+func TestAuthFactorDelete_refusesARevokedFactor(t *testing.T) {
+	root, mock := newTestRootCmdAuthFactor(t)
+	revoked := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	mock.factors["del-2"] = &transport.AuthFactorRecord{ID: "del-2", UserID: 1, Type: "mtls", Credential: []byte("k"), RevokedAt: &revoked}
+
+	if _, err := executeCommand(root, "auth", "factor", "delete", "del-2"); !errors.Is(err, auth.ErrFactorRevoked) {
+		t.Fatalf("delete of a revoked factor err = %v, want ErrFactorRevoked", err)
+	}
+	if _, ok := mock.factors["del-2"]; !ok {
+		t.Fatal("revoked factor was deleted")
+	}
+}
+
+func TestAuthFactorDelete_missingFactorID(t *testing.T) {
+	root, _ := newTestRootCmdAuthFactor(t)
+	_, err := executeCommand(root, "auth", "factor", "delete")
+	var mfi *MissingFactorIDError
+	if !errors.As(err, &mfi) || mfi.Op != "auth factor delete" {
+		t.Fatalf("err = %v, want MissingFactorIDError for auth factor delete", err)
+	}
+}
+
+func TestRunAuthFactorDelete_NoClient(t *testing.T) {
+	oldClient := client
+	client = nil
+	defer func() { client = oldClient }()
+
+	if err := runAuthFactorDelete(context.Background(), "factor-1", false); err == nil {
+		t.Fatal("expected error when no client")
+	}
+}
+
+func TestRunAuthFactorDelete_MissingID(t *testing.T) {
+	var mfi *MissingFactorIDError
+	if err := runAuthFactorDelete(context.Background(), "", false); !errors.As(err, &mfi) {
+		t.Fatalf("expected MissingFactorIDError, got %T: %v", err, err)
 	}
 }
 

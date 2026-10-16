@@ -309,8 +309,15 @@ distinct, authenticated holders present.
   roster that is bound to the key it unlocks.
 - **Shares never rest as garbage-collected strings.** Held envelopes are
   go-enclave sealed secrets; a submitted share is held in a go-enclave
-  protected share; the transports wipe the share bytes they decoded; the
-  reconstructed key is wiped after use.
+  protected share from the moment its round accepts it, and the plain bytes
+  it arrived in are wiped whether it is accepted or refused; the transports
+  wipe the share bytes they decoded; the reconstructed key is wiped after use.
+- **No share outlives its round.** A round's shares are destroyed on every
+  exit it has: completion or a failed reconstruction, expiry (an eager timer,
+  not the next submission), replacement, redistribution or deletion of the
+  share set it was opened on, an unseal that leaves it unable to run, and
+  seal or close of the barrier. Nothing waits for garbage collection, and an
+  abandoned round holds locked memory for at most its TTL.
 - **Membership changes need the quorum.** Adding, removing or re-policing
   holders is a rekey, and a rekey completes only with M current holders.
 - **Every holder event is on the record.** Enrolment, claim, quorum

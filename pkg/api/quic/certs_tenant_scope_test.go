@@ -101,6 +101,11 @@ func (f *refusingCertEnroll) RemoveTrustAnchor(context.Context, string, string) 
 	return nil
 }
 
+func (f *refusingCertEnroll) IssueDelegation(context.Context, *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	f.t.Fatal("IssueDelegation ran although the tenancy gate refused")
+	return nil, nil
+}
+
 // newCertEnrollScopeGateServer returns a QUIC server whose certs gate
 // refuses, with a CertEnrollmentServicer wired instead of a CertProvider, for
 // the IssueCert/EnrollCert/TrustAnchor* handlers.

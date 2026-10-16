@@ -127,6 +127,12 @@ func (b *StandaloneBackend) Delete(_ context.Context, key []byte) error {
 	return b.store.Delete(key)
 }
 
+func (b *StandaloneBackend) DeleteRange(_ context.Context, start, end []byte) error {
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return b.store.DeleteRange(start, end)
+}
+
 // guarded runs a guarded verb's read-check-write indivisibly. It takes writeMu,
 // and when the store is shared between processes (it implements
 // storage.Exclusive, as the file engine does) it runs fn under the store's

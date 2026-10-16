@@ -17,6 +17,8 @@ package transport
 import (
 	"context"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -97,12 +99,32 @@ type AuthFactorAddRequest struct {
 
 	// CreatedBy is the provenance string ("self", "admin", "ceremony").
 	CreatedBy string `json:"created_by,omitempty"`
+
+	// IfNoActiveType makes the add conditional: it is refused with
+	// ErrFactorConditionFailed when the user already holds an active factor
+	// of Type. Of N callers racing the same claim, exactly one wins.
+	IfNoActiveType bool `json:"if_no_active_type,omitempty"`
+
+	// ExpectedFactorSetVersion makes the add conditional: it is refused with
+	// ErrFactorConditionFailed unless the user's factor-set version -- the
+	// one AuthFactorListResponse reports -- still equals it.
+	ExpectedFactorSetVersion *uint64 `json:"expected_factor_set_version,omitempty"`
+}
+
+// Condition returns the condition the add names, or nil for an
+// unconditional add.
+func (r *AuthFactorAddRequest) Condition() *auth.FactorAddCondition {
+	return auth.FactorAddConditionOf(r.IfNoActiveType, r.ExpectedFactorSetVersion)
 }
 
 // AuthFactorAddResponse is returned after a successful Add.
 type AuthFactorAddResponse struct {
 	// Factor is the persisted record (with ID and RegisteredAt populated).
 	Factor AuthFactorRecord `json:"factor"`
+
+	// FactorSetVersion is the factor-set version a conditional add committed.
+	// It is zero for an unconditional add.
+	FactorSetVersion uint64 `json:"factor_set_version,omitempty"`
 }
 
 // AuthFactorListRequest is the request payload for listing a user's factors.
@@ -118,6 +140,11 @@ type AuthFactorListResponse struct {
 
 	// Total is len(Factors) for caller convenience.
 	Total int `json:"total"`
+
+	// FactorSetVersion is the user's factor-set version, read before the
+	// factors were listed: a conditional add guarded on it fails rather than
+	// succeeds if the set changed in between.
+	FactorSetVersion uint64 `json:"factor_set_version"`
 }
 
 // AuthFactorGetRequest is the request payload for retrieving a single factor.
@@ -148,6 +175,25 @@ type AuthFactorRemoveResponse struct {
 	Status string `json:"status"`
 }
 
+// AuthFactorDeleteRequest is the request payload for hard-deleting a factor:
+// the record and its credential, SPKI and user index entries go together, so
+// a rolled-back add can bind the same credential again. A revoked factor is
+// refused.
+type AuthFactorDeleteRequest struct {
+	// FactorID is the factor to delete.
+	FactorID string `json:"factor_id"`
+
+	// Force bypasses the last-active-factor guard. When true and the factor
+	// is the user's last active factor the user is moved to inactive.
+	Force bool `json:"force,omitempty"`
+}
+
+// AuthFactorDeleteResponse is the empty-OK response for Delete.
+type AuthFactorDeleteResponse struct {
+	// Status is "deleted" on success.
+	Status string `json:"status"`
+}
+
 // AuthFactorRotateRequest atomically replaces an old factor with a new one.
 type AuthFactorRotateRequest struct {
 	// OldFactorID is the factor to revoke.
@@ -156,6 +202,13 @@ type AuthFactorRotateRequest struct {
 	// NewFactor is the replacement record. UserID is inherited from the
 	// old factor when zero.
 	NewFactor AuthFactorAddRequest `json:"new_factor"`
+}
+
+// Validate refuses a rotation whose NewFactor names an add condition. A
+// rotation is not conditional; a guard it dropped would let the caller
+// believe the rotation had been decided by one.
+func (r *AuthFactorRotateRequest) Validate() error {
+	return auth.RefuseRotationCondition(r.NewFactor.Condition())
 }
 
 // AuthFactorRotateResponse carries the new factor record.
@@ -239,6 +292,12 @@ type UserAuthFactorClient interface {
 	// RemoveAuthFactor soft-deletes a factor. ErrLastFactor is returned
 	// when force=false and the factor is the user's last active one.
 	RemoveAuthFactor(ctx context.Context, req *AuthFactorRemoveRequest) (*AuthFactorRemoveResponse, error)
+
+	// DeleteAuthFactor hard-deletes a factor and frees its credential and
+	// SPKI indexes, so a rolled-back add can bind the same credential again.
+	// A revoked factor is refused with ErrFactorRevoked; force works as for
+	// RemoveAuthFactor.
+	DeleteAuthFactor(ctx context.Context, req *AuthFactorDeleteRequest) (*AuthFactorDeleteResponse, error)
 
 	// RotateAuthFactor atomically adds the new factor and revokes the old.
 	RotateAuthFactor(ctx context.Context, req *AuthFactorRotateRequest) (*AuthFactorRotateResponse, error)

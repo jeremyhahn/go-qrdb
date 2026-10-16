@@ -21,12 +21,14 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -468,6 +470,66 @@ func TestEtcd_LeaseGrantAndRevoke(t *testing.T) {
 	}
 	if len(getResp.Kvs) != 0 {
 		t.Errorf("key should be gone after lease revoke, got %d kvs", len(getResp.Kvs))
+	}
+}
+
+// TestEtcd_LeaseKeepAliveAndExpiry drives renewal and expiry through a stock
+// etcd client: KeepAliveOnce keeps a short lease, and the key bound to it,
+// alive well past its granted TTL, reporting the full TTL each time; once
+// keep-alives stop the sweeper revokes the lease and deletes the key, and a
+// keep-alive on the gone lease is answered with TTL 0, which the client
+// reports as ErrLeaseNotFound.
+func TestEtcd_LeaseKeepAliveAndExpiry(t *testing.T) {
+	_, etcdPort, ca := startSingleNodeWithEtcd(t)
+	cli := newEtcdClient(t, ca, etcdPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const ttl = 3
+	leaseResp, err := cli.Grant(ctx, ttl)
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if _, err = cli.Put(ctx, "/lease/renewed", "v", clientv3.WithLease(leaseResp.ID)); err != nil {
+		t.Fatalf("Put with lease: %v", err)
+	}
+
+	renewEvery := time.NewTicker(time.Second)
+	defer renewEvery.Stop()
+	renewUntil := time.After(2 * ttl * time.Second)
+renewing:
+	for {
+		ka, kaErr := cli.KeepAliveOnce(ctx, leaseResp.ID)
+		if kaErr != nil {
+			t.Fatalf("KeepAliveOnce: %v", kaErr)
+		}
+		if ka.ID != leaseResp.ID || ka.TTL != ttl {
+			t.Fatalf("KeepAliveOnce = {ID: %d, TTL: %d}, want {ID: %d, TTL: %d}", ka.ID, ka.TTL, leaseResp.ID, ttl)
+		}
+		select {
+		case <-renewEvery.C:
+		case <-renewUntil:
+			break renewing
+		}
+	}
+	getResp, err := cli.Get(ctx, "/lease/renewed")
+	if err != nil || len(getResp.Kvs) != 1 {
+		t.Fatalf("Get after renewing past the granted TTL = %v, err=%v; want the key", getResp, err)
+	}
+
+	awaitClusterCondition(t, 4*ttl*time.Second, "expiry of the unrenewed lease's key", func() error {
+		got, getErr := cli.Get(ctx, "/lease/renewed")
+		if getErr != nil {
+			return getErr
+		}
+		if len(got.Kvs) != 0 {
+			return &leaseKeyPresentError{Key: "/lease/renewed"}
+		}
+		return nil
+	})
+
+	if _, err = cli.KeepAliveOnce(ctx, leaseResp.ID); !errors.Is(err, rpctypes.ErrLeaseNotFound) {
+		t.Fatalf("KeepAliveOnce on the expired lease: err = %v, want rpctypes.ErrLeaseNotFound", err)
 	}
 }
 

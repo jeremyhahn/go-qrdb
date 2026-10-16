@@ -213,37 +213,27 @@ func TestClusteredCreateFunc_MemoryUnsealed(t *testing.T) {
 	require.NotNil(t, fn)
 }
 
-// TestClusteredCreateFunc_UnderTheSealBarrier pins what a clustered node may
-// run while the seal barrier is enabled — the same rule the daemon applies:
-// state machines that persist nothing (memory-class, or disk/fast over memory
-// storage) and disk/fast over pebble storage, which is opened on the
-// barrier's encfs, build; disk/fast over file storage, which would sit on disk
-// in plaintext, is refused as a raft.sm_storage ConfigError.
+// TestClusteredCreateFunc_UnderTheSealBarrier pins that a clustered node may
+// run every state machine and storage while the seal barrier is enabled — the
+// same rule the daemon applies: state machines that persist nothing
+// (memory-class, or disk/fast over memory storage) and disk/fast over pebble
+// or file storage, both opened on the barrier's encfs, build.
 func TestClusteredCreateFunc_UnderTheSealBarrier(t *testing.T) {
 	sealed := atrest.New(sealtest.UnsealedBarrier(t))
-	for _, tc := range []struct {
-		smType, storage string
-		refused         bool
-	}{
-		{"memory", "", false},
-		{"highperf", "", false},
-		{"disk", "pebble", false},
-		{"fast", "memory", false},
-		{"disk", "file", true},
-		{"fast", "file", true},
+	for _, tc := range []struct{ smType, storage string }{
+		{"memory", ""},
+		{"highperf", ""},
+		{"disk", "pebble"},
+		{"fast", "memory"},
+		{"disk", "file"},
+		{"fast", "file"},
 	} {
 		cfg := qrdbconfig.DefaultConfig()
 		cfg.Raft.DataDir = t.TempDir()
 		cfg.Raft.SMType = tc.smType
 		cfg.Raft.SMStorage = tc.storage
 		_, err := clusteredCreateFunc(cfg, nil, nil, sealed, nil)
-		if !tc.refused {
-			require.NoError(t, err, "%s over %q under the barrier", tc.smType, tc.storage)
-			continue
-		}
-		var cfgErr *ConfigError
-		require.ErrorAs(t, err, &cfgErr, "%s over %q under the barrier", tc.smType, tc.storage)
-		assert.Equal(t, "raft.sm_storage", cfgErr.Field)
+		require.NoError(t, err, "%s over %q under the barrier", tc.smType, tc.storage)
 	}
 }
 

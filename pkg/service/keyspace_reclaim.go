@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sort"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -96,6 +98,15 @@ var (
 	_ ReclaimKV = (*MVCCKVService)(nil)
 	_ ReclaimKV = (*BackendKVService)(nil)
 )
+
+// RangeDeleteKV is the optional range-delete capability of a ReclaimKV. When
+// the KV service has it, reclaimKeys removes each prefix in chunked range
+// proposals rather than one proposal per key.
+type RangeDeleteKV interface {
+	// DeleteRange removes every key in [start, end); an empty end removes
+	// through the end of the keyspace.
+	DeleteRange(ctx context.Context, start, end []byte) error
+}
 
 // ReclaimIndex enumerates and drops secondary index catalog entries.
 type ReclaimIndex interface {
@@ -359,6 +370,8 @@ func (s *KeyspaceReclaimService) UnfenceDatabaseKeyspace(ctx context.Context, te
 // keep changing without another create or drop of the same name racing it.
 const markerClaimAttempts = 3
 
+const reclaimRangeDeleteChunkSize = 1024
+
 // claimMarker sets key to live, from absent or from the tombstone only.
 func claimMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key string, live []byte) error {
 	for attempt := 0; attempt < markerClaimAttempts; attempt++ {
@@ -554,24 +567,19 @@ func (s *KeyspaceReclaimService) reclaim(ctx context.Context, t ReclaimTarget, k
 	return reclaimVectorNamespaces(ctx, t.Vector, vectorNS)
 }
 
-// reclaimKeys deletes every key under each prefix, one key at a time.
+// reclaimKeys deletes every key under each prefix.
 //
-// ONE AT A TIME IS DELIBERATE, and it is the honest cost of this fix rather
-// than an oversight. Two faster shapes were tried and neither is available:
+// When t.KV is a RangeDeleteKV it does so in range proposals of at most
+// reclaimRangeDeleteChunkSize listed keys each: the sorted listing is cut into
+// chunks, and each chunk's range runs from its first key to the next chunk's
+// first key (the last runs to the end of the prefix), so no proposal's apply
+// cost is unbounded however large the database is. Every engine and every
+// sm_type applies protocol.OpDeleteRange as a batch of deletes over the live
+// keys in the range, so index entries, history, lease bindings and per-key
+// watch events are what one-at-a-time deletes would have produced, committed
+// at one revision rather than one each.
 //
-//   - A range delete would make each prefix a single proposal. No engine in
-//     this repository has one; adding it is the right eventual fix and is
-//     filed separately.
-//   - BatchServicer.Execute would make it one proposal per chunk, and it
-//     works -- on an MVCC shard. It encodes its deletes as protocol
-//     OpMVCCDelete, which the KV engine behind a standalone node rejects with
-//     "unsupported operation", and nothing in the service set says which
-//     engine is underneath. A teardown that succeeded on one deployment and
-//     failed on another would be a worse defect than a slow one, and guessing
-//     then retrying on failure would be guessing.
-//
-// So the cost is O(keys) proposals, which a very large database pays as
-// latency on the drop call. That is a stated limitation, not a hidden one.
+// Otherwise it falls back to one Delete per key, O(keys) proposals.
 //
 // A prefix that matches nothing is success, which is what makes a re-issued
 // drop able to finish an interrupted one.
@@ -590,6 +598,17 @@ func reclaimKeys(ctx context.Context, t ReclaimTarget, prefixes []string) error 
 		if err != nil {
 			return &ReclaimPrefixError{Prefix: prefix, Op: "list", Err: err}
 		}
+		if len(keys) == 0 {
+			continue
+		}
+		if ranged, ok := t.KV.(RangeDeleteKV); ok {
+			sort.Strings(keys)
+			remaining, err := reclaimKeyRanges(ctx, ranged, prefix, keys)
+			if err != nil {
+				return err
+			}
+			keys = remaining
+		}
 		for _, k := range keys {
 			if err := t.KV.Delete(ctx, k); err != nil {
 				return &ReclaimPrefixError{Prefix: prefix, Op: "delete", Err: err}
@@ -597,6 +616,35 @@ func reclaimKeys(ctx context.Context, t ReclaimTarget, prefixes []string) error 
 		}
 	}
 	return nil
+}
+
+// reclaimKeyRanges deletes the sorted keys listed under prefix in chunked
+// range proposals and returns the keys it left for reclaimKeys to delete one
+// at a time: none when every chunk was range-deleted, and every key from the
+// first undeleted chunk on when the shard has not activated
+// featuregate.RangeDelete -- a group mid-upgrade, where some replica cannot
+// apply the opcode. The gate's refusal is a definite answer that nothing was
+// proposed, not a failure to guess around, so falling back on it is exact.
+func reclaimKeyRanges(ctx context.Context, ranged RangeDeleteKV, prefix string, keys []string) ([]string, error) {
+	prefixLimit := prefixEnd([]byte(prefix))
+	for start := 0; start < len(keys); start += reclaimRangeDeleteChunkSize {
+		end := start + reclaimRangeDeleteChunkSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		rangeEnd := prefixLimit
+		if end < len(keys) {
+			rangeEnd = []byte(keys[end])
+		}
+		if err := ranged.DeleteRange(ctx, []byte(keys[start]), rangeEnd); err != nil {
+			var notActive *featuregate.NotActiveError
+			if errors.As(err, &notActive) {
+				return keys[start:], nil
+			}
+			return nil, &ReclaimPrefixError{Prefix: prefix, Op: "delete_range", Err: err}
+		}
+	}
+	return nil, nil
 }
 
 // reclaimIndexes drops every secondary index whose name begins with one of

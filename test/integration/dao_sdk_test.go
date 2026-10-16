@@ -119,76 +119,10 @@ func TestDAO_RealBinary_StorageBackends(t *testing.T) {
 	})
 
 	t.Run("file_no_index_capability", func(t *testing.T) {
-		// --sm disk --sm-storage file refuses to run with the seal barrier
-		// enabled (file storage cannot be wrapped in the barrier's at-rest
-		// encryption), the same constraint sm_storage_file_test.go runs
-		// under: --auth-enabled=false, no seal ceremony, no client certificate.
-		ca, port := startFileBackendNodeNoAuth(t)
-		client := daoSDKClientNoAuth(t, ca, port)
+		port, ca := startSingleNode(t, "disk", "--sm-storage", "file")
+		client := daoSDKClient(t, ca, port)
 		exerciseDAOEntityStorageWithoutIndexCapability(t, client, "daosdk-file")
 	})
-}
-
-// startFileBackendNodeNoAuth starts a standalone node over the storage-generic
-// "disk" state machine with the file storage backend. File storage cannot be
-// wrapped in the seal barrier's at-rest encryption, so the barrier -- and
-// therefore qrdb's own authentication, which depends on it -- must be
-// disabled, mirroring sm_storage_file_test.go's startSMFileNode.
-func startFileBackendNodeNoAuth(t *testing.T) (*testCA, int) {
-	t.Helper()
-	bin := buildBinary(t)
-	ca := generateTestCA(t)
-	ports := allocatePorts(t, 1)
-	adminPorts := allocateTCPPorts(t, 1)
-	grpcPorts := allocateTCPPorts(t, 1)
-	dataDir := t.TempDir()
-
-	args := []string{
-		"start",
-		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
-		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
-		"--data-dir", dataDir,
-		"--discovery", "static",
-		"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
-		"--shard-id", "1",
-		"--replica-id", "1",
-		"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
-		"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
-		"--auth-enabled=false",
-		"--enable-rest",
-		"--sm", "disk",
-		"--sm-storage", "file",
-	}
-	args = append(args, ca.tlsFlags(t)...)
-	startNode(t, bin, args, "[dao-file] ")
-	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
-	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
-	warmupWrite(t, ca, adminPorts[0], 15*time.Second)
-	return ca, adminPorts[0]
-}
-
-// daoSDKClientNoAuth dials the real qrdbd admin REST endpoint with only
-// server-side TLS (no client certificate), for a node started with
-// --auth-enabled=false.
-func daoSDKClientNoAuth(t *testing.T, ca *testCA, port int) *sdk.Client {
-	t.Helper()
-	tr, err := rest.New(
-		transport.WithAddress(fmt.Sprintf("https://127.0.0.1:%d", port)),
-		transport.WithTLS("", "", ca.CertPath),
-		transport.WithTimeout(20*time.Second),
-	)
-	if err != nil {
-		t.Fatalf("rest.New: %v", err)
-	}
-	if err := tr.Connect(context.Background()); err != nil {
-		t.Fatalf("transport Connect to 127.0.0.1:%d: %v", port, err)
-	}
-	t.Cleanup(func() { _ = tr.Close() })
-	client, err := sdk.NewClient(tr)
-	if err != nil {
-		t.Fatalf("sdk.NewClient: %v", err)
-	}
-	return client
 }
 
 // exerciseDAOEntityStorageWithoutIndexCapability runs entity CRUD,

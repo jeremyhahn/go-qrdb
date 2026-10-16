@@ -77,6 +77,12 @@ func (m *mockRemoteTransport) Delete(_ context.Context, key []byte) error {
 	return m.deleteErr
 }
 
+func (m *mockRemoteTransport) DeleteRange(_ context.Context, start, end []byte) error {
+	m.deleteCalled = true
+	m.deleteKey = append(append([]byte(nil), start...), end...)
+	return m.deleteErr
+}
+
 func (m *mockRemoteTransport) List(_ context.Context, prefix string) ([]string, error) {
 	m.listCalled = true
 	m.listPrefix = prefix

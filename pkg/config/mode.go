@@ -186,21 +186,19 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 }
 
 // unencryptedLocalBackends are the standalone storage backends that keep
-// data on disk without the barrier's encrypted filesystem, which wraps
-// Pebble's file system only. The memory backend keeps nothing on disk.
+// data without the barrier's encrypting file system. Pebble and file write
+// their files through it; objstore keeps its objects in a bucket, which has
+// no file system to encrypt. The memory backend keeps nothing at rest.
 var unencryptedLocalBackends = map[string]struct{}{
-	"file":     {},
 	"objstore": {},
 }
 
 // unencryptedAtRest reports where, with seal enabled, the node's data plane
-// keeps data on disk unencrypted: a standalone node's file or objstore
-// backend (the backend of the first configured database, pebble when none is
-// set). A raft node reports nothing: every state machine it will start under
-// the barrier is encrypted at rest or persists nothing, and one whose storage
-// would persist plaintext is refused at start (SealedSMStoragePlaintextError,
-// statemachine.SMStorageUnencryptedError). It returns nil when seal is
-// disabled.
+// keeps data unencrypted: a standalone node's objstore backend (the backend
+// of the first configured database, pebble when none is set). A raft node
+// reports nothing: every state machine storage it will start under the
+// barrier (pebble, file) is encrypted at rest, or persists nothing (memory).
+// It returns nil when seal is disabled.
 func (c *Config) unencryptedAtRest(raft bool) []string {
 	if !c.Seal.Enabled || raft {
 		return nil
@@ -210,7 +208,7 @@ func (c *Config) unencryptedAtRest(raft bool) []string {
 		backend = c.Databases[0].Backend
 	}
 	if _, ok := unencryptedLocalBackends[backend]; ok {
-		return []string{`standalone backend "` + backend + `" stores its data without the seal barrier's at-rest encryption; use backend "pebble"`}
+		return []string{`standalone backend "` + backend + `" stores its data without the seal barrier's at-rest encryption; use backend "pebble" or "file"`}
 	}
 	return nil
 }

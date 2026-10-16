@@ -129,6 +129,12 @@ func (a *BackendStorageAdapter) Delete(ctx context.Context, key string) error {
 	return a.inner.Delete(ctx, []byte(key))
 }
 
+func (a *BackendStorageAdapter) DeleteRange(ctx context.Context, start, end []byte) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return a.inner.DeleteRange(ctx, start, end)
+}
+
 // List returns all keys matching the prefix as strings.
 func (a *BackendStorageAdapter) List(ctx context.Context, prefix string) ([]string, error) {
 	return a.inner.List(ctx, prefix)

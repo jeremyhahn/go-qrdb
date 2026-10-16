@@ -93,7 +93,7 @@ func assertHolderForwardRefused(t *testing.T, rec *httptest.ResponseRecorder) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 (body %q)", rec.Code, rec.Body.String())
 	}
-	if want := (&HolderForwardUnsignedError{}).Error(); !strings.Contains(rec.Body.String(), want) {
+	if want := (&UnsignedForwardRefusedError{}).Error(); !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("body %q does not name the holder refusal %q", rec.Body.String(), want)
 	}
 }
@@ -121,9 +121,9 @@ func TestAttachOnBehalfAssertion_HolderSigningFailureIsRefused(t *testing.T) {
 	fwd, _ := http.NewRequest(http.MethodPut, "https://leader/kv/foo", nil)
 
 	err := srv.attachOnBehalfAssertion(fwd, orig, []byte("x"))
-	var refused *HolderForwardUnsignedError
+	var refused *UnsignedForwardRefusedError
 	if !errors.As(err, &refused) {
-		t.Fatalf("err = %v; want *HolderForwardUnsignedError", err)
+		t.Fatalf("err = %v; want *UnsignedForwardRefusedError", err)
 	}
 	if refused.Subject != "admin" {
 		t.Errorf("Subject = %q, want admin", refused.Subject)

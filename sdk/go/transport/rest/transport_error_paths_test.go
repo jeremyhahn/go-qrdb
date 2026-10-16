@@ -203,6 +203,9 @@ func TestRESTUserAuthFactor_AllMethods_ServerError(t *testing.T) {
 	if _, err := rt.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{}); err == nil {
 		t.Fatal("RemoveAuthFactor: expected error")
 	}
+	if _, err := rt.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{}); err == nil {
+		t.Fatal("DeleteAuthFactor: expected error")
+	}
 	if _, err := rt.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{}); err == nil {
 		t.Fatal("RotateAuthFactor: expected error")
 	}

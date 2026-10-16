@@ -1,6 +1,6 @@
 # Configuration — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
 
 Test reference: `make integration-test-configuration`; coverage row: `test/integration/COVERAGE.md` `[configuration](../../docs/configuration/)`.
 
@@ -159,6 +159,56 @@ enrollment key, which still uses memguard through go-truststrap. See
 tightly each is bounded. `secure_memory_budget_mib` is therefore not yet a hard
 ceiling on every page this daemon locks, which is why the derived budget leaves
 headroom under the host limit.
+
+## Raft settings
+
+The `raft:` section configures this node's place in the Raft cluster. Each key
+can also be set from the environment as `QRDB_RAFT_<KEY>`
+(`raft.snapshot_entries` → `QRDB_RAFT_SNAPSHOT_ENTRIES`), with `--config`, and
+by the `qrdbd start` flag shown. [cli.md](cli.md#raft-flags) lists the same
+settings by flag.
+
+```yaml
+raft:
+  data_dir: /var/lib/qrdb
+  deployment_id: 1
+  replica_id: 2
+  raft_address: db2.example.com:63001
+  listen_address: 0.0.0.0:63001
+  peers: "1=db1.example.com:63001,2=db2.example.com:63001,3=db3.example.com:63001"
+  member_identities: "1=spki:<hex>,3=spki:<hex>"
+```
+
+| Key | Flag | Type | Default | Accepted values | What it does |
+|---|---|---|---|---|---|
+| `data_dir` | `--data-dir` | string | `./data` | not empty | Where Raft state lives: the WAL in `wal/`, host metadata in `nodehost/`. |
+| `deployment_id` | `--deployment-id` | integer | `1` | any | Keeps separate Raft clusters on one network apart. Use the same value on every node of a cluster. |
+| `shard_id` | `--shard-id` | integer | `1` | raft mode: 1 to 999 | The node's own Raft group, the system shard. IDs from 1000 up are issued to databases. Leave it at 1. |
+| `replica_id` | `--replica-id` | integer | `1` | raft mode: above 0 | This node's ID in the cluster; unique per node, and the ID other nodes name it by in `peers`. |
+| `raft_address` | `--raft-address` | `host:port` | `127.0.0.1:63001` | raft mode: not empty | The address other nodes dial for Raft (QUIC over UDP). Its host is also the default `server.advertise_host`. |
+| `listen_address` | `--listen` | `host:port` | empty, meaning `raft_address` | any | Where the Raft transport binds, when it should differ from the dialled address (NAT, `0.0.0.0`). |
+| `peers` | `--peers` | comma-separated string | `1=127.0.0.1:63001` | `replicaID=host:port` entries; standalone mode allows at most one | The initial voting members. None or one entry is a single-node cluster. |
+| `member_identities` | `--member-identities` | comma-separated string | empty | `replicaID=spki:<hex>` entries | The Raft identities of the other members; required on a multi-node cluster ([../clustering/user.md](../clustering/user.md)). |
+| `join` | `--join` | boolean | `false` | `false` in standalone mode | Join an existing cluster instead of forming a new one. |
+| `snapshot_entries` | `--snapshot-entries` | integer | `0`, meaning 100000 | more than the effective `compaction_overhead` | Applied entries between automatic snapshots. `0` keeps go-quicraft's default of 100000; it does not turn snapshots off. `18446744073709551615` does. |
+| `compaction_overhead` | `--compaction-overhead` | integer | `0`, meaning 5000 | any | Log entries kept after a snapshot, so a follower that is slightly behind catches up from the log rather than a full snapshot. |
+| `max_in_mem_log_size` | `--max-in-mem-log-size` | integer, bytes | `0`, no limit | any | Per-shard ceiling on the in-memory Raft log; above it proposals are slowed. |
+| `max_total_in_mem_log_size` | `--max-total-in-mem-log-size` | integer, bytes | `0`, no limit | any | Ceiling on the in-memory Raft log across every shard on the node; above it writes fail with `ErrSystemBusy` until the log drains. |
+| `sm_type` | `--sm` | string | `pebble` | `pebble`, `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`; `regular` is refused at start | The state machine. See [../run-modes/architecture.md](../run-modes/architecture.md#raft--single--or-multi-node). |
+| `sm_backend` | `--sm-backend` | string | empty | `standard`, `concurrent`, `fast`, `disk` | The backend variant, when `sm_type` names a logical engine. |
+| `sm_storage` | `--sm-storage` | string | empty, meaning `pebble` | `pebble`, `file`, `memory`; anything but `pebble` only with `sm_type` or `sm_backend` `disk` or `fast`; `objstore` is refused | The storage under the storage-generic state machines. Use the same value on every replica. See [../storage-engines/user.md](../storage-engines/user.md). |
+| `lease_read` | `--lease-read` | boolean | `true` | `true` only with `check_quorum: true` | Linearizable reads served from the leader's lease without a heartbeat round. When that holds: [../key-value/engineering.md](../key-value/engineering.md#consistency-levels--pkgconsistency); what each replica needs: [../deployment/user.md](../deployment/user.md#keep-replica-clocks-disciplined). |
+| `check_quorum` | `--check-quorum` | boolean | `true` | `false` only with `lease_read: false` | A leader that cannot reach a quorum within an election timeout steps down. Turning it off is unsafe; go-quicraft logs a warning when it is off. |
+
+`--debug-raft` has no key: it raises the log level to `debug`.
+
+Values from the file or the environment are checked when the config loads.
+The same values given as flags are not; the checks go-quicraft makes when the
+shard starts (`snapshot_entries` against `compaction_overhead`, `lease_read`
+against `check_quorum`) apply either way.
+
+Election and heartbeat timing are not configurable. Every networked node runs
+go-quicraft's defaults, which is what lease reads rely on.
 
 ## Ports
 

@@ -22,6 +22,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,7 +116,15 @@ func (s *qrdbServiceServer) CredentialRetrieveVersion(ctx context.Context, req *
 	if s.credentialSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
-	value, err := s.credentialSvc.CredentialRetrieveVersion(ctx, req.GetName(), req.GetVersion())
+	buf, err := s.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.GetName(), req.GetVersion())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	// The response message is the wire DTO: the one boundary where the value
+	// leaves protected memory. gRPC marshals it after this handler returns, so
+	// the slice cannot be wiped here.
+	//secure:unwiped the bytes field of the returned response message, which grpc-go marshals after this handler returns
+	value, err := service.CredentialWireValue(buf)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -188,7 +197,15 @@ func (s *qrdbServiceServer) CredentialRetrieve(ctx context.Context, req *pb.Cred
 	if s.credentialSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
-	value, err := s.credentialSvc.CredentialRetrieve(ctx, req.GetName())
+	buf, err := s.credentialSvc.CredentialRetrieveBuffer(ctx, req.GetName())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	// The response message is the wire DTO: the one boundary where the value
+	// leaves protected memory. gRPC marshals it after this handler returns, so
+	// the slice cannot be wiped here.
+	//secure:unwiped the bytes field of the returned response message, which grpc-go marshals after this handler returns
+	value, err := service.CredentialWireValue(buf)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

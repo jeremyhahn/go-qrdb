@@ -40,6 +40,7 @@ func userAuthFactorTools(svc service.UserAuthFactorServicer, userSvc user.UserSe
 		{Tool: toolUserAuthFactorList(), Perm: permission.UserAuthFactorsList, Handler: handleUserAuthFactorListTool(svc)},
 		{Tool: toolUserAuthFactorGet(), Perm: permission.UserAuthFactorsGet, Handler: handleUserAuthFactorGetTool(svc)},
 		{Tool: toolUserAuthFactorRemove(), Perm: permission.UserAuthFactorsRemove, Handler: handleUserAuthFactorRemoveTool(svc)},
+		{Tool: toolUserAuthFactorDelete(), Perm: permission.UserAuthFactorsAdd, Handler: handleUserAuthFactorDeleteTool(svc)},
 		{Tool: toolUserAuthFactorRotate(), Perm: permission.UserAuthFactorsRotate, Handler: handleUserAuthFactorRotateTool(svc)},
 		{Tool: toolUserAuthFactorRelabel(), Perm: permission.UserAuthFactorsRelabel, Handler: handleUserAuthFactorRelabelTool(svc)},
 		{Tool: toolUserAuthFactorLogin(), Perm: permission.UserAuthFactorsLogin, Handler: handleUserAuthFactorLoginTool(svc, userSvc)},
@@ -60,6 +61,8 @@ func toolUserAuthFactorAdd() mcp.Tool {
 		mcp.WithString("spki_credential_b64", mcp.Description("Base64-encoded SHA-256 of the certificate SubjectPublicKeyInfo (renewal-stable secondary lookup key, mtls/piv only).")),
 		mcp.WithString("metadata_json", mcp.Description("JSON-encoded type-specific metadata.")),
 		mcp.WithString("created_by", mcp.Description("Provenance: self, admin, or ceremony.")),
+		mcp.WithBoolean("if_no_active_type", mcp.Description("Add only if the user has no active factor of this type; otherwise refuse with FACTOR_CONDITION_FAILED.")),
+		mcp.WithString("expected_factor_set_version", mcp.Description("Add only if the user's factor set is at this version (uint64, as qrdb_user_authfactor_list reports it; 0 until the set first changes); otherwise refuse with FACTOR_CONDITION_FAILED.")),
 	)
 }
 
@@ -80,6 +83,14 @@ func toolUserAuthFactorGet() mcp.Tool {
 func toolUserAuthFactorRemove() mcp.Tool {
 	return mcp.NewTool("qrdb_user_authfactor_remove",
 		mcp.WithDescription("Soft-delete a factor by setting its RevokedAt. Use force=true to remove the user's last factor (admin override)."),
+		mcp.WithString("factor_id", mcp.Required(), mcp.Description("Factor ID.")),
+		mcp.WithBoolean("force", mcp.Description("Bypass the last-active-factor guard.")),
+	)
+}
+
+func toolUserAuthFactorDelete() mcp.Tool {
+	return mcp.NewTool("qrdb_user_authfactor_delete",
+		mcp.WithDescription("Hard-delete a factor, dropping its credential and SPKI index entries so the credential can be bound again (rolls back an add). Refuses a revoked factor. Use force=true to delete the user's last factor."),
 		mcp.WithString("factor_id", mcp.Required(), mcp.Description("Factor ID.")),
 		mcp.WithBoolean("force", mcp.Description("Bypass the last-active-factor guard.")),
 	)
@@ -142,6 +153,15 @@ func handleUserAuthFactorAddTool(svc service.UserAuthFactorServicer) mcpserver.T
 		if perr != nil {
 			return mcp.NewToolResultError("spki_credential_b64 must be base64: " + perr.Error()), nil
 		}
+		var expectedVersion *uint64
+		if ev := mcp.ParseString(req, "expected_factor_set_version", ""); ev != "" {
+			v, verr := parseUint64(ev)
+			if verr != nil {
+				return mcp.NewToolResultError("expected_factor_set_version must be a uint64: " + verr.Error()), nil
+			}
+			expectedVersion = &v
+		}
+		cond := auth.FactorAddConditionOf(mcp.ParseBoolean(req, "if_no_active_type", false), expectedVersion)
 		factor := &auth.AuthFactor{
 			UserID:         userID,
 			Type:           auth.AuthFactorType(typ),
@@ -151,10 +171,12 @@ func handleUserAuthFactorAddTool(svc service.UserAuthFactorServicer) mcpserver.T
 			Metadata:       metadata,
 			CreatedBy:      mcp.ParseString(req, "created_by", ""),
 		}
-		if err := svc.Add(ctx, userID, factor); err != nil {
+		version, err := service.AddAuthFactor(ctx, svc, userID, factor, cond)
+		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_authfactor_add", Err: err}
 		}
-		return userAuthFactorJSONResult(factor)
+		body, _ := json.Marshal(map[string]any{"factor": factorToMCPMap(factor), "factor_set_version": version})
+		return mcp.NewToolResultText(string(body)), nil
 	}
 }
 
@@ -164,7 +186,7 @@ func handleUserAuthFactorListTool(svc service.UserAuthFactorServicer) mcpserver.
 		if err != nil {
 			return mcp.NewToolResultError("user_id must be a uint64: " + err.Error()), nil
 		}
-		factors, err := svc.List(ctx, userID)
+		factors, version, err := service.ListAuthFactors(ctx, svc, userID)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_authfactor_list", Err: err}
 		}
@@ -172,7 +194,7 @@ func handleUserAuthFactorListTool(svc service.UserAuthFactorServicer) mcpserver.
 		for i, f := range factors {
 			out[i] = factorToMCPMap(f)
 		}
-		body, _ := json.Marshal(map[string]any{"factors": out, "total": len(out)})
+		body, _ := json.Marshal(map[string]any{"factors": out, "total": len(out), "factor_set_version": version})
 		return mcp.NewToolResultText(string(body)), nil
 	}
 }
@@ -202,6 +224,21 @@ func handleUserAuthFactorRemoveTool(svc service.UserAuthFactorServicer) mcpserve
 			return nil, &ToolError{Tool: "qrdb_user_authfactor_remove", Err: err}
 		}
 		body, _ := json.Marshal(map[string]string{"status": "revoked", "factor_id": factorID})
+		return mcp.NewToolResultText(string(body)), nil
+	}
+}
+
+func handleUserAuthFactorDeleteTool(svc service.UserAuthFactorServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		factorID := mcp.ParseString(req, "factor_id", "")
+		if factorID == "" {
+			return mcp.NewToolResultError("factor_id is required"), nil
+		}
+		force := mcp.ParseBoolean(req, "force", false)
+		if err := svc.Delete(ctx, factorID, force); err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_authfactor_delete", Err: err}
+		}
+		body, _ := json.Marshal(map[string]string{"status": "deleted", "factor_id": factorID})
 		return mcp.NewToolResultText(string(body)), nil
 	}
 }

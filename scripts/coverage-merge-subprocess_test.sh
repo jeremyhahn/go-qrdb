@@ -80,16 +80,20 @@ cd "$SCRIPT_DIR/.."
 # pkg/ceremony too, which that commit's own tree did not have yet -- a
 # coverage-mechanism commit whose own test depends on a LATER commit's
 # fixtures is not independently green, which defeats the point of landing it
-# first). This commit adds pkg/secret's, pkg/ceremony's and pkg/seal's own new
+# first). This commit adds pkg/secret's and pkg/ceremony's own new
 # subprocess sites to the four the coverage-merge commit could already see
-# (cmd/qrdbd, pkg/secure, pkg/logger, pkg/seal/encfs).
+# (cmd/qrdbd, pkg/secure, pkg/logger, pkg/seal/encfs). pkg/seal is not listed:
+# its only child-process test, copy_enclave_race_test.go, exercised
+# copyEnclaveToBuffer, and #145 deleted that function together with the test.
+# The quorum now unwraps inside the combine enclave's borrow, and the tests
+# that pin that (quorum_borrow_test.go) run in-process, so pkg/seal has no
+# path only a child process can reach.
 got=$("$SCRIPT" --list)
 for want_pkg in \
 	"github.com/jeremyhahn/go-qrdb/cmd/qrdbd" \
 	"github.com/jeremyhahn/go-qrdb/pkg/secure" \
 	"github.com/jeremyhahn/go-qrdb/pkg/secret" \
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony" \
-	"github.com/jeremyhahn/go-qrdb/pkg/seal" \
 	"github.com/jeremyhahn/go-qrdb/pkg/logger" \
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"; do
 	if printf '%s\n' "$got" | grep -qx "$want_pkg"; then

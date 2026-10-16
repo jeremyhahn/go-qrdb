@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
@@ -53,6 +54,22 @@ func TestRaftPromoter_PromoteObserverCarriesItsIdentity(t *testing.T) {
 		MemberIdentities: map[uint64]string{1: c.Identities[1]},
 	}); err != nil {
 		t.Fatalf("StartShard(observer): %v", err)
+	}
+	// The reconciler promotes only a caught-up observer. Promoting a joiner
+	// that has not yet heard from the leader makes the shard two voters with
+	// one silent, and the leader steps down when its quorum check fires.
+	// Replica 2 having applied the entry that admitted it proves the leader
+	// replicates to it.
+	for {
+		if m, err := follower.GetShardMembership(shardID); err == nil {
+			if _, admitted := m.Observers[2]; admitted {
+				break
+			}
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("observer replica 2 never applied its own admission: %v", ctx.Err())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	if err := newRaftPromoter(leader).PromoteObserver(ctx, shardID, 2, c.Addrs[1]); err != nil {

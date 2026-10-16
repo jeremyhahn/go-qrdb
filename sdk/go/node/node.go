@@ -116,6 +116,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -132,7 +133,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -289,8 +289,42 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 		server.WithDEKProvider(n.dekProvider),
 		server.WithInvitationRedeemLimiter(n.invitationRedeemLimiter),
 		server.WithHolderActLimiter(n.holderActLimiter),
+		server.WithCertKeyProviderFactory(n.certKeyProviderFactory),
+	}
+	// The cert provider only when the composer set one. These options reach
+	// buildServerOpts as caller options, which come last there and win, so an
+	// unset seam forwarded as WithCertProvider(nil) erased the built-in login
+	// CA from every network transport: revoke and list went unrouted while
+	// issue, which rides WithCertEnrollment, still worked.
+	if n.certProvider != nil {
+		merged = append(merged, server.WithCertProvider(n.certProvider))
 	}
 	return append(merged, serverOpts...)
+}
+
+// WithCertKeyProviderFactory routes every tenant's login CA (Key B) signature
+// through f, one key per tenant, in place of the built-in software keys; no
+// software Key B is ever generated or stored. The key for the cluster CA
+// (Key A) is WithClusterCAKeyProvider. Equivalent to
+// server.WithCertKeyProviderFactory; forwarded in both boot paths. Mutually
+// exclusive with WithCertProvider, which replaces the provider this factory
+// configures: a node given both fails to build
+// (*sdk.CertProviderConflictError).
+func WithCertKeyProviderFactory(f cakey.ProviderFactory) NodeOption {
+	return func(o *nodeOptions) { o.certKeyProviderFactory = f }
+}
+
+// WithCertProvider replaces the node's built-in login CA with p: client
+// certificate issue, revoke, revocation checks and listing are
+// served by p on every transport, and the node's client-trust pool reads its
+// tenants' CAs from it -- which it can only do when p also implements
+// clienttrust.CertSource (sdk.ClientCertSource); without it no client certificate
+// p issues authenticates. It is the seam for an embedder's own CA, such as
+// one that publishes CRLs and answers OCSP. The node uses p wherever it would
+// build the built-in provider, that is with the seal enabled. Equivalent to
+// server.WithCertProvider; forwarded in both boot paths.
+func WithCertProvider(p cert.CertProvider) NodeOption {
+	return func(o *nodeOptions) { o.certProvider = p }
 }
 
 // WithAuthorizerWrapper decorates the node's fully built RBAC[+ABAC]
@@ -356,15 +390,18 @@ type nodeOptions struct {
 	// before calling NewStandaloneNode / NewClusteredNode.
 	sealStrategy seal.SealingStrategy
 
-	// backupSink, storageFactory, dekProvider, invitationRedeemLimiter and
-	// holderActLimiter are composition seams; clock is the seventh. Each is
-	// nil unless a composer set it, and nil keeps the software default.
-	// mergeSeamOptions folds them into the server options.
+	// backupSink, storageFactory, dekProvider, invitationRedeemLimiter,
+	// holderActLimiter, certKeyProviderFactory and certProvider are
+	// composition seams; clock is another. Each is nil unless a composer set
+	// it, and nil keeps the software default. mergeSeamOptions folds them
+	// into the server options.
 	backupSink              service.BackupSink
 	storageFactory          server.StorageFactory
 	dekProvider             dek.Provider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
+	certKeyProviderFactory  cakey.ProviderFactory
+	certProvider            cert.CertProvider
 
 	// logger overrides the default slog.Default() logger.
 	logger *slog.Logger
@@ -615,7 +652,12 @@ func WithSessionIssuer(s embedded.SessionIssuer) NodeOption {
 // principal's immutable user id, so a rename or an email change never
 // changes it. A nil hydrator is ignored.
 func WithIdentityHydrator(h embedded.IdentityHydrator) NodeOption {
-	return func(o *nodeOptions) { o.identityHydrator = h }
+	return func(o *nodeOptions) {
+		if h == nil {
+			return
+		}
+		o.identityHydrator = h
+	}
 }
 
 // WithLoginFactorVerifier registers a hardware FactorVerifier (PIV, FIDO2,
@@ -830,6 +872,10 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.DEKProvider = crypto.DEKProvider
 	infra.InvitationRedeemLimiter = crypto.InvitationRedeemLimiter
 	infra.HolderActLimiter = crypto.HolderActLimiter
+	// The login CA is built inside BuildServices, so its seams are forwarded
+	// here rather than to server.New, which would be too late.
+	infra.CertKeyProviderFactory = crypto.CertKeyProviderFactory
+	infra.CertProvider = crypto.CertProvider
 	// The holder events (and the backup plaintext-override audit) recorded
 	// before they take effect follow the node's one audit failure posture.
 	// The sealed window's graph is built before the authorization
@@ -1114,10 +1160,10 @@ type Node struct {
 	// them, so a data-plane rebuild keeps its ports; Close closes them.
 	preboundSockets []io.Closer
 
-	// sessionIssuer and loginFactorVerifiers carry the unified-login
-	// ceremony wiring from the node constructor through to
+	// sessionIssuer, identityHydrator and loginFactorVerifiers carry the
+	// unified-login ceremony wiring from the node constructor through to
 	// wireClientAndServer. They survive the sealed window because
-	// wireClientAndServer runs after Unseal completes the boot. Both are
+	// wireClientAndServer runs after Unseal completes the boot. All are
 	// optional: the ceremony resolver is still wired (when a User service is
 	// present) even when these are absent.
 	sessionIssuer        embedded.SessionIssuer
@@ -1513,12 +1559,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	barrier := n.barrier.Load()
 	barrierRegistry := n.barrierRegistry.Load()
 
-	var dataPlaneFS vfs.FS
-	if barrier != nil && !barrier.IsSealed() && pending.backendType == database.BackendPebble {
-		dataPlaneFS = encfs.New(vfs.Default, barrier)
+	var encryptor *atrest.Encryptor
+	if barrier != nil {
+		encryptor = atrest.New(barrier)
 	}
 
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, dataPlaneFS, pending.cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage.Objstore)
 	if err != nil {
 		return &StorageCreateError{Backend: string(pending.backendType), Err: err}
 	}
@@ -1542,11 +1588,6 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		_ = n.stg.Close()
 		n.stg = nil
 		return err
-	}
-
-	var encryptor *atrest.Encryptor
-	if barrier != nil {
-		encryptor = atrest.New(barrier)
 	}
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
@@ -1615,9 +1656,6 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// An injected BarrierKeyProvider wins over the registry; it is
 		// consumed by the same TenantService.
 		BarrierKeyProvider: server.ResolveCryptoOptions(pending.serverOpts...).BarrierKeyProvider,
-		// Forward an injected (xkms) Key B provider the same way: the
-		// CertProvider is also constructed inside BuildServices.
-		CertKeyProviderFactory: server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
 		// The tenant defaults qrdbd applies, read from the same configuration
 		// (tenant.default_quotas, tenant.default_entitlements); an explicit
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
@@ -1752,9 +1790,8 @@ func (n *Node) closeDatabaseManager() {
 // node's expiry sweeper watches -- without watch or time-series. A
 // storage-generic one ("disk", "fast") composes the storage raft.sm_storage
 // selects under raft.data_dir, exactly as the daemon does, carrying the
-// node's at-rest encryptor: with the seal barrier enabled, pebble storage is
-// opened on the barrier's encfs and file storage — which has no encrypting
-// seam — is refused rather than left in plaintext. A non-pebble sm_storage for
+// node's at-rest encryptor: with the seal barrier enabled, pebble and file
+// storage are opened on the barrier's encfs. A non-pebble sm_storage for
 // any other type is refused rather than ignored.
 func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor, lr *lease.Lessor) (sm.CreateFunc, error) {
 	if usesClusteredMVCCStore(cfg) {
@@ -1770,12 +1807,7 @@ func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvcc
 		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor},
 		statemachine.WithKVLessor(lr))
 	if err != nil {
-		field := "raft.sm_type"
-		var unencrypted *statemachine.SMStorageUnencryptedError
-		if errors.As(err, &unencrypted) {
-			field = "raft.sm_storage"
-		}
-		return nil, &ConfigError{Field: field, Message: err.Error()}
+		return nil, &ConfigError{Field: "raft.sm_type", Message: err.Error()}
 	}
 	return fn, nil
 }
@@ -1851,9 +1883,13 @@ func (n *Node) background() context.Context {
 // no-op on followers. It is skipped when the lease service is absent
 // (embeddable deployments built without lease support), which is the same
 // condition the daemon skips on.
-func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc service.LeaseServicer, replicaID uint64) {
+func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc service.LeaseServicer, hostAdapter service.Host, replicaID uint64, leaseCfg qrdbconfig.LeaseConfig) error {
 	if host == nil || lr == nil || leaseSvc == nil {
-		return
+		return nil
+	}
+	expiryOpts, err := service.LeaseExpiryOptions(hostAdapter, shard.ShardKV, leaseCfg)
+	if err != nil {
+		return err
 	}
 	ctx := n.background()
 	n.bgWG.Add(1)
@@ -1868,9 +1904,10 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 			n.logger,
 			// A revoke is a proposal the node's log cannot take while the
 			// node barrier is sealed (go-qrdb#662).
-			lease.WithExpiryHold(n.IsSealed),
+			append(expiryOpts, lease.WithExpiryHold(n.IsSealed))...,
 		)
 	}()
+	return nil
 }
 
 // startReclaimSweep starts the reclaim-job sweeper
@@ -2181,8 +2218,6 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// hardware/cloud seal strategies resolve in clustered mode too.
 		StrategyRegistry:   server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		BarrierKeyProvider: server.ResolveCryptoOptions(pending.serverOpts...).BarrierKeyProvider,
-		// Forward an injected (xkms) Key B provider the same way.
-		CertKeyProviderFactory: server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
 		// The tenant defaults qrdbd applies, read from the same configuration
 		// (tenant.default_quotas, tenant.default_entitlements); an explicit
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
@@ -2282,9 +2317,12 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// cancel to each such branch would work and would leave places to forget;
 	// one start point with one error path below it cannot be forgotten. The sweeper needs nothing that boot
 	// produces after this line, and nothing is serving traffic yet.
-	n.startLeaseExpiry(host, lr, svcNode.Lease, pending.cfg.Raft.ReplicaID)
-	n.startReclaimSweep(host, svcNode.ReclaimSweeper, pending.cfg.Raft.ReplicaID)
-	if err := n.startClusterSeal(ctx, host, svcNode, barrierRegistry, pending.cfg); err != nil {
+	err = n.startLeaseExpiry(host, lr, svcNode.Lease, hostAdapter, pending.cfg.Raft.ReplicaID, pending.cfg.Lease)
+	if err == nil {
+		n.startReclaimSweep(host, svcNode.ReclaimSweeper, pending.cfg.Raft.ReplicaID)
+		err = n.startClusterSeal(ctx, host, svcNode, barrierRegistry, pending.cfg)
+	}
+	if err != nil {
 		// Stop the sweepers and WAIT for them to exit before tearing down
 		// what they access, as the wireClientAndServer branch below does.
 		if n.bgCancel != nil {
@@ -2878,10 +2916,6 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		InvitationRequireKeyPin: cfg.Auth.InvitationRequireKeyPin,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
-		// Forward an injected (xkms) Key B provider into BuildServices; the
-		// seal StrategyRegistry and BarrierKeyProvider arrive through
-		// withCryptoInfra.
-		CertKeyProviderFactory: server.ResolveCryptoOptions(serverOpts...).CertKeyProviderFactory,
 		// The tenant defaults qrdbd applies, read from the same configuration
 		// (tenant.default_quotas, tenant.default_entitlements); an explicit
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
@@ -3126,10 +3160,12 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// seal-disabled branch builds its host and services inline rather than
 	// through that function, so it needs the same wiring; omitting it here is
 	// how the unsealed path kept the defect after the sealed path was fixed.
-	n.startLeaseExpiry(host, lr, svcNode.Lease, cfg.Raft.ReplicaID)
-	n.startReclaimSweep(host, svcNode.ReclaimSweeper, cfg.Raft.ReplicaID)
-
-	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, false); err != nil {
+	err = n.startLeaseExpiry(host, lr, svcNode.Lease, hostAdapter, cfg.Raft.ReplicaID, cfg.Lease)
+	if err == nil {
+		n.startReclaimSweep(host, svcNode.ReclaimSweeper, cfg.Raft.ReplicaID)
+		err = n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, false)
+	}
+	if err != nil {
 		// Stop the sweepers and WAIT for them to exit before tearing down
 		// what they read, as completeClusteredBoot's failure branch does.
 		if n.bgCancel != nil {
@@ -3799,7 +3835,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// *tls.Config further down, so Key B is never trusted at the TLS
 		// layer without this binding also being enforced here and on the
 		// on-behalf forwarding path (go-qrdb#560 review, B2-1/B2-2).
-		IssuerVerifier:      issuerVerifier,
+		IssuerVerifier: issuerVerifier,
+		// The principal WithServicePrincipal names is the one a tenant may
+		// delegate to: the same name, the same grants, acting inside the
+		// delegating tenant through a certificate that tenant's CA issued.
+		DelegatedPrincipal:  n.servicePrincipal,
 		PendingTenantAdmins: svcNode.PendingAdmins,
 		CertTargetGuard:     svcNode.CertTargets,
 		RevocationCacheTTL:  revocationTTL,
@@ -4521,8 +4561,14 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 // daemon's mode:standalone branch and the embedded transport. An
 // unrecognized backend type falls back to pebble for backward
 // compatibility with this constructor's historical behavior.
-func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
 	if factory != nil {
+		// A composer's storage writes its files through the barrier's
+		// encrypting file system whatever the backend type names.
+		var dataPlaneFS vfs.FS
+		if enc.Enabled() {
+			dataPlaneFS = enc.FS()
+		}
 		stg, err := factory(dataDir, dataPlaneFS)
 		if err != nil {
 			return nil, nil, &lifecycle.LocalStorageError{Backend: backendType, Err: err}
@@ -4536,7 +4582,7 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 	default:
 		backendType = database.BackendPebble
 	}
-	return lifecycle.NewLocalStorage(backendType, dataDir, dataPlaneFS, objCfg)
+	return lifecycle.NewLocalStorage(backendType, dataDir, enc, objCfg)
 }
 
 // createNodeEngine creates the appropriate store engine via the canonical

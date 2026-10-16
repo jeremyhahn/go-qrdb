@@ -20,6 +20,7 @@ import (
 	"math"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // DefaultClientMaxRecvMessageBytes is the response size the gRPC and Unix
@@ -237,6 +238,25 @@ type ObserverMemberAdder interface {
 	// AddObserverMember adds a new replica to the specified shard as an
 	// observer. identity follows AdminClient.AddMember's own rule.
 	AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
+}
+
+// ReplicaStateHasher reports the applied index and SHA-256 state digest of
+// every replica the answering node runs, isolated tenants' included, so a
+// caller can compare replicas by asking every node: two replicas of a shard
+// at the same applied index must report the same hash. It is a distinct
+// interface from AdminClient, not a method on it, for the identical reason
+// ClusterJoinTokenMinter is: a caller type-asserts for it
+// (client.Admin().(transport.ReplicaStateHasher)). Every transport in this
+// module implements it.
+//
+// permission.AdminStateHash (ScopeCross, system tenant only) gates the
+// server-side route on every transport.
+type ReplicaStateHasher interface {
+	// StateHashes returns the state digest of every local replica whose
+	// shard is in shardIDs; an empty shardIDs selects every shard. A shard
+	// ID the node does not replicate selects nothing. One replica's failure
+	// is reported in its own entry and never fails the call.
+	StateHashes(ctx context.Context, shardIDs []uint64) (*StateHashesResponse, error)
 }
 
 // JoinRequestReviewer lists, approves and rejects CSRs a joiner queued
@@ -793,6 +813,12 @@ type CertClient interface {
 	// tenant's trust anchors and authenticates as that account.
 	EnrollCert(ctx context.Context, req *EnrollCertRequest) (*EnrolledCert, error)
 
+	// IssueDelegation has the caller's own tenant's CA issue a short-lived
+	// delegation certificate from a CSR: the named service principal may act
+	// inside the tenant with at most the delegated scope, intersected with
+	// its own grants. The system tenant and a delegated caller are refused.
+	IssueDelegation(ctx context.Context, req *IssueDelegationRequest) (*IssuedDelegation, error)
+
 	// RevokeCert marks a certificate serial as revoked and reports what the
 	// target node found: RevokeResult.RecordFound distinguishes a
 	// certificate the target holds a record for from a deny-by-serial
@@ -1012,9 +1038,11 @@ type CredentialClient interface {
 	// for a grace period.
 	CredentialRotate(ctx context.Context, req *CredentialRotateRequest) (*CredentialRotateResponse, error)
 
-	// CredentialRetrieveVersion returns the stored credential value
-	// for a specific version. Use version == 0 for the current version.
-	CredentialRetrieveVersion(ctx context.Context, req *CredentialRetrieveVersionRequest) (*CredentialRetrieveVersionResponse, error)
+	// CredentialRetrieveVersionBuffer returns the stored credential value
+	// for a specific version in protected memory. Use version == 0 for the
+	// current version. The caller owns the returned buffer and MUST Destroy
+	// it on every path.
+	CredentialRetrieveVersionBuffer(ctx context.Context, req *CredentialRetrieveVersionRequest) (*secure.Buffer, error)
 
 	// CredentialListVersions returns the version history (current +
 	// non-expired grace) for a credential. Values are never returned.
@@ -1027,10 +1055,11 @@ type CredentialClient interface {
 	// CredentialStore persists a credential value under the given name.
 	CredentialStore(ctx context.Context, name string, value []byte) error
 
-	// CredentialRetrieve returns the credential value for the given name.
-	// For the manual strategy this blocks until the credential is submitted
-	// or the context is cancelled.
-	CredentialRetrieve(ctx context.Context, name string) ([]byte, error)
+	// CredentialRetrieveBuffer returns the credential value for the given
+	// name in protected memory. For the manual strategy this blocks until
+	// the credential is submitted or the context is cancelled. The caller
+	// owns the returned buffer and MUST Destroy it on every path.
+	CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error)
 }
 
 // ---------------------------------------------------------------------------

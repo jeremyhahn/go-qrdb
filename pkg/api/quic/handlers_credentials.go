@@ -22,6 +22,8 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // handleCredentialSubmit submits a named credential value by delegating to
@@ -158,10 +160,17 @@ func (s *Server) handleCredentialRetrieveVersion(ctx context.Context, payload []
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	value, err := s.credentialSvc.CredentialRetrieveVersion(ctx, req.GetName(), req.GetVersion())
+	buf, err := s.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.GetName(), req.GetVersion())
 	if err != nil {
 		return nil, err
 	}
+	// The response message is the wire DTO: the one boundary where the value
+	// leaves protected memory. It is wiped as soon as it has been marshalled.
+	value, err := service.CredentialWireValue(buf)
+	if err != nil {
+		return nil, err
+	}
+	defer secure.Wipe(value)
 
 	resp, err := proto.Marshal(&pb.CredentialRetrieveVersionResponse{
 		Value: value,
@@ -270,10 +279,17 @@ func (s *Server) handleCredentialRetrieve(ctx context.Context, payload []byte) (
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	value, err := s.credentialSvc.CredentialRetrieve(ctx, req.GetName())
+	buf, err := s.credentialSvc.CredentialRetrieveBuffer(ctx, req.GetName())
 	if err != nil {
 		return nil, err
 	}
+	// The response message is the wire DTO: the one boundary where the value
+	// leaves protected memory. It is wiped as soon as it has been marshalled.
+	value, err := service.CredentialWireValue(buf)
+	if err != nil {
+		return nil, err
+	}
+	defer secure.Wipe(value)
 
 	out, err := proto.Marshal(&pb.CredentialRetrieveResponse{Value: value})
 	if err != nil {

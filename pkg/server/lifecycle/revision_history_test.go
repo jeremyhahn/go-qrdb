@@ -12,35 +12,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package lifecycle_test
+package lifecycle
 
 import (
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
 // A state machine keeps revision history exactly when its descriptor
 // declares the MVCC capability; an unregistered type keeps none.
+//
+// The two synthetic types go into a test-local registry, never the
+// process-global one: smCells requires the global registry to hold exactly
+// the production types its battery covers, and a type registered here would
+// outlive this test and fail it on every -count iteration after the first.
+// The test is in package lifecycle so it reaches the unexported seam
+// directly: an export_test.go read from lifecycle_test is undefined to gosec's
+// loader and reddens the Security job (see GOSEC_FLAGS in the Makefile).
 func TestStateMachineKeepsRevisionHistory(t *testing.T) {
-	statemachine.RegisterWithDescriptor("lifecycle-test-mvcc", func() sm.CreateFunc { return nil },
+	r := statemachine.NewRegistry()
+	r.RegisterWithDescriptor("lifecycle-test-mvcc", func() sm.CreateFunc { return nil },
 		statemachine.Descriptor{Capabilities: []statemachine.Capability{statemachine.CapabilityKV, statemachine.CapabilityMVCC}})
-	statemachine.RegisterWithDescriptor("lifecycle-test-kv", func() sm.CreateFunc { return nil },
+	r.RegisterWithDescriptor("lifecycle-test-kv", func() sm.CreateFunc { return nil },
 		statemachine.Descriptor{Capabilities: []statemachine.Capability{statemachine.CapabilityKV}})
 
-	if !lifecycle.StateMachineKeepsRevisionHistory("lifecycle-test-mvcc") {
+	if !keepsRevisionHistory(r.Describe, "lifecycle-test-mvcc") {
 		t.Fatal("an MVCC-capable state machine reported no revision history")
 	}
-	if lifecycle.StateMachineKeepsRevisionHistory("lifecycle-test-kv") {
+	if keepsRevisionHistory(r.Describe, "lifecycle-test-kv") {
 		t.Fatal("a KV-only state machine reported revision history")
 	}
-	if lifecycle.StateMachineKeepsRevisionHistory("memory") {
+	if StateMachineKeepsRevisionHistory("lifecycle-test-mvcc") {
+		t.Fatal("a type registered only in a test-local registry leaked into the global one")
+	}
+	if StateMachineKeepsRevisionHistory("memory") {
 		t.Fatal("the built-in memory state machine keeps no revision history")
 	}
-	if lifecycle.StateMachineKeepsRevisionHistory("no-such-type") {
+	if StateMachineKeepsRevisionHistory("no-such-type") {
 		t.Fatal("an unregistered type reported revision history")
 	}
 }

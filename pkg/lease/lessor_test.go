@@ -205,7 +205,7 @@ func TestKeepAliveResetsTTL(t *testing.T) {
 	lr := NewLessor()
 	info, _ := lr.Grant(nopWriter{}, 60)
 
-	updated, err := lr.KeepAlive(info.ID)
+	updated, err := lr.KeepAlive(nopWriter{}, info.ID)
 	if err != nil {
 		t.Fatalf("KeepAlive(%d) returned unexpected error: %v", info.ID, err)
 	}
@@ -223,7 +223,7 @@ func TestKeepAliveResetsTTL(t *testing.T) {
 func TestKeepAlivePreservesID(t *testing.T) {
 	lr := NewLessor()
 	info, _ := lr.Grant(nopWriter{}, 60)
-	updated, err := lr.KeepAlive(info.ID)
+	updated, err := lr.KeepAlive(nopWriter{}, info.ID)
 	if err != nil {
 		t.Fatalf("KeepAlive returned unexpected error: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestKeepAlivePreservesID(t *testing.T) {
 
 func TestKeepAliveUnknownIDReturnsNotFoundError(t *testing.T) {
 	lr := NewLessor()
-	_, err := lr.KeepAlive(999)
+	_, err := lr.KeepAlive(nopWriter{}, 999)
 	if err == nil {
 		t.Fatal("KeepAlive(999) expected error, got nil")
 	}
@@ -245,7 +245,7 @@ func TestKeepAliveUnknownIDReturnsNotFoundError(t *testing.T) {
 
 func TestKeepAliveUnknownIDMessage(t *testing.T) {
 	lr := NewLessor()
-	_, err := lr.KeepAlive(888)
+	_, err := lr.KeepAlive(nopWriter{}, 888)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -262,7 +262,7 @@ func TestKeepAliveOnClosedLessor(t *testing.T) {
 	lr := NewLessor()
 	info, _ := lr.Grant(nopWriter{}, 60)
 	lr.Close()
-	_, err := lr.KeepAlive(info.ID)
+	_, err := lr.KeepAlive(nopWriter{}, info.ID)
 	if err == nil {
 		t.Fatal("KeepAlive on closed lessor expected error, got nil")
 	}
@@ -596,7 +596,7 @@ func TestClosePreventsKeepAlive(t *testing.T) {
 	lr := NewLessor()
 	info, _ := lr.Grant(nopWriter{}, 60)
 	lr.Close()
-	_, err := lr.KeepAlive(info.ID)
+	_, err := lr.KeepAlive(nopWriter{}, info.ID)
 	if err == nil {
 		t.Fatal("KeepAlive after Close expected error, got nil")
 	}

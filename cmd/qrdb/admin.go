@@ -43,6 +43,7 @@ func newAdminCmd() *cobra.Command {
 		newAdminSnapshotCmd(),
 		newAdminDrainCmd(),
 		newAdminTopologyCmd(),
+		newAdminStateHashCmd(),
 		newAdminReplicaStatesCmd(),
 		newAdminCapabilitiesCmd(),
 		newAdminNodeCompactionCmd(),

@@ -113,6 +113,17 @@ type Members []cluster.Member
 // ListMembers returns the records.
 func (m Members) ListMembers(context.Context) ([]cluster.Member, error) { return m, nil }
 
+// StalledMembers is a member-record source whose read never completes: it
+// answers only when the caller's context ends, with the context's error --
+// a system-shard read that cannot reach a quorum.
+type StalledMembers struct{}
+
+// ListMembers blocks until ctx is done.
+func (StalledMembers) ListMembers(ctx context.Context) ([]cluster.Member, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 // ClosedAddr returns a 127.0.0.1 address nothing listens on.
 func ClosedAddr(t testing.TB) string {
 	t.Helper()

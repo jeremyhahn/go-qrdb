@@ -309,6 +309,29 @@ qrdb admin topology --output json
 `admin health` is served on the one public route in the system, so a load
 balancer can probe a node without credentials.
 
+### Checking that replicas agree
+
+Every replica of a shard applies the same log, so two replicas at the same
+applied index must hold the same state. `admin state-hash` shows each local
+replica's applied index and a SHA-256 digest of its state at that index. Ask
+every node and compare:
+
+```bash
+for node in node1 node2 node3; do
+  qrdb --server "https://$node.example.com:8443" admin state-hash --shard 1 --output json
+done
+```
+
+Equal `applied_index` and equal `hash` means the replicas agree. Equal
+`applied_index` with different `hash` means the replicas have diverged:
+take the odd one out of service and replace its data from a healthy
+replica. Different `applied_index` means a replica is still catching up, so
+ask again. A busy shard rarely shows two nodes at the same index at once; to
+compare it, pause writes to it or compare at the next quiet moment.
+
+Isolated tenants' shards are listed under their tenant and hashed inside the
+tenant's own barrier. Only tenants whose host is running on that node appear.
+The command needs `admin:state_hash`, which only the system tenant can hold.
 **Do the replicas hold the same data?** Ask each node for its replicas'
 applied index and state-machine hash, on a shard that is not taking writes:
 
@@ -402,7 +425,8 @@ better goal than churning the cluster for the last point. `--max-moves` bounds
 the disruption.
 
 The result reports moves completed, moves failed, and the imbalance you actually
-ended up with.
+ended up with. Each failed move is listed with the phase it failed in and why,
+so a non-zero `moves_failed` can be acted on without reading node logs.
 
 ## From the SDK
 
@@ -434,6 +458,16 @@ for ev := range ch {
 
 `WatchMembership` polls rather than streaming, so it works on every transport
 including REST.
+
+The replica state hashes are a capability every SDK transport implements:
+
+```go
+hasher := client.Admin().(transport.ReplicaStateHasher)
+resp, err := hasher.StateHashes(ctx, nil) // nil: every shard on this node
+for _, r := range resp.Replicas {
+	// r.TenantID, r.ShardID, r.ReplicaID, r.AppliedIndex, r.Records, r.Hash, r.Error
+}
+```
 
 ## Upgrading a cluster
 

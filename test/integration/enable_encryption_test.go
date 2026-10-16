@@ -168,6 +168,20 @@ func waitForBarrierSealedAgain(t *testing.T, ca *testCA, port int, timeout time.
 	t.Fatalf("timed out after %v waiting for the migrated barrier to come back sealed on port %d", timeout, port)
 }
 
+// createDatabaseRetryingUnavailable creates a database through
+// POST /v1/databases, retrying the server's typed "retry" answers
+// (postRetryingRetryable). A create that a consensus step could not finish
+// inside the server's own create deadline is rolled back and refused as
+// retryable, which on a loaded host is an expected answer rather than a
+// failure; any other non-2xx status fails the test.
+func createDatabaseRetryingUnavailable(t *testing.T, client *http.Client, port int, body map[string]interface{}) {
+	t.Helper()
+	respBody, status := postRetryingRetryable(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", port), body)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("create database %v: status %d, body: %s", body["name"], status, respBody)
+	}
+}
+
 // TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle is the
 // end-to-end proof of the daemon SYSTEM-scope enable-encryption feature: a
 // single-node daemon boots with an UNENCRYPTED (strategy "none") barrier, has
@@ -177,6 +191,25 @@ func waitForBarrierSealedAgain(t *testing.T, ca *testCA, port int, timeout time.
 // passphrase, and every datum written before the migration is intact —
 // proving the host's state-machine Pebble + WAL were re-encrypted without loss.
 func TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle(t *testing.T) {
+	assertSystemEnableEncryptionKeepsData(t, "--sm", "pebble")
+}
+
+// TestEnableEncryption_SystemScope_DiskOverFileStorage is the same daemon
+// system-scope migration over a disk state machine whose storage is the file
+// engine (`raft.sm_storage: file`). That store sits under the data directory's
+// sm/ tree, outside the host's own stores, and is encrypted through the
+// barrier's encfs like them; a migration that left it under the old key would
+// make every replica start fail with a decryption error.
+func TestEnableEncryption_SystemScope_DiskOverFileStorage(t *testing.T) {
+	assertSystemEnableEncryptionKeepsData(t, "--sm", "disk", "--sm-storage", "file")
+}
+
+// assertSystemEnableEncryptionKeepsData starts a single raft node with a
+// strategy-none barrier and the given state machine flags, writes through the
+// full Raft pipeline, migrates the system barrier to a passphrase in process,
+// unseals with it, and asserts every record survived and new writes succeed.
+func assertSystemEnableEncryptionKeepsData(t *testing.T, smArgs ...string) {
+	t.Helper()
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
 	nodeCert, nodeKey := ca.generateNodeCert(t)
@@ -193,7 +226,9 @@ func TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle(t *testing.T)
 		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPort),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
 		"--data-dir", dataDir,
-		"--sm", "pebble",
+	}
+	args = append(args, smArgs...)
+	args = append(args,
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPort),
 		"--shard-id", "1",
@@ -203,7 +238,7 @@ func TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle(t *testing.T)
 		"--tls-ca-file", ca.CertPath,
 		"--tls-cert-file", nodeCert,
 		"--tls-key-file", nodeKey,
-	}
+	)
 	startNode(t, bin, args, "[enc-mig] ")
 
 	// Sealed-window: initialize the none barrier (empty secret) so the daemon
@@ -345,7 +380,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	if err != nil {
 		t.Fatalf("certtest.NewCSR: %v", err)
 	}
-	tBody, tStatus := iraftAPIPost(t, sysClient,
+	tBody, tStatus := postRetryingRetryable(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort),
 		map[string]interface{}{
 			"id":                  tenantID,
@@ -436,13 +471,8 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 		t.Fatalf("pre-migration tenant barrier strategy = %q (ok=%v), want none", strategy, ok)
 	}
 
-	dbBody, dbStatus := iraftAPIPost(t, tenantClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", adminPort),
-		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 1},
-	)
-	if dbStatus != http.StatusCreated && dbStatus != http.StatusOK {
-		t.Fatalf("create tenant database: status %d, body: %s", dbStatus, dbBody)
-	}
+	createDatabaseRetryingUnavailable(t, tenantClient, adminPort,
+		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 1})
 
 	// Write tenant data through the tenant's volume Host (X-QRDB-Database routes
 	// to the dedicated database on the tenant Host).

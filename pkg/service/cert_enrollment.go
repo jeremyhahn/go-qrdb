@@ -49,6 +49,12 @@ type CertEnrollmentServicer interface {
 	// trust anchors and authenticates as exactly that account.
 	EnrollCertificate(ctx context.Context, req *EnrollCertificateRequest) (*EnrolledCertificate, error)
 
+	// IssueDelegation issues a delegation certificate from the caller's own
+	// tenant CA to a service principal, carrying the delegated scope
+	// (pkg/auth/delegation). Its permission is certs:delegate, which is
+	// tenant-only: the system tenant never delegates.
+	IssueDelegation(ctx context.Context, req *IssueDelegationRequest) (*IssuedDelegation, error)
+
 	// AddTrustAnchors registers every CA certificate in a PEM bundle as one
 	// of tenantID's trust anchors.
 	AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)

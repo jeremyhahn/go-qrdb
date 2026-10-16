@@ -28,6 +28,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -346,5 +347,81 @@ func TestTransport_CeremonyInitialize_NoForwardingConfiguredAnswersTheRefusal(t 
 	var notLeader *service.AdminCredentialNotLeaderError
 	if !errors.As(err, &notLeader) {
 		t.Fatalf("CeremonyInitialize = %v; want the node's own AdminCredentialNotLeaderError", err)
+	}
+}
+
+// followerLeaseRegistry serves every database's leases the way a follower
+// does a lease's remaining TTL: with the refusal naming the leader at
+// leaderAddr, or no leader when it is empty.
+type followerLeaseRegistry struct {
+	nonReplicaRegistry
+	leaderAddr string
+}
+
+func (r *followerLeaseRegistry) LeaseService(string, string) (service.LeaseServicer, error) {
+	return &mockLeaseService{ttlFn: func(_ context.Context, id int64) (*lease.Lease, error) {
+		return nil, &service.LeaseTTLNotLeaderError{
+			NotLeaderError: service.NotLeaderError{ShardID: 9, LeaderID: 2, LeaderAddress: r.leaderAddr},
+			Lease:          &lease.Lease{ID: id, TTL: 10},
+		}
+	}}, nil
+}
+
+// A lease's remaining TTL is the leader's to answer (the etcd model): a
+// follower's refusal naming the leader is sent there as the request frame
+// the caller would have sent, as the configured caller, and the leader's
+// answer is the call's. A follower that knows no leader, a caller that does
+// not authenticate, and a leader that is not reached answer the refusal.
+func TestForwardingScope_ForwardsALeaseTTLAFollowerRefusesToTheLeader(t *testing.T) {
+	body, err := proto.Marshal(&pb.LeaseTimeToLiveResponse{Lease: &pb.Lease{Id: 7, Ttl: 10, RemainingTtl: 9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const leader = "192.0.2.2:7000"
+	for name, tc := range map[string]struct {
+		leaderAddr string
+		caller     auth.Authenticator
+		refuse     bool
+		reached    bool
+	}{
+		"the leader is named":              {leaderAddr: leader, caller: fixedCaller{id: alice}, reached: true},
+		"no leader is known":               {caller: fixedCaller{id: alice}},
+		"the caller does not authenticate": {leaderAddr: leader, caller: fixedCaller{err: auth.ErrUnauthenticated}},
+		"the leader is not reached":        {leaderAddr: leader, caller: fixedCaller{id: alice}, refuse: true, reached: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fwd := &recordingForwarder{status: wire.StatusOK, body: body, refuse: tc.refuse}
+			tr, err := New(newMockKVService(), &mockAdminService{}, WithLeaseService(&mockLeaseService{}),
+				WithServiceRegistry(&followerLeaseRegistry{leaderAddr: tc.leaderAddr}), WithReplicaForwarding(fwd, tc.caller))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			scoped, err := tr.WithDatabase("orders")
+			if err != nil {
+				t.Fatalf("WithDatabase: %v", err)
+			}
+			info, err := scoped.(transport.LeaseClient).LeaseTimeToLive(acmeCtx(), 7)
+			if reached := len(fwd.leaderCalls) > 0; reached != tc.reached {
+				t.Fatalf("leader reached = %v; want %v", reached, tc.reached)
+			}
+			if !tc.reached || tc.refuse {
+				var nle *transport.NotLeaderError
+				if !errors.As(err, &nle) || nle.LeaderAddress != tc.leaderAddr {
+					t.Fatalf("LeaseTimeToLive = %+v, %v; want the follower's refusal naming %q", info, err, tc.leaderAddr)
+				}
+				return
+			}
+			if err != nil || info.RemainingTTL != 9 {
+				t.Fatalf("LeaseTimeToLive = %+v, %v; want the leader's remaining TTL 9", info, err)
+			}
+			c := fwd.leaderCalls[0]
+			var req pb.LeaseTimeToLiveRequest
+			if err := proto.Unmarshal(c.payload, &req); err != nil || req.GetLeaseId() != 7 {
+				t.Fatalf("payload = %v (%v); want the LeaseTimeToLiveRequest for lease 7", &req, err)
+			}
+			if c.method != "lease.TimeToLive" || c.database != "orders" || c.caller != alice || c.leaderAddr != leader {
+				t.Fatalf("forwarded %s on %q as %+v to %q; want lease.TimeToLive on orders as alice to %s", c.method, c.database, c.caller, c.leaderAddr, leader)
+			}
+		})
 	}
 }

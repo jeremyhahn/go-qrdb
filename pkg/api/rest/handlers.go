@@ -38,7 +38,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
-	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -142,10 +141,11 @@ type okResponse struct {
 type errorResponse struct {
 	Error string `json:"error"`
 
-	// Code and Metadata carry a replica refusal's structured form
-	// (replicaforward.Refusal) -- NOT_A_REPLICA with the replica set,
-	// NOT_LEADER with the leader -- so a forwarding node classifies the
-	// answer, and a client redials, without parsing Error.
+	// Code and Metadata carry a refusal's structured form (errclass.Refusal)
+	// -- NOT_A_REPLICA with the replica set, NOT_LEADER with the leader,
+	// FACTOR_CONDITION_FAILED with the failed condition -- so a forwarding
+	// node classifies the answer, and a client redials or rebuilds the typed
+	// error, without parsing Error.
 	Code     string            `json:"code,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -1033,7 +1033,7 @@ func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminUR
 	if err := s.attachOnBehalfAssertion(fwdReq, r, body); err != nil {
 		// The client gets the fixed message only; the cause, which may
 		// describe this node's signing key, is logged here.
-		slog.Error("leader forwarding: refusing to forward a holder request unsigned",
+		slog.Error("leader forwarding: refusing to forward a holder or delegated request unsigned",
 			"leader", adminURL, "error", errors.Unwrap(err))
 		writeErrorJSON(w, http.StatusBadGateway,
 			&LeaderForwardError{LeaderURL: adminURL, Err: err})
@@ -1089,21 +1089,24 @@ func forwardHopCount(r *http.Request) int {
 // fails (the failure is logged; the request still forwards and will simply be
 // authorized as the node, preserving prior behavior for non-RBAC paths).
 //
-// A HOLDER caller (auth.IsHolderIdentity) is the exception, and the only case
-// that returns an error: a holder request forwarded without an assertion would
-// be authorized as the forwarding node, so when the assertion cannot be
-// attached it returns *HolderForwardUnsignedError and the request is not
-// forwarded. The assertion it does attach carries the holder profile, so the
-// leader keeps the identity a holder.
+// A HOLDER caller (auth.IsHolderIdentity) and a DELEGATED one
+// (auth.DelegationOf) are the exception, and the only cases that return an
+// error: such a request forwarded without an assertion would be authorized as
+// the forwarding node, so when the assertion cannot be attached it returns
+// *UnsignedForwardRefusedError and the request is not forwarded. The
+// assertion it does attach carries the holder profile or the delegation
+// certificate (forward.CallerAssertion.Carry), so the leader rebuilds the
+// identity as what it is.
 func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) error {
 	caller := auth.IdentityFromContext(r.Context())
 	if caller == nil || caller.Subject == "" {
 		return nil
 	}
-	holder := auth.IsHolderIdentity(caller)
+	_, delegated := auth.DelegationOf(caller)
+	mustAssert := auth.IsHolderIdentity(caller) || delegated
 	if s.forwardSigner == nil || s.forwardNodeID == "" {
-		if holder {
-			return &HolderForwardUnsignedError{Subject: caller.Subject}
+		if mustAssert {
+			return &UnsignedForwardRefusedError{Subject: caller.Subject}
 		}
 		return nil
 	}
@@ -1118,7 +1121,7 @@ func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) e
 		time.Now(),
 		forward.DefaultTTL,
 	)
-	assertion.HolderProfile = caller.Metadata[auth.HolderProfileMetadataKey]
+	assertion.Carry(caller)
 
 	assertionB64, sigB64, err := forward.Sign(assertion, s.forwardSigner)
 	if err != nil {
@@ -1127,8 +1130,8 @@ func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) e
 			"subject", caller.Subject,
 			"tenant", caller.TenantID,
 		)
-		if holder {
-			return &HolderForwardUnsignedError{Subject: caller.Subject, Err: err}
+		if mustAssert {
+			return &UnsignedForwardRefusedError{Subject: caller.Subject, Err: err}
 		}
 		return nil
 	}
@@ -1229,7 +1232,7 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	body := errorResponse{Error: err.Error()}
-	if reason, md, ok := replicaforward.Refusal(err); ok {
+	if reason, md, ok := errclass.Refusal(err); ok {
 		body.Code, body.Metadata = reason, md
 	}
 	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {

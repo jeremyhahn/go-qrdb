@@ -162,6 +162,10 @@ func (s *Server) handleLeaseTimeToLive(w http.ResponseWriter, r *http.Request) {
 
 	l, ttlErr := leaseSvc.TimeToLive(ctx, leaseID)
 	if ttlErr != nil {
+		// Only the leader knows the remaining TTL; a follower names it.
+		if s.tryForwardWrite(w, r, nil, ttlErr) {
+			return
+		}
 		writeErrorJSON(w, mapHTTPError(ttlErr), ttlErr)
 		return
 	}

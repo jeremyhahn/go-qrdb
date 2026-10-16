@@ -24,39 +24,37 @@ import (
 // The borrow guard turns a failure mode this package cannot always report
 // into one a test can catch.
 //
-// Before go-qrdb#114/#553, this package serialized every allocation and every
-// Destroy against every borrow on ONE process-wide purgeMu, because
-// memguard's failure path purged the whole process. purgeMu was an RWMutex,
-// Go's RWMutex is not reentrant, and a goroutine holding a borrow (shared)
-// that reached a purge-class operation (exclusive) blocked on itself,
-// forever, with no error, no panic and no stack — the daemon simply stopped.
+// Each enclave.MemoryEnclave carries its own read/write lock, and a Buffer's
+// borrow (WithBytes, Size) holds that lock for reading. The one way to deadlock
+// on it is the hazard every sync.RWMutex has: the goroutine holding a Buffer's
+// borrow reenters THAT Buffer — Destroy needs the lock for writing, and a
+// second borrow waits behind any writer already queued — and blocks on a lock
+// only it could release. There is no error, no panic and no stack; the
+// goroutine simply stops.
 //
-// go-enclave removed that global lock: each enclave.MemoryEnclave and
-// enclave.SealedEnclave carries its own lock, so allocating or destroying one
-// object no longer excludes a borrow of a DIFFERENT one, and the wide
-// process-wide deadlock purgeMu made possible is gone with it. What remains
-// is the narrower hazard any RWMutex has — reentering the SAME object's lock
-// from inside its own borrow still deadlocks — plus the standing style rule
-// that a WithBytes callback must not call back into this package at all,
-// which this guard keeps enforcing so the wider hazard cannot be
-// reintroduced by some future change to how protected memory is locked.
-// Whether a callback is safe is a question about everything it can reach,
-// transitively, through interfaces the caller does not own (go-qrdb#74), so
-// the guard remains the check rather than something read off the code.
+// Nothing else nests badly. Allocating, opening, borrowing or destroying a
+// DIFFERENT Buffer or Secret from inside a borrow takes a different lock, so
+// it cannot contend with the borrow held (go-qrdb#145). That is what lets a
+// borrow be held across a callee the caller does not own — a barrier, a KEK
+// provider, a verifier — which may use protected memory of its own: the rule
+// is about the borrowed object, not about which package the callee reaches.
 //
-// So the guard makes a violation LOUD instead of silent. While it is armed,
-// every constructor/Destroy-shaped and borrow-shaped entry point asks
-// whether THIS goroutine already holds a borrow, and reports a
-// *NestedBorrowError rather than proceeding into a call that risks wedging.
-// A bad conversion then fails one test with both stacks attached, rather
-// than hanging the suite.
+// What makes the remaining hazard worth a detector is that whether a callback
+// can reach the borrowed Buffer is a question about everything it can reach,
+// transitively, through interfaces the caller does not own (go-qrdb#74). So
+// the guard makes a violation LOUD instead of silent. While it is armed, every
+// entry point that borrows or destroys a Buffer asks whether THIS goroutine is
+// already borrowing THAT Buffer, and reports a *NestedBorrowError rather than
+// proceeding into the self-deadlock. A bad conversion then fails one test with
+// both stacks attached, rather than hanging the suite.
 //
 // # Why goroutine identity, and what it costs
 //
-// "Does the current goroutine hold a borrow" is not answerable from the mutex:
-// RWMutex does not name its readers, and borrows from OTHER goroutines are
-// legitimate and concurrent. Nothing but goroutine identity distinguishes the
-// two, and Go exposes it only through runtime.Stack's header.
+// "Does the current goroutine hold this borrow" is not answerable from the
+// mutex: RWMutex does not name its readers, and borrows of the same Buffer
+// from OTHER goroutines are legitimate and concurrent. Nothing but goroutine
+// identity distinguishes the two, and Go exposes it only through
+// runtime.Stack's header.
 //
 // That is far too expensive for the DEK read path, so the guard is opt-in and
 // off by default. Measured on this tree, a Buffer.WithBytes round trip is
@@ -74,42 +72,33 @@ import (
 // operation, so it is an atomic rather than anything requiring a lock.
 var borrowGuardArmed atomic.Bool
 
-// checkNoBorrow, enterBorrow and exitBorrow are the ONLY places this package
-// touches the borrow-guard bookkeeping. They exist so the guard hook has
-// exactly one home per call shape, the way lockPurge/rLockBorrow did when
-// this package serialized against memguard's process-wide purge (go-qrdb#71).
-//
-// go-enclave (go-qrdb#114, go-qrdb#553) removed that global lock: each
-// enclave.MemoryEnclave and enclave.SealedEnclave carries its own read/write
-// lock, so a purge-class operation on one Buffer or Secret no longer excludes
-// a borrow of a DIFFERENT one. What survives is the narrower, per-object
-// hazard every RWMutex has — reentering the SAME object's lock from inside
-// its own borrow deadlocks — plus the discipline of never calling back into
-// this package from inside a WithBytes callback at all, which the guard keeps
-// enforcing so that hazard cannot be reintroduced by a future change to how
-// enclave locking works. checkNoBorrow marks a constructor/Destroy-shaped
-// call; enterBorrow/exitBorrow bracket a Size/WithBytes-shaped one.
+// checkNotBorrowed, enterBorrow and exitBorrow are the ONLY places this
+// package touches the borrow-guard bookkeeping, so the guard hook has exactly
+// one home per call shape. checkNotBorrowed marks an operation that needs the
+// Buffer's lock for writing or that borrows it internally (Destroy,
+// NewSecretFromBuffer); enterBorrow/exitBorrow bracket a borrow (Size,
+// WithBytes).
 
-// checkNoBorrow reports (if the guard is armed) a violation when the calling
-// goroutine already holds a borrow and is entering a constructor or Destroy.
-func checkNoBorrow(op string) {
+// checkNotBorrowed reports (if the guard is armed) a violation when the
+// calling goroutine is already borrowing b.
+func checkNotBorrowed(op string, b *Buffer) {
 	if borrowGuardArmed.Load() {
-		guardAssertNoBorrow(op)
+		guardAssertNotBorrowed(op, b)
 	}
 }
 
 // enterBorrow records (if the guard is armed) that the calling goroutine has
-// taken a borrow, reporting a violation first if it already held one.
-func enterBorrow(op string) {
+// borrowed b, reporting a violation first if it was already borrowing b.
+func enterBorrow(op string, b *Buffer) {
 	if borrowGuardArmed.Load() {
-		guardEnterBorrow(op)
+		guardEnterBorrow(op, b)
 	}
 }
 
-// exitBorrow undoes what enterBorrow recorded, if the guard is armed.
-func exitBorrow() {
+// exitBorrow undoes what enterBorrow recorded for b, if the guard is armed.
+func exitBorrow(b *Buffer) {
 	if borrowGuardArmed.Load() {
-		guardExitBorrow()
+		guardExitBorrow(b)
 	}
 }
 
@@ -129,18 +118,34 @@ var borrowGuardMu sync.Mutex
 // remove entries concurrently.
 var borrowFrames sync.Map
 
-// borrowFrame records how deep the owning goroutine's borrows are nested and
-// where the outermost one was taken. The stack is captured once, at the outer
-// borrow, because that is the frame a violation report needs and the inner
-// one is already on the reporting goroutine's live stack.
+// borrowFrame records the Buffers the owning goroutine is borrowing, innermost
+// last. Borrows of different Buffers nest legitimately, so the frame is a
+// list rather than a depth.
 type borrowFrame struct {
-	depth int
+	held []heldBorrow
+}
+
+// heldBorrow is one borrow on the owning goroutine: the Buffer and the stack
+// it was taken on. The stack is captured at the borrow because that is the
+// frame a violation report needs; the reentering call is already on the
+// reporting goroutine's live stack.
+type heldBorrow struct {
+	buf   *Buffer
 	stack []byte
 }
 
+// lookup returns the innermost borrow of b in f, if any.
+func (f *borrowFrame) lookup(b *Buffer) (heldBorrow, bool) {
+	for i := len(f.held) - 1; i >= 0; i-- {
+		if f.held[i].buf == b {
+			return f.held[i], true
+		}
+	}
+	return heldBorrow{}, false
+}
+
 // BorrowViolationFunc is called when an armed guard catches a goroutine
-// entering a purge-class or borrow-class operation while it already holds a
-// borrow.
+// borrowing or destroying a Buffer it is already borrowing.
 //
 // It MUST NOT return. Returning would let the caller proceed into the very
 // deadlock the guard just detected, so the guard panics with the same error if
@@ -152,12 +157,11 @@ type BorrowViolationFunc func(*NestedBorrowError)
 // EnableBorrowGuard arms nested-borrow detection process-wide and returns a
 // function that restores the previous state.
 //
-// While armed, a goroutine that already holds a borrow and then enters any
-// constructor/Destroy-shaped operation (NewBuffer, NewBufferFromBytes,
-// NewSecret, NewSecretFromBuffer, Secret.Open, either Destroy) or any further
-// borrow-shaped operation (Buffer.Size, Buffer.WithBytes) is
-// reported to onViolation with a *NestedBorrowError, before the call is
-// allowed to proceed.
+// While armed, a goroutine that is borrowing a Buffer and then reenters THAT
+// Buffer — Buffer.WithBytes, Buffer.Size, Buffer.Destroy, or
+// NewSecretFromBuffer with it — is reported to onViolation with a
+// *NestedBorrowError, before the call is allowed to proceed. Operations on any
+// other Buffer or Secret are not violations and are not reported.
 //
 // A nil onViolation panics with the error, which is the right default: the
 // alternative is to return and hang.
@@ -200,64 +204,75 @@ func EnableBorrowGuard(onViolation BorrowViolationFunc) (restore func()) {
 // panicOnViolation is the default handler.
 func panicOnViolation(err *NestedBorrowError) { panic(err) }
 
-// guardEnterBorrow records that the current goroutine has taken a borrow, and
-// reports a violation first if it already held one.
+// currentFrame returns goroutine id's frame, or nil when it has none.
+func currentFrame(id uint64) *borrowFrame {
+	v, loaded := borrowFrames.Load(id)
+	if !loaded {
+		return nil
+	}
+	f, _ := v.(*borrowFrame)
+	return f
+}
+
+// guardEnterBorrow records that the current goroutine has borrowed b, and
+// reports a violation first if it was already borrowing b.
 //
 // Called only with the guard armed; the caller does the atomic check so the
 // disarmed path pays nothing beyond it.
-func guardEnterBorrow(op string) {
+func guardEnterBorrow(op string, b *Buffer) {
 	id, ok := goroutineID()
 	if !ok {
 		return
 	}
-	if v, loaded := borrowFrames.Load(id); loaded {
-		// reportBorrowViolation does not return, so there is no depth to
-		// increment past it: a second borrow on this goroutine IS the
-		// violation, not a state worth recording.
-		if f, isFrame := v.(*borrowFrame); isFrame && f.depth > 0 {
-			reportBorrowViolation(op, f.stack)
+	f := currentFrame(id)
+	if f != nil {
+		// reportBorrowViolation does not return, so a reentry is never
+		// recorded: it IS the violation, not a state worth tracking.
+		if h, held := f.lookup(b); held {
+			reportBorrowViolation(op, h.stack)
 		}
+	} else {
+		f = &borrowFrame{}
+		borrowFrames.Store(id, f)
 	}
-	borrowFrames.Store(id, &borrowFrame{depth: 1, stack: currentStack()})
+	f.held = append(f.held, heldBorrow{buf: b, stack: currentStack()})
 }
 
-// guardExitBorrow undoes guardEnterBorrow. Unbalanced calls — a borrow taken
-// before the guard was armed and released after — are ignored rather than
-// driven negative.
-func guardExitBorrow() {
+// guardExitBorrow undoes guardEnterBorrow for b. Unbalanced calls — a borrow
+// taken before the guard was armed and released after — are ignored.
+func guardExitBorrow(b *Buffer) {
 	id, ok := goroutineID()
 	if !ok {
 		return
 	}
-	v, loaded := borrowFrames.Load(id)
-	if !loaded {
+	f := currentFrame(id)
+	if f == nil {
 		return
 	}
-	f, isFrame := v.(*borrowFrame)
-	if !isFrame {
-		return
+	for i := len(f.held) - 1; i >= 0; i-- {
+		if f.held[i].buf == b {
+			f.held = append(f.held[:i], f.held[i+1:]...)
+			break
+		}
 	}
-	f.depth--
-	if f.depth <= 0 {
+	if len(f.held) == 0 {
 		borrowFrames.Delete(id)
 	}
 }
 
-// guardAssertNoBorrow reports a violation when the current goroutine enters a
-// purge-class operation while holding a borrow. Called before the exclusive
+// guardAssertNotBorrowed reports a violation when the current goroutine enters
+// an operation on b while borrowing b. Called before the operation takes b's
 // lock, which is the whole point — after it, there is nothing left to report
 // from.
-func guardAssertNoBorrow(op string) {
+func guardAssertNotBorrowed(op string, b *Buffer) {
 	id, ok := goroutineID()
 	if !ok {
 		return
 	}
-	v, loaded := borrowFrames.Load(id)
-	if !loaded {
-		return
-	}
-	if f, isFrame := v.(*borrowFrame); isFrame && f.depth > 0 {
-		reportBorrowViolation(op, f.stack)
+	if f := currentFrame(id); f != nil {
+		if h, held := f.lookup(b); held {
+			reportBorrowViolation(op, h.stack)
+		}
 	}
 }
 
@@ -331,8 +346,8 @@ func parseGoroutineID(header []byte) (uint64, bool) {
 // function that reports the first violation caught, if any.
 //
 // It is the one-line form of EnableBorrowGuard, and it exists because every
-// converted call site in go-qrdb#74 needs the same three things and gets them
-// wrong in the same three ways otherwise:
+// site that holds a borrow across a callee (go-qrdb#74, go-qrdb#145) needs the
+// same three things and gets them wrong in the same three ways otherwise:
 //
 //	func TestSomething(t *testing.T) {
 //		defer secure.GuardBorrows(t.Fatalf)()
@@ -349,8 +364,8 @@ func parseGoroutineID(header []byte) (uint64, bool) {
 //
 // The violating goroutine is ended rather than left to proceed, so its deferred
 // unlocks run and the process stays usable for the rest of the suite; a genuine
-// deadlock would leave the purge lock held for the life of the binary and every
-// later test blocked behind it, which is the failure this replaces.
+// deadlock would leave that goroutine blocked for the life of the binary and
+// the test waiting on it hung, which is the failure this replaces.
 func GuardBorrows(report func(format string, args ...any)) (stop func()) {
 	var caught atomic.Pointer[NestedBorrowError]
 	restore := EnableBorrowGuard(func(e *NestedBorrowError) {
@@ -360,8 +375,8 @@ func GuardBorrows(report func(format string, args ...any)) (stop func()) {
 	return func() {
 		restore()
 		if e := caught.Load(); e != nil && report != nil {
-			report("secure: this path took a NESTED BORROW, which deadlocks "+
-				"outside the guard: %v", e)
+			report("secure: this path reentered a Buffer it was borrowing, "+
+				"which deadlocks outside the guard: %v", e)
 		}
 	}
 }

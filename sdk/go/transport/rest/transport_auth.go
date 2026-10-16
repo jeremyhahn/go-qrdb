@@ -666,6 +666,19 @@ func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertReq
 	return &out, nil
 }
 
+// IssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal. Maps to POST /certs/delegate.
+func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDelegationRequest) (*transport.IssuedDelegation, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	var out transport.IssuedDelegation
+	if err := t.postJSONDecode(ctx, "IssueDelegation", "/certs/delegate", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // RevokeCert marks a certificate serial as revoked, and reports whether
 // the server held a certificate record for it. Maps to POST /certs/revoke.
 func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {

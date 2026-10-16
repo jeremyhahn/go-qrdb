@@ -76,6 +76,8 @@ func (f *failStorage) Delete(key []byte) error {
 	return f.inner.Delete(key)
 }
 
+func (f *failStorage) DeleteRange(start, end []byte) error { return f.inner.DeleteRange(start, end) }
+
 func (f *failStorage) List(prefix []byte) ([][]byte, error) {
 	if f.listErr != nil {
 		return nil, f.listErr

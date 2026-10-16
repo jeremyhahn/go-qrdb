@@ -1,6 +1,6 @@
 # Credentials — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 Named secrets the engine itself needs, with version history and a rotation
 grace period.
@@ -34,6 +34,12 @@ qrdb credential list
 ```
 
 `list` shows names only. It never shows values.
+
+`retrieve` prints the value on standard output, so it is in your terminal
+scrollback or your pipe from that point; that is the one place the value leaves
+protected memory on your side. Inside a Go program, use the SDK's
+`CredentialRetrieveBuffer` and `Destroy` the returned buffer when you are done
+with it; the former `[]byte` retrieve methods were removed on 2026-10-07.
 
 ## Common tasks
 

@@ -60,7 +60,7 @@ func TestE2E_CredentialRetrieve_Success(t *testing.T) {
 	srv.SetResponder("credential.Retrieve", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveResponse{Value: []byte("secret")})
 	})
-	val, err := tr.CredentialRetrieve(context.Background(), "key")
+	val, err := tr.retrieveBytes(context.Background(), "key")
 	if err != nil {
 		t.Fatalf("CredentialRetrieve: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestE2E_CredentialRetrieve_RPCError(t *testing.T) {
 	srv.SetResponder("credential.Retrieve", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("not found")
 	})
-	_, err := tr.CredentialRetrieve(context.Background(), "missing")
+	_, err := tr.retrieveBytes(context.Background(), "missing")
 	assertQuicRequestError(t, err)
 }
 
@@ -83,7 +83,7 @@ func TestE2E_CredentialRetrieve_UnmarshalError(t *testing.T) {
 	srv.SetResponder("credential.Retrieve", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, []byte("bad-proto")
 	})
-	_, err := tr.CredentialRetrieve(context.Background(), "key")
+	_, err := tr.retrieveBytes(context.Background(), "key")
 	if err == nil {
 		t.Fatal("expected error for bad proto unmarshal, got nil")
 	}

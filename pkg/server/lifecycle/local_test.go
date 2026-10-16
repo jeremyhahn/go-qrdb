@@ -21,21 +21,26 @@
 package lifecycle_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -147,34 +152,87 @@ func TestNewLocalStorage_OpenFailureNamesTheBackend(t *testing.T) {
 	}
 }
 
-// TestNewLocalStorage_PebbleRoutesThroughTheDataPlaneFS: when the caller
-// supplies a data-plane filesystem (the seal barrier's encfs in production),
-// every pebble file goes through it -- nothing is written to the real disk at
-// <dataDir>/pebble, which is what keeps an encrypted node's store off the
-// plaintext filesystem.
-func TestNewLocalStorage_PebbleRoutesThroughTheDataPlaneFS(t *testing.T) {
-	dataDir := t.TempDir()
-	memFS := vfs.NewMem()
+// TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor: given an
+// enabled at-rest encryptor, every on-disk backend writes through the same
+// barrier -- a key and value written through the store appear nowhere on the
+// real disk, and read back through it.
+func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) {
+	enc := atrest.New(newUnsealedBarrier(t))
+	key := []byte("localstore-at-rest-key")
+	value := []byte("localstore-at-rest-plaintext-value")
+	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile} {
+		t.Run(string(backend), func(t *testing.T) {
+			dataDir := t.TempDir()
+			stg, _, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.ObjstoreConfig{})
+			if err != nil {
+				t.Fatalf("NewLocalStorage(%s): %v", backend, err)
+			}
+			if err := stg.Set(key, value); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			got, err := stg.Get(key)
+			if err != nil || !bytes.Equal(got, value) {
+				t.Fatalf("Get = %q, %v; want %q", got, err, value)
+			}
+			if err := stg.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
 
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendPebble, dataDir, memFS, qrdbconfig.ObjstoreConfig{})
-	if err != nil {
-		t.Fatalf("NewLocalStorage(pebble, memFS): %v", err)
+			root, err := os.OpenRoot(dataDir)
+			if err != nil {
+				t.Fatalf("OpenRoot: %v", err)
+			}
+			defer func() { _ = root.Close() }()
+			files := 0
+			err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				raw, err := root.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				files++
+				if bytes.Contains(raw, key) || bytes.Contains(raw, value) {
+					t.Errorf("%s holds plaintext", path)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("WalkDir: %v", err)
+			}
+			if files == 0 {
+				t.Fatal("the store wrote no files to scan")
+			}
+		})
 	}
-	t.Cleanup(func() { _ = stg.Close() })
-	if pdb == nil {
-		t.Fatal("pebble backend returned no *pebble.DB handle")
-	}
+}
 
-	if _, err := os.Stat(filepath.Join(dataDir, "pebble")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pebble wrote to the real disk despite a data-plane FS (stat err = %v)", err)
-	}
-	entries, err := memFS.List(filepath.Join(dataDir, "pebble"))
+// newUnsealedBarrier returns an initialized, unsealed barrier over an
+// in-memory backend.
+func newUnsealedBarrier(t *testing.T) *seal.StorageBarrier {
+	t.Helper()
+	ctx := context.Background()
+	const passphrase = "localstore-at-rest-passphrase"
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte(passphrase))
 	if err != nil {
-		t.Fatalf("data-plane FS has no pebble directory: %v", err)
+		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("data-plane FS holds no pebble files")
+	barrier, err := seal.NewStorageBarrier(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "localstore-root-key", DeploymentID: 1}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
+	creds := seal.MustCredentials(ctx, []byte(passphrase))
+	if err := barrier.Initialize(ctx, creds); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if barrier.IsSealed() {
+		if err := barrier.Unseal(ctx, creds); err != nil {
+			t.Fatalf("Unseal: %v", err)
+		}
+	}
+	return barrier
 }
 
 // TestNewLocalStorage_ObjstoreDefaultsUnderDataDir pins the out-of-the-box

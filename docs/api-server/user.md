@@ -38,13 +38,14 @@ A URL scheme on `--server` picks the transport, so you rarely need
 |---|---|
 | REST | 63002 |
 | gRPC | 63003 |
-| QUIC | 63004 |
+| QUIC | 63004 (UDP) |
 | MCP | 63005 |
 | Unix | `/var/run/qrdbd/qrdbd.sock` |
 
-Plus, when enabled: MySQL 3306, PostgreSQL 5432, and a per-database etcd
-listener (no server default; `qrdb database create --etcd` uses
-`localhost:2379`).
+REST and gRPC are on by default; QUIC, MCP and Unix are off until enabled. The
+REST port also serves HTTP/3 on UDP. Plus, when enabled: MySQL 3306, PostgreSQL
+5432, and a per-database etcd listener at the database's `listen_addr` (no
+daemon default; `qrdb database create --etcd` suggests `localhost:2379`).
 
 ## Scoping your requests
 

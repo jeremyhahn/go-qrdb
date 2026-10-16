@@ -15,6 +15,7 @@
 package enrollconv
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -64,6 +65,34 @@ func TestEnrolledCert_BringYourOwn_SerialEmpty(t *testing.T) {
 	}
 	if got.Thumbprint != "thumb-byoc" {
 		t.Errorf("Thumbprint = %q, want thumb-byoc", got.Thumbprint)
+	}
+}
+
+func TestIssueDelegationRequest(t *testing.T) {
+	got := IssueDelegationRequest(&transport.IssueDelegationRequest{
+		Principal: "billing", Scope: []string{"kv:get", "kv:put"}, CSRPEM: "csr-pem", TTL: "30m",
+	})
+	if got.GetPrincipal() != "billing" || !slices.Equal(got.GetScope(), []string{"kv:get", "kv:put"}) ||
+		got.GetCsrPem() != "csr-pem" || got.GetTtl() != "30m" {
+		t.Errorf("IssueDelegationRequest() = %+v", got)
+	}
+	if empty := IssueDelegationRequest(&transport.IssueDelegationRequest{}); empty.GetTtl() != "" || len(empty.GetScope()) != 0 {
+		t.Errorf("IssueDelegationRequest(empty) = %+v, want every field empty", empty)
+	}
+}
+
+func TestIssuedDelegation(t *testing.T) {
+	notAfter := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
+	got := IssuedDelegation(&pb.IssuedDelegationResponse{
+		TenantId: "acme", Principal: "billing", Scope: []string{"kv:get"},
+		CertPem: "cert-pem", Serial: "abc", NotAfter: notAfter.Format(time.RFC3339),
+	})
+	if got.TenantID != "acme" || got.Principal != "billing" || !slices.Equal(got.Scope, []string{"kv:get"}) ||
+		got.CertPEM != "cert-pem" || got.Serial != "abc" || !got.NotAfter.Equal(notAfter) {
+		t.Errorf("IssuedDelegation() = %+v", got)
+	}
+	if nilResp := IssuedDelegation(nil); nilResp.Principal != "" || !nilResp.NotAfter.IsZero() {
+		t.Errorf("IssuedDelegation(nil) = %+v, want the zero value", nilResp)
 	}
 }
 

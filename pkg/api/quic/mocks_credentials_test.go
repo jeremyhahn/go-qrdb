@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -49,8 +50,7 @@ func (m *mockCredentialService) CredentialStore(ctx context.Context, name string
 	return nil
 }
 
-// CredentialRetrieve delegates to retrieveFn or returns an empty value.
-func (m *mockCredentialService) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+func (m *mockCredentialService) retrieveValue(ctx context.Context, name string) ([]byte, error) {
 	if m.retrieveFn != nil {
 		return m.retrieveFn(ctx, name)
 	}
@@ -101,12 +101,27 @@ func (m *mockCredentialService) CredentialRotate(ctx context.Context, name strin
 	}, nil
 }
 
-// CredentialRetrieveVersion delegates to retrieveVersionFn or returns an empty value.
-func (m *mockCredentialService) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (m *mockCredentialService) retrieveVersionValue(ctx context.Context, name string, version uint64) ([]byte, error) {
 	if m.retrieveVersionFn != nil {
 		return m.retrieveVersionFn(ctx, name, version)
 	}
 	return []byte{}, nil
+}
+
+func (m *mockCredentialService) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	v, err := m.retrieveValue(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
+}
+
+func (m *mockCredentialService) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	v, err := m.retrieveVersionValue(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 
 // CredentialListVersions delegates to listVersionsFn or returns an empty slice.

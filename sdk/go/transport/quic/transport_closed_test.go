@@ -60,7 +60,7 @@ func TestQUICCredentials_AfterClose(t *testing.T) {
 	if _, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CredentialRotate: %v", err)
 	}
-	if _, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{}); !errors.As(err, &ce) {
+	if _, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CredentialRetrieveVersion: %v", err)
 	}
 	if _, err := tr.CredentialListVersions(context.Background(), &transport.CredentialListVersionsRequest{}); !errors.As(err, &ce) {

@@ -38,13 +38,18 @@ func (k *KVStateMachine) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) e
 	return k.restoreLessor()
 }
 
-// GetHash delegates hash computation to the backend, between batches: it
-// waits for a batch Update is applying, so the hash is of the state after
-// the whole batch.
+// GetHash computes an xxhash64 over the replicated records, between
+// batches: it waits for a batch Update is applying, so the hash is of the
+// state after the whole batch. The applied-index marker is left out: it
+// changes with every entry, and an entry that writes nothing (a lease
+// keep-alive) must leave the hash unchanged.
 func (k *KVStateMachine) GetHash() (uint64, error) {
 	k.batch.Lock()
 	defer k.batch.Unlock()
-	return k.backend.GetHash()
+	return xxhashRecords(func(fn RecordVisitor) error {
+		_, err := k.visitState(fn)
+		return err
+	})
 }
 
 // Close delegates resource cleanup to the backend.

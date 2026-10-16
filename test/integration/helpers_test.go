@@ -444,6 +444,9 @@ const nodeStopTimeout = 30 * time.Second
 // awaitNodeExit, which is bounded and reaps through the same Daemon.
 func startNode(t *testing.T, binary string, args []string, prefix string, tee ...io.Writer) *exec.Cmd {
 	t.Helper()
+	// Start gives a listener the test left at its fixed default port a
+	// reserved one (qrdbdharness.ReserveListenerPorts), so it cannot collide
+	// with any other daemon on the host doing the same.
 	out := io.MultiWriter(append([]io.Writer{&logWriter{t: t, prefix: prefix}}, tee...)...)
 	cmd := spawnNode(t, binary, args, out)
 	t.Cleanup(func() {
@@ -1175,6 +1178,26 @@ func waitForKV(t *testing.T, ca *testCA, port int, key string, expected []byte, 
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out after %v waiting for key %q to equal %q", timeout, key, expected)
+}
+
+// awaitClusterCondition runs check until it succeeds, failing the test with
+// its last error once wait has passed.
+func awaitClusterCondition(t *testing.T, wait time.Duration, what string, check func() error) {
+	t.Helper()
+	poll := time.NewTicker(300 * time.Millisecond)
+	defer poll.Stop()
+	expired := time.After(wait)
+	for {
+		err := check()
+		if err == nil {
+			return
+		}
+		select {
+		case <-poll.C:
+		case <-expired:
+			t.Fatalf("no %s after %v: %v", what, wait, err)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2705,20 +2728,14 @@ func iraftAPIPost(t *testing.T, client *http.Client, rawURL string, body interfa
 // createRaftTenant creates an IsolationRaft tenant with barrier_auto_unseal
 // through the real tenant-onboarding API (POST /v1/tenants), which now
 // requires every tenant's first admin -- admin_username plus admin_csr_pem
-// or admin_cert_pem -- at creation time, not as a follow-up call. The
-// onboarded admin identity's CSR is generated and discarded here: callers
-// provision their own "db-admin" role and bound user for the mTLS identity
-// they actually authenticate with, exactly as provisionTenantWithSQLReader
-// does for the same requirement in sql_query_tenant_scope_test.go.
-// createRaftTenant creates an IsolationRaft tenant with barrier_auto_unseal
-// through the real tenant-onboarding API (POST /v1/tenants), which now
-// requires every tenant's first admin -- admin_username plus admin_csr_pem
 // or admin_cert_pem -- at creation time, not as a follow-up call. It returns
 // the onboarded admin's private key alongside the response body: the system
 // tenant can no longer provision records inside another tenant's IAM at all
 // (owner ruling, 2026-10-01), so a caller that needs a "db-admin" role and
 // bound user in the new tenant must authenticate AS this admin (see
 // raftTenantAdminClient) to create them, not as the system admin.
+//
+// A refusal the server marks retryable is retried (postRetryingRetryable).
 func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantID, name string) (adminKeyPEM, body []byte, status int) {
 	t.Helper()
 
@@ -2726,7 +2743,7 @@ func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantI
 	if err != nil {
 		t.Fatalf("createRaftTenant: certtest.NewCSR: %v", err)
 	}
-	body, status = iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+	body, status = postRetryingRetryable(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
 		map[string]interface{}{
 			"id":                  tenantID,
 			"name":                name,
@@ -2736,6 +2753,29 @@ func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantI
 			"admin_csr_pem":       string(adminCSRPEM),
 		})
 	return adminKeyPEM, body, status
+}
+
+// retryableCreateWindow bounds how long postRetryingRetryable retries.
+const retryableCreateWindow = 60 * time.Second
+
+// postRetryingRetryable POSTs body to rawURL and returns the first answer
+// that is not the server's typed "retry": 503, a consensus group between
+// leaders or a create rolled back inside the server's deadline, or 504, a
+// consensus step that timed out. After retryableCreateWindow it returns the
+// last retryable answer. Retrying cannot mask a create that half-happened:
+// one that committed before its answer timed out, or was undone part-way and
+// retired its id, answers the retry with 409.
+func postRetryingRetryable(t *testing.T, client *http.Client, rawURL string, body interface{}) ([]byte, int) {
+	t.Helper()
+	deadline := time.Now().Add(retryableCreateWindow)
+	for {
+		respBody, status := iraftAPIPost(t, client, rawURL, body)
+		if (status != http.StatusServiceUnavailable && status != http.StatusGatewayTimeout) || !time.Now().Before(deadline) {
+			return respBody, status
+		}
+		t.Logf("POST %s refused for now (%d), retrying: %s", rawURL, status, respBody)
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // raftTenantAdminClient builds an mTLS client for the admin createRaftTenant

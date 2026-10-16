@@ -18,14 +18,16 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
-// refusalDetail returns the structured form of a replica refusal err carries
-// -- a node that holds no replica of the database, or a follower refusing a
-// write -- as a google.rpc.ErrorInfo detail. Any other error carries none.
+// refusalDetail returns the structured refusal err carries (errclass.Refusal)
+// -- a node that holds no replica of the database, a follower refusing a
+// write, a conditional factor add whose condition failed -- as a
+// google.rpc.ErrorInfo detail. Any other error carries none.
 func refusalDetail(err error) *errdetails.ErrorInfo {
-	reason, md, ok := replicaforward.Refusal(err)
+	reason, md, ok := errclass.Refusal(err)
 	if !ok {
 		return nil
 	}

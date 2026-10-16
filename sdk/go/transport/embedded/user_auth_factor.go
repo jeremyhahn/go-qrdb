@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -100,10 +101,11 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 		return nil, &transport.FactorNotFoundError{}
 	}
 	domain := userAuthRecordToDomain(req, req.UserID)
-	if err := t.userAuthFactorSvc.Add(ctx, req.UserID, domain); err != nil {
+	version, err := service.AddAuthFactor(ctx, t.userAuthFactorSvc, req.UserID, domain, req.Condition())
+	if err != nil {
 		return nil, mapFactorError(err)
 	}
-	return &transport.AuthFactorAddResponse{Factor: domainToUserAuthRecord(domain)}, nil
+	return &transport.AuthFactorAddResponse{Factor: domainToUserAuthRecord(domain), FactorSetVersion: version}, nil
 }
 
 // ListAuthFactors returns every factor (active and revoked) for a user.
@@ -123,13 +125,14 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 	if req == nil {
 		return nil, &transport.FactorNotFoundError{}
 	}
-	factors, err := t.userAuthFactorSvc.List(ctx, req.UserID)
+	factors, version, err := service.ListAuthFactors(ctx, t.userAuthFactorSvc, req.UserID)
 	if err != nil {
 		return nil, mapFactorError(err)
 	}
 	out := &transport.AuthFactorListResponse{
-		Factors: make([]transport.AuthFactorRecord, 0, len(factors)),
-		Total:   len(factors),
+		Factors:          make([]transport.AuthFactorRecord, 0, len(factors)),
+		Total:            len(factors),
+		FactorSetVersion: version,
 	}
 	for _, f := range factors {
 		out.Factors = append(out.Factors, domainToUserAuthRecord(f))
@@ -184,6 +187,31 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	return &transport.AuthFactorRemoveResponse{Status: "revoked"}, nil
 }
 
+// DeleteAuthFactor hard-deletes a factor together with its credential, SPKI
+// and user index entries, so the credential can be bound again. It rolls
+// back an add; a revoked factor is refused and stays revoked.
+func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
+	if err := t.gate("DeleteAuthFactor"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "DeleteAuthFactor"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.userAuthFactorSvc == nil {
+		return nil, &MissingUserAuthFactorServiceError{}
+	}
+	if req == nil || req.FactorID == "" {
+		return nil, &transport.FactorNotFoundError{}
+	}
+	if err := t.userAuthFactorSvc.Delete(ctx, req.FactorID, req.Force); err != nil {
+		return nil, mapFactorError(err)
+	}
+	return &transport.AuthFactorDeleteResponse{Status: "deleted"}, nil
+}
+
 // RotateAuthFactor atomically adds the new factor and revokes the old one.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
 	if err := t.gate("RotateAuthFactor"); err != nil {
@@ -200,6 +228,9 @@ func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFac
 	}
 	if req == nil || req.OldFactorID == "" {
 		return nil, &transport.FactorNotFoundError{FactorID: ""}
+	}
+	if err := req.Validate(); err != nil {
+		return nil, mapFactorError(err)
 	}
 	newDomain := userAuthRecordToDomain(&req.NewFactor, req.NewFactor.UserID)
 	if err := t.userAuthFactorSvc.Rotate(ctx, req.OldFactorID, newDomain); err != nil {

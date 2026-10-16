@@ -227,6 +227,10 @@ func TestRESTUserAuthFactor_AllMethods_Closed(t *testing.T) {
 		{"RemoveAuthFactor", func() error {
 			return func() error { _, e := rt.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{}); return e }()
 		}},
+		{"DeleteAuthFactor", func() error {
+			_, e := rt.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{})
+			return e
+		}},
 		{"RotateAuthFactor", func() error {
 			_, e := rt.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{})
 			return e

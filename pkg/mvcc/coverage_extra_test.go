@@ -48,7 +48,10 @@ func (e *errGetMemStorage) Get(key []byte) ([]byte, error) {
 
 func (e *errGetMemStorage) Set(key, value []byte) error { return e.inner.Set(key, value) }
 func (e *errGetMemStorage) Delete(key []byte) error     { return e.inner.Delete(key) }
-func (e *errGetMemStorage) Batch() storage.Batch        { return e.inner.Batch() }
+func (e *errGetMemStorage) DeleteRange(start, end []byte) error {
+	return e.inner.DeleteRange(start, end)
+}
+func (e *errGetMemStorage) Batch() storage.Batch { return e.inner.Batch() }
 func (e *errGetMemStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	return e.inner.NewIterator(opts)
 }

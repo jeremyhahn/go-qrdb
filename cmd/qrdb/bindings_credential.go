@@ -18,8 +18,25 @@ import (
 	"context"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// credentialBindingValue converts a retrieved credential to the string the
+// Wails frontend contract carries and destroys buf on every path. The frontend
+// bridge serialises the value to JSON for the webview, so this is the output
+// boundary where the credential leaves protected memory; nothing before it
+// holds the value in plain memory.
+func credentialBindingValue(buf *secure.Buffer) (string, error) {
+	defer buf.Destroy()
+	var value string
+	err := buf.WithBytes(func(b []byte) error {
+		//secure:unwiped the string a bound Retrieve method returns to the Wails bridge, which JSON-encodes it for the webview after the method returns
+		value = string(b)
+		return nil
+	})
+	return value, err
+}
 
 // CredentialBinding exposes named-credential submission, storage, and
 // versioned-rotation management to the Wails frontend, mirroring the SDK
@@ -81,13 +98,18 @@ func (b *CredentialBinding) Retrieve(name string) (string, error) {
 		b.logger.Error("Retrieve failed", "error", err)
 		return "", err
 	}
-	value, err := cl.Credentials().CredentialRetrieve(context.Background(), name)
+	buf, err := cl.Credentials().CredentialRetrieveBuffer(context.Background(), name)
+	if err != nil {
+		b.logger.Error("Retrieve failed", "name", name, "error", err)
+		return "", err
+	}
+	value, err := credentialBindingValue(buf)
 	if err != nil {
 		b.logger.Error("Retrieve failed", "name", name, "error", err)
 		return "", err
 	}
 	b.logger.Debug("Retrieve completed", "name", name)
-	return string(value), nil
+	return value, nil
 }
 
 // List returns the sorted list of every stored credential name. Values are
@@ -187,7 +209,7 @@ func (b *CredentialBinding) RetrieveVersion(name string, version uint64) (string
 		b.logger.Error("RetrieveVersion failed", "error", err)
 		return "", err
 	}
-	resp, err := cl.Credentials().CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	buf, err := cl.Credentials().CredentialRetrieveVersionBuffer(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    name,
 		Version: version,
 	})
@@ -195,8 +217,13 @@ func (b *CredentialBinding) RetrieveVersion(name string, version uint64) (string
 		b.logger.Error("RetrieveVersion failed", "name", name, "version", version, "error", err)
 		return "", err
 	}
+	value, err := credentialBindingValue(buf)
+	if err != nil {
+		b.logger.Error("RetrieveVersion failed", "name", name, "version", version, "error", err)
+		return "", err
+	}
 	b.logger.Debug("RetrieveVersion completed", "name", name, "version", version)
-	return string(resp.Value), nil
+	return value, nil
 }
 
 // GCExpired reaps historical versions whose grace period has elapsed for

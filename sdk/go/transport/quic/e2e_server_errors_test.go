@@ -423,7 +423,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("credential.RetrieveVersion", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "credential.RetrieveVersion", "err")
-		if _, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1}); err == nil {
+		if _, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1}); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -667,6 +667,13 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "userauthfactor.Remove", "err")
 		if _, err := tr.RemoveAuthFactor(context.Background(), &transport.AuthFactorRemoveRequest{FactorID: "f"}); err == nil {
+			t.Fatal("expected err")
+		}
+	})
+	t.Run("userauthfactor.Delete", func(t *testing.T) {
+		srv, tr := startE2EServer(t)
+		serverErr(srv, "userauthfactor.Delete", "err")
+		if _, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "f"}); err == nil {
 			t.Fatal("expected err")
 		}
 	})

@@ -55,7 +55,7 @@
 // which its own documentation records as a deliberate, scoped gap (sealing
 // is a one-time cost per value, not a per-request one the way opening is).
 // There is no process-wide purge lock in this package any more — see
-// borrowguard.go for what a "nested borrow" now means without one.
+// "Nesting" below for what may run inside a borrow without one.
 //
 // # Types
 //
@@ -85,10 +85,11 @@
 //     not reuse the slice after the call.
 //  6. Read the material only through Buffer.WithBytes, which is the only
 //     accessor go-enclave offers. It holds the borrow across the read, which
-//     is what makes it safe against a concurrent Destroy of the SAME Buffer
-//     (see below). Never call back into this package from inside a
-//     WithBytes callback — a nested call on the SAME object deadlocks, and
-//     the guard treats any nested call as a violation regardless of object.
+//     is what makes it safe against a concurrent Destroy of the SAME Buffer.
+//     Hold that borrow across the callee the material is for — a barrier, a
+//     KEK, a DEKProvider, a verifier — so the plaintext it receives IS the
+//     protected buffer, never a heap copy of it. The nesting rule that makes
+//     this safe is below.
 //  7. When the borrow must end in a caller-owned []byte because the calling
 //     signature says []byte, use CopyOut rather than writing the copy by
 //     hand. It holds ONE borrow across the whole copy and refuses an empty
@@ -96,20 +97,47 @@
 //  8. Arm the borrow guard in the tests for any path that reads protected
 //     memory: `defer secure.GuardBorrows(t.Fatalf)()`. See below.
 //
+// # Nesting: what may run inside a borrow (go-qrdb#145)
+//
+// A borrow holds only its own enclave's lock. Each MemoryEnclave and
+// SealedEnclave has an independent lock, so from inside a WithBytes callback
+// it is safe to allocate, open, borrow and destroy any OTHER Buffer or Secret.
+// A callee handed the borrowed bytes may therefore use protected memory of its
+// own, and the caller need not know whether it does.
+//
+// The one thing that may not happen inside a borrow is reentering the
+// borrowed Buffer itself — its WithBytes, Size or Destroy, or
+// NewSecretFromBuffer with it. That is the self-deadlock every RWMutex
+// has: the goroutine blocks on a lock only it could release.
+//
+// # Output direction: allocate outside, write in place inside (go-xkms#291)
+//
+// When a callee PRODUCES secret material — a decrypt, an unwrap, a combine —
+// the protected destination is allocated BEFORE the borrow that feeds the
+// callee, and the callee writes into it in place inside that borrow. The
+// output then never exists outside protected memory, and the destination's
+// own borrow nests legitimately because it is a different object. Where the
+// callee's API is append-shaped (cipher.AEAD.Open(dst[:0], ...)), the caller
+// checks that the result aliases the destination it allocated, and refuses
+// the result if the callee reallocated onto the heap. copyFrozenToWritable in
+// this package and the root-key unwrap in pkg/seal are the reference
+// implementations.
+//
 // # The borrow guard
 //
-// Rule 6 is the one that cannot be enforced by reading, because whether a
-// callback is safe is a question about everything it can reach transitively,
-// through interfaces the caller does not own. A violation on the SAME
-// object produces no error and no panic — the goroutine blocks on itself
-// forever and the only symptom is a job that hangs until its wall-clock
-// limit.
+// The nesting rule is the one that cannot be enforced by reading, because
+// whether a callback can reach the borrowed Buffer is a question about
+// everything it can reach transitively, through interfaces the caller does
+// not own. A violation produces no error and no panic — the goroutine blocks
+// on itself forever and the only symptom is a job that hangs until its
+// wall-clock limit.
 //
-// GuardBorrows and EnableBorrowGuard arm a detector that answers "does THIS
-// goroutine already hold a borrow" at every constructor/Destroy-shaped and
-// borrow-shaped entry point, and reports a *NestedBorrowError before the
-// call is allowed to proceed. A conversion that reaches a nested call then
-// fails one test naming both sites, instead of risking a hang.
+// GuardBorrows and EnableBorrowGuard arm a detector that answers "is THIS
+// goroutine already borrowing THIS Buffer" at every entry point that borrows
+// or destroys one, and reports a *NestedBorrowError before the call is allowed
+// to proceed. A path that reenters a borrowed Buffer then fails one test
+// naming both sites, instead of hanging. Operations on other objects are not
+// violations and the guard does not report them.
 //
 // It is opt-in and off by default: arming it costs a runtime.Stack call per
 // borrow, which is too much for the DEK read path. Disarmed, each

@@ -346,9 +346,12 @@ type covMockUserAuthFactorSvc struct {
 	getFn      func(ctx context.Context, factorID string) (*auth.AuthFactor, error)
 	lookupFn   func(ctx context.Context, t auth.AuthFactorType, key []byte) (*auth.AuthFactor, error)
 	removeFn   func(ctx context.Context, factorID string, force bool) error
+	deleteFn   func(ctx context.Context, factorID string, force bool) error
 	rotateFn   func(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error
 	relabelFn  func(ctx context.Context, factorID, label string) error
 	markUsedFn func(ctx context.Context, factorID string, ts time.Time) error
+	condFn     func(ctx context.Context, userID uint64, factor *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error)
+	versionFn  func(ctx context.Context, userID uint64) (uint64, error)
 }
 
 var _ service.UserAuthFactorServicer = (*covMockUserAuthFactorSvc)(nil)
@@ -389,6 +392,12 @@ func (m *covMockUserAuthFactorSvc) Remove(ctx context.Context, factorID string, 
 	}
 	return nil
 }
+func (m *covMockUserAuthFactorSvc) Delete(ctx context.Context, factorID string, force bool) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, factorID, force)
+	}
+	return nil
+}
 func (m *covMockUserAuthFactorSvc) Rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error {
 	if m.rotateFn != nil {
 		return m.rotateFn(ctx, oldID, newFactor)
@@ -408,6 +417,22 @@ func (m *covMockUserAuthFactorSvc) MarkUsed(ctx context.Context, factorID string
 		return m.markUsedFn(ctx, factorID, ts)
 	}
 	return nil
+}
+
+func (m *covMockUserAuthFactorSvc) AddConditional(ctx context.Context, userID uint64, factor *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error) {
+	if m.condFn != nil {
+		return m.condFn(ctx, userID, factor, cond)
+	}
+	factor.ID = "f-001"
+	factor.RegisteredAt = time.Now()
+	return 1, nil
+}
+
+func (m *covMockUserAuthFactorSvc) FactorSetVersion(ctx context.Context, userID uint64) (uint64, error) {
+	if m.versionFn != nil {
+		return m.versionFn(ctx, userID)
+	}
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1729,8 +1754,8 @@ func TestCovHandleAuthFactorRevoke_ServiceError(t *testing.T) {
 func TestCovUserAuthFactorTools_Registration(t *testing.T) {
 	svc := newCovMockUserAuthFactorSvc()
 	tools := userAuthFactorTools(svc, nil)
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("expected 8 tools, got %d", len(tools))
 	}
 }
 

@@ -237,10 +237,8 @@ func TestAcquire_TwoPartyDeadlock_NewestRequestIsVictimAndReleased(t *testing.T)
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
 	require.NoError(t, b.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0))
 
-	base := waitersNow(t)
 	aDone := acquireAsync(a, tbl, []string{keyB}, ModeExclusive, 5*time.Second)
 	waitQueued(t, tbl, keyB, 2)
-	waitWaiting(t, base+1)
 
 	err := b.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 5*time.Second)
 	var dl *DeadlockError
@@ -253,6 +251,37 @@ func TestAcquire_TwoPartyDeadlock_NewestRequestIsVictimAndReleased(t *testing.T)
 	assert.False(t, b.Holds(keyB, ModeExclusive))
 	var released *OwnerReleasedError
 	require.ErrorAs(t, b.Acquire(context.Background(), tbl, []string{keyC}, ModeShared, 0), &released)
+}
+
+// Both requests of a cycle can check for it after both have enqueued, and
+// both then find it. Only the one whose edge is newest -- the one that closed
+// the cycle -- is its victim; the older one waits and is granted.
+func TestAcquire_TwoPartyDeadlock_BothCheckingAfterward_OnlyTheNewestIsVictim(t *testing.T) {
+	s := newStack(t)
+	tbl := s.table(t)
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
+	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
+
+	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
+	require.NoError(t, b.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0))
+
+	tblA, gateA := gatedTable(t, s)
+	tblB, gateB := gatedTable(t, s)
+	aDone := acquireAsync(a, tblA, []string{keyB}, ModeExclusive, 5*time.Second)
+	mustReach(t, gateA, "the older request")
+	bDone := acquireAsync(b, tblB, []string{keyA}, ModeExclusive, 5*time.Second)
+	mustReach(t, gateB, "the newer request")
+
+	// Both requests have enqueued, so the older request's check finds the
+	// cycle too.
+	close(gateA.proceed)
+	close(gateB.proceed)
+
+	var dl *DeadlockError
+	require.ErrorAs(t, mustReturn(t, bDone, "the newer request"), &dl)
+	require.NoError(t, mustReturn(t, aDone, "the older request"), "one victim per cycle")
+	assert.True(t, a.Holds(keyB, ModeExclusive))
+	assert.Equal(t, []string{a.ID() + "/x"}, queueOwners(t, tbl, keyB))
 }
 
 // Both requests of a two-party cycle have enqueued before either detector
@@ -348,12 +377,10 @@ func TestAcquire_ThreePartyDeadlock_IsDetected(t *testing.T) {
 	require.NoError(t, b.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0))
 	require.NoError(t, c.Acquire(context.Background(), tbl, []string{keyC}, ModeExclusive, 0))
 
-	base := waitersNow(t)
 	aDone := acquireAsync(a, tbl, []string{keyB}, ModeExclusive, 5*time.Second)
 	waitQueued(t, tbl, keyB, 2)
 	bDone := acquireAsync(b, tbl, []string{keyC}, ModeExclusive, 5*time.Second)
 	waitQueued(t, tbl, keyC, 2)
-	waitWaiting(t, base+2)
 
 	var dl *DeadlockError
 	require.ErrorAs(t, c.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 5*time.Second), &dl)
@@ -370,10 +397,8 @@ func TestAcquire_UpgradeDeadlock_IsDetected(t *testing.T) {
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
 	require.NoError(t, b.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
-	base := waitersNow(t)
 	aDone := acquireAsync(a, tbl, []string{keyA}, ModeExclusive, 5*time.Second)
 	waitQueued(t, tbl, keyA, 3)
-	waitWaiting(t, base+1)
 
 	var dl *DeadlockError
 	require.ErrorAs(t, b.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 5*time.Second), &dl)

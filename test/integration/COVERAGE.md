@@ -62,7 +62,9 @@ each of which drives embedded directly through `sdk/go/node`'s in-process
 `*sdk.Client` instead of the CLI binary — forwarding because its behavior
 differs for an embedded caller (no network hop to itself), api-server
 because it is the one feature whose job is to prove behavioral parity
-across every transport the server hosts, embedded included. A command's
+across every transport the server hosts, embedded included. auth-factors'
+conditional add is driven over embedded the same way, and only that part
+of the feature is. A command's
 `_PerProtocol` test passing is not evidence the command works over
 embedded; closing this gap for a given feature means adding a dedicated
 embedded subtest the way those two files do, not widening `multiProtocols`
@@ -76,7 +78,7 @@ itself (it is, deliberately, the CLI-selectable set).
 | [transactions](../../docs/transactions/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `tx_cli_test.go` is `_PerProtocol`. `sql_transaction_test.go` tests MySQL-wire transaction semantics (deadlock detection), a different protocol axis, not a qrdb-transport gap. |
 | [guarded-swap](../../docs/guarded-swap/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `feature_gate_cluster_test.go`'s `TestCluster_FeatureGateActivatesGuardedWrites_CLI_PerProtocol` drives the post-drop guarded-write refusal over every remote transport; the three-node activation/drop-fence correctness suite itself (`TestCluster_FeatureGateActivatesGuardedWrites`) stays REST-only since the transport is not its axis. |
 | [watch](../../docs/watch/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`, plus an MCP-specific no-loss replay case. |
-| [leases](../../docs/leases/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `lease_cli_test.go` is `_PerProtocol`. `lease_binding_test.go`'s three-node restart-survival cases are REST only. |
+| [leases](../../docs/leases/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `lease_cli_test.go` is `_PerProtocol`, including keep-alive past the granted TTL and expiry once renewals stop. `lease_binding_test.go`'s three-node restart-survival cases and `lease_keepalive_test.go`'s leader-failover case are REST only. etcd keep-alive and expiry are `TestEtcd_LeaseKeepAliveAndExpiry` in `etcd_test.go`. |
 | [distributed-locks](../../docs/distributed-locks/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
 | [coordination](../../docs/coordination/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `TestCoordinator_SameOnEveryTransport` (`sdk/go/conformance/coordination_parity_test.go`) drives Get/Put/CompareAndSwap/AcquireLease/Watch through `Client.Coordination()` on every transport, including embedded, across the backend/mode grid. `coordination_sdk_test.go` (the `make integration-test-coordination` target) drives the same SDK `Client.Coordination()` surface over the shared multi-protocol node. Coordination is a client-side composition over leases/transactions/watch with deliberately no CLI surface (`docs/coordination/cli.md`), so this is SDK-level coverage rather than a CLI integration test. |
 | [secondary-indexes](../../docs/secondary-indexes/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `index_cli_test.go` is `_PerProtocol`. |
@@ -121,8 +123,8 @@ itself (it is, deliberately, the CLI-selectable set).
 | [credentials](../../docs/credentials/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
 | [key-wrapping](../../docs/key-wrapping/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `key_wrapping_cli_test.go` is `_PerProtocol`: the encrypted-backup envelope round trip (provider recorded and shown by `backup get`, stored key reference resolving on restore, an override naming the right key accepted and the wrong key refused as a decryption failure) and the refusals (unregistered provider, path or `..` instead of a bare key name, missing and wrong-length key files). The offline boot-time restore of an encrypted backup is `backup_restore_test.go`. |
 | [tenant-dek](../../docs/tenant-dek/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `dek_cli_test.go` is `_PerProtocol`. `dek_test.go`'s cluster-replication and restart-survival suites drive REST only. |
-| [identity-rbac](../../docs/identity-rbac/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `roles_cli_test.go`, `users_cli_test.go`, `invitation_cli_test.go` are `_PerProtocol`. |
-| [auth-factors](../../docs/auth-factors/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `auth_cli_test.go` is `_PerProtocol`. `test/integration/auth/factors_test.go` additionally drives the factor-lookup path's REST/gRPC/QUIC/MCP wire encodings directly (in-process, no CLI, no Unix). |
+| [identity-rbac](../../docs/identity-rbac/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `roles_cli_test.go`, `users_cli_test.go`, `invitation_cli_test.go` are `_PerProtocol`. `identity_hydrator_test.go` is embedded only: it boots an in-process node with `node.WithIdentityHydrator` and asserts the Subject the login ceremony returns and its bearer resolves to, because the ceremony is served by the embedded transport alone and a hydrator is a Go value no spawned `qrdbd` can take. |
+| [auth-factors](../../docs/auth-factors/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `auth_cli_test.go` is `_PerProtocol`. `auth_factor_condition_cli_test.go` drives the conditional add (one-time claim, expected version, N racing claims) through the CLI per protocol and, for **E**, through `sdk/go/node`'s in-process client; the rest of the lifecycle has no embedded coverage. `test/integration/auth/factors_test.go` additionally drives the factor-lookup path's REST/gRPC/QUIC/MCP wire encodings directly (in-process, no CLI, no Unix). |
 | [audit](../../docs/audit/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
 | [rate-limit](../../docs/rate-limit/) | — | — | — | — | — | — | **Gap.** No integration test. |
 | [attested-caller](../../docs/attested-caller/) | — | — | — | — | — | — | **Gap.** No integration test. |

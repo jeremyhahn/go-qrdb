@@ -100,13 +100,95 @@ func NewTenantSharedKVStore(barrier *TenantBarrier, shared kvstore.KVStore) (kvs
 		shared:  shared,
 		prefix:  TenantSharedNamespace(barrier.TenantID()),
 	}
-	if atomicShared, ok := shared.(kvstore.AtomicKVStore); ok {
-		return &atomicTenantSharedKVStore{
-			tenantSharedKVStore: base,
-			shared:              atomicShared,
+	atomicShared, ok := shared.(kvstore.AtomicKVStore)
+	if !ok {
+		return base, nil
+	}
+	atomicStore := &atomicTenantSharedKVStore{
+		tenantSharedKVStore: base,
+		shared:              atomicShared,
+	}
+	if batchShared, ok := shared.(kvstore.MultiGuardedBatchKVStore); ok {
+		return &batchTenantSharedKVStore{
+			atomicTenantSharedKVStore: atomicStore,
+			batch:                     batchShared,
 		}, nil
 	}
-	return base, nil
+	return atomicStore, nil
+}
+
+// batchTenantSharedKVStore is the tenant IAM wrapper over a shared store that
+// can also apply a multi-guarded batch in one proposal. Like
+// atomicTenantSharedKVStore it is a separate type so the
+// kvstore.MultiGuardedBatchKVStore assertion answers honestly: a shared store
+// without a transaction plane yields a wrapper that does not claim the
+// capability, and its caller fails closed instead of writing key by key.
+type batchTenantSharedKVStore struct {
+	*atomicTenantSharedKVStore
+	batch kvstore.MultiGuardedBatchKVStore
+}
+
+// PutAllIfUnchanged applies every write only while guardKey still decrypts to
+// guardValue (absent when guardValue is nil). It is PutAllIfAllUnchanged with
+// one guard.
+func (s *batchTenantSharedKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
+}
+
+// PutAllIfAllUnchanged applies every write, namespaced and encrypted with the
+// tenant DEK, only while every guard still holds: a nil Value means the key is
+// absent, a non-nil Value means the stored value DECRYPTS to exactly Value.
+//
+// Each present-value guard is translated to the ciphertext this call read,
+// for the reason CompareAndSwap gives: the AEAD is nonce-randomised, so a
+// fresh encryption of the expected plaintext could never match. Guarding on
+// the bytes read keeps the batch exact — any write landing between the read
+// and the proposal replaces those bytes, and the shared store refuses the
+// whole batch. A guard that already fails in plaintext is reported as
+// applied=false without a proposal, which is the same unchanged outcome.
+func (s *batchTenantSharedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	physicalGuards := make([]kvstore.Guard, 0, len(guards))
+	for i, g := range guards {
+		if g.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "guard", Index: i}
+		}
+		physical := s.prefix + g.Key
+		if g.Value == nil {
+			physicalGuards = append(physicalGuards, kvstore.Guard{Key: physical})
+			continue
+		}
+		ciphertext, err := s.shared.Get(ctx, physical)
+		if err != nil {
+			return false, err
+		}
+		if ciphertext == nil {
+			return false, nil
+		}
+		plaintext, derr := s.barrier.Barrier().Decrypt(ciphertext)
+		if derr != nil {
+			return false, derr
+		}
+		if !bytes.Equal(plaintext, g.Value) {
+			return false, nil
+		}
+		physicalGuards = append(physicalGuards, kvstore.Guard{Key: physical, Value: ciphertext})
+	}
+	physicalWrites := make([]kvstore.KV, 0, len(writes))
+	for i, w := range writes {
+		if w.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "write", Index: i}
+		}
+		if w.Delete {
+			physicalWrites = append(physicalWrites, kvstore.KV{Key: s.prefix + w.Key, Delete: true})
+			continue
+		}
+		ciphertext, err := s.barrier.Barrier().Encrypt(w.Value)
+		if err != nil {
+			return false, err
+		}
+		physicalWrites = append(physicalWrites, kvstore.KV{Key: s.prefix + w.Key, Value: ciphertext})
+	}
+	return s.batch.PutAllIfAllUnchanged(ctx, physicalGuards, physicalWrites)
 }
 
 // atomicTenantSharedKVStore is the tenant IAM wrapper over a shared store that

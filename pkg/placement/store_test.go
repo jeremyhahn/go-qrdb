@@ -942,6 +942,122 @@ func TestStore_SetDropping_ConflictExhaustsRetries(t *testing.T) {
 	}
 }
 
+func TestStore_RemoveReplica_DropsReplicaAndUpdatesRF(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	p := samplePlacement("acme", "orders", 1000)
+	if err := s.Put(ctx, p); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	updated, err := s.RemoveReplica(ctx, p, 1)
+	if err != nil {
+		t.Fatalf("RemoveReplica: %v", err)
+	}
+	if updated.RF != 1 || len(updated.Replicas) != 1 || updated.Replicas[0].ReplicaID != 2 {
+		t.Errorf("returned = RF %d replicas %+v, want RF 1 with only replica 2", updated.RF, updated.Replicas)
+	}
+	got, err := s.Get(ctx, "acme", "orders")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.RF != 1 || len(got.Replicas) != 1 || got.Replicas[0].ReplicaID != 2 {
+		t.Errorf("stored = RF %d replicas %+v, want RF 1 with only replica 2", got.RF, got.Replicas)
+	}
+	if p.RF != 2 || len(p.Replicas) != 2 {
+		t.Error("RemoveReplica modified the caller's target")
+	}
+}
+
+func TestStore_RemoveReplica_UnknownIDIsNoop(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	p := samplePlacement("acme", "orders", 1000)
+	if err := s.Put(ctx, p); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	updated, err := s.RemoveReplica(ctx, p, 999)
+	if err != nil {
+		t.Fatalf("RemoveReplica: %v", err)
+	}
+	if updated.RF != 2 || len(updated.Replicas) != 2 {
+		t.Errorf("returned = RF %d replicas %+v, want the entry unchanged", updated.RF, updated.Replicas)
+	}
+}
+
+// TestStore_RemoveReplica_AppliesToEntryAsItStands proves the removal is
+// applied to the stored entry rather than to the caller's target: a change
+// committed after the target was read is kept, not refused or overwritten.
+func TestStore_RemoveReplica_AppliesToEntryAsItStands(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	stale := samplePlacement("acme", "orders", 1000)
+	if err := s.Put(ctx, stale); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	moved := samplePlacement("acme", "orders", 1000)
+	moved.LeaderReplicaID = 2
+	if err := s.Put(ctx, moved); err != nil {
+		t.Fatalf("racing Put: %v", err)
+	}
+
+	if _, err := s.RemoveReplica(ctx, stale, 1); err != nil {
+		t.Fatalf("RemoveReplica: %v", err)
+	}
+	got, err := s.Get(ctx, "acme", "orders")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LeaderReplicaID != 2 {
+		t.Errorf("LeaderReplicaID = %d, want 2 (the concurrent change must be kept)", got.LeaderReplicaID)
+	}
+	if len(got.Replicas) != 1 || got.Replicas[0].ReplicaID != 2 {
+		t.Errorf("Replicas = %+v, want only replica 2", got.Replicas)
+	}
+}
+
+func TestStore_RemoveReplica_NotFound(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	_, err = s.RemoveReplica(context.Background(), samplePlacement("acme", "no-such-db", 1000), 1)
+	if !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("error = %v, want ErrPlacementNotFound", err)
+	}
+	_, err = s.RemoveReplica(context.Background(), nil, 1)
+	if !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("nil target: error = %v, want ErrPlacementNotFound", err)
+	}
+}
+
+func TestStore_RemoveReplica_ConflictExhaustsRetries(t *testing.T) {
+	s, err := NewStore(&alwaysDeclineKV{atomicKV: newAtomicKV()})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	p := samplePlacement("acme", "orders", 1000)
+	if err := s.Put(ctx, p); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, err = s.RemoveReplica(ctx, p, 1)
+	if cerr := (*ConflictError)(nil); !errors.As(err, &cerr) {
+		t.Fatalf("error = %v, want *ConflictError", err)
+	}
+}
+
 // TestStore_TryMarkDropping_BackendError mirrors
 // TestStore_CompareAndSwapPlacement_BackendError for TryMarkDropping's own
 // error path.

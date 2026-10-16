@@ -18,6 +18,7 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -26,7 +27,7 @@ import (
 
 // SignCaller signs the assertion that caller made the request b binds, as the
 // node nodeID holding key. A holder caller's assertion carries its holder
-// profile, so the receiving node keeps the identity a holder. With no
+// profile, and a delegated caller's its delegation certificate (Carry). With no
 // authenticated caller, or no node signing identity, it returns
 // *ForwardUnsignedError: a forward must never be authorized as the forwarding
 // node instead of its caller.
@@ -38,8 +39,22 @@ func SignCaller(caller *auth.Identity, b Binding, key crypto.Signer, nodeID stri
 		return "", "", &ForwardUnsignedError{Reason: "this node has no signing identity"}
 	}
 	a := b.Assertion(caller.Subject, caller.TenantID, nodeID, now)
-	a.HolderProfile = caller.Metadata[auth.HolderProfileMetadataKey]
+	a.Carry(caller)
 	return Sign(a, key)
+}
+
+// Carry stamps a with what the receiving node needs to rebuild caller as the
+// identity it is, beyond its name: a holder's profile, so it stays a holder,
+// and a delegated caller's delegation certificate, which the receiving node
+// verifies again rather than taking this node's word for.
+func (a *CallerAssertion) Carry(caller *auth.Identity) {
+	if caller == nil {
+		return
+	}
+	a.HolderProfile = caller.Metadata[auth.HolderProfileMetadataKey]
+	if d, ok := auth.DelegationOf(caller); ok {
+		a.Delegation = base64.StdEncoding.EncodeToString(d.Certificate)
+	}
 }
 
 // NodeIdentity extracts the on-behalf signing key and this node's

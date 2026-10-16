@@ -245,6 +245,17 @@ and a deleted id is retired (below), so that id cannot be created again; any
 undo step that itself failed is listed in the error (`ProvisioningUndoneError`)
 for an operator to finish.
 
+**Deadline.** Running out of time is such a failure, so the deadline is sized
+for the whole sequence of Raft writes -- the tenant record, its pool
+reservation and barrier, then roles, the admin's account and its certificate
+binding -- not for one read. The server bounds onboarding itself, the same on
+every transport: 60 seconds (`service.DefaultTenantOnboardingTimeout`), or the
+caller's own deadline when that is sooner. REST's other tenant endpoints use
+5 seconds. A caller that cancels or disconnects still cancels the creation,
+and the undo then runs on its own 30-second budget. An onboarding the deadline
+cuts short answers 504 / `DEADLINE_EXCEEDED`; because undoing retires the id,
+retry under a new id.
+
 **BREAKING:** `admin_username` and one admin credential are required, and the
 response carries `admin`. A tenant can no longer be created without its first
 admin. The caller still needs `tenants:create` (platform operator).

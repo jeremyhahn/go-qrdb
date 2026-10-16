@@ -29,6 +29,7 @@ and refuses in standalone with `requires mode: raft`.
 | Stop shard | `DELETE /admin/shards/{id}` | `StopShard` | `admin.StopShard` | `qrdb_stop_shard` | `StopShard` | `admin:stop_shard` |
 | Shard state | `GET /admin/shards/{id}/state` | `GetShardState` | `admin.GetShardState` | `qrdb_shard_state` | `GetShardState` | `admin:shard_state` |
 | Topology | `GET /admin/topology` | `GetTopology` | `admin.GetTopology` | `qrdb_topology` | `GetTopology` | `admin:topology` |
+| Replica state hashes | `GET /admin/state-hashes` | `GetStateHashes` | `admin.GetStateHashes` | `qrdb_state_hashes` | `StateHashes` | `admin:state_hash` |
 | Replica states (applied index + state-machine hash) | `GET /admin/replica-states` | `GetReplicaStates` | `admin.GetReplicaStates` | `qrdb_replica_states` | `ReplicaStates` | `admin:replica_state` |
 | Node-keyspace compaction policy | `GET /admin/node-compaction` | `GetNodeCompaction` | `admin.GetNodeCompaction` | `qrdb_node_compaction` | `NodeCompaction` | `admin:node_compaction` |
 | Set node-keyspace compaction policy | `PUT /admin/node-compaction` | `SetNodeCompaction` | `admin.SetNodeCompaction` | `qrdb_update_node_compaction` | `SetNodeCompaction` | `admin:node_compaction` |
@@ -62,7 +63,7 @@ admission-vs-signing split: `ApproveJoinRequest` only records a decision,
 and never itself calls the cluster CA.
 
 **Drain, snapshot, add/remove member, start/stop shard, shard state,
-topology, replica states and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
+topology, replica state hashes, replica states and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
 route: they act on, or describe, shards every tenant shares, and name no
 tenant. A tenant's Admin or SO -- whose built-in roles carry several of these
 grants -- is refused with `403` / `PermissionDenied` on every transport.
@@ -127,6 +128,77 @@ transport; see [engineering.md](engineering.md#error-semantics). Start shard
 takes no identities: it resolves every other member's from the committed
 memberships, as a dedicated database's founders do, and answers the same typed
 refusals with the same codes (REST no longer answers them `500`).
+
+## Replica state hashes
+
+A read of **this node's** replicas: for every shard the node replicates, the
+replica's applied index and a SHA-256 digest of its state machine at exactly
+that index. Each node answers from its own state machines with no proposal and
+no leader round trip, so a caller compares replicas by asking every node and
+lining the entries up by `(tenant_id, shard_id)`: two replicas at the same
+`applied_index` must report the same `hash`. The digest definition and the
+consistency guarantee are in
+[engineering.md](engineering.md#replica-state-hashes).
+
+Server-side it is `service.ReplicaStateHasher`, a capability interface
+separate from `AdminServicer` for the reason `MemberPromoter` is one; the
+transports type-assert for it. Client-side it is
+`transport.ReplicaStateHasher`: a caller type-asserts
+`client.Admin().(transport.ReplicaStateHasher)`, and all six SDK transports
+implement it.
+
+| Transport | Binding |
+|---|---|
+| REST | `GET /admin/state-hashes`, optional repeated `shard` query parameter (`?shard=1&shard=7`) |
+| gRPC | `QRDBService.GetStateHashes(GetStateHashesRequest{repeated uint64 shard_ids})` |
+| Unix | served by the same `qrdbServiceServer` gRPC implementation the TCP gRPC listener uses |
+| QUIC | `admin.GetStateHashes`, the gRPC request and response messages as its payload |
+| MCP | the `qrdb_state_hashes` tool, optional `shard_ids` integer array argument |
+| Embedded | `StateHashes(ctx, shardIDs)`, a direct in-process call |
+
+An empty shard list means every shard. A non-empty list selects the shards
+with those IDs on every host the node runs; an ID this node does not
+replicate selects nothing and is not an error.
+
+Response (`GetStateHashesResponse`):
+
+```json
+{ "node_id": "node1",
+  "replicas": [
+    { "tenant_id": "", "shard_id": 1, "replica_id": 1,
+      "applied_index": 4182, "records": 913,
+      "hash": "9f2c…64 lowercase hex digits…", "error": "" },
+    { "tenant_id": "", "shard_id": 3, "replica_id": 1,
+      "applied_index": 0, "records": 0, "hash": "",
+      "error": "state machine does not support state digests" },
+    { "tenant_id": "acme", "shard_id": 1, "replica_id": 1,
+      "applied_index": 77, "records": 12,
+      "hash": "1b7e…", "error": "" } ] }
+```
+
+| Field | Meaning |
+|---|---|
+| `node_id` | the answering node's host ID, the `node_id` `GET /admin/topology` reports |
+| `tenant_id` | `""` for a shard of the node's own (system) host; the tenant ID for a shard of an isolated tenant's host |
+| `shard_id`, `replica_id` | the shard and this node's replica of it |
+| `applied_index` | the replica's applied index the digest was computed at |
+| `records` | how many records the digest covers |
+| `hash` | the SHA-256 digest, 64 lowercase hex digits |
+| `error` | empty on success; otherwise why this one replica has no digest, with `applied_index`, `records` and `hash` zero |
+
+Entries are ordered by `tenant_id`, then `shard_id`. **One replica's failure
+never fails the call:** a shard whose state machine cannot produce a digest
+(a state-machine type without digest support, a witness, a replica not yet
+loaded) reports it in its own `error` and every other entry is still
+returned.
+
+**Isolated tenants' shards are hashed inside their own barrier.** Each
+started isolated-tenant host computes its own digests over the plaintext its
+barrier decrypts, so a tenant's entries are comparable across replicas the
+same way the system host's are. The read never starts a tenant's host: a
+tenant whose host is not running on this node has no entries. A digest and a
+record count disclose no record content, which is why a cross-scope read may
+carry them for every tenant.
 
 ## Replica states
 
@@ -245,9 +317,21 @@ other than `Owner` carries it, the same as `admin:shard_state` and
 
 ```json
 { "moves_completed": 9, "moves_failed": 1,
-  "duration": 284000000000, "final_imbalance": 3.1 }
+  "duration": 284000000000, "final_imbalance": 3.1,
+  "failures": [ { "shard_id": 7, "from_node": "node1", "to_node": "node4",
+                  "step": "add-observer", "error": "..." } ] }
 ```
 
+`failures` carries one entry per failed move, in plan order, so its length
+equals `moves_failed`; it is omitted when every move completed. `step` names
+the phase of a dedicated-group move that failed (`dropping`, `wait-leader`,
+`find-source`, `add-placement`, `add-observer`, `remove-placement`,
+`remove-node`) and is empty for a generic shard move. gRPC, QUIC and Unix
+carry the same entries as repeated `RebalanceMoveFailure` messages.
+
+Executing a plan first reads every database placement, because a move of a
+shard that belongs to a tenant's dedicated Raft group must update that
+group's placement record and deliver its keys.
 A node that cannot read the placement records (for example during an
 election) refuses the whole plan before any move with
 `*service.RebalancePlacementReadError`: REST `503`, gRPC/MCP `UNAVAILABLE`.
@@ -273,6 +357,8 @@ Nothing was changed; resubmit the plan.
 | Add/remove of an already-present/absent replica | 200 | `OK` — idempotent, skipped |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Node draining | 503 | `UNAVAILABLE` |
+| Consensus refused the request for now (busy, dropped, shard not ready, no leader yet) | 503 | `UNAVAILABLE` — retry |
+| A consensus proposal or read timed out | 504 | `DEADLINE_EXCEEDED` — retry |
 
 Cluster enrollment mostly runs at daemon startup, below every transport, so
 most of its failures are startup errors rather than status codes. The one

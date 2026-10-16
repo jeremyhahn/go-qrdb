@@ -21,15 +21,20 @@ package file
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
@@ -68,6 +73,15 @@ var (
 // incompatible: New refuses to open a non-empty data directory that was not
 // written by this exact format (see formatMarkerFileName).
 //
+// The CONTENTS of each record and of the commit journal are read and written
+// through fs: the OS file system, or the seal barrier's encrypting file system
+// when the engine is opened WithEncryptor, the same one the pebble backend
+// writes through. Under it every record, key and value alike, is ciphertext
+// at rest. The format marker alone is plaintext (see writeFormatMarker).
+// Name operations (listing, stat, rename, remove, directory fsync) go to the
+// OS directly: the encrypting file system passes names through unchanged, so
+// the hashed file names are the same either way.
+//
 // # Sharing a directory between processes
 //
 // More than one process may open the same directory (an application that loads
@@ -85,6 +99,8 @@ var (
 // directory must be on a local filesystem (flock is not reliable over NFS).
 type Engine struct {
 	dir    string
+	fs     vfs.FS
+	atRest string
 	closed atomic.Bool
 
 	// writeMu is the in-process half of the engine's write exclusion, and
@@ -126,8 +142,26 @@ const (
 
 	// formatVersion is this build's on-disk format. Bump it, and the error
 	// messages that name it, whenever the layout or record format changes
-	// again; there is no migration between versions, by policy.
-	formatVersion = "2"
+	// again; there is no migration between versions, by policy. Version 3
+	// added the at-rest posture to the marker and routes every record's and
+	// the journal's contents through the engine's file system.
+	formatVersion = "3"
+
+	// atRestPlaintext and atRestEncrypted are the at-rest postures the
+	// format marker records after the version ("3/encrypted"), so a store
+	// is never opened under the other one: a plaintext store under the
+	// barrier would serve its plaintext records beside new ciphertext ones,
+	// and an encrypted store without it would decode ciphertext as records.
+	atRestPlaintext = "plaintext"
+	atRestEncrypted = "encrypted"
+
+	// Temp-file prefixes for the three crash-safe publishes (writeDurable):
+	// a record, the commit journal and the format marker. None has the
+	// shape of a record name (isHashFileName), and leftovers are removed at
+	// open.
+	tmpSetPrefix     = ".tmp-set-"
+	tmpJournalPrefix = ".tmp-journal-"
+	tmpFormatPrefix  = ".tmp-format-"
 
 	// lostAndFoundDirName is the directory mkfs/fsck creates at the root of
 	// a freshly formatted ext2/3/4 filesystem (and recreates after a repair)
@@ -154,6 +188,29 @@ const (
 	hashHexLen = sha256.Size * 2
 )
 
+// Encryptor layers at-rest encryption over the file system the engine reads
+// and writes file contents through. *atrest.Encryptor, the seal barrier's
+// encrypting file system that the pebble backend also writes through,
+// satisfies it. One whose Enabled reports false leaves the engine plaintext.
+type Encryptor interface {
+	Enabled() bool
+	Wrap(base vfs.FS) vfs.FS
+}
+
+// Option configures New.
+type Option func(*options)
+
+// options is what the Options set.
+type options struct {
+	encryptor Encryptor
+}
+
+// WithEncryptor encrypts every file's contents at rest under enc. A nil or
+// disabled enc leaves the engine plaintext.
+func WithEncryptor(enc Encryptor) Option {
+	return func(o *options) { o.encryptor = enc }
+}
+
 // New creates a new file-based storage engine rooted at dir. The directory
 // is created if it does not exist, with every directory entry created along
 // the way fsynced into its parent so the creation itself is crash-durable
@@ -168,15 +225,22 @@ const (
 // recoverJournal); a corrupt journal fails the open rather than silently
 // serving a half-applied batch.
 //
+// With WithEncryptor the store is encrypted at rest; a directory written in
+// the other posture is refused (AtRestMismatchError).
+//
 // The open-time work (format marker, journal recovery, stray temp-file cleanup)
 // runs under the same cross-process write lock as every write, so a second
 // process opening a directory the first is writing to waits for the write in
 // flight instead of removing its temporary file or replaying its journal. The
 // lock is released on every return path and the lock file is closed when the
 // open fails.
-func New(dir string) (*Engine, error) {
+func New(dir string, opts ...Option) (*Engine, error) {
 	if dir == "" {
 		return nil, storage.ErrInvalidPath
+	}
+	var cfg options
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	if err := mkdirAllDurable(dir); err != nil {
 		return nil, err
@@ -185,7 +249,11 @@ func New(dir string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{dir: dir, lock: lock}
+	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext, lock: lock}
+	if cfg.encryptor != nil && cfg.encryptor.Enabled() {
+		e.fs = cfg.encryptor.Wrap(vfs.Default)
+		e.atRest = atRestEncrypted
+	}
 	if err := e.recoverUnderLock(); err != nil {
 		_ = lock.Close()
 		return nil, err
@@ -337,7 +405,7 @@ func (e *Engine) cleanupTempSetFiles() error {
 			}
 			return err
 		}
-		if info.IsDir() || !strings.HasPrefix(info.Name(), ".tmp-set-") {
+		if info.IsDir() || !strings.HasPrefix(info.Name(), tmpSetPrefix) {
 			return nil
 		}
 		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
@@ -470,9 +538,9 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	_, path := e.recordPaths(key)
-	record, err := os.ReadFile(path) // #nosec G304 -- path is e.dir joined with the SHA-256 hex digest of key, never a caller-supplied path
+	record, err := readFile(e.fs, path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if isNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -491,7 +559,7 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 
 // Set durably stores a key-value pair: the record is written to a temp file
 // in the key's shard directory (created if absent), fsynced, and atomically
-// renamed into place, then that directory is fsynced. A crash therefore
+// renamed into place, then that directory is fsynced (writeDurable). A crash therefore
 // leaves either the old record or the new one, never a torn file — the
 // durability contract the raft state-machine storage seam (raft.sm_storage:
 // file) relies on. It holds the write lock (see Engine) for the duration.
@@ -522,43 +590,7 @@ func (e *Engine) writeRecord(key, value []byte) error {
 	if err := e.ensureShardDirDurable(dir); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".tmp-set-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	record := encodeRecord(key, value)
-	if _, err := tmp.Write(record); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return err
-	}
-	// Chmod the open handle, not the path: the record is private to the owner
-	// whatever the umask or the temp-file default.
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		e.discardTemp(tmpName)
-		return err
-	}
-
-	// fsync.Rename is the rename and its directory sync as one operation. The
-	// temp file and the target share dir, so it is synced exactly once -- the
-	// same work the separate os.Rename + directory-fsync pair did, with no second
-	// place for the pairing to be got wrong (go-qrdb#268).
-	if err := fsync.Rename(tmpName, path); err != nil {
-		e.discardTemp(tmpName)
-		return err
-	}
-	return nil
+	return e.writeDurable(e.fs, path, tmpSetPrefix, encodeRecord(key, value))
 }
 
 // CompareAndSwap implements storage.GuardedStorage. The read, compare and write
@@ -699,6 +731,48 @@ func (e *Engine) del(key []byte) error {
 	return fsync.Dir(dir)
 }
 
+// DeleteRange removes every key in [start, end); an empty end is unbounded.
+// Hashed filenames carry no key order, so the range is found by filtering the
+// full key listing, and each delete is individually durable (see Delete).
+// It holds the write lock (see Engine) across the whole range.
+func (e *Engine) DeleteRange(start, end []byte) (err error) {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	if err := e.lockWrites(); err != nil {
+		return err
+	}
+	defer func() { err = e.unlockWrites(err) }()
+	return e.deleteRange(start, end)
+}
+
+// deleteRange is DeleteRange without the write lock, for callers that already
+// hold it: a batch commit and open-time recovery.
+func (e *Engine) deleteRange(start, end []byte) error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	keys, err := e.List(nil)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if bytes.Compare(key, start) < 0 {
+			continue
+		}
+		if len(end) > 0 && bytes.Compare(key, end) >= 0 {
+			continue
+		}
+		if err := e.del(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // List returns all keys matching the given prefix, in ascending byte order.
 //
 // Because a key's filename carries no information about the key itself
@@ -730,9 +804,9 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		if info.IsDir() || !isHashFileName(info.Name()) {
 			return nil
 		}
-		record, rerr := os.ReadFile(path) // #nosec G304 -- path comes from walking this engine's own root directory, filtered to isHashFileName entries
+		record, rerr := readFile(e.fs, path)
 		if rerr != nil {
-			if os.IsNotExist(rerr) {
+			if isNotExist(rerr) {
 				return nil
 			}
 			return rerr
@@ -896,6 +970,69 @@ func mkdirAllDurable(dir string) error {
 	return fsync.Dir(filepath.Dir(dir))
 }
 
+// isNotExist reports whether err says a file is absent. The engine's file
+// system wraps OS errors, which os.IsNotExist does not unwrap.
+func isNotExist(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// readFile returns the contents of the file at path, read through fs: the
+// engine's file system decrypts when the engine is encrypted. Under a sealed
+// barrier an encrypted file cannot be opened and the barrier's error is
+// returned unwrapped (seal.ErrSealed).
+func readFile(fs vfs.FS, path string) ([]byte, error) {
+	f, err := fs.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// writeDurable publishes data at path crash-safely: it is written through fs
+// to a temp file named tmpPrefix plus a random suffix in path's directory,
+// made owner-only before any of data is written, fsynced, and renamed into
+// place. fsync.Rename is the rename and its directory sync as one operation
+// (go-qrdb#268). A crash leaves either the old file or the new one, never a
+// torn one; a leftover temp file is removed at open, and a failed write's
+// temp file through discardTemp. path lies beneath the store root.
+func (e *Engine) writeDurable(fs vfs.FS, path, tmpPrefix string, data []byte) error {
+	tmpName := filepath.Join(filepath.Dir(path), tmpPrefix+rand.Text())
+	f, err := fs.Create(tmpName, vfs.WriteCategoryUnspecified)
+	if err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		_ = f.Close()
+		e.discardTemp(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return fail(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		e.discardTemp(tmpName)
+		return err
+	}
+	if err := fsync.Rename(tmpName, path); err != nil {
+		e.discardTemp(tmpName)
+		return err
+	}
+	return nil
+}
+
 // ensureFormatMarker refuses to open a non-empty data directory that was
 // not written by this exact on-disk format (see FormatMarkerMissingError,
 // FormatVersionMismatchError), and writes the marker into a fresh one.
@@ -908,20 +1045,24 @@ func (e *Engine) ensureFormatMarker() error {
 		return err
 	}
 	for _, ent := range entries {
-		if !ent.IsDir() && strings.HasPrefix(ent.Name(), ".tmp-format-") {
+		if !ent.IsDir() && strings.HasPrefix(ent.Name(), tmpFormatPrefix) {
 			_ = os.Remove(filepath.Join(e.dir, ent.Name()))
 		}
 	}
 
 	markerPath := filepath.Join(e.dir, formatMarkerFileName)
-	data, err := os.ReadFile(markerPath) // #nosec G304 -- markerPath is e.dir joined with a constant filename
+	data, err := readFile(vfs.Default, markerPath)
 	switch {
 	case err == nil:
-		if string(data) != formatVersion {
-			return &FormatVersionMismatchError{Found: string(data), Want: formatVersion}
+		version, atRest, _ := strings.Cut(string(data), "/")
+		if version != formatVersion {
+			return &FormatVersionMismatchError{Found: version, Want: formatVersion}
+		}
+		if atRest != e.atRest {
+			return &AtRestMismatchError{Dir: e.dir, Found: atRest, Want: e.atRest}
 		}
 		return nil
-	case os.IsNotExist(err):
+	case isNotExist(err):
 		entries, err = os.ReadDir(e.dir)
 		if err != nil {
 			return err
@@ -942,31 +1083,16 @@ func (e *Engine) ensureFormatMarker() error {
 }
 
 // writeFormatMarker durably publishes formatMarkerFileName naming
-// formatVersion, via the same temp-file-plus-rename pattern Set uses for a
-// record.
+// formatVersion and the engine's at-rest posture ("3/encrypted"). The marker
+// is the one file always written in plaintext: it says how every other file
+// must be read, so it has to be readable before that choice is made, and it
+// holds no data.
 func (e *Engine) writeFormatMarker() error {
-	tmp, err := os.CreateTemp(e.dir, ".tmp-format-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(formatVersion); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		e.discardTemp(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		e.discardTemp(tmpName)
-		return err
-	}
-	if err := fsync.Rename(tmpName, filepath.Join(e.dir, formatMarkerFileName)); err != nil {
-		e.discardTemp(tmpName)
-		return err
-	}
-	return nil
+	return e.writeDurable(vfs.Default, filepath.Join(e.dir, formatMarkerFileName), tmpFormatPrefix, []byte(formatMarker(e.atRest)))
+}
+
+// formatMarker is the content of formatMarkerFileName for a store with the
+// given at-rest posture.
+func formatMarker(atRest string) string {
+	return formatVersion + "/" + atRest
 }

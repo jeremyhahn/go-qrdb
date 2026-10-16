@@ -994,3 +994,7 @@ type errorDeleteStorage struct {
 func (s *errorDeleteStorage) Delete(key []byte) error {
 	return errors.New("delete error")
 }
+
+func (s *errorDeleteStorage) DeleteRange(start, end []byte) error {
+	return errors.New("delete error")
+}

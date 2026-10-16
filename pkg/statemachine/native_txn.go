@@ -314,6 +314,12 @@ func applyNativeBatch(ks keyspace, payload []byte) ([]Mutation, error) {
 	if err != nil {
 		return nil, &IncompleteDataError{Reason: "batch: " + err.Error()}
 	}
+	return applyNativeOps(ks, ops)
+}
+
+// applyNativeOps is applyNativeBatch for operations already decoded: the
+// whole set is decided before any of it is committed, and committed as one.
+func applyNativeOps(ks keyspace, ops []protocol.DecodedOp) ([]Mutation, error) {
 	muts, leases, err := batchMutations(ks, ops)
 	if err != nil {
 		return nil, err
@@ -362,7 +368,7 @@ func batchOpIsDelete(op byte) bool {
 }
 
 // reservedKeys are keys the state machines in this package keep for their
-// own bookkeeping. The disk state machine stores its applied-index marker in
+// own bookkeeping. Every KV state machine stores its applied-index marker in
 // the same keyspace clients write; a client write to that key would move the
 // index a restart resumes from.
 var reservedKeys = map[string]struct{}{

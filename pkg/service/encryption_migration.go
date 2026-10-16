@@ -93,6 +93,22 @@ type EncryptionMigrator interface {
 // Provider
 // ---------------------------------------------------------------------------
 
+// MigrationStores are the store directories an encryption migration
+// re-encrypts, by the kind of store each holds, which decides how it is
+// recoded.
+type MigrationStores struct {
+	// Pebble are Pebble stores, recoded by the migration's mechanism.
+	Pebble []string
+	// File are file-backend stores, recoded record by record through the file
+	// engine.
+	File []string
+}
+
+// Dirs returns every directory in s.
+func (s MigrationStores) Dirs() []string {
+	return append(append([]string(nil), s.Pebble...), s.File...)
+}
+
 // BarrierMigrationProvider supplies the node-specific mechanics an encryption
 // migration needs, keeping the service decoupled from daemon/store internals.
 // The daemon implements it: it owns store directories and their open/close
@@ -107,7 +123,7 @@ type BarrierMigrationProvider interface {
 	// barrier on THIS node. For a clustered tenant/db barrier this is the local
 	// replica's copy; the cluster coordinator invokes the migration on every
 	// owning node.
-	StoreDirs(ctx context.Context, scope BarrierScope) ([]string, error)
+	StoreDirs(ctx context.Context, scope BarrierScope) (MigrationStores, error)
 
 	// MintKeyedTarget creates and initializes a fresh keyed target barrier for
 	// the scope (over a staging root-key path in the same seal backend), per the
@@ -203,10 +219,11 @@ func (s *EncryptionMigrationService) EnableTenantEncryption(ctx context.Context,
 // keyed root key → reopen stores under the keyed barrier (always, even on
 // failure, so the node never strands its data behind closed stores).
 func (s *EncryptionMigrationService) run(ctx context.Context, scope BarrierScope, source *seal.StorageBarrier, opts seal.MigrationOptions) (err error) {
-	dirs, err := s.provider.StoreDirs(ctx, scope)
+	stores, err := s.provider.StoreDirs(ctx, scope)
 	if err != nil {
 		return err
 	}
+	dirs := stores.Dirs()
 	target, err := s.provider.MintKeyedTarget(ctx, scope, opts)
 	if err != nil {
 		return err
@@ -225,10 +242,11 @@ func (s *EncryptionMigrationService) run(ctx context.Context, scope BarrierScope
 	}()
 
 	mig := &database.NodeStoreMigration{
-		Source:    source,
-		Target:    target,
-		StoreDirs: dirs,
-		Logger:    s.logger,
+		Source:        source,
+		Target:        target,
+		StoreDirs:     stores.Pebble,
+		FileStoreDirs: stores.File,
+		Logger:        s.logger,
 	}
 	if merr := mig.Run(ctx, opts); merr != nil {
 		err = merr

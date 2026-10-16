@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -156,43 +157,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	return &resp, nil
 }
 
-// CredentialRetrieveVersion returns the credential value for a specific
-// version. Version == 0 means "current version".
-// Maps to GET /v1/credentials/{name}/versions/{version}.
-func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*transport.CredentialRetrieveVersionResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &nilRequestError{}}
-	}
-	if req.Name == "" {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &emptyCredentialNameError{}}
-	}
-
-	reqURL := t.baseURL + "/v1/credentials/" + url.PathEscape(req.Name) + "/versions/" + strconv.FormatUint(req.Version, 10)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: err}
-	}
-
-	httpResp, err := t.client.Do(httpReq)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: err}
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, t.decodeErrorResponse("CredentialRetrieveVersion", httpResp)
-	}
-
-	var resp transport.CredentialRetrieveVersionResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &jsonDecodeError{Err: err}}
-	}
-	return &resp, nil
-}
-
 // CredentialListVersions returns the version history (current +
 // non-expired grace) for a credential. Values are never returned.
 // Maps to GET /v1/credentials/{name}/versions.
@@ -266,19 +230,44 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	return t.postJSONDecode(ctx, "CredentialStore", "/v1/credentials/store", body, nil)
 }
 
-// CredentialRetrieve returns the credential value. Maps to
-// GET /v1/credentials/{name}/value. The value is carried as a []byte field so
-// encoding/json decodes it from base64 (RFC 4648), preserving binary content.
-func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+// CredentialRetrieveBuffer returns the credential value for name in protected
+// memory. The JSON response is the wire DTO; it is moved into a buffer and the
+// decoded slice wiped.
+func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	var resp struct {
-		Value []byte `json:"value"`
+		Value transport.WireValue `json:"value"`
 	}
 	path := "/v1/credentials/" + url.PathEscape(name) + "/value"
 	if err := t.getJSONDecode(ctx, "CredentialRetrieve", path, &resp); err != nil {
+		resp.Value.Buffer.Destroy()
 		return nil, err
 	}
-	return resp.Value, nil
+	return resp.Value.Buffer, nil
+}
+
+// CredentialRetrieveVersionBuffer returns the stored value for a specific
+// version in protected memory. The JSON response is the wire DTO; it is moved
+// into a buffer and the decoded slice wiped.
+func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*secure.Buffer, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &nilRequestError{}}
+	}
+	if req.Name == "" {
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &emptyCredentialNameError{}}
+	}
+	var resp struct {
+		Value transport.WireValue `json:"value"`
+	}
+	path := "/v1/credentials/" + url.PathEscape(req.Name) + "/versions/" + strconv.FormatUint(req.Version, 10)
+	if err := t.getJSONDecode(ctx, "CredentialRetrieveVersion", path, &resp); err != nil {
+		resp.Value.Buffer.Destroy()
+		return nil, err
+	}
+	return resp.Value.Buffer, nil
 }

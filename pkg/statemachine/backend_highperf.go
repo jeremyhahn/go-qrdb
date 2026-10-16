@@ -328,30 +328,25 @@ func (b *HighPerfBackend) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) 
 }
 
 // GetHash computes a deterministic xxhash64 hash over all key-value
-// pairs across all shards in sorted key order.
+// pairs, visited in ascending key order.
 func (b *HighPerfBackend) GetHash() (uint64, error) {
-	h := xxhash.New()
+	return xxhashRecords(b.Records)
+}
 
-	var allKeys []string
+// Records visits every key-value pair in ascending key order. Each shard is
+// read under its own read lock; a view consistent across shards needs the
+// state machine's batch lock held exclusively.
+func (b *HighPerfBackend) Records(fn RecordVisitor) error {
+	var recs []kvRecord
 	for i := range b.shards {
 		s := &b.shards[i]
 		s.mu.RLock()
-		for k := range s.data {
-			allKeys = append(allKeys, k)
+		for k, v := range s.data {
+			recs = append(recs, kvRecord{key: k, value: v})
 		}
 		s.mu.RUnlock()
 	}
-	sort.Strings(allKeys)
-
-	for _, k := range allKeys {
-		s := b.shardFor(k)
-		s.mu.RLock()
-		_, _ = h.Write([]byte(k))
-		_, _ = h.Write(s.data[k])
-		s.mu.RUnlock()
-	}
-
-	return h.Sum64(), nil
+	return visitSorted(recs, fn)
 }
 
 // Close clears all shard data and releases resources.

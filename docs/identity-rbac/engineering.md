@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 ## Exported surface
 
@@ -49,6 +49,34 @@ func (r *Role) RetiredPermissionError() error   // nil when there is no drift
 // RetiredPermissionError, RetiredPermissions.
 // sdk/go/transport: RoleClient.ReconcileBuiltInRoles(ctx, *ReconcileRolesRequest)
 //                   (*ReconcileRolesResponse, error)
+```
+
+Tenant-issued delegations (see
+[architecture.md](architecture.md#tenant-issued-delegations)):
+
+```go
+// pkg/auth/delegation — the extension's content; no signing, no verification.
+var OID asn1.ObjectIdentifier                    // 1.3.6.1.4.1.29377.101.24 (tp-delegation)
+const DefaultLifetime, MaxLifetime = time.Hour, 24 * time.Hour
+const MaxScope, MaxPrincipalLen = 64, 64
+type Grant struct{ Tenant, Principal string; Scope []string }
+func (g Grant) Validate() error                   // *GrantError
+func (g Grant) Extension() (pkix.Extension, error) // always Critical
+func FromCertificate(c *x509.Certificate) (g Grant, found bool, err error) // *ExtensionError
+func CheckLifetime(c *x509.Certificate) error     // *LifetimeError
+
+// sdk/go re-exports: DelegationGrant, DelegationGrantError,
+// DelegationExtensionError, DelegationLifetimeError, DelegationOID,
+// DelegationDefaultLifetime, DelegationMaxLifetime, DelegationMaxScope,
+// DelegationFromCertificate, DelegationCheckLifetime.
+
+// sdk/go/node — what an embedder sets to accept delegations.
+func WithServicePrincipal(name string) NodeOption // the ONE principal accepted
+// sdk.RegisterPermissionRoleGrant(name, perms...) — the principal's own grants,
+// the upper bound of every delegation's scope.
+
+// sdk/go/transport: CertClient.IssueDelegation(ctx, *IssueDelegationRequest)
+//                   (*IssuedDelegation, error)
 ```
 
 ### User entity — `pkg/user/types.go`
@@ -536,6 +564,32 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
 
 ## Invariants
 
+- **A delegation certificate is never a user login.** Once the authenticator
+  finds the delegation extension it either admits the certificate as the
+  delegated service identity or refuses it; there is no fallback to the CN/OU
+  user path. A malformed or non-critical extension is a refusal, not "no
+  delegation".
+- **A delegation's issuer is the delegating tenant's own login CA, and only
+  that.** The check is on the leaf's DIRECT issuer against the tenant's
+  registered Key B certificate, so the cluster CA, a static client CA, a trust
+  anchor and every other tenant's CA are refused even where they chain.
+- **A delegated identity's permissions are recomputed on every request** as
+  the grant's scope ∩ `permission.HasRoleGrant(principal, p)`. Nothing is
+  cached across requests, so withdrawing a host grant takes effect at once,
+  and the identity carries no roles for a role-based path to widen.
+- **Delegated requests are never unaudited.** The authorization record goes to
+  the delegating tenant's trail; an absent logger or a failed write refuses the
+  request with 503 regardless of the audit fail-open setting.
+- **A forwarded delegated request is re-verified on the leader.** The follower
+  carries the delegation certificate inside the signed on-behalf assertion and
+  the leader runs its own authenticator over it, so a follower cannot widen,
+  extend or re-tenant a delegation. A follower that cannot sign the assertion
+  refuses to forward (`UnsignedForwardRefusedError`) rather than forwarding
+  unsigned.
+- **Issuance is the tenant's act alone.** `IssueDelegation` is confined with
+  `tenant.Confine`, refuses the system tenant and a delegated caller, validates
+  every scope entry against the permission registry, and writes `cert.delegate`
+  to the tenant's trail before the CA signs.
 - **`ReconcileBuiltInRoles` is the ONLY writer to a built-in role's
   permissions.** `UpdateRole` returns `SystemRoleImmutableError{Op:
   "re-permissioned"}` and `DeleteRole` returns `SystemRoleImmutableError{Op:
@@ -715,9 +769,19 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   401. A holder request is never forwarded unsigned, because an unsigned
   forward is authorized as the forwarding node: a follower with no signing
   identity, or whose signing fails, answers **502** with a fixed message
-  (`rest.HolderForwardUnsignedError`) and logs the cause; the request never
-  reaches the leader. A user request in the same situation is forwarded as
-  before.
+  (`rest.UnsignedForwardRefusedError`) and logs the cause; the request never
+  reaches the leader. A request authenticated with a tenant-issued delegation
+  is refused the same way. A user request in the same situation is forwarded
+  as before.
+- **A forwarded delegation is verified again on the leader.** For a caller
+  that authenticated with a tenant-issued delegation certificate, the
+  assertion carries the certificate itself (`delegation`, base64 DER), signed
+  with the rest of it. The leader rebuilds the identity from that certificate
+  through its own mTLS authenticator (`middleware.WithDelegationVerifier`) --
+  chain to the tenant's own login CA, lifetime, revocation, principal -- and
+  refuses the assertion when the certificate's subject or tenant differs from
+  the asserted ones, when it also claims a holder profile, or when the leader
+  accepts no delegations at all.
 - **The rule is one exported function, `CheckAuthMethod(u, method)`**
   (`pkg/auth/middleware`, re-exported as `sdk.CheckAuthMethod` with
   `sdk.AuthMethodNotPermittedError`). The middleware calls it for every method
@@ -1173,10 +1237,10 @@ authenticated value — whether or not the authenticator set one.
 | Re-permissioning a built-in role through `UpdateRole` | `SystemRoleImmutableError{Op: "re-permissioned"}` | **yes** |
 | Reconciling another tenant's built-ins as a normal tenant caller | `tenant.CrossTenantDeniedError` | **yes** |
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
-| The linearizable user lookup misses its 500 ms budget for a NON-system tenant | retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
+| The linearizable user lookup misses its 5 s budget for a NON-system tenant | retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
 | The user lookup fails with anything but an election (a corrupt record, a decrypt refusal, a cancelled request) | that error, at once, with no retry | **yes** |
 | The user lookup meets a sealed node barrier (`seal.ErrBarrierSealed` from go-quicraft on a node re-sealed at runtime, or `seal.ErrSealed`) | `*middleware.BarrierSealedError` (503, retryable once unsealed) — never `StoreUnavailableError`, and never logged as a store outage | **yes** |
-| The linearizable role resolution misses its 500 ms budget for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
+| The linearizable role resolution misses its 5 s budget for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
@@ -1199,28 +1263,32 @@ and `staleMayDenote` each consult `rolesFallback` only when
 `tenantid.IsSystem` holds for the tenant the resolve is scoped to;
 otherwise the primary's transient error stands.
 
-**The 500 ms budget itself is unconditional, for both lookups, on every
-tenant — only the FALLBACK CONSULT is conditioned on the tenant.**
-`lookupUser` bounds the primary (linearizable) read to
-`authLookupSyncTimeout` (500 ms) for every tenant, and `resolvePermissionSet`
-bounds the primary resolve to `resolveSyncTimeout` (500 ms) the same way,
-regardless of whether `useFallback` holds for the tenant the resolve is
-scoped to. The reason is not that a fallback is always there to catch the
-result — for a non-system tenant neither fallback is ever consulted, exactly
-as the rows above describe — it is that a bare 500 ms timeout alone turns a
-stalled ReadIndex into a prompt, retryable answer instead of a hang on
-the caller's own outer context, which a request that set no deadline at all
-would never resolve. For the system tenant the budget additionally buys a
-fast failover to the StaleRead fallback within that same window; for every
-other tenant it still bounds the wait, and the primary's own error —
-`context.DeadlineExceeded` on a miss — comes back as the retryable
-`*rbac.ResolveError`/503 the row above describes. The externally visible
-effect is the same for both paths: a correctly enrolled non-system tenant
-user gets the retryable error, never a silent deny. The role lookup's arrives
-within the 500 ms budget; the user lookup's after the election wait below.
+**Both lookups are bounded on every tenant, and the size of the bound
+depends on whether a fallback can answer in the primary's place.** The bound
+itself is unconditional: a stalled ReadIndex must end in a retryable answer,
+not a hang on the caller's own outer context, which a request that set no
+deadline at all would never resolve. Where the StaleRead fallback holds the
+tenant (the system tenant, with a fallback configured), `lookupUser` bounds
+the primary (linearizable) read to `authLookupSyncTimeout` (500 ms) and
+`resolvePermissionSet` bounds the primary resolve to `resolveSyncTimeout`
+(500 ms), so a blip fails over to the fallback promptly. For every other
+tenant there is nothing to fail over to, and the bounds are
+`authLookupTimeout` and `resolveTimeout` (5 s): sized to ride out one leader
+election on a multi-node shard at go-quicraft's default timing (a 2 s
+election timeout, randomized up to twice that) plus the new leader's first
+commit. A miss comes back as the retryable `StoreUnavailableError` or
+`*rbac.ResolveError`/503 the rows above describe; a correctly enrolled
+non-system tenant user gets the retryable error, never a silent deny.
 
-**The user lookup waits out an election of its store's shard.** The 500 ms
-budget bounds one attempt, not the request. When an attempt fails because the
+The 500 ms bound used to apply to every tenant. For a tenant with no fallback
+it did not make anything faster, it only turned a ReadIndex slowed past
+500 ms (for example by an election on a loaded host) into a 503 on a request
+that would have been answered. Every authenticated request pays the user
+lookup, and an MCP tool call is several requests, so under load this
+reddened the multi-node MCP replica-forwarding suite.
+
+**The user lookup waits out an election of its store's shard.** The budget above
+bounds one attempt, not the request. When an attempt fails because the
 shard holding the user is electing a leader or moving it — quicraft's
 timeout, aborted, not-leader, shard-not-ready or ReadIndex-not-ready errors,
 or a `*service.NotLeaderError`, as `service.LeadershipTransient` names them —
@@ -1404,6 +1472,31 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   unauthenticated-redemption and opaque-refusal assertions at its own
   handler, so a transport that forgot to skip authentication for this one
   verb fails there, not only in the shared service test.
+- **Delegations are tested against REAL certificates from a REAL tenant CA.**
+  `pkg/clienttrust` signs delegations with per-tenant login CAs and asserts the
+  authenticator refuses one naming another principal, one signed by another
+  tenant's CA (or by the cluster CA), one that is revoked, one whose
+  revocation cannot be read (503, not 401) or that no revocation checker can
+  judge, one over the lifetime cap, one delegating the system tenant, and one
+  whose extension is malformed; and that plain `crypto/x509` rejects every
+  delegation as an unhandled critical extension. `pkg/auth/delegation`
+  asserts the DER round trip and refuses a non-critical extension.
+  `pkg/auth/middleware` asserts the scope ∩ host-grant intersection and the
+  503 with no audit logger; `pkg/api/rest` asserts a forwarded delegation is
+  verified again by the leader.
+- **The CLI is tested end to end on every transport.**
+  `TestCADelegate_CLI_PerProtocol` (`make integration-test-certificate-authority`)
+  issues a delegation with `qrdb ca delegate`, presents it from a node that
+  accepts that principal, and asserts admission inside the intersection (a
+  read, and a write of the tenant's own database) and refusal outside its
+  scope, for another principal, from another tenant's CA, on another tenant's
+  data, after revocation, after expiry and past 24h of validity even when the
+  tenant's own CA signed it; and that issuance refuses an unknown permission,
+  a lifetime over 24h and a built-in role's name.
+- **An embedder reaches the delegation seams through `sdk/go` alone**: the
+  external-composer build gate (`test/buildgates`) reads a grant with
+  `sdk.DelegationFromCertificate` and composes `node.WithServicePrincipal` from
+  a module of its own.
 
 ## Observability
 

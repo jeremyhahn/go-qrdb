@@ -467,6 +467,71 @@ func TestReserveJoinIdentity_DoesNotReclaimALiveReservation(t *testing.T) {
 	}
 }
 
+func TestReserveJoinIdentity_ReadBackFailureSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{
+		AtomicKVStore:                 kvstore.NewMemoryKVStore(),
+		forcePutIfAbsentFalseOnPrefix: joinIdentityPrefix,
+		failGetOnPrefix:               joinIdentityPrefix,
+	}
+	reserved, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) || storeErr.Op != "get" {
+		t.Fatalf("ReserveJoinIdentity (get error) = %v, want *JoinTokenStoreError for op get", err)
+	}
+	if !errors.Is(err, errInjectedFault) {
+		t.Fatalf("ReserveJoinIdentity (get error) = %v, want it to wrap the store's error", err)
+	}
+	if reserved || pending != nil {
+		t.Fatalf("ReserveJoinIdentity (get error) = (%v, %q), want (false, nil)", reserved, pending)
+	}
+}
+
+// seedExpiredReservation stores a pending reservation whose TTL has passed,
+// the one record ReserveJoinIdentity reclaims through CompareAndSwap.
+func seedExpiredReservation(t *testing.T, store kvstore.AtomicKVStore, nodeURI string) []byte {
+	t.Helper()
+	stale := pendingValue(time.Now().Add(-time.Minute))
+	if err := store.Put(context.Background(), joinIdentityPrefix+nodeURI, stale); err != nil {
+		t.Fatalf("Put (stale pending): %v", err)
+	}
+	return stale
+}
+
+func TestReserveJoinIdentity_ReclaimSwapFailureSurfacesTyped(t *testing.T) {
+	backing := kvstore.NewMemoryKVStore()
+	stale := seedExpiredReservation(t, backing, "node-1")
+	store := &faultyJoinStore{AtomicKVStore: backing, failCompareAndSwapOnPrefix: joinIdentityPrefix}
+
+	reserved, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) || storeErr.Op != "compareandswap" {
+		t.Fatalf("ReserveJoinIdentity (swap error) = %v, want *JoinTokenStoreError for op compareandswap", err)
+	}
+	if reserved {
+		t.Fatal("ReserveJoinIdentity reported a reservation although the reclaim failed")
+	}
+	if got, _ := backing.Get(context.Background(), joinIdentityPrefix+"node-1"); string(got) != string(stale) {
+		t.Fatalf("identity record = %q, want the stale reservation left as it was", got)
+	}
+}
+
+func TestReserveJoinIdentity_LostReclaimRaceIsNotAReservation(t *testing.T) {
+	backing := kvstore.NewMemoryKVStore()
+	stale := seedExpiredReservation(t, backing, "node-1")
+	store := &faultyJoinStore{AtomicKVStore: backing, forceCompareAndSwapFalseOnPrefix: joinIdentityPrefix}
+
+	reserved, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (lost race): %v", err)
+	}
+	if reserved || pending != nil {
+		t.Fatalf("ReserveJoinIdentity (lost race) = (%v, %q), want (false, nil)", reserved, pending)
+	}
+	if got, _ := backing.Get(context.Background(), joinIdentityPrefix+"node-1"); string(got) != string(stale) {
+		t.Fatalf("identity record = %q, want the record the winner left untouched by the loser", got)
+	}
+}
+
 func TestPromoteJoinIdentityAdmitted_SwapsAReservation(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	_, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)

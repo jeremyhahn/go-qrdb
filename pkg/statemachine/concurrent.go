@@ -191,6 +191,10 @@ func NewConcurrentStateMachine(shardID, replicaID uint64, store storage.Storage,
 		// position -- the drop fence rides on it. See guarded_write.go.
 		protocol.OpGuarded: c.handleGuarded,
 
+		// A replicated delete of every key in [start, end), gated by the
+		// range-delete feature. See delete_range.go.
+		protocol.OpDeleteRange: c.handleDeleteRange,
+
 		// MVCC
 		protocol.OpMVCCPut:    c.handleMVCCPut,
 		protocol.OpMVCCDelete: c.handleMVCCDelete,
@@ -847,12 +851,20 @@ func (c *ConcurrentStateMachine) handleBatch(payload []byte, revision uint64) (s
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "batch: " + err.Error()}
 	}
+	if err := c.applyBatchOps(ops, revision); err != nil {
+		return sm.Result{}, err
+	}
+	return sm.Result{Value: revision}, nil
+}
 
+// applyBatchOps applies decoded batch operations to the shard cache and
+// notifies watchers of each.
+func (c *ConcurrentStateMachine) applyBatchOps(ops []protocol.DecodedOp, revision uint64) error {
 	// Refuse the whole batch before applying any of it: the loop below mutates
 	// as it goes, so validating inside it would leave earlier operations
 	// committed and notified for a batch the caller is told was refused.
 	if opErr := validateBatchOps(ops); opErr != nil {
-		return sm.Result{}, opErr
+		return opErr
 	}
 
 	for _, op := range ops {
@@ -871,11 +883,10 @@ func (c *ConcurrentStateMachine) handleBatch(payload []byte, revision uint64) (s
 				c.watchManager.Notify(key, nil, revision, true)
 			}
 		default:
-			return sm.Result{}, &InvalidOpcodeError{Op: op.Type}
+			return &InvalidOpcodeError{Op: op.Type}
 		}
 	}
-
-	return sm.Result{Value: revision}, nil
+	return nil
 }
 
 // ---------------------------------------------------------------------------

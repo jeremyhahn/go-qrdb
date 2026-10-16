@@ -44,7 +44,7 @@ func rotateTwiceWithGrace(t *testing.T, svc *CredentialService, name string) {
 func assertVersionGone(t *testing.T, svc *CredentialService, name string, version uint64) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := svc.RetrieveCredentialVersion(ctx, name, version)
+	_, err := svc.retrieveVersionBytes(ctx, name, version)
 	if !errors.Is(err, ErrCredentialNotFound) && !errors.Is(err, ErrVersionNotFound) && !errors.Is(err, ErrVersionExpired) {
 		t.Fatalf("RetrieveCredentialVersion(%d) = %v, want one of ErrCredentialNotFound/ErrVersionNotFound/ErrVersionExpired", version, err)
 	}
@@ -62,7 +62,7 @@ func TestDeleteCredential_Barrier_RemovesCurrentMetaAndAllVersions(t *testing.T)
 
 	require.NoError(t, svc.DeleteCredential(ctx, "k"))
 
-	_, err = svc.RetrieveCredential(ctx, "k")
+	_, err = svc.retrieveBytes(ctx, "k")
 	assert.ErrorIs(t, err, ErrCredentialNotFound)
 
 	assertVersionGone(t, svc, "k", 1)
@@ -114,7 +114,7 @@ func TestDeleteCredential_Barrier_RemovesAllVersionsAcrossRestart(t *testing.T) 
 	svc2, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, b2, testLogger())
 	require.NoError(t, err)
 
-	_, err = svc2.RetrieveCredential(ctx, "k")
+	_, err = svc2.retrieveBytes(ctx, "k")
 	assert.ErrorIs(t, err, ErrCredentialNotFound)
 	assertVersionGone(t, svc2, "k", 1)
 	assertVersionGone(t, svc2, "k", 2)
@@ -159,7 +159,7 @@ func TestDeleteCredential_Manual_RemovesAllVersionsAndMeta(t *testing.T) {
 	// "blocks" behavior with a short timeout instead of hanging forever.
 	timeoutCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
-	_, err = svc.RetrieveCredential(timeoutCtx, "k")
+	_, err = svc.retrieveBytes(timeoutCtx, "k")
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 
 	assertVersionGone(t, svc, "k", 1)

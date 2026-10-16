@@ -235,3 +235,58 @@ func TestRequireGuardedBatch(t *testing.T) {
 		})
 	}
 }
+
+// TestNewGuardedKVServiceAdapter_RefusesANilTransactionService: a guarded
+// store with no transaction plane would claim a capability it cannot keep, so
+// the constructor refuses rather than build one.
+func TestNewGuardedKVServiceAdapter_RefusesANilTransactionService(t *testing.T) {
+	adapter, err := newGuardedKVServiceAdapter(newMockKVStore(map[string][]byte{}), nil, nil, nil)
+	if !errors.Is(err, ErrTransactionServiceRequired) {
+		t.Fatalf("err = %v, want ErrTransactionServiceRequired", err)
+	}
+	if adapter != nil {
+		t.Fatalf("adapter = %T alongside the refusal, want nil", adapter)
+	}
+}
+
+// TestKVServiceAdapter_CompareAndDeleteDelegatesToTheService: the condition is
+// the KV service's, so the adapter passes the key and expected value through
+// unchanged and reports the service's answer and error as its own.
+func TestKVServiceAdapter_CompareAndDeleteDelegatesToTheService(t *testing.T) {
+	refused := errors.New("not leader")
+	for _, tc := range []struct {
+		name        string
+		deleted     bool
+		err         error
+		wantDeleted bool
+	}{
+		{name: "matched", deleted: true, wantDeleted: true},
+		{name: "value changed", deleted: false},
+		{name: "service error", err: refused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newMockKVStore(map[string][]byte{})
+			var gotKey string
+			var gotExpected []byte
+			svc.compareAndDeleteFn = func(_ context.Context, key string, expected []byte) (bool, error) {
+				gotKey, gotExpected = key, expected
+				return tc.deleted, tc.err
+			}
+			adapter, err := newGuardedKVServiceAdapter(svc, &mockTxServicer{}, nil, nil)
+			if err != nil {
+				t.Fatalf("newGuardedKVServiceAdapter: %v", err)
+			}
+
+			deleted, err := adapter.(kvstore.AtomicKVStore).CompareAndDelete(context.Background(), "lock/a", []byte("owner-1"))
+			if !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
+				t.Fatalf("CompareAndDelete err = %v, want %v", err, tc.err)
+			}
+			if deleted != tc.wantDeleted {
+				t.Errorf("deleted = %v, want %v", deleted, tc.wantDeleted)
+			}
+			if gotKey != "lock/a" || string(gotExpected) != "owner-1" {
+				t.Errorf("service saw (%q, %q), want (lock/a, owner-1)", gotKey, gotExpected)
+			}
+		})
+	}
+}

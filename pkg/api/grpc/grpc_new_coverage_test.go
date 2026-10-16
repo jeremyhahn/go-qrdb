@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -108,8 +109,12 @@ func (c *coverageGRPCCredentialService) CredentialDelete(_ context.Context, _ st
 func (c *coverageGRPCCredentialService) CredentialStore(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
-func (c *coverageGRPCCredentialService) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
-	return nil, nil
+func (c *coverageGRPCCredentialService) CredentialRetrieveBuffer(_ context.Context, _ string) (*secure.Buffer, error) {
+	return secure.NewBufferFromBytes([]byte("coverage-value"))
+}
+
+func (c *coverageGRPCCredentialService) CredentialRetrieveVersionBuffer(_ context.Context, _ string, _ uint64) (*secure.Buffer, error) {
+	return secure.NewBufferFromBytes([]byte("coverage-value"))
 }
 
 func (c *coverageGRPCCredentialService) CredentialList(_ context.Context) ([]string, error) {
@@ -117,9 +122,6 @@ func (c *coverageGRPCCredentialService) CredentialList(_ context.Context) ([]str
 }
 func (c *coverageGRPCCredentialService) CredentialRotate(_ context.Context, _ string, _ credentials.RotateOptions) (*credentials.RotateResult, error) {
 	return &credentials.RotateResult{}, nil
-}
-func (c *coverageGRPCCredentialService) CredentialRetrieveVersion(_ context.Context, _ string, _ uint64) ([]byte, error) {
-	return nil, nil
 }
 func (c *coverageGRPCCredentialService) CredentialListVersions(_ context.Context, _ string) ([]credentials.CredentialVersion, error) {
 	return nil, nil

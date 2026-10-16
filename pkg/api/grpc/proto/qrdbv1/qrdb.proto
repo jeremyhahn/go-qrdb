@@ -20,7 +20,7 @@ option go_package = "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1";
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/wrappers.proto";
-import "pkg/api/grpc/proto/qrdbv1/authz.proto";
+import "qrdb/v1/permission.proto";
 
 // QRDBService is the gRPC API for the QRDB distributed key-value database.
 // It provides data-plane (KV CRUD) and control-plane (admin) operations.
@@ -525,6 +525,14 @@ service QRDBService {
         option (qrdb.v1.permission) = "admin:node_compaction";
     }
 
+    // GetStateHashes returns the answering node's replica state hashes: each
+    // replica's applied index and the SHA-256 digest of its state machine at
+    // that index, read locally with no proposal. admin:state_hash is
+    // ScopeCross: system tenant only.
+    rpc GetStateHashes(GetStateHashesRequest) returns (GetStateHashesResponse) {
+        option (qrdb.v1.permission) = "admin:state_hash";
+    }
+
     // MintJoinToken mints a single-use, identity-bound member-side CSR join
     // token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
     // no built-in role carries cluster:join_token by default.
@@ -715,6 +723,14 @@ service QRDBService {
     // tenant's registered trust anchors and authenticates as that account.
     rpc EnrollCert(EnrollCertRequest) returns (EnrolledCertResponse) {
         option (qrdb.v1.permission) = "certs:enroll";
+    }
+
+    // IssueDelegation has the caller's own tenant's CA issue a short-lived
+    // delegation certificate from a CSR: the named service principal may act
+    // inside the tenant with at most the delegated scope. The system tenant
+    // and a delegated caller are refused.
+    rpc IssueDelegation(IssueDelegationRequest) returns (IssuedDelegationResponse) {
+        option (qrdb.v1.permission) = "certs:delegate";
     }
 
     // TrustAnchorAdd registers CA certificates as trust anchors of
@@ -3176,6 +3192,29 @@ message EnrolledCertResponse {
     string not_after = 7;
 }
 
+// IssueDelegationRequest asks the caller's own tenant's CA to delegate scope
+// to a service principal. Only the CSR's key is used.
+message IssueDelegationRequest {
+    string principal = 1;
+    repeated string scope = 2;
+    string csr_pem = 3;
+    // ttl is a Go duration; empty is the delegation default of one hour, and
+    // more than 24h is refused.
+    string ttl = 4;
+}
+
+// IssuedDelegationResponse is a delegation certificate the tenant's CA
+// issued; it is revoked by serial like any other.
+message IssuedDelegationResponse {
+    string tenant_id = 1;
+    string principal = 2;
+    repeated string scope = 3;
+    string cert_pem = 4;
+    string serial = 5;
+    // not_after is RFC 3339.
+    string not_after = 6;
+}
+
 // TrustAnchorAddRequest registers every CA certificate in certs_pem.
 message TrustAnchorAddRequest {
     string tenant_id = 1;
@@ -3566,6 +3605,39 @@ message SetNodeCompactionRequest {
 // unset means none.
 message NodeCompactionResponse {
     DatabaseCompactionConfig compaction = 1;
+}
+
+// GetStateHashesRequest selects the shards whose replica state hashes the
+// answering node reports. Empty selects every shard; an ID the node does not
+// replicate selects nothing.
+message GetStateHashesRequest {
+    repeated uint64 shard_ids = 1;
+}
+
+// ReplicaStateHash is the SHA-256 state digest of one of the answering node's
+// replicas at its applied index.
+message ReplicaStateHash {
+    // tenant_id is "" for a shard of the node's own (system) host, otherwise
+    // the isolated tenant whose host runs the shard.
+    string tenant_id = 1;
+    uint64 shard_id = 2;
+    uint64 replica_id = 3;
+    // applied_index is the applied index the digest was computed at.
+    uint64 applied_index = 4;
+    // records is how many records the digest covers.
+    uint64 records = 5;
+    // hash is the digest, 64 lowercase hex digits.
+    string hash = 6;
+    // error is empty on success; otherwise why this replica has no digest,
+    // with applied_index, records and hash zero.
+    string error = 7;
+}
+
+// GetStateHashesResponse is one node's replica state hashes, ordered by
+// tenant_id, then shard_id.
+message GetStateHashesResponse {
+    string node_id = 1;
+    repeated ReplicaStateHash replicas = 2;
 }
 
 // DatabaseSQLConfig holds a database's SQL settings.
@@ -4879,6 +4951,19 @@ message RebalanceExecutionResponse {
     int32  moves_failed    = 2;
     int64  duration_ns     = 3;
     double final_imbalance = 4;
+    // failures carries one entry per failed move, in plan order.
+    repeated RebalanceMoveFailure failures = 5;
+}
+
+// RebalanceMoveFailure names a move that could not be completed and why.
+message RebalanceMoveFailure {
+    uint64 shard_id  = 1;
+    string from_node = 2;
+    string to_node   = 3;
+    // step is the dedicated-group move phase that failed; empty for a
+    // generic shard move.
+    string step      = 4;
+    string error     = 5;
 }
 
 // NodeLoad describes the load distribution on a single node.
@@ -5742,6 +5827,14 @@ service UserAuthFactorService {
         option (qrdb.v1.permission) = "user_authfactors:remove";
     }
 
+    // Delete hard-deletes an auth factor and frees its credential and SPKI
+    // indexes, so a rolled-back add can bind the same credential again. It
+    // carries the add permission because it undoes an add; a revoked factor
+    // is refused.
+    rpc Delete(UserAuthFactorDeleteRequest) returns (UserAuthFactorDeleteResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:add";
+    }
+
     // Rotate atomically replaces one factor with another.
     rpc Rotate(UserAuthFactorRotateRequest) returns (UserAuthFactorRotateResponse) {
         option (qrdb.v1.permission) = "user_authfactors:rotate";
@@ -5788,11 +5881,22 @@ message UserAuthFactorAddRequest {
     string              created_by = 6;
     // Optional renewal-stable secondary lookup key (mtls / piv).
     bytes               spki_credential = 7;
+    // if_no_active_type makes the add conditional: it is refused with
+    // ALREADY_EXISTS and a FACTOR_CONDITION_FAILED ErrorInfo when the user
+    // already holds an active factor of type.
+    bool                if_no_active_type = 8;
+    // expected_factor_set_version makes the add conditional: it is refused
+    // the same way unless the user's factor-set version -- the one
+    // UserAuthFactorListResponse reports -- still equals it.
+    optional uint64     expected_factor_set_version = 9;
 }
 
 // UserAuthFactorAddResponse carries the newly registered factor.
 message UserAuthFactorAddResponse {
     UserAuthFactorRecord factor = 1;
+    // factor_set_version is the version a conditional add committed; zero
+    // for an unconditional add.
+    uint64               factor_set_version = 2;
 }
 
 // UserAuthFactorListRequest carries the user ID to list factors for.
@@ -5804,6 +5908,9 @@ message UserAuthFactorListRequest {
 message UserAuthFactorListResponse {
     repeated UserAuthFactorRecord factors = 1;
     int32                         total   = 2;
+    // factor_set_version is the user's factor-set version, read before the
+    // factors were listed.
+    uint64                        factor_set_version = 3;
 }
 
 // UserAuthFactorGetRequest carries the factor ID to retrieve.
@@ -5824,6 +5931,18 @@ message UserAuthFactorRemoveRequest {
 
 // UserAuthFactorRemoveResponse reports the removal outcome.
 message UserAuthFactorRemoveResponse {
+    string status = 1;
+}
+
+// UserAuthFactorDeleteRequest carries the factor ID to hard-delete. force
+// permits deleting the user's last active factor.
+message UserAuthFactorDeleteRequest {
+    string factor_id = 1;
+    bool   force     = 2;
+}
+
+// UserAuthFactorDeleteResponse reports the deletion outcome.
+message UserAuthFactorDeleteResponse {
     string status = 1;
 }
 

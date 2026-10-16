@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 ## Exported surface
 
@@ -20,6 +20,41 @@ Composition-plane options (Tier 2):
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
 func WithPINBackend(backend pin.PINBackend) ServerOption
 ```
+
+Conditional add (`pkg/auth`, `pkg/service`, re-exported by `sdk/go`):
+
+```go
+// pkg/auth
+type FactorAddCondition struct {
+	NoActiveOfType  bool    // refuse while the user holds an active factor of the type
+	ExpectedVersion *uint64 // refuse unless the factor set is at this version
+}
+func FactorAddConditionOf(noActiveOfType bool, expectedVersion *uint64) *FactorAddCondition // nil when neither is set
+func (c FactorAddCondition) Validate() error // refuses an empty condition
+func RefuseRotationCondition(cond *FactorAddCondition) error
+type FactorConditionFailedError struct{ UserID; Type; Condition; ExpectedVersion; CurrentVersion; ExistingFactorID }
+var ErrFactorConditionFailed error // sentinel FactorConditionFailedError matches
+
+// pkg/service — UserAuthFactorServicer gains
+AddConditional(ctx, userID, factor, cond auth.FactorAddCondition) (uint64, error)
+FactorSetVersion(ctx, userID) (uint64, error)
+func AddAuthFactor(ctx, svc, userID, factor, cond *auth.FactorAddCondition) (uint64, error)
+func ListAuthFactors(ctx, svc, userID) ([]*auth.AuthFactor, uint64, error)
+type FactorSetContendedError struct{ UserID uint64; Attempts int } // unwraps to ErrFactorSetContended
+var ErrUserAuthFactorAtomicStoreRequired error
+
+// sdk/go/transport
+AuthFactorAddRequest.IfNoActiveType           bool
+AuthFactorAddRequest.ExpectedFactorSetVersion *uint64
+AuthFactorAddResponse.FactorSetVersion        uint64 // 0 for an unconditional add
+AuthFactorListResponse.FactorSetVersion       uint64
+```
+
+`sdk/go` re-exports `ErrFactorConditionFailed`, `FactorConditionFailedError`,
+`FactorAddCondition`, `FactorConditionKind`, `FactorConditionNoActiveOfType`
+and `FactorConditionExpectedVersion` as aliases, so `errors.Is` and
+`errors.As` match the canonical declarations. Per-transport field names are in
+[api.md](api.md#conditional-add--the-one-time-claim-and-the-expected-version).
 
 ### `PINBackend` — the canonical contract
 
@@ -176,6 +211,82 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   cannot be asserted to it (pinned by a test in `sdk/go/transport/embedded`).
   Read the keys back by name: `auth.MetadataAttestLevel`,
   `auth.MetadataAttestAAGUID`. All of it is re-exported by `sdk/go`.
+- **A conditional add is decided by one guarded write on the factor-set
+  record** (`__sys:auth/factorsets/{userID}`, JSON `{"version":N,"active":{id:type}}`),
+  never by a read the caller or the handler made first. The record is
+  committed with `PutIfAbsent` when absent and `CompareAndSwap` against the
+  exact bytes read otherwise; no Raft opcode exists for it. Of N concurrent
+  adds racing one claim, exactly one commits.
+- **Every membership change moves the version.** `Add`, `AddConditional`,
+  `Remove`, `Delete` and `Rotate` all commit the set, so a version read from `List`
+  is stale as soon as anything a condition could depend on changes. Relabel
+  does not change membership and does not move it.
+- **The version is checked before the type**, so a caller holding a stale
+  version learns that first, whatever else it asked.
+- **The commit loop is bounded at 64 attempts.** Each refused swap means another
+  change to the same user committed in between; reaching the bound returns
+  `*service.FactorSetContendedError` and the caller retries.
+- **The new factor's primary record is reserved before the set commits and
+  released with `CompareAndDelete` when the add is refused.** A caller may
+  name the factor id, so the record is written behind an absence guard
+  (`PutIfAbsent`, or the batch guarding the key's absence): an id already in
+  use, by this user or any other, is refused with
+  `*auth.FactorAlreadyExistsError` before anything is written, and the
+  release can only remove a record this add created. A store with neither
+  guard reads the key first, and an add there is never released. The user and
+  lookup indexes commit in the SAME multi-guarded batch as the factor set
+  (`commitEnrollment`), guarded on the set record the decision was made
+  against, on the primary record still holding the bytes the add wrote, and
+  on every index key being absent. A hard `Delete` commits over the same
+  primary and set record, so the two serialise: a `Delete` that lands first
+  refuses the add with `*auth.FactorNotFoundError` and no index written, one
+  that lands after removes the indexes the add wrote. An index claimed by
+  another node since the duplicate check refuses the add with
+  `*auth.FactorAlreadyExistsError`. Writing the indexes after the commit
+  would let them outlive a `Delete` landing in between, naming a deleted
+  factor and keeping its credential reserved. On a store with only a
+  single-key guard the indexes follow the commit; such a store refuses a hard
+  `Delete`, and each commit re-derives the active set from the record's ids
+  plus the user index, reading each primary record, so a process that stops
+  between the commit and the index writes is repaired by the next commit.
+- **`ListAuthFactors` reads the version before the factors**, so a version it
+  reports can only be older than the list, never newer: an add conditioned
+  on it is refused rather than accepted against a set the caller never saw.
+- **A store without guarded writes refuses every conditional add** with
+  `service.ErrUserAuthFactorAtomicStoreRequired` and reports version 0. It is
+  never silently treated as unconditional.
+- **`Delete` is one multi-key guarded batch, and nothing else.** It plans
+  from the primary record, the factor set and every index key
+  `factorIndexKeys` names (user index, credential lookup, SPKI lookup),
+  guards each on the bytes it read, and commits the record delete, the
+  index deletes and the next set through
+  `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged` — one proposal.
+  A refused batch re-plans, inside the same 64-attempt bound. An index whose
+  value names another factor is guarded but not deleted. A revoked factor is
+  refused with `*auth.FactorRevokedError` before any write, so its claims
+  stay; a store without the batch is refused with
+  `service.ErrUserAuthFactorBatchStoreRequired`. It is audited as `delete`
+  and authorized as `user_authfactors:add`, the add it undoes.
+- **`Remove` and `Rotate` commit their records and the next set together.**
+  On a store with the multi-guarded batch, `Remove` writes the revoked
+  record and the set without it in one batch, guarded on both as read, with
+  the same last-factor rule and 64-attempt bound as `Delete`. `Rotate` writes
+  the new record, its index entries, the revoked old record and the set with
+  the new factor in and the old one out in one batch. That batch is guarded
+  on the old record and the set as read, on the new record being absent, and
+  on each new index entry as read. An entry that already names the old
+  factor, the SPKI lookup of a same-keypair renewal, is repointed. So a
+  failed write leaves neither the revocation nor the version. A hard
+  `Delete` of the old factor landing in between refuses the batch, and the
+  re-plan returns `*auth.FactorNotFoundError` rather than writing the deleted
+  record back as revoked. A new id that names an existing record, or a new
+  credential claimed in between, is refused with
+  `*auth.FactorAlreadyExistsError`. On a store with only a single-key guard
+  each record is written on its own and the set commits last; the new record
+  is reserved behind the same absence guard as an add's, so an id in use,
+  the old factor's own included, is refused before anything is written.
+- **Rotate takes no condition.** A rotation request carrying one is refused by
+  `auth.RefuseRotationCondition` on every transport before any write.
 - **qrdb never interprets `FactorEnrollment.Data`.**
 - **The qrdb CLI performs no hardware verification.** `auth login` resolves a
   `(method, lookup key)` tuple to a user through the `LoginAuthFactor` RPC.
@@ -229,7 +340,7 @@ func MigrateFactorsToTenants(ctx, shared kvstore.KVStore, resolver, owners, logg
 |---|---|---|
 | `Add`, `AddAttested` | the tenant that **owns the user id**, via `tenant.IdentityIndex`; a caller that may not reach it is refused with `*tenant.CrossTenantDeniedError` | an enrolment must land where the user lives, or the login that follows — begun under the user's tenant — finds nothing and reports a bad credential |
 | `List`, `HasActiveFactor` | the tenant that owns the user id, via `tenant.OwningTenant`; an unreachable or unindexed id routes to the caller's own tenant and finds nothing | the shared by-id read rule; it discloses nothing about where the id lives |
-| `Get`, `Remove`, `Rotate`, `Relabel`, `MarkUsed` | the **context** tenant | a factor id is issued inside a tenant and only travels back to it; there is no index for it and none is wanted |
+| `Get`, `Remove`, `Delete`, `Rotate`, `Relabel`, `MarkUsed` | the **context** tenant | a factor id is issued inside a tenant and only travels back to it; there is no index for it and none is wanted |
 | `LookupByCredentialKey` | the **context** tenant — the tenant the login was begun under | this is the isolation boundary; nothing downstream re-checks it |
 
 The write path is stricter than the read path on purpose. A write routed to
@@ -264,7 +375,7 @@ func NewRoutingAuthFactorService(cfg RoutingAuthFactorServiceConfig) (AuthFactor
   label — and `ChallengeFactor`, `VerifyFactor`, `ListFactors` and
   `RevokeFactor` all key on an enrollment id issued by `EnrollFactor` itself,
   inside the enrolling tenant. That is exactly the "factor id" shape the
-  table above documents for `Get`/`Remove`/`Rotate`/`Relabel`/`MarkUsed`: the
+  table above documents for `Get`/`Remove`/`Delete`/`Rotate`/`Relabel`/`MarkUsed`: the
   id only ever travels back to the tenant that issued it, so **every verb on
   this service routes on the context tenant**, and a caller presenting
   another tenant's enrollment id gets `authfactors.EnrollmentNotFoundError`
@@ -555,6 +666,15 @@ Factor sentinels (`pkg/auth/factors_errors.go`), relevant here:
 |---|---|
 | `ErrReservedMetadata` | caller-supplied metadata carried a key inside the server-owned `attest_` namespace; carried by `*ReservedMetadataKeyError`, which names the key and the prefix |
 | `ErrInvalidAttestation` | an `AttestationRecorder` call named a level outside `none` / `software` / `hardware`; carried by `*InvalidAttestationError`, which names the level. Never crosses a wire — the recorder is in-process only |
+| `ErrFactorConditionFailed` | a conditional add's condition did not hold; carried by `*FactorConditionFailedError`, which names the user, type, condition kind, expected and current version and, for a type claim, the active factor that holds it. Classified AlreadyExists (409 / `ALREADY_EXISTS`) and carried as the structured refusal `FACTOR_CONDITION_FAILED` in domain `qrdb.v1`; every SDK transport decodes it back into the typed error |
+
+Factor-set errors (`pkg/service/user_auth_factor_set.go`):
+
+| Error | Meaning |
+|---|---|
+| `*FactorSetContendedError` (unwraps to `ErrFactorSetContended`) | 64 consecutive commits of the user's factor set lost to other changes; classified Aborted (409 / `ABORTED`); retry |
+| `ErrUserAuthFactorAtomicStoreRequired` | a conditional add on a store with no guarded writes; unclassified, so 500 / `INTERNAL` — it is a composition fault, not a caller error |
+| `*FactorSetDecodeError` | a factor-set or primary record read during a commit did not decode; fails closed |
 
 Typed errors carrying payload:
 
@@ -585,7 +705,7 @@ storage.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol and the factor-lookup wire-encoding suite (REST, gRPC, QUIC, MCP; in-process, no Unix). Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol, the conditional-add suite (`auth_factor_condition_cli_test.go`: the one-time claim, the expected version and N racing claims through the CLI per protocol, and the same over embedded through `sdk/go/node`'s in-process client), and the factor-lookup wire-encoding suite (REST, gRPC, QUIC, MCP; in-process, no Unix). Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: each `PINBackend` method against `SoftwareBackend`, the 6-character
   floor enforced in `Service`, constant-time comparison, algorithm resolution
@@ -603,6 +723,19 @@ storage.
   seams -- that wrong SO PINs spent on a seal lock out a rekey on the same
   counter.
 - **Error tests** for every sentinel and typed error above.
+- **Conditional add** (`pkg/service/user_auth_factor_set_test.go`): the
+  condition holding and failing for each kind, both together, a version
+  mismatch, invalid input, a non-atomic store refused, revoked and other
+  users' factors not counting, rotated and pre-record factors counting, the
+  version moving on every membership change, the bounded commit loop under
+  contention, store faults and undecodable records failing closed, and
+  `TestAddConditional_concurrentClaimsExactlyOneWins` — N concurrent claims,
+  exactly one success. `pkg/auth/factor_condition_test.go` pins validation and
+  the refusal's metadata round trip; `pkg/api/errclass/refusal_test.go` the
+  classification; each server package's `user_auth_factor_condition_test.go`
+  the wire fields and the carried refusal; each SDK transport's
+  `refusal_test.go` the decode back into the typed error, and that an
+  unrelated conflict is not decoded as one.
 
 ## Observability
 

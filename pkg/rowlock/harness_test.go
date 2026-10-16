@@ -24,7 +24,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -154,44 +153,5 @@ func mustReturn(t *testing.T, ch <-chan error, what string) error {
 	}
 }
 
-// waitersNow reads qrdb_sql_row_lock_waiters, the number of requests blocked
-// inside Owner.wait.
-func waitersNow(t *testing.T) float64 {
-	t.Helper()
-	families, err := metrics.Registry().Gather()
-	if err != nil {
-		t.Fatalf("gather metrics: %v", err)
-	}
-	for _, f := range families {
-		if f.GetName() != "qrdb_sql_row_lock_waiters" {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			return m.GetGauge().GetValue()
-		}
-	}
-	return 0
-}
-
 // waitWaiting blocks until want requests are blocked inside Owner.wait.
 //
-// A request enters wait only AFTER its own deadlock check. waitQueued alone
-// is not enough to order a deadlock test: it returns once the asynchronous
-// request's record is in the queue, which can be before that request has run
-// its check. If the test's next request then completes the cycle first, the
-// earlier request finds the cycle too and makes itself the victim, and the
-// test fails one run in tens under -race.
-func waitWaiting(t *testing.T, want float64) {
-	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	for waitersNow(t) < want {
-		select {
-		case <-deadline.C:
-			t.Fatalf("waiters never reached %v (now %v)", want, waitersNow(t))
-		case <-tick.C:
-		}
-	}
-}

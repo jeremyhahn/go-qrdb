@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
 
 The `Factor` framework, the user-side N-factor model, and PIN custody with
 backend-native lockout.
@@ -31,7 +31,7 @@ The SDK deliberately exposes two, and they are not the same thing:
 | Accessor | Model | Used by |
 |---|---|---|
 | `Client.AuthFactors()` | ceremony-time custodian enrolment, challenge, verify, revoke | custodian unseal flows |
-| `Client.UserAuthFactors()` | the user-side N-factor model: one User → many AuthFactors, with Add / List / Get / Remove / Rotate / Relabel / Login | ordinary user authentication |
+| `Client.UserAuthFactors()` | the user-side N-factor model: one User → many AuthFactors, with Add / List / Get / Remove / Delete / Rotate / Relabel / Login | ordinary user authentication |
 
 `UserAuthFactors()` returns **nil** when the transport does not implement it.
 Every transport, including embedded, implements `transport.UserAuthFactorClient`
@@ -80,6 +80,72 @@ every call — `EnrollFactor`, `ChallengeFactor`, `VerifyFactor`, `ListFactors`,
 surface applies to its own by-id verbs. See
 [engineering.md](engineering.md#the-custodian-surface-is-routed-too).
 
+### Conditional add: one guarded write decides it
+
+A consumer that hands out a one-time claim — "this user may enrol their first
+PIV card, once" — needs the check and the add to be one step. Two concurrent
+adds that each read "no PIV card yet" and each write one is the defect, and no
+amount of checking before the write closes that window.
+
+So every user's factors carry one more record: the **factor set**, at
+`__sys:auth/factorsets/{userID}` in the same routed store as the factors
+themselves, holding a version and the user's active factor ids by type. An
+`Add` that carries a condition — *no active factor of this type*, or *the set
+is at version N* — evaluates it against that record and commits the new set
+with **one guarded write**: `PutIfAbsent` for the first, `CompareAndSwap`
+against the bytes it read for every later one. Two adds that read the same
+version cannot both swap; the loser re-reads, finds the condition false, and
+is refused with `auth.FactorConditionFailedError`. The decision is the write's,
+so it holds wherever the write is linearizable: on one node, and through Raft
+on many, with no opcode the cluster does not already apply.
+
+Every membership change — `Add`, `Remove`, `Delete`, `Rotate` — commits the
+set the same way, so the version a caller read from `List` moves whenever anything a
+condition could depend on moves. An unconditional add commits it too; it only
+reports no version back.
+
+The record is a cache of the user's factors, not their source of truth. Each
+commit re-derives the active set from the primary records it names plus the
+user index, so a process that stopped between the set commit and the index
+writes leaves nothing a later commit does not repair. The new factor's primary
+record is written before the set commits and released with `CompareAndDelete`
+when the condition refuses it, so a refused add leaves nothing behind.
+
+A store with no guarded writes cannot make this decision and does not pretend
+to: a conditional add on it is refused with
+`service.ErrUserAuthFactorAtomicStoreRequired`, and `List` reports version 0.
+
+### Revoke and delete: two ways a factor ends
+
+A factor's credential and SubjectPublicKeyInfo are each claimed by an index
+record naming the factor, and an add that finds a claim is refused. `Remove`
+is a **revocation**: the record is stamped and every claim stays, so a
+credential an administrator withdrew can never be bound again — not by the
+same user, not by anyone in the tenant.
+
+That is wrong for the other way a factor ends. A caller that adds a factor
+and then has to roll back — the enrolment it was part of failed — would
+leave the credential claimed by a factor that never served, and the retry
+would be refused for colliding with its own abandoned attempt. `Delete` ends
+the factor without a trace: the primary record, the user index entry, every
+claim naming it and the factor-set update go in **one** multi-key guarded
+batch (`kvstore.MultiGuardedBatchKVStore`, one Raft proposal on a cluster).
+Each key the batch writes is guarded on the bytes the delete read, so a
+concurrent change to any of them aborts the batch and the delete re-plans;
+nothing is ever half-removed. A claim that names a different factor is
+guarded and left alone.
+
+Delete **refuses a revoked factor**. If it did not, delete-then-add would be a
+way to undo any revocation, and the claims a revocation keeps are the whole of
+what makes it permanent. The two verbs therefore partition the factor's life:
+`Delete` before revocation, nothing after it.
+
+A store that cannot commit several guarded keys at once cannot make the delete
+atomic and does not try: `Delete` on it is refused with
+`service.ErrUserAuthFactorBatchStoreRequired`. Every production store — the
+plaintext engine store and the tenant barrier's encrypted store — implements
+the batch.
+
 ### Alternatives rejected
 
 - **Putting the tenant in the lookup key** (`.../lookup/{tenant}/{type}/...`).
@@ -96,6 +162,23 @@ surface applies to its own by-id verbs. See
   tenant to enrol a credential is refused for a collision with a record it
   cannot see, and told the factor id that caused it. A boundary enforced after
   the read is also one any new caller of the store can skip.
+- **A new Raft opcode for the conditional add.** Rejected. Every node would
+  need the opcode before any could propose it, which is a cluster feature gate
+  for a decision the existing guarded writes already make linearizably.
+- **Deciding the condition from a `List` before the `Add`.** Rejected — that
+  is the race the feature exists to close. A caller may still `List` to learn
+  the version; the server decides against the record, at the write.
+- **A lock record around the add.** Rejected. A lock needs a holder, a lease
+  and a recovery path for a holder that dies, all to serialize one write that
+  `CompareAndSwap` already serializes, and it would stall every other change
+  to the user's factors while held.
+- **Freeing the claims on `Remove`.** Rejected: a revocation that releases
+  the credential is a revocation the next add can reverse. Revocation keeps
+  its claims; only the separate `Delete`, refused once revoked, frees them.
+- **Deleting with sequential writes.** Rejected: a process that stopped
+  between the record's delete and its index deletes would leave the
+  credential claimed by a factor that no longer exists, which is the defect
+  `Delete` is for, with no record left to retry from.
 - **Verifying hardware factors in qrdb.** Rejected — the whole point of the
   registry is that qrdb never imports a hardware SDK. It ships the framework and
   one reference factor.

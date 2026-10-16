@@ -351,7 +351,7 @@ func TestE2E_CredentialRetrieveVersion_UnmarshalError(t *testing.T) {
 	srv.SetResponder("credential.RetrieveVersion", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageProto
 	})
-	if _, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1}); err == nil {
+	if _, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
@@ -756,6 +756,16 @@ func TestE2E_RemoveAuthFactor_UnmarshalError(t *testing.T) {
 		return wire.StatusOK, garbageJSON
 	})
 	if _, err := tr.RemoveAuthFactor(context.Background(), &transport.AuthFactorRemoveRequest{FactorID: "f1"}); err == nil {
+		t.Fatal("expected unmarshal error")
+	}
+}
+
+func TestE2E_DeleteAuthFactor_UnmarshalError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("userauthfactor.Delete", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, garbageJSON
+	})
+	if _, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{FactorID: "f1"}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }

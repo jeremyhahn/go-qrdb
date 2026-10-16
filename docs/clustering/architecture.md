@@ -771,6 +771,48 @@ cadence is `DefaultMembershipPollInterval`.
   works over every transport including unary-only REST; it polls at
   `DefaultMembershipPollInterval`.
 
+## Replica state hashes
+
+**Problem.** Raft guarantees every replica of a shard applies the same log in
+the same order. It does not detect a replica whose state machine applied it
+differently: a non-deterministic apply, a storage fault, or state written
+around the log. go-quicraft's `StateMachineHash` cannot be used for this
+comparison, for two reasons:
+
+- it reads the applied index and then the hash in two steps, so on a live
+  replica the pair can straddle an apply;
+- it is a 64-bit non-cryptographic hash, and each state-machine type defines
+  its own.
+
+**Shape chosen.** A per-node admin read, `admin:state_hash`, that returns for
+every local replica its applied index and a SHA-256 digest of its replicated
+records at exactly that index. The digest is computed by the state machine
+itself, answering a query through `Lookup` with no proposal, over a view
+pinned to the index it reports:
+
+- the `pebble` and `mvcc` state machines use a storage snapshot;
+- the KV state machines hold their batch lock for the scan.
+
+The record set is exactly what a snapshot of the shard carries, and the
+encoding is canonical, length-prefixed and versioned. Equal state therefore
+gives an equal digest, whichever `sm_storage` backend holds it. A caller
+compares replicas by asking each node, because the point of the read is that
+no node vouches for another.
+
+**Isolated tenants** run their own hosts, so each tenant host computes its
+own replicas' digests inside its barrier. The read lists only tenant hosts
+already running. A diagnostic must never be what starts a tenant.
+
+**Alternatives rejected.**
+
+- Wrapping `StateMachineHash`: it is unpinned and non-cryptographic, as
+  above.
+- Hashing on the leader and comparing there: one node would vouch for the
+  others, and a proposal would make a diagnostic take part in consensus.
+- Hashing only client-visible user keys: replicated lease, audit and
+  compaction records diverge just as harmfully, and they travel in the same
+  snapshots.
+
 ## Component boundaries
 
 | Piece | Package | Owner |
@@ -779,7 +821,8 @@ cadence is `DefaultMembershipPollInterval`.
 | Bootstrap orchestration, `MembershipManager` | `pkg/cluster` | go-qrdb |
 | Member-side CSR join (anchor fetch, CSR exchange, admission) | `pkg/clusterenroll` | go-qrdb |
 | Cluster CA (Key A) provider seam | `pkg/cakey`, `pkg/clustertls` — see [../certificate-authority/](../certificate-authority/) | go-qrdb |
-| Node admin (health, status, peers, drain, snapshot, shards, topology, replica states) | `pkg/service` admin | go-qrdb |
+| Node admin (health, status, peers, drain, snapshot, shards, topology, replica state hashes, replica states) | `pkg/service` admin | go-qrdb |
+| Replica state digest (canonical encoding, SHA-256) | `pkg/statedigest`; each state machine answers it in `pkg/store`, `pkg/statemachine` | go-qrdb |
 | A replica's applied index and state-machine hash (`Host.StateMachineHash`) | — | **go-quicraft** |
 | Shard rebalancing | `pkg/placement`, `pkg/service` | go-qrdb |
 | Raft primitives, leader election, log | — | **go-quicraft** |
@@ -809,6 +852,11 @@ cadence is `DefaultMembershipPollInterval`.
   `add-observer` there was no way to create the observer `member promote`
   promotes. Both are served on every transport — see
   [api.md](api.md#capability-matrix--node-administration).
+- **Replica state hashes are cross-scope** (`admin:state_hash`): they cover
+  every tenant's shards on the node. A digest and a record count disclose no
+  record content, which is what makes a cross-scope read of isolated tenants'
+  shards acceptable. The hash is computed inside the tenant's barrier and
+  only the digest leaves it.
 - **A leader-only write forwards; it does not refuse by node identity.**
   `qrdb init`'s admin-credential step (ceremony-initialize,
   `service.CeremonyServiceWithLeaderGate`) must commit to the system shard,
@@ -883,3 +931,5 @@ cadence is `DefaultMembershipPollInterval`.
   swapped. See [../seal/fips140-mode.md](../seal/fips140-mode.md).
 - **No automatic rebalancing.** Plans are generated and executed deliberately.
 - **No cross-cluster federation.**
+- **No automatic divergence repair.** `admin state-hash` reports divergence;
+  replacing a diverged replica's data is an operator decision.

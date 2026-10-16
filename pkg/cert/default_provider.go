@@ -529,6 +529,13 @@ func (p *DefaultCertProvider) Seal() error {
 // or a trust domain that is not a bare host — is refused with
 // *SPIFFEIdentityError, because a certificate whose SAN and OU disagree
 // authenticates as different tenants depending on which node's pin is set.
+//
+// With req.Delegation set the certificate is a delegation (pkg/auth/delegation):
+// the grant rides in a critical extension, so a verifier that does not know it
+// refuses the certificate outright, and the lifetime is the delegation's own
+// (delegation.DefaultLifetime, at most delegation.MaxLifetime) rather than the
+// provider's. A grant for another tenant, for the system tenant, or whose
+// principal is not req.Username's is refused with *ValidationError.
 func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error) {
 	if err := validateIssueRequest(req); err != nil {
 		return nil, err
@@ -536,6 +543,14 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 
 	// Derived before the CA key is touched, so a refused identity never costs
 	// a signature and a certificate that would be refused is never minted.
+	var extensions []pkix.Extension
+	if req.Delegation != nil {
+		ext, err := delegationExtension(req)
+		if err != nil {
+			return nil, err
+		}
+		extensions = []pkix.Extension{ext}
+	}
 	uris, err := p.clientSPIFFEURIs(req)
 	if err != nil {
 		return nil, err
@@ -552,7 +567,10 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 	}
 
 	ttl := req.TTL
-	if ttl == 0 {
+	switch {
+	case req.Delegation != nil:
+		ttl = delegationTTL(ttl)
+	case ttl == 0:
 		ttl = p.defaultTTL
 	}
 	// A leaf never outlives its issuer: the configured maximum (WithMaxTTL)
@@ -579,7 +597,8 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageClientAuth,
 		},
-		URIs: uris,
+		URIs:            uris,
+		ExtraExtensions: extensions,
 	}
 
 	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, req.PublicKey, caSigner)
@@ -597,12 +616,13 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 
 	// Persist the cert record.
 	record := &CertRecord{
-		Serial:    serialHex,
-		Username:  req.Username,
-		TenantID:  req.TenantID,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(ttl),
-		Revoked:   false,
+		Serial:     serialHex,
+		Username:   req.Username,
+		TenantID:   req.TenantID,
+		IssuedAt:   now,
+		ExpiresAt:  now.Add(ttl),
+		Revoked:    false,
+		Delegation: req.Delegation,
 	}
 	recordKey := prefixCerts + req.TenantID + "/" + serialHex
 	recordBytes, err := json.Marshal(record)
@@ -622,7 +642,9 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 
 // clientSPIFFEURIs returns the URI SANs a client certificate for req carries:
 // none when no trust domain is configured, otherwise exactly one tenant-scoped
-// SPIFFE ID of kind user, named for the certificate's CN.
+// SPIFFE ID -- of kind user named for the certificate's CN, or for a
+// delegation of kind svc named for the delegated principal, the SAN the
+// authenticator requires a delegation's to be.
 //
 // The ID is round-tripped through the SAME parser the authenticator applies to
 // a presented certificate (spiffe.ParseID, over the URL as x509 will encode
@@ -632,6 +654,9 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 // SAN that parses back to req.TenantID agrees with it by construction, and one
 // that does not is never signed.
 func (p *DefaultCertProvider) clientSPIFFEURIs(req *IssueRequest) ([]*url.URL, error) {
+	if req.Delegation != nil {
+		return tenantSPIFFEURIs(p.trustDomain, req.TenantID, spiffe.KindService, req.Delegation.Principal)
+	}
 	return ClientSPIFFEURIs(p.trustDomain, req.TenantID, req.Username)
 }
 
@@ -643,37 +668,28 @@ func (p *DefaultCertProvider) clientSPIFFEURIs(req *IssueRequest) ([]*url.URL, e
 // name that can never be certified is refused before anything is written.
 // An empty trustDomain admits every name and returns none.
 func ClientSPIFFEURIs(trustDomain, tenantID, username string) ([]*url.URL, error) {
+	return tenantSPIFFEURIs(trustDomain, tenantID, spiffe.KindUser, username)
+}
+
+// tenantSPIFFEURIs is ClientSPIFFEURIs for an identity of any kind.
+func tenantSPIFFEURIs(trustDomain, tenantID, kind, name string) ([]*url.URL, error) {
 	if trustDomain == "" {
 		return nil, nil
 	}
 	want := spiffe.ID{
 		TrustDomain: trustDomain,
 		TenantID:    tenantID,
-		Kind:        spiffe.KindUser,
-		Name:        username,
+		Kind:        kind,
+		Name:        name,
 	}
-	refuse := func(reason string) error {
-		return &SPIFFEIdentityError{
+	u, err := want.URI()
+	if err != nil {
+		return nil, &SPIFFEIdentityError{
 			TrustDomain: trustDomain,
 			TenantID:    tenantID,
-			Username:    username,
-			Reason:      reason,
+			Username:    name,
+			Reason:      err.Error(),
 		}
-	}
-	encoded := want.String()
-	if encoded == "" {
-		return nil, refuse("the identity is not a valid tenant SPIFFE ID")
-	}
-	u, err := url.Parse(encoded)
-	if err != nil {
-		return nil, refuse("the SPIFFE ID does not parse as a URI")
-	}
-	got, ok, err := spiffe.ParseID(u)
-	if err != nil || !ok {
-		return nil, refuse("the SPIFFE ID does not parse back as a tenant identity")
-	}
-	if got != want {
-		return nil, refuse("the SPIFFE ID parses back to a different identity than the Subject names")
 	}
 	return []*url.URL{u}, nil
 }

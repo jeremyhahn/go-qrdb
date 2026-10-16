@@ -16,7 +16,7 @@
 //go:build integration
 
 // auth_cli_test.go drives the `qrdb auth` COMMAND TREE (login, factor
-// list/add/remove/rotate/relabel) through the real client CLI binary
+// list/add/remove/delete/rotate/relabel) through the real client CLI binary
 // (cmd/qrdb), against every transport (REST, gRPC, QUIC, MCP, Unix) sharing
 // the multi_protocol_helpers_test.go harness.
 //
@@ -252,6 +252,109 @@ func testAuthLoginAndFactorLifecycleOverProtocol(t *testing.T, node *multiProtoN
 	out, err = runCLIProto(t, node, proto, "auth", "login", "--method", "mtls", "--cert", certB)
 	if err == nil {
 		t.Fatalf("[%s] auth login after factor remove should fail, got: %s", proto.name, out)
+	}
+}
+
+// TestAuthFactorDelete_CLI_PerProtocol drives `qrdb auth factor delete`
+// against every transport sharing one multiProtoNode: a factor added and
+// then deleted leaves no credential claim behind, so the same certificate
+// binds to the same user again, while a revoked factor refuses deletion and
+// keeps its certificate claimed.
+func TestAuthFactorDelete_CLI_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testAuthFactorDeleteOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testAuthFactorDeleteOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	username := fmt.Sprintf("afd-%s-%d", proto.name, time.Now().UnixNano())
+	out, err := runCLIProto(t, node, proto, "--output", "json", "users", "create", "--without-email-login-key",
+		"--username", username)
+	if err != nil {
+		t.Fatalf("[%s] users create (fixture): %v\noutput: %s", proto.name, err, out)
+	}
+	var user userCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &user); jerr != nil {
+		t.Fatalf("[%s] decode users create JSON (fixture): %v\noutput: %s", proto.name, jerr, out)
+	}
+	userID := fmt.Sprintf("%d", user.ID)
+	cert, _ := node.ca.generateAdminClientCert(t, t.TempDir())
+
+	add := func() (string, error) {
+		return runCLIProto(t, node, proto, "--output", "json", "auth", "factor", "add",
+			"--user", userID, "--type", "mtls", "--label", "rollback", "--cert", cert)
+	}
+	addOK := func(step string) string {
+		t.Helper()
+		out, err := add()
+		if err != nil {
+			t.Fatalf("[%s] auth factor add (%s): %v\noutput: %s", proto.name, step, err, out)
+		}
+		var rec authFactorRecordCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &rec); jerr != nil {
+			t.Fatalf("[%s] decode auth factor add JSON (%s): %v\noutput: %s", proto.name, step, jerr, out)
+		}
+		if rec.ID == "" || rec.UserID != user.ID {
+			t.Fatalf("[%s] auth factor add (%s) = %+v, want a factor for user %d", proto.name, step, rec, user.ID)
+		}
+		return rec.ID
+	}
+
+	first := addOK("first")
+	if out, err := add(); err == nil {
+		t.Fatalf("[%s] binding a claimed certificate should fail, got: %s", proto.name, out)
+	}
+
+	// --- factor delete: the factor and every index it claimed are gone -----
+	out, err = runCLIProto(t, node, proto, "auth", "factor", "delete", first, "--force")
+	if err != nil {
+		t.Fatalf("[%s] auth factor delete: %v\noutput: %s", proto.name, err, out)
+	}
+	if !strings.Contains(out, "OK") {
+		t.Fatalf("[%s] auth factor delete: expected OK, got: %s", proto.name, out)
+	}
+	out, err = runCLIProto(t, node, proto, "--output", "json", "auth", "factor", "list", "--user", userID)
+	if err != nil {
+		t.Fatalf("[%s] auth factor list: %v\noutput: %s", proto.name, err, out)
+	}
+	var listed authFactorListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode auth factor list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if authFactorListContainsID(listed.Factors, first) {
+		t.Fatalf("[%s] auth factor list still contains deleted %s: %+v", proto.name, first, listed.Factors)
+	}
+
+	// The same certificate binds to the same user again, as a new factor.
+	second := addOK("rebind after delete")
+	if second == first {
+		t.Fatalf("[%s] rebind reused the deleted factor id %s", proto.name, first)
+	}
+
+	// A deleted factor is not there to delete twice.
+	if out, err := runCLIProto(t, node, proto, "auth", "factor", "delete", first, "--force"); err == nil {
+		t.Fatalf("[%s] second delete of %s should fail, got: %s", proto.name, first, out)
+	}
+
+	// --- revoked: delete refuses, so the revocation cannot be undone -------
+	out, err = runCLIProto(t, node, proto, "auth", "factor", "remove", second, "--force")
+	if err != nil {
+		t.Fatalf("[%s] auth factor remove: %v\noutput: %s", proto.name, err, out)
+	}
+	if out, err := runCLIProto(t, node, proto, "auth", "factor", "delete", second, "--force"); err == nil {
+		t.Fatalf("[%s] delete of revoked %s should fail, got: %s", proto.name, second, out)
+	} else if !strings.Contains(strings.ToLower(out+err.Error()), "revoked") {
+		t.Fatalf("[%s] delete of revoked %s: want a revoked error, got: %v\noutput: %s", proto.name, second, err, out)
+	}
+	if out, err := add(); err == nil {
+		t.Fatalf("[%s] binding a revoked factor's certificate should fail, got: %s", proto.name, out)
 	}
 }
 

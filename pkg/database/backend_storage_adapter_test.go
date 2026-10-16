@@ -259,6 +259,8 @@ func (m *mockStorageAdapterBackend) Get(_ context.Context, _ []byte) ([]byte, er
 }
 func (m *mockStorageAdapterBackend) Put(_ context.Context, _, _ []byte) error { return nil }
 func (m *mockStorageAdapterBackend) Delete(_ context.Context, _ []byte) error { return nil }
+
+func (m *mockStorageAdapterBackend) DeleteRange(_ context.Context, _, _ []byte) error { return nil }
 func (m *mockStorageAdapterBackend) List(_ context.Context, _ string) ([]string, error) {
 	return m.listVal, m.listErr
 }

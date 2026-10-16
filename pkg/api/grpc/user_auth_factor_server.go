@@ -51,21 +51,24 @@ func RegisterUserAuthFactorService(srv *grpc.Server, svc service.UserAuthFactorS
 // Add handles the UserAuthFactorService.Add RPC.
 func (s *userAuthFactorServer) Add(ctx context.Context, req *pb.UserAuthFactorAddRequest) (*pb.UserAuthFactorAddResponse, error) {
 	factor := userFactorFromAddProto(req)
-	if err := s.svc.Add(ctx, req.GetUserId(), factor); err != nil {
+	cond := auth.FactorAddConditionOf(req.GetIfNoActiveType(), req.ExpectedFactorSetVersion)
+	version, err := service.AddAuthFactor(ctx, s.svc, req.GetUserId(), factor, cond)
+	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return &pb.UserAuthFactorAddResponse{Factor: userFactorToProto(factor)}, nil
+	return &pb.UserAuthFactorAddResponse{Factor: userFactorToProto(factor), FactorSetVersion: version}, nil
 }
 
 // List handles the UserAuthFactorService.List RPC.
 func (s *userAuthFactorServer) List(ctx context.Context, req *pb.UserAuthFactorListRequest) (*pb.UserAuthFactorListResponse, error) {
-	factors, err := s.svc.List(ctx, req.GetUserId())
+	factors, version, err := service.ListAuthFactors(ctx, s.svc, req.GetUserId())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 	resp := &pb.UserAuthFactorListResponse{
-		Factors: make([]*pb.UserAuthFactorRecord, len(factors)),
-		Total:   int32(len(factors)), //nolint:gosec // factor count is bounded
+		Factors:          make([]*pb.UserAuthFactorRecord, len(factors)),
+		Total:            int32(len(factors)), //nolint:gosec // factor count is bounded
+		FactorSetVersion: version,
 	}
 	for i, f := range factors {
 		resp.Factors[i] = userFactorToProto(f)
@@ -88,6 +91,14 @@ func (s *userAuthFactorServer) Remove(ctx context.Context, req *pb.UserAuthFacto
 		return nil, mapServiceError(err)
 	}
 	return &pb.UserAuthFactorRemoveResponse{Status: "revoked"}, nil
+}
+
+// Delete implements UserAuthFactorServiceServer.Delete.
+func (s *userAuthFactorServer) Delete(ctx context.Context, req *pb.UserAuthFactorDeleteRequest) (*pb.UserAuthFactorDeleteResponse, error) {
+	if err := s.svc.Delete(ctx, req.GetFactorId(), req.GetForce()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.UserAuthFactorDeleteResponse{Status: "deleted"}, nil
 }
 
 // Rotate handles the UserAuthFactorService.Rotate RPC.

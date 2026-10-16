@@ -269,6 +269,45 @@ func (e *Engine) remove(key []byte) error {
 	return nil
 }
 
+// DeleteRange removes every key in [start, end); an empty end is unbounded.
+// Object names do not sort as their keys do, and hashed names not at all, so
+// the range is found by filtering the full key listing.
+func (e *Engine) DeleteRange(start, end []byte) error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	if err := e.enterWrite(); err != nil {
+		return err
+	}
+	defer e.writeMu.RUnlock()
+	return e.deleteRange(start, end)
+}
+
+// deleteRange is DeleteRange without the write lock, for callers that already
+// hold it: a committing batch applies its range deletes under the exclusive
+// lock, where the locking DeleteRange would deadlock.
+func (e *Engine) deleteRange(start, end []byte) error {
+	keys, err := e.List(nil)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if bytes.Compare(key, start) < 0 {
+			continue
+		}
+		if len(end) > 0 && bytes.Compare(key, end) >= 0 {
+			continue
+		}
+		if err := e.remove(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // List returns all keys matching prefix. An empty prefix returns all keys.
 //
 // The provider is asked to narrow by the encoded prefix, which is a string

@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // nonAtomicKVStore is a KVStore that deliberately does NOT implement
@@ -50,6 +51,8 @@ func newTenantSharedStore(t *testing.T, shared kvstore.KVStore) *tenantSharedKVS
 		t.Fatalf("NewTenantSharedKVStore: %v", err)
 	}
 	switch w := store.(type) {
+	case *batchTenantSharedKVStore:
+		return w.tenantSharedKVStore
 	case *atomicTenantSharedKVStore:
 		return w.tenantSharedKVStore
 	case *tenantSharedKVStore:
@@ -516,6 +519,188 @@ func TestTenantSharedKVStore_GetDistinguishesAbsentFromBroken(t *testing.T) {
 		}
 		if got != nil {
 			t.Errorf("Get returned %q alongside an error", got)
+		}
+	})
+}
+
+// racingBatchStore runs before against the shared store immediately ahead of
+// each multi-guarded batch, standing in for a writer that lands between the
+// wrapper's read of a guard key and its proposal.
+type racingBatchStore struct {
+	*kvstoretest.GuardedMemoryStore
+	before func()
+}
+
+func (s *racingBatchStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if s.before != nil {
+		s.before()
+	}
+	return s.GuardedMemoryStore.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+func TestTenantSharedKVStore_MultiGuardedBatchOnlyOverABatchBacking(t *testing.T) {
+	if _, ok := newTenantSharedStoreIface(t, kvstore.NewMemoryKVStore()).(kvstore.MultiGuardedBatchKVStore); ok {
+		t.Error("a shared store without a transaction plane must not yield a MultiGuardedBatchKVStore")
+	}
+	if _, ok := newTenantSharedStoreIface(t, nonAtomicKVStore{kvstore.NewMemoryKVStore()}).(kvstore.MultiGuardedBatchKVStore); ok {
+		t.Error("a non-atomic shared store must not yield a MultiGuardedBatchKVStore")
+	}
+	store := newTenantSharedStoreIface(t, kvstoretest.NewGuardedMemoryStore())
+	if _, ok := store.(kvstore.MultiGuardedBatchKVStore); !ok {
+		t.Fatal("a multi-guarded shared store must yield a MultiGuardedBatchKVStore")
+	}
+	if _, ok := store.(kvstore.AtomicKVStore); !ok {
+		t.Error("the batch wrapper must keep the atomic capability")
+	}
+}
+
+func TestTenantSharedKVStore_MultiGuardedBatch(t *testing.T) {
+	ctx := context.Background()
+	newBatch := func(t *testing.T) (*kvstoretest.GuardedMemoryStore, kvstore.MultiGuardedBatchKVStore) {
+		t.Helper()
+		shared := kvstoretest.NewGuardedMemoryStore()
+		return shared, newTenantSharedStoreIface(t, shared).(kvstore.MultiGuardedBatchKVStore)
+	}
+	physical := TenantSharedNamespace("tshared")
+
+	t.Run("applies encrypted, namespaced writes and deletes when every guard holds", func(t *testing.T) {
+		shared, s := newBatch(t)
+		if err := s.Put(ctx, "primary", []byte("record")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if err := s.Put(ctx, "index", []byte("id-1")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		applied, err := s.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: "primary", Value: []byte("record")}, {Key: "index", Value: []byte("id-1")}, {Key: "set"}},
+			[]kvstore.KV{{Key: "primary", Delete: true}, {Key: "index", Delete: true}, {Key: "set", Value: []byte("v2")}})
+		if err != nil || !applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+		}
+		for _, k := range []string{"primary", "index"} {
+			if ok, _ := s.Exists(ctx, k); ok {
+				t.Errorf("%s survived an applied batch delete", k)
+			}
+		}
+		got, gerr := s.Get(ctx, "set")
+		if gerr != nil || string(got) != "v2" {
+			t.Errorf("set = (%q, %v), want %q", got, gerr, "v2")
+		}
+		raw, _ := shared.Get(ctx, physical+"set")
+		if raw == nil || string(raw) == "v2" {
+			t.Errorf("the shared store holds %q under the namespaced key, want ciphertext", raw)
+		}
+		if ok, _ := shared.Exists(ctx, "set"); ok {
+			t.Error("a batch write escaped the tenant namespace")
+		}
+	})
+
+	t.Run("a stale plaintext guard declines and changes nothing", func(t *testing.T) {
+		_, s := newBatch(t)
+		if err := s.Put(ctx, "k", []byte("actual")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		applied, err := s.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: "k", Value: []byte("stale")}},
+			[]kvstore.KV{{Key: "k", Delete: true}, {Key: "other", Value: []byte("x")}})
+		if err != nil || applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if got, _ := s.Get(ctx, "k"); string(got) != "actual" {
+			t.Errorf("a declined batch changed k to %q", got)
+		}
+		if ok, _ := s.Exists(ctx, "other"); ok {
+			t.Error("a declined batch wrote other")
+		}
+	})
+
+	t.Run("a present-value guard on an absent key declines", func(t *testing.T) {
+		_, s := newBatch(t)
+		applied, err := s.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: "missing", Value: []byte("v")}},
+			[]kvstore.KV{{Key: "missing", Value: []byte("next")}})
+		if err != nil || applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if ok, _ := s.Exists(ctx, "missing"); ok {
+			t.Error("a declined batch created the key")
+		}
+	})
+
+	t.Run("an absence guard on a present key declines", func(t *testing.T) {
+		_, s := newBatch(t)
+		if err := s.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		applied, err := s.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: "k"}},
+			[]kvstore.KV{{Key: "k", Value: []byte("next")}})
+		if err != nil || applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if got, _ := s.Get(ctx, "k"); string(got) != "v" {
+			t.Errorf("a declined batch changed k to %q", got)
+		}
+	})
+
+	t.Run("a rewrite between read and proposal is refused on the ciphertext", func(t *testing.T) {
+		shared := &racingBatchStore{GuardedMemoryStore: kvstoretest.NewGuardedMemoryStore()}
+		s := newTenantSharedStoreIface(t, shared).(kvstore.MultiGuardedBatchKVStore)
+		if err := s.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		// The racer writes the SAME plaintext: only a guard on the bytes read,
+		// not on the plaintext, can see that the key changed under the batch.
+		shared.before = func() {
+			if err := s.Put(ctx, "k", []byte("v")); err != nil {
+				t.Errorf("racing Put: %v", err)
+			}
+		}
+		applied, err := s.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: "k", Value: []byte("v")}},
+			[]kvstore.KV{{Key: "k", Delete: true}})
+		if err != nil || applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if ok, _ := s.Exists(ctx, "k"); !ok {
+			t.Error("the batch deleted a key rewritten after its guard was read")
+		}
+	})
+
+	t.Run("PutAllIfUnchanged is the single-guard form", func(t *testing.T) {
+		_, s := newBatch(t)
+		if err := s.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if applied, err := s.PutAllIfUnchanged(ctx, "k", []byte("other"), []kvstore.KV{{Key: "k", Delete: true}}); err != nil || applied {
+			t.Fatalf("stale PutAllIfUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if applied, err := s.PutAllIfUnchanged(ctx, "k", []byte("v"), []kvstore.KV{{Key: "k", Delete: true}}); err != nil || !applied {
+			t.Fatalf("PutAllIfUnchanged = (%v, %v), want (true, nil)", applied, err)
+		}
+		if ok, _ := s.Exists(ctx, "k"); ok {
+			t.Error("k survived an applied single-guard batch")
+		}
+	})
+
+	t.Run("empty keys are refused before anything is written", func(t *testing.T) {
+		_, s := newBatch(t)
+		var empty *kvstore.EmptyKeyError
+		if _, err := s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: ""}}, nil); !errors.As(err, &empty) || empty.Field != "guard" {
+			t.Errorf("empty guard key: err = %v, want *kvstore.EmptyKeyError{Field: guard}", err)
+		}
+		if _, err := s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: "", Value: []byte("v")}}); !errors.As(err, &empty) || empty.Field != "write" {
+			t.Errorf("empty write key: err = %v, want *kvstore.EmptyKeyError{Field: write}", err)
+		}
+	})
+
+	t.Run("an unreadable guard value is an error, not a decline", func(t *testing.T) {
+		shared, s := newBatch(t)
+		if err := shared.Put(ctx, physical+"k", []byte("not ciphertext")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if applied, err := s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "k", Value: []byte("v")}}, nil); err == nil || applied {
+			t.Errorf("PutAllIfAllUnchanged = (%v, %v), want a decrypt error", applied, err)
 		}
 	})
 }

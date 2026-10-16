@@ -21,8 +21,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/cespare/xxhash/v2"
 )
 
 // Compile-time interface assertion.
@@ -222,22 +220,22 @@ func (b *StandardBackend) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) 
 }
 
 // GetHash computes a deterministic xxhash64 hash over all key-value
-// pairs in sorted key order.
+// pairs, visited in ascending key order.
 func (b *StandardBackend) GetHash() (uint64, error) {
+	return xxhashRecords(b.Records)
+}
+
+// Records visits every key-value pair in ascending key order under the
+// backend's read lock.
+func (b *StandardBackend) Records(fn RecordVisitor) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	h := xxhash.New()
-	keys := make([]string, 0, len(b.data))
-	for k := range b.data {
-		keys = append(keys, k)
+	recs := make([]kvRecord, 0, len(b.data))
+	for k, v := range b.data {
+		recs = append(recs, kvRecord{key: k, value: v})
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		_, _ = h.Write([]byte(k))
-		_, _ = h.Write(b.data[k])
-	}
-	return h.Sum64(), nil
+	return visitSorted(recs, fn)
 }
 
 // Close releases all resources. For the standard backend this clears

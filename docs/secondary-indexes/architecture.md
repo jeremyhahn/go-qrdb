@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 ## Problem
 
@@ -412,6 +412,40 @@ The residual is named rather than implied: an **unscoped** index — no namespac
 in its name and no declared prefix — still spans the whole state machine. No
 transport can create one; a single-tenant in-process composer can, and for it
 "the whole state machine" and "its own database" are the same set.
+
+## Secret entity fields
+
+A DAO entity sometimes carries key material — a wrapped key, a credential —
+that should live in go-enclave protected memory, not on the Go heap where a
+garbage-collected copy outlives every wipe. `dao.SecretBytes` is that field
+type, and the design question is the codec: every encoder that writes through
+a pooled or growing buffer leaves plaintext behind that the DAO cannot reach.
+
+**Shape chosen: the entity type picks the codec path, and only a codec that
+can keep the promise accepts it.** MessagePack writes a bin item with one
+`Write` of the slice it is given and decodes it with one read into the
+caller's slice, so the secret-carrying encoding measures the record in a first
+pass and writes it into an exact-size record in a second, and decodes straight
+into a new protected buffer. JSON, YAML, TOML, BSON, CBOR and ProtoBuf are
+refused when the codec is built, so a misconfigured DAO fails at construction
+instead of leaking on first save. The protected memory is the existing
+`secure.Buffer` over go-enclave; there is no second mechanism.
+
+**Rejected:**
+
+- *Base64 into a protected buffer for JSON.* `encoding/json` still builds the
+  output in its pooled encode state; wiping the field's own buffer would leave
+  the encoder's copy. Refusing is the honest answer.
+- *Wiping the record after the store write.* A store owns the slices it is
+  given; the in-memory store keeps them, so a wipe would corrupt stored data.
+  The record is the one heap copy, handed to the store path.
+- *Indexing a secret field.* An index entry is the field's value in the
+  clear keyspace, so a secret field is refused as an index or compound member.
+
+**At rest** the record is an ordinary value: the store encrypts it under the
+database's barrier, so the secret reaches storage only as ciphertext, and on a
+plaintext barrier it is stored in plaintext like everything else. See
+[engineering.md](engineering.md#secret-entity-fields) for the contract.
 
 ## What this feature deliberately does not do
 

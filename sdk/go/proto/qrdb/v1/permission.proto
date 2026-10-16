@@ -16,7 +16,7 @@ syntax = "proto3";
 
 package qrdb.v1;
 
-option go_package = "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1";
+option go_package = "github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1;qrdbv1";
 
 import "google/protobuf/descriptor.proto";
 
@@ -27,6 +27,11 @@ import "google/protobuf/descriptor.proto";
 // unary/stream interceptors. An RPC without this option is DEFAULT-DENY —
 // it is rejected before reaching the service handler unless it belongs to
 // an infrastructure service (health checking, server reflection).
+//
+// The file is public: a service defined outside go-qrdb that is served
+// behind the same middleware imports it as "qrdb/v1/permission.proto",
+// with this module's proto/ directory on the protoc include path, and
+// annotates its RPCs with option (qrdb.v1.permission).
 //
 // The value is a permission string from pkg/permission (e.g. "kv:put").
 // The sentinel "identity:gated" marks endpoints whose authorization is

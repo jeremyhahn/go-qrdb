@@ -61,7 +61,8 @@ type PebbleStorage struct {
 	config *Config
 	gate   sync.RWMutex
 	// casMu makes CompareAndSwap atomic against every other writer: Set,
-	// Delete and batch commits hold it shared, CompareAndSwap exclusive.
+	// Delete, DeleteRange and batch commits hold it shared, CompareAndSwap
+	// exclusive.
 	// Lock order is gate, then casMu.
 	casMu    sync.RWMutex
 	closed   atomic.Bool
@@ -208,6 +209,62 @@ func (s *PebbleStorage) Delete(key []byte) error {
 		return &storage.OpError{Op: "delete", Err: err}
 	}
 	return nil
+}
+
+// DeleteRange removes every key in [start, end) with one range tombstone. An
+// empty end is unbounded: the range runs to the end of the keyspace.
+func (s *PebbleStorage) DeleteRange(start, end []byte) error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+
+	s.casMu.RLock()
+	defer s.casMu.RUnlock()
+	s.writeSem <- struct{}{}
+	defer func() { <-s.writeSem }()
+
+	writeOpts := pebble.NoSync
+	if s.config.SyncWrites {
+		writeOpts = pebble.Sync
+	}
+
+	if len(end) == 0 {
+		var err error
+		if end, err = unboundedRangeEnd(s.db, start); err != nil {
+			return &storage.OpError{Op: "delete_range", Err: err}
+		}
+		if end == nil {
+			return nil
+		}
+	}
+	if err := s.db.DeleteRange(start, end, writeOpts); err != nil {
+		return &storage.OpError{Op: "delete_range", Err: err}
+	}
+	return nil
+}
+
+// unboundedRangeEnd returns an exclusive end that covers every key r holds at
+// or after start, or nil when it holds none. A range tombstone needs a finite
+// end, so an unbounded range is closed just past the last key present.
+func unboundedRangeEnd(r pebble.Reader, start []byte) (end []byte, err error) {
+	iter, err := r.NewIter(&pebble.IterOptions{LowerBound: start})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := iter.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	if !iter.Last() {
+		return nil, iter.Error()
+	}
+	return append(append([]byte(nil), iter.Key()...), 0x00), nil
 }
 
 // CompareAndSwap implements storage.GuardedStorage. The read, compare and

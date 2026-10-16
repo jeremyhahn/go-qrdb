@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -278,6 +279,23 @@ func WithRaftHost(h RaftHost) DatabaseServiceOption {
 // wait/timeout paths without the full production bound.
 func WithScaleLeaderWaitTimeout(timeout time.Duration) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.scaleLeaderWaitTimeout = timeout }
+}
+
+// DefaultDatabaseCreateTimeout bounds a database create from the service's
+// side, whatever transport carried it. It matches the replica-forwarding
+// bound (config.DefaultReplicaForwardingTimeout), so a create forwarded to the
+// placement leader and one served where it landed answer within the same
+// budget.
+const DefaultDatabaseCreateTimeout = 10 * time.Second
+
+// WithDatabaseCreateTimeout overrides the create deadline (default
+// DefaultDatabaseCreateTimeout). A non-positive timeout is ignored.
+func WithDatabaseCreateTimeout(timeout time.Duration) DatabaseServiceOption {
+	return func(s *DatabaseService) {
+		if timeout > 0 {
+			s.createTimeout = timeout
+		}
+	}
 }
 
 // WithScaleLeaderWaitInterval overrides the poll interval (default
@@ -561,19 +579,36 @@ func addObserverReplica(
 }
 
 // removeReplicaFromGroup is the "remove one replica" step shared by
-// DatabaseService.scaleDown and RebalanceService.moveTenantGroupShard:
-// persist an updated placement with replicaID dropped, then evict it from
-// Raft consensus.
+// DatabaseService.scaleDown and RebalanceService.moveTenantGroupShard: evict
+// replicaID from Raft consensus, then drop it from the placement.
 //
-// Returns updated (current with replicaID dropped; unchanged on a
-// placement-put failure), placementFailed (true when err originated from the
-// placement-put rather than RemoveFollowerNode, letting a caller that
-// reports a step name distinguish the two failure points), and err (a fatal
-// error from either step -- the placement already reflects the intended
-// post-removal state by the time RemoveFollowerNode is attempted, so a
-// RemoveFollowerNode failure leaves the Raft config change for the
-// TenantShardReconciler to eventually converge, but still fails the call so
-// the caller can alert or retry).
+// The eviction comes first because the placement is what tears the replica
+// down: every node's TenantShardReconciler stops -- and, with
+// WithPurgeOnDemotion, deletes -- a local replica once its node leaves the
+// placement. The eviction is a Raft config change committed by a quorum of
+// the configuration it leaves, which still counts replicaID's vote. Drop the
+// placement first and a group of two voters can lose the very vote that
+// would commit the removal: the source's shard is stopped, the survivor can
+// no longer reach a majority, its leader steps down and the removal never
+// commits. Evicting first keeps replicaID running, and voting, until its own
+// removal has committed.
+//
+// Before the eviction, a compare-and-swap of current onto itself confirms the
+// caller's snapshot is still the stored entry, so a stale snapshot -- one a
+// concurrent scale step or a drop's fence has replaced -- never reaches Raft
+// (go-qrdb#482 round 3, finding 3). After the eviction the placement only
+// records what Raft has already done, so the drop is applied to the entry as
+// it then stands (placement.Store.RemoveReplica) rather than refused when a
+// reconciler promotion changed it meanwhile.
+//
+// Returns updated (the stored entry with replicaID dropped; current on any
+// failure), placementFailed (true when err originated from the placement
+// rather than RemoveFollowerNode, letting a caller that reports a step name
+// distinguish the two failure points), and err. A RemoveFollowerNode failure
+// leaves the placement untouched, so replicaID keeps running and the caller
+// can retry. A placement failure after a successful eviction leaves replicaID
+// listed but out of the group; the call fails so the caller can alert or
+// retry.
 //
 // removeReplicaFromGroup deliberately does NOT attempt to transfer
 // leadership away from replicaID here, even though removing the CURRENT
@@ -603,8 +638,7 @@ func removeReplicaFromGroup(
 	current *placement.Placement,
 	replicaID uint64,
 ) (updated *placement.Placement, placementFailed bool, err error) {
-	updated = dropReplicaFromPlacement(current, replicaID)
-	swapped, perr := ps.CompareAndSwapPlacement(ctx, current, updated)
+	swapped, perr := ps.CompareAndSwapPlacement(ctx, current, current)
 	if perr != nil {
 		return current, true, perr
 	}
@@ -617,9 +651,13 @@ func removeReplicaFromGroup(
 		}
 	}
 	if raftHost != nil {
-		if rerr := raftHost.RemoveFollowerNode(ctx, updated.ShardID, replicaID); rerr != nil {
-			return updated, false, rerr
+		if rerr := raftHost.RemoveFollowerNode(ctx, current.ShardID, replicaID); rerr != nil {
+			return current, false, rerr
 		}
+	}
+	updated, perr = ps.RemoveReplica(ctx, current, replicaID)
+	if perr != nil {
+		return current, true, perr
 	}
 	return updated, false, nil
 }
@@ -629,6 +667,11 @@ const (
 	// transferLeadershipAwayFromRemoved waits for a requested leadership
 	// transfer to complete before giving up.
 	defaultLeaderTransferWaitTimeout = 5 * time.Second
+
+	// defaultLeaseCheckpointBeforeTransferTimeout bounds how long
+	// transferLeadershipAwayFromRemoved waits for the group's leases to be
+	// checkpointed before it asks for the transfer regardless.
+	defaultLeaseCheckpointBeforeTransferTimeout = 2 * time.Second
 
 	// defaultLeaderTransferWaitInterval is the poll interval
 	// transferLeadershipAwayFromRemoved uses between LeaderReplicaID calls
@@ -664,7 +707,14 @@ const (
 // selectReplicasToRemove never selects the current leader for removal
 // unless it is the sole remaining voter, which this function also treats as
 // a no-op since there is nowhere to transfer to).
-func transferLeadershipAwayFromRemoved(ctx context.Context, raftHost RaftHost, before *placement.Placement, shardID, replicaID uint64) error {
+//
+// Before it asks for the transfer it checkpoints every lease of the group
+// through host, as etcd does, so the new leader counts each lease from what it
+// has left rather than from a full TTL (see LeaseService.CheckpointAll). That
+// is best-effort and bounded by defaultLeaseCheckpointBeforeTransferTimeout: a
+// failure is logged and the transfer goes ahead, leaving the leases where the
+// periodic checkpoints put them. A nil host skips it.
+func transferLeadershipAwayFromRemoved(ctx context.Context, raftHost RaftHost, host Host, logger *slog.Logger, before *placement.Placement, shardID, replicaID uint64) error {
 	leaderID, ok, err := raftHost.LeaderReplicaID(ctx, shardID)
 	if err != nil || !ok || leaderID != replicaID {
 		return nil
@@ -680,6 +730,8 @@ func transferLeadershipAwayFromRemoved(ctx context.Context, raftHost RaftHost, b
 	if target == 0 {
 		return nil
 	}
+
+	checkpointLeasesBeforeTransfer(ctx, host, logger, shardID)
 
 	if terr := raftHost.RequestLeaderTransfer(ctx, shardID, target); terr != nil {
 		return terr
@@ -699,6 +751,26 @@ func transferLeadershipAwayFromRemoved(ctx context.Context, raftHost RaftHost, b
 		case <-time.After(defaultLeaderTransferWaitInterval):
 		}
 	}
+}
+
+// checkpointLeasesBeforeTransfer checkpoints every lease of shardID on this
+// node, its leader, ahead of a leadership transfer; see
+// transferLeadershipAwayFromRemoved. A replica that holds no lessor to
+// checkpoint answers *lease.NotPrimaryError, which is not a failure.
+func checkpointLeasesBeforeTransfer(ctx context.Context, host Host, logger *slog.Logger, shardID uint64) {
+	if host == nil {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, defaultLeaseCheckpointBeforeTransferTimeout)
+	defer cancel()
+	err := (&LeaseService{host: host, shardID: shardID}).CheckpointAll(cctx)
+	var notPrimary *lease.NotPrimaryError
+	if err == nil || errors.As(err, &notPrimary) || logger == nil {
+		return
+	}
+	logger.Warn("lease checkpoint before leader transfer failed; transferring anyway",
+		slog.Uint64("shard_id", shardID),
+		slog.Any("error", err))
 }
 
 // resolveGroupLeader determines whether selfNodeID is the current Raft
@@ -776,6 +848,11 @@ type DatabaseService struct {
 	scaleLeaderWaitTimeout  time.Duration
 	scaleLeaderWaitInterval time.Duration
 
+	// createTimeout bounds a database create (boundedCreate). Defaulted in
+	// NewDatabaseService to DefaultDatabaseCreateTimeout and overridable
+	// via WithDatabaseCreateTimeout.
+	createTimeout time.Duration
+
 	// infoReadBound bounds each best-effort read that decorates a database's
 	// info (see boundedInfoRead). Defaulted in NewDatabaseService to
 	// defaultInfoReadBound; a test sets it to exercise the bound quickly.
@@ -805,6 +882,7 @@ func NewDatabaseService(manager *database.Manager, opts ...DatabaseServiceOption
 		logger:                  slog.Default(),
 		scaleLeaderWaitTimeout:  defaultScaleLeaderWaitTimeout,
 		scaleLeaderWaitInterval: defaultScaleLeaderWaitInterval,
+		createTimeout:           DefaultDatabaseCreateTimeout,
 		infoReadBound:           defaultInfoReadBound,
 	}
 	for _, opt := range opts {
@@ -848,7 +926,39 @@ func (s *DatabaseService) Create(cfg database.DatabaseConfig) (*database.Databas
 // handlers that accept barrier credentials at create time (e.g.
 // --barrier-passphrase) should type-assert the resolved DatabaseServicer for
 // DatabaseCredentialCreator before falling back to plain Create.
+//
+// The create is bounded by the service's create deadline -- see
+// boundedCreate.
 func (s *DatabaseService) CreateWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	return s.boundedCreate(ctx, cfg.Name, func(ctx context.Context) (*database.DatabaseInfo, error) {
+		return s.createWithCredentials(ctx, cfg, creds)
+	})
+}
+
+// boundedCreate runs create under the service's create deadline
+// (createTimeout), so a create whose consensus steps cannot make progress --
+// no leader, a leader that cannot reach quorum -- answers with a typed,
+// retryable *DatabaseCreateTimeoutError instead of holding the caller until
+// the caller gives up. create rolls back what it completed on any failure,
+// under a context detached from the expired one (database.DropRollbackContext:
+// a rollback under the expired context would fail at once and leave the
+// reservations and the half-created database behind). A
+// caller whose own context ended first gets create's error as it is: the
+// deadline that fired was the caller's, not the service's.
+func (s *DatabaseService) boundedCreate(ctx context.Context, name string, create func(context.Context) (*database.DatabaseInfo, error)) (*database.DatabaseInfo, error) {
+	createCtx, cancel := context.WithTimeout(ctx, s.createTimeout)
+	defer cancel()
+	info, err := create(createCtx)
+	if err != nil && ctx.Err() == nil && errors.Is(createCtx.Err(), context.DeadlineExceeded) {
+		return nil, &DatabaseCreateTimeoutError{Name: name, Timeout: s.createTimeout, Err: err}
+	}
+	return info, err
+}
+
+// createWithCredentials is CreateWithCredentials without the deadline: it is
+// also the system tenant's branch of createForTenantWithCredentials, which
+// already runs under one.
+func (s *DatabaseService) createWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
 	// A Shamir M-of-N the seal cannot split is refused before anything is
 	// reserved or persisted; the manager checks it again in Validate.
 	if err := cfg.Barrier.Validate(); err != nil {
@@ -865,7 +975,9 @@ func (s *DatabaseService) CreateWithCredentials(ctx context.Context, cfg databas
 		return nil, err
 	}
 	if err := s.clearPredecessorSeal(ctx, db); err != nil {
-		s.rollBackCreate(ctx, db, err)
+		rbCtx, cancel := database.DropRollbackContext(ctx)
+		defer cancel()
+		s.rollBackCreate(rbCtx, db, err)
 		return nil, err
 	}
 	info := db.Info()
@@ -1395,7 +1507,18 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 //
 // This method is additive to DatabaseServicer (not part of the interface);
 // see CreateWithCredentials and DatabaseCredentialCreator.
+//
+// The create is bounded by the service's create deadline -- see
+// boundedCreate.
 func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	return s.boundedCreate(ctx, cfg.Name, func(ctx context.Context) (*database.DatabaseInfo, error) {
+		return s.createForTenantWithCredentials(ctx, cfg, creds)
+	})
+}
+
+// createForTenantWithCredentials is CreateForTenantWithCredentials without
+// the deadline.
+func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
 	if err := cfg.Barrier.Validate(); err != nil {
 		return nil, err
 	}
@@ -1407,7 +1530,7 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 		// the request is discarded, as a tenant caller's is: no caller
 		// creates a database in another tenant.
 		cfg.TenantID = ""
-		return s.CreateWithCredentials(ctx, cfg, creds)
+		return s.createWithCredentials(ctx, cfg, creds)
 	}
 	tenantID := tenant.FromContext(ctx)
 
@@ -1595,6 +1718,26 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 	raftReserved := false
 	replicasReserved := int64(0)
 	dedicatedWALReserved := false
+
+	// releaseReservations rolls back the quota reservations made below. It
+	// is invoked when a reservation, database creation or placement
+	// persistence fails, under a context detached from the create's own: a
+	// create that failed because its deadline expired must still give its
+	// reservations back.
+	releaseReservations := func() {
+		rbCtx, cancel := database.DropRollbackContext(ctx)
+		defer cancel()
+		if raftReserved {
+			_, _ = s.quotaUsage.DecrementQuotaUsage(rbCtx, tenantID, quota.ResourceRaftGroups, 1)
+		}
+		if replicasReserved > 0 {
+			_, _ = s.quotaUsage.DecrementQuotaUsage(rbCtx, tenantID, quota.ResourceTotalReplicas, replicasReserved)
+		}
+		if dedicatedWALReserved {
+			_, _ = s.quotaUsage.DecrementQuotaUsage(rbCtx, tenantID, quota.ResourceDedicatedWALGroups, 1)
+		}
+	}
+
 	if cfg.Backend == database.BackendRaft && s.quotaUsage != nil {
 		if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1); err != nil {
 			return nil, err
@@ -1602,31 +1745,16 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 		raftReserved = true
 		replicas := int64(cfg.Replicas)
 		if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, replicas); err != nil {
-			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1)
+			releaseReservations()
 			return nil, err
 		}
 		replicasReserved = replicas
 		if cfg.DedicatedWAL {
 			if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceDedicatedWALGroups, 1); err != nil {
-				_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, replicas)
-				_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1)
+				releaseReservations()
 				return nil, err
 			}
 			dedicatedWALReserved = true
-		}
-	}
-
-	// releaseReservations rolls back the quota reservations made above. It is
-	// invoked when database creation or placement persistence fails.
-	releaseReservations := func() {
-		if raftReserved {
-			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1)
-		}
-		if replicasReserved > 0 {
-			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, replicasReserved)
-		}
-		if dedicatedWALReserved {
-			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceDedicatedWALGroups, 1)
 		}
 	}
 
@@ -1636,7 +1764,9 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 		return nil, err
 	}
 	if err := s.clearPredecessorSeal(ctx, db); err != nil {
-		s.rollBackCreate(ctx, db, err)
+		rbCtx, cancel := database.DropRollbackContext(ctx)
+		defer cancel()
+		s.rollBackCreate(rbCtx, db, err)
 		releaseReservations()
 		return nil, err
 	}
@@ -1652,7 +1782,9 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 	if info.Backend == database.BackendRaft && s.placementStore != nil && s.placementScheduler != nil {
 		plan, placeErr := s.persistPlacement(ctx, tenantID, &info)
 		if placeErr != nil {
-			if dropErr := s.manager.DropForTenant(ctx, cfg.Name); dropErr != nil {
+			rbCtx, cancel := database.DropRollbackContext(ctx)
+			defer cancel()
+			if dropErr := s.manager.DropForTenant(rbCtx, cfg.Name); dropErr != nil {
 				s.logger.Error("failed to roll back database after placement failure",
 					slog.String("tenant", tenantID),
 					slog.String("database", cfg.Name),
@@ -2479,11 +2611,11 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 
 // scaleDown implements the C.3 scale-down sequence: no quota check (freeing
 // capacity never violates a cap), selectReplicasToRemove picks removeCount
-// replicas (leader last), then per replica (one at a time) placement-update
-// -> RemoveFollowerNode. Unlike scale-up's AddObserver, a
-// RemoveFollowerNode error fails the whole call (the placement already
-// reflects the intended post-scale state and the reconciler will eventually
-// stop the removed replica locally; the caller retries). Whatever prefix of
+// replicas (leader last), then per replica (one at a time)
+// RemoveFollowerNode -> placement-update (see removeReplicaFromGroup for why
+// Raft goes first). Unlike scale-up's AddObserver, a RemoveFollowerNode error
+// fails the whole call (the placement still lists the replica, which keeps
+// running; the caller retries). Whatever prefix of
 // removals did succeed is still persisted (manager.UpdateReplicas + quota
 // decrement for the actually-removed count), so a retry converges rather than
 // double-applying.

@@ -39,9 +39,14 @@ type fakeCertEnrollHandler struct {
 	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
+	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollHandler)(nil)
+
+func (f *fakeCertEnrollHandler) IssueDelegation(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+	return f.delegFn(ctx, req)
+}
 
 func (f *fakeCertEnrollHandler) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 	return f.signFn(ctx, req)

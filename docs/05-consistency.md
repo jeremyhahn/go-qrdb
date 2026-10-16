@@ -9,7 +9,7 @@ QRDB supports four consistency levels for read operations, allowing applications
 |-------|---------|-----------|----------|
 | **Strong** | 10–50ms | Full Raft SyncRead consensus | Financial transactions, account balance |
 | **Linearizable** | 1–5ms | ReadIndex optimization (default) | Most applications, user-facing data |
-| **LeaseRead** | <1ms | Leader serves if lease valid | High-throughput reads, caching |
+| **LeaseRead** | <1ms | Linearizable; leader serves locally while its lease holds | High-throughput reads, caching |
 | **Eventual** | <1ms | Local stale read | Analytics, dashboards, non-critical reads |
 
 ## 1. Strong Consistency
@@ -91,7 +91,15 @@ the leader sent less than the lease length ago. The lease length is
 `ElectionRTT - 2` ticks of real time, shortened by 1 % (go-quicraft
 `leaseDriftDivisor = 100`, rounded so the lease errs short). A follower that
 acknowledges a round sent at T grants no vote to another candidate for at least
-that span, so no other leader can exist before the lease runs out.
+that span, so no other leader can exist before the lease runs out. Each
+acknowledgment carries the vote window its follower promises (its own
+`ElectionRTT` ticks of real time), and the leader counts it toward the lease
+only when that window covers the lease. A replica records its promised window
+in its persisted Raft hard state before acknowledging, and after a restart
+withholds its vote and pre-vote and does not campaign until the window has
+passed, so a restart does not reopen a window; the cost is that after a
+full-shard restart the first leader is elected about one election timeout
+later.
 
 ```
 Leader sends heartbeat round at T (monotonic clock)
@@ -138,7 +146,8 @@ a clock that stops or runs backward, which Go's monotonic clock does not do.
 4. **Same timing on every replica:** every replica of a shard runs the same
    `ElectionRTT` and tick interval (`RTTMillisecond`); the lease length on the
    leader is computed from them and assumes the followers' election timers
-   use the same values.
+   use the same values. A replica configured with a shorter window backs no lease;
+   that is safe, but reads then take the heartbeat round.
 5. **Clock rate:** clock rate drift between replicas under 1 %. Run chrony on
    every replica; see [deployment/user.md](deployment/user.md#keep-replica-clocks-disciplined).
 
@@ -329,19 +338,20 @@ Latency by consistency level (measured on local 3-node cluster):
 **Scaling characteristics:**
 
 - **Strong/Linearizable:** Latency scales with quorum round-trip time (RTT). Larger clusters = larger RTT.
-- **LeaseRead/Eventual:** Latency is independent of cluster size (purely local).
+- **LeaseRead:** Latency is independent of cluster size while the leader holds its lease (local lookup); near or after lease expiry a read pays one heartbeat round.
+- **Eventual:** Latency is independent of cluster size (purely local).
 
 ## 9. Comparison Table
 
 | Property | Strong | Linearizable | LeaseRead | Eventual |
 |----------|--------|--------------|-----------|----------|
 | Requires Raft consensus | Yes | Yes (heartbeat) | No (lease check) | No |
-| Requires network RTT | Yes | Yes | No | No |
-| Sees all prior writes | Yes | Yes | Yes | No |
+| Requires network RTT | Yes | Yes | No (while the lease holds) | No |
+| Sees all prior writes | Yes | Yes | Yes (clock-rate drift < 1 %) | No |
 | Latency | 10–50ms | 1–5ms | <1ms | <1ms |
 | Suitable for leader | Yes | Yes | Yes | Yes |
-| Suitable for follower | Yes (forward) | Yes (forward) | No | Yes |
-| Recovers on crash | Yes | Yes | Degraded | Degraded |
+| Suitable for follower | Yes (forward) | Yes (forward) | Yes (forward) | Yes |
+| Recovers on crash | Yes | Yes | Yes | Degraded |
 
 ## Cross-References
 

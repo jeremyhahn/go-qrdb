@@ -70,6 +70,10 @@ type BarrierRegistry struct {
 	// boot-wired composition fields.
 	migrationRecoverer MigrationRecoverer
 
+	// startupReadRetry, when non-nil, is what RestoreVolumeTenants runs its
+	// system-shard reads through (see StartupReadRetry). Guarded by poolMu.
+	startupReadRetry StartupReadRetry
+
 	// auditTrail is the compliance trail every tenant barrier records on
 	// (WithAuditTrail). Guarded by poolMu.
 	auditTrail audit.AuditLogger
@@ -124,6 +128,17 @@ type VolumeResolver interface {
 // owns the directory-swap and snapshot-staging mechanics) and is injected
 // here via WithMigrationRecoverer because pkg/seal cannot import pkg/database.
 type MigrationRecoverer func(ctx context.Context, backend StorageBackend, rootKeyPath string) error
+
+// StartupReadRetry runs read, one boot-time step that reads the system
+// shard, until it succeeds or fails with an error the composer does not
+// recognize as the system shard settling (an election in progress, or a new
+// leader's ReadIndex warm-up), within a bound of its own; op names the step.
+// It returns read's last error.
+//
+// The concrete implementation lives at the server layer (pkg/server owns the
+// classification of a settling system shard) and is injected here via
+// WithStartupReadRetry because pkg/seal cannot import pkg/server.
+type StartupReadRetry func(ctx context.Context, op string, read func(context.Context) error) error
 
 // Option configures a BarrierRegistry at construction time.
 //
@@ -199,6 +214,24 @@ func WithMigrationRecoverer(rec MigrationRecoverer) Option {
 		defer r.poolMu.Unlock()
 		if rec != nil {
 			r.migrationRecoverer = rec
+		}
+	}
+}
+
+// WithStartupReadRetry attaches the retry RestoreVolumeTenants runs each of
+// its system-shard reads through: the catalog listing, each tenant's barrier
+// posture, and each tenant's re-attach, which resolves the tenant's
+// Assignment. A restart brings every node up together, so the restore can
+// run while the system shard has no leader; without a retry one such read
+// fails the restore -- or one tenant's -- for the life of the process.
+//
+// Passing nil is a no-op. When never configured, each read is attempted once.
+func WithStartupReadRetry(retry StartupReadRetry) Option {
+	return func(r *BarrierRegistry) {
+		r.poolMu.Lock()
+		defer r.poolMu.Unlock()
+		if retry != nil {
+			r.startupReadRetry = retry
 		}
 	}
 }
@@ -689,6 +722,18 @@ func (r *BarrierRegistry) migrationRecovererHook() MigrationRecoverer {
 	return r.migrationRecoverer
 }
 
+// startupRead runs read through the configured StartupReadRetry, or once when
+// none is configured.
+func (r *BarrierRegistry) startupRead(ctx context.Context, op string, read func(context.Context) error) error {
+	r.poolMu.RLock()
+	retry := r.startupReadRetry
+	r.poolMu.RUnlock()
+	if retry == nil {
+		return read(ctx)
+	}
+	return retry(ctx, op, read)
+}
+
 // LocalTenantDataRoot returns the local volume-pool DataRoot for tenantID,
 // resolved fresh through RequireInsideLocalPool on every call: the
 // catalog's Assignment is already the durable, cluster-wide answer (no
@@ -779,8 +824,16 @@ func (r *BarrierRegistry) loadTenantBarrierPosture(ctx context.Context, tenantID
 // The method is idempotent: tenants already present in the registry are
 // skipped, and an Assignment for a pool this node does not map is skipped
 // quietly -- some other node serves it. Individual re-registration
-// failures are logged and skipped rather than aborting; the caller's
-// reconciler retries on the next pass.
+// failures are logged and skipped rather than aborting.
+//
+// Nothing re-runs the restore later in the process, so each of its
+// system-shard reads -- the catalog listing, a tenant's barrier posture, and
+// the Assignment its re-attach resolves -- runs through the StartupReadRetry
+// attached with WithStartupReadRetry: a restart brings every node up
+// together, and a read made while the system shard elects a leader fails
+// without one. A listing that still fails is returned; a tenant whose
+// posture read still fails is restored self-managed (sealed), and one whose
+// re-attach still fails is not restored.
 func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 	if r.system == nil || r.system.IsSealed() {
 		return nil
@@ -789,7 +842,12 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 	if allocator == nil || resolver == nil {
 		return nil
 	}
-	assignments, err := allocator.ListAll(ctx)
+	var assignments []volume.Assignment
+	err := r.startupRead(ctx, "volume tenant restore: catalog list", func(actx context.Context) error {
+		var lerr error
+		assignments, lerr = allocator.ListAll(actx)
+		return lerr
+	})
 	if err != nil {
 		return err
 	}
@@ -802,13 +860,25 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 			continue // this node does not map (or cannot open) a.Pool; another node serves it
 		}
 
-		autoUnseal, _, perr := r.loadTenantBarrierPosture(ctx, tenantID)
+		var autoUnseal bool
+		perr := r.startupRead(ctx, "volume tenant restore: barrier posture", func(actx context.Context) error {
+			var lerr error
+			autoUnseal, _, lerr = r.loadTenantBarrierPosture(actx, tenantID)
+			return lerr
+		})
 		if perr != nil {
 			r.logger.Warn("registry: restore: failed to read tenant barrier posture; defaulting to self-managed",
 				slog.String("tenant", tenantID), slog.Any("error", perr))
 		}
 
-		if _, _, rerr := r.ReattachVolumeTenant(ctx, tenantID, autoUnseal); rerr != nil {
+		// The re-attach opens the tenant's store and persists its posture, so
+		// it keeps ctx rather than taking a read attempt's bound; it is retried
+		// for the Assignment it resolves before anything is opened.
+		rerr := r.startupRead(ctx, "volume tenant restore: re-attach", func(context.Context) error {
+			_, _, aerr := r.ReattachVolumeTenant(ctx, tenantID, autoUnseal)
+			return aerr
+		})
+		if rerr != nil {
 			if errors.Is(rerr, ErrTenantAlreadyExists) {
 				continue // registered concurrently
 			}
@@ -816,9 +886,8 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 			if errors.As(rerr, &mm) {
 				// The dedicated disk/mount for this tenant is not present. Fail
 				// THIS tenant's restore closed (never open a fresh empty
-				// barrier) but do not crash the node; the reconciler retries on
-				// the next pass, by which point the operator may have mounted
-				// the volume.
+				// barrier) but do not crash the node; a restart after the
+				// operator mounts the volume restores it.
 				r.logger.Error("registry: restore: tenant barrier store absent; dedicated mount likely not present — refusing fresh empty barrier",
 					slog.String("tenant", tenantID),
 					slog.String("pool", a.Pool),

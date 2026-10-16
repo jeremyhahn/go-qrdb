@@ -1136,6 +1136,64 @@ func TestMVCCEngine_LeaseKeepAliveNoLessor(t *testing.T) {
 	}
 }
 
+func TestMVCCEngine_LeaseCheckpointNoLessor(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	cmd := mustEncode(protocol.EncodeLeaseCheckpoint(0, 0, []lease.Checkpoint{{ID: 1, RemainingTTL: 5}}))
+	results := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err != nil {
+		t.Fatalf("Update must not return a fatal error with no lessor: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload in result with no lessor")
+	}
+}
+
+func TestMVCCEngine_LeaseCheckpointMalformedIsAnApplyFault(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng, err := NewMVCCEngine(stg, WithMVCCLessor(lease.NewLessor()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	cmd := []byte{protocol.OpLeaseCheckpoint, 0x01}
+	results := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err == nil {
+		t.Fatal("a truncated checkpoint command applied")
+	}
+}
+
+func TestMVCCEngine_Lookup_LeaseCheckpointNow(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng, err := NewMVCCEngine(stg)
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	var iq *InvalidQueryError
+	if _, err := eng.Lookup(context.Background(), service.LeaseCheckpointNowQuery{}); !errors.As(err, &iq) {
+		t.Fatalf("no lessor: error = %v, want *InvalidQueryError", err)
+	}
+
+	withLessor, err := NewMVCCEngine(memory.NewStorage(), WithMVCCLessor(lease.NewLessor()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = withLessor.Close(context.Background()) }()
+
+	// No expiry loop is checkpointing, so this replica is not the primary.
+	var np *lease.NotPrimaryError
+	if _, err := withLessor.Lookup(context.Background(), service.LeaseCheckpointNowQuery{}); !errors.As(err, &np) {
+		t.Fatalf("off the primary: error = %v, want *lease.NotPrimaryError", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Lookup: Lease queries
 // ---------------------------------------------------------------------------
@@ -1167,6 +1225,76 @@ func TestMVCCEngine_Lookup_LeaseTimeToLive(t *testing.T) {
 	l := got.(*lease.Lease)
 	if l.ID != leaseID {
 		t.Errorf("lease ID = %d, want %d", l.ID, leaseID)
+	}
+}
+
+func TestMVCCEngine_Lookup_LeaseKeepAlive(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	lr := lease.NewLessor()
+	eng, err := NewMVCCEngine(stg, WithMVCCLessor(lr))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	results := make([]sm.Result, 1)
+	grant := []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(60))}}
+	if err := eng.Update(context.Background(), grant, results); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	leaseID := int64(results[0].Value)
+
+	// Not running the expiry loop: not the primary, so the caller must renew
+	// through the log.
+	var np *lease.NotPrimaryError
+	if _, err := eng.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: leaseID}); !errors.As(err, &np) {
+		t.Fatalf("Lookup before RunExpiry error = %v, want *lease.NotPrimaryError", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lr.RunExpiry(ctx, time.Hour, func() bool { return true },
+			func(context.Context, int64) error { return nil }, nil)
+	}()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := eng.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: leaseID})
+		if err == nil {
+			if l := got.(*lease.Lease); l.ID != leaseID {
+				t.Fatalf("lease ID = %d, want %d", l.ID, leaseID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Lookup never renewed: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var lnf *service.LeaseNotFoundError
+	if _, err := eng.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: leaseID + 99}); !errors.As(err, &lnf) {
+		t.Fatalf("unknown lease error = %v, want *service.LeaseNotFoundError", err)
+	}
+}
+
+func TestMVCCEngine_Lookup_LeaseKeepAliveWithoutLessor(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng, err := NewMVCCEngine(stg)
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	var iq *InvalidQueryError
+	if _, err := eng.Lookup(context.Background(), service.LeaseKeepAliveQuery{ID: 1}); !errors.As(err, &iq) {
+		t.Fatalf("error = %v, want *InvalidQueryError", err)
 	}
 }
 

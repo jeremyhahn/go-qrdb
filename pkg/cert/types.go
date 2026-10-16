@@ -22,6 +22,8 @@ package cert
 import (
 	"crypto"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 )
 
 // IssueRequest carries the parameters of a client certificate issued for a
@@ -42,8 +44,16 @@ type IssueRequest struct {
 	PublicKey crypto.PublicKey
 
 	// TTL is the certificate validity period. Zero means the provider's
-	// default TTL is used.
+	// default TTL is used -- for a delegation, delegation.DefaultLifetime.
 	TTL time.Duration
+
+	// Delegation, when set, makes the certificate a delegation: it carries
+	// the grant as a critical extension, its SPIFFE SAN (with a trust domain
+	// configured) names the grant's principal as a service, and its lifetime
+	// is capped at delegation.MaxLifetime. Username must then be
+	// auth.ServicePrincipalSubjectPrefix plus the principal, and TenantID the
+	// grant's tenant, which may not be the system tenant.
+	Delegation *delegation.Grant
 }
 
 // IssuedCert is a signed client certificate. It carries no private key: the
@@ -131,4 +141,8 @@ type CertRecord struct {
 
 	// Revoked indicates whether the certificate has been revoked.
 	Revoked bool `json:"revoked"`
+
+	// Delegation is the grant a delegation certificate carries; nil for
+	// every other certificate.
+	Delegation *delegation.Grant `json:"delegation,omitempty"`
 }

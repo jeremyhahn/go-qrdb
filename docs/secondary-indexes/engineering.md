@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 ## Exported surface
 
@@ -78,6 +78,27 @@ const DAOSortAscending, DAOSortDescending
 type DAOUnitOfWork, DAOTransactional[E], DAOVersioned, DAOTimestamped
 func NewDAOUnitOfWork, RegisterDAOSave[E], RegisterDAODelete[E], WithDAOUnitOfWorkTimeout
 type DAOAtomicBatchUnsupportedError
+
+// A secret entity field held in go-enclave protected memory, and the
+// refusals that keep it there -- see "Secret entity fields" below.
+type DAOSecretBytes
+var NewDAOSecretBytes, DAOSecretBytesFromBuffer
+type DAOSecretCodecUnsupportedError, DAOSecretEncodingSizeError, DAOSecretFieldIndexedError
+
+// DAOs built from a factory for a named database. The database is resolved
+// by DAOFactory.DatabaseKVStore as the partition of its own name, and NEVER
+// falls back to the factory's default store: a name the factory cannot
+// resolve is refused with DAODatabaseStoreUnresolvedError and nothing is
+// built. NewClientDAOFactory resolves a database name to
+// Client.DatabaseScoped(name).KVStore(), so against a node the DAO lands in
+// that database of the caller's tenant. The database argument selects the
+// store only; DAOWithDatabase is the index-name qualifier for databases that
+// share one store, a different setting.
+func NewDAOTransactional[E](store KVStore, entityType string, newEntity func() E, opts ...DAOOption) (DAOTransactional[E], error)
+func NewDatabaseDAO[E](factory *DAOFactory, database, entityType string, newEntity func() E, opts ...DAOOption) (GenericDAO[E], error)
+func NewDatabaseDAOTransactional[E](factory *DAOFactory, database, entityType string, newEntity func() E, opts ...DAOOption) (DAOTransactional[E], error)
+func NewClientDAOFactory(c *Client) *DAOFactory
+type DAODatabaseStoreUnresolvedError
 
 // DAOUnitOfWork.Commit REQUIRES the underlying store to implement
 // kvstore.MultiGuardedBatchKVStore: every queued save/delete lands as ONE
@@ -436,6 +457,92 @@ Aggregation limitations, all current:
 Time-series aggregation is a different mechanism with its own functions and
 bucketing — see [../time-series/](../time-series/engineering.md).
 
+## Secret entity fields
+
+`dao.SecretBytes` (`sdk.DAOSecretBytes`) is an entity field for secret key
+material. Its bytes live in a `secure.Buffer` (go-enclave protected memory:
+mlocked, guard-paged, outside the Go heap) and the entity codec moves them
+between that buffer and the record without leaving a plaintext copy on the
+heap that nothing can wipe.
+
+```go
+type Credential struct {
+	ID    uint64           `msgpack:"id"`
+	Label string           `msgpack:"label" index:"true"`
+	Key   dao.SecretBytes  `msgpack:"key"`
+}
+
+key, err := dao.NewSecretBytes(raw)   // raw is wiped, success or failure
+credDAO, err := dao.New[*Credential](store, "creds", newCredential,
+	dao.WithCodec(dao.CodecMsgPack))
+```
+
+- **Construction.** `NewSecretBytes(src)` moves `src` into protected memory and
+  wipes `src` on every path; an empty `src` is `*secure.InvalidSizeError`.
+  `SecretBytesFromBuffer(buf)` takes ownership of a buffer that never touched
+  the heap. Access is `WithBytes(fn)` (a borrow for the call), `Len`,
+  `IsZero`, `Buffer`; `Destroy` / `DestroyErr` wipe and release.
+- **A handle, not a value.** Copies of a `SecretBytes` share one buffer, and
+  `Destroy` through any copy wipes it for all. Every `Get`, `Find` or page
+  decodes a new buffer the caller owns and must `Destroy`; decoding into an
+  entity replaces the handle it held without destroying it. The zero value
+  holds nothing and encodes as nil.
+- **The codec is chosen by the entity type.** `dao.NewCodec` (and so
+  `dao.New`) inspects the entity type statically; a type holding a
+  `SecretBytes` — directly, or inside a struct, pointer, slice, array or map —
+  gets the secret-carrying encoding for the requested codec, or is refused
+  when the codec has none. A `SecretBytes` stored in an interface-typed field
+  is invisible to that inspection; declare the field with its static type.
+
+| Codec | Secret fields | Why |
+|---|---|---|
+| MessagePack (`CodecMsgPack`, build tag `codec_msgpack`) | **supported**, as one raw bin item | encoding measures the record, then writes the secret straight from its protected pages into a record allocated at exactly that size; decoding reads the bin item straight from the record into a new protected buffer |
+| JSON (the DAO default) | refused | base64 of the plaintext is built in the encoder's pooled buffer |
+| YAML, TOML | refused | encode through `encoding.TextMarshaler` and growing buffers |
+| BSON, CBOR | refused | encode through pooled writer buffers the DAO cannot wipe |
+| ProtoBuf | refused | encodes generated `proto.Message` types, which cannot declare the field |
+
+The refusal is `dao.CodecCreationError` wrapping
+`dao.SecretCodecUnsupportedError{CodecType}`, returned when the codec is built
+— an entity type with a secret field cannot reach a store through a codec that
+would copy it. A build without `codec_msgpack` refuses every codec.
+`SecretBytes` also refuses `encoding/json` and `encoding.TextMarshaler`
+directly, so an entity marshalled outside the DAO (into a log line) fails
+rather than leaks, and every `fmt` verb prints `dao.SecretBytes(redacted)`.
+
+**The one heap copy is the record.** On a save the encoded record is the only
+heap copy of the plaintext the codec makes, and it is handed to the store; on
+a read the record the store returns is the one the codec decodes from. Neither
+is wiped by the DAO: a store owns the slices it is given and returns, and an
+in-memory store may alias them. Copies the store path makes beyond the codec —
+transport frames, the Raft log in memory, the barrier's plaintext input — are
+outside this guarantee.
+
+**At rest the record is a value like any other.** The store encrypts it under
+the database's barrier before it reaches storage, so the secret is at rest
+only as ciphertext. A database on a plaintext barrier (strategy `none`) stores
+it in plaintext; the field does not add encryption of its own.
+
+**A secret field is never indexed and never a SQL column.** An `index:` tag or
+a compound index naming a secret field fails `dao.New` with
+`dao.SecretFieldIndexedError{EntityType, Field}` — an index entry is the
+field's plaintext in the clear keyspace. The entity-SQL bridge registers no
+column for it, since a result row would read the secret out of protected
+memory.
+
+**Encoding is two-pass, and checks itself.** The first pass counts bytes into
+a discarding writer; the second writes into a fixed-capacity writer that
+refuses to grow. A type whose encoding changes size between the passes is
+refused with `dao.SecretEncodingSizeError{Measured, Encoded}` and the partial
+record is wiped. Only entity types holding a secret pay for the second pass.
+
+Tests: `pkg/dao/secret_bytes_test.go` (refusals, type inspection, index and
+column refusal) and `pkg/dao/secret_bytes_msgpack_test.go` (a DAO round trip
+that wipes the decoded secret, byte-equality with a plain `[]byte` field, and
+heap-allocation measurements showing decode allocates no copy of the secret
+and encode allocates only the record, each beside a control that allocates the
+copies and so proves the measurement can fail).
+
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |
@@ -464,6 +571,11 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | `GetByNaturalKey` where the configured `IDGenerator` is not a `DeterministicIDGenerator` | `*dao.UnsupportedIDGeneratorError` | **yes** — there is no deterministic way to derive an ID from a bare value |
 | `GetByNaturalKey` where the derived ID names a DIFFERENT entity | `dao.NaturalKeyMismatchError` | **yes** — the mismatched record is never returned |
 | `Get(id)`, `Page`, `ForEachPage`, `Delete` | never verify a natural key | n/a — each takes a bare id or an already-loaded entity, never the natural-key value a mismatch would be checked against |
+| `dao.New` / `dao.NewCodec` for an entity type holding a `SecretBytes` with any codec but MessagePack (or without `codec_msgpack`) | `dao.CodecCreationError` wrapping `dao.SecretCodecUnsupportedError` | **yes** — refused before any record exists |
+| `index:` tag or compound index naming a `SecretBytes` field | `dao.SecretFieldIndexedError` from `dao.New` | **yes** |
+| `json.Marshal` / `MarshalText` of a `SecretBytes` outside the DAO | `dao.SecretCodecUnsupportedError` (`"json"` / `"text"`) | **yes** |
+| Saving an entity whose `SecretBytes` was destroyed | `*secure.NilBufferError` | **yes** — never stored as empty |
+| A secret entity's encoding changes size between the measuring and writing pass | `dao.SecretEncodingSizeError`; partial record wiped | **yes** |
 
 **There is one atomic-refusal marker: `kvstore.ErrAtomicWriteUnsupported`.**
 Every layer that refuses a guarded write for want of the capability — the

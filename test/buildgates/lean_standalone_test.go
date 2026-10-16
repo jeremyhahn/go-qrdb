@@ -75,8 +75,7 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/auth -> pkg/api/sealedwindow":                       true,
 
 	// The gRPC proto and chi types in the shared auth chain.
-	"pkg/auth/middleware -> github.com/go-chi/chi/v5":  true,
-	"pkg/auth/middleware -> pkg/api/grpc/proto/qrdbv1": true,
+	"pkg/auth/middleware -> github.com/go-chi/chi/v5": true,
 
 	// The service.Host interface LocalBackend implements is typed by the
 	// quicraft NodeHost.
@@ -160,6 +159,9 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/common":  true,
 	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/factory": true,
 
+	// At-rest encryption of the file backend goes through a pebble vfs.FS.
+	"pkg/storage/file -> github.com/cockroachdb/pebble/v2/vfs": true,
+
 	// The pebble storage backend, compiled by every node.
 	"pkg/storage/pebble -> github.com/cockroachdb/pebble/v2":         true,
 	"pkg/storage/pebble -> github.com/cockroachdb/pebble/v2/bloom":   true,
@@ -234,7 +236,9 @@ var leanStandaloneEdges = map[string]bool{
 	"sdk/go/transport/internal/dekconv -> pkg/api/grpc/proto/qrdbv1":        true,
 	"sdk/go/transport/internal/enrollconv -> pkg/api/grpc/proto/qrdbv1":     true,
 	"sdk/go/transport/internal/holderconv -> pkg/api/grpc/proto/qrdbv1":     true,
+	"sdk/go/transport/internal/rebalanceconv -> pkg/api/grpc/proto/qrdbv1":  true,
 	"sdk/go/transport/internal/sealconv -> pkg/api/grpc/proto/qrdbv1":       true,
+	"sdk/go/transport/internal/statehashconv -> pkg/api/grpc/proto/qrdbv1":  true,
 	"sdk/go/transport/internal/tenantconv -> pkg/api/grpc/proto/qrdbv1":     true,
 	"sdk/go/transport/quic -> pkg/api/grpc/proto/qrdbv1":                    true,
 	"sdk/go/transport/quic -> pkg/api/quic/wire":                            true,

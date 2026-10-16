@@ -133,7 +133,7 @@ func newDaemonStoreResolver(t *testing.T, tenantIDs ...string) (tenant.StoreReso
 // enrolled under one tenant does not resolve under another.
 func TestBuildUserAuthFactorServiceOption_Routed(t *testing.T) {
 	resolver, store := newDaemonStoreResolver(t, "acme", "globex")
-	opt, err := buildUserAuthFactorServiceOption(context.Background(), resolver, store, slog.New(slog.DiscardHandler))
+	opt, err := buildUserAuthFactorServiceOption(context.Background(), resolver, store, nil, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	require.NotNil(t, opt)
 
@@ -171,7 +171,7 @@ func TestBuildUserAuthFactorServiceOption_MigratesLegacyRecords(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.Put(context.Background(), "__sys:auth/factors/legacy", data))
 
-	opt, err := buildUserAuthFactorServiceOption(context.Background(), resolver, store, slog.New(slog.DiscardHandler))
+	opt, err := buildUserAuthFactorServiceOption(context.Background(), resolver, store, nil, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	require.NotNil(t, opt)
 
@@ -200,7 +200,7 @@ func TestBuildUserAuthFactorServiceOption_MigratesLegacyRecords(t *testing.T) {
 // refusal: with no resolver there is no tenant boundary to serve behind, so
 // the wiring returns ErrNoTenantStoreResolver rather than an unrouted service.
 func TestBuildUserAuthFactorServiceOption_NoResolver(t *testing.T) {
-	opt, err := buildUserAuthFactorServiceOption(context.Background(), nil, nil, nil)
+	opt, err := buildUserAuthFactorServiceOption(context.Background(), nil, nil, nil, nil)
 	assert.ErrorIs(t, err, ErrNoTenantStoreResolver)
 	assert.Nil(t, opt)
 }

@@ -158,7 +158,7 @@ func TestE2E_CredentialRetrieveVersion_RoundTrip(t *testing.T) {
 	srv.SetResponder("credential.RetrieveVersion", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveVersionResponse{Value: []byte("secret-v2")})
 	})
-	resp, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	resp, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name: "db", Version: 2,
 	})
 	if err != nil {

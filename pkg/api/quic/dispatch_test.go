@@ -50,6 +50,7 @@ var expectedMethods = []string{
 	"admin.GetReplicaStates",
 	"admin.GetNodeCompaction",
 	"admin.SetNodeCompaction",
+	"admin.GetStateHashes",
 	"admin.MintJoinToken",
 	"admin.AddObserverMember",
 	"admin.ListPendingJoinRequests",
@@ -164,6 +165,7 @@ var expectedMethods = []string{
 	// Certificate management (4)
 	"cert.Issue",
 	"cert.Enroll",
+	"cert.Delegate",
 	"cert.Revoke",
 	"cert.List",
 
@@ -272,6 +274,10 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 195 = 194 + cert.Delegate, a tenant-issued delegation certificate for a
+	// service principal (docs/certificate-authority).
+	// 194 = 193 + admin.GetStateHashes, every local replica's applied index
+	// and state digest (docs/clustering).
 	// 193 = 192 + admin.GetReplicaStates, each replica's applied index and
 	// state-machine hash on the answering node (docs/clustering).
 	// 192 = 187 + 5 verbs for the member-side CSR approval queue, observer
@@ -333,7 +339,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 193
+	const wantCount = 195
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -424,7 +430,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 
 	expectedCounts := map[string]int{
 		"kv":       8,
-		"admin":    22,
+		"admin":    23,
 		"mvcc":     7,
 		"tx":       1,
 		"batch":    5,
@@ -435,7 +441,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"vector":   20,
 		"user":     12,
 		"role":     11,
-		"cert":     4,
+		"cert":     5,
 		"barrier":  21,
 		"ceremony": 3,
 		"tenant":   12,

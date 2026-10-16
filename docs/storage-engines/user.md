@@ -19,7 +19,7 @@ at database creation. There is no client verb for it.
 | Backend | Pick it when | Notes |
 |---|---|---|
 | `pebble` (default) | production, anything durable and large | LSM store; the right default |
-| `file` | small metadata sets, or when a real filesystem layout matters | durable: atomic writes plus a replayed commit journal |
+| `file` | small metadata sets, or when a real filesystem layout matters | durable: atomic writes plus a replayed commit journal; encrypted at rest under the seal, like `pebble` |
 | `memory` | tests, caches, anything disposable | nothing survives a restart |
 | `objstore` | snapshot/backup/archive tiers | go-objstore backend; not a hot apply path |
 
@@ -68,6 +68,42 @@ qrdb database info app --output json      # shows engine, backend, dataDir
 This is fixed at creation. Changing it means a new database and a data
 migration.
 
+## At-rest encryption
+
+With the seal enabled, the barrier encrypts what each backend leaves on disk.
+The guarantee differs by backend:
+
+| Backend | Encrypted at rest | What stays visible on disk |
+|---|---|---|
+| `pebble` | every file: sstables, WAL, manifest, options | file count and sizes |
+| `file` | every record file and the commit journal, key and value alike | the number of records and each record's size; file names are SHA-256 digests of the keys, so they reveal no key; the format marker (version and whether the store is encrypted) |
+| `objstore` | — (no file system for the barrier to encrypt) | values and object names, which encode the keys; a standalone `storage.backend: objstore` is not encrypted and the daemon warns at start |
+| `memory` | — | nothing is written |
+
+`pebble` and `file` use the same mechanism: every file goes through the
+barrier's encrypting file system, under a per-file key wrapped by the
+barrier's key. There is no second cipher for `file`.
+
+**While the barrier is sealed** a `pebble` or `file` store opens, but every read
+and write fails with the typed sealed error (`errors.Is(err, sdk.ErrSealed)`
+in Go; `503` / `Unavailable` over the wire) until it is unsealed. No record is
+served from a store whose key is not available.
+
+**Enabling encryption re-encrypts a `file` store.** `qrdb barrier
+enable-encryption` moves a node from strategy `none` to a keyed strategy and
+copies every `file` store under the new key, record by record, verifies it and
+swaps it in, exactly as it does a `pebble` store. That covers the standalone
+`storage.backend: file` store and, in raft mode, `raft.sm_storage: file`. If
+the copy does not match, nothing is swapped and the store stays under the old
+key. See
+[../barrier-seal/user.md](../barrier-seal/user.md).
+
+**A `file` store written with the seal off cannot be opened with it on**, nor
+the reverse; the daemon refuses it at start rather than serve plaintext
+records beside encrypted ones. Move such data through backup and restore into
+a node started with the seal on — see
+[../barrier-seal/user.md](../barrier-seal/user.md#running-with-no-barrier-at-all).
+
 ## Tenant isolation
 
 You do not configure this. Tenant-scoped consumers are handed an engine already
@@ -108,12 +144,6 @@ tier and is refused as a hot apply path. Use `pebble`, `file` or `memory`. Note
 also that `sm_storage` applies only to `sm_type: disk` and `fast`: every other
 state machine carries its own storage and rejects a non-pebble `sm_storage`.
 
-**The daemon refused `sm_type: disk` or `fast` "while the seal barrier is
-enabled".** Their `sm_storage` is `file`, which the barrier cannot encrypt, so
-the replica's data would sit on disk in plaintext beside a barrier you enabled
-to prevent that. Use `sm_storage: pebble`, which the barrier encrypts, or
-`memory`.
-
 **Everything vanished after a restart.** The engine is `memory`. That is what it
 does.
 
@@ -124,6 +154,11 @@ checked before use.
 **A volume pool path does not exist on the node you are on.**
 `VolumePoolBackend.LocalPath` is a filesystem path on the *serving* node. It is
 not portable.
+
+**A `file` store refused to open, saying it "was written plaintext and cannot
+be opened encrypted"** (or the reverse). The data directory was written with
+the seal in the other state. See "At-rest encryption" above; the engine
+refuses rather than mix the two.
 
 **The server would not start, complaining about a directory.** Backing
 directories are opened at startup, not lazily at first write, so a permissions

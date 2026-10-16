@@ -31,18 +31,20 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 		return nil, &transport.ClosedError{}
 	}
 	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Add(ctx, &pb.UserAuthFactorAddRequest{
-		UserId:         req.UserID,
-		Type:           req.Type,
-		Label:          req.Label,
-		Credential:     req.Credential,
-		SpkiCredential: req.SPKICredential,
-		Metadata:       req.Metadata,
-		CreatedBy:      req.CreatedBy,
+		UserId:                   req.UserID,
+		Type:                     req.Type,
+		Label:                    req.Label,
+		Credential:               req.Credential,
+		SpkiCredential:           req.SPKICredential,
+		Metadata:                 req.Metadata,
+		CreatedBy:                req.CreatedBy,
+		IfNoActiveType:           req.IfNoActiveType,
+		ExpectedFactorSetVersion: req.ExpectedFactorSetVersion,
 	})
 	if err != nil {
 		return nil, mapGRPCError("AddAuthFactor", err)
 	}
-	return &transport.AuthFactorAddResponse{Factor: pbUserFactorToTransport(resp.GetFactor())}, nil
+	return &transport.AuthFactorAddResponse{Factor: pbUserFactorToTransport(resp.GetFactor()), FactorSetVersion: resp.GetFactorSetVersion()}, nil
 }
 
 // ListAuthFactors invokes UserAuthFactorService.List via gRPC.
@@ -57,8 +59,9 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 		return nil, mapGRPCError("ListAuthFactors", err)
 	}
 	out := transport.AuthFactorListResponse{
-		Factors: make([]transport.AuthFactorRecord, len(resp.GetFactors())),
-		Total:   int(resp.GetTotal()),
+		Factors:          make([]transport.AuthFactorRecord, len(resp.GetFactors())),
+		Total:            int(resp.GetTotal()),
+		FactorSetVersion: resp.GetFactorSetVersion(),
 	}
 	for i, f := range resp.GetFactors() {
 		out.Factors[i] = pbUserFactorToTransport(f)
@@ -95,10 +98,28 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	return &transport.AuthFactorRemoveResponse{Status: resp.GetStatus()}, nil
 }
 
+// DeleteAuthFactor implements transport.Transport.
+func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Delete(ctx, &pb.UserAuthFactorDeleteRequest{
+		FactorId: req.FactorID,
+		Force:    req.Force,
+	})
+	if err != nil {
+		return nil, mapGRPCError("DeleteAuthFactor", err)
+	}
+	return &transport.AuthFactorDeleteResponse{Status: resp.GetStatus()}, nil
+}
+
 // RotateAuthFactor invokes UserAuthFactorService.Rotate via gRPC.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := req.Validate(); err != nil {
+		return nil, &transport.RequestError{Method: "RotateAuthFactor", Err: err}
 	}
 	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Rotate(ctx, &pb.UserAuthFactorRotateRequest{
 		OldFactorId: req.OldFactorID,

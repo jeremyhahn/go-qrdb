@@ -1,6 +1,6 @@
 # Configuration — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
 
 ## Exported surface
 
@@ -102,7 +102,6 @@ flags alone.
 | etcd enabled on a database | any backend serves etcd; there is no longer an `engine` constraint (Lane 1C deleted `database.EtcdEngineUnsupportedError` along with the `engine` concept, OD-12/OD-13) |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
-| Seal barrier enabled with `disk`/`fast` over `file` `sm_storage` | refused at start: file storage cannot be encrypted at rest (`pebble` storage is encrypted and allowed) |
 | Per-database barrier on a database sharing the default store | refused |
 | Multicast discovery with no secret | the method does not run |
 | `raft.shard_id` at or above `shard.UserMin` (1000) in raft mode | validation error -- the node's own group sits below the user range, whose IDs the cluster issues to databases |
@@ -124,6 +123,7 @@ Viper-bound, equivalent to their flags:
 
 ## CLI flag to YAML mapping
 
+| Flag                            | YAML key                           |
 |---------------------------------|------------------------------------|
 | `--config`                      | N/A (specifies the YAML file path) |
 | `--admin-port`                  | `server.admin_port`                |
@@ -142,15 +142,12 @@ Viper-bound, equivalent to their flags:
 | `--compaction-overhead`         | `raft.compaction_overhead`         |
 | `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
 | `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
-
-go-quicraft's `TransportConfig` carries other resource knobs (snapshot
-receive rate/memory, connection caps, the inbound message-receive budget);
-`buildHostConfig` sets only `MTLSConfig` on it, so those run at go-quicraft's
-defaults and have no entry in this table. See `../configuration/cli.md` for
-the 0.18.0 message-receive-budget default change
-(`DefaultMaxMessageReceiveMemory` removed; now derived from
-`MessageReceiveBudgetFrames`).
+| `--member-identities`           | `raft.member_identities`           |
 | `--sm`                          | `raft.sm_type` (`pebble` default; every registered type starts — see `../run-modes/architecture.md`) |
+| `--sm-backend`                  | `raft.sm_backend`                  |
+| `--sm-storage`                  | `raft.sm_storage`                  |
+| `--lease-read`                  | `raft.lease_read`                  |
+| `--check-quorum`                | `raft.check_quorum`                |
 | `--tls-ca-file`                 | `tls.ca_file`                      |
 | `--tls-cert-file`               | `tls.cert_file`                    |
 | `--tls-key-file`                | `tls.key_file`                     |
@@ -161,6 +158,19 @@ the 0.18.0 message-receive-budget default change
 | `--dns-domain`                  | `discovery.dns_domain`             |
 | `--debug-raft`                  | N/A (forces `logging.level: debug`)|
 | `--auth-enabled`                | `auth.enabled`                     |
+
+*(Corrected: the table had no header row, and the paragraph below sat inside
+it, so every row from `--sm` down rendered as text. The rows for `--member-identities`, `--sm-backend`,
+`--sm-storage`, `--lease-read` and `--check-quorum` were missing.)* Each Raft flag's type, default
+and bounds are in [cli.md](cli.md#raft-flags).
+
+go-quicraft's `TransportConfig` carries other resource knobs (snapshot
+receive rate/memory, connection caps, the inbound message-receive budget);
+`buildHostConfig` sets only `MTLSConfig` on it, so those run at go-quicraft's
+defaults and have no entry in this table. See `../configuration/cli.md` for
+the 0.18.0 message-receive-budget default change
+(`DefaultMaxMessageReceiveMemory` removed; now derived from
+`MessageReceiveBudgetFrames`).
 
 ---
 

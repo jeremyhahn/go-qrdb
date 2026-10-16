@@ -59,10 +59,11 @@ type restRebalancePlanRequest struct {
 
 // restRebalanceExecution is the on-wire JSON for POST /v1/rebalance/execute.
 type restRebalanceExecution struct {
-	MovesCompleted int     `json:"moves_completed"`
-	MovesFailed    int     `json:"moves_failed"`
-	DurationMs     int64   `json:"duration_ms"`
-	FinalImbalance float64 `json:"final_imbalance"`
+	MovesCompleted int                              `json:"moves_completed"`
+	MovesFailed    int                              `json:"moves_failed"`
+	Failures       []transport.RebalanceMoveFailure `json:"failures"`
+	DurationMs     int64                            `json:"duration_ms"`
+	FinalImbalance float64                          `json:"final_imbalance"`
 }
 
 // restNodeLoad is the on-wire JSON shape for a single node's load.
@@ -131,6 +132,7 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 	return &transport.RebalanceResult{
 		MovesCompleted: wire.MovesCompleted,
 		MovesFailed:    wire.MovesFailed,
+		Failures:       wire.Failures,
 		Duration:       time.Duration(wire.DurationMs) * time.Millisecond,
 		FinalImbalance: wire.FinalImbalance,
 	}, nil

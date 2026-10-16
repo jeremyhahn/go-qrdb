@@ -144,6 +144,16 @@ type CallerAssertion struct {
 	// never sees the certificate. omitempty keeps a user's assertion
 	// byte-identical to the form before the field existed.
 	HolderProfile string `json:"holder_profile,omitempty"`
+
+	// Delegation is the base64 (standard encoding) DER of the tenant-issued
+	// delegation certificate the original caller authenticated with
+	// (auth.DelegationOf), and empty for every other caller. The certificate
+	// itself travels, not a claim about it: the receiving node verifies it
+	// again -- chain, tenant issuer, revocation, principal -- exactly as if
+	// the caller had presented it there, and admits the identity only if
+	// that agrees with Subject and TenantID. omitempty keeps every other
+	// assertion byte-identical to the form before the field existed.
+	Delegation string `json:"delegation,omitempty"`
 }
 
 // NewCallerAssertion builds a request-bound assertion for the given caller and

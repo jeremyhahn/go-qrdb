@@ -73,6 +73,11 @@ func ClusterAdminScope(t *testing.T, start ClusterStartFunc) {
 			})
 			return err
 		}},
+		// Replica state hashes cover every tenant's replicas on the node.
+		{"get state hashes", func(c pb.QRDBServiceClient, t *testing.T) error {
+			_, err := c.GetStateHashes(callCtx(t), &pb.GetStateHashesRequest{})
+			return err
+		}},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

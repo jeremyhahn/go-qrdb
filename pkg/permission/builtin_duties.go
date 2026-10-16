@@ -120,7 +120,7 @@ func registerGovernanceDuties() {
 		// Shamir ceremony (SO-exclusive).
 		CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		// Certificate administration.
-		CertsIssue, CertsEnroll, CertsRevoke,
+		CertsIssue, CertsEnroll, CertsDelegate, CertsRevoke,
 		CertsList, CertsRead,
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,

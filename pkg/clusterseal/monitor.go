@@ -35,6 +35,14 @@ const (
 	DefaultAckTimeout   = 5 * time.Second
 )
 
+// SettleBudget bounds how long one Seal or Clear waits out the system shard
+// electing a leader: one budget for the whole request, its reads and its
+// write together.
+const SettleBudget = 15 * time.Second
+
+// settlePoll paces the retries of a transient KV error.
+const settlePoll = 100 * time.Millisecond
+
 // KV is the slice of the replicated system store the monitor needs. Get and
 // Scan must be linearizable reads; PutIfAbsent and CompareAndSwap must be
 // evaluated by the state machine, so replicas cannot diverge.
@@ -171,6 +179,12 @@ type Config struct {
 	// AckTimeout bounds the wait for every node's acknowledgement before a
 	// node key is wiped. Default DefaultAckTimeout.
 	AckTimeout time.Duration
+	// Retryable reports whether an error from KV is transient: the system
+	// shard electing a leader, or its leader moving. Seal and Clear retry a
+	// transient error within SettleBudget, and the node-seal acknowledgement
+	// within AckTimeout; any other error is final at once. Nil makes every
+	// error final.
+	Retryable func(error) bool
 	// Clock overrides the real clock in tests.
 	Clock Clock
 	// Logger overrides slog.Default.
@@ -595,7 +609,8 @@ var sealEnds = map[Kind]sealEnd{
 
 // awaitAcks writes this node's acknowledgement of epoch and waits until every
 // system-shard member has acknowledged it, or until AckTimeout -- a bound on
-// the whole wait, the write and every read included.
+// the whole wait, the write, its retries and every read included. A transient
+// error writing the acknowledgement is retried within that bound.
 //
 // The wait reads the acknowledgements from this node's own copy of the store
 // (KV.ScanStale), never through a quorum. The nodes that see every
@@ -609,7 +624,10 @@ func (m *Monitor) awaitAcks(ctx context.Context, epoch uint64) {
 	deadline := clock.Now().Add(m.cfg.AckTimeout)
 	ctx, cancel := context.WithTimeout(ctx, m.cfg.AckTimeout)
 	defer cancel()
-	if err := m.cfg.KV.Put(ctx, ackKey(m.cfg.Self), []byte(strconv.FormatUint(epoch, 10))); err != nil {
+	ack := []byte(strconv.FormatUint(epoch, 10))
+	if err := m.settle(ctx, deadline, func() error {
+		return m.cfg.KV.Put(ctx, ackKey(m.cfg.Self), ack)
+	}); err != nil {
 		m.logger.Warn("cluster seal: could not acknowledge the node seal", slog.Any("error", &AckError{Err: err}))
 	}
 	step := m.cfg.PollInterval / 4
@@ -695,9 +713,10 @@ func (m *Monitor) next(cur Record, b Barrier, sealed bool, by Principal) Record 
 
 // Seal records a seal of b, then seals b on this node. The record is written
 // first because a node key also protects this node's Raft log. A barrier
-// whose record is already sealed is not written again. If the record cannot
-// be confirmed, this node seals b anyway -- sealing is the safe direction --
-// and returns *RecordNotConfirmedError.
+// whose record is already sealed is not written again. A transient KV error
+// -- the system shard electing -- is waited out within SettleBudget. If the
+// record still cannot be confirmed, this node seals b anyway -- sealing is
+// the safe direction -- and returns *RecordNotConfirmedError.
 func (m *Monitor) Seal(ctx context.Context, b Barrier, by Principal) (Record, error) {
 	if !m.Active() {
 		return Record{}, ErrInactive
@@ -708,7 +727,8 @@ func (m *Monitor) Seal(ctx context.Context, b Barrier, by Principal) (Record, er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cur, raw, found, err := m.load(ctx, b)
+	deadline := m.settleDeadline()
+	cur, raw, found, err := m.loadSettled(ctx, deadline, b)
 	if err != nil {
 		return Record{}, m.sealUnconfirmedLocked(ctx, b, cur.Epoch+1, err)
 	}
@@ -716,12 +736,12 @@ func (m *Monitor) Seal(ctx context.Context, b Barrier, by Principal) (Record, er
 		return cur, m.adoptSealedLocked(ctx, cur)
 	}
 	next := m.next(cur, b, true, by)
-	ok, err := m.write(ctx, next, raw, found)
+	ok, err := m.writeSettled(ctx, deadline, next, raw, found)
 	if err != nil {
 		return Record{}, m.sealUnconfirmedLocked(ctx, b, next.Epoch, err)
 	}
 	if !ok {
-		winner, _, wfound, rerr := m.load(ctx, b)
+		winner, _, wfound, rerr := m.loadSettled(ctx, deadline, b)
 		if rerr == nil && wfound && winner.Sealed {
 			return winner, m.adoptSealedLocked(ctx, winner)
 		}
@@ -757,7 +777,9 @@ func (m *Monitor) sealUnconfirmedLocked(ctx context.Context, b Barrier, epoch ui
 // Clear records the end of b's cluster seal. It unseals nothing: the caller
 // has already unsealed b on this node, and for the node barrier this node
 // must have unsealed itself (seal.ErrSealed otherwise). A record that is
-// already clear, or absent, is returned without a write.
+// already clear, or absent, is returned without a write. A transient KV
+// error is waited out within SettleBudget, as for Seal; a record still not
+// confirmed is *RecordNotConfirmedError, and the barrier stays sealed.
 func (m *Monitor) Clear(ctx context.Context, b Barrier, by Principal) (Record, error) {
 	if !m.Active() {
 		return Record{}, ErrInactive
@@ -771,7 +793,8 @@ func (m *Monitor) Clear(ctx context.Context, b Barrier, by Principal) (Record, e
 	if b.Kind() == KindNode && !m.cfg.Enforcer.NodeUnsealed() {
 		return Record{}, seal.ErrSealed
 	}
-	cur, raw, found, err := m.load(ctx, b)
+	deadline := m.settleDeadline()
+	cur, raw, found, err := m.loadSettled(ctx, deadline, b)
 	if err != nil {
 		return Record{}, &RecordNotConfirmedError{Barrier: b, Op: "clear", Err: err}
 	}
@@ -782,12 +805,12 @@ func (m *Monitor) Clear(ctx context.Context, b Barrier, by Principal) (Record, e
 		return cur, nil
 	}
 	next := m.next(cur, b, false, by)
-	ok, err := m.write(ctx, next, raw, found)
+	ok, err := m.writeSettled(ctx, deadline, next, raw, found)
 	if err != nil {
 		return Record{}, &RecordNotConfirmedError{Barrier: b, Op: "clear", Err: err}
 	}
 	if !ok {
-		winner, _, wfound, rerr := m.load(ctx, b)
+		winner, _, wfound, rerr := m.loadSettled(ctx, deadline, b)
 		if rerr == nil && wfound && !winner.Sealed {
 			m.publishOne(winner)
 			m.applied[b] = max(m.applied[b], winner.Epoch)

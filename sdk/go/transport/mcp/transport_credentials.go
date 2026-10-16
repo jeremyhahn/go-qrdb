@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -138,32 +139,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	return &resp, nil
 }
 
-// CredentialRetrieveVersion returns the stored credential value for a
-// specific version by calling the qrdb_credential_retrieve_version MCP
-// tool. Use version == 0 to retrieve the current version.
-func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*transport.CredentialRetrieveVersionResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &nilRequestError{Method: "CredentialRetrieveVersion"}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_credential_retrieve_version", map[string]any{
-		"name":    req.Name,
-		"version": req.Version,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: err}
-	}
-
-	var resp transport.CredentialRetrieveVersionResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-	return &resp, nil
-}
-
 // CredentialListVersions returns the version history (current + non-expired
 // grace) for a credential by calling the qrdb_credential_list_versions MCP
 // tool. Values are never returned by this call.
@@ -231,10 +206,10 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	return nil
 }
 
-// CredentialRetrieve returns the credential value via the
-// qrdb_credential_retrieve tool, which emits the value base64-encoded
-// (RFC 4648); this decodes it back to raw bytes.
-func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+// CredentialRetrieveBuffer returns the credential value for name in protected
+// memory. The tool result is the wire DTO; it is moved into a buffer and the
+// decoded slice wiped.
+func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -242,9 +217,38 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CredentialRetrieve", Err: err}
 	}
-	value, decodeErr := base64.StdEncoding.DecodeString(text)
+	buf, decodeErr := transport.BufferFromBase64([]byte(text))
 	if decodeErr != nil {
 		return nil, &transport.RequestError{Method: "CredentialRetrieve", Err: &valueDecodeError{Err: decodeErr}}
 	}
-	return value, nil
+	return buf, nil
+}
+
+// CredentialRetrieveVersionBuffer returns the stored value for a specific
+// version in protected memory. The tool result is the wire DTO; it is moved
+// into a buffer and the decoded slice wiped.
+func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*secure.Buffer, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &nilRequestError{Method: "CredentialRetrieveVersion"}}
+	}
+	text, err := t.callTool(ctx, "qrdb_credential_retrieve_version", map[string]any{
+		"name":    req.Name,
+		"version": req.Version,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: err}
+	}
+	body := []byte(text)
+	defer secure.Wipe(body)
+	var resp struct {
+		Value transport.WireValue `json:"value"`
+	}
+	if jsonErr := json.Unmarshal(body, &resp); jsonErr != nil {
+		resp.Value.Buffer.Destroy()
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return resp.Value.Buffer, nil
 }

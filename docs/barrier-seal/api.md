@@ -346,8 +346,8 @@ seal record from a serving node.
 | Tenant `enable-encryption` while a system-scope migration is rebuilding the data plane | `503` | `UNAVAILABLE` — `DataPlaneRecyclingError`; retry |
 | `enable-encryption` (or unseal) on an embedded node that is closing | `503` | `UNAVAILABLE` — `service.ErrNodeClosed`; retry against another node |
 | Two seal or clear requests for one barrier race; this one lost | 409 | `ABORTED` — `clusterseal.SealEpochConflictError`; read the record and retry |
-| A seal whose record could not be confirmed. **The receiving node is sealed**; the other nodes may not be | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry through another node |
-| An unseal whose clear record could not be written. The node sealed the barrier again | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry |
+| A seal whose record could not be confirmed, after waiting out up to 15 s of a system-shard election (a seal that outlasts the election succeeds). **The receiving node is sealed**; the other nodes may not be | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry through another node |
+| An unseal whose clear record could not be written, after the same bounded wait. The node sealed the barrier again | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry |
 | Cluster unseal before `cluster-seal` is activated | 409 | `FAILED_PRECONDITION` — `clusterseal.ErrInactive` |
 | Any request on a node a cluster seal holds, or whose node record is sealed | 503 | `UNAVAILABLE` — the sealed-window refusal (`SEALED`). The node answers no status; a serving node's `barrier status` shows the record in `cluster_seal` |
 | Any request on a node cut off from the seal records — its lease lapsed, for example while the system shard has no leader — or that has not yet read them | 503 `SEAL_STATE_UNCONFIRMED`, `Retry-After: 5` | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, `ErrorInfo` reason `SEAL_STATE_UNCONFIRMED`; retryable. The barrier is not sealed and the node keeps its key, but it serves only the unseal call: `barrier status` is refused with the same refusal |

@@ -237,6 +237,18 @@ type Infra struct {
 	// below, not after.
 	CertKeyProviderFactory cakey.ProviderFactory
 
+	// CertProvider, when non-nil, replaces the built-in
+	// cert.DefaultCertProvider -- the login CA (Key B) that issues, revokes,
+	// lists and bundles client certificates -- with an embedder's own
+	// (go-xkms's CRL/OCSP-capable CA), on every transport and in the
+	// client-trust pool. It is used where the built-in one would be built, on
+	// a node with a barrier registry. The client-trust pool admits its
+	// certificates only when it also implements clienttrust.CertSource.
+	// Mutually exclusive with CertKeyProviderFactory, which configures the
+	// built-in provider only: BuildServices refuses both with
+	// *CertProviderConflictError.
+	CertProvider cert.CertProvider
+
 	// TrustAnchors, when non-nil, replaces the built-in per-tenant trust
 	// anchor store (trustanchor.NewKVRegistry over the replicated system
 	// store): every tenant's registered anchors -- what a bring-your-own
@@ -712,6 +724,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if infra.WatchHub == nil {
 		return nil, &NilWatchHubError{}
 	}
+	if infra.CertProvider != nil && infra.CertKeyProviderFactory != nil {
+		return nil, &CertProviderConflictError{}
+	}
 
 	log := infra.Logger
 	if log == nil {
@@ -1131,7 +1146,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			}
 			n.Role = routedRoles
 
-			if err := n.buildUserAuthFactorService(ctx, resolver, authStore, log); err != nil {
+			if err := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); err != nil {
 				return nil, err
 			}
 		}
@@ -1186,7 +1201,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 		n.Role = routedRoles
 
-		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, log); uafErr != nil {
+		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); uafErr != nil {
 			return nil, uafErr
 		}
 	}
@@ -1443,27 +1458,31 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			return &CertStoreError{Err: err}
 		}
 		n.ClientTrustChanges = &trustanchor.Changes{}
-		certOpts := []cert.ProviderOption{
-			cert.WithTrustDomain(infra.SPIFFETrustDomain),
-			cert.WithNewCAHook(n.ClientTrustChanges.Notify),
-			// certs:revoke has no single caller every transport funnels
-			// through the way certs:issue/certs:enroll go through
-			// CertEnrollmentService, so its own audit trail (cert.revoke)
-			// belongs here, in the provider every transport's handler
-			// calls directly.
-			cert.WithAuditLogger(infra.AuditLogger),
+		if infra.CertProvider != nil {
+			n.CertProv = infra.CertProvider
+		} else {
+			certOpts := []cert.ProviderOption{
+				cert.WithTrustDomain(infra.SPIFFETrustDomain),
+				cert.WithNewCAHook(n.ClientTrustChanges.Notify),
+				// certs:revoke has no single caller every transport funnels
+				// through the way certs:issue/certs:enroll go through
+				// CertEnrollmentService, so its own audit trail (cert.revoke)
+				// belongs here, in the provider every transport's handler
+				// calls directly.
+				cert.WithAuditLogger(infra.AuditLogger),
+			}
+			if infra.CertKeyProviderFactory != nil {
+				certOpts = append(certOpts, cert.WithKeyProviderFactory(infra.CertKeyProviderFactory))
+			}
+			// n.Watch is already live (set above, unconditionally on
+			// infra.WatchHub): wiring it here only enables
+			// DefaultCertProvider.WatchForDeletions, which starts nothing by
+			// itself. Every composer calls WatchCertProviderEvictions,
+			// below, once, with its own long-lived background context, after
+			// BuildServices returns.
+			certOpts = append(certOpts, cert.WithWatchService(n.Watch))
+			n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier, certOpts...)
 		}
-		if infra.CertKeyProviderFactory != nil {
-			certOpts = append(certOpts, cert.WithKeyProviderFactory(infra.CertKeyProviderFactory))
-		}
-		// n.Watch is already live (set above, unconditionally on
-		// infra.WatchHub): wiring it here only enables
-		// DefaultCertProvider.WatchForDeletions, which starts nothing by
-		// itself. Every composer calls WatchCertProviderEvictions,
-		// below, once, with its own long-lived background context, after
-		// BuildServices returns.
-		certOpts = append(certOpts, cert.WithWatchService(n.Watch))
-		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier, certOpts...)
 
 		// Cluster CA (Key A): an injected provider replaces the built-in one
 		// entirely. Otherwise the built-in cakey.SoftwareProvider is
@@ -1955,10 +1974,11 @@ func newMinimalLogger(log *slog.Logger) *logger.Logger {
 // called while the shard is still electing, and a linearizable read at that
 // moment fails with "not leader, leader unknown" on a node that is otherwise
 // healthy, which would turn a migration into a failed boot.
-func (n *Node) buildUserAuthFactorService(_ context.Context, resolver tenant.StoreResolver, legacy kvstore.KVStore, log *slog.Logger) error {
+func (n *Node) buildUserAuthFactorService(_ context.Context, resolver tenant.StoreResolver, legacy kvstore.KVStore, trail audit.AuditLogger, log *slog.Logger) error {
 	svc, err := service.NewRoutingUserAuthFactorService(service.RoutingUserAuthFactorServiceConfig{
 		Resolver:    resolver,
 		LegacyStore: legacy,
+		AuditLogger: trail,
 		Logger:      log,
 	})
 	if err != nil {
@@ -1995,7 +2015,14 @@ func UserStoreOptions(mtlsBindingPolicy string, logger *slog.Logger) ([]user.Opt
 // statemachine.CapabilityMVCC. An unregistered type is reported as keeping
 // none.
 func StateMachineKeepsRevisionHistory(smType string) bool {
-	d, err := statemachine.Describe(smType)
+	return keepsRevisionHistory(statemachine.Describe, smType)
+}
+
+// keepsRevisionHistory applies StateMachineKeepsRevisionHistory's rule to
+// the descriptor describe returns for smType, so a test can supply a
+// test-local registry instead of registering into the process-global one.
+func keepsRevisionHistory(describe func(string) (statemachine.Descriptor, error), smType string) bool {
+	d, err := describe(smType)
 	if err != nil {
 		return false
 	}

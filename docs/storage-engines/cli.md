@@ -47,12 +47,41 @@ Objstore is a snapshot and backup tier and is **refused** as a hot apply path.
 `<data-dir>/sm/shard-<S>-replica-<R>`. Every other state machine carries its
 own storage and rejects a non-pebble `sm_storage`. With the seal barrier
 enabled, `disk` and `fast` over `pebble` storage are encrypted at rest by the
-barrier, like the `pebble` and `mvcc` state machines; `file` storage cannot be
-encrypted, so `qrdbd start` (and the SDK) refuse it under the barrier rather
-than keep the replica's data in plaintext. `sm_storage: memory` persists
-nothing and is allowed. On every combination the
+barrier, like the `pebble` and `mvcc` state machines, and so is `file`
+storage: every record and journal file goes through the barrier's encrypting
+file system, as the standalone `storage.backend: file` does (see below).
+`sm_storage: memory` persists nothing. On every combination the
 state machine serves KV, batches, the guarded verbs and transactions; see
 [../run-modes/architecture.md](../run-modes/architecture.md#raft--single--or-multi-node).
+
+### At rest under the seal
+
+With `seal.enabled: true`, what `storage.backend` leaves on disk:
+
+| `storage.backend` | On disk | While sealed |
+|---|---|---|
+| `pebble` | every sstable, WAL, manifest and options file encrypted by the barrier's encrypting file system | record reads and writes fail with the sealed error |
+| `file` | every record file and commit journal encrypted by the same file system; file names are SHA-256 digests of the keys; only the format marker is plaintext | record reads and writes fail with the sealed error |
+| `objstore` | values and object names in the clear; `qrdbd start` logs a warning naming the gap | — |
+| `memory` | nothing | — |
+
+The warning for `objstore` is logged once at start and reported in the
+capability report's `unencryptedAtRest` list:
+
+```
+seal is enabled but data is stored unencrypted at rest  where="standalone backend \"objstore\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\" or \"file\""
+```
+
+A `file` data directory records whether it was written through the barrier. One
+written with `seal.enabled: false` is refused at start once the seal is on,
+and the reverse, rather than mixing plaintext and ciphertext records. There
+is no in-place path from `seal.enabled: false`. See
+[user.md](user.md#at-rest-encryption).
+
+`qrdb barrier enable-encryption` (from strategy `none`) re-encrypts a `file`
+store, standalone or `raft.sm_storage: file`, record by record under the new
+key, as it does a `pebble` store; see
+[../barrier-seal/cli.md](../barrier-seal/cli.md#qrdb-barrier-enable-encryption).
 
 ## Per-database storage — `qrdb database`
 

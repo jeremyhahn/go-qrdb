@@ -43,6 +43,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
@@ -703,6 +704,20 @@ func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, chain []*x509.
 	return keyBErr
 }
 
+// VerifyTenantIssuer reports whether issuer is tenantID's own registered
+// Key B CA and nothing else: unlike VerifyIssuer it admits neither the
+// cluster CA, nor a static ClientCAs entry, nor a trust anchor. It is the
+// check a tenant-issued delegation is held to (pkg/auth/delegation): only
+// the tenant's own CA speaks for the tenant, so a delegation the platform's
+// CA, an operator's CA or an enterprise root signed is refused. Returns
+// *IssuerNotTrustedError otherwise.
+func (p *Pool) VerifyTenantIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
+	if issuer == nil {
+		return &IssuerNotTrustedError{TenantID: tenantID}
+	}
+	return p.verifyKeyBIssuer(ctx, tenantID, issuer)
+}
+
 // verifyKeyBIssuer is VerifyIssuer's Key B branch.
 func (p *Pool) verifyKeyBIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
 	box := p.provider.Load()
@@ -864,7 +879,10 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 	for _, c := range cs.PeerCertificates[1:] {
 		intermediates.AddCert(c)
 	}
-	_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
+	// A tenant-issued delegation carries a critical extension crypto/x509
+	// does not handle; the authenticator enforces it (pkg/auth), so the
+	// chain is verified as the handled copy.
+	_, err := delegation.Verifiable(cs.PeerCertificates[0]).Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: intermediates,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
@@ -917,7 +935,9 @@ func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, interm
 	for _, c := range intermediates {
 		inter.AddCert(c)
 	}
-	chains, verifyErr := leaf.Verify(x509.VerifyOptions{
+	// The handled copy, as verifyPeerConnection verifies: the returned
+	// chain's leaf is that copy, and pkg/auth reads the delegation from it.
+	chains, verifyErr := delegation.Verifiable(leaf).Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: inter,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

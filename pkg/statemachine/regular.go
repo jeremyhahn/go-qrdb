@@ -145,6 +145,10 @@ func NewRegularStateMachine(opts ...RegularOption) *RegularStateMachine {
 		// position -- the drop fence rides on it. See guarded_write.go.
 		protocol.OpGuarded: r.handleGuarded,
 
+		// A replicated delete of every key in [start, end), gated by the
+		// range-delete feature. See delete_range.go.
+		protocol.OpDeleteRange: r.handleDeleteRange,
+
 		// MVCC
 		protocol.OpMVCCPut:    r.handleMVCCPut,
 		protocol.OpMVCCDelete: r.handleMVCCDelete,

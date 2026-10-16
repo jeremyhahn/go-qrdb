@@ -243,12 +243,15 @@ injects it as a `cakey.Provider` -- `cakey.Adapter` wraps any signer -- and
 the node signs with it, as `qrdbd` and `pkg/server` do:
 
 ```go
-ca := cakey.Adapter{SignerFunc: hsmSigner, CertificateFunc: operatorCACert}
+ca := sdk.CAKeyAdapter{SignerFunc: hsmSigner, CertificateFunc: operatorCACert}
 n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts,
     node.WithRaftMTLS(&node.RaftMTLSConfig{CACert: caPEM, Cert: certPEM, Key: keyPEM}),
     node.WithClusterCAKeyProvider(ca), // the cluster CA (Key A): never generated, never stored
 )
 ```
+
+`sdk.CAKeyAdapter`, `sdk.CAKeyProvider` and `sdk.CAKeyProviderFactory` are the
+`pkg/cakey` types, re-exported, so an embedder imports only `sdk/go/...`.
 
 With a provider injected the node is no longer BYO-TLS: its cluster CA is the
 provider's certificate, CSR signing and officer registration sign with it, and
@@ -256,8 +259,12 @@ member-side CSR join (`cluster_join.enabled`, `cluster_join.listen_host`,
 `cluster_join.listen_port`) runs exactly as on `qrdbd` -- the node records its
 own join identity as admitted, starts the join listener, and serves the
 join-token verb from the same store. The per-tenant login CA (Key B) is
-injected separately, through `server.WithCertKeyProviderFactory` in
-`serverOpts`.
+injected separately, through `node.WithCertKeyProviderFactory` (one key per
+tenant). An embedder that runs its own login CA instead -- one that publishes
+CRLs and answers OCSP, say -- replaces it whole with `node.WithCertProvider`;
+the two are mutually exclusive, and a node given both fails to build with
+`*sdk.CertProviderConflictError`. See
+[certificate-authority/architecture.md](certificate-authority/architecture.md#injection).
 
 #### Tenant defaults
 

@@ -100,6 +100,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"admin.RequestSnapshot":         "RequestSnapshot",
 	"admin.RetireJoinIdentity":      "RetireJoinIdentity",
 	"admin.SetNodeCompaction":       "SetNodeCompaction",
+	"admin.GetStateHashes":          "StateHashes",
 	"admin.StartShard":              "StartShard",
 	"admin.Status":                  "Status",
 	"admin.StopShard":               "StopShard",
@@ -146,8 +147,6 @@ var quicToEmbeddedMethod = map[string]string{
 	"credential.GCExpired":          "CredentialGCExpired",
 	"credential.List":               "CredentialList",
 	"credential.ListVersions":       "CredentialListVersions",
-	"credential.Retrieve":           "CredentialRetrieve",
-	"credential.RetrieveVersion":    "CredentialRetrieveVersion",
 	"credential.Rotate":             "CredentialRotate",
 	"credential.Store":              "CredentialStore",
 	"credential.Strategy":           "CredentialStrategy",
@@ -242,6 +241,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"userauthfactor.Login":          "LoginAuthFactor",
 	"userauthfactor.Relabel":        "RelabelAuthFactor",
 	"userauthfactor.Remove":         "RemoveAuthFactor",
+	"userauthfactor.Delete":         "DeleteAuthFactor",
 	"userauthfactor.Rotate":         "RotateAuthFactor",
 	"vector.BatchDelete":            "BatchDeleteVectors",
 	"vector.BatchUpsert":            "BatchUpsert",
@@ -292,10 +292,13 @@ var quicMethodExclusions = map[string]string{
 	"barrier.Unseal":                     "public",
 	"ceremony.Initialize":                "public",
 	"ceremony.SignCSR":                   "public",
+	"cert.Delegate":                      "target-resolved",
 	"cert.Enroll":                        "target-resolved",
 	"cert.Issue":                         "target-resolved",
 	"cert.List":                          "target-resolved",
 	"cert.Revoke":                        "target-resolved",
+	"credential.Retrieve":                "wire-only",
+	"credential.RetrieveVersion":         "wire-only",
 	"db.BarrierQuorumBegin":              "identity-gated",
 	"db.BarrierQuorumSubmit":             "identity-gated",
 	"db.BarrierShareClaimBegin":          "identity-gated",
@@ -372,7 +375,7 @@ func TestOperationPermissions_MatchQUIC(t *testing.T) {
 	for quicMethod, quicPerm := range quicPerms {
 		if reason, excluded := quicMethodExclusions[quicMethod]; excluded {
 			switch reason {
-			case "public", "identity-gated", "target-resolved":
+			case "public", "identity-gated", "target-resolved", "wire-only":
 				// Recognized category; the test named in the package
 				// comment covers this method instead.
 			default:

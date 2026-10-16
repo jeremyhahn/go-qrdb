@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -74,10 +75,22 @@ type quorumRound struct {
 	// submission's seal function (SubmitHolderShareWith), set once the
 	// round is detached.
 	seal func() error
+
+	// stopExpiry cancels the round's expiry timer (see armLocked), set
+	// while the round is in the rounds map.
+	stopExpiry func() bool
+
+	// expiryDone is closed when the round's expiry goroutine (see armLocked)
+	// has returned: the sweep has run, or the timer was stopped.
+	expiryDone chan struct{}
 }
 
 // destroy wipes every accumulated share.
 func (r *quorumRound) destroy() {
+	if r.stopExpiry != nil {
+		r.stopExpiry()
+		r.stopExpiry = nil
+	}
 	for _, s := range r.shares {
 		s.Destroy()
 	}
@@ -182,6 +195,28 @@ type QuorumOutcome struct {
 	Rekey *ShamirInitParams
 }
 
+// SetClock installs the clock quorum rounds are dated and expired on. The
+// default is the real clock; a nil clock restores it.
+func (b *StorageBarrier) SetClock(c clock.Clock) {
+	b.quorumMu.Lock()
+	defer b.quorumMu.Unlock()
+	b.clk = c
+}
+
+// quorumClockLocked returns the clock quorum rounds are dated and expired on.
+// Must be called with quorumMu held.
+func (b *StorageBarrier) quorumClockLocked() clock.Clock {
+	if b.clk == nil {
+		return clock.Real()
+	}
+	return b.clk
+}
+
+// quorumNowLocked reads the quorum clock. Must be called with quorumMu held.
+func (b *StorageBarrier) quorumNowLocked() time.Time {
+	return b.quorumClockLocked().Now()
+}
+
 // SetHolderVerifier installs the verifier that authenticates share holders.
 // Until one is installed every submission is refused.
 func (b *StorageBarrier) SetHolderVerifier(v HolderVerifier) {
@@ -217,7 +252,7 @@ func (b *StorageBarrier) checkOpState(op QuorumOp) error {
 // demand. Must be called with quorumMu held.
 func (b *StorageBarrier) roundLocked(key quorumRoundKey, roster *HolderRoster, digest []byte) (*quorumRound, error) {
 	if r, ok := b.rounds[key]; ok {
-		if time.Now().Before(r.expiresAt) && bytes.Equal(r.rosterDigest, digest) {
+		if b.quorumNowLocked().Before(r.expiresAt) && bytes.Equal(r.rosterDigest, digest) {
 			return r, nil
 		}
 		r.destroy()
@@ -231,11 +266,11 @@ func (b *StorageBarrier) roundLocked(key quorumRoundKey, roster *HolderRoster, d
 		op:           key.op,
 		roster:       roster,
 		rosterDigest: digest,
-		expiresAt:    time.Now().Add(b.quorumTTL()),
+		expiresAt:    b.quorumNowLocked().Add(b.quorumTTL()),
 		contributors: make(map[string]bool),
 		indexes:      make(map[int]bool),
 	}
-	b.rounds[key] = r
+	b.armLocked(key, r)
 	return r, nil
 }
 
@@ -299,7 +334,7 @@ func (b *StorageBarrier) StartRekey(ctx context.Context, domain QuorumDomain, pa
 		return nil, err
 	}
 	if r, ok := b.rounds[key]; ok {
-		if time.Now().Before(r.expiresAt) && bytes.Equal(r.rosterDigest, digest) {
+		if b.quorumNowLocked().Before(r.expiresAt) && bytes.Equal(r.rosterDigest, digest) {
 			return nil, ErrQuorumRoundInProgress
 		}
 		r.destroy()
@@ -314,12 +349,12 @@ func (b *StorageBarrier) StartRekey(ctx context.Context, domain QuorumDomain, pa
 		op:           OpRekey,
 		roster:       roster,
 		rosterDigest: digest,
-		expiresAt:    time.Now().Add(b.quorumTTL()),
+		expiresAt:    b.quorumNowLocked().Add(b.quorumTTL()),
 		rekey:        &resolved,
 		contributors: make(map[string]bool),
 		indexes:      make(map[int]bool),
 	}
-	b.rounds[key] = r
+	b.armLocked(key, r)
 
 	// The opening is recorded by the holder authority that opened it
 	// (ceremony's holder-rekey-start), the one emitter of that event.
@@ -427,6 +462,12 @@ func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission,
 	if b.holderVerifier == nil {
 		return nil, nil, ErrHolderVerifierNotConfigured
 	}
+	// The state is checked again under the lock: Seal and unseal change it
+	// before they sweep the rounds the change ends, so a submission that
+	// passed the unlocked check cannot open a round behind the sweep.
+	if err := b.checkOpState(sub.Op); err != nil {
+		return nil, nil, err
+	}
 	key := quorumRoundKey{domain: sub.Domain, op: sub.Op}
 	round, err := b.roundLocked(key, roster, digest)
 	if err != nil {
@@ -515,7 +556,7 @@ func shareXCoordinate(share *shamir.ProtectedShare) (int, error) {
 // finishRound reconstructs the round's key, authenticates it (and the pinned
 // roster) by opening the domain's wrapped blob, and runs the operation.
 func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, outcome *QuorumOutcome) (*QuorumOutcome, error) {
-	secretEnclave, err := shamir.CombineProtected(round.shares)
+	secretEnclave, err := combineProtected(round.shares)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Cause: err}
 	}
@@ -527,28 +568,29 @@ func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, ou
 	}()
 	round.destroy()
 
-	keyBuf, err := copyEnclaveToBuffer(secretEnclave)
-	if err != nil {
-		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed key", Cause: err}
-	}
-	defer keyBuf.Destroy()
-
 	// If the domain was redistributed while this round was open, its shares
 	// reconstruct a key that no longer exists and the unwrap below fails with
 	// ErrUnsealKeyMismatch: every distribution has a fresh key and a unique
 	// roster digest, so no extra check is needed here.
 	//
-	// The key cannot be read under a held borrow: resolveDomainKey hands it to
-	// the configured AEADProvider, an interface consumers implement, and then
-	// decrypts into a second protected buffer of its own. It gets a copy that
-	// is wiped the moment the call returns.
-	key, err := secure.CopyOut(keyBuf)
+	// The key is read in place: secretEnclave's borrow is held across
+	// resolveDomainKey, so the configured AEADProvider — an interface
+	// consumers implement — receives the enclave's own locked pages and never
+	// a heap copy (go-qrdb#145). The root key is decrypted into a protected
+	// buffer allocated inside that borrow; it is a different object, so the
+	// nesting is safe (pkg/secure's doc, "Nesting").
+	var rootKey *secure.Buffer
+	opened := false
+	err = secretEnclave.WithBytes(func(key []byte) error {
+		opened = true
+		var resolveErr error
+		rootKey, resolveErr = b.resolveDomainKey(ctx, round.domain, key)
+		return resolveErr
+	})
 	if err != nil {
-		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed key", Cause: err}
-	}
-	rootKey, err := b.resolveDomainKey(ctx, round.domain, key)
-	secure.Wipe(key)
-	if err != nil {
+		if !opened {
+			return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed key", Cause: err}
+		}
 		emitAudit(b.config.AuditLogger, "quorum-complete", "barrier", b.config.RootKeyPath, "deny",
 			map[string]string{"domain": string(round.domain), "op": string(round.op)})
 		return nil, err
@@ -610,7 +652,82 @@ type quorumState struct {
 	quorumMu       sync.Mutex
 	rounds         map[quorumRoundKey]*quorumRound
 	holderVerifier HolderVerifier
+	// clk is the clock a round's expiry is read from; nil means the real
+	// clock. Guarded by quorumMu, like the rounds it dates.
+	clk clock.Clock
 	// redistributions holds one redistribution slot per domain
 	// (QuorumDomain -> chan struct{}); see lockRedistribution.
 	redistributions sync.Map
+}
+
+// armLocked registers r under key and schedules its expiry sweep: when the TTL
+// passes on the quorum clock, the round's share buffers are destroyed even if
+// no further share ever arrives. The caller holds quorumMu.
+func (b *StorageBarrier) armLocked(key quorumRoundKey, r *quorumRound) {
+	b.rounds[key] = r
+	timer := b.quorumClockLocked().NewTimer(b.quorumTTL())
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	r.expiryDone = done
+	go func() {
+		defer close(done)
+		select {
+		case <-timer.C():
+			b.expireRound(key, r)
+		case <-stop:
+		}
+	}()
+	r.stopExpiry = func() bool {
+		stopped := timer.Stop()
+		close(stop)
+		return stopped
+	}
+}
+
+// expireRound destroys r if it is still the open round for key. A round that
+// completed or was replaced has left the map and is owned by whoever detached
+// it, so it is left alone.
+func (b *StorageBarrier) expireRound(key quorumRoundKey, r *quorumRound) {
+	b.quorumMu.Lock()
+	defer b.quorumMu.Unlock()
+	if b.rounds[key] != r {
+		return
+	}
+	r.destroy()
+	delete(b.rounds, key)
+}
+
+// destroyRounds destroys every open round's share buffers. Seal and Close call
+// it: shares held toward an unseal must not outlive the barrier they were
+// submitted to.
+func (b *StorageBarrier) destroyRounds() {
+	b.destroyRoundsWhere(func(quorumRoundKey) bool { return true })
+}
+
+// destroyDomainRounds destroys every open round of domain. A redistribution or
+// deletion of the domain's share set calls it: the shares those rounds hold
+// reconstruct a key that no longer wraps anything, so they do not wait for
+// their TTL.
+func (b *StorageBarrier) destroyDomainRounds(domain QuorumDomain) {
+	b.destroyRoundsWhere(func(key quorumRoundKey) bool { return key.domain == domain })
+}
+
+// destroyUnrunnableRounds destroys every open round whose operation the
+// barrier's state now refuses (checkOpState). Unseal calls it: an unseal or
+// recovery round can no longer complete, so its shares go at once. A round
+// whose operation still runs is left to finish.
+func (b *StorageBarrier) destroyUnrunnableRounds() {
+	b.destroyRoundsWhere(func(key quorumRoundKey) bool { return b.checkOpState(key.op) != nil })
+}
+
+// destroyRoundsWhere destroys and removes every open round whose key matches.
+func (b *StorageBarrier) destroyRoundsWhere(match func(quorumRoundKey) bool) {
+	b.quorumMu.Lock()
+	defer b.quorumMu.Unlock()
+	for key, r := range b.rounds {
+		if match(key) {
+			r.destroy()
+			delete(b.rounds, key)
+		}
+	}
 }

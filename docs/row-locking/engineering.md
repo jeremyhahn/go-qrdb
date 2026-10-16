@@ -231,7 +231,9 @@ lease  = the owning session's lease in this store
    refuses it, the request still fails with its own error, and the stale
    waiting record stays queued — blocking the requests behind it, and visible
    to the deadlock detector as a wait — until the owner's transaction ends or
-   its lease expires, the same bound as its held locks.
+   its lease expires, the same bound as its held locks. A cycle whose newest
+   edge is such a stale record has no requester left to check it, so the
+   requests on it end at their lock-wait timeout.
 8. **Deadlock detection runs once per wait, after enqueue, before waiting**,
    over at most `MaxDetectionRecords` (10,000) records read linearizably. A
    cycle the requester closed — one through it whose newest edge, by the
@@ -471,9 +473,10 @@ mean.
 - `pkg/rowlock`: grant rule and FIFO (table-driven over queues), shared
   compatibility, upgrade, re-entry, wait and wake-up on release, lock-wait
   timeout and `NOWAIT` cleaning up their waiting records, deadlock cycle
-  detection (two-party, three-party, upgrade), exactly one victim when every
-  member of a cycle enqueues before any detector reads (only the request that
-  closed the cycle aborts, the others are granted), the detection bound, lease
+  detection (two-party, three-party, upgrade), exactly one victim per cycle
+  when both requests check after the cycle closed and when every member of a
+  cycle enqueues before any detector reads (only the request that closed the
+  cycle aborts, the others are granted), the detection bound, lease
   expiry releasing a crashed holder's locks, keepalive keeping a live holder's,
   lost-lock detection, release idempotence, fault injection on every servicer.
   The session lease: successive owners sharing one lease (one grant, no

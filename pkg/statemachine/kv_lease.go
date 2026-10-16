@@ -183,19 +183,53 @@ func (k *KVStateMachine) handleLeaseRevoke(payload []byte, revision uint64) (sm.
 }
 
 // handleLeaseKeepAlive resets a lease's expiry. Expiry is wall-clock state
-// local to each replica, so nothing is written. A lease that no longer exists
-// is an idempotent no-op, for the same reason as handleLeaseRevoke.
+// local to each replica, so the only write is the deletion of the lease's
+// checkpoint record, when it has one. A lease that no longer exists is an
+// idempotent no-op, for the same reason as handleLeaseRevoke.
 func (k *KVStateMachine) handleLeaseKeepAlive(payload []byte, revision uint64) (sm.Result, error) {
 	leaseID, err := protocol.DecodeLeaseKeepAlive(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "lease keep-alive: " + err.Error()}
 	}
-	if _, kaErr := k.lessor.KeepAlive(leaseID); kaErr != nil {
+	var muts []Mutation
+	l, kaErr := k.lessor.KeepAlive(mutationWriter{muts: &muts}, leaseID)
+	if kaErr != nil {
 		var nfe *lease.NotFoundError
 		if errors.As(kaErr, &nfe) {
-			return sm.Result{Value: revision}, nil
+			return sm.Result{Value: revision, Data: protocol.EncodeLeaseKeepAliveNotFound(leaseID)}, nil
 		}
 		return sm.Result{}, kaErr
+	}
+	if len(muts) > 0 {
+		if err := k.backend.ApplyAtomic(muts); err != nil {
+			return sm.Result{}, &StorageError{Op: "lease_keepalive", Inner: err}
+		}
+	}
+	// The apply already computed the lease's post-reset state; carrying it
+	// back in Data lets the service layer answer the caller from this
+	// committed result instead of a second, separately linearized read
+	// (go-qrdb#275).
+	return sm.Result{Value: revision, Data: protocol.EncodeLeaseInfo(l.ID, l.GrantedTTL, l.RemainingTTL, l.Keys)}, nil
+}
+
+// handleLeaseCheckpoint records the leader's checkpoint of the remaining TTL of
+// a batch of leases (lease.Lessor.ApplyCheckpoints), so that a replica that
+// becomes leader counts each lease from what it had left. Leases this replica
+// no longer holds are skipped, so a checkpoint that races a revoke never
+// stalls apply.
+func (k *KVStateMachine) handleLeaseCheckpoint(payload []byte, revision uint64) (sm.Result, error) {
+	token, index, cps, err := protocol.DecodeLeaseCheckpoint(payload)
+	if err != nil {
+		return sm.Result{}, &IncompleteDataError{Reason: "lease checkpoint: " + err.Error()}
+	}
+	var muts []Mutation
+	if err := k.lessor.ApplyCheckpoints(mutationWriter{muts: &muts}, token, index, cps); err != nil {
+		return sm.Result{}, err
+	}
+	if len(muts) > 0 {
+		if err := k.backend.ApplyAtomic(muts); err != nil {
+			return sm.Result{}, &StorageError{Op: "lease_checkpoint", Inner: err}
+		}
 	}
 	return sm.Result{Value: revision}, nil
 }
@@ -246,11 +280,23 @@ func (k *KVStateMachine) handleNativeMVCCDelete(payload []byte, revision uint64)
 func (k *KVStateMachine) lookupLease(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
 	case *lease.LeaseTimeToLiveQuery:
-		l, err := k.lessor.LookupOrNotFound(q.ID)
+		l, err := k.lessor.TimeToLive(q.ID)
 		return l, true, err
 	case lease.LeaseTimeToLiveQuery:
-		l, err := k.lessor.LookupOrNotFound(q.ID)
+		l, err := k.lessor.TimeToLive(q.ID)
 		return l, true, err
+	case *lease.LeaseKeepAliveQuery:
+		l, err := k.lessor.RenewLocal(q.ID)
+		return l, true, err
+	case lease.LeaseKeepAliveQuery:
+		l, err := k.lessor.RenewLocal(q.ID)
+		return l, true, err
+	case *lease.LeaseCheckpointNowQuery, lease.LeaseCheckpointNowQuery:
+		answer, err := k.lessor.RequestCheckpoint()
+		if err != nil {
+			return nil, true, err
+		}
+		return answer, true, nil
 	case *lease.LeasesQuery, lease.LeasesQuery:
 		return k.lessor.Leases(), true, nil
 	default:

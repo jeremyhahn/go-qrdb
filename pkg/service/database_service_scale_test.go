@@ -1597,7 +1597,7 @@ func TestTransferLeadershipAwayFromRemoved_NoopWhenNotLeader(t *testing.T) {
 	t.Parallel()
 
 	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
-	if err := transferLeadershipAwayFromRemoved(context.Background(), host, transferPlacement(), 500, 1); err != nil {
+	if err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, transferPlacement(), 500, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(host.transferCalls) != 0 {
@@ -1611,7 +1611,7 @@ func TestTransferLeadershipAwayFromRemoved_NoopWhenLeaderUnknown(t *testing.T) {
 	t.Parallel()
 
 	host := &fakeRaftHost{leaderOK: false}
-	if err := transferLeadershipAwayFromRemoved(context.Background(), host, transferPlacement(), 500, 1); err != nil {
+	if err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, transferPlacement(), 500, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(host.transferCalls) != 0 {
@@ -1635,7 +1635,7 @@ func TestTransferLeadershipAwayFromRemoved_NoopWhenNoOtherVoter(t *testing.T) {
 		},
 	}
 	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
-	if err := transferLeadershipAwayFromRemoved(context.Background(), host, solo, 500, 1); err != nil {
+	if err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, solo, 500, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(host.transferCalls) != 0 {
@@ -1660,7 +1660,7 @@ func TestTransferLeadershipAwayFromRemoved_SkipsNonVotingCandidates(t *testing.T
 		},
 	}
 	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
-	if err := transferLeadershipAwayFromRemoved(context.Background(), host, p, 500, 1); err != nil {
+	if err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, p, 500, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(host.transferCalls) != 0 {
@@ -1677,7 +1677,7 @@ func TestTransferLeadershipAwayFromRemoved_TransfersToOtherActiveVoter(t *testin
 	t.Parallel()
 
 	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
-	if err := transferLeadershipAwayFromRemoved(context.Background(), host, transferPlacement(), 500, 1); err != nil {
+	if err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, transferPlacement(), 500, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(host.transferCalls) != 1 {
@@ -1701,7 +1701,7 @@ func TestTransferLeadershipAwayFromRemoved_RequestErrorPropagates(t *testing.T) 
 
 	transferErr := errors.New("shard busy")
 	host := &fakeRaftHost{leaderID: 1, leaderOK: true, transferErr: transferErr}
-	err := transferLeadershipAwayFromRemoved(context.Background(), host, transferPlacement(), 500, 1)
+	err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, transferPlacement(), 500, 1)
 	if !errors.Is(err, transferErr) {
 		t.Fatalf("error = %v, want it to wrap %v", err, transferErr)
 	}
@@ -1716,7 +1716,7 @@ func TestTransferLeadershipAwayFromRemoved_TimesOutWhenTransferNeverCompletes(t 
 	t.Parallel()
 
 	host := &fakeRaftHost{leaderID: 1, leaderOK: true, transferNoop: true}
-	err := transferLeadershipAwayFromRemoved(context.Background(), host, transferPlacement(), 500, 1)
+	err := transferLeadershipAwayFromRemoved(context.Background(), host, nil, nil, transferPlacement(), 500, 1)
 	var lte *LeaderTransferTimeoutError
 	if !errors.As(err, &lte) {
 		t.Fatalf("expected *LeaderTransferTimeoutError, got %T (%v)", err, err)
@@ -1884,5 +1884,145 @@ func TestRemoveReplicaFromGroup_RejectsStaleCurrentSnapshot(t *testing.T) {
 	}
 	if len(got.Replicas) != 2 {
 		t.Errorf("stored Replicas = %+v, want both replicas still present (the removal must not have applied)", got.Replicas)
+	}
+}
+
+// TestRemoveReplicaFromGroup_EvictsBeforeDroppingPlacement proves the Raft
+// eviction runs while the placement still lists the replica. The placement
+// is what stops a replica's shard on its node, and the eviction commits only
+// with the votes of the configuration it leaves -- in a group of two voters,
+// the removed replica's own. Dropping the placement first stopped that voter
+// and left the removal uncommittable.
+func TestRemoveReplicaFromGroup_EvictsBeforeDroppingPlacement(t *testing.T) {
+	t.Parallel()
+
+	store, err := placement.NewStore(newMemPlacementKV())
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	current := transferPlacement()
+	if err := store.Put(context.Background(), current); err != nil {
+		t.Fatalf("initial Put: %v", err)
+	}
+
+	listedAtEviction := false
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
+	host.onRemove = func() {
+		got, gerr := store.Get(context.Background(), current.TenantID, current.Database)
+		if gerr != nil {
+			t.Errorf("Get during eviction: %v", gerr)
+			return
+		}
+		_, listedAtEviction = got.ReplicaForNode("node-b:9100")
+	}
+
+	updated, placementFailed, err := removeReplicaFromGroup(context.Background(), host, store, current, 2)
+	if err != nil || placementFailed {
+		t.Fatalf("removeReplicaFromGroup = (placementFailed=%v, err=%v), want success", placementFailed, err)
+	}
+	if !listedAtEviction {
+		t.Error("the replica was dropped from the placement before its Raft eviction")
+	}
+	if updated.RF != 1 || len(updated.Replicas) != 1 || updated.Replicas[0].ReplicaID != 1 {
+		t.Errorf("updated = RF %d replicas %+v, want RF 1 with only replica 1", updated.RF, updated.Replicas)
+	}
+	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if _, ok := got.ReplicaForNode("node-b:9100"); ok || got.RF != 1 {
+		t.Errorf("stored = RF %d replicas %+v, want replica 2 gone and RF 1", got.RF, got.Replicas)
+	}
+}
+
+// TestRemoveReplicaFromGroup_KeepsChangeCommittedDuringEviction proves a
+// placement change committed while the eviction runs -- a reconciler
+// promoting another replica -- neither fails the removal nor is lost: once
+// Raft has evicted the replica, the placement must record it.
+func TestRemoveReplicaFromGroup_KeepsChangeCommittedDuringEviction(t *testing.T) {
+	t.Parallel()
+
+	store, err := placement.NewStore(newMemPlacementKV())
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	current := transferPlacement()
+	current.Replicas = append(current.Replicas, placement.Replica{
+		ReplicaID: 3, NodeID: "node-c:9100", RaftAddr: "node-c:9100", State: placement.ReplicaStateObserver,
+	})
+	current.RF = len(current.Replicas)
+	if err := store.Put(context.Background(), current); err != nil {
+		t.Fatalf("initial Put: %v", err)
+	}
+
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	host.onRemove = func() {
+		promoted := *current
+		promoted.Replicas = append([]placement.Replica(nil), current.Replicas...)
+		promoted.Replicas[2].State = placement.ReplicaStateActive
+		if perr := store.Put(context.Background(), &promoted); perr != nil {
+			t.Errorf("racing Put: %v", perr)
+		}
+	}
+
+	updated, placementFailed, err := removeReplicaFromGroup(context.Background(), host, store, current, 1)
+	if err != nil || placementFailed {
+		t.Fatalf("removeReplicaFromGroup = (placementFailed=%v, err=%v), want success", placementFailed, err)
+	}
+	if len(host.removeCalls) != 1 {
+		t.Fatalf("removeCalls = %+v, want exactly 1", host.removeCalls)
+	}
+	if _, ok := updated.ReplicaForNode("node-a:9100"); ok {
+		t.Error("replica 1 must be dropped from the returned placement")
+	}
+	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if _, ok := got.ReplicaForNode("node-a:9100"); ok {
+		t.Error("replica 1 must be dropped from the stored placement")
+	}
+	r, ok := got.ReplicaForNode("node-c:9100")
+	if !ok || r.State != placement.ReplicaStateActive {
+		t.Errorf("replica 3 = %+v (listed %v), want the concurrent promotion to Active kept", r, ok)
+	}
+	if got.RF != 2 {
+		t.Errorf("stored RF = %d, want 2", got.RF)
+	}
+}
+
+// TestRemoveReplicaFromGroup_EvictionFailureKeepsPlacement proves a failed
+// RemoveFollowerNode leaves the placement listing the replica: it is still a
+// member of the group, so its node must keep it running.
+func TestRemoveReplicaFromGroup_EvictionFailureKeepsPlacement(t *testing.T) {
+	t.Parallel()
+
+	store, err := placement.NewStore(newMemPlacementKV())
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	current := transferPlacement()
+	if err := store.Put(context.Background(), current); err != nil {
+		t.Fatalf("initial Put: %v", err)
+	}
+	removeErr := errors.New("config change rejected")
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true, removeErr: removeErr}
+
+	updated, placementFailed, err := removeReplicaFromGroup(context.Background(), host, store, current, 2)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("err = %v, want %v", err, removeErr)
+	}
+	if placementFailed {
+		t.Error("placementFailed = true, want false (the eviction failed, not the placement)")
+	}
+	if updated != current {
+		t.Error("updated must be the caller's snapshot when the eviction fails")
+	}
+	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Replicas) != 2 || got.RF != 2 {
+		t.Errorf("stored = RF %d replicas %+v, want both replicas kept", got.RF, got.Replicas)
 	}
 }

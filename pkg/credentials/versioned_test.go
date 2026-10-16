@@ -167,7 +167,7 @@ func TestRotateCredential_SubsequentRotationIncrementsVersion(t *testing.T) {
 	if res.GraceUntil.IsZero() {
 		t.Fatalf("GraceUntil must be set when GracePeriod > 0")
 	}
-	current, err := svc.RetrieveCredential(ctx, "k")
+	current, err := svc.retrieveBytes(ctx, "k")
 	if err != nil {
 		t.Fatalf("RetrieveCredential: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestRotateCredential_ZeroGraceWipesPrevious(t *testing.T) {
 	if res.NewVersion != 2 {
 		t.Fatalf("NewVersion = %d, want 2", res.NewVersion)
 	}
-	if _, err := svc.RetrieveCredentialVersion(ctx, "k", 1); !errors.Is(err, ErrVersionNotFound) && !errors.Is(err, ErrVersionExpired) {
+	if _, err := svc.retrieveVersionBytes(ctx, "k", 1); !errors.Is(err, ErrVersionNotFound) && !errors.Is(err, ErrVersionExpired) {
 		t.Fatalf("RetrieveCredentialVersion(v1) after zero-grace rotation must refuse; got %v", err)
 	}
 }
@@ -240,7 +240,7 @@ func TestRetrieveCredentialVersion_Zero_AliasesCurrent(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 0)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 0)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(0): %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRetrieveCredentialVersion_GracedVersionRetrievable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RotateCredential: %v", err)
 	}
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(v1) during grace: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestRetrieveCredentialVersion_ExpiredGraceRejected(t *testing.T) {
 		t.Fatalf("RotateCredential: %v", err)
 	}
 	expireGrace(svc, "k")
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if !errors.Is(err, ErrVersionExpired) {
 		t.Fatalf("err = %v, want ErrVersionExpired", err)
 	}
@@ -295,7 +295,7 @@ func TestRetrieveCredentialVersion_NonExistentVersion(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 42)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 42)
 	if !errors.Is(err, ErrVersionNotFound) {
 		t.Fatalf("err = %v, want ErrVersionNotFound", err)
 	}
@@ -307,7 +307,7 @@ func TestRetrieveCredentialVersion_LegacyNoMetaV1Returns(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("legacy")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(legacy v1): %v", err)
 	}
@@ -318,7 +318,7 @@ func TestRetrieveCredentialVersion_LegacyNoMetaV1Returns(t *testing.T) {
 
 func TestRetrieveCredentialVersion_LegacyMissingNameReturnsNotFound(t *testing.T) {
 	svc := newManualService(t)
-	_, err := svc.RetrieveCredentialVersion(context.Background(), "absent", 1)
+	_, err := svc.retrieveVersionBytes(context.Background(), "absent", 1)
 	if !errors.Is(err, ErrCredentialNotFound) {
 		t.Fatalf("err = %v, want ErrCredentialNotFound", err)
 	}
@@ -330,7 +330,7 @@ func TestRetrieveCredentialVersion_LegacyNoMetaNonV1Rejected(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("legacy")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 7)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 7)
 	if !errors.Is(err, ErrVersionNotFound) {
 		t.Fatalf("err = %v, want ErrVersionNotFound", err)
 	}
@@ -342,7 +342,7 @@ func TestRetrieveCredentialVersion_CurrentMissingValue(t *testing.T) {
 	svc := newManualService(t)
 	svc.ensureManualVersionStore()
 	svc.manualMeta["k"] = &credentialMeta{CurrentVersion: 1}
-	_, err := svc.RetrieveCredentialVersion(context.Background(), "k", 1)
+	_, err := svc.retrieveVersionBytes(context.Background(), "k", 1)
 	if !errors.Is(err, ErrCredentialNotFound) {
 		t.Fatalf("err = %v, want ErrCredentialNotFound", err)
 	}
@@ -366,7 +366,7 @@ func TestRetrieveCredentialVersion_HistoryWithoutStoredBytes(t *testing.T) {
 			GraceUntil: time.Now().Add(time.Hour),
 		}},
 	}
-	_, err = svc.RetrieveCredentialVersion(context.Background(), "k", 1)
+	_, err = svc.retrieveVersionBytes(context.Background(), "k", 1)
 	if !errors.Is(err, ErrVersionExpired) {
 		t.Fatalf("err = %v, want ErrVersionExpired", err)
 	}
@@ -374,7 +374,7 @@ func TestRetrieveCredentialVersion_HistoryWithoutStoredBytes(t *testing.T) {
 
 func TestRetrieveCredentialVersion_EmptyName(t *testing.T) {
 	svc := newManualService(t)
-	_, err := svc.RetrieveCredentialVersion(context.Background(), "", 1)
+	_, err := svc.retrieveVersionBytes(context.Background(), "", 1)
 	if !errors.Is(err, ErrEmptyCredentialName) {
 		t.Fatalf("err = %v, want ErrEmptyCredentialName", err)
 	}
@@ -383,7 +383,7 @@ func TestRetrieveCredentialVersion_EmptyName(t *testing.T) {
 func TestRetrieveCredentialVersion_InvalidStrategy(t *testing.T) {
 	svc := newManualService(t)
 	svc.strategy = "bogus"
-	_, err := svc.RetrieveCredentialVersion(context.Background(), "k", 1)
+	_, err := svc.retrieveVersionBytes(context.Background(), "k", 1)
 	if !errors.Is(err, ErrInvalidStrategy) {
 		t.Fatalf("err = %v, want ErrInvalidStrategy", err)
 	}
@@ -596,7 +596,7 @@ func TestRotateThenRetrieveRoundtrip_PreservesValues(t *testing.T) {
 		// v1 was stored, not rotated-with-grace. It's the original
 		// untracked value at credentials/k; the first rotation
 		// promoted it to v1 with a grace window. So it's retrievable.
-		got, err := svc.RetrieveCredentialVersion(ctx, "k", uint64(i))
+		got, err := svc.retrieveVersionBytes(ctx, "k", uint64(i))
 		if err != nil {
 			t.Fatalf("RetrieveCredentialVersion(v%d): %v", i, err)
 		}
@@ -681,7 +681,7 @@ func TestRotateCredential_Barrier_LegacyPromotion(t *testing.T) {
 		t.Fatalf("res = %+v, want PreviousVersion=1 NewVersion=2", res)
 	}
 	// Old value retrievable via v1 during grace.
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(v1): %v", err)
 	}
@@ -699,7 +699,7 @@ func TestRotateCredential_Barrier_ZeroGraceWipesPrevious(t *testing.T) {
 	if _, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("new")}); err != nil {
 		t.Fatalf("RotateCredential: %v", err)
 	}
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if !errors.Is(err, ErrVersionNotFound) {
 		t.Fatalf("err = %v, want ErrVersionNotFound (no history was kept)", err)
 	}
@@ -711,7 +711,7 @@ func TestRetrieveCredentialVersion_Barrier_Zero_AliasesCurrent(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 0)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 0)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(0): %v", err)
 	}
@@ -732,7 +732,7 @@ func TestRetrieveCredentialVersion_Barrier_CurrentVersionMatch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 2)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 2)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(v2): %v", err)
 	}
@@ -747,7 +747,7 @@ func TestRetrieveCredentialVersion_Barrier_LegacyV1(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("legacy")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	got, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	got, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if err != nil {
 		t.Fatalf("RetrieveCredentialVersion(legacy v1): %v", err)
 	}
@@ -758,7 +758,7 @@ func TestRetrieveCredentialVersion_Barrier_LegacyV1(t *testing.T) {
 
 func TestRetrieveCredentialVersion_Barrier_LegacyMissing(t *testing.T) {
 	svc := newBarrierService(t)
-	_, err := svc.RetrieveCredentialVersion(context.Background(), "absent", 1)
+	_, err := svc.retrieveVersionBytes(context.Background(), "absent", 1)
 	if !errors.Is(err, ErrCredentialNotFound) {
 		t.Fatalf("err = %v, want ErrCredentialNotFound", err)
 	}
@@ -770,7 +770,7 @@ func TestRetrieveCredentialVersion_Barrier_LegacyNonV1Rejected(t *testing.T) {
 	if err := svc.StoreCredential(ctx, "k", []byte("legacy")); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 7)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 7)
 	if !errors.Is(err, ErrVersionNotFound) {
 		t.Fatalf("err = %v, want ErrVersionNotFound", err)
 	}
@@ -789,7 +789,7 @@ func TestRetrieveCredentialVersion_Barrier_ExpiredGrace(t *testing.T) {
 		t.Fatalf("Rotate: %v", err)
 	}
 	expireBarrierGrace(t, svc, "k")
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if !errors.Is(err, ErrVersionExpired) {
 		t.Fatalf("err = %v, want ErrVersionExpired", err)
 	}
@@ -811,7 +811,7 @@ func TestRetrieveCredentialVersion_Barrier_GraceVersionNotFoundInStore(t *testin
 	if err := svc.barrier.Delete(ctx, versionKey("k", 1)); err != nil {
 		t.Fatalf("barrier.Delete: %v", err)
 	}
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 1)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 1)
 	if !errors.Is(err, ErrVersionExpired) {
 		t.Fatalf("err = %v, want ErrVersionExpired", err)
 	}
@@ -829,7 +829,7 @@ func TestRetrieveCredentialVersion_Barrier_VersionNotInHistory(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
-	_, err := svc.RetrieveCredentialVersion(ctx, "k", 99)
+	_, err := svc.retrieveVersionBytes(ctx, "k", 99)
 	if !errors.Is(err, ErrVersionNotFound) {
 		t.Fatalf("err = %v, want ErrVersionNotFound", err)
 	}

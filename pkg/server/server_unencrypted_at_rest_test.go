@@ -53,7 +53,7 @@ type capabilityClient interface {
 // report end to end: the node's at-rest gaps reach a client on REST, gRPC,
 // Unix, QUIC and MCP alike.
 func TestCapabilities_UnencryptedAtRest_EveryTransport(t *testing.T) {
-	gaps := []string{`standalone backend "file" stores its data without the seal barrier's at-rest encryption`}
+	gaps := []string{`standalone backend "objstore" stores its data without the seal barrier's at-rest encryption`}
 	cfg := testConfigFull(t, protocolFlags{rest: true, grpc: true, quic: true, unix: true, mcp: true}, filepath.Join(t.TempDir(), "qrdb.sock"))
 	srv := New(cfg, newMockKVService(), &gapAdminService{gaps: gaps}, WithCeremonyCA(testServerCA))
 	if err := srv.Start(); err != nil {

@@ -21,6 +21,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,32 @@ func realUserFactorService(t *testing.T) service.UserAuthFactorServicer {
 		putFn: func(_ context.Context, key string, value []byte) error {
 			store[key] = append([]byte(nil), value...)
 			return nil
+		},
+		// Add reserves the factor's primary record behind an absence guard,
+		// so the conditional writes must land in the same map the reads see:
+		// the double's default reports a write it never made.
+		putIfAbsentFn: func(_ context.Context, key string, value []byte) (bool, error) {
+			if _, exists := store[key]; exists {
+				return false, nil
+			}
+			store[key] = append([]byte(nil), value...)
+			return true, nil
+		},
+		compareAndSwapFn: func(_ context.Context, key string, expected, next []byte) (bool, error) {
+			current, exists := store[key]
+			if !exists || !bytes.Equal(current, expected) {
+				return false, nil
+			}
+			store[key] = append([]byte(nil), next...)
+			return true, nil
+		},
+		compareAndDeleteFn: func(_ context.Context, key string, expected []byte) (bool, error) {
+			current, exists := store[key]
+			if !exists || !bytes.Equal(current, expected) {
+				return false, nil
+			}
+			delete(store, key)
+			return true, nil
 		},
 		getFn: func(_ context.Context, key string) ([]byte, error) {
 			return store[key], nil

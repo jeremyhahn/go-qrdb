@@ -1174,3 +1174,126 @@ func TestJoinCSR_DialFailureIsFetchError(t *testing.T) {
 		t.Fatalf("JoinCSR dial failure = %v, want *FetchError", err)
 	}
 }
+
+// parseTestJoinCSR builds a CSR bound to nodeURI and parses it, the form
+// issueAndAdmit receives once HandleJoinRequest has validated the request.
+func parseTestJoinCSR(t *testing.T, nodeURI string) *x509.CertificateRequest {
+	t.Helper()
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatalf("ParseCertificateRequest: %v", err)
+	}
+	return csr
+}
+
+func TestIssueAndAdmit_ReservationStoreFailureRefusesWithoutSigning(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
+	nodeURI := spiffe.NodeURI(testTrustDomain, "reserve-failure-node")
+	advertiser := &fakeFeatureAdvertiser{}
+
+	resp := issueAndAdmit(context.Background(), provider, store, nodeURI, parseTestJoinCSR(t, nodeURI), 7, nil, advertiser)
+	if resp.Error != "join request could not be processed" {
+		t.Fatalf("response = %q, want the generic infrastructure-failure message", resp.Error)
+	}
+	if len(resp.CertPEM) != 0 {
+		t.Fatal("a leaf was issued although the identity could not be reserved")
+	}
+	if n := advertiser.callCount(); n != 0 {
+		t.Fatalf("advertiser called %d times for a refused join, want 0", n)
+	}
+	if got, err := store.AtomicKVStore.Get(context.Background(), joinIdentityPrefix+nodeURI); err != nil || got != nil {
+		t.Fatalf("identity record = %q (err %v), want none", got, err)
+	}
+}
+
+func TestIssueAndAdmit_SignFailureWithUnreleasableReservationKeepsItHeld(t *testing.T) {
+	realProvider := newTestClusterCAProvider(t)
+	caCert, err := realProvider.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	failingProvider := &issuanceFailureProvider{cert: caCert}
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndDeleteOnPrefix: joinIdentityPrefix}
+	nodeURI := spiffe.NodeURI(testTrustDomain, "release-failure-node")
+
+	resp := issueAndAdmit(context.Background(), failingProvider, store, nodeURI, parseTestJoinCSR(t, nodeURI), 0, nil, nil)
+	if resp.Error != "signing failed" {
+		t.Fatalf("response = %q, want the signing-failed message", resp.Error)
+	}
+	if len(resp.CertPEM) != 0 {
+		t.Fatal("a leaf was returned although signing failed")
+	}
+
+	// The release failed, so the pending reservation is still in place and
+	// still live: a second reservation for the same identity is refused
+	// until its TTL lapses.
+	got, err := store.AtomicKVStore.Get(context.Background(), joinIdentityPrefix+nodeURI)
+	if err != nil {
+		t.Fatalf("Get identity record: %v", err)
+	}
+	if deadline, ok := parsePendingDeadline(got); !ok || !deadline.After(time.Now()) {
+		t.Fatalf("identity record = %q, want a live pending reservation", got)
+	}
+	reserved, _, err := ReserveJoinIdentity(context.Background(), store, nodeURI, 0)
+	if err != nil || reserved {
+		t.Fatalf("ReserveJoinIdentity after the failed release = (%v, %v), want (false, nil)", reserved, err)
+	}
+}
+
+func TestParseLeafExpiry_RefusesNonPEM(t *testing.T) {
+	_, _, err := parseLeafExpiry([]byte("not a pem block"))
+	var parseErr *LeafExpiryParseError
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("parseLeafExpiry(non-PEM) = %v, want *LeafExpiryParseError", err)
+	}
+	if !strings.Contains(err.Error(), "issued leaf is not valid PEM") {
+		t.Fatalf("error = %q, want it to name the PEM failure", err)
+	}
+}
+
+func TestParseLeafExpiry_RefusesUnparsableCertificate(t *testing.T) {
+	garbage := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")})
+	_, _, err := parseLeafExpiry(garbage)
+	var parseErr *LeafExpiryParseError
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("parseLeafExpiry(bad DER) = %v, want *LeafExpiryParseError", err)
+	}
+	if parseErr.Unwrap() == nil || errors.Unwrap(err) != parseErr.Err {
+		t.Fatalf("Unwrap = %v, want the x509 parse error", errors.Unwrap(err))
+	}
+	if !strings.HasPrefix(err.Error(), "clusterenroll: could not parse the issued leaf's own expiry: ") {
+		t.Fatalf("error = %q, want the clusterenroll expiry-parse prefix", err)
+	}
+}
+
+func TestParseLeafExpiry_ReadsTheIssuedLeaf(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	nodeURI := spiffe.NodeURI(testTrustDomain, "expiry-node")
+	certPEM, err := clusterca.IssueLeafForKey(context.Background(), provider, parseTestJoinCSR(t, nodeURI).PublicKey, nodeURI)
+	if err != nil {
+		t.Fatalf("IssueLeafForKey: %v", err)
+	}
+	block, _ := pem.Decode(certPEM)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+
+	notAfter, serial, err := parseLeafExpiry(certPEM)
+	if err != nil {
+		t.Fatalf("parseLeafExpiry: %v", err)
+	}
+	if !notAfter.Equal(cert.NotAfter) || serial != cert.SerialNumber.String() {
+		t.Fatalf("parseLeafExpiry = (%v, %s), want (%v, %s)", notAfter, serial, cert.NotAfter, cert.SerialNumber)
+	}
+}
+
+func TestJoinPendingError_NamesTheRequest(t *testing.T) {
+	err := &JoinPendingError{RequestID: "req-42"}
+	want := "clusterenroll: join request req-42 is awaiting operator approval"
+	if err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+}

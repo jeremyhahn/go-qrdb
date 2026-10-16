@@ -25,8 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
-// volumePoolRequestTimeout bounds every volume-pool management endpoint,
-// mirroring tenantRequestTimeout.
+// volumePoolRequestTimeout bounds every volume-pool management endpoint.
 const volumePoolRequestTimeout = 5 * time.Second
 
 // ---------------------------------------------------------------------------

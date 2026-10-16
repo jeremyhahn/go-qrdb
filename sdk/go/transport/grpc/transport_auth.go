@@ -506,6 +506,19 @@ func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertReq
 	return enrollconv.EnrolledCert(resp), nil
 }
 
+// IssueDelegation has the caller's own tenant's CA issue a delegation
+// certificate to a service principal, via the IssueDelegation RPC.
+func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDelegationRequest) (*transport.IssuedDelegation, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.IssueDelegation(ctx, enrollconv.IssueDelegationRequest(req))
+	if err != nil {
+		return nil, mapGRPCError("IssueDelegation", err)
+	}
+	return enrollconv.IssuedDelegation(resp), nil
+}
+
 // RevokeCert marks a certificate serial as revoked and reports whether the
 // server held a certificate record for it.
 func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {

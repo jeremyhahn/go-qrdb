@@ -19,6 +19,7 @@ package node
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -409,4 +411,113 @@ func TestWithLoginFactorVerifier_NilIgnored(t *testing.T) {
 	o := &nodeOptions{}
 	WithLoginFactorVerifier(nil)(o)
 	assert.Empty(t, o.loginFactorVerifiers)
+}
+
+// countingHydrator records how often it ran and, when err is set, refuses the
+// principal. It is written against the sdk aliases only, the way a composer
+// would write it without a pkg/* import, so a test can tell it was the node's
+// hydrator that produced the identity and not the default.
+type countingHydrator struct {
+	calls atomic.Int32
+	err   error
+}
+
+var _ embedded.IdentityHydrator = (*countingHydrator)(nil)
+
+func (h *countingHydrator) Hydrate(_ context.Context, principal *sdk.Principal, _ *sdk.AuthFactor) (*sdk.Identity, error) {
+	h.calls.Add(1)
+	if h.err != nil {
+		return nil, h.err
+	}
+	return &sdk.Identity{
+		TenantID: principal.TenantID,
+		Roles:    append([]string(nil), principal.Roles...),
+	}, nil
+}
+
+// hydrationRefusedError is what a hydrator returns to abort a login.
+type hydrationRefusedError struct{}
+
+func (hydrationRefusedError) Error() string { return "hydrator refused the principal" }
+
+func TestWithIdentityHydrator_NilIgnored(t *testing.T) {
+	h := &countingHydrator{}
+	o := &nodeOptions{}
+	WithIdentityHydrator(h)(o)
+	WithIdentityHydrator(nil)(o)
+	assert.Same(t, h, o.identityHydrator, "a nil hydrator must not clear one already set")
+}
+
+// loginThroughNode enrolls a PIV factor for a fresh user of tenant-a and runs
+// the login ceremony through the embedded transport the node's own
+// buildEmbeddedOpts composes, which is the path WithIdentityHydrator reaches.
+func loginThroughNode(t *testing.T, opts ...NodeOption) (*user.User, *embedded.Transport, *transport.FinishLoginResponse, error) {
+	t.Helper()
+	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+
+	n := newMemoryNodeWithUser(t, append([]NodeOption{WithSessionIssuer(newFakeSessionIssuer())}, opts...)...)
+	svcNode := n.Services()
+	u, err := svcNode.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
+		Username: "alice",
+		TenantID: "tenant-a",
+		RoleIDs:  []string{"admin"},
+	})
+	require.NoError(t, err)
+
+	embOpts, err := n.buildEmbeddedOpts(svcNode, nil, false, false)
+	require.NoError(t, err)
+	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embOpts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tp.Close() })
+
+	credential := []byte("piv-credential-hydrator-0001")
+	require.NoError(t, tp.FactorClient().Enroll(ctx, u.ID, transport.Factor{
+		Type:       transport.FactorTypePIV,
+		Label:      "yubikey",
+		Credential: credential,
+	}))
+	begin, err := tp.LoginClient().BeginLogin(ctx, transport.BeginLoginRequest{
+		Type:     transport.FactorTypePIV,
+		TenantID: "tenant-a",
+	})
+	require.NoError(t, err)
+	fin, err := tp.LoginClient().FinishLogin(ctx, transport.FinishLoginRequest{
+		SessionID: begin.SessionID,
+		Type:      transport.FactorTypePIV,
+		LookupKey: credential,
+	})
+	return u, tp, fin, err
+}
+
+func TestBuildEmbeddedOpts_IdentityHydratorRunsOncePerLogin(t *testing.T) {
+	h := &countingHydrator{}
+	u, tp, fin, err := loginThroughNode(t, WithIdentityHydrator(h))
+	require.NoError(t, err)
+	require.NotNil(t, fin.Identity)
+
+	want := auth.UserSubject(u.ID)
+	assert.Equal(t, int32(1), h.calls.Load(), "the node's hydrator must run exactly once per login")
+	assert.Equal(t, want, fin.Identity.Subject, "the login Subject is the user id, whatever the hydrator returns")
+	assert.Equal(t, "tenant-a", fin.Identity.TenantID)
+
+	// The bearer carries the hydrated identity, not a re-derived one.
+	resolved, err := tp.LoginClient().ResolveIdentity(context.Background(), fin.Bearer)
+	require.NoError(t, err)
+	assert.Equal(t, want, resolved.Subject)
+}
+
+func TestBuildEmbeddedOpts_IdentityHydratorErrorAbortsLogin(t *testing.T) {
+	h := &countingHydrator{err: hydrationRefusedError{}}
+	_, _, fin, err := loginThroughNode(t, WithIdentityHydrator(h))
+	require.ErrorIs(t, err, hydrationRefusedError{})
+	assert.Nil(t, fin, "no bearer may be issued when the hydrator refuses")
+	assert.Equal(t, int32(1), h.calls.Load())
+}
+
+func TestBuildEmbeddedOpts_NoIdentityHydratorSubjectIsUserID(t *testing.T) {
+	u, _, fin, err := loginThroughNode(t)
+	require.NoError(t, err)
+	require.NotNil(t, fin.Identity)
+	assert.Equal(t, auth.UserSubject(u.ID), fin.Identity.Subject)
+	assert.NotEqual(t, "alice", fin.Identity.Subject, "the username is never the login Subject")
 }

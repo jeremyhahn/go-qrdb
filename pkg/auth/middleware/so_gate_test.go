@@ -201,6 +201,20 @@ func sealedPIN(t *testing.T, pin string) *secure.Secret {
 	return s
 }
 
+// presentedPIN returns the sealed PIN's plaintext, read the way the gate reads
+// it.
+func presentedPIN(t *testing.T, s *secure.Secret) string {
+	t.Helper()
+	var got string
+	if err := withSOPIN(t.Context(), s, func(pin []byte) error {
+		got = string(pin)
+		return nil
+	}); err != nil {
+		t.Fatalf("withSOPIN: %v", err)
+	}
+	return got
+}
+
 // requireDestroyed fails unless the sealed PIN can no longer be opened.
 func requireDestroyed(t *testing.T, what string, s *secure.Secret) {
 	t.Helper()
@@ -229,11 +243,9 @@ func TestNewSOFactor(t *testing.T) {
 	if !f.Secure || f.ClientIP != "192.0.2.1:1" || f.sealErr != nil {
 		t.Fatalf("factor = %+v", f)
 	}
-	got, err := openSOPIN(t.Context(), f.PIN)
-	if err != nil || string(got) != soGatePIN {
-		t.Fatalf("openSOPIN = %q, %v; want the presented PIN", got, err)
+	if got := presentedPIN(t, f.PIN); got != soGatePIN {
+		t.Fatalf("sealed PIN = %q; want the presented PIN", got)
 	}
-	secure.Wipe(got)
 
 	for name, tc := range map[string]struct {
 		pin      []byte
@@ -338,11 +350,9 @@ func TestSOFactorFromHTTPRequest(t *testing.T) {
 	if !f.Secure || f.ClientIP != r.RemoteAddr {
 		t.Fatalf("TLS factor = %+v", f)
 	}
-	got, err := openSOPIN(t.Context(), f.PIN)
-	if err != nil || string(got) != soGatePIN {
-		t.Fatalf("TLS factor PIN = %q, %v; want the header", got, err)
+	if got := presentedPIN(t, f.PIN); got != soGatePIN {
+		t.Fatalf("TLS factor PIN = %q; want the header", got)
 	}
-	secure.Wipe(got)
 
 	r.TLS = nil
 	if f := SOFactorFromHTTPRequest(r); f.Secure || f.PIN != nil {

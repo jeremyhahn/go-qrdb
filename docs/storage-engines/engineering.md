@@ -59,6 +59,66 @@ type RecordCorruptError struct{ Name, Reason string }     // hashed record unpar
 type KeyMismatchError struct{ Name string }               // hashed record holds another key
 ```
 
+`pkg/storage/file` — at-rest encryption is an option of `New`:
+
+```go
+func New(dir string, opts ...Option) (*Engine, error)
+type Option func(*options)
+type Encryptor interface {      // satisfied by *atrest.Encryptor
+	Enabled() bool
+	Wrap(base vfs.FS) vfs.FS
+}
+func WithEncryptor(enc Encryptor) Option   // nil or disabled: plaintext
+
+type FormatMarkerMissingError struct{ Dir string }
+type FormatVersionMismatchError struct{ Found, Want string }
+type AtRestMismatchError struct{ Dir, Found, Want string }   // "plaintext" | "encrypted"
+```
+
+`pkg/atrest` — the one at-rest seam, shared by Pebble and the file engine:
+
+```go
+func New(barrier *seal.StorageBarrier) *Encryptor   // nil barrier: disabled
+func (e *Encryptor) Enabled() bool
+func (e *Encryptor) Apply(o *pebble.Options)        // Pebble: Options.FS
+func (e *Encryptor) FS() vfs.FS
+func (e *Encryptor) Wrap(base vfs.FS) vfs.FS        // file engine: over its base FS
+```
+
+```go
+// pkg/server/lifecycle
+func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor,
+	objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+```
+
+`NewLocalStorage` opens `pebble` and `file` through `enc`; it is the
+constructor every standalone node store goes through — the daemon, the SDK
+node and the embedded server. A raft replica's `file` storage takes the same
+encryptor from `statemachine.StorageConfig.Encryptor`.
+
+`pkg/database` — re-encrypting a `file` store under a new key, the file
+engine's counterpart of `ReencryptPebbleStore`:
+
+```go
+func ReencryptFileStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor,
+	dstDir string, dstEnc *atrest.Encryptor) (count int64, err error)
+func VerifyReencryptedFileStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor,
+	dstDir string, dstEnc *atrest.Encryptor) error
+
+type NodeStoreMigration struct {
+	// ...
+	StoreDirs     []string // Pebble stores
+	FileStoreDirs []string // file stores
+}
+```
+
+Both open the source under `srcEnc` and the destination under `dstEnc`
+through `file.New`, so every record is decrypted under the old key and
+re-sealed under the new one. A copy failure, cancellation included, is
+`ReencryptCopyError`; a verify that finds a differing key, value or record
+count is `ReencryptVerifyMismatchError`. The node migration journals every
+directory of both lists and swaps them together.
+
 `pkg/storage/pool`:
 
 ```go
@@ -163,6 +223,19 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
   It is not portable across nodes.
 - **Engines store what they are given.** Encryption is the barrier's layer;
   revisions are the state machine's.
+- **One at-rest mechanism for every on-disk backend.** Under the seal,
+  `pebble` and `file` write every file through `atrest.Encryptor`'s
+  encrypting file system and nothing else; neither carries a cipher of its
+  own. A new backend that writes files takes the encryptor's file system; it
+  does not add a second mechanism.
+- **A `file` store never mixes postures.** Its plaintext marker records
+  `encrypted` or `plaintext`, and `New` refuses the other
+  (`AtRestMismatchError`). The marker is the only plaintext file in an
+  encrypted store.
+- **A sealed barrier fails every record read and write.** The encrypting file
+  system cannot unwrap a file's key, so the engine returns `seal.ErrSealed`.
+  `Exists` answers from the hashed record file name without reading the
+  record, so it does not consult the barrier.
 
 ## Configuration
 
@@ -217,8 +290,13 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
 | A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
-| Seal barrier enabled with `sm_type: disk`/`fast` over `file` `sm_storage` | refused at start (`statemachine.SMStorageUnencryptedError`; `qrdbd`: `SealedSMStoragePlaintextError`; SDK: `ConfigError` on `raft.sm_storage`), nothing opened | **yes** |
 | Seal barrier enabled with `sm_type: disk`/`fast` over `pebble` `sm_storage` | opened on the barrier's encfs (`atrest.Encryptor.FS`): every sstable, WAL and manifest encrypted | — |
+| Seal barrier enabled with `sm_type: disk`/`fast` over `file` `sm_storage` | opened on the barrier's encfs (`file.WithEncryptor`): every record file and the commit journal encrypted | — |
+| Seal barrier enabled with standalone `storage.backend: pebble` or `file` | opened on the barrier's encfs: every file but the `file` engine's format marker encrypted | — |
+| Seal barrier enabled with standalone `storage.backend: objstore` | started; one WARN and an `unencryptedAtRest` capability entry name the gap | no |
+| `file` store opened in the other at-rest posture (written plaintext, opened under the seal, or the reverse) | refused at open (`file.AtRestMismatchError`), nothing read | **yes** |
+| Read or write on an encrypted store while the barrier is sealed | `seal.ErrSealed` from the encrypting file system | **yes** |
+| Node encryption migration whose re-encrypted `file` store differs from its source | `ReencryptVerifyMismatchError`, wrapped in `MigrateStoreDirError` naming the directory; the migration rolls back before any swap and the store stays under the old key | **yes** |
 | `VolumePools()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 | Pool `Pick` with an unknown pool name | not-found | yes |
 | Opcode an engine has no handler for | refused in the result payload; the apply loop keeps advancing | **yes** |
@@ -250,7 +328,11 @@ an error value, so an unchecked call panics rather than failing cleanly.
   (the `fast` state machine's write-through) make pruning them on a
   point-in-time emptiness check a race. `New` refuses a non-empty data
   directory lacking a matching format-version marker
-  (`FormatMarkerMissingError`, `FormatVersionMismatchError`). The layout has
+  (`FormatMarkerMissingError`, `FormatVersionMismatchError`), or one whose
+  marker records the other at-rest posture (`AtRestMismatchError`). With an
+  enabled encryptor every record and the journal are written through the
+  barrier's encrypting file system; the marker (`3/encrypted`) is the one
+  plaintext file. The layout has
   no key-length or path-depth dependency at all, so `KeySegmentTooLongError`
   — a refusal the previous, one-directory-per-key layout needed — no longer
   exists; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
@@ -313,6 +395,36 @@ an error value, so an unchecked call panics rather than failing cleanly.
 - **Namespace wrapper**: prefixing on write, prefix filtering on `List`, and
   that a second tenant's keys are invisible.
 - **File engine journal**: crash-mid-write replay at open.
+- **File engine at rest** (`pkg/storage/file/encrypted_test.go`): no key or
+  value readable anywhere in an encrypted store's files, a batch-committed
+  record included; a reopen and unseal reading every record back; reads and writes
+  failing with `seal.ErrSealed` while sealed, including on a store reopened
+  sealed; the posture marker refusing the other posture in both directions.
+  End to end through every node composition: the embedded server over
+  `pebble` and `file` (`sdk/go/transport/embedded/server_encfs_test.go`: no
+  plaintext on disk, sealed boot refused, a reseal failing record reads with
+  `seal.ErrSealed` and an unseal restoring them), `lifecycle`
+  (`TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor`), raft
+  replica storage (`TestStorageGenericSMsEncryptStorageUnderTheBarrier`) and a
+  sealed three-node group over `file` replica storage
+  (`TestRaftSMOverFileStorage_SealedLeavesNoPlaintextOnDisk`).
+- **File store re-encryption** (`pkg/database/reencrypt_file_test.go`): every
+  record read back under the new key and none under the old; verify refusing
+  a differing key, value or record count; cancellation as
+  `ReencryptCopyError`. The node migration moving a `file` store
+  (`TestNodeStoreMigration_MovesFileStores`,
+  `TestEncryptionMigration_SystemMovesFileStores`), the SDK provider
+  classifying store directories by backend
+  (`sdk/go/node/migrate_store_dirs_test.go`), and an SDK node on `file`
+  migrating from strategy `none` to a passphrase and reading every record
+  back after a restart
+  (`TestNode_EnableEncryption_SystemNoneToPassphrase_FileBackend`). In raft
+  mode, `qrdbd` naming each state machine's stores by `sm_type` and
+  `sm_storage` (`cmd/qrdbd/system_migrate_stores_test.go`), and a real daemon
+  with `--sm disk --sm-storage file` enabling encryption and serving its data
+  back under the passphrase
+  (`TestEnableEncryption_SystemScope_DiskOverFileStorage` in
+  `test/integration/enable_encryption_test.go`).
 - **File engine on tmpfs**: the file engine's unit tests, the storage parity
   tests and every file-engine cell of the `sdk/go/conformance` matrix make
   their directories with `pkg/testutil/memdir`, which creates them under
@@ -446,9 +558,8 @@ key, never shared between instances.
   `WithRemote`. The adapter encrypts the whole object payload with the same
   `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
   `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
-  working encryptor fails closed at open, matching
-  `statemachine.SMStorageUnencryptedError`'s existing precedent for
-  `file`-backed state machines.
+  working encryptor fails closed at open rather than writing plaintext
+  objects.
 - **One prefix, one `CreatorID`, one owning instance — never shared.** A
   replacement instance (replacement Raft replica, or a reassigned local-binding
   owner) never reopens a previous instance's prefix; it gets a fresh one. This
@@ -492,7 +603,7 @@ documents them today (see "Configuration" above and
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
-| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
+| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, nothing written | **yes** |
 | A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
 | go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |
 | `raft.sm_storage`/`state_storage: objstore` before the phase-3 gate accepts it | refused, as today | **yes** |

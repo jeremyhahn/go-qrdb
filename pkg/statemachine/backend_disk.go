@@ -18,10 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"sort"
 	"strings"
-
-	"github.com/cespare/xxhash/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -226,42 +223,30 @@ func (b *DiskBackend) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) erro
 }
 
 // GetHash computes a deterministic xxhash64 hash over all key-value
-// pairs in sorted key order.
+// pairs in storage, visited in ascending key order.
 func (b *DiskBackend) GetHash() (uint64, error) {
-	h := xxhash.New()
+	return xxhashRecords(b.Records)
+}
 
-	// Collect all entries sorted by key.
-	type entry struct {
-		key   string
-		value []byte
-	}
-	var entries []entry
-
+// Records visits every key-value pair in storage in ascending key order.
+// Storage iteration order is backend-specific (the file backend's layout is
+// hashed), so records are collected and sorted before the visit.
+func (b *DiskBackend) Records(fn RecordVisitor) error {
+	var recs []kvRecord
 	iter := b.store.NewIterator(nil)
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		k := string(iter.Key())
 		v := make([]byte, len(iter.Value()))
 		copy(v, iter.Value())
-		entries = append(entries, entry{key: k, value: v})
+		recs = append(recs, kvRecord{key: string(iter.Key()), value: v})
 	}
 	if err := iter.Error(); err != nil {
 		_ = iter.Close()
-		return 0, &StorageError{Op: "hash", Inner: err}
+		return &StorageError{Op: "records", Inner: err}
 	}
 	if err := iter.Close(); err != nil {
-		return 0, &StorageError{Op: "hash-close", Inner: err}
+		return &StorageError{Op: "records-close", Inner: err}
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].key < entries[j].key
-	})
-
-	for _, e := range entries {
-		_, _ = h.Write([]byte(e.key))
-		_, _ = h.Write(e.value)
-	}
-
-	return h.Sum64(), nil
+	return visitSorted(recs, fn)
 }
 
 // Close releases storage resources.

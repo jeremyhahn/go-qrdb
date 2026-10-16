@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -259,19 +260,13 @@ func handleSystemMigration(
 		_ = shutdownNode(host)
 	}
 
-	// Plain encfs Pebble stores wrapped by the system barrier, OUTSIDE the Raft
-	// WAL: the host state-machine Pebble and the vector store (opened separately
-	// by lifecycle.BuildServices via the shared atrest Encryptor). Both must be
-	// re-encrypted or the keyed re-init fails to open them ("decryption failed").
-	// Filtered to those that exist (vector is absent when the qrdb_vector build
-	// tag is off or no vectors were ever written).
-	pebbleDirs := existingDirs(
-		filepath.Join(f.dataDir, "nodehost", "snapshots", fmt.Sprintf("shard-%d", shard.ShardKV)),
-		filepath.Join(f.dataDir, "vector"),
-	)
+	// The stores wrapped by the system barrier OUTSIDE the Raft WAL. Every one
+	// must be re-encrypted or the keyed re-init fails to open it ("decryption
+	// failed").
+	stores := systemMigrationStores(f.dataDir, f.smType, f.smStorage)
 	walDir := filepath.Join(f.dataDir, "wal")
 
-	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, pebbleDirs, walDir, req.opts)
+	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, stores, walDir, req.opts)
 	// The recycle has consumed the unlock credential; destroy the credential the
 	// reconciler handed off (the system-scope path owns it — the reconciler can't
 	// destroy it because this recycle runs async across the in-process reboot).
@@ -291,6 +286,41 @@ func handleSystemMigration(
 }
 
 // existingDirs returns the subset of the given paths that exist as directories.
+// selfStoredSMTypes are the --sm types that keep their state in a Pebble
+// store of their own inside the host's snapshot directory for the shard. Every
+// other type is either in memory or storage-generic, keeping its state under
+// <data-dir>/sm in the --sm-storage backend.
+var selfStoredSMTypes = map[string]bool{
+	"pebble": true,
+	"mvcc":   true,
+}
+
+// systemMigrationStores names the system host's at-rest stores outside the
+// Raft WAL, by the kind of store each is: the KV state machine's own Pebble
+// store (pebble and mvcc) or the storage-generic state machines' per-replica
+// stores under <data-dir>/sm, plus the vector store, which
+// lifecycle.BuildServices opens through the same atrest Encryptor. Only
+// directories that exist are named: vector is absent when the qrdb_vector
+// build tag is off or no vector was ever written, and --sm-storage memory
+// writes nothing. Any other snapshot directory is not a store; its snapshot
+// data files are re-encrypted with the WAL.
+func systemMigrationStores(dataDir, smType, smStorage string) service.MigrationStores {
+	var stores service.MigrationStores
+	if selfStoredSMTypes[smType] {
+		stores.Pebble = existingDirs(filepath.Join(dataDir, "nodehost", "snapshots", fmt.Sprintf("shard-%d", shard.ShardKV)))
+	} else {
+		// The pattern is constant and well-formed, so Glob cannot fail.
+		replicas, _ := filepath.Glob(filepath.Join(dataDir, "sm", "shard-*-replica-*"))
+		if smStorage == "file" {
+			stores.File = existingDirs(replicas...)
+		} else {
+			stores.Pebble = existingDirs(replicas...)
+		}
+	}
+	stores.Pebble = append(stores.Pebble, existingDirs(filepath.Join(dataDir, "vector"))...)
+	return stores
+}
+
 func existingDirs(paths ...string) []string {
 	var out []string
 	for _, p := range paths {
@@ -304,11 +334,11 @@ func existingDirs(paths ...string) []string {
 // recodeSystemBarrier re-encrypts the system barrier's at-rest stores from the
 // source (none) barrier into a freshly-minted keyed barrier, then atomically
 // swaps the keyed copies into place and adopts the keyed root key as canonical.
-// pebbleDirs are the plain encfs Pebble stores (the Raft host state-machine
-// Pebble and the vector store); walDir is the Raft write-ahead log. The host
+// stores are the encfs stores outside the WAL, named by systemMigrationStores;
+// walDir is the Raft write-ahead log. The host
 // MUST already be closed by the caller (its Pebble/WAL locks released). It
 // mirrors the per-tenant recycle in pkg/server/tenant_migrate.go.
-func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbleDirs []string, walDir string, opts seal.MigrationOptions) (err error) {
+func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, stores service.MigrationStores, walDir string, opts seal.MigrationOptions) (err error) {
 	if source == nil {
 		return service.ErrMigrationProviderUnavailable
 	}
@@ -352,6 +382,7 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 	defer func() { _ = target.DeleteRootKey(ctx) }()
 	defer func() { _ = target.Close() }()
 
+	storeDirs := stores.Dirs()
 	j, err := source.BeginMigration(ctx, opts)
 	if err != nil {
 		return err
@@ -361,14 +392,20 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 	// pass can roll the swaps forward (or back) from the journal alone, even if
 	// the configured store layout changes before the interrupted migration is
 	// reconciled.
-	j.StoreDirs = append(append([]string(nil), pebbleDirs...), walDir)
+	j.StoreDirs = append(append([]string(nil), storeDirs...), walDir)
+	// stagedSnaps accumulates re-encrypted snapshot data files staged beside
+	// their originals in a snapshot directory that no store swap below moves.
+	// They are renamed into place after the swaps commit, or discarded on any
+	// pre-commit failure.
+	var stagedSnaps []database.StagedSnapshot
 	// Registered BEFORE the first CheckpointMigration so any post-begin failure
 	// rolls the journal to terminal PhaseFailed — else a leftover non-terminal
 	// journal wedges the next BeginMigration (manual restart) with
 	// ErrMigrationInProgress.
 	defer func() {
 		if err != nil && !j.Committed() {
-			for _, dir := range pebbleDirs {
+			database.RollbackStagedSnapshots(stagedSnaps)
+			for _, dir := range storeDirs {
 				_ = os.RemoveAll(dir + database.KeyedDirSuffix)
 			}
 			_ = os.RemoveAll(walDir + database.KeyedDirSuffix)
@@ -389,14 +426,15 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 		recode = database.ReencryptStoreFiles
 	}
 
-	// Copy phase: re-encrypt every plain Pebble store + the WAL into keyed
-	// siblings.
+	// Copy phase: re-encrypt every store + the WAL into keyed siblings. A file
+	// store is copied through the file engine, record by record, under either
+	// mechanism.
 	j.Phase = seal.PhaseCopying
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
 		err = cerr
 		return err
 	}
-	for _, dir := range pebbleDirs {
+	for _, dir := range stores.Pebble {
 		keyed := dir + database.KeyedDirSuffix
 		_ = os.RemoveAll(keyed)
 		if _, cerr := recode(ctx, dir, srcEnc, keyed, dstEnc); cerr != nil {
@@ -404,31 +442,56 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 			return err
 		}
 	}
+	for _, dir := range stores.File {
+		keyed := dir + database.KeyedDirSuffix
+		_ = os.RemoveAll(keyed)
+		if _, cerr := database.ReencryptFileStore(ctx, dir, srcEnc, keyed, dstEnc); cerr != nil {
+			err = fmt.Errorf("re-encrypt file store %q: %w", dir, cerr)
+			return err
+		}
+	}
 	walKeyed := walDir + database.KeyedDirSuffix
 	_ = os.RemoveAll(walKeyed)
-	// The system host's snapshot directories sit UNDER a recoded Pebble store
-	// (nodehost/snapshots/shard-N), so re-encrypt each snapshot's data file into
-	// the matching path inside that store's keyed staging dir; the SwapStoreDir
-	// below makes it live and a rollback discards it with the staging dir. No
-	// separate snapshot commit is required, so the staged slice is ignored.
-	snapDest := func(snapDir string) string {
-		for _, d := range pebbleDirs {
+	// A snapshot directory under a recoded store (the pebble and mvcc state
+	// machines keep theirs under nodehost/snapshots/shard-N) has its data file
+	// re-encrypted into the matching path inside that store's keyed staging
+	// dir; the SwapStoreDir below makes it live and a rollback discards it with
+	// the staging dir. Any other snapshot (an in-memory or storage-generic state
+	// machine's) is staged as a keyed sibling and committed after the swaps.
+	swappedDir := func(snapDir string) (string, bool) {
+		for _, d := range storeDirs {
 			if snapDir == d || strings.HasPrefix(snapDir, d+string(filepath.Separator)) {
-				return filepath.Join(strings.Replace(snapDir, d, d+database.KeyedDirSuffix, 1), database.SnapshotDataFile)
+				return d, true
 			}
 		}
-		// Defensive: a snapshot outside every recoded store has no swap to ride;
-		// stage a sibling so the re-encryption never silently writes into a live
-		// store. The system layout keeps snapshots under a pebbleDir, so this is
-		// not expected.
+		return "", false
+	}
+	snapDest := func(snapDir string) string {
+		if d, ok := swappedDir(snapDir); ok {
+			return filepath.Join(strings.Replace(snapDir, d, d+database.KeyedDirSuffix, 1), database.SnapshotDataFile)
+		}
 		return filepath.Join(snapDir, database.SnapshotDataFile) + database.SnapshotKeyedSuffix
 	}
-	if _, _, cerr := database.ReencryptWALStore(walDir, source, walKeyed, target, snapDest); cerr != nil {
+	_, staged, cerr := database.ReencryptWALStore(walDir, source, walKeyed, target, snapDest)
+	if cerr != nil {
 		err = fmt.Errorf("re-encrypt write-ahead log: %w", cerr)
 		return err
 	}
+	for _, s := range staged {
+		if _, ok := swappedDir(filepath.Dir(s.FinalPath)); !ok {
+			stagedSnaps = append(stagedSnaps, s)
+		}
+	}
+	// Checkpoint the staged snapshot set so a crash from here on leaves the
+	// journal aware of every sibling: recovery commits them on roll-forward and
+	// discards them on roll-back.
+	j.StagedSnapshots = stagedSnaps
+	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
+	}
 
-	// Verify each Pebble round-trip (no data loss). The WAL is verified
+	// Verify each store round-trip (no data loss). The WAL is verified
 	// implicitly by the host reopen on the next boot iteration, which replays it
 	// into the keyed state machine.
 	j.Phase = seal.PhaseVerifying
@@ -436,20 +499,27 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 		err = cerr
 		return err
 	}
-	for _, dir := range pebbleDirs {
+	for _, dir := range stores.Pebble {
 		if verr := database.VerifyReencryptedStore(ctx, dir, srcEnc, dir+database.KeyedDirSuffix, dstEnc); verr != nil {
 			err = fmt.Errorf("verify re-encrypted store %q: %w", dir, verr)
 			return err
 		}
 	}
+	for _, dir := range stores.File {
+		if verr := database.VerifyReencryptedFileStore(ctx, dir, srcEnc, dir+database.KeyedDirSuffix, dstEnc); verr != nil {
+			err = fmt.Errorf("verify re-encrypted file store %q: %w", dir, verr)
+			return err
+		}
+	}
 
-	// Commit (point of no return): swap dirs, adopt the keyed root key.
+	// Commit (point of no return): swap dirs, commit the staged snapshots,
+	// adopt the keyed root key.
 	j.Phase = seal.PhaseCommitting
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
 		err = cerr
 		return err
 	}
-	for _, dir := range pebbleDirs {
+	for _, dir := range storeDirs {
 		if serr := database.SwapStoreDir(dir); serr != nil {
 			err = fmt.Errorf("swap store %q: %w", dir, serr)
 			return err
@@ -459,11 +529,18 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 		err = fmt.Errorf("swap write-ahead log: %w", serr)
 		return err
 	}
+	// The swapped WAL metadata now expects the keyed snapshots, so a transient
+	// rename failure is retried rather than left with the live snapshots under
+	// the old key.
+	if cerr := database.CommitStagedSnapshotsWithRetry(ctx, stagedSnaps, systemSnapshotCommitAttempts, systemSnapshotCommitBackoff); cerr != nil {
+		err = fmt.Errorf("commit re-encrypted snapshots: %w", cerr)
+		return err
+	}
 	if aerr := source.AdoptMigratedRootKey(ctx, target); aerr != nil {
 		err = aerr
 		return err
 	}
-	for _, dir := range pebbleDirs {
+	for _, dir := range storeDirs {
 		database.RemoveStoreBackup(dir)
 	}
 	database.RemoveStoreBackup(walDir)
@@ -477,6 +554,13 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, pebbl
 // systemMigrateStagingSuffix names the staging root-key path for a system
 // migration's keyed target barrier.
 const systemMigrateStagingSuffix = ".migrating"
+
+// systemSnapshotCommitAttempts and systemSnapshotCommitBackoff bound the retry
+// of committing a system migration's staged snapshots once the WAL is swapped.
+const (
+	systemSnapshotCommitAttempts = 5
+	systemSnapshotCommitBackoff  = 50 * time.Millisecond
+)
 
 // keyedSystemStrategy builds the keyed sealing strategy for a PASSPHRASE-target
 // system migration, using the same deferred passphrase strategy the boot path

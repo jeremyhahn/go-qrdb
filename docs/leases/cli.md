@@ -1,6 +1,6 @@
 # Leases — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
 
 Command group: `qrdb lease` — create, revoke, renew, inspect and list
 distributed TTL leases. All verbs accept the root persistent flags documented in
@@ -31,6 +31,14 @@ qrdb lease keep-alive 7
 
 Run this on an interval comfortably shorter than the TTL. Reading or writing a
 leased key does **not** renew the lease.
+
+The renewal is answered by the cluster leader without a log write. Every
+`lease.checkpoint_interval` (default `5m`) the leader records what each lease
+longer than that has left. If leadership changes, the new leader counts every
+lease from that recorded value — or its full TTL when it has none — plus
+`lease.failover_grace` (default `5s`), so `lease ttl` may briefly show a
+remaining TTL above the granted one. Both keys are set in the `lease:` section of the config file;
+see [engineering.md](engineering.md#configuration).
 
 ## `qrdb lease ttl <lease-id>`
 

@@ -185,7 +185,7 @@ path.
 | MVCC (revisions, `--at-revision`, watch replay, PITR-lite restore) | ❌ | ✅ | ❌ | ❌ |
 | Lease, watch, lock, index, time series | ✅ | ✅ | ❌ | ❌ |
 | SQL / relational (needs `node://` or daemon) | ✅ | ✅ | ✅ | ✅ (volatile) |
-| Encryption at rest (barrier encfs) | ✅ | ✅ | ✅ over `pebble` `sm_storage`; `file` refused under the seal barrier (no encrypting seam); `memory` persists nothing | n/a |
+| Encryption at rest (barrier encfs) | ✅ | ✅ | ✅ over `pebble` and `file` `sm_storage`; `memory` persists nothing | n/a |
 
 **Run mode × storage backend (`storage.backend`):** all four backends load
 in every run mode; production is `pebble` everywhere, `memory` for tests,
@@ -204,7 +204,7 @@ explicitly wanted.
 | **Quorum** | Majority of the voting set. 1 of 1, 2 of 3, 3 of 5. |
 | **`join`** | `false`: bootstrap a new group from the `peers` map. `true`: join an existing group as a fresh replica (snapshot-fed). Never restart an existing replica with `join: true`. |
 | **Leader forwarding** | Followers transparently forward writes to the leader (REST and SDK transports). |
-| **ReadIndex / lease read** | Linearizable read paths; `lease_read: true` serves reads from a valid leadership lease without a heartbeat round-trip (requires `check_quorum`). |
+| **ReadIndex / lease read** | Linearizable read paths; `lease_read: true` serves reads from a valid leadership lease without a heartbeat round-trip (requires `check_quorum`). The lease runs on the leader's monotonic clock and stays linearizable while replica clock rates differ by under 1 %; near or after expiry the read takes the heartbeat round. |
 | **RF (replication factor)** | Replica count for a dedicated-raft database (`--replicas`). RF=1 is a valid single-replica group, scaled up later via observer → voter promotion. |
 
 ## Tenancy & isolation

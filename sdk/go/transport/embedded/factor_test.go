@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -122,12 +123,38 @@ func (m *memUserAuthFactorService) Remove(_ context.Context, factorID string, _ 
 	return nil
 }
 
+func (m *memUserAuthFactorService) Delete(_ context.Context, factorID string, _ bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f, ok := m.factors[factorID]
+	if !ok {
+		return &auth.FactorNotFoundError{FactorID: factorID}
+	}
+	if f.RevokedAt != nil {
+		return &auth.FactorRevokedError{FactorID: factorID}
+	}
+	delete(m.factors, factorID)
+	return nil
+}
+
 func (m *memUserAuthFactorService) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
 	return errors.New("not implemented")
 }
 
 func (m *memUserAuthFactorService) Relabel(_ context.Context, _ string, _ string) error {
 	return errors.New("not implemented")
+}
+
+// AddConditional refuses: this double keeps no guarded factor-set record,
+// which is exactly the store the real service refuses a conditional add on.
+// Tests of the conditional add build the real service over a memory store.
+func (m *memUserAuthFactorService) AddConditional(_ context.Context, _ uint64, _ *auth.AuthFactor, _ auth.FactorAddCondition) (uint64, error) {
+	return 0, service.ErrUserAuthFactorAtomicStoreRequired
+}
+
+// FactorSetVersion refuses for the same reason AddConditional does.
+func (m *memUserAuthFactorService) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) {
+	return 0, service.ErrUserAuthFactorAtomicStoreRequired
 }
 
 func (m *memUserAuthFactorService) MarkUsed(_ context.Context, factorID string, ts time.Time) error {

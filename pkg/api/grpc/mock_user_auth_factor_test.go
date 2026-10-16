@@ -37,10 +37,20 @@ type mockUserAuthFactorSvc struct {
 	getResult    *auth.AuthFactor
 	getErr       error
 	removeErr    error
+	deleteErr    error
 	rotateErr    error
 	relabelErr   error
 	lookupResult *auth.AuthFactor
 	lookupErr    error
+
+	// condVersion and condErr answer AddConditional; gotCond records the
+	// condition it was called with.
+	condVersion uint64
+	condErr     error
+	gotCond     *auth.FactorAddCondition
+	// setVersion and setVersionErr answer FactorSetVersion.
+	setVersion    uint64
+	setVersionErr error
 }
 
 var _ service.UserAuthFactorServicer = (*mockUserAuthFactorSvc)(nil)
@@ -92,6 +102,9 @@ func (m *mockUserAuthFactorSvc) LookupByCredentialKey(_ context.Context, _ auth.
 func (m *mockUserAuthFactorSvc) Remove(_ context.Context, _ string, _ bool) error {
 	return m.removeErr
 }
+func (m *mockUserAuthFactorSvc) Delete(_ context.Context, _ string, _ bool) error {
+	return m.deleteErr
+}
 func (m *mockUserAuthFactorSvc) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
 	return m.rotateErr
 }
@@ -100,4 +113,13 @@ func (m *mockUserAuthFactorSvc) Relabel(_ context.Context, _ string, _ string) e
 }
 func (m *mockUserAuthFactorSvc) MarkUsed(_ context.Context, _ string, _ time.Time) error {
 	return nil
+}
+
+func (m *mockUserAuthFactorSvc) AddConditional(_ context.Context, _ uint64, _ *auth.AuthFactor, cond auth.FactorAddCondition) (uint64, error) {
+	m.gotCond = &cond
+	return m.condVersion, m.condErr
+}
+
+func (m *mockUserAuthFactorSvc) FactorSetVersion(_ context.Context, _ uint64) (uint64, error) {
+	return m.setVersion, m.setVersionErr
 }

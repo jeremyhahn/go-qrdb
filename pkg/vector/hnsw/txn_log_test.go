@@ -16,6 +16,7 @@
 package hnsw
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 	"testing"
@@ -64,6 +65,26 @@ func (m *mockStorage) Delete(key []byte) error {
 
 	delete(m.data, string(key))
 	return nil
+}
+
+func (m *mockStorage) DeleteRange(start, end []byte) error {
+	if err := storage.ValidateRange(start, end); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.data {
+		if inDeleteRange([]byte(k), start, end) {
+			delete(m.data, k)
+		}
+	}
+	return nil
+}
+
+// inDeleteRange reports whether key falls in [start, end); a nil end runs to
+// the end of the keyspace, as storage.Storage.DeleteRange defines it.
+func inDeleteRange(key, start, end []byte) bool {
+	return bytes.Compare(key, start) >= 0 && (len(end) == 0 || bytes.Compare(key, end) < 0)
 }
 
 func (m *mockStorage) List(prefix []byte) ([][]byte, error) {

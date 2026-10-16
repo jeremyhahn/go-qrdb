@@ -86,6 +86,14 @@ func (m *mapReader) apply(ops []BufferedOp) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, op := range ops {
+		if op.Range {
+			for k := range m.data {
+				if inRange([]byte(k), op.Key, op.RangeEnd) {
+					delete(m.data, k)
+				}
+			}
+			continue
+		}
 		if op.Deleted {
 			delete(m.data, string(op.Key))
 			continue

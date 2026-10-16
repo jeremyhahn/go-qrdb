@@ -19,6 +19,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -271,10 +273,14 @@ func TestRevisionNotFoundError_RevisionNotFound_EmptyKeyZeroRevision(t *testing.
 	}
 }
 
-func TestCompactRevisionInvalidError_Error_ContainsRevision(t *testing.T) {
-	got := (&CompactRevisionInvalidError{Revision: -7}).Error()
-	if want := "mvcc: compaction revision -7 is invalid (must be at least 1)"; got != want {
-		t.Errorf("Error = %q, want %q", got, want)
+func TestCompactRevisionInvalidError_Error(t *testing.T) {
+	for rev, want := range map[int64]string{
+		0:  "mvcc: compaction revision 0 is invalid (must be at least 1)",
+		-3: "mvcc: compaction revision -3 is invalid (must be at least 1)",
+	} {
+		if got := (&CompactRevisionInvalidError{Revision: rev}).Error(); got != want {
+			t.Errorf("Error() = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -290,10 +296,18 @@ func TestCompactRevisionInvalidError_ReturnedForRevisionZero(t *testing.T) {
 	}
 }
 
-func TestCompactRevisionFutureError_Error_ContainsBothRevisions(t *testing.T) {
-	got := (&CompactRevisionFutureError{Requested: 12, Current: 5}).Error()
-	if want := "mvcc: compaction revision 12 is a future revision (current: 5)"; got != want {
-		t.Errorf("Error = %q, want %q", got, want)
+func TestCompactRevisionFutureError_Error(t *testing.T) {
+	cases := []struct {
+		e    *CompactRevisionFutureError
+		want string
+	}{
+		{&CompactRevisionFutureError{Requested: 9, Current: 3}, "mvcc: compaction revision 9 is a future revision (current: 3)"},
+		{&CompactRevisionFutureError{Requested: 1, Current: 0}, "mvcc: compaction revision 1 is a future revision (current: 0)"},
+	}
+	for _, tc := range cases {
+		if got := tc.e.Error(); got != tc.want {
+			t.Errorf("Error() = %q, want %q", got, tc.want)
+		}
 	}
 }
 
@@ -314,16 +328,14 @@ func TestCompactRevisionFutureError_ReturnedPastCurrent(t *testing.T) {
 	}
 }
 
-func TestUnsupportedSortTargetError_Error_ContainsTarget(t *testing.T) {
-	got := (&UnsupportedSortTargetError{Target: 42}).Error()
-	if want := "mvcc: unsupported sort target: 42"; got != want {
-		t.Errorf("Error = %q, want %q", got, want)
-	}
-}
-
-func TestUnsupportedSortTargetError_Error_ZeroTarget(t *testing.T) {
-	got := (&UnsupportedSortTargetError{}).Error()
-	if !strings.HasSuffix(got, ": 0") {
-		t.Errorf("Error = %q, want the zero target named", got)
+func TestUnsupportedSortTargetError_Error(t *testing.T) {
+	for target, want := range map[service.SortTarget]string{
+		0:   "mvcc: unsupported sort target: 0",
+		99:  "mvcc: unsupported sort target: 99",
+		255: "mvcc: unsupported sort target: 255",
+	} {
+		if got := (&UnsupportedSortTargetError{Target: target}).Error(); got != want {
+			t.Errorf("Error() = %q, want %q", got, want)
+		}
 	}
 }

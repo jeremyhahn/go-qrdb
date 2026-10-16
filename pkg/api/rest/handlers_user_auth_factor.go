@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -35,6 +36,7 @@ import (
 //   DELETE /v1/users/factors/{factor_id}      -> Remove (force=true via query)
 //   PUT    /v1/users/factors/{factor_id}/label -> Relabel
 //   POST   /v1/users/factors/rotate           -> Rotate
+//   POST   /v1/users/factors/delete           -> Delete (hard delete)
 //   POST   /v1/users/factors/login            -> Login resolution
 // ---------------------------------------------------------------------------
 
@@ -50,11 +52,12 @@ func (s *Server) handleUserAuthFactorAdd(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	factor := userAuthFactorFromRequest(&req)
-	if err := s.userAuthFactorSvc.Add(r.Context(), req.UserID, factor); err != nil {
+	version, err := service.AddAuthFactor(r.Context(), s.userAuthFactorSvc, req.UserID, factor, req.Condition())
+	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
-	writeJSON(w, transport.AuthFactorAddResponse{Factor: userAuthFactorToRecord(factor)})
+	writeJSON(w, transport.AuthFactorAddResponse{Factor: userAuthFactorToRecord(factor), FactorSetVersion: version})
 }
 
 // handleUserAuthFactorList handles GET /v1/users/factors/list?user_id=N.
@@ -68,14 +71,15 @@ func (s *Server) handleUserAuthFactorList(w http.ResponseWriter, r *http.Request
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "user_id"})
 		return
 	}
-	factors, err := s.userAuthFactorSvc.List(r.Context(), uid)
+	factors, version, err := service.ListAuthFactors(r.Context(), s.userAuthFactorSvc, uid)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	resp := transport.AuthFactorListResponse{
-		Factors: make([]transport.AuthFactorRecord, len(factors)),
-		Total:   len(factors),
+		Factors:          make([]transport.AuthFactorRecord, len(factors)),
+		Total:            len(factors),
+		FactorSetVersion: version,
 	}
 	for i, f := range factors {
 		resp.Factors[i] = userAuthFactorToRecord(f)
@@ -94,12 +98,34 @@ func (s *Server) handleUserAuthFactorRotate(w http.ResponseWriter, r *http.Reque
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
+	if err := req.Validate(); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	newFactor := userAuthFactorFromRequest(&req.NewFactor)
 	if err := s.userAuthFactorSvc.Rotate(r.Context(), req.OldFactorID, newFactor); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	writeJSON(w, transport.AuthFactorRotateResponse{NewFactor: userAuthFactorToRecord(newFactor)})
+}
+
+// handleUserAuthFactorDelete handles POST /v1/users/factors/delete.
+func (s *Server) handleUserAuthFactorDelete(w http.ResponseWriter, r *http.Request) {
+	if s.userAuthFactorSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "user_authfactor"})
+		return
+	}
+	var req transport.AuthFactorDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	if err := s.userAuthFactorSvc.Delete(r.Context(), req.FactorID, req.Force); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, transport.AuthFactorDeleteResponse{Status: "deleted"})
 }
 
 // handleUserAuthFactorLogin handles POST /v1/users/factors/login.

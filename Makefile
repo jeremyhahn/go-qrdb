@@ -634,12 +634,37 @@ clean:
 	rm -rf cmd/qrdb/frontend/node_modules cmd/qrdb/frontend/dist
 	rm -rf cmd/qrdb/frontend/test-results cmd/qrdb/frontend/playwright-report
 
+# sdk/go/proto is the public proto root: its files are imported by their path
+# under it ("qrdb/v1/permission.proto"), by qrdb.proto and by any service
+# outside go-qrdb that is served behind the same authorization middleware. It
+# precedes "." on the include path so protoc names those files by that public
+# path rather than by their place in this repository. module= writes each file
+# where its go_package says, so the public package lands in the sdk/go module.
+PROTO_ROOT := sdk/go/proto
+
 .PHONY: proto
 proto:
-	protoc --go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
-		pkg/api/grpc/proto/qrdbv1/authz.proto \
+	protoc -I $(PROTO_ROOT) -I . \
+		--go_out=. --go_opt=module=github.com/jeremyhahn/go-qrdb \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/jeremyhahn/go-qrdb \
+		$(PROTO_ROOT)/qrdb/v1/permission.proto \
 		pkg/api/grpc/proto/qrdbv1/qrdb.proto
+
+# A .proto defined outside go-qrdb must compile against the public option with
+# nothing but $(PROTO_ROOT) on the include path (go-qrdb#626). The Go side --
+# that an embedder links the option through sdk/go alone -- is the
+# sdk_external_composer gate in test/buildgates, which needs no protoc; this
+# target needs the same tools as `proto`.
+PUBLIC_PROTO_FIXTURE := test/buildgates/testdata/publicproto
+
+.PHONY: check-public-proto
+check-public-proto:
+	@out=$$(mktemp -d) && trap 'rm -rf "$$out"' EXIT && \
+	protoc -I $(PROTO_ROOT) -I $(PUBLIC_PROTO_FIXTURE) \
+		--descriptor_set_out="$$out/billing.pb" \
+		--go_out="$$out" --go-grpc_out="$$out" \
+		$(PUBLIC_PROTO_FIXTURE)/billing/v1/invoice.proto && \
+	echo "check-public-proto: billing/v1/invoice.proto compiles against qrdb/v1/permission.proto"
 
 # ============================================================================
 # Unit tests
@@ -815,6 +840,15 @@ bench-sqlpk:
 	$(GOBUILD) -tags "$(SQLPK_TAGS)" -o $(SQLPK_BIN)/qrdbd ./cmd/qrdbd
 	$(GOBUILD) -tags "$(SQLPK_TAGS)" -o $(SQLPK_BIN)/qrdb ./cmd/qrdb
 	$(GO) run -tags benchmark ./test/performance/sqlpk -qrdbd $(SQLPK_BIN)/qrdbd -qrdb $(SQLPK_BIN)/qrdb $(SQLPK_ARGS)
+
+# bench-leasekeepalive measures LeaseKeepAlive round-trip latency against a
+# 3-node cluster (go-qrdb#275; see test/performance/LEASE_KEEPALIVE_LATENCY.md).
+# Pass extra flags, e.g. LEASEKEEPALIVE_ARGS="-ops 2000 -writers 16".
+LEASEKEEPALIVE_ARGS ?=
+
+.PHONY: bench-leasekeepalive
+bench-leasekeepalive:
+	$(GO) run -tags benchmark ./test/performance/leasekeepalive $(LEASEKEEPALIVE_ARGS)
 
 .PHONY: test-timeseries
 test-timeseries:
@@ -1988,7 +2022,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2263,6 +2297,14 @@ check-action-pins:
 .PHONY: check-integration-feature-coverage
 check-integration-feature-coverage:
 	$(GOTEST) -run '^TestIntegrationFeatureCoverage' ./test/buildgates/...
+
+# #22. A retrieved credential travels as a protected-memory *secure.Buffer; the
+# []byte retrieval methods are deleted. This is the gate that no Go file in
+# THIS repository declares one again or calls a removed store-level selector.
+# Scoped with -run to that gate and its detector self-test.
+.PHONY: check-no-deprecated-credential-retrieve
+check-no-deprecated-credential-retrieve:
+	$(GOTEST) -run '^(TestNoInRepoCallerOfDeprecatedCredentialRetrieve|TestRetrieveSelectors_)' ./test/buildgates/...
 
 # A lean standalone embedder -- sdk/go/node on the file backend, the embedded
 # transport and an entity DAO (sdk/go/examples/leanstandalone) -- must not

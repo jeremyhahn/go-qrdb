@@ -72,6 +72,25 @@ func enrolledToResponse(e *service.EnrolledCertificate) enrolledCertResponse {
 	}
 }
 
+// issueDelegationRequest is the JSON payload for POST /certs/delegate: a
+// service principal's CSR and the scope the caller's tenant delegates to it.
+type issueDelegationRequest struct {
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	CSRPEM    string   `json:"csrPEM"`
+	TTL       string   `json:"ttl,omitempty"`
+}
+
+// issuedDelegationResponse is a delegation certificate the tenant's CA issued.
+type issuedDelegationResponse struct {
+	TenantID  string    `json:"tenantID"`
+	Principal string    `json:"principal"`
+	Scope     []string  `json:"scope"`
+	CertPEM   string    `json:"certPEM"`
+	Serial    string    `json:"serial"`
+	NotAfter  time.Time `json:"notAfter"`
+}
+
 // revokeCertRequest is the JSON payload for POST /certs/revoke.
 type revokeCertRequest struct {
 	Serial string `json:"serial"`
@@ -232,6 +251,60 @@ func (s *Server) handleEnrollCert(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(enrolledToResponse(enrolled))
+}
+
+// handleIssueDelegation handles POST /certs/delegate -- the caller's own
+// tenant's CA issues a short-lived delegation certificate naming a service
+// principal and the scope it may act with inside the tenant. The principal
+// keeps its private key; only the certificate is returned.
+func (s *Server) handleIssueDelegation(w http.ResponseWriter, r *http.Request) {
+	if s.certEnrollment == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "cert enrollment"})
+		return
+	}
+	var req issueDelegationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	var ttl time.Duration
+	if req.TTL != "" {
+		d, err := time.ParseDuration(req.TTL)
+		if err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "ttl", Err: err})
+			return
+		}
+		ttl = d
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsDelegate); err != nil {
+		writeAuthzErrorJSON(w, err)
+		return
+	}
+	issued, err := s.certEnrollment.IssueDelegation(ctx, &service.IssueDelegationRequest{
+		TenantID:  tenantID,
+		Principal: req.Principal,
+		Scope:     req.Scope,
+		CSRPEM:    []byte(req.CSRPEM),
+		TTL:       ttl,
+	})
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(issuedDelegationResponse{
+		TenantID:  issued.TenantID,
+		Principal: issued.Principal,
+		Scope:     issued.Scope,
+		CertPEM:   string(issued.CertPEM),
+		Serial:    issued.Serial,
+		NotAfter:  issued.NotAfter,
+	})
 }
 
 // handleRevokeCert handles POST /certs/revoke -- marks a certificate serial as

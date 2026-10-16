@@ -105,6 +105,19 @@ The keyring holds no keys between calls: each operation reads the record,
 applies the key and wipes the decoded key bytes. That keeps every node
 consistent with the replicated record at the cost of one store read per call.
 
+A new version's key is generated straight into a protected-memory buffer
+(go-enclave, via `pkg/secure`) and handed to the provider's `Wrap` from that
+same buffer, which is destroyed when the wrap returns: the key is never copied
+to the Go heap on the way. The `keywrap.Provider` interface is unchanged, so
+a provider receives the key as a `[]byte` over protected pages; it must not
+retain it past the call. The buffer's borrow is held across `Wrap`, and a
+provider — a hardware or KMS one especially — may allocate, open and destroy
+protected memory of its own inside it: every go-enclave object carries its
+own lock, and the only nesting that deadlocks, reentering the key's own
+buffer, is out of the provider's reach because it never holds that buffer. A
+failure to allocate the buffer is `ErrCrypto`, as a failure to read entropy
+is.
+
 ## Error classes
 
 Every error matches exactly one sentinel under `errors.Is`; `dekwire.Code` maps

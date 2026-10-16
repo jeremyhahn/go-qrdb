@@ -1,6 +1,6 @@
 # Certificate Authority — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 ## Exported surface
 
@@ -35,6 +35,11 @@ type CertEnrollmentServicer interface {
 	// account after verifying it chains to one of the tenant's registered
 	// trust anchors and authenticates as exactly that account.
 	EnrollCertificate(ctx context.Context, req *EnrollCertificateRequest) (*EnrolledCertificate, error)
+	// IssueDelegation has the caller's own tenant CA certify a service
+	// principal's CSR with a delegation extension (pkg/auth/delegation).
+	// certs:delegate is tenant-only: the system tenant and a delegated
+	// caller are refused with *DelegationDeniedError.
+	IssueDelegation(ctx context.Context, req *IssueDelegationRequest) (*IssuedDelegation, error)
 	AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
 	ListTrustAnchors(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error
@@ -62,6 +67,22 @@ type EnrolledCertificate struct {
 	Serial     string // empty for a bring-your-own certificate
 	Thumbprint string
 	NotAfter   time.Time
+}
+
+type IssueDelegationRequest struct {
+	TenantID  string        // empty = the caller's own; any other is refused
+	Principal string        // the embedder's service principal
+	Scope     []string      // registered permissions, at most delegation.MaxScope
+	CSRPEM    []byte        // proof of possession; its Subject is ignored
+	TTL       time.Duration // zero = delegation.DefaultLifetime; max delegation.MaxLifetime
+}
+
+type IssuedDelegation struct {
+	TenantID, Principal string
+	Scope               []string
+	CertPEM             []byte
+	Serial              string
+	NotAfter            time.Time
 }
 
 func NewCertEnrollmentService(certs cert.CertProvider, users certEnrollmentUsers,
@@ -119,6 +140,10 @@ type IssueRequest struct {
 	TenantID  string           // sets certificate OU, and selects the tenant's Key B CA
 	PublicKey crypto.PublicKey // the key certified; must pass CheckClientKey
 	TTL       time.Duration    // zero = provider default (1 year)
+	// Delegation, when set, is written as the critical delegation extension
+	// and caps the lifetime at delegation.MaxLifetime; Username must then be
+	// "qrdb-service:" plus the principal and TenantID the grant's tenant.
+	Delegation *delegation.Grant
 }
 
 type IssuedCert struct {
@@ -143,6 +168,8 @@ type CertRecord struct {
 	IssuedAt  time.Time `json:"issuedAt"`   // UTC
 	ExpiresAt time.Time `json:"expiresAt"`  // UTC
 	Revoked   bool      `json:"revoked"`
+	// Delegation is the grant a delegation certificate carries; nil otherwise.
+	Delegation *delegation.Grant `json:"delegation,omitempty"`
 }
 
 func NewDefaultProvider(kv kvstore.KVStore, barrier seal.EncryptionBarrier, opts ...Option) *DefaultCertProvider
@@ -271,6 +298,15 @@ type AuthMiddlewareConfig struct {
   the binding fails after a certificate was signed, `SignCertificate` revokes
   that serial and returns `*service.CertBindingFailedError`, whose `RevokeErr`
   says when the revocation failed too.
+- **A delegation is minted only by its own tenant's CA, for its own tenant.**
+  `IssueDelegation` confines the request to the caller's tenant
+  (`tenant.Confine`), refuses the system tenant and a caller authenticated by a
+  delegation (`*DelegationDeniedError`), refuses a built-in role name as the
+  principal, an unregistered permission, or a lifetime above
+  `delegation.MaxLifetime` (`*DelegationRequestError`), and writes the
+  `cert.delegate` audit event before `IssueClientCert` signs. The extension is
+  always critical, so a verifier that does not understand it rejects the
+  certificate rather than treating it as a plain login.
 - **`IssueClientCert` never mints a SAN that disagrees with the OU.**
   `clientSPIFFEURIs` round-trips the ID through `spiffe.ParseID` and requires
   field-for-field equality before signing; anything else is
@@ -427,6 +463,7 @@ enumeration.
 |---|---|
 | Issue a certificate from a CSR | `certs:issue` |
 | Enrol a bring-your-own certificate | `certs:enroll` |
+| Issue a delegation to a service principal | `certs:delegate` (tenant-only) |
 | Export PKCS#12 | `certs:export` |
 | Revoke certificate | `certs:revoke` |
 | Revoke a serial this node holds no record for (deny-by-serial) | `certs:revoke` **and** `certs:revoke:cross` |
@@ -536,6 +573,19 @@ key patterns are the on-disk contract for this feature.
 - **Each refusal ships with its control.** Own-tenant issue, revoke and list
   keep working, and a no-middleware deployment is still served — otherwise "deny everything" would
   pass every test above.
+- **Delegation issuance is tested on every transport through the real CLI**
+  (`TestCADelegate_CLI_PerProtocol`, `make integration-test-certificate-authority`):
+  the tenant's own CA issues it with the principal and scope in a critical
+  extension; it authenticates holding its scope intersected with the
+  principal's own grants and writes the tenant's own database; it is refused
+  when it names another principal, when another tenant's CA signed it, on
+  another tenant's data, once revoked, once expired, and when the tenant's own
+  CA signed it for longer than 24 hours (the same certificate at exactly 24
+  hours is admitted); and the tenant cannot issue one for a built-in role,
+  beyond the maximum lifetime, or for an unknown permission. The node's Key B
+  is a `WithCertKeyProviderFactory` the test holds, which is how it signs the
+  over-long delegation the CA's own issuance refuses to. The verifier-side unit tests are listed in
+  [../identity-rbac/engineering.md](../identity-rbac/engineering.md#test-strategy).
 - **The transport tests fail the double when the effect runs.** The provider
   used for the QUIC and MCP gate tests calls `t.Fatal` from
   `IssueClientCert`/`RevokeCert`/`ListCerts`, so a handler that authorizes

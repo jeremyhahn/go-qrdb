@@ -92,6 +92,20 @@ func TestRefusal_ClassifiesTheTwoReplicaRefusals(t *testing.T) {
 	}
 }
 
+// TestRefusal_LeaseTTLOnAFollowerIsNotLeader: a follower's TimeToLive refusal
+// is a not-leader refusal naming the leader, so every transport that forwards
+// one forwards the TimeToLive to the node that knows the remaining TTL.
+func TestRefusal_LeaseTTLOnAFollowerIsNotLeader(t *testing.T) {
+	err := &service.LeaseTTLNotLeaderError{
+		NotLeaderError: service.NotLeaderError{ShardID: 3, LeaderID: 2, LeaderAddress: "192.0.2.2:7000"},
+		Lease:          &service.Lease{ID: 7},
+	}
+	reason, md, ok := Refusal(err)
+	if !ok || reason != ReasonNotLeader || LeaderRaftAddr(md) != "192.0.2.2:7000" {
+		t.Fatalf("Refusal(LeaseTTLNotLeader) = %q, %v, %v", reason, md, ok)
+	}
+}
+
 // TestRefusal_SealStateUnconfirmed: a node that cannot confirm the cluster
 // seal state carries its own reason, wrapped or not, and a sealed barrier
 // does not.

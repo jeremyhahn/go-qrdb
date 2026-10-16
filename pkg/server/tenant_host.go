@@ -55,6 +55,7 @@ type tenantHost struct {
 	tenantID string
 	dataRoot string
 	host     *quicraft.Host
+	adapter  service.Host
 	hub      *watch.Hub
 	lessor   *lease.Lessor
 	services *DatabaseServices
@@ -154,6 +155,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 		tenantID: tenantID,
 		dataRoot: dataRoot,
 		host:     host,
+		adapter:  adapter,
 		hub:      hub,
 		lessor:   lessor,
 		cancel:   cancel,

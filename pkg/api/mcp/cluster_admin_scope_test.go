@@ -49,6 +49,8 @@ func TestClusterAdminScope(t *testing.T) {
 		// compaction discards every tenant's raw history on the node.
 		{"qrdb_node_compaction", nil},
 		{"qrdb_update_node_compaction", map[string]any{"mode": "revision", "retainRevisions": 10}},
+		// Replica state hashes cover every tenant's replicas on the node.
+		{"qrdb_state_hashes", nil},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

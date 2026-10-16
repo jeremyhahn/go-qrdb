@@ -1,6 +1,6 @@
 # Unified API Server — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 This feature *is* the API surface — it hosts every other feature's capabilities.
 What follows is the shape common to all of them; the capability tables live in
@@ -48,12 +48,14 @@ credentials the host does not understand — a session-token plane, for instance
 path: roles come from the store, never from the token.**
 
 **The `qrdb-service:` subject namespace is reserved.** It belongs to the
-embedder's in-process service principal (`node.WithServicePrincipal`), which
-no network transport accepts. A request whose credential resolves to a subject
-in that namespace, or to an identity carrying the principal marker, is refused
-as unauthenticated (REST 401, gRPC `Unauthenticated`) before any handler or
-authorization runs. See
-[engineering.md](engineering.md#service-principal).
+embedder's in-process service principal (`node.WithServicePrincipal`). A
+request whose credential resolves to a subject in that namespace, or to an
+identity carrying the principal marker, is refused as unauthenticated (REST
+401, gRPC `Unauthenticated`) before any handler or authorization runs — unless
+it is a delegation certificate a tenant's own CA issued to that principal,
+which acts inside that tenant only (see
+[../identity-rbac/api.md](../identity-rbac/api.md#delegation-certificates)).
+See [engineering.md](engineering.md#service-principal).
 
 ## Authorization
 
@@ -79,6 +81,39 @@ a name no tool answers (`UnknownPublicToolError`); the MCP server does not
 start. An authenticated caller's `tools/list` shows the public set plus the
 tools its grants allow. See
 [engineering.md](engineering.md#mcp-public-tools).
+
+**The permission option is public.** It is defined in
+`qrdb/v1/permission.proto`, shipped in the sdk/go module's `proto/` directory,
+so a service module built outside go-qrdb annotates its RPCs the way qrdb's
+own do:
+
+```proto
+syntax = "proto3";
+
+package billing.v1;
+
+option go_package = "example.com/billing/gen/billing/v1;billingv1";
+
+import "qrdb/v1/permission.proto";
+
+service InvoiceService {
+  rpc Issue(IssueRequest) returns (IssueResponse) {
+    option (qrdb.v1.permission) = "billing:issue";
+  }
+}
+```
+
+Compile it with that directory on the include path:
+
+```sh
+protoc -I "$(go list -m -f '{{.Dir}}' github.com/jeremyhahn/go-qrdb/sdk/go)/proto" -I . \
+  --go_out=. --go-grpc_out=. billing/v1/invoice.proto
+```
+
+The generated code imports `github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1`,
+which registers the option, so the shared interceptor resolves the annotated
+method's permission like any of qrdb's own. The option is field 51000 of
+`google.protobuf.MethodOptions`.
 
 **The registry is populated unconditionally**, even for routes a given server
 does not enable, so SO dual-factor gating recognizes SO-permissioned paths on
@@ -155,9 +190,9 @@ code. The embedded transport returns the typed error itself.
 | `ResourceExhausted` | Quota exceeded, rate limited, PIN locked out | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
 | `TooLarge` | Body, payload, key or import over its bound | 413 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
 | `OutOfRange` | Revision below the compaction floor | 416 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
-| `Canceled` | Work stopped (`context.Canceled`, a canceled watch) | 500 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
+| `Canceled` | Work stopped (`context.Canceled`, a canceled consensus request, a canceled watch) | 500 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
 | `DataLoss` | Persisted or secondary state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
-| `Unavailable` | Barrier sealed, seal state unconfirmed (`SEAL_STATE_UNCONFIRMED`, retryable — not sealed), store closed, not leader, draining, a raft request whose wait ran out (`quicraft: timeout`) | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
+| `Unavailable` | Barrier sealed, seal state unconfirmed (`SEAL_STATE_UNCONFIRMED`, retryable — not sealed), store closed, not leader, draining; consensus refused the request for now (busy, dropped, shard not ready, no leader yet) or a raft request's wait ran out (`quicraft: timeout`); a server-side bound ran out after rolling back what it had done | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
 | `Unimplemented` | Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
 | — | Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
 | `DeadlineExceeded` | The caller's deadline passed before the operation completed (`context.DeadlineExceeded`), or a module's origin said so; raft reports its own wait running out as `quicraft: timeout`, which is `Unavailable` | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |

@@ -19,6 +19,7 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -26,23 +27,9 @@ import (
 // servicePrincipalField names WithServicePrincipal in a *ConfigError.
 const servicePrincipalField = "WithServicePrincipal"
 
-// maxServicePrincipalName bounds a service principal's name.
-const maxServicePrincipalName = 64
-
 // ErrNoServicePrincipal is returned by ServiceContext on a node built without
 // WithServicePrincipal.
 var ErrNoServicePrincipal = errors.New("node: no service principal configured (WithServicePrincipal)")
-
-// builtinRoleNames are the role names a service principal may not take: its
-// grants are declared under its own name, and a built-in role's grants are
-// every account's that holds it.
-var builtinRoleNames = map[string]struct{}{
-	permission.RoleSO:       {},
-	permission.RoleAdmin:    {},
-	permission.RoleOperator: {},
-	permission.RoleUser:     {},
-	permission.RoleAuditor:  {},
-}
 
 // WithServicePrincipal names the node-sanctioned service principal the
 // embedding host's OWN in-process calls run as (docs/auth): loading its CA
@@ -60,10 +47,15 @@ var builtinRoleNames = map[string]struct{}{
 // audit trail attributes it to the subject "qrdb-service:<name>". The
 // principal lives in the system tenant.
 //
-// No network transport accepts it: a presented identity claiming the
-// principal is refused as unauthenticated (*ServicePrincipalPresentedError),
-// and a call the embedded client forwards to another replica travels as the
-// WithEmbeddedCaller identity, never as the principal.
+// No network transport accepts it on its own authority: a presented identity
+// claiming the principal is refused as unauthenticated
+// (*ServicePrincipalPresentedError), and a call the embedded client forwards
+// to another replica travels as the WithEmbeddedCaller identity, never as the
+// principal. The one way the principal reaches a request from the network is
+// a delegation certificate a tenant's own CA issued to it (docs/identity-rbac):
+// it then acts inside that tenant, never the system tenant, holding the
+// delegation's scope intersected with these grants. A node built without
+// WithServicePrincipal accepts no delegation.
 //
 // name is lowercase letters, digits, '.', '_' and '-', starts with a letter
 // or digit, is at most 64 bytes and is not a built-in role name; anything
@@ -81,33 +73,18 @@ func parseServicePrincipal(name *string) (string, error) {
 	if name == nil {
 		return "", nil
 	}
-	if *name == "" {
-		return "", &ConfigError{Field: servicePrincipalField, Message: "name is empty"}
-	}
-	if len(*name) > maxServicePrincipalName {
-		return "", &ConfigError{Field: servicePrincipalField, Message: "name is longer than 64 bytes"}
-	}
-	if _, builtin := builtinRoleNames[*name]; builtin {
+	// Its grants are declared under its own name, and a built-in role's
+	// grants are every account's that holds it.
+	if permission.IsBuiltinRole(*name) {
 		return "", &ConfigError{Field: servicePrincipalField, Message: "name " + *name + " is a built-in role"}
 	}
-	for i := 0; i < len(*name); i++ {
-		if !servicePrincipalNameByte((*name)[i], i == 0) {
-			return "", &ConfigError{Field: servicePrincipalField, Message: "name must be [a-z0-9][a-z0-9._-]*"}
-		}
+	// The syntax is the delegation's: a tenant names this principal in the
+	// delegations it issues, so the two must accept exactly the same names.
+	var invalid *delegation.GrantError
+	if err := delegation.ValidatePrincipal(*name); errors.As(err, &invalid) {
+		return "", &ConfigError{Field: servicePrincipalField, Message: "name " + invalid.Reason}
 	}
 	return *name, nil
-}
-
-// servicePrincipalNameByte reports whether c may appear in a service
-// principal's name; the first byte must be a letter or digit.
-func servicePrincipalNameByte(c byte, first bool) bool {
-	switch {
-	case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		return true
-	case c == '.' || c == '_' || c == '-':
-		return !first
-	}
-	return false
 }
 
 // ServiceContext returns ctx carrying the node's service principal

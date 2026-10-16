@@ -127,6 +127,7 @@ func (b *gapErrBackend) Scan(prefix []byte, limit int) (map[string][]byte, error
 func (b *gapErrBackend) SaveSnapshot(w io.Writer, stopper <-chan struct{}) error    { return nil }
 func (b *gapErrBackend) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) error { return nil }
 func (b *gapErrBackend) GetHash() (uint64, error)                                   { return 0, nil }
+func (b *gapErrBackend) Records(fn RecordVisitor) error                             { return b.listErr }
 func (b *gapErrBackend) Close() error                                               { return nil }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +603,13 @@ func (s *diskFailStorage) Delete(key []byte) error {
 	return s.memStorage.Delete(key)
 }
 
+func (s *diskFailStorage) DeleteRange(start, end []byte) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.memStorage.DeleteRange(start, end)
+}
+
 // Batch meets the same faults a direct write would: a batched Set fails with
 // setErr and a batched Delete with deleteErr.
 func (s *diskFailStorage) Batch() storage.Batch {
@@ -625,6 +633,13 @@ func (b *diskFailBatch) Delete(key []byte) error {
 		return b.owner.deleteErr
 	}
 	return b.memBatch.Delete(key)
+}
+
+func (b *diskFailBatch) DeleteRange(start, end []byte) error {
+	if b.owner.deleteErr != nil {
+		return b.owner.deleteErr
+	}
+	return b.memBatch.DeleteRange(start, end)
 }
 
 func (s *diskFailStorage) List(prefix []byte) ([][]byte, error) {
@@ -2196,6 +2211,13 @@ func (s *diskFailStorageFSM) Delete(key []byte) error {
 		return s.deleteErr
 	}
 	return s.memStorage.Delete(key)
+}
+
+func (s *diskFailStorageFSM) DeleteRange(start, end []byte) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.memStorage.DeleteRange(start, end)
 }
 
 func (s *diskFailStorageFSM) Set(key, value []byte) error {

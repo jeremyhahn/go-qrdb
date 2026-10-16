@@ -454,6 +454,12 @@ func TestRebalanceService_ExecuteRebalance_AddNodeError(t *testing.T) {
 	if result.MovesCompleted != 0 {
 		t.Fatalf("expected 0 completed moves, got %d", result.MovesCompleted)
 	}
+	// A generic shard move has no dedicated-group phase, so Step stays empty
+	// while the cause is still reported.
+	if len(result.Failures) != 1 || result.Failures[0].ShardID != testGenericShard ||
+		result.Failures[0].Step != "" || !strings.Contains(result.Failures[0].Error, "add node failed") {
+		t.Fatalf("failures = %+v, want one generic entry carrying the cause", result.Failures)
+	}
 }
 
 // ---------------------------------------------------------------------------

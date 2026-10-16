@@ -23,7 +23,10 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
+
+var _ service.TenantReplicaHosts = (*TenantHostRegistry)(nil)
 
 // TenantHostRegistry lazily builds and caches one per-tenant Raft Host per
 // IsolationVolume tenant and exposes its data-plane service set. A single Host
@@ -243,6 +246,24 @@ func (r *TenantHostRegistry) startedServices() map[string]*DatabaseServices {
 	out := make(map[string]*DatabaseServices, len(r.hosts))
 	for id, th := range r.hosts {
 		out[id] = th.services
+	}
+	return out
+}
+
+// StartedHosts implements service.TenantReplicaHosts: the Host of every
+// tenant already built on this node, keyed by tenant, without building any.
+// The admin service's replica state hashes read each one.
+func (r *TenantHostRegistry) StartedHosts() map[string]service.Host {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]service.Host, len(r.hosts))
+	for id, th := range r.hosts {
+		if th.adapter != nil {
+			out[id] = th.adapter
+		}
 	}
 	return out
 }

@@ -1,6 +1,6 @@
 # Unified API Server — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 
 ## Exported surface
 
@@ -59,8 +59,14 @@ secret, err := n.Client().Credentials().CredentialRetrieve(svcCtx, "ca-state")
 - **The name is validated at construction.** It must match `[a-z0-9][a-z0-9._-]*`,
   be at most 64 bytes long and not be a built-in role name (`so`, `admin`,
   `operator`, `user`, `auditor`). Anything else is a `*node.ConfigError`.
-- **It never comes from the network.** See
-  [architecture.md](architecture.md#trust-boundaries).
+- **It never comes from the network on its own say-so.** See
+  [architecture.md](architecture.md#trust-boundaries). The one network form is a
+  delegation certificate a **tenant's** own CA issued naming the principal,
+  which the mTLS authenticator verifies in full and which acts inside that
+  tenant only, holding the delegated scope intersected with the permissions
+  registered under `<name>` — see
+  [../identity-rbac/architecture.md](../identity-rbac/architecture.md#tenant-issued-delegations).
+  A node built without `WithServicePrincipal` accepts no delegation.
 - **It is audited by name.** Each authorization decision is recorded with
   actor `qrdb-service:<name>`, action `auth.authorize` and the permission as
   the resource.
@@ -227,7 +233,12 @@ request.
 - **Permissions are not declared on `ServiceModule`.** An operation's permission
   lives on its gRPC method as the `qrdb.v1.permission` proto option and is
   *referenced* by the chi route, the MCP tool, and the QUIC frame projection.
-  One source, four readers.
+  One source, four readers. A module defined outside go-qrdb declares it the
+  same way: its `.proto` imports `"qrdb/v1/permission.proto"` from the sdk/go
+  module's `proto/` directory, and its generated Go code imports
+  `github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1`. That file is the one
+  copy; qrdb's own `qrdb.proto` imports it by the same path. See
+  [api.md](api.md#authorization).
 - **A `RegisterQUIC` method whose descriptor carries no `(qrdb.v1.permission)`
   option fails QUIC server construction** — the same default-deny startup
   assertion an undeclared REST route or QUIC built-in method fails, just
@@ -424,7 +435,7 @@ over the same services, not a seventh transport.
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |
-| A presented identity claiming a service principal (subject `qrdb-service:*` or the principal marker), from any authenticator, an on-behalf assertion or a module fallback, on any network transport | `*ServicePrincipalPresentedError`, which unwraps to `auth.ErrUnauthenticated`: REST 401, gRPC/Unix `Unauthenticated`, and the same class on QUIC, MCP, SQL and etcd. No identity is bound | **yes** |
+| A presented identity claiming a service principal (subject `qrdb-service:*` or the principal marker), from any authenticator, an on-behalf assertion or a module fallback, on any network transport — other than a tenant-issued delegation the mTLS authenticator verified in full | `*ServicePrincipalPresentedError`, which unwraps to `auth.ErrUnauthenticated`: REST 401, gRPC/Unix `Unauthenticated`, and the same class on QUIC, MCP, SQL and etcd. No identity is bound | **yes** |
 | `ServiceContext` on a node built without `WithServicePrincipal` | `node.ErrNoServicePrincipal` | **yes** |
 | `WithServicePrincipal` name that is empty, too long, outside `[a-z0-9][a-z0-9._-]*` or a built-in role name | `*node.ConfigError` from the constructor | **yes** |
 | A service-principal call for a permission not granted to its name | `*rbac.PermissionDeniedError` (`*sdk.PermissionDeniedError`), audited as denied under the principal | **yes** |
@@ -441,10 +452,17 @@ What kind of failure a typed error is, is decided once, by `pkg/api/errclass`:
 - The table is ordered in three bands. **Dominant** rows win however deeply
   their condition is wrapped: a transport type's own declared class
   (`errclass.Classed`), the authentication classifier, a closed store, a sealed
-  tenant, a cross-tenant refusal, a failed index rollback. **Family** blocks
-  hold the leaf conditions. **Generic** wrappers (`ProposeError`,
-  `ReadError`, the store errors) come last, so they only classify what nothing
-  more specific recognised.
+  tenant, a cross-tenant refusal, a failed index rollback, a database create
+  that ran out of its own deadline. **Family** blocks hold the leaf
+  conditions. After them come the context conditions -- the caller's deadline
+  or cancellation, and go-quicraft's own `ErrTimeout` (`DeadlineExceeded`) and
+  `ErrCanceled` -- and then every other refusal go-quicraft reports as
+  temporary (`quicraft.Temporary`: busy, dropped, shard not ready, no leader
+  yet) as `Unavailable`, so a consensus step that could not finish answers as
+  retryable rather than as a server fault. **Generic** wrappers
+  (`ProposeError`, `ReadError`, the store errors) come last, so they only
+  classify what nothing more specific recognised -- a permanent consensus
+  failure such as a missing shard among them.
 - A transport's own refusal types implement `errclass.Classed` beside the
   transport's projection table, because `pkg/api/errclass` cannot import the
   transports.

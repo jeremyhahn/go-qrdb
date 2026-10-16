@@ -27,6 +27,7 @@ import (
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -49,8 +50,23 @@ type fakeCredentialServicer struct {
 func (f *fakeCredentialServicer) CredentialStore(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
-func (f *fakeCredentialServicer) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
+func (f *fakeCredentialServicer) retrieveValue(_ context.Context, _ string) ([]byte, error) {
 	return nil, nil
+}
+
+func (f *fakeCredentialServicer) CredentialRetrieveBuffer(_ context.Context, _ string) (*secure.Buffer, error) {
+	return secure.NewBufferFromBytes([]byte("fake-value"))
+}
+
+func (f *fakeCredentialServicer) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	if f.retrieveVersFn == nil {
+		return secure.NewBufferFromBytes([]byte("fake-value"))
+	}
+	v, err := f.retrieveVersFn(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return secure.NewBufferFromBytes(append([]byte(nil), v...))
 }
 func (f *fakeCredentialServicer) CredentialSubmit(ctx context.Context, name string, value []byte) error {
 	if f.submitFn != nil {
@@ -82,7 +98,7 @@ func (f *fakeCredentialServicer) CredentialRotate(ctx context.Context, name stri
 	}
 	return nil, nil
 }
-func (f *fakeCredentialServicer) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+func (f *fakeCredentialServicer) retrieveVersionValue(ctx context.Context, name string, version uint64) ([]byte, error) {
 	if f.retrieveVersFn != nil {
 		return f.retrieveVersFn(ctx, name, version)
 	}
@@ -409,7 +425,7 @@ func TestTransportCredential_RetrieveVersion_Success(t *testing.T) {
 	tr, cleanup := connectCredentialTransport(t, addr)
 	defer cleanup()
 
-	resp, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+	resp, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name: "n", Version: 9,
 	})
 	if err != nil {
@@ -425,7 +441,7 @@ func TestTransportCredential_RetrieveVersion_Success(t *testing.T) {
 
 func TestTransportCredential_RetrieveVersion_NilRequest(t *testing.T) {
 	tr := &Transport{config: &transport.Config{}}
-	_, err := tr.CredentialRetrieveVersion(context.Background(), nil)
+	_, err := tr.retrieveVersionResponse(context.Background(), nil)
 	var re *transport.RequestError
 	if !errors.As(err, &re) {
 		t.Fatalf("expected RequestError, got %T: %v", err, err)
@@ -435,7 +451,7 @@ func TestTransportCredential_RetrieveVersion_NilRequest(t *testing.T) {
 func TestTransportCredential_RetrieveVersion_AfterClose(t *testing.T) {
 	tr := &Transport{config: &transport.Config{}}
 	tr.closed.Store(true)
-	_, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "n"})
+	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "n"})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)

@@ -749,7 +749,6 @@ func TestEmbedded_DispatchNilService_ErrorPaths(t *testing.T) {
 		// Credential handlers (nil credential service)
 		{"CredentialList", &transport.CredentialListRequest{}},
 		{"CredentialRotate", &transport.CredentialRotateRequest{Name: "k", NewValue: []byte("v")}},
-		{"CredentialRetrieveVersion", &transport.CredentialRetrieveVersionRequest{Name: "k"}},
 		{"CredentialListVersions", &transport.CredentialListVersionsRequest{Name: "k"}},
 		{"CredentialGCExpired", &transport.CredentialGCRequest{Name: "k"}},
 		// TS handlers (no TS service)
@@ -1327,7 +1326,7 @@ func TestEmbedded_CredentialStore_Closed(t *testing.T) {
 
 func TestEmbedded_CredentialRetrieve_NilService(t *testing.T) {
 	tr := newExtTransport(t)
-	_, err := tr.CredentialRetrieve(context.Background(), "k")
+	_, err := tr.retrieveBytes(context.Background(), "k")
 	var ne *NilServiceError
 	if !errors.As(err, &ne) {
 		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
@@ -1336,7 +1335,7 @@ func TestEmbedded_CredentialRetrieve_NilService(t *testing.T) {
 
 func TestEmbedded_CredentialRetrieve_Closed(t *testing.T) {
 	tr := closedExtTransport(t)
-	_, err := tr.CredentialRetrieve(context.Background(), "k")
+	_, err := tr.retrieveBytes(context.Background(), "k")
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
@@ -1464,6 +1463,10 @@ func TestEmbedded_UserAuthFactor_AllMethods_MissingService(t *testing.T) {
 		}},
 		{"RemoveAuthFactor", func() error {
 			_, e := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{})
+			return e
+		}},
+		{"DeleteAuthFactor", func() error {
+			_, e := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{})
 			return e
 		}},
 		{"RotateAuthFactor", func() error {

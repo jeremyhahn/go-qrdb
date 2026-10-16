@@ -51,6 +51,28 @@ func EnrolledCert(r *pb.EnrolledCertResponse) *transport.EnrolledCert {
 	}
 }
 
+// IssueDelegationRequest builds the IssueDelegationRequest message for req.
+func IssueDelegationRequest(req *transport.IssueDelegationRequest) *pb.IssueDelegationRequest {
+	return &pb.IssueDelegationRequest{
+		Principal: req.Principal,
+		Scope:     req.Scope,
+		CsrPem:    req.CSRPEM,
+		Ttl:       req.TTL,
+	}
+}
+
+// IssuedDelegation converts an IssuedDelegationResponse.
+func IssuedDelegation(r *pb.IssuedDelegationResponse) *transport.IssuedDelegation {
+	return &transport.IssuedDelegation{
+		TenantID:  r.GetTenantId(),
+		Principal: r.GetPrincipal(),
+		Scope:     r.GetScope(),
+		CertPEM:   r.GetCertPem(),
+		Serial:    r.GetSerial(),
+		NotAfter:  parseTime(r.GetNotAfter()),
+	}
+}
+
 // Invitation converts an InvitationResponse.
 func Invitation(r *pb.InvitationResponse) *transport.Invitation {
 	return &transport.Invitation{

@@ -90,6 +90,60 @@ func TestReporter_StartRefusedWhileSealed(t *testing.T) {
 	}
 }
 
+// TestReporter_CloseWhileSealedLeavesTheLease pins that Close proposes no
+// revoke while sealed: the loop stops and the report is left to its lease.
+func TestReporter_CloseWhileSealedLeavesTheLease(t *testing.T) {
+	probe := &fakeSealProbe{}
+	r, mvcc, leases := newTestReporter(t, "node-1", WithReporterSealProbe(probe))
+	ctx := context.Background()
+	if err := r.Start(ctx, func() NodeReport { return NodeReport{} }); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	probe.sealed.Store(true)
+	err := r.Close()
+	var sealedErr *NodeSealedError
+	if !errors.As(err, &sealedErr) || sealedErr.Op != "revoke" {
+		t.Fatalf("Close while sealed: err = %v, want *NodeSealedError{Op: revoke}", err)
+	}
+	leases.mu.Lock()
+	revoked := len(leases.revoked)
+	leases.mu.Unlock()
+	if revoked != 0 {
+		t.Fatal("Close while sealed proposed a revoke")
+	}
+	if raw, _ := mvcc.Get(ctx, NodeReportKey("node-1")); raw == nil {
+		t.Fatal("Close while sealed deleted the report")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("second Close: err = %v, want nil (Close is idempotent)", err)
+	}
+}
+
+// TestReporter_CloseUnsealedRevokes pins the other side: with a probe that
+// reports unsealed, Close revokes the lease and the report goes with it.
+func TestReporter_CloseUnsealedRevokes(t *testing.T) {
+	probe := &fakeSealProbe{}
+	r, mvcc, leases := newTestReporter(t, "node-1", WithReporterSealProbe(probe))
+	ctx := context.Background()
+	if err := r.Start(ctx, func() NodeReport { return NodeReport{} }); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	leases.mu.Lock()
+	revoked := len(leases.revoked)
+	leases.mu.Unlock()
+	if revoked != 1 {
+		t.Fatalf("Close revoked %d lease(s), want 1", revoked)
+	}
+	if raw, _ := mvcc.Get(ctx, NodeReportKey("node-1")); raw != nil {
+		t.Fatalf("Close left the report behind: %s", raw)
+	}
+}
+
 func TestReporter_RefreshSkipsWhileSealed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		probe := &fakeSealProbe{}

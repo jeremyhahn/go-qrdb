@@ -148,7 +148,6 @@ func NewBuffer(size int) (*Buffer, error) {
 	if size <= 0 {
 		return nil, &InvalidSizeError{Size: size}
 	}
-	checkNoBorrow("NewBuffer")
 	a, err := processAllocator()
 	if err != nil {
 		return nil, err
@@ -187,7 +186,6 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 	if len(src) == 0 {
 		return nil, &InvalidSizeError{Size: len(src)}
 	}
-	checkNoBorrow("NewBufferFromBytes")
 	a, err := processAllocator()
 	if err != nil {
 		enclave.Wipe(src)
@@ -222,32 +220,23 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 //
 // fn MUST NOT retain the slice beyond the call, and MUST NOT call this
 // Buffer's own methods reentrantly: enclave.MemoryEnclave's lock is not
-// reentrant, so a nested WithBytes/Destroy on the SAME buffer from inside its
-// own callback deadlocks. Calling into a DIFFERENT Buffer or Secret from
-// inside the callback is safe — each holds its own independent lock — but is
-// still discouraged style; see the borrow guard in borrowguard.go, which
-// flags any nested call into this package for a test to catch.
+// reentrant, so a nested WithBytes/Size/Destroy on the SAME buffer from inside
+// its own callback deadlocks. Anything on a DIFFERENT Buffer or Secret —
+// allocating, opening, borrowing, destroying — is safe from inside the
+// callback, because each holds its own independent lock; that is what lets a
+// borrow be held across a barrier, KEK or verifier that uses protected memory
+// itself. The borrow guard in borrowguard.go catches the same-buffer reentry
+// for a test.
 //
 // Returns *NilBufferError when the buffer is nil, destroyed, or a zero value.
 // Any error fn returns is passed through unchanged. The empty Buffer
 // NewEmptyBuffer returns calls fn with a zero-length slice.
 func (b *Buffer) WithBytes(fn func([]byte) error) error {
-	if fn == nil {
+	if b == nil || fn == nil || b.destroyed.Load() {
 		return &NilBufferError{}
 	}
-	enterBorrow("Buffer.WithBytes")
-	defer exitBorrow()
-	return b.borrow(fn)
-}
-
-// borrow is WithBytes without the borrow guard's bookkeeping, for the one
-// caller that must hold two borrows at once (Equal). It refuses a nil,
-// destroyed or zero-value Buffer with *NilBufferError, hands the empty value
-// an empty slice, and otherwise holds the enclave's own borrow across fn.
-func (b *Buffer) borrow(fn func([]byte) error) error {
-	if b == nil || b.destroyed.Load() {
-		return &NilBufferError{}
-	}
+	enterBorrow("Buffer.WithBytes", b)
+	defer exitBorrow(b)
 	if b.empty {
 		return fn([]byte{})
 	}
@@ -268,8 +257,8 @@ func (b *Buffer) IsAlive() bool {
 	if b.empty {
 		return true
 	}
-	enterBorrow("Buffer.IsAlive")
-	defer exitBorrow()
+	enterBorrow("Buffer.IsAlive", b)
+	defer exitBorrow(b)
 	return b.enc.IsAlive()
 }
 
@@ -311,10 +300,8 @@ func (b *Buffer) Equal(o *Buffer) (bool, error) {
 		return true, nil
 	}
 	equal := false
-	enterBorrow("Buffer.Equal")
-	defer exitBorrow()
-	if err := b.borrow(func(v []byte) error {
-		return o.borrow(func(w []byte) error {
+	if err := b.WithBytes(func(v []byte) error {
+		return o.WithBytes(func(w []byte) error {
 			equal = subtle.ConstantTimeCompare(v, w) == 1
 			return nil
 		})
@@ -341,8 +328,8 @@ func (b *Buffer) Size() int {
 	if b == nil || b.destroyed.Load() {
 		return 0
 	}
-	enterBorrow("Buffer.Size")
-	defer exitBorrow()
+	enterBorrow("Buffer.Size", b)
+	defer exitBorrow(b)
 	return b.enc.Size()
 }
 
@@ -388,12 +375,12 @@ func (b *Buffer) Destroy() {
 // proceeds; the rest see nil immediately) but would be wrong for any attempt
 // that does not complete the release: a refused munlock or munmap, or an armed
 // borrow guard's violation handler panicking or calling runtime.Goexit from
-// checkNoBorrow before the release even starts. Without the reset, a caller
+// checkNotBorrowed before the release even starts. Without the reset, a caller
 // that retries would find b.destroyed already true and get a false "nil,
 // already destroyed" for a release that never completed, while the mapping
 // stays live and registered (go-qrdb#114 review, round 4, non-blocking). The
 // reset is keyed on completion rather than on recover(), so it covers the
-// checkNoBorrow window as well as the release itself, runs on runtime.Goexit
+// checkNotBorrowed window as well as the release itself, runs on runtime.Goexit
 // (where recover returns nil), and lets an original panic propagate with its
 // own stack instead of a re-panic.
 func (b *Buffer) DestroyErr() error {
@@ -409,7 +396,7 @@ func (b *Buffer) DestroyErr() error {
 			b.destroyed.Store(false)
 		}
 	}()
-	checkNoBorrow("Buffer.Destroy")
+	checkNotBorrowed("Buffer.Destroy", b)
 	err := b.enc.Destroy()
 	completed = !errors.Is(err, enclave.ErrLockedMemoryUnavailable)
 	return err
