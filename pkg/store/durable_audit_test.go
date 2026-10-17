@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // These tests drive the two audit-serving raft state machines -- Pebble and
@@ -49,18 +50,18 @@ type auditNode struct {
 
 type auditSMKind struct {
 	name string
-	new  func(c *audit.Chain) (sm.DiskStateMachine, func() storage.Reader)
+	new  func(l *vlog.Chain) (sm.DiskStateMachine, func() storage.Reader)
 }
 
 var auditSMKinds = []auditSMKind{
-	{name: "pebble", new: func(c *audit.Chain) (sm.DiskStateMachine, func() storage.Reader) {
+	{name: "pebble", new: func(l *vlog.Chain) (sm.DiskStateMachine, func() storage.Reader) {
 		s := store.NewPebbleStateMachine(nil)
-		s.SetAuditChain(c)
+		s.SetLogs(l)
 		return s, func() storage.Reader { return pebbleStorage.NewFromDB(s.DB(), true) }
 	}},
-	{name: "mvcc", new: func(c *audit.Chain) (sm.DiskStateMachine, func() storage.Reader) {
+	{name: "mvcc", new: func(l *vlog.Chain) (sm.DiskStateMachine, func() storage.Reader) {
 		s := store.NewMVCCStateMachine(nil)
-		s.SetAuditChain(c)
+		s.SetLogs(l)
 		return s, func() storage.Reader { return s.Store().Storage() }
 	}},
 }
@@ -69,8 +70,9 @@ var auditSMKinds = []auditSMKind{
 // dir, with a fresh Chain.
 func openAuditNode(t *testing.T, kind auditSMKind, dir string) (*auditNode, func() storage.Reader) {
 	t.Helper()
-	chain := audit.NewChain()
-	s, readerFn := kind.new(chain)
+	logs := vlog.NewChain()
+	chain := audit.ChainOn(logs)
+	s, readerFn := kind.new(logs)
 	if _, err := s.Open(context.Background(), dir, make(chan struct{})); err != nil {
 		t.Fatalf("%s: open: %v", kind.name, err)
 	}

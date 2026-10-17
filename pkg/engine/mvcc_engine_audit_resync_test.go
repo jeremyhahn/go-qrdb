@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // This file mirrors mvcc_engine_lessor_resync_test.go exactly, for
@@ -49,8 +50,8 @@ func resyncTestEvent(tenantID string) audit.AuditEvent {
 func TestMVCCEngine_FailedCommitRestoresTheAuditChain(t *testing.T) {
 	stg := &commitFailingStorage{Storage: memory.NewStorage()}
 	defer func() { _ = stg.Close() }()
-	chain := audit.NewChain()
-	eng, err := NewMVCCEngine(stg, WithMVCCAuditChain(chain))
+	chain := vlog.NewChain()
+	eng, err := NewMVCCEngine(stg, WithMVCCLogs(chain))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func TestMVCCEngine_FailedCommitRestoresTheAuditChain(t *testing.T) {
 		t.Fatalf("Update = %v, want the commit fault", err)
 	}
 
-	page, qerr := chain.Query(stg.Storage, "acme", audit.Filter{Limit: 100})
+	page, qerr := audit.ChainOn(chain).Query(stg.Storage, "acme", audit.Filter{Limit: 100})
 	if qerr != nil {
 		t.Fatalf("query after failed commit: %v", qerr)
 	}
@@ -89,14 +90,14 @@ func TestMVCCEngine_FailedCommitRestoresTheAuditChain(t *testing.T) {
 func TestMVCCEngine_FailedCommitOverAnUnreadableAuditTableReportsBoth(t *testing.T) {
 	stg := &commitFailingStorage{Storage: memory.NewStorage()}
 	defer func() { _ = stg.Close() }()
-	eng, err := NewMVCCEngine(stg, WithMVCCAuditChain(audit.NewChain()))
+	eng, err := NewMVCCEngine(stg, WithMVCCLogs(vlog.NewChain()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A head record that fails decodeHead's length check (headRecordSize),
-	// so Chain.Restore returns *audit.CorruptTableError rather than reading
+	// so Chain.Restore returns *vlog.CorruptTableError rather than reading
 	// cleanly.
-	if err := stg.Storage.Set([]byte(audit.TablePrefix+"h/acme"), []byte{1, 2, 3}); err != nil {
+	if err := stg.Storage.Set([]byte(vlog.TablePrefix+"h/acme"), []byte{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
 	stg.fail.Store(true)

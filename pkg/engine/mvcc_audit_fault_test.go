@@ -22,10 +22,10 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // This file completes N7's "malformed/unknown-subtype paths" ask for the
@@ -34,7 +34,7 @@ import (
 // _UnknownSubtype, _AuditPrune_MalformedCutoff), but mvcc_audit_test.go
 // never did. It also adds the one halt-path pebble_audit_test.go documents
 // as untestable there for want of a fault-injection seam on a raw
-// *pebble.Batch: handleAuditAppend's *audit.TableWriteError branch. The MVCC
+// *pebble.Batch: handleAuditAppend's *vlog.TableWriteError branch. The MVCC
 // engine's batch parameter is the storage.Batch INTERFACE, not a concrete
 // type, so that seam exists here and this is a real red-then-green test,
 // not a note explaining its absence.
@@ -75,8 +75,8 @@ func (b *auditWriteFailingBatch) Set(key, value []byte) error {
 // a refusal would let this replica silently diverge from peers whose write
 // to the same entry succeeded.
 func TestMVCCEngine_AuditAppend_TableWriteFaultHaltsApply(t *testing.T) {
-	stg := &auditWriteFailingStorage{Storage: memory.NewStorage(), failPrefix: []byte(audit.TablePrefix)}
-	eng, err := NewMVCCEngine(stg, WithMVCCAuditChain(audit.NewChain()))
+	stg := &auditWriteFailingStorage{Storage: memory.NewStorage(), failPrefix: []byte(vlog.TablePrefix)}
+	eng, err := NewMVCCEngine(stg, WithMVCCLogs(vlog.NewChain()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestMVCCEngine_AuditAppend_TableWriteFaultHaltsApply(t *testing.T) {
 // halt (N3), because the outer command decoded fine and every replica
 // reaches the identical malformed body from the identical committed entry.
 func TestMVCCEngine_AuditAppend_MalformedEvent(t *testing.T) {
-	eng, _ := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	eng, _ := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 	entry := rawAuditAppendEntry(1, "acme", []byte("not json"))
 
 	results := make([]sm.Result, 1)
@@ -112,7 +112,7 @@ func TestMVCCEngine_AuditAppend_MalformedEvent(t *testing.T) {
 // sub-type byte is a protocol error (a halt), unlike a malformed EVENT body,
 // because it names a shape this binary does not understand at all.
 func TestMVCCEngine_AuditAppend_UnknownSubtype(t *testing.T) {
-	eng, _ := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	eng, _ := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 	entry := rawAuditAppendEntry(1, "acme", nil)
 	entry.Cmd[1] = 99 // the subtype byte, neither AuditSubtypeAppend nor AuditSubtypePrune
 
@@ -126,7 +126,7 @@ func TestMVCCEngine_AuditAppend_UnknownSubtype(t *testing.T) {
 // TestPebbleStateMachine_AuditPrune_MalformedCutoff: a prune command whose
 // cutoff is not exactly 8 bytes is a protocol error.
 func TestMVCCEngine_AuditPrune_MalformedCutoff(t *testing.T) {
-	eng, _ := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	eng, _ := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 	entry := auditPruneEntry(1, "acme", 0)
 	entry.Cmd = entry.Cmd[:len(entry.Cmd)-1] // truncate the cutoff by one byte
 

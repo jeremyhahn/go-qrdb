@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // This file is the Pebble half of the go-qrdb audit-replicated review's
@@ -36,7 +37,8 @@ import (
 
 var pebbleReservedTestKeys = map[string][]byte{
 	"lease table": []byte(lease.TablePrefix + "l/x"),
-	"audit table": []byte(audit.TablePrefix + "h/acme"),
+	"audit table": []byte(vlog.TablePrefix + "h/acme"),
+	"named log":   []byte(vlog.LogTablePrefix + "acme/app/ledger/h"),
 	"node-local":  []byte(metaKeyLastApplied),
 }
 

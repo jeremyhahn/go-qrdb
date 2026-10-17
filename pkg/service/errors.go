@@ -299,15 +299,29 @@ func (e *ProposeError) Is(target error) bool {
 // which carried none, reported every proposal failure through an untyped code
 // no transport mapped.
 func translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
+	if nle, ok := notLeaderRefusal(err); ok {
+		return nle
 	}
 	return &ProposeError{Err: err}
+}
+
+// notLeaderRefusal returns the service form of a go-quicraft not-leader
+// refusal: a request the node turned away, proven not stored. A not-leader
+// error under quicraft.MaybeAppliedError is no refusal. It reaches a proposal
+// already in the log when its leader steps down, and the entry may still
+// commit under the next leader, so marking it not stored, forwarding it or
+// sending it again could apply it twice. It keeps its wrapper and stays an
+// outcome-unknown failure.
+func notLeaderRefusal(err error) (*NotLeaderError, bool) {
+	var nle *quicraft.NotLeaderError
+	if quicraft.MaybeApplied(err) || !errors.As(err, &nle) {
+		return nil, false
+	}
+	return &NotLeaderError{
+		ShardID:       nle.ShardID,
+		LeaderID:      nle.LeaderID,
+		LeaderAddress: nle.LeaderAddress,
+	}, true
 }
 
 // SubsystemNotConfiguredError is returned when a request reaches a state

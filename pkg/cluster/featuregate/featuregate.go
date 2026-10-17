@@ -175,9 +175,18 @@ const LeaseCheckpoint Feature = "lease-checkpoint"
 // refused (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
 const PerNodeBarrierKeys Feature = "per-node-barrier-keys"
 
+// VerifiableLog is protocol.OpVerifiableLog: a deterministic, apply-time
+// create, append, checkpoint or body expiry on a named verifiable log. A
+// replica that does not implement it answers the opcode with UnknownOpError
+// while its peers grow the log, so no replica may be sent it until every
+// replica of the group can apply it. Its apply carries no build tag, so every
+// binary that carries it advertises it. See
+// docs/decisions/verifiable-log.md, section 3.
+const VerifiableLog Feature = "verifiable-log"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

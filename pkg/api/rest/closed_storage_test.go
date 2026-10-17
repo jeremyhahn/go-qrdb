@@ -132,13 +132,11 @@ func TestWriteReadFailure_ClosedStorageIsServiceUnavailable(t *testing.T) {
 }
 
 // Every other read failure keeps the 500 and the ReadError wrapper it had.
-// The helper is narrow on purpose; widening it would move NotLeaderError to
-// 503 on reads while the write path pins it at 500, which is a fresh verb
-// asymmetry of exactly the kind this change removes.
+// The helper is narrow on purpose: only a closed store and an unknown leader
+// (not_leader_failure_test.go) move to 503, the same two on both verbs.
 func TestWriteReadFailure_LeavesOtherReadFailuresAt500(t *testing.T) {
 	for name, err := range map[string]error{
-		"unrelated":  &service.ReadError{Err: storage.ErrEmptyKey},
-		"not leader": &service.NotLeaderError{ShardID: 1},
+		"unrelated": &service.ReadError{Err: storage.ErrEmptyKey},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

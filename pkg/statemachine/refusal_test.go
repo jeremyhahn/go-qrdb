@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // TestRefusalKind_NamesEverySubsystemRefusal pins the table that replaced the
@@ -44,6 +45,17 @@ func TestRefusalKind_NamesEverySubsystemRefusal(t *testing.T) {
 		{&timeseries.InvalidAggFuncError{}, protocol.AppErrorInvalid},
 		{&timeseries.InvalidBatchPointError{}, protocol.AppErrorInvalid},
 		{&timeseries.ClosedError{}, protocol.AppErrorUnavailable},
+		{&vlog.InvalidLogNameError{}, protocol.AppErrorInvalid},
+		{&vlog.InvalidDescriptorError{}, protocol.AppErrorInvalid},
+		{&vlog.LogNotFoundError{}, protocol.AppErrorInvalid},
+		{&vlog.AppendBatchError{}, protocol.AppErrorInvalid},
+		{&vlog.SizeOutOfRangeError{}, protocol.AppErrorInvalid},
+		{&vlog.IndexOutOfRangeError{}, protocol.AppErrorInvalid},
+		{&vlog.CheckpointRootMismatchError{}, protocol.AppErrorInvalid},
+		{&vlog.EmptyCheckpointError{}, protocol.AppErrorInvalid},
+		{&vlog.ExpireNotAllowedError{}, protocol.AppErrorInvalid},
+		{&vlog.LogExistsError{}, protocol.AppErrorConflict},
+		{&vlog.CheckpointExistsError{}, protocol.AppErrorConflict},
 		{errors.New("pebble: write failed"), protocol.AppErrorFault},
 	} {
 		if got := RefusalKind(fmt.Errorf("apply: %w", tc.err)); got != tc.want {

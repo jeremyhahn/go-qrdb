@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -35,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -137,8 +137,9 @@ func LocalEngineKeepsLeases(_ database.BackendType) bool {
 	return true
 }
 
-// The MVCC engine also always gets a fresh replicated audit.Chain
-// (engine.WithMVCCAuditChain): unlike hub and lr, nothing outside the engine
+// The MVCC engine also always gets a fresh log registry, vlog.Chain, the
+// replicated audit chain's instance among its logs (engine.WithMVCCLogs):
+// unlike hub and lr, nothing outside the engine
 // needs to share this instance, so one is constructed here rather than
 // threaded in from the caller. It is attached unconditionally for the same
 // reason the raft composition in cmd/qrdbd/start.go attaches one
@@ -152,7 +153,7 @@ func LocalEngineKeepsLeases(_ database.BackendType) bool {
 // backend-specific concerns outside the engine (compaction scheduling,
 // metrics); the engine itself needs only stg, which every backend provides.
 func NewLocalEngine(_ database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
-	mvccOpts := []engine.MVCCOption{engine.WithMVCCAuditChain(audit.NewChain())}
+	mvccOpts := []engine.MVCCOption{engine.WithMVCCLogs(vlog.NewChain())}
 	if lr != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCLessor(lr))
 	}

@@ -20,126 +20,44 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
-// Writer is the minimal write capability Chain needs to stage a mutation into
-// a state machine's apply batch: mirrors lease.Writer exactly, and for the
-// same reason -- Chain's authoritative state is kept in memory (restored once
-// from storage.Reader) and the apply path never reads it back, so Writer never
-// needs a Get.
-type Writer interface {
-	// Set stages key = value.
-	Set(key, value []byte) error
-
-	// Delete stages the removal of key.
-	Delete(key []byte) error
-}
-
-// headState is the in-memory half of one tenant's head record: seq is the
-// newest assigned sequence, lo is the lowest SURVIVING sequence (events below
-// lo have been pruned), and digest is the chain's running hash as of seq.
-type headState struct {
-	seq    uint64
-	lo     uint64
-	digest [32]byte
-}
-
-// Chain is the in-memory authority for every tenant's replicated audit hash
-// chain, backed by the raw keyspace table this file's sibling (table.go)
-// defines. It is the audit equivalent of lease.Lessor: restored once from
-// storage at state-machine open (and after snapshot recovery), consulted and
-// updated only during Apply, and never read back from the batch it writes
-// into.
-//
-// Determinism is the entire point, for BOTH of Chain's mutations. Append
-// assigns the next sequence number and digest from the Chain's own current
-// head -- never from a value a client proposed. Prune computes the range it
-// deletes from the Chain's own current head alone -- never from a storage
-// read -- which is what makes it immune to how many committed entries one
-// Raft Update call happens to pack together: a read-the-committed-range
-// Prune (this package's first version) answered a DIFFERENT result for
-// `[append, append, append, prune(3)]` applied as one batch versus four,
-// because the batch that performed the prior appends was not yet visible to
-// a read issued from the SAME Update call on some code paths and was on
-// others. Reading only c.heads, which every Append in the SAME Update call
-// has already updated in memory before Prune (if any) runs, removes the
-// dependence on batching entirely: Prune and Append agree with each other and
-// with every replica regardless of packing. See
-// docs/audit/architecture.md#the-hash-chain-stays-linear-under-raft-because-it-is-assigned-at-apply-time.
-//
-// Attach exactly one Chain per state machine instance, unconditionally --
-// SetAuditChain(NewChain()) belongs beside SetLessor(lease.NewLessor()) in
-// every composition, whether or not replicated audit is enabled for any
-// tenant on this node. Opt-in governs whether anything ever PROPOSES
-// OpAuditAppend (pkg/service's entitlement gate, phase 2); it must never
-// govern whether a replica CAN APPLY one it receives, because that is a
-// property of the binary, not of a per-node config choice, and two replicas
-// of the same group running the same binary must apply the identical
-// opcode identically or diverge.
-//
-// Chain is safe for concurrent use. The lock exists for Restore running
-// concurrently with a resync after an apply fault; ordinary Apply is already
-// serialized per shard by Raft and never calls Append or Prune concurrently
-// with themselves or each other.
+// Chain is the replicated audit hash chain: the audit instance of
+// vlog.Chain. vlog.Chain owns the apply-time head, the raw keyspace table and
+// the restore-then-apply contract; Chain adds what makes a record an audit
+// event -- event validation, its JSON encoding, the PrevHash link and the
+// linear SHA-256 fold -- and answers Query and Verify over the same table.
+// See vlog.Chain for the determinism and attachment rules, which hold for
+// Chain unchanged: attach exactly one per state machine instance,
+// unconditionally.
 type Chain struct {
-	mu    sync.Mutex
-	heads map[string]headState
+	log *vlog.Chain
 }
 
 // NewChain returns a Chain with no tenant heads. Call Restore before Apply
 // reaches it, exactly as a fresh Lessor must be restored before Grant.
 func NewChain() *Chain {
-	return &Chain{heads: make(map[string]headState)}
+	return ChainOn(vlog.NewChain())
 }
 
-// Restore rebuilds the in-memory head table from the durable table in r. Call
-// at state-machine open and after snapshot recovery -- the log a recovering
-// replica never sees is exactly why the head cannot be carried over from
-// memory across either event, the same reason lease.Lessor.Restore exists.
+// ChainOn returns the audit Chain over log, the state machine's log registry,
+// so the audit instance and its named logs share one restore and one
+// per-Update staging. It returns nil for a nil log: a state machine with no
+// registry has no audit chain either.
+func ChainOn(log *vlog.Chain) *Chain {
+	if log == nil {
+		return nil
+	}
+	return &Chain{log: log}
+}
+
+// Restore rebuilds the in-memory head table from the durable table in r; see
+// vlog.Chain.Restore.
 func (c *Chain) Restore(r storage.Reader) error {
-	heads := make(map[string]headState, len(c.heads))
-	it := r.NewIterator(&storage.IteratorOptions{
-		LowerBound: []byte(headPrefix),
-		UpperBound: prefixEnd([]byte(headPrefix)),
-	})
-	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
-		// key is captured before any possible it.Close() below: a
-		// storage.Iterator may invalidate the slice Key() returns once
-		// closed (the in-memory backend does), so reading it again inside
-		// the error path below would silently report an empty Key.
-		key := it.Key()
-		tenantID := string(key[len(headPrefix):])
-		seq, lo, digest, decOK := decodeHead(it.Value())
-		if !decOK {
-			_ = it.Close()
-			return &CorruptTableError{Key: string(key), Reason: "malformed head record"}
-		}
-		heads[tenantID] = headState{seq: seq, lo: lo, digest: digest}
-	}
-	if err := it.Error(); err != nil {
-		_ = it.Close()
-		return &TableReadError{Err: err}
-	}
-	if err := it.Close(); err != nil {
-		return &TableReadError{Err: err}
-	}
-	c.mu.Lock()
-	c.heads = heads
-	c.mu.Unlock()
-	return nil
-}
-
-// validateTenantID refuses a tenant id containing '/', which would let a
-// crafted id carve a second segment inside another tenant's range in the raw
-// table's concatenated keys (table.go's eventKey/headKey).
-func validateTenantID(tenantID string) error {
-	if strings.Contains(tenantID, "/") {
-		return &InvalidTenantIDError{TenantID: tenantID}
-	}
-	return nil
+	return c.log.Restore(r)
 }
 
 // Append assigns tenantID's next sequence number and digest from the Chain's
@@ -176,8 +94,8 @@ func validateTenantID(tenantID string) error {
 // (*TenantMismatchError) rather than overwritten -- see that error's doc
 // comment for why silently "stamping" tenantID over a conflicting value
 // would be worse than refusing.
-func (c *Chain) Append(w Writer, tenantID string, ev AuditEvent) (seq uint64, err error) {
-	if err := validateTenantID(tenantID); err != nil {
+func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint64, err error) {
+	if err := vlog.ValidateTenantID(tenantID); err != nil {
 		return 0, err
 	}
 	if ev.Timestamp.IsZero() {
@@ -187,89 +105,28 @@ func (c *Chain) Append(w Writer, tenantID string, ev AuditEvent) (seq uint64, er
 		return 0, &TenantMismatchError{EventTenantID: ev.TenantID, RoutingTenantID: tenantID}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	return c.log.Append(w, tenantID, func(prev [32]byte, genesis bool) ([]byte, [32]byte, error) {
+		if genesis {
+			ev.PrevHash = ""
+		} else {
+			ev.PrevHash = "sha256:" + hex.EncodeToString(prev[:])
+		}
 
-	head := c.heads[tenantID]
-	seq = head.seq + 1
-	lo := head.lo
-	if head.seq == 0 {
-		ev.PrevHash = ""
-		lo = 1 // the first live sequence is 1; nothing below it ever existed.
-	} else {
-		ev.PrevHash = "sha256:" + hex.EncodeToString(head.digest[:])
-	}
-
-	body, encErr := json.Marshal(ev)
-	if encErr != nil {
-		return 0, &EncodeEventError{Err: encErr}
-	}
-	folded := make([]byte, 0, len(head.digest)+len(body))
-	folded = append(folded, head.digest[:]...)
-	folded = append(folded, body...)
-	digest := sha256.Sum256(folded)
-
-	if setErr := w.Set(eventKey(tenantID, seq), body); setErr != nil {
-		return 0, &TableWriteError{Err: setErr}
-	}
-	if setErr := w.Set(headKey(tenantID), encodeHead(seq, lo, digest)); setErr != nil {
-		return 0, &TableWriteError{Err: setErr}
-	}
-
-	c.heads[tenantID] = headState{seq: seq, lo: lo, digest: digest}
-	return seq, nil
+		body, encErr := json.Marshal(ev)
+		if encErr != nil {
+			return nil, [32]byte{}, &EncodeEventError{Err: encErr}
+		}
+		folded := make([]byte, 0, len(prev)+len(body))
+		folded = append(folded, prev[:]...)
+		folded = append(folded, body...)
+		return body, sha256.Sum256(folded), nil
+	})
 }
 
-// Prune deletes tenantID's events in [lo, upper), where lo is the Chain's own
-// current low-watermark and upper is cutoff clamped to the Chain's own
-// current seq (never deleting the newest event, so a surviving chain always
-// keeps at least one record to verify against) and to lo+MaxPrunePerCommand
-// (bounding how many deletes one command stages). Both bounds come from
-// c.heads alone -- Prune never reads storage -- which is what makes its
-// result independent of how many committed entries the apply batch
-// containing it happens to hold; see Chain's own doc comment. It returns the
-// number of events deleted, which may be less than requested if the
-// per-command cap applied; the caller issues Prune again, with the same
-// cutoff, to continue.
-//
-// A tenant with no chain yet (no Append has ever run) or already pruned up
-// to its own head is a no-op, not an error.
-func (c *Chain) Prune(w Writer, tenantID string, cutoff uint64) (deleted int, err error) {
-	if err := validateTenantID(tenantID); err != nil {
-		return 0, err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	head, ok := c.heads[tenantID]
-	if !ok || head.seq == 0 {
-		return 0, nil
-	}
-	upper := cutoff
-	if upper > head.seq {
-		upper = head.seq
-	}
-	if upper > head.lo+MaxPrunePerCommand {
-		upper = head.lo + MaxPrunePerCommand
-	}
-	if upper <= head.lo {
-		return 0, nil
-	}
-
-	for seq := head.lo; seq < upper; seq++ {
-		if delErr := w.Delete(eventKey(tenantID, seq)); delErr != nil {
-			return int(seq - head.lo), &TableWriteError{Err: delErr}
-		}
-	}
-	deleted = int(upper - head.lo)
-
-	newHead := headState{seq: head.seq, lo: upper, digest: head.digest}
-	if setErr := w.Set(headKey(tenantID), encodeHead(newHead.seq, newHead.lo, newHead.digest)); setErr != nil {
-		return deleted, &TableWriteError{Err: setErr}
-	}
-	c.heads[tenantID] = newHead
-	return deleted, nil
+// Prune deletes tenantID's events below cutoff, from the Chain's own head
+// alone; see vlog.Chain.Prune.
+func (c *Chain) Prune(w vlog.Writer, tenantID string, cutoff uint64) (deleted int, err error) {
+	return c.log.Prune(w, tenantID, cutoff)
 }
 
 // Query answers f from r, a point-in-time range read over tenantID's event
@@ -279,7 +136,7 @@ func (c *Chain) Prune(w Writer, tenantID string, cutoff uint64) (deleted int, er
 // way to, since the range bounds passed to the iterator never leave
 // tenantID's own key prefix.
 func (c *Chain) Query(r storage.Reader, tenantID string, f Filter) (*Page, error) {
-	if err := validateTenantID(tenantID); err != nil {
+	if err := vlog.ValidateTenantID(tenantID); err != nil {
 		return nil, err
 	}
 
@@ -294,8 +151,8 @@ func (c *Chain) Query(r storage.Reader, tenantID string, f Filter) (*Page, error
 	}
 
 	it := r.NewIterator(&storage.IteratorOptions{
-		LowerBound: eventRangeStart(tenantID, startSeq),
-		UpperBound: eventRangeEnd(tenantID),
+		LowerBound: vlog.EventRangeStart(tenantID, startSeq),
+		UpperBound: vlog.EventRangeEnd(tenantID),
 	})
 	defer func() { _ = it.Close() }()
 
@@ -304,7 +161,7 @@ func (c *Chain) Query(r storage.Reader, tenantID string, f Filter) (*Page, error
 	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
 		var ev AuditEvent
 		if err := json.Unmarshal(it.Value(), &ev); err != nil {
-			return nil, &CorruptTableError{Key: string(it.Key()), Reason: "malformed event record"}
+			return nil, &vlog.CorruptTableError{Key: string(it.Key()), Reason: "malformed event record"}
 		}
 		// The existing file-sink matchesFilter(ev, f) already implements the
 		// exact TenantID/Untenanted confinement semantics this needs (see
@@ -317,9 +174,9 @@ func (c *Chain) Query(r storage.Reader, tenantID string, f Filter) (*Page, error
 			continue
 		}
 		if len(events) == limit {
-			seq, seqOK := eventSeq(it.Key(), tenantID)
+			seq, seqOK := vlog.EventSeq(it.Key(), tenantID)
 			if !seqOK {
-				return nil, &CorruptTableError{Key: string(it.Key()), Reason: "malformed event key"}
+				return nil, &vlog.CorruptTableError{Key: string(it.Key()), Reason: "malformed event key"}
 			}
 			next = strconv.FormatUint(seq, 10)
 			break
@@ -327,7 +184,7 @@ func (c *Chain) Query(r storage.Reader, tenantID string, f Filter) (*Page, error
 		events = append(events, ev)
 	}
 	if err := it.Error(); err != nil {
-		return nil, &TableReadError{Err: err}
+		return nil, &vlog.TableReadError{Err: err}
 	}
 	return &Page{Events: events, Next: next, Total: -1}, nil
 }
@@ -374,21 +231,23 @@ type ChainContinuityReport struct {
 // A tenant with no chain at all (head.seq == 0) verifies trivially: Verified
 // true, Records 0, Genesis true.
 func (c *Chain) Verify(r storage.Reader, tenantID string) (*ChainContinuityReport, error) {
-	if err := validateTenantID(tenantID); err != nil {
+	if err := vlog.ValidateTenantID(tenantID); err != nil {
 		return nil, err
 	}
 
-	c.mu.Lock()
-	head := c.heads[tenantID]
-	c.mu.Unlock()
+	var head struct {
+		seq, lo uint64
+		digest  [32]byte
+	}
+	head.seq, head.lo, head.digest = c.log.Head(tenantID)
 
 	if head.seq == 0 {
 		return &ChainContinuityReport{Verified: true, Genesis: true}, nil
 	}
 
 	it := r.NewIterator(&storage.IteratorOptions{
-		LowerBound: eventRangeStart(tenantID, head.lo),
-		UpperBound: eventRangeEnd(tenantID),
+		LowerBound: vlog.EventRangeStart(tenantID, head.lo),
+		UpperBound: vlog.EventRangeEnd(tenantID),
 	})
 	defer func() { _ = it.Close() }()
 
@@ -396,9 +255,9 @@ func (c *Chain) Verify(r storage.Reader, tenantID string) (*ChainContinuityRepor
 	seen := uint64(0)
 	expectedSeq := head.lo
 	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
-		seq, seqOK := eventSeq(it.Key(), tenantID)
+		seq, seqOK := vlog.EventSeq(it.Key(), tenantID)
 		if !seqOK {
-			return nil, &CorruptTableError{Key: string(it.Key()), Reason: "malformed event key"}
+			return nil, &vlog.CorruptTableError{Key: string(it.Key()), Reason: "malformed event key"}
 		}
 		if seq != expectedSeq {
 			return &ChainContinuityReport{
@@ -414,7 +273,7 @@ func (c *Chain) Verify(r storage.Reader, tenantID string) (*ChainContinuityRepor
 		body := it.Value()
 		var ev AuditEvent
 		if err := json.Unmarshal(body, &ev); err != nil {
-			return nil, &CorruptTableError{Key: string(it.Key()), Reason: "malformed event record"}
+			return nil, &vlog.CorruptTableError{Key: string(it.Key()), Reason: "malformed event record"}
 		}
 
 		if seq == head.lo {
@@ -469,7 +328,7 @@ func (c *Chain) Verify(r storage.Reader, tenantID string) (*ChainContinuityRepor
 		expectedSeq++
 	}
 	if err := it.Error(); err != nil {
-		return nil, &TableReadError{Err: err}
+		return nil, &vlog.TableReadError{Err: err}
 	}
 	if seen != head.seq-head.lo+1 {
 		return &ChainContinuityReport{

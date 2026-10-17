@@ -21,13 +21,14 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // TestMVCCEngine_Lookup_AuditQueryRequest exercises the Lookup dispatch for
 // audit.QueryRequest, the propose-free read path every transport's "read
 // the replicated chain" capability takes.
 func TestMVCCEngine_Lookup_AuditQueryRequest(t *testing.T) {
-	eng, _ := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	eng, _ := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 	entries := []sm.Entry{auditAppendEntry(t, 1, "acme", tenantEvent("acme", "barrier", "unseal"))}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -59,7 +60,7 @@ func TestMVCCEngine_Lookup_AuditQueryRequest_NoChainConfigured(t *testing.T) {
 // TestMVCCEngine_Lookup_AuditVerifyRequest exercises the Lookup dispatch for
 // audit.VerifyRequest, the hash-continuity check exposed to auditors.
 func TestMVCCEngine_Lookup_AuditVerifyRequest(t *testing.T) {
-	eng, _ := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	eng, _ := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 	entries := []sm.Entry{auditAppendEntry(t, 1, "acme", tenantEvent("acme", "barrier", "unseal"))}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {

@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // tenantEvent returns a minimal AuditEvent for tenantID. The replicated
@@ -101,8 +102,8 @@ func TestMVCCEngine_AuditAppend_RefusedWithNoChainConfigured(t *testing.T) {
 // the record lands in the engine's storage under the raw audit table, and a
 // second Append continues the same tenant's chain.
 func TestMVCCEngine_AuditAppend_AssignsSequenceAndPersists(t *testing.T) {
-	chain := audit.NewChain()
-	eng, stg := newMVCCEngine(t, WithMVCCAuditChain(chain))
+	chain := vlog.NewChain()
+	eng, stg := newMVCCEngine(t, WithMVCCLogs(chain))
 
 	entries := []sm.Entry{auditAppendEntry(t, 1, "acme", tenantEvent("acme", "barrier", "unseal"))}
 	results := make([]sm.Result, 1)
@@ -122,7 +123,7 @@ func TestMVCCEngine_AuditAppend_AssignsSequenceAndPersists(t *testing.T) {
 		t.Fatalf("assigned sequence = %d, want 2", results[0].Value)
 	}
 
-	page, err := chain.Query(stg, "acme", audit.Filter{Limit: 100})
+	page, err := audit.ChainOn(chain).Query(stg, "acme", audit.Filter{Limit: 100})
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -138,8 +139,8 @@ func TestMVCCEngine_AuditAppend_AssignsSequenceAndPersists(t *testing.T) {
 // because Chain.Append reads the chain's own prior state rather than
 // anything the payload carries.
 func TestMVCCEngine_AuditAppend_DeterministicAcrossTwoEngines(t *testing.T) {
-	engA, stgA := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
-	engB, stgB := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	engA, stgA := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
+	engB, stgB := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 
 	for i := 0; i < 5; i++ {
 		entries := []sm.Entry{auditAppendEntry(t, uint64(i+1), "acme", tenantEvent("acme", "barrier", "unseal"))}
@@ -179,8 +180,8 @@ func TestMVCCEngine_AuditAppend_DeterministicAcrossTwoEngines(t *testing.T) {
 // the retention sub-type: events below the cutoff are gone, the chain's head
 // is untouched, and the next Append continues from where it left off.
 func TestMVCCEngine_AuditPrune_DeletesOldEventsWithoutBreakingTheChain(t *testing.T) {
-	chain := audit.NewChain()
-	eng, stg := newMVCCEngine(t, WithMVCCAuditChain(chain))
+	chain := vlog.NewChain()
+	eng, stg := newMVCCEngine(t, WithMVCCLogs(chain))
 
 	for i := 0; i < 5; i++ {
 		entries := []sm.Entry{auditAppendEntry(t, uint64(i+1), "acme", tenantEvent("acme", "barrier", "unseal"))}
@@ -199,7 +200,7 @@ func TestMVCCEngine_AuditPrune_DeletesOldEventsWithoutBreakingTheChain(t *testin
 		t.Fatalf("pruned %d events, want 2", results[0].Value)
 	}
 
-	page, err := chain.Query(stg, "acme", audit.Filter{Limit: 100})
+	page, err := audit.ChainOn(chain).Query(stg, "acme", audit.Filter{Limit: 100})
 	if err != nil {
 		t.Fatalf("query after prune: %v", err)
 	}
@@ -222,8 +223,8 @@ func TestMVCCEngine_AuditPrune_DeletesOldEventsWithoutBreakingTheChain(t *testin
 // continues the same tenant's chain rather than restarting it at sequence 1.
 func TestMVCCEngine_AuditAppend_SurvivesEngineRestart(t *testing.T) {
 	stg := memory.NewStorage()
-	chain1 := audit.NewChain()
-	eng1, err := NewMVCCEngine(stg, WithMVCCAuditChain(chain1))
+	chain1 := vlog.NewChain()
+	eng1, err := NewMVCCEngine(stg, WithMVCCLogs(chain1))
 	if err != nil {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
@@ -235,8 +236,8 @@ func TestMVCCEngine_AuditAppend_SurvivesEngineRestart(t *testing.T) {
 
 	// A fresh engine over the SAME storage, exactly as a restart rebuilds the
 	// engine over the data directory it finds on disk.
-	chain2 := audit.NewChain()
-	eng2, err := NewMVCCEngine(stg, WithMVCCAuditChain(chain2))
+	chain2 := vlog.NewChain()
+	eng2, err := NewMVCCEngine(stg, WithMVCCLogs(chain2))
 	if err != nil {
 		t.Fatalf("NewMVCCEngine (restart): %v", err)
 	}
@@ -257,9 +258,9 @@ func TestMVCCEngine_AuditAppend_SurvivesEngineRestart(t *testing.T) {
 // a deterministic consequence of the committed entry's bytes -- every
 // replica reaches it identically -- so it must be encoded as an application
 // refusal, leaving the engine free to keep applying later entries. Only a
-// genuine local storage fault (*audit.TableWriteError) may halt apply.
+// genuine local storage fault (*vlog.TableWriteError) may halt apply.
 func TestMVCCEngine_AuditAppend_MissingTimestampIsARefusalNotAHalt(t *testing.T) {
-	eng, _ := newMVCCEngine(t, WithMVCCAuditChain(audit.NewChain()))
+	eng, _ := newMVCCEngine(t, WithMVCCLogs(vlog.NewChain()))
 	ev := tenantEvent("acme", "barrier", "unseal")
 	ev.Timestamp = time.Time{} // the proposer forgot to set it
 	// protocol.EncodeAuditAppend now refuses this at encode time (N3), so

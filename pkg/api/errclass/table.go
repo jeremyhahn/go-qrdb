@@ -244,6 +244,12 @@ var dataPlaneRules = []rule{
 	// election as a server fault. A timed-out write may still have committed,
 	// so a client retries only a write it has made idempotent.
 	is(quicraft.ErrTimeout, Unavailable),
+	// A leader stepping down under a proposal or member change already in its
+	// log: the same election met mid-request. The service layer keeps it out
+	// of NotLeaderError, since the entry may still commit, so it arrives in
+	// its ProposeError or MembershipError wrapper and is claimed here, ahead
+	// of their Internal rows, with the same idempotent-retry caveat.
+	is(quicraft.ErrNotLeader, Unavailable),
 	// A shard paused while the node seals: the seal pauses every shard the
 	// node hosts before it wipes the keys (seal-pause-resume), and a paused
 	// replica refuses proposals, reads and sessions with ErrShardPaused, which

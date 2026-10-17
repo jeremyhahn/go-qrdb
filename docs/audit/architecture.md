@@ -446,19 +446,32 @@ plane exists, not something `Chain.Append` itself does.
 agree on one hash-chained audit trail per tenant exists end to end:
 
 - `pkg/audit.Chain` — the deterministic, apply-time authority for every
-  tenant's chain (`Append`, `Prune`, `Query`, `Restore`).
-- `pkg/audit.TablePrefix` (`table.go`) — the reserved raw-keyspace table the
-  chain is durable in, mirroring `pkg/lease`'s table exactly.
+  tenant's chain (`Append`, `Prune`, `Query`, `Restore`), the audit instance
+  of `pkg/vlog.Chain`, which owns the head, its sequencing and the table.
+- `pkg/vlog.TablePrefix` (`pkg/vlog/table.go`) — the reserved raw-keyspace
+  table the chain is durable in, mirroring `pkg/lease`'s table exactly.
 - `protocol.OpAuditAppend` — the single opcode carrying both an append and a
   retention prune, gated by `featuregate.AuditAppend` so no replica of a
   group is ever sent an opcode a sibling cannot apply.
+- `protocol.OpVerifiableLog` — the named-log opcode (`pkg/protocol/vlog.go`),
+  one sub-type each for create, append, checkpoint and body expiry, gated by
+  `featuregate.VerifiableLog` on the same terms. Both families hand it to
+  `pkg/statemachine.ApplyVerifiableLog`, which refuses what every replica
+  refuses alike (a malformed body, a missing or existing log, a mismatched
+  checkpoint, a state machine with no registry) and halts on an unknown
+  framing or a fault in this replica's own table. `OpAuditAppend` is
+  unchanged and writes no Merkle node.
 - Both state-machine families (`pkg/store.PebbleStateMachine`,
   `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
   and on snapshot recovery, and resync it after a failed apply, exactly as
-  the lease table already does.
+  the lease table already does. The resync and the restore cover the named
+  logs too, so a replica opened from disk or from a snapshot taken mid-log
+  serves the same heads and proofs as its peers and appends the same nodes.
 - Every `mvcc`/`pebble` state machine this binary composes — the Raft
-  factory in `cmd/qrdbd/start.go` and the standalone/embedded composition in
-  `pkg/server/lifecycle.NewLocalEngine` — attaches a `Chain` unconditionally.
+  factory in `cmd/qrdbd/start.go`, the tenant and database groups'
+  `newDataPlaneCreateFunc` in `pkg/server`, and the standalone/embedded
+  composition in `pkg/server/lifecycle.NewLocalEngine` — attaches a `Chain`
+  unconditionally.
   There is no configuration flag that turns this attachment off, because a
   replica missing it would answer `OpAuditAppend` with a refusal while a
   sibling that has one applies the write: state divergence within one Raft
@@ -576,6 +589,16 @@ replicated state: it travels in every snapshot and is covered by the
 replica hash like any other applied record (`pkg/store`'s
 `isNodeLocalKey`), exactly as the lease table already is.
 
+The same package keeps a second reserved table beside it, under
+`LogTablePrefix = "\x00qrdb.vlog/"`: the named verifiable logs of
+[the verifiable-log design](../decisions/verifiable-log.md), each a
+descriptor, a head, its entries, its Merkle tree nodes and its checkpoints,
+keyed by tenant, database and log name. `vlog.IsTableKey` matches both
+prefixes, so every reserved-key refusal and the replica hash cover the second
+table exactly as they cover this one, and `Chain.Restore` rebuilds both
+together: a malformed record in either fails the restore. The audit table's
+layout above is unchanged.
+
 ### The hash chain stays linear under Raft because it is assigned at apply time
 
 A client never supplies a sequence number or a previous-hash value.
@@ -616,7 +639,7 @@ further bounds, both clamps on `upper`:
 - **Never the newest event.** `upper` is clamped to the head's own `seq`, so
   a chain always keeps at least one live record — an anchor a verifier can
   check the surviving chain against.
-- **At most `audit.MaxPrunePerCommand` (10,000) events per call.** A cutoff
+- **At most `vlog.MaxPrunePerCommand` (10,000) events per call.** A cutoff
   far ahead of the low-watermark deletes at most that many and reports the
   count; the caller reissues `Prune` with the same cutoff to continue,
   rather than one command staging an unbounded number of deletes into one

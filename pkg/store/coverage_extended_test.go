@@ -28,12 +28,12 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -582,23 +582,28 @@ func TestWithLessor_AppliesLessor(t *testing.T) {
 	}
 }
 
-// TestWithAuditChain_AttachesChain proves the option hands the replicated
-// audit chain to every state machine the create function builds.
-func TestWithAuditChain_AttachesChain(t *testing.T) {
-	chain := audit.NewChain()
-
-	cf := NewMVCCCreateFuncWith(nil, WithAuditChain(chain))
+// TestWithLogs_AttachesRegistry proves the option hands a log registry to
+// every state machine the create function builds, and a different one to
+// each: a chain shared by two groups would let one group's restore overwrite
+// the other's heads.
+func TestWithLogs_AttachesRegistry(t *testing.T) {
+	cf := NewMVCCCreateFuncWith(nil, WithLogs())
 	if cf == nil {
 		t.Fatal("expected non-nil CreateFunc")
 	}
+	seen := make(map[*vlog.Chain]uint64)
 	for _, replica := range []uint64{1, 2} {
 		machine, ok := cf(1, replica).(*MVCCStateMachine)
 		if !ok {
 			t.Fatalf("replica %d: CreateFunc did not build an MVCCStateMachine", replica)
 		}
-		if machine.auditChain != chain {
-			t.Fatalf("replica %d: the audit chain was not attached", replica)
+		if machine.logs == nil {
+			t.Fatalf("replica %d: the log registry was not attached", replica)
 		}
+		if other, dup := seen[machine.logs]; dup {
+			t.Fatalf("replicas %d and %d share one log registry", other, replica)
+		}
+		seen[machine.logs] = replica
 	}
 }
 

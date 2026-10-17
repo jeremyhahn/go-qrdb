@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -324,6 +325,14 @@ func WithCompactionInterval(interval time.Duration) ServerOption {
 	}
 }
 
+// WithCompactionClock sets the time source the compaction scheduler stamps a
+// period policy's revision samples with and ages them by against the policy's
+// retain period. The samples are replicated, so every node of a cluster must
+// be given the same clock. Nil keeps the real clock.
+func WithCompactionClock(c clock.Clock) ServerOption {
+	return func(o *serverOptions) { o.compactionClock = c }
+}
+
 // startCompactionScheduler starts the scheduler. It runs on every node; each
 // pass acts only on the stores this node leads or holds alone.
 func (s *Server) startCompactionScheduler() {
@@ -331,10 +340,14 @@ func (s *Server) startCompactionScheduler() {
 	if interval <= 0 {
 		interval = DefaultCompactionInterval
 	}
+	now := time.Now
+	if c := s.opts.compactionClock; c != nil {
+		now = c.Now
+	}
 	scheduler := &compactionScheduler{
 		stores:   s.compactionStores,
 		interval: interval,
-		now:      time.Now,
+		now:      now,
 		logger:   s.logger,
 	}
 	ctx, cancel := context.WithCancel(context.Background())

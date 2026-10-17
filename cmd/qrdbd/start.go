@@ -85,6 +85,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdkgo "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -1412,11 +1413,12 @@ func runStart(f *startFlags) (err error) {
 	// the SM, the WatchHub delivers change events to watchers, and
 	// time-series storage is lazily created by the SM when the DB opens.
 	//
-	// The replicated audit chain is not among them: buildSMCreateFunc
-	// attaches a fresh audit.Chain to every mvcc/pebble state machine it
-	// creates, unconditionally, exactly like lr is attached: it must never
-	// be conditioned on per-node configuration, because a replica missing
-	// it answers protocol.OpAuditAppend with a refusal while a sibling
+	// The log registry is not among them: buildSMCreateFunc attaches a
+	// fresh vlog.Chain -- the verifiable logs and the replicated audit
+	// chain's instance -- to every mvcc/pebble state machine it creates,
+	// unconditionally, exactly like lr is attached: it must never be
+	// conditioned on per-node configuration, because a replica missing it
+	// answers protocol.OpAuditAppend with a refusal while a sibling
 	// replica that has it applies the write, which is state divergence
 	// within the same Raft group, not a degraded feature. Whether the
 	// opcode is ever proposed is the featuregate.AuditAppend gate's
@@ -3726,7 +3728,7 @@ func shutdownNode(node io.Closer) error {
 // file storage are opened on that encfs too, and memory storage persists
 // nothing.
 //
-// Every state machine the returned function creates gets a fresh audit.Chain
+// Every state machine the returned function creates gets a fresh vlog.Chain
 // of its own: Chain.Restore replaces the whole head table with what one
 // state machine's storage holds, so a chain shared by two Raft groups on this
 // node would number one group's events after the other's and let either
@@ -3747,7 +3749,7 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, h
 	case "mvcc":
 		return store.NewMVCCCreateFuncWith(pebbleOpts,
 			store.WithLessor(lr),
-			func(s *store.MVCCStateMachine) { s.SetAuditChain(audit.NewChain()) },
+			store.WithLogs(),
 			store.WithWatchHub(hub),
 			store.WithTimeSeriesEnabled(),
 		), nil
@@ -3755,7 +3757,7 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, h
 		return store.NewPebbleCreateFuncWith(pebbleOpts,
 			func(s *store.PebbleStateMachine) {
 				s.SetLessor(lr)
-				s.SetAuditChain(audit.NewChain())
+				s.SetLogs(vlog.NewChain())
 				s.SetWatchHub(hub)
 				s.SetTimeSeriesEnabled(true)
 			},

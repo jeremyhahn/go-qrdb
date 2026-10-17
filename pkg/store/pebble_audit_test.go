@@ -28,21 +28,22 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
-// openStoreWithAuditChain creates a PebbleStateMachine with a replicated
-// audit Chain attached, mirroring openStoreWithLessor exactly.
+// openStoreWithAuditChain creates a PebbleStateMachine with a log registry
+// attached, mirroring openStoreWithLessor exactly, and returns the
+// registry's audit instance.
 func openStoreWithAuditChain(t *testing.T) (*PebbleStateMachine, *audit.Chain) {
 	t.Helper()
 	s := NewPebbleStateMachine(nil)
-	c := audit.NewChain()
-	s.SetAuditChain(c)
+	s.SetLogs(vlog.NewChain())
 	dir := filepath.Join(t.TempDir(), "db")
 	if _, err := s.Open(context.Background(), dir, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
-	return s, c
+	return s, s.AuditChain()
 }
 
 func auditEvent(tenantID string) audit.AuditEvent {
@@ -74,32 +75,38 @@ func rawAuditAppendCmd(tenantID string, body []byte) []byte {
 	return buf
 }
 
-// TestPebbleStateMachine_SetAuditChain exercises the setter/getter pair,
+// TestPebbleStateMachine_SetLogs exercises the setter/getter pair,
 // mirroring TestPebbleStateMachine_SetLessor.
-func TestPebbleStateMachine_SetAuditChain(t *testing.T) {
+func TestPebbleStateMachine_SetLogs(t *testing.T) {
 	s := NewPebbleStateMachine(nil)
-	if s.AuditChain() != nil {
-		t.Fatal("expected nil audit chain before SetAuditChain")
+	if s.Logs() != nil || s.AuditChain() != nil {
+		t.Fatal("expected no registry and no audit chain before SetLogs")
 	}
-	c := audit.NewChain()
-	s.SetAuditChain(c)
-	if s.AuditChain() != c {
-		t.Fatal("AuditChain() did not return the attached chain")
+	l := vlog.NewChain()
+	s.SetLogs(l)
+	if s.Logs() != l {
+		t.Fatal("Logs() did not return the attached registry")
+	}
+	if s.AuditChain() == nil {
+		t.Fatal("AuditChain() is nil with a registry attached")
 	}
 }
 
-// TestMVCCStateMachine_AuditChain_BeforeOpen asserts the pre-Open getter
-// answers from the state machine's own stored field, exactly as
+// TestMVCCStateMachine_Logs_BeforeOpen asserts the pre-Open getters answer
+// from the state machine's own stored field, exactly as
 // MVCCStateMachine.Lessor() does, before an engine exists to delegate to.
-func TestMVCCStateMachine_AuditChain_BeforeOpen(t *testing.T) {
+func TestMVCCStateMachine_Logs_BeforeOpen(t *testing.T) {
 	s := NewMVCCStateMachine(nil)
-	if s.AuditChain() != nil {
-		t.Fatal("expected nil audit chain before SetAuditChain")
+	if s.Logs() != nil || s.AuditChain() != nil {
+		t.Fatal("expected no registry and no audit chain before SetLogs")
 	}
-	c := audit.NewChain()
-	s.SetAuditChain(c)
-	if s.AuditChain() != c {
-		t.Fatal("AuditChain() before Open() did not return the attached chain")
+	l := vlog.NewChain()
+	s.SetLogs(l)
+	if s.Logs() != l {
+		t.Fatal("Logs() before Open() did not return the attached registry")
+	}
+	if s.AuditChain() == nil {
+		t.Fatal("AuditChain() before Open() is nil with a registry attached")
 	}
 }
 
@@ -175,7 +182,7 @@ func TestPebbleStateMachine_AuditPrune(t *testing.T) {
 // and asserts the chain continues rather than restarting at sequence 1.
 func TestPebbleStateMachine_AuditAppend_SurvivesRestart(t *testing.T) {
 	s := NewPebbleStateMachine(nil)
-	s.SetAuditChain(audit.NewChain())
+	s.SetLogs(vlog.NewChain())
 	dir := filepath.Join(t.TempDir(), "db")
 	if _, err := s.Open(context.Background(), dir, nil); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -186,7 +193,7 @@ func TestPebbleStateMachine_AuditAppend_SurvivesRestart(t *testing.T) {
 	}
 
 	s2 := NewPebbleStateMachine(nil)
-	s2.SetAuditChain(audit.NewChain())
+	s2.SetLogs(vlog.NewChain())
 	t.Cleanup(func() { _ = s2.Close(context.Background()) })
 	if _, err := s2.Open(context.Background(), dir, nil); err != nil {
 		t.Fatalf("Open (restart): %v", err)
@@ -280,7 +287,7 @@ func TestPebbleStateMachine_AuditPrune_MalformedCutoff(t *testing.T) {
 // replica reaches it identically -- so it must be encoded as an application
 // refusal (statemachine.RefusalResult), exactly like an invalid lease TTL,
 // leaving the state machine free to keep applying later entries. Only a
-// genuine local storage fault (*audit.TableWriteError) may halt apply.
+// genuine local storage fault (*vlog.TableWriteError) may halt apply.
 func TestPebbleStateMachine_AuditAppend_MissingTimestampIsARefusalNotAHalt(t *testing.T) {
 	s, _ := openStoreWithAuditChain(t)
 	ev := auditEvent("acme")

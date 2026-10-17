@@ -524,6 +524,9 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 	return store.NewMVCCCreateFuncWith(
 		[]store.Option{store.WithEncryptor(enc)},
 		store.WithLessor(lessor),
+		// A registry of its own per state machine, so the many tenant and
+		// database groups on a node never share heads.
+		store.WithLogs(),
 		store.WithWatchHub(hub),
 		store.WithTimeSeriesEnabled(),
 	)

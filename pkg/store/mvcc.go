@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -60,7 +61,7 @@ type MVCCStateMachine struct {
 	// Pre-Open configuration stored until Open() is called.
 	hub              *watch.Hub
 	lessor           *lease.Lessor
-	auditChain       *audit.Chain
+	logs             *vlog.Chain
 	enableTimeSeries bool
 
 	// noSync disables fsync on PebbleDB writes. When true, batch.Commit()
@@ -121,24 +122,32 @@ func (s *MVCCStateMachine) Lessor() *lease.Lessor {
 	return s.lessor
 }
 
-// SetAuditChain attaches a replicated audit Chain to the state machine. When
-// set, protocol.OpAuditAppend commands are processed. Must be called before
-// the state machine is opened.
-func (s *MVCCStateMachine) SetAuditChain(c *audit.Chain) {
+// SetLogs attaches the state machine's log registry: the named verifiable
+// logs protocol.OpVerifiableLog applies to and the audit instance
+// protocol.OpAuditAppend applies to. Must be called before the state machine
+// is opened.
+func (s *MVCCStateMachine) SetLogs(l *vlog.Chain) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.auditChain = c
+	s.logs = l
 }
 
-// AuditChain returns the attached replicated audit Chain. Returns nil if none
-// is configured.
+// Logs returns the attached log registry. Returns nil if none is configured.
+func (s *MVCCStateMachine) Logs() *vlog.Chain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs
+}
+
+// AuditChain returns the audit instance of the attached log registry.
+// Returns nil if none is configured.
 func (s *MVCCStateMachine) AuditChain() *audit.Chain {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.engine != nil {
 		return s.engine.AuditChain()
 	}
-	return s.auditChain
+	return audit.ChainOn(s.logs)
 }
 
 // SetTimeSeries attaches a time-series storage engine to the state machine.
@@ -191,8 +200,8 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	if s.lessor != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCLessor(s.lessor))
 	}
-	if s.auditChain != nil {
-		engineOpts = append(engineOpts, engine.WithMVCCAuditChain(s.auditChain))
+	if s.logs != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCLogs(s.logs))
 	}
 	// Create time-series storage if enabled. It rides the same storage.Storage
 	// the engine itself is built over, so a time-series write lands in the
@@ -252,6 +261,26 @@ func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results
 		return &NotOpenError{}
 	}
 
+	if err := s.update(entries, results); err != nil {
+		return s.resyncLogs(err)
+	}
+	return nil
+}
+
+// resyncLogs rebuilds the log registry from committed storage after an
+// Update that did not commit, exactly as PebbleStateMachine.resyncLogs.
+func (s *MVCCStateMachine) resyncLogs(applyErr error) error {
+	if s.logs == nil {
+		return applyErr
+	}
+	if err := s.logs.Restore(s.storage); err != nil {
+		return &LogsResyncError{ApplyErr: applyErr, RestoreErr: err}
+	}
+	return applyErr
+}
+
+// update applies entries in one batch; Update holds s.mu.
+func (s *MVCCStateMachine) update(entries []sm.Entry, results []sm.Result) error {
 	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
@@ -480,8 +509,8 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 	if s.lessor != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCLessor(s.lessor))
 	}
-	if s.auditChain != nil {
-		engineOpts = append(engineOpts, engine.WithMVCCAuditChain(s.auditChain))
+	if s.logs != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCLogs(s.logs))
 	}
 	if s.engine != nil && s.engine.TimeSeries() != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCTimeSeries(s.engine.TimeSeries()))

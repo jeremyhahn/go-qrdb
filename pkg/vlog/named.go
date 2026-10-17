@@ -1,0 +1,458 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package vlog
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"maps"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/transparency-dev/merkle/compact"
+	"github.com/transparency-dev/merkle/rfc6962"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+)
+
+// HashSHA256 is the one tree hash a log may name: RFC 9162 / RFC 6962 tree
+// hashing over SHA-256, with the 0x00 leaf and 0x01 node prefixes.
+const HashSHA256 = "sha256"
+
+// MaxAppendPerCommand caps how many entries one append stages, as
+// MaxPrunePerCommand caps a prune and an ExpireBodies call.
+const MaxAppendPerCommand = 10000
+
+// hasher is the tree hasher every log uses; factory builds compact ranges
+// over it. Both are the merkle library's: go-qrdb hashes nothing itself.
+var (
+	hasher  = rfc6962.DefaultHasher
+	factory = &compact.RangeFactory{Hash: hasher.HashChildren}
+)
+
+// LogID names one log: the tenant that owns it, the database it lives in and
+// its name within that database.
+type LogID struct {
+	TenantID string
+	Database string
+	Log      string
+}
+
+// Validate refuses a name that would not address exactly one log: any of the
+// three containing '/', which ValidateTenantID refuses for the audit table's
+// tenant segment for the same reason, or an empty database or log name.
+func (id LogID) Validate() error {
+	if strings.Contains(id.TenantID, "/") {
+		return &InvalidLogNameError{Field: "tenant", Name: id.TenantID}
+	}
+	if id.Database == "" || strings.Contains(id.Database, "/") {
+		return &InvalidLogNameError{Field: "database", Name: id.Database}
+	}
+	if id.Log == "" || strings.Contains(id.Log, "/") {
+		return &InvalidLogNameError{Field: "log", Name: id.Log}
+	}
+	return nil
+}
+
+// String returns id as tenant/database/log.
+func (id LogID) String() string {
+	return id.TenantID + "/" + id.Database + "/" + id.Log
+}
+
+// Descriptor is what a log's owner sets at create, stored as the log's "d"
+// record.
+type Descriptor struct {
+	// Origin is the log's identity, the first line of every checkpoint for
+	// it: non-empty, valid UTF-8, no control characters.
+	Origin string `json:"origin"`
+
+	// Hash is the tree hash; HashSHA256 is the only one.
+	Hash string `json:"hash"`
+
+	// VerifierKeys are the keys a checkpoint's signature is checked against,
+	// opaque to go-qrdb.
+	VerifierKeys []string `json:"verifier_keys,omitempty"`
+
+	// AllowExpireBodies permits ExpireBodies on the log.
+	AllowExpireBodies bool `json:"allow_expire_bodies,omitempty"`
+}
+
+// validate refuses a descriptor Create cannot store.
+func (d Descriptor) validate() error {
+	if d.Origin == "" || !utf8.ValidString(d.Origin) || strings.ContainsFunc(d.Origin, unicode.IsControl) {
+		return &InvalidDescriptorError{Reason: "origin must be non-empty UTF-8 without control characters"}
+	}
+	if d.Hash != HashSHA256 {
+		return &InvalidDescriptorError{Reason: "unsupported hash " + d.Hash}
+	}
+	return nil
+}
+
+// logState is the in-memory half of one log's head record: size is the
+// number of entries, lo the lowest index whose body has not expired, hashes
+// the compact range of [0, size), and allowExpire the descriptor's flag.
+type logState struct {
+	size        uint64
+	lo          uint64
+	hashes      [][]byte
+	allowExpire bool
+}
+
+// getFunc reads one record, answering nil, nil for an absent key as
+// storage.Reader.Get does.
+type getFunc func(key []byte) ([]byte, error)
+
+// restoreLogs reads every named log's descriptor and head from r. It visits
+// each log once, seeking past the log's entries and nodes rather than
+// scanning them, so its cost is in the number of logs, not their size.
+func restoreLogs(r storage.Reader) (map[LogID]logState, error) {
+	logs := make(map[LogID]logState)
+	it := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: []byte(LogTablePrefix),
+		UpperBound: prefixEnd([]byte(LogTablePrefix)),
+	})
+	for ok := it.SeekToFirst(); ok && it.Valid(); {
+		// Cloned for the same reason Restore captures its key: the slice
+		// Key() returns is not the caller's past the next iterator call.
+		key := bytes.Clone(it.Key())
+		id, prefix, parsed := parseLogPrefix(key)
+		if !parsed {
+			_ = it.Close()
+			return nil, &CorruptTableError{Key: string(key), Reason: "key outside any log's prefix"}
+		}
+		st, err := readLogState(r.Get, id)
+		if err != nil {
+			_ = it.Close()
+			return nil, err
+		}
+		logs[id] = st
+		ok = it.Seek(prefixEnd(prefix))
+	}
+	if err := it.Error(); err != nil {
+		_ = it.Close()
+		return nil, &TableReadError{Err: err}
+	}
+	if err := it.Close(); err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	return logs, nil
+}
+
+// readLogState reads id's descriptor and head records. Create stages both,
+// so a log with either missing is corrupt.
+func readLogState(get getFunc, id LogID) (logState, error) {
+	dk := descriptorKey(id)
+	raw, err := get(dk)
+	if err != nil {
+		return logState{}, &TableReadError{Err: err}
+	}
+	var desc Descriptor
+	if raw == nil || json.Unmarshal(raw, &desc) != nil {
+		return logState{}, &CorruptTableError{Key: string(dk), Reason: "missing or malformed descriptor"}
+	}
+	size, lo, hashes, err := readLogHead(get, id)
+	if missing := (*LogNotFoundError)(nil); errors.As(err, &missing) {
+		return logState{}, &CorruptTableError{Key: string(logHeadKey(id)), Reason: "descriptor without a head"}
+	}
+	if err != nil {
+		return logState{}, err
+	}
+	return logState{size: size, lo: lo, hashes: hashes, allowExpire: desc.AllowExpireBodies}, nil
+}
+
+// readLogHead reads and decodes id's head record, answering
+// *LogNotFoundError when there is none.
+func readLogHead(get getFunc, id LogID) (size, lo uint64, hashes [][]byte, err error) {
+	hk := logHeadKey(id)
+	raw, err := get(hk)
+	if err != nil {
+		return 0, 0, nil, &TableReadError{Err: err}
+	}
+	if raw == nil {
+		return 0, 0, nil, &LogNotFoundError{ID: id}
+	}
+	size, lo, hashes, ok := decodeLogHead(raw)
+	if !ok {
+		return 0, 0, nil, &CorruptTableError{Key: string(hk), Reason: "malformed head record"}
+	}
+	return size, lo, hashes, nil
+}
+
+// readHash reads the tree node at key, which must be stored: every perfect
+// subtree a proof or a root names was completed by an earlier append.
+func readHash(get getFunc, key []byte) ([]byte, error) {
+	v, err := get(key)
+	if err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	if len(v) != hashSize {
+		return nil, &CorruptTableError{Key: string(key), Reason: "missing or malformed tree node"}
+	}
+	return v, nil
+}
+
+// readNodes reads the hashes of the tree nodes ids names, in order.
+func readNodes(get getFunc, id LogID, ids []compact.NodeID) ([][]byte, error) {
+	hashes := make([][]byte, len(ids))
+	for i, nid := range ids {
+		h, err := readHash(get, nodeKey(id, nid.Level, nid.Index))
+		if err != nil {
+			return nil, err
+		}
+		hashes[i] = h
+	}
+	return hashes, nil
+}
+
+// rangeRoot returns the root of id's tree of size whose compact range is
+// hashes. The range is the head's own or one read node by node from the IDs
+// compact.RangeNodes names, so it always has the shape size requires.
+func rangeRoot(id LogID, size uint64, hashes [][]byte) ([]byte, error) {
+	if size == 0 {
+		return hasher.EmptyRoot(), nil
+	}
+	rng, err := factory.NewRange(0, size, hashes)
+	if err != nil {
+		return nil, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
+	}
+	root, err := rng.GetRootHash(nil)
+	if err != nil {
+		return nil, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
+	}
+	return root, nil
+}
+
+// rootAt returns the root of id's tree at size, from the stored perfect
+// subtrees covering [0, size).
+func rootAt(get getFunc, id LogID, size uint64) ([]byte, error) {
+	hashes, err := readNodes(get, id, compact.RangeNodes(0, size, nil))
+	if err != nil {
+		return nil, err
+	}
+	return rangeRoot(id, size, hashes)
+}
+
+// BeginUpdate drops the tree nodes and checkpoints staged by the previous
+// Update call. A state machine calls it at the start of every Update call,
+// once that call's predecessor has committed, so apply reads through exactly
+// the records the current call has staged and not yet committed.
+func (c *Chain) BeginUpdate() {
+	c.mu.Lock()
+	clear(c.staged)
+	c.mu.Unlock()
+}
+
+// stagedGet returns a getFunc that reads the current call's staged records
+// before r.
+func (c *Chain) stagedGet(r storage.Reader) getFunc {
+	return func(key []byte) ([]byte, error) {
+		if v, ok := c.staged[string(key)]; ok {
+			return v, nil
+		}
+		return r.Get(key)
+	}
+}
+
+// Create stages a new log's descriptor and empty head into w. It refuses an
+// invalid name or descriptor and a log that already exists.
+func (c *Chain) Create(w Writer, id LogID, desc Descriptor) error {
+	if err := id.Validate(); err != nil {
+		return err
+	}
+	if err := desc.validate(); err != nil {
+		return err
+	}
+	// A struct of strings, a string slice and a bool always marshals, and
+	// always to the same bytes.
+	body, _ := json.Marshal(desc)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.logs[id]; ok {
+		return &LogExistsError{ID: id}
+	}
+	if err := w.Set(descriptorKey(id), body); err != nil {
+		return &TableWriteError{Err: err}
+	}
+	if err := w.Set(logHeadKey(id), encodeLogHead(0, 0, nil)); err != nil {
+		return &TableWriteError{Err: err}
+	}
+	c.logs[id] = logState{allowExpire: desc.AllowExpireBodies}
+	return nil
+}
+
+// AppendEntries assigns entries the next indices of id from the Chain's
+// in-memory head, and stages each entry, its leaf hash, every perfect
+// subtree node the append completes and the new head into w. It returns the
+// first assigned index. The leaf and node hashes come from the merkle
+// library's compact range, which reports each node as the append completes
+// it; nothing is read from storage.
+func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint64, err error) {
+	if err := id.Validate(); err != nil {
+		return 0, err
+	}
+	if len(entries) == 0 || len(entries) > MaxAppendPerCommand {
+		return 0, &AppendBatchError{Count: len(entries)}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	st, ok := c.logs[id]
+	if !ok {
+		return 0, &LogNotFoundError{ID: id}
+	}
+	// The range is built over a copy, so a failed append leaves st as it was.
+	rng, err := factory.NewRange(0, st.size, append([][]byte(nil), st.hashes...))
+	if err != nil {
+		return 0, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
+	}
+
+	staged := make(map[string][]byte)
+	var stageErr error
+	visit := func(nid compact.NodeID, hash []byte) {
+		if stageErr != nil {
+			return
+		}
+		k := nodeKey(id, nid.Level, nid.Index)
+		if err := w.Set(k, hash); err != nil {
+			stageErr = &TableWriteError{Err: err}
+			return
+		}
+		staged[string(k)] = hash
+	}
+	for i, e := range entries {
+		if err := w.Set(entryKey(id, st.size+uint64(i)), e); err != nil {
+			return 0, &TableWriteError{Err: err}
+		}
+		if err := rng.Append(hasher.HashLeaf(e), visit); err != nil {
+			return 0, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
+		}
+		if stageErr != nil {
+			return 0, stageErr
+		}
+	}
+
+	size := st.size + uint64(len(entries))
+	hashes := rng.Hashes()
+	if err := w.Set(logHeadKey(id), encodeLogHead(size, st.lo, hashes)); err != nil {
+		return 0, &TableWriteError{Err: err}
+	}
+	maps.Copy(c.staged, staged)
+	first = st.size
+	st.size, st.hashes = size, hashes
+	c.logs[id] = st
+	return first, nil
+}
+
+// Checkpoint stages a signed checkpoint for id's tree at size, after
+// checking that size is no larger than the log's and that root is the tree's
+// root at size. The root is computed from the stored perfect subtrees
+// covering [0, size), read from r through the nodes the current Update call
+// has staged, so the answer does not depend on whether r sees the batch.
+// The signature is not verified here: the proposing service and every client
+// verify it, and apply stays independent of a verifier's version. A
+// checkpoint is a record beside the tree, never a leaf of it, and a size has
+// at most one.
+func (c *Chain) Checkpoint(r storage.Reader, w Writer, id LogID, size uint64, root, signed []byte) error {
+	if err := id.Validate(); err != nil {
+		return err
+	}
+	if len(signed) == 0 {
+		return &EmptyCheckpointError{Size: size}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	st, ok := c.logs[id]
+	if !ok {
+		return &LogNotFoundError{ID: id}
+	}
+	if size > st.size {
+		return &SizeOutOfRangeError{Size: size, Limit: st.size}
+	}
+	get := c.stagedGet(r)
+	ck := checkpointKey(id, size)
+	existing, err := get(ck)
+	if err != nil {
+		return &TableReadError{Err: err}
+	}
+	if existing != nil {
+		return &CheckpointExistsError{Size: size}
+	}
+
+	var want []byte
+	if size == st.size {
+		want, err = rangeRoot(id, st.size, st.hashes)
+	} else {
+		want, err = rootAt(get, id, size)
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(want, root) {
+		return &CheckpointRootMismatchError{Size: size}
+	}
+
+	if err := w.Set(ck, signed); err != nil {
+		return &TableWriteError{Err: err}
+	}
+	c.staged[string(ck)] = signed
+	return nil
+}
+
+// ExpireBodies deletes id's entry bodies in [lo, upper), where lo is the
+// log's own low-watermark and upper is cutoff clamped to the log's size and
+// to lo+MaxPrunePerCommand, then advances lo to upper. Leaf and node hashes
+// stay, so the tree and every proof stay valid; an expired entry reads as
+// expired. Both bounds come from the in-memory head alone, as Prune's do. It
+// returns the number of bodies expired; the caller issues it again with the
+// same cutoff to continue past the cap.
+func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, err error) {
+	if err := id.Validate(); err != nil {
+		return 0, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	st, ok := c.logs[id]
+	if !ok {
+		return 0, &LogNotFoundError{ID: id}
+	}
+	if !st.allowExpire {
+		return 0, &ExpireNotAllowedError{ID: id}
+	}
+	upper := min(cutoff, st.size, st.lo+MaxPrunePerCommand)
+	if upper <= st.lo {
+		return 0, nil
+	}
+	for index := st.lo; index < upper; index++ {
+		if err := w.Delete(entryKey(id, index)); err != nil {
+			return int(index - st.lo), &TableWriteError{Err: err}
+		}
+	}
+	expired = int(upper - st.lo)
+	if err := w.Set(logHeadKey(id), encodeLogHead(st.size, upper, st.hashes)); err != nil {
+		return expired, &TableWriteError{Err: err}
+	}
+	st.lo = upper
+	c.logs[id] = st
+	return expired, nil
+}

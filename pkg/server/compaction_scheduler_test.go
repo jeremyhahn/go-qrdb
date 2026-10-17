@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -392,6 +393,19 @@ func TestWithCompactionInterval(t *testing.T) {
 	WithCompactionInterval(time.Second)(&o)
 	if o.compactionInterval != time.Second {
 		t.Fatal("interval not set")
+	}
+}
+
+func TestWithCompactionClock(t *testing.T) {
+	var o serverOptions
+	WithCompactionClock(nil)(&o)
+	if o.compactionClock != nil {
+		t.Fatal("a nil clock was kept")
+	}
+	fake := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	WithCompactionClock(fake)(&o)
+	if o.compactionClock != fake {
+		t.Fatal("clock not set")
 	}
 }
 

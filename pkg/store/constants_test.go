@@ -17,10 +17,10 @@ package store
 import (
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // TestIsNodeLocalKey_ReplicatedTablesAreNeverNodeLocal is the property a
@@ -41,8 +41,10 @@ func TestIsNodeLocalKey_ReplicatedTablesAreNeverNodeLocal(t *testing.T) {
 		{"the last-applied index is node-local", []byte(metaKeyLastApplied), true},
 		{"a lease-table record is replicated, not node-local", []byte(lease.TablePrefix + "l/x"), false},
 		{"a compaction-table record is replicated, not node-local", []byte(compaction.TablePrefix + "p"), false},
-		{"an audit-table head record is replicated, not node-local", []byte(audit.TablePrefix + "h/acme"), false},
-		{"an audit-table event record is replicated, not node-local", []byte(audit.TablePrefix + "e/acme/1"), false},
+		{"an audit-table head record is replicated, not node-local", []byte(vlog.TablePrefix + "h/acme"), false},
+		{"an audit-table event record is replicated, not node-local", []byte(vlog.TablePrefix + "e/acme/1"), false},
+		{"a named-log head record is replicated, not node-local", []byte(vlog.LogTablePrefix + "acme/app/ledger/h"), false},
+		{"a named-log tree node is replicated, not node-local", []byte(vlog.LogTablePrefix + "acme/app/ledger/n/\x00/\x00\x00\x00\x00\x00\x00\x00\x01"), false},
 		{"an import-staging chunk is replicated, not node-local", importstage.ChunkKey("sess", 3), false},
 		{"an import-staging session record is replicated, not node-local", importstage.MetaKey("sess"), false},
 		{"an import-staging tenant-index entry is replicated, not node-local", importstage.TenantIndexKey("acme", "sess"), false},

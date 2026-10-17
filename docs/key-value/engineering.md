@@ -880,6 +880,13 @@ catalog and its samples in memory, then in a file in the node's data
 directory -- run by whichever node's catalog held the database, lost with
 that node, and reset by a restart. It is now replicated state.)*
 
+The scheduler stamps and ages samples by the wall clock unless the server is
+given `server.WithCompactionClock`, a `clock.Clock` for this schedule alone;
+`server.WithClock` does not reach it. The samples are replicated, so every node
+of a cluster is given the same clock. The node tests drive the schedule on a
+fake clock this way, which makes "the new leader continues from the replicated
+samples" a property they assert rather than a race against the wall clock.
+
 **Clock skew between leaders.** A sample's time is the wall clock of the
 leader that took it, and a period policy's target is read against the wall
 clock of the leader running it. When leadership moves between nodes whose

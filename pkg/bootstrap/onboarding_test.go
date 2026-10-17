@@ -1210,6 +1210,64 @@ func TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget(t *testing.T) {
 	}
 }
 
+// failThenStallUsers fails its first CreateUser with err and stalls every
+// later one until its context ends.
+type failThenStallUsers struct {
+	*fakeUsers
+	err   error
+	calls int
+}
+
+func (s *failThenStallUsers) CreateUser(ctx context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+	s.calls++
+	if s.calls == 1 {
+		return nil, s.err
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestCompletePendingTenantAdminWithin_BudgetCutOffKeepsTheCause proves that
+// when the budget runs out part-way through an attempt, the error returned is
+// the one that kept the admin pending, not the cut-off: the attempt bound
+// outlasts the budget, so the second attempt is ended by the budget alone.
+func TestCompletePendingTenantAdminWithin_BudgetCutOffKeepsTheCause(t *testing.T) {
+	boom := errors.New("boom")
+	users := &failThenStallUsers{fakeUsers: &fakeUsers{}, err: boom}
+	_, deps, _ := provisionAutoUnsealTenant(t, users)
+	bounds := testAdminCompletionBounds
+	bounds.Budget = 50 * time.Millisecond
+	bounds.AttemptTimeout = time.Minute
+
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
+	if done || !errors.Is(err, boom) {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false and the failure before the cut-off", done, err)
+	}
+	if users.calls != 2 {
+		t.Errorf("CreateUser calls = %d, want the failed attempt then the one the budget cut off", users.calls)
+	}
+}
+
+// TestCompletePendingTenantAdminWithin_FirstAttemptCutOffReportsTheBudget
+// proves the other side: with no earlier failure to report, an attempt the
+// budget cuts off reports the deadline.
+func TestCompletePendingTenantAdminWithin_FirstAttemptCutOffReportsTheBudget(t *testing.T) {
+	users := &failThenStallUsers{fakeUsers: &fakeUsers{}}
+	users.calls = 1 // every call stalls
+	_, deps, _ := provisionAutoUnsealTenant(t, users)
+	bounds := testAdminCompletionBounds
+	bounds.Budget = 50 * time.Millisecond
+	bounds.AttemptTimeout = time.Minute
+
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
+	if done || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false and the budget's deadline", done, err)
+	}
+	if users.calls != 2 {
+		t.Errorf("CreateUser calls = %d, want the one attempt the budget cut off", users.calls-1)
+	}
+}
+
 // TestCompletePendingTenantAdminWithin_RequiresLogger proves the bounded
 // completion refuses a composition with no logger, as the unbounded one does.
 func TestCompletePendingTenantAdminWithin_RequiresLogger(t *testing.T) {

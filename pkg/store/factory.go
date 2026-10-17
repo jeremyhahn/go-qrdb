@@ -20,8 +20,8 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -74,17 +74,28 @@ func WithLessor(lr *lease.Lessor) MVCCOption {
 	}
 }
 
-// WithAuditChain attaches a replicated audit.Chain to the MVCC state
-// machine. Every state machine the registry builds for a given sm_type MUST
-// receive the same kind of attachment (this option mirrors WithLessor): a
-// chain conditioned on per-node configuration would let one replica apply
-// protocol.OpAuditAppend while a sibling replica of the same Raft group
-// refuses it for want of a Chain, which is state divergence, not a
-// degraded feature. The featuregate.AuditAppend gate -- not this
-// attachment -- is what controls whether the opcode is ever proposed.
-func WithAuditChain(c *audit.Chain) MVCCOption {
+// WithLogs attaches a log registry (vlog.Chain) of its own to every MVCC
+// state machine the create function builds. It is the one way a create
+// function attaches logs: the daemon, the per-tenant data plane and the SDK's
+// clustered node all compose it.
+//
+// The chain is built per machine, never shared: Chain.Restore replaces the
+// whole head table with what one state machine's storage holds, so a chain
+// shared by two Raft groups on a node would number one group's events after
+// the other's and let either group's open or recovery overwrite the other's
+// heads.
+//
+// Every state machine the registry builds for a given sm_type MUST receive
+// this attachment (it mirrors WithLessor): a chain conditioned on per-node
+// configuration would let one replica apply protocol.OpAuditAppend or
+// protocol.OpVerifiableLog while a sibling replica of the same Raft group
+// refuses it for want of a registry, which is state divergence, not a
+// degraded feature. The featuregate.AuditAppend and featuregate.VerifiableLog
+// gates -- not this attachment -- are what control whether the opcodes are
+// ever proposed.
+func WithLogs() MVCCOption {
 	return func(s *MVCCStateMachine) {
-		s.SetAuditChain(c)
+		s.SetLogs(vlog.NewChain())
 	}
 }
 

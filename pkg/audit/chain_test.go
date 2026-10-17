@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // fixedEvent returns a deterministic AuditEvent: every field a caller could
@@ -36,60 +37,6 @@ func fixedEvent(n int, tenantID string) AuditEvent {
 		Resource:  "barrier",
 		Action:    "unseal",
 		Outcome:   OutcomeSuccess,
-	}
-}
-
-// TestChain_AppendIsDeterministicAcrossReplicas is the core correctness
-// property: two independently constructed Chains, fed the identical sequence
-// of commands (the way two Raft replicas apply the identical committed log),
-// must compute byte-identical chains. Neither Chain ever reads from the
-// other; the only shared input is the sequence of fixedEvent values, which is
-// exactly what a committed Raft entry supplies in production.
-func TestChain_AppendIsDeterministicAcrossReplicas(t *testing.T) {
-	const tenantID = "acme"
-	replicaA := NewChain()
-	replicaB := NewChain()
-	storeA := memory.NewStorage()
-	storeB := memory.NewStorage()
-
-	for i := 0; i < 5; i++ {
-		seqA, err := replicaA.Append(storeA, tenantID, fixedEvent(i, tenantID))
-		if err != nil {
-			t.Fatalf("replica A append %d: %v", i, err)
-		}
-		seqB, err := replicaB.Append(storeB, tenantID, fixedEvent(i, tenantID))
-		if err != nil {
-			t.Fatalf("replica B append %d: %v", i, err)
-		}
-		if seqA != seqB {
-			t.Fatalf("event %d: sequence diverged: A=%d B=%d", i, seqA, seqB)
-		}
-	}
-
-	for i := uint64(1); i <= 5; i++ {
-		va, err := storeA.Get(eventKey(tenantID, i))
-		if err != nil {
-			t.Fatalf("read A seq %d: %v", i, err)
-		}
-		vb, err := storeB.Get(eventKey(tenantID, i))
-		if err != nil {
-			t.Fatalf("read B seq %d: %v", i, err)
-		}
-		if string(va) != string(vb) {
-			t.Fatalf("seq %d: replicas disagree on the stored record:\nA=%s\nB=%s", i, va, vb)
-		}
-	}
-
-	ha, err := storeA.Get(headKey(tenantID))
-	if err != nil {
-		t.Fatalf("read A head: %v", err)
-	}
-	hb, err := storeB.Get(headKey(tenantID))
-	if err != nil {
-		t.Fatalf("read B head: %v", err)
-	}
-	if string(ha) != string(hb) {
-		t.Fatal("replicas disagree on the final head record")
 	}
 }
 
@@ -109,7 +56,7 @@ func TestChain_PrevHashLinksToThePriorDigest(t *testing.T) {
 		if err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
-		raw, err := store.Get(eventKey(tenantID, seq))
+		raw, err := store.Get(vlog.EventKey(tenantID, seq))
 		if err != nil {
 			t.Fatalf("read seq %d: %v", seq, err)
 		}
@@ -124,78 +71,88 @@ func TestChain_PrevHashLinksToThePriorDigest(t *testing.T) {
 		} else if stored.PrevHash != prevHeadHex {
 			t.Fatalf("event %d: PrevHash = %q, want the prior head %q", i, stored.PrevHash, prevHeadHex)
 		}
-		headRaw, err := store.Get(headKey(tenantID))
-		if err != nil {
-			t.Fatalf("read head after append %d: %v", i, err)
-		}
-		_, _, digest, ok := decodeHead(headRaw)
-		if !ok {
-			t.Fatalf("head record after append %d does not decode", i)
-		}
+		_, _, digest := c.log.Head(tenantID)
 		prevHeadHex = "sha256:" + hex.EncodeToString(digest[:])
 	}
 }
 
-// TestChain_Restore rebuilds a fresh Chain from storage and asserts the next
-// Append continues the same sequence and the same digest a single
-// uninterrupted Chain would have produced -- the property a node restart or a
-// snapshot install depends on.
-func TestChain_Restore(t *testing.T) {
+// TestChainOn_SharesTheRegistry asserts the audit Chain ChainOn returns
+// writes through the registry it was given, so a state machine's audit
+// instance and its named logs advance one in-memory head table.
+func TestChainOn_SharesTheRegistry(t *testing.T) {
 	const tenantID = "acme"
-	store := memory.NewStorage()
-
-	reference := NewChain()
-	var referenceDigestAfter5 [32]byte
-	for i := 0; i < 5; i++ {
-		if _, err := reference.Append(store, tenantID, fixedEvent(i, tenantID)); err != nil {
-			t.Fatalf("reference append %d: %v", i, err)
-		}
+	logs := vlog.NewChain()
+	c := ChainOn(logs)
+	if _, err := c.Append(memory.NewStorage(), tenantID, fixedEvent(0, tenantID)); err != nil {
+		t.Fatalf("append: %v", err)
 	}
-	if _, _, d, ok := decodeHead(mustGet(t, store, headKey(tenantID))); ok {
-		referenceDigestAfter5 = d
-	} else {
-		t.Fatal("reference head does not decode")
-	}
-
-	restored := NewChain()
-	if err := restored.Restore(store); err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-
-	seq, err := restored.Append(store, tenantID, fixedEvent(5, tenantID))
-	if err != nil {
-		t.Fatalf("append after restore: %v", err)
-	}
-	if seq != 6 {
-		t.Fatalf("sequence after restore = %d, want 6 (continuing from the restored head)", seq)
-	}
-	raw := mustGet(t, store, eventKey(tenantID, 6))
-	var stored AuditEvent
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		t.Fatalf("decode seq 6: %v", err)
-	}
-	want := "sha256:" + hex.EncodeToString(referenceDigestAfter5[:])
-	if stored.PrevHash != want {
-		t.Fatalf("event after restore: PrevHash = %q, want %q (the pre-restore head)", stored.PrevHash, want)
+	if seq, _, _ := logs.Head(tenantID); seq != 1 {
+		t.Fatalf("registry head seq = %d, want 1", seq)
 	}
 }
 
-// TestChain_RestoreWithNoRecords leaves a fresh Chain's heads empty -- the
-// zero value for an unknown tenant -- so the first Append after a restore on
-// an empty table still starts the chain at sequence 1, exactly as a brand
-// new tenant would.
-func TestChain_RestoreWithNoRecords(t *testing.T) {
+// TestChainOn_NilRegistryIsNilChain asserts a state machine with no registry
+// has no audit chain either, so the apply path refuses OpAuditAppend as
+// unconfigured rather than dereferencing nil.
+func TestChainOn_NilRegistryIsNilChain(t *testing.T) {
+	if c := ChainOn(nil); c != nil {
+		t.Fatalf("ChainOn(nil) = %v, want nil", c)
+	}
+}
+
+// TestChain_RestoreContinuesTheChain asserts a Chain rebuilt from the table
+// alone -- a restart, or a snapshot recovered on another replica -- carries on
+// where the one that wrote it stopped: the next sequence number and a PrevHash
+// naming the restored head, not a second genesis.
+func TestChain_RestoreContinuesTheChain(t *testing.T) {
+	const tenantID = "acme"
+	writer := NewChain()
 	store := memory.NewStorage()
-	c := NewChain()
-	if err := c.Restore(store); err != nil {
-		t.Fatalf("restore: %v", err)
+	var lastSeq uint64
+	for i := 0; i < 3; i++ {
+		seq, err := writer.Append(store, tenantID, fixedEvent(i, tenantID))
+		if err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+		lastSeq = seq
 	}
-	seq, err := c.Append(store, "acme", fixedEvent(0, "acme"))
+	_, _, digest := writer.log.Head(tenantID)
+
+	restored := NewChain()
+	if err := restored.Restore(store); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	seq, err := restored.Append(store, tenantID, fixedEvent(3, tenantID))
 	if err != nil {
-		t.Fatalf("append: %v", err)
+		t.Fatalf("append after restore: %v", err)
 	}
-	if seq != 1 {
-		t.Fatalf("sequence = %d, want 1", seq)
+	if seq != lastSeq+1 {
+		t.Fatalf("seq after restore = %d, want %d", seq, lastSeq+1)
+	}
+	raw, err := store.Get(vlog.EventKey(tenantID, seq))
+	if err != nil {
+		t.Fatalf("read seq %d: %v", seq, err)
+	}
+	var stored AuditEvent
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode seq %d: %v", seq, err)
+	}
+	if want := "sha256:" + hex.EncodeToString(digest[:]); stored.PrevHash != want {
+		t.Fatalf("PrevHash after restore = %q, want the restored head %q", stored.PrevHash, want)
+	}
+}
+
+// TestChain_RestoreRefusesACorruptHead asserts Restore surfaces a malformed
+// head record as vlog's typed corruption error rather than starting the
+// tenant's chain over.
+func TestChain_RestoreRefusesACorruptHead(t *testing.T) {
+	store := memory.NewStorage()
+	if err := store.Set([]byte(vlog.TablePrefix+"h/acme"), []byte{1, 2, 3}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var corrupt *vlog.CorruptTableError
+	if err := NewChain().Restore(store); !errors.As(err, &corrupt) {
+		t.Fatalf("Restore = %v, want *vlog.CorruptTableError", err)
 	}
 }
 
@@ -270,104 +227,6 @@ func TestChain_QueryConfinesToTheRequestedTenant(t *testing.T) {
 	}
 }
 
-// TestChain_Prune deletes a prefix of the chain without disturbing the head,
-// so the surviving chain continues to extend correctly and a query over the
-// pruned range finds nothing there -- the replicated equivalent of the file
-// sink's retention window.
-func TestChain_Prune(t *testing.T) {
-	const tenantID = "acme"
-	store := memory.NewStorage()
-	c := NewChain()
-
-	for i := 0; i < 5; i++ {
-		if _, err := c.Append(store, tenantID, fixedEvent(i, tenantID)); err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-	}
-
-	deleted, err := c.Prune(store, tenantID, 3)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	if deleted != 2 {
-		t.Fatalf("pruned %d events, want 2 (sequences 1 and 2)", deleted)
-	}
-
-	page, err := c.Query(store, tenantID, Filter{Limit: 100})
-	if err != nil {
-		t.Fatalf("query after prune: %v", err)
-	}
-	if len(page.Events) != 3 {
-		t.Fatalf("query after prune returned %d events, want 3", len(page.Events))
-	}
-
-	// The chain still extends correctly: Prune never touches seq, so the
-	// next Append continues from sequence 5.
-	seq, err := c.Append(store, tenantID, fixedEvent(5, tenantID))
-	if err != nil {
-		t.Fatalf("append after prune: %v", err)
-	}
-	if seq != 6 {
-		t.Fatalf("sequence after prune = %d, want 6", seq)
-	}
-}
-
-// TestChain_Prune_NeverDeletesTheNewestEvent is the coordinator's ruling
-// (N2): a cutoff at or beyond the current head is clamped to head.seq, so a
-// chain always keeps at least one surviving record -- an anchor a verifier
-// can check the surviving chain against. Pruning with a cutoff equal to
-// seq+1 (every event, if taken literally) must still leave exactly one.
-func TestChain_Prune_NeverDeletesTheNewestEvent(t *testing.T) {
-	const tenantID = "acme"
-	store := memory.NewStorage()
-	c := NewChain()
-	for i := 0; i < 3; i++ {
-		if _, err := c.Append(store, tenantID, fixedEvent(i, tenantID)); err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-	}
-
-	deleted, err := c.Prune(store, tenantID, 100) // far beyond the head
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	if deleted != 2 {
-		t.Fatalf("pruned %d events, want 2 (everything strictly before the newest)", deleted)
-	}
-
-	page, err := c.Query(store, tenantID, Filter{Limit: 100})
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	if len(page.Events) != 1 {
-		t.Fatalf("got %d surviving events, want exactly 1 (the anchor)", len(page.Events))
-	}
-
-	// Pruning again with the same oversized cutoff is a no-op: there is
-	// nothing below the newest event left to delete.
-	deleted, err = c.Prune(store, tenantID, 100)
-	if err != nil {
-		t.Fatalf("second prune: %v", err)
-	}
-	if deleted != 0 {
-		t.Fatalf("second prune deleted %d, want 0 (the anchor is never deleted)", deleted)
-	}
-}
-
-// NOTE on B1 (Prune non-determinism under Raft batch packing): Chain itself
-// has no concept of "batch" at all -- Prune and Query both read ONLY
-// c.heads, never a storage.Reader -- so there is no meaningful
-// batched-vs-unbatched distinction to construct a regression test against
-// AT THIS LAYER; the prior bug was that Prune used to take a storage.Reader
-// and compute its delete range from a committed-storage READ, whose result
-// depended on whether the reader could see a same-batch, not-yet-committed
-// write. The real packing-variance regression test -- driving
-// [append, append, append, prune(3)] through one Update call versus four,
-// on a real PebbleStateMachine/MVCCEngine -- lives at the engine layer,
-// where "batch" is a real, observable thing: see
-// TestPebbleStateMachine_AuditPrune_IsIndependentOfBatchPacking and
-// TestMVCCEngine_AuditPrune_IsIndependentOfBatchPacking.
-
 // TestChain_Append_RefusesTenantMismatch asserts a conflicting ev.TenantID
 // is refused rather than silently overwritten ("stamped"): see
 // TenantMismatchError's doc comment for why overwriting would be worse.
@@ -391,7 +250,7 @@ func TestChain_Append_LeavesEmptyTenantIDAlone(t *testing.T) {
 	if _, err := c.Append(store, "system", ev); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	raw, err := store.Get(eventKey("system", 1))
+	raw, err := store.Get(vlog.EventKey("system", 1))
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -404,62 +263,23 @@ func TestChain_Append_LeavesEmptyTenantIDAlone(t *testing.T) {
 	}
 }
 
-// TestChain_RefusesTenantIDContainingSlash covers Append, Prune and Query
-// alike: a tenant id with '/' could carve a second segment inside another
-// tenant's range in the raw table's concatenated keys.
+// TestChain_RefusesTenantIDContainingSlash covers Append and Query alike: a
+// tenant id with '/' could carve a second segment inside another tenant's
+// range in the raw table's concatenated keys. Prune's refusal is pkg/vlog's.
 func TestChain_RefusesTenantIDContainingSlash(t *testing.T) {
 	store := memory.NewStorage()
 	c := NewChain()
 	const evil = "acme/evil"
 
 	_, err := c.Append(store, evil, fixedEvent(0, evil))
-	var invalid *InvalidTenantIDError
+	var invalid *vlog.InvalidTenantIDError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("Append: err = %v, want *InvalidTenantIDError", err)
-	}
-
-	_, err = c.Prune(store, evil, 1)
-	if !errors.As(err, &invalid) {
-		t.Fatalf("Prune: err = %v, want *InvalidTenantIDError", err)
 	}
 
 	_, err = c.Query(store, evil, Filter{})
 	if !errors.As(err, &invalid) {
 		t.Fatalf("Query: err = %v, want *InvalidTenantIDError", err)
-	}
-}
-
-// TestChain_Prune_CapsPerCommand asserts N6's per-command bound: a cutoff
-// far beyond the low-watermark deletes at most MaxPrunePerCommand events in
-// one call, and a second call continues from where the first left off.
-func TestChain_Prune_CapsPerCommand(t *testing.T) {
-	const tenantID = "acme"
-	store := memory.NewStorage()
-	c := NewChain()
-	const total = MaxPrunePerCommand + 10
-	for i := 0; i < total; i++ {
-		if _, err := c.Append(store, tenantID, fixedEvent(i%1000, tenantID)); err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-	}
-
-	deleted, err := c.Prune(store, tenantID, total) // cutoff far beyond lo
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	if deleted != MaxPrunePerCommand {
-		t.Fatalf("first prune deleted %d, want the cap %d", deleted, MaxPrunePerCommand)
-	}
-
-	deleted, err = c.Prune(store, tenantID, total)
-	if err != nil {
-		t.Fatalf("second prune: %v", err)
-	}
-	// Remaining to delete: total - MaxPrunePerCommand, minus 1 for the
-	// anchor (the newest event is never deleted).
-	wantSecond := total - MaxPrunePerCommand - 1
-	if deleted != wantSecond {
-		t.Fatalf("second prune deleted %d, want %d", deleted, wantSecond)
 	}
 }
 
@@ -528,17 +348,4 @@ func TestChain_QueryInvalidCursor(t *testing.T) {
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want *InvalidCursorError", err)
 	}
-}
-
-// --- small local helpers kept out of the production path ---
-
-func mustGet(t *testing.T, r interface {
-	Get(key []byte) ([]byte, error)
-}, key []byte) []byte {
-	t.Helper()
-	v, err := r.Get(key)
-	if err != nil {
-		t.Fatalf("get %q: %v", key, err)
-	}
-	return v
 }

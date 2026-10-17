@@ -20,15 +20,15 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // This file is the audit-replicated review's N7: fault-injection coverage
-// for Restore and Query, the two Chain methods that still read storage
-// after B1's fix. Prune is deliberately NOT covered here for a corrupt-key
-// or iterator-error case: B1 rewrote it to read nothing from storage at
-// all (see chain.go's Prune doc comment), so there is no iterator for a
-// fault to inject into -- the fix itself is what makes that case
-// unreachable, not an oversight.
+// for Query, the Chain method here that reads storage. Restore's own fault
+// coverage moved with it to pkg/vlog (log_fault_test.go), and Prune reads
+// nothing from storage at all after B1's fix (see pkg/vlog's Prune doc
+// comment), so there is no iterator for a fault to inject into -- the fix
+// itself is what makes that case unreachable, not an oversight.
 
 // memoryStorageWithRawKey returns a memory.Storage with exactly one raw key
 // set directly (bypassing Chain entirely), for tests that need a
@@ -70,41 +70,12 @@ func (r errReader) NewIterator(*storage.IteratorOptions) storage.Iterator {
 	return errIterator{err: r.err}
 }
 
-// TestChain_Restore_IteratorError covers Restore's head-scan iterator
-// reporting a fault: Restore must report *TableReadError wrapping the
-// underlying fault rather than silently restoring an empty (wrong) set of
-// heads.
-func TestChain_Restore_IteratorError(t *testing.T) {
-	c := NewChain()
-	err := c.Restore(errReader{err: errStorageFault})
-	var tre *TableReadError
-	if !errors.As(err, &tre) || !errors.Is(err, errStorageFault) {
-		t.Fatalf("Restore() err = %v, want *TableReadError wrapping %v", err, errStorageFault)
-	}
-}
-
-// TestChain_Restore_CorruptHeadRecord covers a head record present but not
-// decodeHead-shaped: Restore must refuse with *CorruptTableError naming the
-// offending key, not panic or silently treat it as absent.
-func TestChain_Restore_CorruptHeadRecord(t *testing.T) {
-	stg := memoryStorageWithRawKey(t, headKey("acme"), []byte{1, 2, 3})
-	c := NewChain()
-	err := c.Restore(stg)
-	var cte *CorruptTableError
-	if !errors.As(err, &cte) {
-		t.Fatalf("Restore() err = %v, want *CorruptTableError", err)
-	}
-	if cte.Key != string(headKey("acme")) {
-		t.Errorf("CorruptTableError.Key = %q, want %q", cte.Key, headKey("acme"))
-	}
-}
-
 // TestChain_Query_IteratorError covers Query's event-range iterator
 // reporting a fault.
 func TestChain_Query_IteratorError(t *testing.T) {
 	c := NewChain()
 	_, err := c.Query(errReader{err: errStorageFault}, "acme", Filter{Limit: 10})
-	var tre *TableReadError
+	var tre *vlog.TableReadError
 	if !errors.As(err, &tre) || !errors.Is(err, errStorageFault) {
 		t.Fatalf("Query() err = %v, want *TableReadError wrapping %v", err, errStorageFault)
 	}
@@ -114,14 +85,14 @@ func TestChain_Query_IteratorError(t *testing.T) {
 // valid AuditEvent JSON: Query must refuse with *CorruptTableError rather
 // than returning a zero-value event or panicking.
 func TestChain_Query_CorruptEventRecord(t *testing.T) {
-	stg := memoryStorageWithRawKey(t, eventKey("acme", 1), []byte("not json"))
+	stg := memoryStorageWithRawKey(t, vlog.EventKey("acme", 1), []byte("not json"))
 	c := NewChain()
 	_, err := c.Query(stg, "acme", Filter{Limit: 10})
-	var cte *CorruptTableError
+	var cte *vlog.CorruptTableError
 	if !errors.As(err, &cte) {
 		t.Fatalf("Query() err = %v, want *CorruptTableError", err)
 	}
-	if cte.Key != string(eventKey("acme", 1)) {
-		t.Errorf("CorruptTableError.Key = %q, want %q", cte.Key, eventKey("acme", 1))
+	if cte.Key != string(vlog.EventKey("acme", 1)) {
+		t.Errorf("CorruptTableError.Key = %q, want %q", cte.Key, vlog.EventKey("acme", 1))
 	}
 }

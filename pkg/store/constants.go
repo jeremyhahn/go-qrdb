@@ -15,11 +15,11 @@
 package store
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // metaKeyLastApplied is the reserved key used to persist the last applied
@@ -42,7 +42,7 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 //     it would leave the recovering replica -- or a restored cluster -- with
 //     no compaction policy, and a new leader with no samples, so its
 //     schedule would silently stop or restart its retention clock;
-//   - the replicated audit table (audit.TablePrefix): a snapshot that dropped
+//   - the replicated audit table (vlog.TablePrefix): a snapshot that dropped
 //     it would hand the recovering replica a chain that resumes from a head
 //     no committed log entry produced, breaking the property
 //     (docs/audit/architecture.md#the-hash-chain-stays-linear-under-raft-because-it-is-assigned-at-apply-time)
@@ -53,7 +53,7 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 //     leader change would find the chunks staged before the snapshot missing.
 func isNodeLocalKey(k []byte) bool {
 	return len(k) > 0 && k[0] == '\x00' &&
-		!lease.IsTableKey(k) && !compaction.IsTableKey(k) && !audit.IsTableKey(k) && !importstage.IsTableKey(k)
+		!lease.IsTableKey(k) && !compaction.IsTableKey(k) && !vlog.IsTableKey(k) && !importstage.IsTableKey(k)
 }
 
 // The internal key namespace is declared once, in pkg/service. This package

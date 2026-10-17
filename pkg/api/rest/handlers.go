@@ -1156,7 +1156,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // writeProposeFailure reports a write that did not reach the cluster.
 //
-// It exists for two cases, both of which a blanket 500 describes wrongly.
+// It exists for the cases a blanket 500 describes wrongly.
 //
 // Since the encoders began refusing a field longer than its length field can
 // describe (go-qrdb#52), an oversized key fails on this path without a proposal
@@ -1165,12 +1165,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 // a retry of an input that can never succeed. A closed store is the mirror
 // image: the request was fine and the node is going away (go-qrdb#371).
 //
+// A write that met its shard electing or moving a leader is the third
+// (service.LeadershipTransient): no leader known for as long as it could wait,
+// or Raft timing the proposal out mid-election. The next attempt, after the
+// election, does not share the condition, so the status is errclass's 503 --
+// NOT_LEADER for a refusal, which stored nothing and which classifyRESTAnswer
+// recognises; UNAVAILABLE for a timeout, which may have committed and which a
+// forwarder therefore relays rather than re-sends. At 500 both contradicted the
+// leader-wait contract and the key-value error table.
+//
 // Deliberately NOT `mapHTTPError(err)` wholesale: that would also reclassify
-// the other errors reaching this path, and this is not the change to do it in.
-// A non-forwardable NotLeaderError, for instance, would become 503 — arguably
-// better, but a behaviour change nobody asked for, and it is pinned at 500 by
-// existing tests. Everything except those two keeps exactly the status and the
-// ProposeError wrapper it had.
+// the other errors reaching this path. Everything else keeps exactly the status
+// and the ProposeError wrapper it had.
 func writeProposeFailure(w http.ResponseWriter, err error) {
 	var encodeErr *service.EncodeRequestError
 	if errors.As(err, &encodeErr) {
@@ -1195,30 +1201,29 @@ func writeProposeFailure(w http.ResponseWriter, err error) {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
+	if service.LeadershipTransient(err) {
+		writeErrorJSON(w, mapHTTPError(err), &ProposeError{Err: err})
+		return
+	}
 	writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})
 }
 
 // writeReadFailure reports a read that could not be served.
 //
-// It is writeProposeFailure's counterpart on the other verb, and it exists for
-// one case, the same one: a read that met a closed store. go-qrdb#371's whole
-// argument — "500 tells a client the request is poison and invites a retry that
-// can never work" — is as true of a read as of a write, so answering PUT /kv/k
-// with 503 and GET /kv/k with 500 would leave the verb asymmetry the issue was
-// filed to remove.
+// It is writeProposeFailure's counterpart on the other verb, for the same two
+// conditions that are not the cluster's fault: a read that met a closed store,
+// and a read that met its shard electing or moving a leader
+// (service.LeadershipTransient). go-qrdb#371's whole argument — "500 tells a client the request is
+// poison and invites a retry that can never work" — is as true of a read as of
+// a write, so both verbs answer each with the same 503.
 //
-// Deliberately NOT `mapHTTPError(err)` wholesale, measured rather than assumed.
-// KVService.translateReadError yields exactly three things: KeyNotFoundError,
-// NotLeaderError, or ReadError wrapping whatever the host returned. Of those,
-// handleKVGet answers KeyNotFoundError itself before reaching here and a
-// list or scan cannot produce one, so the only status the wholesale form would
-// additionally change is NotLeaderError, from 500 to 503. writeProposeFailure
-// pins that error at 500 on the write path with a written reason, so moving it
-// on reads alone would create a fresh instance of exactly the asymmetry this
-// function removes. Everything except the closed store keeps the status and
-// the ReadError wrapper it had.
+// Deliberately NOT `mapHTTPError(err)` wholesale. KVService.translateReadError
+// yields exactly three things: KeyNotFoundError, NotLeaderError, or ReadError
+// wrapping whatever the host returned. handleKVGet answers KeyNotFoundError
+// itself before reaching here; everything else keeps the 500 and the ReadError
+// wrapper it had.
 func writeReadFailure(w http.ResponseWriter, err error) {
-	if errors.Is(err, storage.ErrStorageClosed) {
+	if errors.Is(err, storage.ErrStorageClosed) || service.LeadershipTransient(err) {
 		writeErrorJSON(w, mapHTTPError(err), &ReadError{Err: err})
 		return
 	}

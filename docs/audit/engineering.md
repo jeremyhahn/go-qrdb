@@ -778,14 +778,24 @@ map.
 
 | File | Contents |
 |---|---|
-| `pkg/audit/table.go` | `TablePrefix`, key encoding/decoding, head record codec |
-| `pkg/audit/chain.go` | `Chain` — `Append`, `Prune`, `Query`, `Restore`, `Verify` |
-| `pkg/audit/chain_errors.go` | `TableWriteError`, `TableReadError`, `CorruptTableError`, `EncodeEventError`, `MissingTimestampError`, `InvalidCursorError`, `TenantMismatchError`, `InvalidTenantIDError` |
+| `pkg/vlog/table.go` | `TablePrefix`, key encoding/decoding, head record codec, `MaxPrunePerCommand`; `LogTablePrefix` and the named-log record keys; `IsTableKey` (both prefixes) |
+| `pkg/vlog/log.go` | `vlog.Chain` — the apply-time head: `Append`'s sequencing and staging, `Prune`, `Restore` (the audit heads and every named log) |
+| `pkg/vlog/named.go` | Named logs on the same `vlog.Chain`: `LogID`, `Descriptor`, `Create`, `AppendEntries`, `Checkpoint`, `ExpireBodies`, the RFC 6962 tree over `github.com/transparency-dev/merkle` |
+| `pkg/vlog/read.go` | Storage reads every replica answers alike: `ReadHead`, `ReadCheckpoint`, `Get`, `Inclusion`, `Consistency` |
+| `pkg/vlog/errors.go` | `TableWriteError`, `TableReadError`, `CorruptTableError`, `InvalidTenantIDError`; the named-log errors (`InvalidLogNameError` … `ExpireNotAllowedError`) |
+| `pkg/vlog/request.go` | `HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest` — the named-log `Lookup` query types — and `Read`, which answers them from storage |
+| `pkg/audit/chain.go` | `Chain` — the audit instance over `vlog.Chain`: `Append` (event validation, `PrevHash`, the digest fold), `Query`, `Verify` |
+| `pkg/audit/chain_errors.go` | `EncodeEventError`, `MissingTimestampError`, `InvalidCursorError`, `TenantMismatchError` |
 | `pkg/protocol/audit.go` | `OpAuditAppend`, `AuditSubtypeAppend`/`AuditSubtypePrune`, `EncodeAuditAppend`, `EncodeAuditPrune`, `DecodeAuditCommand` |
-| `pkg/cluster/featuregate/featuregate.go` | `AuditAppend` feature |
-| `pkg/engine/mvcc_engine.go` | `MVCCEngine.handleAuditAppend`, `WithMVCCAuditChain`, `resyncAuditChain`, the `audit.QueryRequest`/`audit.VerifyRequest` `Lookup` cases |
-| `pkg/store/pebble.go` | `PebbleStateMachine.pebbleHandleAuditAppend`, `pebbleAuditWriter`, `SetAuditChain`/`restoreAuditChain`, the same two `Lookup` cases |
-| `pkg/store/factory.go`, `pkg/store/mvcc.go` | `WithAuditChain` / `SetAuditChain` / `AuditChain` accessors mirroring the lessor's |
+| `pkg/protocol/vlog.go` | `OpVerifiableLog`, `VerifiableLogSubtypeCreate`/`Append`/`Checkpoint`/`ExpireBodies`, their `EncodeVerifiableLog*` and `DecodeVerifiableLog*` codecs, `DecodeVerifiableLogCommand` |
+| `pkg/cluster/featuregate/featuregate.go` | `AuditAppend` and `VerifiableLog` features |
+| `pkg/statemachine/vlog_apply.go` | `ApplyVerifiableLog` — the one `OpVerifiableLog` apply both families dispatch to, and its refusal-versus-halt rule (`isLogTableFault`) |
+| `pkg/engine/mvcc_engine.go` | `MVCCEngine.handleAuditAppend`, `handleVerifiableLog`, `WithMVCCLogs` (attaches the state machine's `vlog.Chain`; the audit `Chain` is `audit.ChainOn` over it), `resyncAuditChain`, the `audit.QueryRequest`/`audit.VerifyRequest` and `vlog.Request` `Lookup` cases |
+| `pkg/store/pebble.go` | `PebbleStateMachine.pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`, `pebbleAuditWriter`, `SetLogs`/`restoreAuditChain`, `resyncLogs` (rebuilds the registry from storage after a failed update), the same three `Lookup` cases |
+| `pkg/store/factory.go`, `pkg/store/mvcc.go` | `WithLogs` / `SetLogs` / `Logs` / `AuditChain` accessors mirroring the lessor's; `MVCCStateMachine.resyncLogs` |
+| `pkg/store/errors.go` | `LogsResyncError` — a failed update whose registry could not then be rebuilt, carrying both failures |
+| `pkg/server/tenant_host.go` | `newDataPlaneCreateFunc` builds a `vlog.Chain` per tenant and database state machine, as `cmd/qrdbd/start.go`'s `buildSMCreateFunc` does per node group |
+| `pkg/store/storetest/logs.go` | `RequireOwnLogsPerStateMachine` — the two-groups proof that no two state machines from one create function share a registry, run over every create function above |
 
 **Package layout, phase 2 (the entitlement, the proposer, and the read API).**
 
@@ -815,14 +825,14 @@ this, the network transports of an SDK node answered the local trail only.
 split into exactly two buckets, and the handler on both engine families
 makes the identical split:
 
-- `*audit.TableWriteError` — a local storage fault staging the write into
+- `*vlog.TableWriteError` — a local storage fault staging the write into
   the apply batch. Returned as a Go `error` from the handler, which HALTS
   apply: the fault is local to this replica, not a property every replica
   would reach identically, so answering it as a refusal would let this
   replica silently diverge from peers whose write succeeded.
 - Everything else `Append` can return (`*audit.MissingTimestampError`,
   `*audit.EncodeEventError`, `*audit.TenantMismatchError`,
-  `*audit.InvalidTenantIDError`) and everything a malformed or
+  `*vlog.InvalidTenantIDError`) and everything a malformed or
   unrecognized command can produce (`*protocol.InvalidCommandError`) is a
   deterministic consequence of the committed entry's own bytes — every
   replica reaches it identically — so it is encoded as an application
@@ -836,7 +846,7 @@ Two defects this classification caught during review, now pinned by
 regression tests: both engine families' `Append` error branches were
 dead-code duplicates of each other before the split above existed, and the
 MVCC handler originally returned every `Chain.Append` error as a halt rather
-than isolating `*audit.TableWriteError` as the only halting case.
+than isolating `*vlog.TableWriteError` as the only halting case.
 
 **The reserved-keyspace read/compare fix.** Adding a second raw-keyspace
 table (the lease table was the first) alongside direct `Lookup`, transaction

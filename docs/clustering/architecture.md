@@ -881,14 +881,15 @@ already running. A diagnostic must never be what starts a tenant.
   node's leader report with backoff, and re-runs it once a leader is known,
   so a write or linearizable read sent to any node right after a leader
   change succeeds rather than answering `not leader`. The committed
-  membership read that resolves a new member's identity is a ReadIndex too,
-  and holds the same way: a membership change that removed the leader starts
-  an election, and the next `member add` or `add-observer` waits it out
-  instead of failing to read the membership. A newly elected leader also
-  refuses a ReadIndex until its first entry commits in its term
-  (`quicraft.ErrReadIndexNotReady`); a read — linearizable, follower or
-  membership — waits for that commit too, as etcd holds a linearizable read
-  through an election, while a proposal is not held for it. The refusal comes
+  membership read that admitting a member starts with, and that resolves a
+  new member's identity, is a ReadIndex too and holds the same way: a
+  membership change that removed the leader starts an election, and the next
+  `member add` or `add-observer` waits it out instead of failing to read the
+  membership. A newly elected leader also refuses a ReadIndex until its
+  first entry commits in its term (`quicraft.ErrReadIndexNotReady`); a read —
+  linearizable, follower or membership — waits for that commit too, as etcd
+  holds a linearizable read through an election, while a proposal is not held
+  for it. The refusal comes
   before anything is proposed, so the retry cannot apply a command twice.
   The hold is bounded by 10 seconds and by the caller's deadline; at the
   bound the request fails with `*raft.LeaderWaitError`, which wraps the
@@ -896,6 +897,17 @@ already running. A diagnostic must never be what starts a tenant.
   below the service layer, so every transport gets it. A refusal that names
   a leader is not held; the transport forwards it as above. Stale reads
   never consult a leader and are not affected.
+- **A write its leader stepped down under is not refused.** When a leader
+  loses its term with a proposal or membership change already in its log,
+  go-quicraft fails the request with a not-leader error wrapped in
+  `*quicraft.MaybeAppliedError`: the entry may still commit under the next
+  leader. That is no refusal, and nothing treats it as one. The Raft host
+  adapter does not hold or re-propose it, the service layer keeps it out of
+  `*service.NotLeaderError` (`ErrNotStored`), so no transport forwards it and
+  no quota is given back, and it stays a `ProposeError` or `MembershipError`
+  whose outcome is unknown. Every transport answers it `UNAVAILABLE` (REST
+  503), as for a Raft timeout; a client retries only a write it has made
+  idempotent.
 - **Replica states are read where the replica lives, and only there.** The
   read (`service.ReplicaStateReader`, `qrdb admin replica-states`) answers for
   the replicas on the node it reaches and is never forwarded: a node cannot

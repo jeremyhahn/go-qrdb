@@ -366,7 +366,11 @@ func (b AdminCompletionBounds) withDefaults() AdminCompletionBounds {
 // CompletePendingTenantAdmin's idempotence makes safe. It stops without
 // retrying on tenant.ErrTenantSealed -- the barrier-ready hook completes the
 // admin when the barrier next unseals -- and on an error no retry can
-// change. Whatever it returns, a pending record left behind is completed by
+// change. When Budget runs out it returns the error of the last attempt the
+// budget did not cut off, so the caller learns why the admin is still
+// pending rather than only that time ran out; an attempt the budget ends
+// part-way reports nothing new. Whatever it returns, a pending record left
+// behind is completed by
 // the hook on the tenant's next barrier unseal or status read.
 func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps Dependencies, b AdminCompletionBounds) (bool, error) {
 	if deps.Logger == nil {
@@ -378,6 +382,7 @@ func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps
 	ctx, cancel := context.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.Budget)
 	defer cancel()
 	var done bool
+	var prev error // the last attempt's error, for an attempt the budget cuts off
 	err := retry.Do(ctx, &retry.Config{
 		MaxAttempts:   math.MaxInt,
 		Backoff:       &retry.ExponentialBackoff{InitialDelay: b.Delay, MaxDelay: b.MaxDelay, Multiplier: 2},
@@ -392,6 +397,13 @@ func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps
 		defer cancel()
 		var err error
 		done, err = CompletePendingTenantAdmin(actx, tenantID, deps)
+		if err != nil && prev != nil && ctx.Err() != nil &&
+			(errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+			// The budget ran out under this attempt: what it reports is
+			// the cut-off, not why the admin is still pending.
+			return prev
+		}
+		prev = err
 		return err
 	})
 	if err != nil {

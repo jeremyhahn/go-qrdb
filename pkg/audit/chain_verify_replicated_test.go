@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // TestChain_Verify_EmptyTenantVerifiesTrivially asserts a tenant with no
@@ -80,7 +81,7 @@ func TestChain_Verify_DetectsTamperedRecord(t *testing.T) {
 	}
 
 	var ev AuditEvent
-	raw, err := store.Get(eventKey(tenantID, 3))
+	raw, err := store.Get(vlog.EventKey(tenantID, 3))
 	if err != nil {
 		t.Fatalf("read seq 3: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestChain_Verify_DetectsTamperedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal tampered event: %v", err)
 	}
-	if err := store.Set(eventKey(tenantID, 3), tampered); err != nil {
+	if err := store.Set(vlog.EventKey(tenantID, 3), tampered); err != nil {
 		t.Fatalf("write tampered event: %v", err)
 	}
 
@@ -155,7 +156,7 @@ func TestChain_Verify_DetectsMissingSequence(t *testing.T) {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
-	if err := store.Delete(eventKey(tenantID, 3)); err != nil {
+	if err := store.Delete(vlog.EventKey(tenantID, 3)); err != nil {
 		t.Fatalf("delete seq 3: %v", err)
 	}
 
@@ -175,7 +176,7 @@ func TestChain_Verify_RefusesInvalidTenantID(t *testing.T) {
 	store := memory.NewStorage()
 
 	_, err := c.Verify(store, "a/b")
-	var invalidErr *InvalidTenantIDError
+	var invalidErr *vlog.InvalidTenantIDError
 	if !errors.As(err, &invalidErr) {
 		t.Fatalf("want *InvalidTenantIDError, got %v (%T)", err, err)
 	}

@@ -625,6 +625,7 @@ var testSupportPackages = map[string]bool{
 	"pkg/replicaforward/replicaforwardtest": true,
 	"pkg/seal/sealtest":                     true,
 	"pkg/service/servicetest":               true,
+	"pkg/store/storetest":                   true,
 	"pkg/volume/volumetest":                 true,
 }
 

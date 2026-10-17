@@ -1789,7 +1789,13 @@ func (n *Node) closeDatabaseManager() {
 // clusteredCreateFunc selects the Raft state-machine factory for a clustered
 // node. The default (empty, "pebble", or "mvcc") is the durable MVCC-over-Pebble
 // store wired with the supplied lessor / watch-hub / time-series / encryptor
-// options — the only state machine that keeps revisions. Any other
+// options — the only state machine that keeps revisions. Every machine it
+// builds gets a log registry of its own (store.WithLogs), exactly as the
+// daemon's do: this node advertises featuregate.AuditAppend and
+// featuregate.VerifiableLog like any other, so a replica without a registry
+// would refuse a committed protocol.OpVerifiableLog its peers apply. The
+// attachment is made here, not by each boot path, so no path can omit it.
+// Any other
 // cfg.Raft.SMType (e.g. "memory", "concurrent", "fast", "disk") selects that
 // factory from the statemachine registry: KV, batches, the guarded verbs,
 // transactions (go-qrdb#136) and durable leases kept in lr -- the lessor the
@@ -1807,7 +1813,8 @@ func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvcc
 				Message: "sm_storage " + cfg.Raft.SMStorage + " applies to the storage-generic state machines only; set raft.sm_type to disk or fast",
 			}
 		}
-		return store.NewMVCCCreateFuncWith(pebbleOpts, mvccOpts...), nil
+		opts := append([]store.MVCCOption{store.WithLogs()}, mvccOpts...)
+		return store.NewMVCCCreateFuncWith(pebbleOpts, opts...), nil
 	}
 	fn, err := statemachine.ResolveTypedWithStorage(cfg.Raft.SMType, cfg.Raft.SMBackend,
 		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor},

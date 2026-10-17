@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -98,6 +99,7 @@ type MVCCEngine struct {
 	indexValueTypes map[string]index.IndexValueType
 
 	lessor     *lease.Lessor
+	logs       *vlog.Chain
 	auditChain *audit.Chain
 	hub        *watch.Hub
 	ts         *timeseries.Storage
@@ -125,13 +127,15 @@ func WithMVCCLessor(lr *lease.Lessor) MVCCOption {
 	}
 }
 
-// WithMVCCAuditChain attaches a replicated audit Chain to the engine for
-// protocol.OpAuditAppend. When unset, the opcode is refused with
-// *statemachine.ServiceNotConfiguredError exactly as a nil lessor refuses a
-// lease opcode.
-func WithMVCCAuditChain(c *audit.Chain) MVCCOption {
+// WithMVCCLogs attaches the state machine's log registry to the engine: the
+// named verifiable logs protocol.OpVerifiableLog applies to, and the audit
+// instance protocol.OpAuditAppend applies to. When unset, both opcodes are
+// refused with *statemachine.ServiceNotConfiguredError exactly as a nil
+// lessor refuses a lease opcode.
+func WithMVCCLogs(l *vlog.Chain) MVCCOption {
 	return func(e *MVCCEngine) {
-		e.auditChain = c
+		e.logs = l
+		e.auditChain = audit.ChainOn(l)
 	}
 }
 
@@ -229,8 +233,11 @@ func (e *MVCCEngine) Store() *mvcc.Store { return e.store }
 // Lessor returns the attached lessor. Returns nil if no lessor is configured.
 func (e *MVCCEngine) Lessor() *lease.Lessor { return e.lessor }
 
-// AuditChain returns the attached replicated audit Chain. Returns nil if none
-// is configured.
+// Logs returns the attached log registry. Returns nil if none is configured.
+func (e *MVCCEngine) Logs() *vlog.Chain { return e.logs }
+
+// AuditChain returns the audit instance of the attached log registry.
+// Returns nil if no registry is configured.
 func (e *MVCCEngine) AuditChain() *audit.Chain { return e.auditChain }
 
 // TimeSeries returns the attached time-series storage. Returns nil if not
@@ -323,6 +330,12 @@ func (e *MVCCEngine) resyncAuditChain(applyErr error) error {
 func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, results []sm.Result) ([]Notification, []vector.IndexEffect, error) {
 	var notifications []Notification
 	var vectorEffects []vector.IndexEffect
+
+	// Every update stages its log writes afresh over what is committed; see
+	// vlog.Chain.BeginUpdate.
+	if e.logs != nil {
+		e.logs.BeginUpdate()
+	}
 
 	for i, entry := range entries {
 		cmd, err := protocol.DecodeCommand(entry.Cmd)
@@ -576,6 +589,12 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		}
 		return e.auditChain.Verify(e.stg, q.TenantID)
 
+	case vlog.Request:
+		if e.logs == nil {
+			return nil, &InvalidQueryError{Reason: "log registry not configured"}
+		}
+		return vlog.ReadSnapshot(e.stg, q)
+
 	case service.IndexQueryRequest:
 		e.indexMu.RLock()
 		idx, ok := e.indexes[q.IndexName]
@@ -805,6 +824,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpLeaseKeepAlive:    handleLeaseKeepAlive,
 		protocol.OpLeaseCheckpoint:   handleLeaseCheckpoint,
 		protocol.OpAuditAppend:       e.handleAuditAppend,
+		protocol.OpVerifiableLog:     e.handleVerifiableLog,
 		protocol.OpIndexCreate:       e.handleIndexCreate,
 		protocol.OpIndexDrop:         e.handleIndexDrop,
 		protocol.OpTSWrite:           e.handleTSWrite,
@@ -2001,7 +2021,7 @@ func (e *MVCCEngine) handleAuditAppend(_ *mvcc.Store, _ *lease.Lessor, batch sto
 			// from the identical input, so it is encoded as an application
 			// result rather than returned as a Go error that would stall
 			// Raft on a command every replica is equally unable to apply.
-			var twe *audit.TableWriteError
+			var twe *vlog.TableWriteError
 			if errors.As(appendErr, &twe) {
 				return sm.Result{}, nil, appendErr
 			}
@@ -2031,6 +2051,14 @@ func (e *MVCCEngine) handleAuditAppend(_ *mvcc.Store, _ *lease.Lessor, batch sto
 	default:
 		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "audit command: unknown sub-type"}
 	}
+}
+
+// handleVerifiableLog applies one OpVerifiableLog command to the engine's log
+// registry. Classification -- refusal versus halt -- is
+// statemachine.ApplyVerifiableLog's, shared with the pebble state machine.
+func (e *MVCCEngine) handleVerifiableLog(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	res, err := statemachine.ApplyVerifiableLog(e.logs, e.stg, batch, payload)
+	return res, nil, err
 }
 
 // ---------------------------------------------------------------------------

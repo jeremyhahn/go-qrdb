@@ -18,9 +18,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -61,10 +61,10 @@ func TestBuildSMCreateFunc_EverySMStorageBuildsUnderTheBarrier(t *testing.T) {
 	}
 }
 
-// auditChainHolder is satisfied by both store.MVCCStateMachine and
+// logsHolder is satisfied by both store.MVCCStateMachine and
 // store.PebbleStateMachine.
-type auditChainHolder interface {
-	AuditChain() *audit.Chain
+type logsHolder interface {
+	Logs() *vlog.Chain
 }
 
 // TestBuildSMCreateFunc_AttachesAuditChainUnconditionally is audit-replicated
@@ -89,12 +89,12 @@ func TestBuildSMCreateFunc_AttachesAuditChainUnconditionally(t *testing.T) {
 				t.Fatalf("buildSMCreateFunc(%s): %v", smType, err)
 			}
 			sm := fn(1, 1)
-			holder, ok := sm.(auditChainHolder)
+			holder, ok := sm.(logsHolder)
 			if !ok {
-				t.Fatalf("--sm %s state machine %T does not implement auditChainHolder", smType, sm)
+				t.Fatalf("--sm %s state machine %T does not implement logsHolder", smType, sm)
 			}
-			if holder.AuditChain() == nil {
-				t.Errorf("--sm %s state machine built with a nil audit.Chain attached", smType)
+			if holder.Logs() == nil {
+				t.Errorf("--sm %s state machine built with a nil vlog.Chain attached", smType)
 			}
 		})
 	}

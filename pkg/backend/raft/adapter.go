@@ -282,8 +282,10 @@ func (a *HostAdapter) GetShardRaftState(shardID uint64) (configChangeIndex uint6
 // which this node knows no leader -- the election a membership change that
 // removed the leader starts -- through the new leader's first commit in its
 // term, and reissued when a leadership change strands it (see
-// readThroughLeaderChange). An admin write resolving a member's identity
-// reads it, and must not fail its caller during a normal election.
+// readThroughLeaderChange). A membership change that follows a leader
+// removing itself reads membership while the remaining replicas elect, and an
+// admin write resolving a member's identity reads it; neither may fail its
+// caller during a normal election.
 func (a *HostAdapter) SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error) {
 	return readThroughLeaderChange(ctx, a.inner, shardID, a.leaderWait, func() (*quicraft.Membership, error) {
 		return a.inner.SyncGetShardMembership(ctx, shardID)

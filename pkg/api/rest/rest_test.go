@@ -1870,9 +1870,9 @@ func TestHandler_KVPut_NotLeaderError_NoResolver(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	// Without resolver, should return 500 (not forward).
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("PUT /kv/key1 (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// Without resolver, nothing is forwarded: the refusal is answered as is.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("PUT /kv/key1 (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -1890,9 +1890,9 @@ func TestHandler_KVPut_NotLeaderError_EmptyLeaderAddr(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	// Empty leader address -> cannot forward -> ProposeError.
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("PUT /kv/key1 (empty leader) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// Empty leader address -> cannot forward -> 503 NOT_LEADER.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("PUT /kv/key1 (empty leader) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -2039,8 +2039,8 @@ func TestHandler_KVDelete_NotLeaderError_NoResolver(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("DELETE /kv/key1 (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("DELETE /kv/key1 (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -2295,9 +2295,9 @@ func TestHandler_KVPut_ForwardToLeader_UnresolvableAdmin(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	// Cannot resolve admin URL -> falls through to ProposeError -> 500.
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("unresolvable admin status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// Cannot resolve admin URL -> the refusal is answered as is, 503 NOT_LEADER.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unresolvable admin status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 

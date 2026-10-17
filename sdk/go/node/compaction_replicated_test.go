@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -34,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // A scheduled-compaction policy and its samples are replicated state in the
@@ -79,20 +81,63 @@ func keepWriting(t *testing.T, n *Node, key string) (stop func()) {
 	return func() { cancel(); wg.Wait() }
 }
 
-// awaitFloor waits for n's store to compact key's history and returns the
-// first floor it observes.
-func awaitFloor(t *testing.T, ctx context.Context, n *Node, key string, budget time.Duration) int64 {
+// awaitFloor waits, for as long as ctx allows, for n's store to compact key's
+// history and returns the first floor it observes.
+func awaitFloor(t *testing.T, ctx context.Context, n *Node, key string) int64 {
 	t.Helper()
-	deadline := time.Now().Add(budget)
 	for {
 		if floor := compactionFloor(ctx, n, key); floor > 0 {
 			return floor
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no compaction of %q within %s", key, budget)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no compaction of %q: %v", key, ctx.Err())
+		case <-time.After(5 * time.Millisecond):
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// awaitSample waits until db's period policy holds a sample taken at at, read
+// through n, and returns the revision it sampled. The scheduler stamps its
+// samples with the compaction clock, so a caller moves that clock to at and
+// this waits for the pass that records the sample the move made due.
+func awaitSample(t *testing.T, ctx context.Context, n *Node, db string, at time.Time) int64 {
+	t.Helper()
+	store, ok := n.Services().MVCC.(service.CompactionStateStore)
+	require.True(t, ok, "the node's store keeps no compaction table")
+	for {
+		states, err := store.CompactionStates(ctx)
+		for _, state := range states {
+			if state == nil || state.Database != db {
+				continue
+			}
+			for _, s := range state.Samples {
+				if s.At == at.UnixNano() {
+					return s.Revision
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no sample of %s taken at %s (last read: %v): %v", db, at, err, ctx.Err())
+		case <-time.After(clusterPollInterval):
+		}
+	}
+}
+
+// sampleMostOfAPeriod has n's scheduler sample db across five eighths of
+// period on clk -- each step moves the clock an eighth and waits for the
+// sample that makes due -- and returns the revision of the newest sample. No
+// sample is a whole period old, so nothing is compacted yet, and with clk
+// standing still no further sample falls due.
+func sampleMostOfAPeriod(t *testing.T, ctx context.Context, n *Node, db string, clk *clocktest.Fake, period time.Duration) int64 {
+	t.Helper()
+	newest := awaitSample(t, ctx, n, db, clk.Now())
+	for range 5 {
+		clk.Advance(period / 8)
+		newest = awaitSample(t, ctx, n, db, clk.Now())
+	}
+	return newest
 }
 
 // setPolicy sets db's policy as its owner, retrying while the cluster
@@ -115,14 +160,16 @@ func setPolicy(t *testing.T, ctx context.Context, n *Node, owner, db string, pol
 
 // TestStandaloneNode_CompactionScheduleSurvivesRestart: a standalone node's
 // period policy keeps its retention clock across a restart. Samples taken
-// before the restart are in the database's store, so the restarted node
-// compacts to one of them -- a revision no newer than the store held at the
-// restart -- instead of starting the period over from its own samples.
+// before the restart are in the database's store, so once the newest of them
+// is a period old the restarted node compacts to it, instead of starting the
+// period over from its own samples. Both nodes run on one compaction clock the
+// test moves, so no wall-clock window decides the outcome.
 func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	dataDir := t.TempDir()
-	opts := []server.ServerOption{server.WithCompactionInterval(compactionTestInterval)}
+	clk := clocktest.NewAt(time.Now())
+	opts := []server.ServerOption{server.WithCompactionInterval(compactionTestInterval), server.WithCompactionClock(clk)}
 	key := tenant.ComposeNamespace(tenantid.System, "events") + "k"
 
 	first, err := NewStandaloneNode(ctx, standaloneRestartConfig(dataDir), opts)
@@ -134,10 +181,8 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	setPolicy(t, ctx, first, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
 
 	stop := keepWriting(t, first, key)
-	time.Sleep(period * 5 / 8) // the first node samples for most of a period
+	sampledByFirst := sampleMostOfAPeriod(t, ctx, first, "events", clk, period)
 	stop()
-	revAtRestart, err := first.Services().MVCC.CurrentRevision(ctx)
-	require.NoError(t, err)
 	require.Zero(t, compactionFloor(ctx, first, key), "compacted before a full period was observed")
 	require.NoError(t, first.Close())
 
@@ -147,17 +192,22 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	stop = keepWriting(t, second, key)
 	defer stop()
 
-	floor := awaitFloor(t, ctx, second, key, 3*period)
-	require.LessOrEqualf(t, floor, revAtRestart,
-		"the restarted node compacted to %d, a revision of its own after the restart (the store held %d at the restart): its retention clock started over",
-		floor, revAtRestart)
+	// The first node's newest sample is now a period old. A node that kept
+	// the samples compacts to it; one whose retention clock started over has
+	// no sample that old and compacts nothing.
+	clk.Advance(period)
+	floor := awaitFloor(t, ctx, second, key)
+	require.Equalf(t, sampledByFirst, floor,
+		"the restarted node compacted to %d, not to the first node's newest sample %d", floor, sampledByFirst)
 }
 
 // TestClusteredNodes_CompactionContinuesAfterLeaderFailover: a policy set
 // through node A -- the shared shard's leader -- is not A's: after A goes
 // down, the new leader runs it, from the samples A's term recorded, so the
-// first compaction it makes is to a revision no newer than the store held
-// when A went down.
+// first compaction it makes is to the newest of them once that is a period
+// old. The nodes share one compaction clock the test moves, so neither how
+// long the leader change takes nor how long the new leader's first reads
+// stall decides the outcome.
 func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	ca, replicas := newFormationReplicas(t, 3)
 	// The seal on (strategy none), as a deployed node runs: a node booted
@@ -167,9 +217,10 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
 	}
+	clk := clocktest.NewAt(time.Now())
 	nodes, err := bootFormationClusterWith(t, ca, replicas, func(self uint64) string {
 		return peerIdentitySpecs(t, self, replicas)
-	}, sealed, server.WithCompactionInterval(compactionTestInterval))
+	}, sealed, server.WithCompactionInterval(compactionTestInterval), server.WithCompactionClock(clk))
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*clusterFormationBudget)
 	defer cancel()
@@ -185,14 +236,19 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	setPolicy(t, ctx, a, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
 
 	stop := keepWriting(t, a, key)
-	time.Sleep(period * 5 / 8) // A samples for most of a period
+	sampledByA := sampleMostOfAPeriod(t, ctx, a, "events", clk, period)
 	stop()
-	// A goes down; another node takes the shard. A keeps sampling until its
-	// scheduler stops inside Close, and its own shutdown writes move the
-	// revision, so what A's term sampled is read back from the record rather
-	// than from the store beforehand.
-	require.NoError(t, a.Close())
-	down := time.Now()
+	// A goes down; another node takes the shard. The compaction clock stands
+	// still meanwhile, so neither A's last passes nor the new leader's first
+	// ones sample or compact, however long the leader change takes.
+	//
+	// Close deregisters A, which is a write, and reports it failing when the
+	// cluster has no leader at that moment — which a loaded runner can produce
+	// before A ever stops. A is down either way; any other error fails here.
+	if err := a.Close(); err != nil {
+		var notLeader *transport.NotLeaderError
+		require.ErrorAsf(t, err, &notLeader, "closing A: %v", err)
+	}
 
 	var survivor *Node
 	for i, n := range nodes {
@@ -201,41 +257,15 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 			break
 		}
 	}
-	sampledByA := newestSampleBefore(t, ctx, survivor, "events", down)
 	stop = keepWriting(t, survivor, key)
 	defer stop()
 
-	floor := awaitFloor(t, ctx, survivor, key, 3*period)
-	require.LessOrEqualf(t, floor, sampledByA,
-		"the new leader compacted to %d, a revision after A went down (A's term sampled up to %d): it did not continue from A's samples",
+	// A's newest sample is now a period old. A new leader that runs the
+	// policy from A's samples compacts to it; one that started the period
+	// over has no sample that old and compacts nothing.
+	clk.Advance(period)
+	floor := awaitFloor(t, ctx, survivor, key)
+	require.Equalf(t, sampledByA, floor,
+		"the new leader compacted to %d, not to the newest sample A's term recorded (%d): it did not continue from A's samples",
 		floor, sampledByA)
-}
-
-// newestSampleBefore returns the highest revision db's period policy sampled
-// at or before t, read linearizably through n -- waiting out a leader change
-// -- from the replicated compaction table. It fails the test when the table
-// holds no such sample: the samples did not survive.
-func newestSampleBefore(t *testing.T, ctx context.Context, n *Node, db string, before time.Time) int64 {
-	t.Helper()
-	store, ok := n.Services().MVCC.(service.CompactionStateStore)
-	require.True(t, ok, "the node's store keeps no compaction table")
-	states, err := store.CompactionStates(ctx)
-	for err != nil && ctx.Err() == nil {
-		time.Sleep(clusterPollInterval)
-		states, err = store.CompactionStates(ctx)
-	}
-	require.NoError(t, err)
-	var newest int64
-	for _, state := range states {
-		if state == nil || state.Database != db {
-			continue
-		}
-		for _, s := range state.Samples {
-			if s.At <= before.UnixNano() {
-				newest = max(newest, s.Revision)
-			}
-		}
-	}
-	require.Positivef(t, newest, "no sample of %s taken before %s survived the leader change", db, before)
-	return newest
 }

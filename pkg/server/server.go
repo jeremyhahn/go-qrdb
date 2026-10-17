@@ -255,6 +255,9 @@ type serverOptions struct {
 	// databases' policies; zero keeps DefaultCompactionInterval. See
 	// WithCompactionInterval.
 	compactionInterval time.Duration
+	// compactionClock is the compaction scheduler's time source; nil is the
+	// real clock. See WithCompactionClock.
+	compactionClock clock.Clock
 	// retentionInterval tunes how often the retention scheduler sweeps
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.

@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -89,9 +90,11 @@ type PebbleStateMachine struct {
 	// lessor manages lease lifecycle. Nil if leases are not enabled.
 	lessor *lease.Lessor
 
-	// auditChain is the in-memory authority for the replicated audit hash
-	// chain (protocol.OpAuditAppend). Nil if the replicated audit trail is
-	// not enabled, exactly as a nil lessor means leases are not enabled.
+	// logs is the in-memory authority for the state machine's verifiable
+	// logs (protocol.OpVerifiableLog), and auditChain its audit instance
+	// (protocol.OpAuditAppend). Both are nil if no registry is attached,
+	// exactly as a nil lessor means leases are not enabled.
+	logs       *vlog.Chain
 	auditChain *audit.Chain
 
 	// indexes holds registered secondary indexes by name.
@@ -183,7 +186,8 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 
 		// Replicated audit chain (append and retention prune, one opcode,
 		// two sub-types -- see protocol.OpAuditAppend).
-		protocol.OpAuditAppend: s.pebbleHandleAuditAppend,
+		protocol.OpAuditAppend:   s.pebbleHandleAuditAppend,
+		protocol.OpVerifiableLog: s.pebbleHandleVerifiableLog,
 
 		// Index operations.
 		protocol.OpIndexCreate: s.pebbleHandleIndexCreate,
@@ -287,17 +291,26 @@ func (s *PebbleStateMachine) Lessor() *lease.Lessor {
 	return s.lessor
 }
 
-// SetAuditChain attaches a replicated audit Chain to the store. When set,
-// protocol.OpAuditAppend commands are processed. Must be called before the
-// store is opened.
-func (s *PebbleStateMachine) SetAuditChain(c *audit.Chain) {
+// SetLogs attaches the state machine's log registry to the store: the named
+// verifiable logs protocol.OpVerifiableLog applies to and the audit instance
+// protocol.OpAuditAppend applies to. Must be called before the store is
+// opened.
+func (s *PebbleStateMachine) SetLogs(l *vlog.Chain) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.auditChain = c
+	s.logs = l
+	s.auditChain = audit.ChainOn(l)
 }
 
-// AuditChain returns the attached replicated audit Chain. Returns nil if none
-// is set.
+// Logs returns the attached log registry. Returns nil if none is set.
+func (s *PebbleStateMachine) Logs() *vlog.Chain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs
+}
+
+// AuditChain returns the audit instance of the attached log registry.
+// Returns nil if none is set.
 func (s *PebbleStateMachine) AuditChain() *audit.Chain {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -447,17 +460,44 @@ func (s *PebbleStateMachine) readLastApplied() (uint64, error) {
 	return decodeLastApplied(val), nil
 }
 
+// resyncLogs rebuilds the log registry from committed storage after an
+// Update that did not commit: an append staged into the discarded batch has
+// already advanced the registry's in-memory head, and a head for entries no
+// replica holds must not outlive the failure. When the registry cannot be
+// rebuilt either, it returns a *LogsResyncError carrying both errors.
+func (s *PebbleStateMachine) resyncLogs(applyErr error) error {
+	if err := s.restoreAuditChain(); err != nil {
+		return &LogsResyncError{ApplyErr: applyErr, RestoreErr: err}
+	}
+	return applyErr
+}
+
 // Update applies committed entries to the PebbleDB store using an atomic
 // batch. Each entry is decoded using either the base KV protocol or the
 // extended wire protocol and dispatched to the appropriate handler via
 // map-based O(1) lookup. The last applied index is persisted in the same
-// batch for crash recovery.
-func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
+// batch for crash recovery. An Update that does not commit rebuilds the log
+// registry before it returns (resyncLogs).
+//
+// The apply loop stays in this method rather than a helper: it is the seam
+// test/buildgates checks for statemachine.ResolveApplyError (go-qrdb#520).
+func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.db == nil {
 		return &NotOpenError{}
+	}
+	defer func() {
+		if err != nil {
+			err = s.resyncLogs(err)
+		}
+	}()
+
+	// Every update stages its log writes afresh over what is committed; see
+	// vlog.Chain.BeginUpdate.
+	if s.logs != nil {
+		s.logs.BeginUpdate()
 	}
 
 	// The batch is INDEXED so that handlers can read their own writes: a
@@ -630,6 +670,12 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
 		return s.auditChain.Verify(pebbleStorage.NewFromDB(s.db, true), q.TenantID)
+
+	case vlog.Request:
+		if s.logs == nil {
+			return nil, &InvalidQueryError{Reason: "log registry not configured"}
+		}
+		return vlog.ReadSnapshot(pebbleStorage.NewFromDB(s.db, true), q)
 
 	case index.IndexQueryRequest:
 		idx, ok := s.indexes[q.IndexName]
@@ -2033,7 +2079,7 @@ func (s *PebbleStateMachine) pebbleHandleAuditAppend(_ *PebbleStateMachine, batc
 			// result, the same way an invalid lease TTL is, rather than
 			// returned as a Go error that would stall Raft on a command every
 			// replica is equally unable to apply.
-			var twe *audit.TableWriteError
+			var twe *vlog.TableWriteError
 			if errors.As(appendErr, &twe) {
 				return sm.Result{}, nil, appendErr
 			}
@@ -2065,7 +2111,16 @@ func (s *PebbleStateMachine) pebbleHandleAuditAppend(_ *PebbleStateMachine, batc
 	}
 }
 
-// pebbleAuditWriter adapts a *pebble.Batch to audit.Writer, mirroring
+// pebbleHandleVerifiableLog applies one protocol.OpVerifiableLog command to
+// the attached log registry, reading tree nodes from committed storage
+// beneath what this update has staged. Classification -- refusal versus halt
+// -- is statemachine.ApplyVerifiableLog's, shared with the MVCC engine.
+func (s *PebbleStateMachine) pebbleHandleVerifiableLog(_ *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	res, err := statemachine.ApplyVerifiableLog(s.logs, pebbleStorage.NewFromDB(s.db, true), pebbleAuditWriter{batch: batch}, payload)
+	return res, nil, err
+}
+
+// pebbleAuditWriter adapts a *pebble.Batch to vlog.Writer, mirroring
 // pebbleLeaseWriter exactly.
 type pebbleAuditWriter struct {
 	batch *pebble.Batch

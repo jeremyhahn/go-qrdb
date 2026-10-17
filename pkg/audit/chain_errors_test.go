@@ -20,36 +20,6 @@ import (
 	"testing"
 )
 
-func TestTableWriteError_ErrorAndUnwrap(t *testing.T) {
-	cause := errors.New("disk full")
-	e := &TableWriteError{Err: cause}
-	if !strings.Contains(e.Error(), "disk full") {
-		t.Fatalf("Error() = %q, want it to mention the cause", e.Error())
-	}
-	if e.Unwrap() != cause {
-		t.Fatal("Unwrap() did not return the wrapped cause")
-	}
-}
-
-func TestTableReadError_ErrorAndUnwrap(t *testing.T) {
-	cause := errors.New("corrupt page")
-	e := &TableReadError{Err: cause}
-	if !strings.Contains(e.Error(), "corrupt page") {
-		t.Fatalf("Error() = %q, want it to mention the cause", e.Error())
-	}
-	if e.Unwrap() != cause {
-		t.Fatal("Unwrap() did not return the wrapped cause")
-	}
-}
-
-func TestCorruptTableError_Error(t *testing.T) {
-	e := &CorruptTableError{Key: "\x00qrdb.audit/h/acme", Reason: "malformed head record"}
-	msg := e.Error()
-	if !strings.Contains(msg, "malformed head record") {
-		t.Fatalf("Error() = %q, want it to mention the reason", msg)
-	}
-}
-
 func TestEncodeEventError_ErrorAndUnwrap(t *testing.T) {
 	cause := errors.New("unsupported type")
 	e := &EncodeEventError{Err: cause}
@@ -80,12 +50,5 @@ func TestTenantMismatchError_Error(t *testing.T) {
 	msg := e.Error()
 	if !strings.Contains(msg, "acme") || !strings.Contains(msg, "other") {
 		t.Fatalf("Error() = %q, want it to mention both tenant ids", msg)
-	}
-}
-
-func TestInvalidTenantIDError_Error(t *testing.T) {
-	e := &InvalidTenantIDError{TenantID: "acme/evil"}
-	if !strings.Contains(e.Error(), "acme/evil") {
-		t.Fatalf("Error() = %q, want it to mention the offending tenant id", e.Error())
 	}
 }

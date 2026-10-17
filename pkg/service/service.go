@@ -1376,15 +1376,11 @@ func (s *AdminService) PromoteMember(ctx context.Context, shardID, replicaID uin
 // service-level typed errors. NotLeaderError is mapped to service.NotLeaderError
 // so callers (in particular the REST/gRPC leader-forwarding paths) can
 // redirect the request to the current leader instead of surfacing a generic
-// failure. All other errors are wrapped as MembershipError.
+// failure. All other errors, a maybe-applied change among them, are wrapped
+// as MembershipError.
 func (s *AdminService) translateMembershipError(op string, err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
+	if nle, ok := notLeaderRefusal(err); ok {
+		return nle
 	}
 	return &MembershipError{Op: op, Err: err}
 }

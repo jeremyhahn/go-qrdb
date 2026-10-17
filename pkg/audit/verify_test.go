@@ -168,6 +168,28 @@ func TestVerificationUnsupportedError_Error(t *testing.T) {
 	}
 }
 
+// TestVerificationErrors_Error asserts each verification-path error names
+// its origin and, where it has one, the trail it concerns.
+func TestVerificationErrors_Error(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"file locked", &FileLockedError{Path: "/trail/audit.log"}, "audit: file locked: /trail/audit.log"},
+		{"verification canceled", &VerificationCanceledError{Path: "/trail/audit.log", Err: context.Canceled},
+			"audit: verification of /trail/audit.log canceled: context canceled"},
+		{"verification busy", &VerificationBusyError{}, "audit: a chain verification is already in progress"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.err.Error(); got != tc.want {
+				t.Fatalf("Error() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // aggregateLogger.VerifyChainSet
 // ---------------------------------------------------------------------------

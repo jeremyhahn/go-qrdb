@@ -20,10 +20,10 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // This file is the go-qrdb audit-replicated review's addendum: a transaction
@@ -37,12 +37,13 @@ import (
 // reserved key exists.
 
 // reservedTestKeys names one key from each raw-keyspace table this
-// repository defines today, so this test covers both without the per-table
+// repository defines today, so this test covers each without the per-table
 // list the shared predicate (statemachine.IsReservedKey) exists to avoid at
 // the call sites.
 var reservedTestKeys = map[string][]byte{
 	"lease table": []byte(lease.TablePrefix + "l/x"),
-	"audit table": []byte(audit.TablePrefix + "h/acme"),
+	"audit table": []byte(vlog.TablePrefix + "h/acme"),
+	"named log":   []byte(vlog.LogTablePrefix + "acme/app/ledger/h"),
 	"node-local":  []byte("\x00__quicraft_last_applied__"),
 }
 

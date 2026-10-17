@@ -46,6 +46,25 @@ func (e *WriteError) Unwrap() error {
 	return e.Err
 }
 
+// LogsResyncError is returned by a state machine's Update when an apply failed
+// and its log registry could not then be rebuilt from committed storage: the
+// registry may no longer match the store, mirroring
+// engine.AuditChainResyncError.
+type LogsResyncError struct {
+	ApplyErr   error
+	RestoreErr error
+}
+
+// Error returns a human-readable description of both failures.
+func (e *LogsResyncError) Error() string {
+	return "store: apply failed (" + e.ApplyErr.Error() + ") and the log registry could not be rebuilt from storage: " + e.RestoreErr.Error()
+}
+
+// Unwrap returns both underlying errors for use with errors.Is and errors.As.
+func (e *LogsResyncError) Unwrap() []error {
+	return []error{e.ApplyErr, e.RestoreErr}
+}
+
 // ReadError is returned when a read operation fails.
 type ReadError struct {
 	Key string

@@ -221,6 +221,8 @@ func TestRaftTimeoutIsUnavailableOnEveryTransport(t *testing.T) {
 		"propose": &service.ProposeError{Err: quicraft.ErrTimeout},
 		"read":    &service.ReadError{Err: quicraft.ErrTimeout},
 		"batch":   &service.BatchError{Err: quicraft.ErrTimeout},
+		// A write already in the log when its leader stepped down.
+		"maybe-applied propose": &service.ProposeError{Err: &quicraft.MaybeAppliedError{Err: &quicraft.NotLeaderError{ShardID: 1}}},
 	} {
 		if got := answer(wrapped{err}); got != want {
 			t.Errorf("%s: answered %+v, want %+v", name, got, want)

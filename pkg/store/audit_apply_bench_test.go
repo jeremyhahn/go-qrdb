@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // benchAuditEvent returns a representative audit event. tenantID is left
@@ -84,7 +85,7 @@ func BenchmarkMVCCApply_AuditAppend(b *testing.B) {
 	for _, size := range benchBatchSizes {
 		b.Run(fmt.Sprintf("batch=%d", size), func(b *testing.B) {
 			s := newBenchMVCCStateMachine(b)
-			s.SetAuditChain(audit.NewChain())
+			s.SetLogs(vlog.NewChain())
 
 			runApplyBenchmark(b, size,
 				func(index uint64) sm.Entry {
@@ -114,7 +115,7 @@ func BenchmarkMVCCApply_AuditAppend_ManyTenants(b *testing.B) {
 	for _, size := range benchBatchSizes {
 		b.Run(fmt.Sprintf("batch=%d", size), func(b *testing.B) {
 			s := newBenchMVCCStateMachine(b)
-			s.SetAuditChain(audit.NewChain())
+			s.SetLogs(vlog.NewChain())
 
 			runApplyBenchmark(b, size,
 				func(index uint64) sm.Entry {
@@ -145,7 +146,7 @@ func BenchmarkPebbleApply_AuditAppend_Fsync(b *testing.B) {
 	for _, size := range benchBatchSizes {
 		b.Run(fmt.Sprintf("batch=%d", size), func(b *testing.B) {
 			s := newBenchPebbleStateMachine(b)
-			s.SetAuditChain(audit.NewChain())
+			s.SetLogs(vlog.NewChain())
 
 			runApplyBenchmark(b, size,
 				func(index uint64) sm.Entry {

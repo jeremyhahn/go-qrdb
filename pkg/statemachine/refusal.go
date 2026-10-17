@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // refusalRule recognises one error a subsystem returns during apply and
@@ -71,13 +72,27 @@ var refusalRules = []refusalRule{
 	// so it classifies as invalid input exactly like lease.InvalidTTLError,
 	// never as a fault. See pkg/store/pebble.go's pebbleHandleAuditAppend
 	// and pkg/engine/mvcc_engine.go's handleAuditAppend for why only
-	// *audit.TableWriteError (a local storage fault) is excluded from this
+	// *vlog.TableWriteError (a local storage fault) is excluded from this
 	// classification and returned as a Go error instead.
 	{isType[audit.MissingTimestampError], protocol.AppErrorInvalid},
 	{isType[audit.EncodeEventError], protocol.AppErrorInvalid},
 	{isType[audit.TenantMismatchError], protocol.AppErrorInvalid},
-	{isType[audit.InvalidTenantIDError], protocol.AppErrorInvalid},
+	{isType[vlog.InvalidTenantIDError], protocol.AppErrorInvalid},
 	{isType[protocol.InvalidCommandError], protocol.AppErrorInvalid},
+	// A named log's refusals (OpVerifiableLog), each a deterministic
+	// consequence of the committed bytes; see ApplyVerifiableLog for the
+	// table faults that halt instead.
+	{isType[vlog.InvalidLogNameError], protocol.AppErrorInvalid},
+	{isType[vlog.InvalidDescriptorError], protocol.AppErrorInvalid},
+	{isType[vlog.LogNotFoundError], protocol.AppErrorInvalid},
+	{isType[vlog.AppendBatchError], protocol.AppErrorInvalid},
+	{isType[vlog.SizeOutOfRangeError], protocol.AppErrorInvalid},
+	{isType[vlog.IndexOutOfRangeError], protocol.AppErrorInvalid},
+	{isType[vlog.CheckpointRootMismatchError], protocol.AppErrorInvalid},
+	{isType[vlog.EmptyCheckpointError], protocol.AppErrorInvalid},
+	{isType[vlog.ExpireNotAllowedError], protocol.AppErrorInvalid},
+	{isType[vlog.LogExistsError], protocol.AppErrorConflict},
+	{isType[vlog.CheckpointExistsError], protocol.AppErrorConflict},
 }
 
 // RefusalKind reports what kind of refusal err is, for a subsystem error a

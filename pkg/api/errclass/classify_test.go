@@ -182,12 +182,21 @@ func TestClassify_RaftTransientConditionsAreRetryable(t *testing.T) {
 	}
 }
 
+// maybeAppliedNotLeader is what go-quicraft delivers to a proposal or config
+// change already in the log when its leader steps down: the service layer
+// keeps it out of *service.NotLeaderError, since the entry may still commit.
+func maybeAppliedNotLeader() error {
+	return &quicraft.MaybeAppliedError{Err: &quicraft.NotLeaderError{ShardID: 1}}
+}
+
 // TestClassify_RaftTimeoutIsUnavailable: a request Raft timed out -- most
 // often a proposal or read that met an election, or a leader still settling
 // its term -- is retryable, whatever wrapper carried it. Before, the wrapper's
 // own Internal row claimed it, and a 500 told the caller the node was broken.
 // The collection write whose outcome is unknown stays a server fault: that
 // row is about what the caller must not assume, not about why it failed.
+// A leader stepping down under a proposal already in its log is the same
+// election met mid-request, and the same class.
 func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -199,6 +208,8 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 		{"inside a read failure", &service.ReadError{Err: quicraft.ErrTimeout}, Unavailable},
 		{"inside a batch failure", &service.BatchError{Err: quicraft.ErrTimeout}, Unavailable},
 		{"inside a tenant store read", &tenant.StoreError{Op: "get", Err: &service.ReadError{Err: quicraft.ErrTimeout}}, Unavailable},
+		{"a leader stepping down under a proposal", &service.ProposeError{Err: maybeAppliedNotLeader()}, Unavailable},
+		{"a leader stepping down under a member change", &service.MembershipError{Op: "add", Err: maybeAppliedNotLeader()}, Unavailable},
 		{"a caller's own deadline is still its own", &service.ProposeError{Err: context.DeadlineExceeded}, DeadlineExceeded},
 		{"another Raft failure is still a fault", &service.ProposeError{Err: quicraft.ErrRejected}, Internal},
 		{"a propose that may still commit", &service.ProposeError{Err: &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}}, Unavailable},

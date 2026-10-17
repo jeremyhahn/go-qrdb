@@ -246,6 +246,7 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Barrier sealed | 503 | `UNAVAILABLE` | fail closed |
 | Not the leader, no resolver configured | 503 | `UNAVAILABLE` | otherwise routed to the leader. QUIC answers `StatusUnavailable`, not the generic `StatusError` it used to |
 | Raft timed out the proposal or read: an election, or a leader still committing the first entry of its term | 503 | `UNAVAILABLE` | `quicraft.ErrTimeout`, whatever wrapper carried it. Retryable once a leader serves; a timed-out write may still have committed, so retry only a write made idempotent. *(Corrected: this answered 500 / `INTERNAL`, which reported an election as a server fault.)* |
+| The leader stepped down with the write already in its log | 503 | `UNAVAILABLE` | `quicraft.ErrNotLeader` under `*quicraft.MaybeAppliedError`. The write may still commit under the next leader, so it is not a `NOT_LEADER` refusal and is never forwarded; retry only a write made idempotent. *(Corrected: this was held and re-proposed, then answered as a `NOT_LEADER` refusal.)* |
 
 Every condition in this table has a QUIC status; the whole vocabulary is in
 [the API server's status mapping](../api-server/api.md#common-status-mapping).

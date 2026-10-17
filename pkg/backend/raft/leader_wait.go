@@ -76,10 +76,13 @@ func (e *LeaderWaitError) Unwrap() error { return e.Err }
 
 // leaderUnknown reports whether err is go-quicraft's refusal of a request on
 // a node that knows no leader for the shard: the one not-leader refusal that
-// names nowhere to forward the request to.
+// names nowhere to forward the request to. A not-leader error under
+// quicraft.MaybeAppliedError is no refusal: the proposal was already in the
+// log when its leader stepped down and may still commit, so it is never held
+// and proposed again.
 func leaderUnknown(err error) bool {
 	var nle *quicraft.NotLeaderError
-	return errors.As(err, &nle) && nle.LeaderID == 0 && nle.LeaderAddress == ""
+	return !quicraft.MaybeApplied(err) && errors.As(err, &nle) && nle.LeaderID == 0 && nle.LeaderAddress == ""
 }
 
 // throughElection runs op and, while go-quicraft refuses it because this node
