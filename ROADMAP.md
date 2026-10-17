@@ -8,8 +8,8 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Milestones
 
-- [Working fundamentally: Raft clustering and storage](../../milestone/28) — RC — projected 2026-11-02 04Z
-- [Dev complete](../../milestone/12) — RC — projected 2026-11-02 04Z — criteria in [docs/SPEC.md](docs/SPEC.md#release-criteria)
+- [Working fundamentally: Raft clustering and storage](../../milestone/28) — RC — projected 2026-10-21 16Z
+- [Dev complete](../../milestone/12) — RC — projected 2026-10-22 10Z — criteria in [docs/SPEC.md](docs/SPEC.md#release-criteria)
 
 ## Complete
 
@@ -78,19 +78,19 @@ The cluster engine and database system for every project in the stack: embedded,
 
 - **cluster-verification** — the qrdb-3-node-proven gate passes on the three-node cluster; cluster suites green on main — [#668](../../issues/668), [#671](../../issues/671), [#679](../../issues/679) — blocked: the pinned port set (#671) and the rate nemesis (#679)
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683) — open
-- **lease-reads** — lease reads documented as linearizable under the 1 % clock-rate bound — [#678](../../issues/678), PR [#681](../../pulls/681) — in review
-- **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — in review
-- **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — in review
+- **lease-reads** — lease reads documented as linearizable under the 1 % clock-rate bound — [#678](../../issues/678), PR [#681](../../pulls/681) — open
+- **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — open
+- **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — open
 - **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — open
 
 ## Next
 
 - **fips-140-3** — nightly FIPS 140-3 job green and placed; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118) — open
 - **documentation** — ROADMAP names every milestone and folder; RC spec scrub; agent spec home — [#657](../../issues/657), [#658](../../issues/658), [#634](../../issues/634) — open
-- **file-backend-encryption** — file backend encrypted at rest under the node barrier — [#630](../../issues/630), PR [#681](../../pulls/681) — in review
-- **embedder-seams** — `sdk/go` exposes the seams embedders need — [#626](../../issues/626), PR [#681](../../pulls/681) — in review
-- **lease-keepalive-latency** — no heavy keepalive tail — [#275](../../issues/275), PR [#681](../../pulls/681) — in review
-- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729) — in review
+- **file-backend-encryption** — file backend encrypted at rest under the node barrier — [#630](../../issues/630), PR [#681](../../pulls/681) — open
+- **embedder-seams** — `sdk/go` exposes the seams embedders need — [#626](../../issues/626), PR [#681](../../pulls/681) — open
+- **lease-keepalive-latency** — no heavy keepalive tail — [#275](../../issues/275), PR [#681](../../pulls/681) — open
+- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729) — open
 
 ## Later
 
