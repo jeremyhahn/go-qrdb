@@ -23,6 +23,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
 
 const (
@@ -497,15 +500,40 @@ func TestLeaseExpiry_ReleasesACrashedHoldersLocks_AndWakesWaiters(t *testing.T) 
 }
 
 func TestKeepalive_KeepsLocksPastTheLeaseTTL(t *testing.T) {
-	s := newStack(t)
+	// The lessor runs on a fake clock, so a lease expires only when the test
+	// advances it: a keepalive the host delays is waited for, not raced. Each
+	// half-TTL step is taken after a renewal that began at the current time,
+	// and four steps carry the lock two TTLs past its grant, where a lease
+	// that was never renewed has expired.
+	const ttlSeconds = 1
+	ttl := ttlSeconds * time.Second
+	clk := clocktest.NewAt(time.Unix(1_000_000, 0))
+	s := newStack(t, lease.WithClock(clk))
 	s.runExpiry(t)
-	tbl := s.table(t, WithLeaseTTL(1))
+	renewals := make(chan time.Time, 1)
+	deps := s.deps
+	deps.Lease = renewalLease{LeaseServicer: s.deps.Lease, clk: clk, renewed: renewals}
+	tbl, err := New(deps, "acme/shop", WithLeaseTTL(ttlSeconds))
+	require.NoError(t, err)
 
 	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
 
-	time.Sleep(1500 * time.Millisecond)
+	for range 4 {
+		clk.Advance(ttl / 2)
+		since := clk.Now()
+		for renewed := false; !renewed; {
+			select {
+			case began := <-renewals:
+				renewed = !began.Before(since)
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the holder's keepalive renewed no lease at or after %v", since)
+			}
+		}
+	}
+
+	assert.Empty(t, s.lessor.ExpiredLeaseIDs(), "a renewed lease is live two TTLs after its grant")
 	var nowait *LockNotAvailableError
 	require.ErrorAs(t, b.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0), &nowait,
 		"a live holder's lease is renewed and its lock survives the TTL")

@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -707,6 +708,58 @@ func waitForAdmin(t *testing.T, pool *x509.CertPool, port int, timeout time.Dura
 	t.Helper()
 	if err := qrdbdharness.WaitForHTTPOK(adminURL(port, "/health"), pool, nil, timeout); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// adminAfterUnsealReserve is the part of a test's deadline that
+// waitForAdminAfterUnseal leaves unspent, so a node still silent at the end
+// fails with its goroutine dump before the test binary's own timeout panics.
+const adminAfterUnsealReserve = 30 * time.Second
+
+// adminAfterUnsealFallback bounds waitForAdminAfterUnseal in a test binary run
+// without a deadline (-timeout 0).
+const adminAfterUnsealFallback = 10 * time.Minute
+
+// waitForAdminAfterUnseal waits for the admin /health of a node spawnNode
+// started and the test unsealed, for as long as the node runs and the test has
+// time. After unseal qrdbd binds its admin listener only once its system shard
+// has a Raft leader and first boot has run, and the daemon gives that wait no
+// budget (awaitLeader, cmd/qrdbd/start.go), because the quorum forms only when
+// the peers are unsealed too: a fixed bound here measured the host's load, not
+// the node. A node that exits fails the test at once with its output tail; one
+// that has not answered by the test's deadline, less adminAfterUnsealReserve,
+// fails through WaitForHTTPOK, which leaves the node's goroutine dump.
+func waitForAdminAfterUnseal(t *testing.T, pool *x509.CertPool, cmd *exec.Cmd, port int) {
+	t.Helper()
+	daemon := spawnedDaemon(t, cmd)
+	url := adminURL(port, "/health")
+	start := time.Now()
+	deadline := start.Add(adminAfterUnsealFallback)
+	if d, ok := t.Deadline(); ok {
+		deadline = d.Add(-adminAfterUnsealReserve)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exited := make(chan error, 1)
+	go func() { exited <- daemon.WaitContext(ctx) }()
+
+	client := qrdbdharness.HTTPSClient(pool, nil, 5*time.Second)
+	for time.Now().Before(deadline) {
+		if resp, err := client.Get(url); err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		select {
+		case err := <-exited:
+			t.Fatalf("node on admin port %d exited before answering %s: %v\n%s", port, url, err, daemon.Tail())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if err := qrdbdharness.WaitForHTTPOK(url, pool, nil, 0); err != nil {
+		t.Fatalf("node on admin port %d did not answer %s in %v: %v", port, url, time.Since(start), err)
 	}
 }
 
@@ -2654,18 +2707,67 @@ func unsealNodes(t *testing.T, ca *testCA, adminPorts ...int) {
 // user only once an administrator has bound it; this is the enrolment an
 // operator performs for every non-bootstrap identity. It returns the new
 // user's ID.
+//
+// A loaded node may refuse the create with 503 or 504 after it has already
+// committed it, so the retry is idempotent: a 409 that follows a refusal is
+// this helper's own earlier write, read back by username, never a fresh
+// create. A 409 on the first attempt is still a failure.
 func createBoundUser(t *testing.T, client *http.Client, port int, fields map[string]any, certPath string) uint64 {
 	t.Helper()
-	body, status := iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/users", port), fields)
-	if status != http.StatusCreated && status != http.StatusOK {
-		t.Fatalf("createBoundUser: create user: status %d, body: %s", status, body)
+	url := fmt.Sprintf("https://127.0.0.1:%d/users", port)
+	deadline := time.Now().Add(retryableCreateWindow)
+	refused := false
+	for {
+		body, status := iraftAPIPost(t, client, url, fields)
+		switch {
+		case status == http.StatusCreated || status == http.StatusOK:
+			var created transport.User
+			if err := json.Unmarshal(body, &created); err != nil || created.ID == 0 {
+				t.Fatalf("createBoundUser: decode user: %v body=%s", err, body)
+			}
+			bindUserCert(t, client, port, created.ID, certPath)
+			return created.ID
+		case status == http.StatusConflict && refused:
+			// A refused attempt may still have committed: a 503 says the
+			// node could not confirm the write in time, not that the write
+			// did not happen. The user that answers 409 is then this
+			// helper's own, so read it back rather than fail.
+			id := lookupUserByUsername(t, client, port, fields)
+			bindUserCert(t, client, port, id, certPath)
+			return id
+		case (status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout) && time.Now().Before(deadline):
+			refused = true
+			t.Logf("createBoundUser: POST %s refused for now (%d), retrying: %s", url, status, body)
+			time.Sleep(250 * time.Millisecond)
+		default:
+			t.Fatalf("createBoundUser: create user: status %d, body: %s", status, body)
+		}
 	}
-	var created transport.User
-	if err := json.Unmarshal(body, &created); err != nil || created.ID == 0 {
-		t.Fatalf("createBoundUser: decode user: %v body=%s", err, body)
+}
+
+// lookupUserByUsername reads back the user createBoundUser's fields name, by
+// its tenant-scoped username, and returns its ID.
+func lookupUserByUsername(t *testing.T, client *http.Client, port int, fields map[string]any) uint64 {
+	t.Helper()
+	username, _ := fields["username"].(string)
+	tenantID, _ := fields["tenant_id"].(string)
+	lookup := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s",
+		port, neturl.PathEscape(username), neturl.QueryEscape(tenantID))
+	deadline := time.Now().Add(retryableCreateWindow)
+	for {
+		body, status := iraftAPIGet(t, client, lookup)
+		if status == http.StatusOK {
+			var existing transport.User
+			if err := json.Unmarshal(body, &existing); err != nil || existing.ID == 0 {
+				t.Fatalf("createBoundUser: decode user %q read back: %v body=%s", username, err, body)
+			}
+			return existing.ID
+		}
+		if !retryableStatus(status) || !time.Now().Before(deadline) {
+			t.Fatalf("createBoundUser: read back user %q after 409: status %d, body: %s", username, status, body)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	bindUserCert(t, client, port, created.ID, certPath)
-	return created.ID
 }
 
 // bindUserCert enrols the certificate at certPath as an mTLS binding of user
@@ -2686,7 +2788,9 @@ func bindUserCert(t *testing.T, client *http.Client, port int, userID uint64, ce
 		t.Fatalf("bindUserCert: parse %s: %v", certPath, err)
 	}
 	url := fmt.Sprintf("https://127.0.0.1:%d/users/%d/cert-bindings", port, userID)
-	body, status := iraftAPIPost(t, client, url, map[string]any{
+	// AddCertBinding is idempotent for an identical binding, so a refused
+	// attempt that did commit is safe to send again.
+	body, status := postRetryingRetryable(t, client, url, map[string]any{
 		"thumbprint":     user.ComputeSPKIThumbprint(cert),
 		"not_after_unix": cert.NotAfter.Unix(),
 	})
@@ -2774,12 +2878,20 @@ func postRetryingRetryable(t *testing.T, client *http.Client, rawURL string, bod
 	deadline := time.Now().Add(retryableCreateWindow)
 	for {
 		respBody, status := iraftAPIPost(t, client, rawURL, body)
-		if (status != http.StatusServiceUnavailable && status != http.StatusGatewayTimeout) || !time.Now().Before(deadline) {
+		if !retryableStatus(status) || !time.Now().Before(deadline) {
 			return respBody, status
 		}
 		t.Logf("POST %s refused for now (%d), retrying: %s", rawURL, status, respBody)
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// retryableStatus reports whether status is the server's typed "retry" that
+// postRetryingRetryable and its SDK-level counterparts wait out: 503, a
+// consensus group between leaders (pkg/api/errclass's
+// NotLeaderError->Unavailable rule), or 504, a consensus step that timed out.
+func retryableStatus(status int) bool {
+	return status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
 // raftTenantAdminClient builds an mTLS client for the admin createRaftTenant

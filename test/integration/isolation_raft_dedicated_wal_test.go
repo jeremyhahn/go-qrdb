@@ -152,7 +152,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	unsealAll(true)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+		waitForAdminAfterUnseal(t, ca.Pool, cmds[i], adminPorts[i])
 	}
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
@@ -363,11 +363,11 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	// ---------------------------------------------------------------------------
 	// Phase 6: restart + re-unseal + re-attach.
 	// ---------------------------------------------------------------------------
-	startCluster("R2")
+	restarted := startCluster("R2")
 	unsealAll(false)
 	for i := range 3 {
 		waitForHealthy(t, dataDirs[i], 60*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+		waitForAdminAfterUnseal(t, ca.Pool, restarted[i], adminPorts[i])
 	}
 	leaderPort2 := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 

@@ -27,6 +27,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"syscall"
@@ -34,6 +35,7 @@ import (
 	"time"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 type daoClusterNode struct {
@@ -151,6 +153,31 @@ func startDAOCluster(t *testing.T, smType string) *daoCluster {
 // sdk.Client, until the entity is readable both by Get and by its unique
 // Email index -- the two access paths exerciseDAOEntityStorage exercises
 // against a single node -- or the deadline expires.
+// newDAORetryingRetryable builds a DAO over client, retrying for up to
+// retryableCreateWindow while the IndexCreate that sdk.NewDAO proposes is
+// answered with the server's typed "retry" (retryableStatus). Around a leader
+// kill or a restart the shard has no leader for a moment and a node answers
+// 503 NOT_LEADER, "already submitted to raft; it may still commit"; the retry
+// is safe because a create of an index that already exists under the same
+// owner is an idempotent no-op (pkg/engine/index_value_type.go,
+// index.CheckCreateOwner).
+func newDAORetryingRetryable(t *testing.T, client *sdk.Client, entityType string, newEntity func() *daoSDKUser, what string) sdk.GenericDAO[*daoSDKUser] {
+	t.Helper()
+	deadline := time.Now().Add(retryableCreateWindow)
+	for {
+		d, err := sdk.NewDAO[*daoSDKUser](client.KVStore(), entityType, newEntity)
+		if err == nil {
+			return d
+		}
+		var reqErr *transport.RequestError
+		if !errors.As(err, &reqErr) || !retryableStatus(reqErr.StatusCode) || !time.Now().Before(deadline) {
+			t.Fatalf("sdk.NewDAO %s: %v", what, err)
+		}
+		t.Logf("sdk.NewDAO %s refused for now, retrying: %v", what, err)
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 func assertDAOVisibleEverywhere(t *testing.T, cluster *daoCluster, entityType string, id uint64, wantEmail string, timeout time.Duration) {
 	t.Helper()
 	ctx := context.Background()
@@ -158,10 +185,7 @@ func assertDAOVisibleEverywhere(t *testing.T, cluster *daoCluster, entityType st
 
 	for _, port := range cluster.adminPorts() {
 		client := daoSDKClient(t, cluster.ca, port)
-		d, err := sdk.NewDAO[*daoSDKUser](client.KVStore(), entityType, newEntity)
-		if err != nil {
-			t.Fatalf("sdk.NewDAO on admin port %d: %v", port, err)
-		}
+		d := newDAORetryingRetryable(t, client, entityType, newEntity, fmt.Sprintf("on admin port %d", port))
 
 		deadline := time.Now().Add(timeout)
 		var lastErr error
@@ -212,10 +236,7 @@ func TestDAO_RealBinary_ThreeNodeCluster_LeaderKillAndRestart(t *testing.T) {
 
 	// Write through a FOLLOWER: REST leader-forwarding must carry it.
 	followerClient := daoSDKClient(t, cluster.ca, followerPort)
-	followerDAO, err := sdk.NewDAO[*daoSDKUser](followerClient.KVStore(), entityType, newEntity)
-	if err != nil {
-		t.Fatalf("sdk.NewDAO over follower (port %d): %v", followerPort, err)
-	}
+	followerDAO := newDAORetryingRetryable(t, followerClient, entityType, newEntity, fmt.Sprintf("over follower (port %d)", followerPort))
 	u1 := &daoSDKUser{Email: "cluster1@example.com", Status: "active", Username: "Cluster1", Age: 10}
 	if err := followerDAO.Save(ctx, u1); err != nil {
 		t.Fatalf("Save(u1) via follower port %d (leader-forwarded write): %v", followerPort, err)
@@ -243,10 +264,7 @@ func TestDAO_RealBinary_ThreeNodeCluster_LeaderKillAndRestart(t *testing.T) {
 	warmupWrite(t, cluster.ca, newLeaderPort, 15*time.Second)
 
 	survivorClient := daoSDKClient(t, cluster.ca, newLeaderPort)
-	survivorDAO, err := sdk.NewDAO[*daoSDKUser](survivorClient.KVStore(), entityType, newEntity)
-	if err != nil {
-		t.Fatalf("sdk.NewDAO after failover (port %d): %v", newLeaderPort, err)
-	}
+	survivorDAO := newDAORetryingRetryable(t, survivorClient, entityType, newEntity, fmt.Sprintf("after failover (port %d)", newLeaderPort))
 	u2 := &daoSDKUser{Email: "cluster2@example.com", Status: "active", Username: "Cluster2", Age: 11}
 	if err := survivorDAO.Save(ctx, u2); err != nil {
 		t.Fatalf("Save(u2) after leader kill: %v", err)

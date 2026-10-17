@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -36,10 +37,10 @@ type stack struct {
 	deps   Deps
 }
 
-func newStack(t *testing.T) *stack {
+func newStack(t *testing.T, opts ...lease.Option) *stack {
 	t.Helper()
 	hub := watch.NewHub()
-	lessor := lease.NewLessor()
+	lessor := lease.NewLessor(opts...)
 	eng, err := engine.NewMVCCEngine(memory.NewStorage(),
 		engine.WithMVCCLessor(lessor), engine.WithMVCCWatchHub(hub))
 	if err != nil {
@@ -94,6 +95,28 @@ type silentLease struct {
 func (silentLease) KeepAlive(ctx context.Context, _ int64) (*lease.Lease, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+// renewalLease is a lease servicer that reports each KeepAlive the lessor
+// granted by the lease-clock time the renewal began, so the renewal set the
+// lease's deadline to at least that time plus its TTL. A report is dropped
+// while an earlier one is unread.
+type renewalLease struct {
+	service.LeaseServicer
+	clk     clock.Clock
+	renewed chan time.Time
+}
+
+func (r renewalLease) KeepAlive(ctx context.Context, id int64) (*lease.Lease, error) {
+	began := r.clk.Now()
+	l, err := r.LeaseServicer.KeepAlive(ctx, id)
+	if err == nil {
+		select {
+		case r.renewed <- began:
+		default:
+		}
+	}
+	return l, err
 }
 
 // queueOwners returns the owners queued on key, in FIFO order.
