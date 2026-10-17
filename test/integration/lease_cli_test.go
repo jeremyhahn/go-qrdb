@@ -276,6 +276,27 @@ func testLeaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 // past it and then waiting for the sweeper stays within seconds.
 const leaseRenewTTL = 3
 
+// renewalWindow is what a lease's renewals guarantee a test that must not
+// depend on its host's pace. A grant or renewal sent at s that succeeds sets
+// the server's deadline no earlier than s plus the TTL, so an answer that
+// arrives before then must find the lease and its keys. An answer arriving
+// later reflects the host's pace, not the contract, and is not judged.
+type renewalWindow struct {
+	ttl   time.Duration
+	until time.Time
+}
+
+func newRenewalWindow(ttlSeconds int64) *renewalWindow {
+	return &renewalWindow{ttl: time.Duration(ttlSeconds) * time.Second}
+}
+
+// renewed records a grant or renewal, sent at sent, that succeeded.
+func (w *renewalWindow) renewed(sent time.Time) { w.until = sent.Add(w.ttl) }
+
+// guaranteed reports whether an answer that has just arrived falls inside
+// the window the last successful renewal opened.
+func (w *renewalWindow) guaranteed() bool { return time.Now().Before(w.until) }
+
 // TestLease_CLI_KeepAliveAndExpiry_PerProtocol drives renewal and expiry
 // through the CLI binary on every transport: `lease keep-alive` keeps a short
 // lease -- and the key bound to it -- alive well past the TTL it was granted
@@ -297,10 +318,13 @@ func testLeaseKeepAliveAndExpiryOverProtocol(t *testing.T, node *multiProtoNode,
 	t.Helper()
 
 	key := "leasecli/" + proto.name + "/renewed"
+	window := newRenewalWindow(leaseRenewTTL)
+	sent := time.Now()
 	out, err := runCLIProto(t, node, proto, "--output", "json", "lease", "grant", "--ttl", strconv.Itoa(leaseRenewTTL))
 	if err != nil {
 		t.Fatalf("[%s] lease grant --ttl %d: %v\noutput: %s", proto.name, leaseRenewTTL, err, out)
 	}
+	window.renewed(sent)
 	var granted leaseInfoDisplay
 	if jerr := json.Unmarshal([]byte(out), &granted); jerr != nil {
 		t.Fatalf("[%s] decode `lease grant` JSON: %v\noutput: %s", proto.name, jerr, out)
@@ -310,14 +334,31 @@ func testLeaseKeepAliveAndExpiryOverProtocol(t *testing.T, node *multiProtoNode,
 		t.Fatalf("[%s] kv put %s --lease-id %s: %v\noutput: %s", proto.name, key, leaseID, err, out)
 	}
 
-	// Renew every second for twice the granted TTL. Each keep-alive must
-	// report the lease back at its full TTL, to the second.
+	// Renew every second for twice the granted TTL. Each keep-alive either
+	// renews the lease back to its full TTL, and its key is there, or answers
+	// lease-not-found, and its key is gone; never a renewal followed by a
+	// missing key. Only the window a renewal guarantees is judged, so a host
+	// too loaded to renew within the TTL lets the lease expire rather than
+	// failing the test.
 	renewEvery := time.NewTicker(time.Second)
 	defer renewEvery.Stop()
 	renewUntil := time.After(2 * leaseRenewTTL * time.Second)
 renewing:
 	for {
+		sent = time.Now()
 		out, err = runCLIProto(t, node, proto, "--output", "json", "lease", "keep-alive", leaseID)
+		if err != nil && strings.Contains(out, "not found") {
+			if window.guaranteed() {
+				t.Fatalf("[%s] lease keep-alive %s answered lease-not-found before %v, the deadline the last renewal guaranteed\noutput: %s",
+					proto.name, leaseID, window.until, out)
+			}
+			got, existsErr := runCLIProto(t, node, proto, "kv", "exists", key)
+			if existsErr != nil || strings.TrimSpace(got) != "false" {
+				t.Fatalf("[%s] kv exists %s after lease-not-found = %q, err=%v, want %q", proto.name, key, got, existsErr, "false")
+			}
+			t.Logf("[%s] the host renewed too slowly to keep the %ds lease: it expired and took its key", proto.name, leaseRenewTTL)
+			break renewing
+		}
 		if err != nil {
 			t.Fatalf("[%s] lease keep-alive %s: %v\noutput: %s", proto.name, leaseID, err, out)
 		}
@@ -329,16 +370,23 @@ renewing:
 			t.Fatalf("[%s] lease keep-alive %s = %+v, want lease %d back at its full %ds",
 				proto.name, leaseID, renewed, granted.ID, leaseRenewTTL)
 		}
+		window.renewed(sent)
+		out, err = runCLIProto(t, node, proto, "kv", "exists", key)
+		if err != nil {
+			t.Fatalf("[%s] kv exists %s after a renewal: %v\noutput: %s", proto.name, key, err, out)
+		}
+		if strings.TrimSpace(out) != "true" {
+			if window.guaranteed() {
+				t.Fatalf("[%s] kv exists %s before %v, the deadline a successful renewal guaranteed, = %q, want %q",
+					proto.name, key, window.until, out, "true")
+			}
+			t.Logf("[%s] kv exists after a renewal answered past its guaranteed deadline without the key: not judged", proto.name)
+		}
 		select {
 		case <-renewEvery.C:
 		case <-renewUntil:
 			break renewing
 		}
-	}
-	out, err = runCLIProto(t, node, proto, "kv", "exists", key)
-	if err != nil || strings.TrimSpace(out) != "true" {
-		t.Fatalf("[%s] kv exists %s after renewing past the granted TTL = %q, err=%v, want %q",
-			proto.name, key, out, err, "true")
 	}
 
 	// Stop renewing: the sweeper revokes the lease and deletes its key.

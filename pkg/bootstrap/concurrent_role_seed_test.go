@@ -236,13 +236,18 @@ func TestProvisionTenant_ConcurrentCallersConverge(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, err := bootstrap.ProvisionTenant(context.Background(), bootstrap.TenantProvisionConfig{
-				TenantID:    tenantID,
-				Isolation:   tenant.IsolationPrefix,
-				AdminCSRPEM: adminCSRPEM,
-			}, bootstrap.Dependencies{
-				Tenants: tenants, Users: users, Roles: roleSvcs[i],
-				Signer: signer, Binder: binder, Logger: discardLogger(),
+			// A caller re-runs a provisioning an election cut short: the
+			// re-run is idempotent, and that is the contract a caller of a
+			// non-exclusive ProvisionTenant has on a leader change.
+			_, err := service.SettleLeadership(context.Background(), provisionSettle, func(ctx context.Context) (*bootstrap.TenantProvisionResult, error) {
+				return bootstrap.ProvisionTenant(ctx, bootstrap.TenantProvisionConfig{
+					TenantID:    tenantID,
+					Isolation:   tenant.IsolationPrefix,
+					AdminCSRPEM: adminCSRPEM,
+				}, bootstrap.Dependencies{
+					Tenants: tenants, Users: users, Roles: roleSvcs[i],
+					Signer: signer, Binder: binder, Logger: discardLogger(),
+				})
 			})
 			errs[i] = err
 		}(i)
@@ -260,7 +265,9 @@ func TestProvisionTenant_ConcurrentCallersConverge(t *testing.T) {
 
 	for _, want := range role.BuiltInRoles(tenantID) {
 		for i := range callers {
-			got, err := roleSvcs[i].GetRoleByName(context.Background(), tenantID, want.Name)
+			got, err := service.SettleLeadership(context.Background(), readSettle, func(ctx context.Context) (*role.Role, error) {
+				return roleSvcs[i].GetRoleByName(ctx, tenantID, want.Name)
+			})
 			if err != nil {
 				t.Fatalf("host %d: GetRoleByName(%q): %v", i, want.Name, err)
 			}
@@ -294,6 +301,27 @@ const extraShardReadyBound = 5 * time.Minute
 // timeout lets the loop send a fresh ReadIndex request throughout the whole
 // bound window instead of spending it on a single attempt.
 const shardReadyPollAttempt = 2 * time.Second
+
+// provisionSettle waits out an election that cuts a caller's provisioning
+// short (a leader that misses its check-quorum window on a loaded host steps
+// down mid-proposal and answers "not leader ... it may still commit"): the
+// caller re-runs ProvisionTenant, which is idempotent when not Exclusive.
+// An attempt gets the whole budget because it is a chain of Raft writes
+// that each answer promptly on a leader change; extraShardReadyBound is the
+// hang guard, not a speed assertion.
+var provisionSettle = service.SettlePolicy{
+	Budget:  extraShardReadyBound,
+	Attempt: extraShardReadyBound,
+	Poll:    100 * time.Millisecond,
+}
+
+// readSettle waits out an election under the convergence reads, with a
+// short attempt for the reason shardReadyPollAttempt records.
+var readSettle = service.SettlePolicy{
+	Budget:  extraShardReadyBound,
+	Attempt: shardReadyPollAttempt,
+	Poll:    100 * time.Millisecond,
+}
 
 // waitShardReadableWithin is raftharness.Cluster.WaitReadable with a wait
 // bound this test controls directly, rather than the package's own fixed

@@ -115,8 +115,9 @@ func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, er
 		return l, err
 	}
 
-	// The replica that answered is not the lease primary (a follower, or a
-	// state machine that does not renew in memory), or the lease has a
+	// The replica that answered is not the lease primary (a follower, a state
+	// machine that does not renew in memory, or a primary that stood down
+	// while the expired lease awaited its revoke), or the lease has a
 	// checkpoint that only a replicated renewal clears: renew through the log,
 	// which Raft forwards to the leader.
 	return s.keepAliveReplicated(ctx, leaseID)
@@ -139,6 +140,10 @@ func (s *LeaseService) renewLocal(ctx context.Context, leaseID int64) (*Lease, e
 		if errors.As(err, &checkpointed) {
 			return nil, checkpointed
 		}
+		var expired *lease.ExpiredError
+		if errors.As(err, &expired) {
+			return nil, s.awaitExpired(ctx, expired)
+		}
 		var notFound *lease.NotFoundError
 		if errors.As(err, &notFound) {
 			return nil, &LeaseNotFoundError{LeaseID: notFound.ID}
@@ -151,6 +156,25 @@ func (s *LeaseService) renewLocal(ctx context.Context, leaseID int64) (*Lease, e
 		return nil, &unexpectedResultTypeError{}
 	}
 	return l, nil
+}
+
+// awaitExpired waits, outside the read that found it, for the fate of a lease
+// the primary refused to renew because it is past its deadline, as etcd's
+// lessor.Renew does. Its revoke applying answers *LeaseNotFoundError, never a
+// renewal the revoke would overtake; the primary standing down answers
+// *lease.NotPrimaryError, so KeepAlive renews through the log and the next
+// primary decides; ctx ending first is a read error like any other.
+func (s *LeaseService) awaitExpired(ctx context.Context, expired *lease.ExpiredError) error {
+	err := expired.Await(ctx)
+	var notFound *lease.NotFoundError
+	if errors.As(err, &notFound) {
+		return &LeaseNotFoundError{LeaseID: notFound.ID}
+	}
+	var notPrimary *lease.NotPrimaryError
+	if errors.As(err, &notPrimary) {
+		return notPrimary
+	}
+	return s.translateReadError(err)
 }
 
 // keepAliveReplicated renews the lease with a replicated keep-alive command,

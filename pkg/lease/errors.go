@@ -14,7 +14,10 @@
 
 package lease
 
-import "strconv"
+import (
+	"context"
+	"strconv"
+)
 
 // NotFoundError is returned when a lease ID does not exist.
 type NotFoundError struct {
@@ -89,6 +92,53 @@ type CheckpointedError struct {
 func (e *CheckpointedError) Error() string {
 	return "lease renewal: lease " + strconv.FormatInt(e.ID, 10) + " is checkpointed; renew through the log"
 }
+
+// ExpiredError is returned by RenewLocal when lease ID is past its deadline.
+// The expiry loop revokes such a lease, so a renewal must not answer that it
+// lives on: the revoke, already proposed or about to be, would delete it
+// behind the answer. RenewLocal runs inside a read that the apply of that
+// revoke waits behind, so it cannot wait for the outcome itself; it returns
+// this error, and the caller waits with Await once the read has returned.
+// This is etcd's lessor.Renew, split at the point where qrdb's read ends.
+type ExpiredError struct {
+	ID int64
+
+	revoked <-chan struct{}
+	demoted <-chan struct{}
+}
+
+func (e *ExpiredError) Error() string {
+	return "lease renewal: lease " + strconv.FormatInt(e.ID, 10) + " has expired"
+}
+
+// Await blocks until the expired lease's fate is known. It returns a
+// *NotFoundError once the lease's revoke has applied, a *NotPrimaryError once
+// this replica stops being the one that expires leases (the next primary
+// decides, so the renewal goes through the log), and a *RenewAwaitError when
+// ctx ends first.
+func (e *ExpiredError) Await(ctx context.Context) error {
+	select {
+	case <-e.revoked:
+		return &NotFoundError{ID: e.ID}
+	case <-e.demoted:
+		return &NotPrimaryError{}
+	case <-ctx.Done():
+		return &RenewAwaitError{ID: e.ID, Err: ctx.Err()}
+	}
+}
+
+// RenewAwaitError is returned by ExpiredError.Await when the caller's context
+// ends before the expired lease is revoked or this replica is demoted.
+type RenewAwaitError struct {
+	ID  int64
+	Err error
+}
+
+func (e *RenewAwaitError) Error() string {
+	return "lease renewal: waiting on expired lease " + strconv.FormatInt(e.ID, 10) + ": " + e.Err.Error()
+}
+
+func (e *RenewAwaitError) Unwrap() error { return e.Err }
 
 // ApplyIndexUnsetError is returned by ApplyCheckpoints when the state machine
 // applying the checkpoint has not reported the Raft index it is applying

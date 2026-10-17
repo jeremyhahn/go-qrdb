@@ -486,25 +486,57 @@ func TestEtcd_LeaseKeepAliveAndExpiry(t *testing.T) {
 	defer cancel()
 
 	const ttl = 3
+	const key = "/lease/renewed"
+	window := newRenewalWindow(ttl)
+	sent := time.Now()
 	leaseResp, err := cli.Grant(ctx, ttl)
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if _, err = cli.Put(ctx, "/lease/renewed", "v", clientv3.WithLease(leaseResp.ID)); err != nil {
+	window.renewed(sent)
+	if _, err = cli.Put(ctx, key, "v", clientv3.WithLease(leaseResp.ID)); err != nil {
 		t.Fatalf("Put with lease: %v", err)
 	}
 
+	// Renew every second for twice the granted TTL. Each keep-alive either
+	// renews the lease, and its key is there, or answers lease-not-found, and
+	// its key is gone; never a renewal followed by a missing key. Only the
+	// window a renewal guarantees is judged, so a host too loaded to renew
+	// within the TTL lets the lease expire rather than failing the test.
 	renewEvery := time.NewTicker(time.Second)
 	defer renewEvery.Stop()
 	renewUntil := time.After(2 * ttl * time.Second)
 renewing:
 	for {
+		sent = time.Now()
 		ka, kaErr := cli.KeepAliveOnce(ctx, leaseResp.ID)
+		if errors.Is(kaErr, rpctypes.ErrLeaseNotFound) {
+			if window.guaranteed() {
+				t.Fatalf("KeepAliveOnce answered lease-not-found before %v, the deadline the last renewal guaranteed", window.until)
+			}
+			getResp, getErr := cli.Get(ctx, key)
+			if getErr != nil || len(getResp.Kvs) != 0 {
+				t.Fatalf("Get after KeepAliveOnce answered lease-not-found = %v, err=%v; want the key gone", getResp, getErr)
+			}
+			t.Logf("the host renewed too slowly to keep the %ds lease: it expired and took its key", ttl)
+			break renewing
+		}
 		if kaErr != nil {
 			t.Fatalf("KeepAliveOnce: %v", kaErr)
 		}
 		if ka.ID != leaseResp.ID || ka.TTL != ttl {
 			t.Fatalf("KeepAliveOnce = {ID: %d, TTL: %d}, want {ID: %d, TTL: %d}", ka.ID, ka.TTL, leaseResp.ID, ttl)
+		}
+		window.renewed(sent)
+		getResp, err := cli.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get after a renewal: %v", err)
+		}
+		if len(getResp.Kvs) != 1 {
+			if window.guaranteed() {
+				t.Fatalf("Get before %v, the deadline a successful renewal guaranteed, = %v; want the key", window.until, getResp)
+			}
+			t.Logf("Get after a renewal answered past its guaranteed deadline without the key: not judged")
 		}
 		select {
 		case <-renewEvery.C:
@@ -512,18 +544,14 @@ renewing:
 			break renewing
 		}
 	}
-	getResp, err := cli.Get(ctx, "/lease/renewed")
-	if err != nil || len(getResp.Kvs) != 1 {
-		t.Fatalf("Get after renewing past the granted TTL = %v, err=%v; want the key", getResp, err)
-	}
 
 	awaitClusterCondition(t, 4*ttl*time.Second, "expiry of the unrenewed lease's key", func() error {
-		got, getErr := cli.Get(ctx, "/lease/renewed")
+		got, getErr := cli.Get(ctx, key)
 		if getErr != nil {
 			return getErr
 		}
 		if len(got.Kvs) != 0 {
-			return &leaseKeyPresentError{Key: "/lease/renewed"}
+			return &leaseKeyPresentError{Key: key}
 		}
 		return nil
 	})

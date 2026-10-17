@@ -131,6 +131,7 @@ func (lr *Lessor) RunExpiry(ctx context.Context, interval time.Duration, isLeade
 
 	lr.leader.Store(&isLeader)
 	defer lr.leader.Store(nil)
+	defer lr.endPrimary()
 
 	var checkpointTick <-chan time.Time
 	if cfg.checkpointer != nil {
@@ -187,9 +188,15 @@ func (lr *Lessor) RunExpiry(ctx context.Context, interval time.Duration, isLeade
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
+			// demotec is open exactly while ticks revoke expired leases, so
+			// a renewal waiting on an expired lease (ExpiredError) learns
+			// of either outcome: its revoke, or that no revoke comes from
+			// here.
 			if holding() || !observe() {
+				lr.endPrimary()
 				continue
 			}
+			lr.beginPrimary()
 			for _, id := range lr.ExpiredLeaseIDs() {
 				if err := revoke(ctx, id); err != nil {
 					if logger != nil {

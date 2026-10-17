@@ -71,7 +71,21 @@ type lease struct {
 	// replica has not applied yet; 0 when there is none.
 	pending uint64
 
+	// revokec is closed when the lease leaves the table: its revoke applies,
+	// or a Restore drops it. A renewal of an expired lease waits on it (see
+	// ExpiredError). It is never replaced while the lease lives; Restore
+	// carries it over to the lease's new record.
+	revokec chan struct{}
+
 	mu sync.RWMutex
+}
+
+// closeRevoked closes l.revokec. A nil channel, as on a lease built without
+// newLease, has no waiter to wake.
+func (l *lease) closeRevoked() {
+	if l.revokec != nil {
+		close(l.revokec)
+	}
 }
 
 // effectiveTTLLocked returns the TTL, in seconds, a replica counts the lease's
@@ -187,6 +201,47 @@ type Lessor struct {
 	// from: the index of the first checkpoint it applied, 0 until then. It is
 	// replicated state, changed only by apply and Restore.
 	recordFrom atomic.Uint64
+
+	// demotec is open while this replica is the lease primary as the expiry
+	// loop sees it: the loop opens it on a tick that will revoke expired
+	// leases and closes it on one that will not, when it stops, and on Close.
+	// nil means not primary. A renewal of an expired lease waits on it (see
+	// ExpiredError), as etcd's lessor.Renew waits on its demotec.
+	demotec atomic.Pointer[chan struct{}]
+}
+
+// closedChan stands in for demotec when there is none: a renewal waiting on
+// it learns at once that this replica is not the primary.
+var closedChan = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+// beginPrimary opens demotec unless it is open already. Only the expiry loop
+// calls it.
+func (lr *Lessor) beginPrimary() {
+	if lr.demotec.Load() == nil {
+		c := make(chan struct{})
+		lr.demotec.CompareAndSwap(nil, &c)
+	}
+}
+
+// endPrimary closes demotec, waking every renewal waiting on it, and leaves
+// it nil.
+func (lr *Lessor) endPrimary() {
+	if c := lr.demotec.Swap(nil); c != nil {
+		close(*c)
+	}
+}
+
+// demoted returns the channel a renewal waits on to learn this replica
+// stopped being the lease primary.
+func (lr *Lessor) demoted() <-chan struct{} {
+	if c := lr.demotec.Load(); c != nil {
+		return *c
+	}
+	return closedChan
 }
 
 // Option configures a Lessor.
@@ -230,6 +285,7 @@ func newLease(id, ttl, checkpointTTL int64, now time.Time) *lease {
 		ttl:           ttl,
 		checkpointTTL: checkpointTTL,
 		keys:          make(map[string]struct{}),
+		revokec:       make(chan struct{}),
 	}
 	l.expiry = now.Add(time.Duration(l.effectiveTTLLocked()) * time.Second)
 	return l
@@ -319,6 +375,7 @@ func (lr *Lessor) Revoke(w Writer, id int64) ([][]byte, error) {
 		delete(lr.bindings, string(k))
 	}
 	delete(lr.leases, id)
+	l.closeRevoked()
 
 	return keys, nil
 }
@@ -389,6 +446,12 @@ func (l *lease) extendLocked(now time.Time) {
 // RunExpiry) is absent or false answers *NotPrimaryError and changes nothing,
 // and the caller renews through the replicated log with KeepAlive instead.
 //
+// A lease past its deadline answers *ExpiredError and changes nothing: the
+// expiry loop revokes it, and a renewal that answered it lives on would be
+// overtaken by that revoke. The caller waits on the error's Await for the
+// outcome, outside the read RenewLocal runs in, since the revoke's apply waits
+// behind that read.
+//
 // A lease with a checkpoint recorded, or one proposed and not yet applied
 // here, answers *CheckpointedError and changes nothing, and the caller renews
 // through the log in the same way. A renewal in memory would leave that
@@ -416,12 +479,17 @@ func (lr *Lessor) RenewLocal(id int64) (*Lease, error) {
 		return nil, &NotFoundError{ID: id}
 	}
 
+	now := lr.now()
 	l.mu.Lock()
+	if l.isExpiredLocked(now) {
+		l.mu.Unlock()
+		return nil, &ExpiredError{ID: id, revoked: l.revokec, demoted: lr.demoted()}
+	}
 	if l.checkpointTTL > 0 || l.pending != 0 {
 		l.mu.Unlock()
 		return nil, &CheckpointedError{ID: id}
 	}
-	l.extendLocked(lr.now())
+	l.extendLocked(now)
 	l.mu.Unlock()
 
 	return lr.toLease(l), nil
@@ -712,6 +780,17 @@ func (lr *Lessor) Restore(r storage.Reader) error {
 
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
+	// A lease the snapshot keeps keeps its revokec, so a renewal waiting on
+	// it still learns of its revoke; one the snapshot drops is revoked.
+	for id, old := range lr.leases {
+		if l, ok := leases[id]; ok {
+			if old.revokec != nil {
+				l.revokec = old.revokec
+			}
+			continue
+		}
+		old.closeRevoked()
+	}
 	lr.leases = leases
 	lr.bindings = t.bindings
 	lr.idSeq = t.seq
@@ -838,6 +917,7 @@ func (lr *Lessor) Count() int {
 // LessorClosedError.
 func (lr *Lessor) Close() {
 	lr.closed.Store(true)
+	lr.endPrimary()
 }
 
 // toLease converts an internal lease to the exported Lease type.
