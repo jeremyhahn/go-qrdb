@@ -1,6 +1,7 @@
 # Rate Limiting — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 This feature has two audiences: the **embedder** who wires qrdb into a
 process and decides which operations need a capacity bound, and the **API

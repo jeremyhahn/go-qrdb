@@ -1,6 +1,7 @@
 # Firstboot and System Bootstrap — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Firstboot is a **composition-plane capability**: it runs inside the daemon's
 startup sequence, driven by `pkg/firstboot`'s `Dependencies`, not by a client

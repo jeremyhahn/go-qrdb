@@ -1,6 +1,7 @@
 # Full-Text Search — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 ## Capability matrix
 

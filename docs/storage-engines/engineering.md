@@ -3,6 +3,7 @@
 > **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner ruling —
 > for the object-storage LSM target design (see "Target design" at the end).**
 > · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
 

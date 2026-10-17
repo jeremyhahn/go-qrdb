@@ -1,6 +1,7 @@
 # Firstboot and System Bootstrap — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 One client verb, `qrdb init`, plus the daemon flags that shape what it does.
 

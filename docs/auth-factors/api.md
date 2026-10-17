@@ -1,6 +1,7 @@
 # Authentication Factors and PINs — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first.
 
 Two distinct gRPC services, because there are two distinct factor models:
 

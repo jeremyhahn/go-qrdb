@@ -1,6 +1,7 @@
 # Shamir Custody — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first.
 
 M-of-N custody of a barrier's key material by named **share holders**: who
 holds a share, how a share reaches them, how they prove who they are when they

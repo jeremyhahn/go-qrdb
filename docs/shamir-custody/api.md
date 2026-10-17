@@ -1,6 +1,7 @@
 # Shamir Custody — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Every capability below is served on all six transports with the same
 semantics and the same error classes. gRPC service `qrdb.v1.QRDBService`

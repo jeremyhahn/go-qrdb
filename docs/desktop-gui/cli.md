@@ -1,6 +1,7 @@
 # Desktop GUI — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 **No `qrdb` verb launches the GUI.** The same binary is both the CLI and the
 GUI: invoked with **no arguments** on a machine with a display, it opens the

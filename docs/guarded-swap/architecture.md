@@ -1,6 +1,7 @@
 # Guarded Swap — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-22
+> Conflicts with this document are defects. Fix them here first.
 
 `sdk.GuardedSwap` is the optimistic compare-and-set loop over the transaction
 plane: read a record, decide what it should become, and write that only if the

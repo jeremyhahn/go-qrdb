@@ -1,6 +1,7 @@
 # Full-Text Search — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** This feature exists only in builds carrying the
 > `qrdb_fts` tag (`WITH_QRDB_FTS=1`). Without it, `pkg/fts` compiles to a stub

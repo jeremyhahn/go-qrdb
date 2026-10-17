@@ -1,6 +1,7 @@
 # Rate Limiting — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Rate limiting has **no dedicated wire capability of its own** — no endpoint,
 RPC, or tool to configure, inspect, or reset a limit at runtime. It is a

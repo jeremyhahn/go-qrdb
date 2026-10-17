@@ -1,6 +1,7 @@
 # Key Wrapping — CLI
 
 > **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Key wrapping has no command group of its own — it is reached through
 `qrdb backup create` / `qrdb backup restore`'s flags, and through

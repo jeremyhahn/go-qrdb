@@ -1,6 +1,7 @@
 # SQL — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 Two surfaces: the `qrdb sql` client verb group, and the `qrdbd` flags that turn
 the wire protocols on. Both require a `qrdb_sql` build; the wire servers

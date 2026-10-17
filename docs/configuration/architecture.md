@@ -1,6 +1,7 @@
 # Configuration — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 How the daemon is configured: the load order, the validation contract, and the
 sections that exist.

@@ -1,6 +1,7 @@
 # Identity and RBAC — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 Users, roles, the permission vocabulary, and the single policy decision point
 that authorizes every request on every transport.

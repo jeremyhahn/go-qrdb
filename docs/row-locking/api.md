@@ -1,6 +1,7 @@
 # Row Locking — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> Conflicts with this document are defects. Fix them here first.
 
 Row locking is reached two ways:
 

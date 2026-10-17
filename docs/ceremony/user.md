@@ -1,6 +1,7 @@
 # Initialization Ceremony — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> Conflicts with this document are defects. Fix them here first.
 
 The ceremony is how a brand-new system gets its PINs, a CA, a barrier and, for
 M-of-N custody, its first share holders. Most operators never run it by hand —

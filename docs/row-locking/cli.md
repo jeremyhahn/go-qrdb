@@ -1,6 +1,7 @@
 # Row Locking — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> Conflicts with this document are defects. Fix them here first.
 
 Row locking has one configuration knob outside SQL — a database's concurrency
 mode — and it is set through the `qrdb database` verb group. Everything else is

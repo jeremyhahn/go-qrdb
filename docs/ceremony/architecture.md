@@ -1,6 +1,7 @@
 # Initialization Ceremony — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> Conflicts with this document are defects. Fix them here first.
 
 The ceremony is the barrier's custody bootstrap and the home of the share
 holder engine: it establishes the PINs and the CA, enrols the initial share

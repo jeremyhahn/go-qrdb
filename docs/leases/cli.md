@@ -1,6 +1,7 @@
 # Leases — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb lease` — create, revoke, renew, inspect and list
 distributed TTL leases. All verbs accept the root persistent flags documented in

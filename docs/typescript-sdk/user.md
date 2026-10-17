@@ -1,6 +1,7 @@
 # TypeScript SDK — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 ## Prerequisites
 

@@ -1,6 +1,7 @@
 # Embedding Service — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Turn text into vectors. The server does not run models — it proxies to an
 OpenAI-compatible endpoint you configure, caches the results, and applies the

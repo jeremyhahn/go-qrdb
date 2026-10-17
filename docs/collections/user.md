@@ -1,6 +1,7 @@
 # Document Collections — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> Conflicts with this document are defects. Fix them here first.
 
 A collection is a named box for JSON documents inside a database. You create the
 box, decide how document IDs are generated, then put documents in.

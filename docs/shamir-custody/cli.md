@@ -1,6 +1,7 @@
 # Shamir Custody — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Custody verbs live under `qrdb barrier` (`officer`, `quorum`, `rekey`,
 `init-shamir`, `recovery`) for the system barrier and under `qrdb tenant`

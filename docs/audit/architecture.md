@@ -1,6 +1,7 @@
 # Audit — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> Conflicts with this document are defects. Fix them here first.
 
 Compliance-grade audit logging: who did what, to which resource, with what
 outcome.

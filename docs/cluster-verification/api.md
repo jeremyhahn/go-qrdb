@@ -1,19 +1,3 @@
-<!--
-Copyright 2026 Jeremy Hahn
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
--->
-
 # Cluster Verification — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
@@ -31,6 +15,22 @@ limitations under the License.
 >
 > Corrected 2026-10-12, when the seal types were ruled: the harness calls no
 > barrier endpoint; unsealing a restarted node is the operator's command.
+
+<!--
+Copyright 2026 Jeremy Hahn
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
 
 **No API surface.** This feature adds no endpoint, RPC, QUIC method, MCP tool,
 Unix socket method or embedded call. It is a test harness that *consumes* the

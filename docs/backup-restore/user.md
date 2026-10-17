@@ -1,6 +1,7 @@
 # Backup and Restore — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-backup-restore`; coverage row: `test/integration/COVERAGE.md` `[backup-restore](../../docs/backup-restore/)`.
 

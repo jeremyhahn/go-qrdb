@@ -1,6 +1,7 @@
 # Guarded Swap — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-22
+> Conflicts with this document are defects. Fix them here first.
 
 **There is no CLI surface for guarded swap, and there is deliberately no plan
 to add one.**

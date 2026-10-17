@@ -1,6 +1,7 @@
 # Identity and RBAC — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 Two command groups: `qrdb users` and `qrdb roles`. Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is

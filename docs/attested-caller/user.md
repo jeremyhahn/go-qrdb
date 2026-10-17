@@ -1,6 +1,7 @@
 # Attested Caller — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> Conflicts with this document are defects. Fix them here first.
 
 ## What it is
 

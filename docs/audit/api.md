@@ -1,6 +1,7 @@
 # Audit — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
 `QRDBService`. The Unix socket transport serves the same gRPC wire over a UDS.

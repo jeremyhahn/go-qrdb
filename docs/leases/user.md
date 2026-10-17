@@ -1,6 +1,7 @@
 # Leases — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first.
 
 A lease is a timer with a name. Attach keys to it, keep it alive while you care
 about them, and the server deletes them all when you stop.

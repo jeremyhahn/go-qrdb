@@ -1,6 +1,7 @@
 # Watch — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 One verb: `qrdb watch`. It accepts the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).

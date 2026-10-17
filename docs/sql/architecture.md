@@ -1,6 +1,7 @@
 # SQL — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** `qrdb_sql` compiles the shared SQL core; `qrdb_mysql`
 > and `qrdb_pgsql` add the wire protocols and each implies `qrdb_sql`.

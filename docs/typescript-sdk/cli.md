@@ -1,6 +1,7 @@
 # TypeScript SDK — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 No QRDB CLI command is owned by the TypeScript SDK. The package is built and
 tested with npm scripts from `sdk/typescript`.

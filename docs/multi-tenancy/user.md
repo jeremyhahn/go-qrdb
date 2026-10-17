@@ -2,6 +2,7 @@
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
 > implemented) · Scope: go-qrdb · Last verified: 2026-10-05
+> Conflicts with this document are defects. Fix them here first.
 
 Running several customers on one deployment, with as much separation as each
 one needs.

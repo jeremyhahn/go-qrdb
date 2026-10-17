@@ -1,6 +1,7 @@
 # Row Locking — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated** with the rest of the SQL layer: `qrdb_sql` compiles it,
 > `qrdb_mysql` / `qrdb_pgsql` carry it onto the wire protocols. See

@@ -1,6 +1,7 @@
 # Key Wrapping — User Guide
 
 > **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 This is what actually protects an encrypted backup's contents: a
 fresh, random key generated per backup (the DEK), itself locked ("wrapped")

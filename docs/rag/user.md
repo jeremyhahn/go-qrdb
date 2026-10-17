@@ -1,6 +1,7 @@
 # RAG — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Put documents in, get the most relevant passages back. What you do with those
 passages — build a prompt, call a model, rerank — is up to you; this feature

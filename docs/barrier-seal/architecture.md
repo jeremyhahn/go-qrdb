@@ -1,6 +1,7 @@
 # Barrier and Seal — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first.
 
 The barrier is the at-rest encryption boundary. Everything persistent passes
 through it, and when it is sealed the data path refuses every read and write.

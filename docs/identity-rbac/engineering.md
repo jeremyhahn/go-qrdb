@@ -1,6 +1,7 @@
 # Identity and RBAC — Engineering Contract
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
 

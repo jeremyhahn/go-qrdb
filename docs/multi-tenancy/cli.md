@@ -2,6 +2,7 @@
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
 > implemented) · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
 quotas and entitlements, and drive their dedicated barriers. All verbs accept

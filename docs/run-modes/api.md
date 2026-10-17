@@ -1,6 +1,7 @@
 # Run Modes — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Run mode is not itself an API capability — it is the property that determines
 which capabilities exist. Two things are observable over the wire: the reported

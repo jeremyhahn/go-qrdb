@@ -1,6 +1,7 @@
 # SQL — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 SQL reaches callers two ways, and they are genuinely different surfaces:
 

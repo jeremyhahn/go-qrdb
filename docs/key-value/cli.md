@@ -1,6 +1,7 @@
 # Key-Value Store — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb kv`. Three top-level aliases exist for the most common
 verbs: `qrdb put`, `qrdb get`, `qrdb del` are identical to their `kv`

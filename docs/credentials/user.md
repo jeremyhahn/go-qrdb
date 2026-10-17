@@ -1,6 +1,7 @@
 # Credentials — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> Conflicts with this document are defects. Fix them here first.
 
 Named secrets the engine itself needs, with version history and a rotation
 grace period.

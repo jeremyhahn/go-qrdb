@@ -1,6 +1,7 @@
 # Distributed Locks — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> Conflicts with this document are defects. Fix them here first.
 
 A distributed lock lets one process at a time into a critical section across
 machines. Each acquisition comes with a **fencing token** — a number that only

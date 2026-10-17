@@ -1,6 +1,7 @@
 # Desktop GUI — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** The GUI exists only in builds carrying `desktop`
 > (which requires CGO for native window integration). Without it,

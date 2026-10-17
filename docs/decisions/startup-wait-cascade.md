@@ -1,6 +1,9 @@
 # A bounded startup wait during leader churn exits the node and its peers
 
-**Status (2026-10-16): open, for the owner.**
+> **Status: PROPOSED — pending owner ruling** · Scope: go-qrdb
+> Last verified: 2026-10-17
+> The Problem describes shipped behaviour; the Options are open, for the
+> owner. Nothing here is built until the owner rules.
 
 ## Problem
 

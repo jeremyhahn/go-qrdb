@@ -1,6 +1,7 @@
 # Key-Value Store — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-11
+> Conflicts with this document are defects. Fix them here first.
 
 Six transports, one capability set. The gRPC service is `qrdb.v1.QRDBService`;
 the **Unix socket transport serves the same gRPC wire over a UDS**, so its

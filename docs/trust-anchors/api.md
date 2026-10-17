@@ -1,6 +1,7 @@
 # Trust Anchors — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Register, list and remove a tenant's trust anchors on every transport.
 

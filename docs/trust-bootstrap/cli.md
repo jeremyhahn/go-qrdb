@@ -1,6 +1,7 @@
 # Trust Bootstrap — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb bootstrap` — trust bootstrap for a **fresh client**
 establishing CA trust to a remote node.

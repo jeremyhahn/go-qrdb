@@ -1,6 +1,7 @@
 # Audit — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> Conflicts with this document are defects. Fix them here first.
 
 Who did what, when, and whether it worked. Auditing is on by default.
 

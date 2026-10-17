@@ -1,6 +1,7 @@
 # Configuration — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
+> Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-configuration`; coverage row: `test/integration/COVERAGE.md` `[configuration](../../docs/configuration/)`.
 

@@ -1,6 +1,7 @@
 # Row Locking — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> Conflicts with this document are defects. Fix them here first.
 
 QRDB's SQL transactions are optimistic by default: two transactions that write
 the same row both run, and the second to commit fails with error 1213 and must

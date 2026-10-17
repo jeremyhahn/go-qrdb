@@ -1,6 +1,7 @@
 # Distributed Locks — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb lock` — acquire, release, extend, inspect and list
 distributed locks with fencing tokens. All verbs accept the root persistent

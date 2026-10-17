@@ -1,6 +1,7 @@
 # Full-Text Search — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 Full-text search finds documents that *mention* a word, as opposed to
 [secondary indexes](../secondary-indexes/user.md), which find records whose

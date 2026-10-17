@@ -1,6 +1,7 @@
 # Full-Text Search — Engineering Contract
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated: `qrdb_fts`** (`WITH_QRDB_FTS=1` in the Makefile). Without
 > the tag, `pkg/fts` is the stub in `stub.go` and `Available()` returns false.

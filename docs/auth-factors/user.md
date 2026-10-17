@@ -1,6 +1,7 @@
 # Authentication Factors and PINs — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first.
 
 A user can hold several authentication factors — a client certificate, a FIDO2
 token, a PIV card — and log in with any of them.

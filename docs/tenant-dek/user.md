@@ -1,6 +1,7 @@
 # Tenant DEK Keyring — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Encrypt your application's data under your tenant's own key without ever
 holding the key.

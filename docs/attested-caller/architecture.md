@@ -1,6 +1,7 @@
 # Attested Caller — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> Conflicts with this document are defects. Fix them here first.
 
 An authorization gate that admits a request for a chosen set of operations only
 from a peer whose **measured state** is currently acceptable — not merely one

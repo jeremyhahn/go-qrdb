@@ -1,6 +1,7 @@
 # Secondary Indexes — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first.
 
 An index turns "find every user whose email is X" from a full scan into a
 lookup. Most of the time you do not create one by hand: you tag the field on

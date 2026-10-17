@@ -2,6 +2,7 @@
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 >
 > Sections headed **Target** are the requirements contract for the multi-model
 > database program described in [architecture.md](architecture.md). They are

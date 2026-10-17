@@ -1,6 +1,7 @@
 # Credentials — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.

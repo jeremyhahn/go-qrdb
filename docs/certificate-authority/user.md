@@ -1,6 +1,7 @@
 # Certificate Authority — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 Every caller authenticates with a client certificate. This is where they come
 from.

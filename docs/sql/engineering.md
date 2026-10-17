@@ -1,6 +1,7 @@
 # SQL — Engineering Contract
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> Conflicts with this document are defects. Fix them here first.
 
 Design and boundaries are in [architecture.md](architecture.md). This file is
 the implementation contract: schemas, invariants, error codes, limits and the

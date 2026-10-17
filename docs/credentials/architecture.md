@@ -1,6 +1,7 @@
 # Credentials and Secret Resolution — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> Conflicts with this document are defects. Fix them here first.
 
 Named credentials with versioned rotation, plus the SPI that resolves
 `credential://` and `literal://` references in configuration at boot.

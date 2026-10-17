@@ -1,6 +1,7 @@
 # Firstboot and System Bootstrap — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Firstboot is the **admin bootstrap**: system tenant, built-in roles, the
 platform admin user and the admin client certificate. It runs *after* the

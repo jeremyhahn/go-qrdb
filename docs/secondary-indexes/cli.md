@@ -1,6 +1,7 @@
 # Secondary Indexes — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb index` — create, drop, query, scan and list secondary
 indexes. All verbs accept the root persistent flags documented in

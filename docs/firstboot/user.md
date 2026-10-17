@@ -1,6 +1,7 @@
 # Firstboot and System Bootstrap — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Getting a brand-new server from nothing to something you can log into.
 

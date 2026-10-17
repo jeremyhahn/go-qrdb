@@ -1,6 +1,7 @@
 # Identity and RBAC — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 Who someone is, and what they may do. There are no passwords: a certificate is
 the identity, and roles carry the permissions.

@@ -1,6 +1,7 @@
 # Document Collections — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb collection`, with a `doc` subgroup for the documents
 inside. All verbs accept the root persistent flags documented in

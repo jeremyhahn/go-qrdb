@@ -1,6 +1,7 @@
 # Barrier and Seal — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,

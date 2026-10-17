@@ -1,6 +1,7 @@
 # Row Locking — Engineering Contract
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> Conflicts with this document are defects. Fix them here first.
 
 Design and boundaries are in [architecture.md](architecture.md). This file is
 the implementation contract: the record format, the invariants, configuration,

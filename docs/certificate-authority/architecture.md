@@ -1,6 +1,7 @@
 # Certificate Authority — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 Issuing, exporting and revoking the client certificates that authenticate every
 caller. Authentication is mTLS throughout the store, so this is the feature that

@@ -1,3 +1,14 @@
+# Cluster Verification — Architecture
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> Conflicts with this document are defects. Fix them here first. The build is
+> in progress: this folder is the requirement it builds against.
+>
+> This folder is the requirements contract for the cluster proof harness. Its
+> design decisions are in [Decisions](#decisions).
+> One question the seal-type decision raised is still open: how a joined
+> node enrolls Shamir share holders ([Seal types](#seal-types)).
+
 <!--
 Copyright 2026 Jeremy Hahn
 
@@ -13,17 +24,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
-# Cluster Verification — Architecture
-
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> This folder is the requirements contract for the cluster proof harness. Its
-> design decisions are in [Decisions](#decisions).
-> One question the seal-type decision raised is still open: how a joined
-> node enrolls Shamir share holders ([Seal types](#seal-types)).
 
 Covers what "Raft clustering and storage proven" means for go-qrdb and the
 harness that proves it: the gate, the exit criteria, the workload and its

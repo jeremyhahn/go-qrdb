@@ -1,6 +1,7 @@
 # Full-Text Search — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 **No CLI surface.** Full-text search has no `qrdb` verb group. It is reachable
 only by importing `pkg/fts` in-process, in a build carrying the `qrdb_fts` tag.

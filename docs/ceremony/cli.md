@@ -1,6 +1,7 @@
 # Initialization Ceremony — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb ceremony`. All verbs accept the root persistent flags
 documented in [../key-value/cli.md](../key-value/cli.md#global-flags).

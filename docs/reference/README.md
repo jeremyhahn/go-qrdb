@@ -1,6 +1,9 @@
 # Reference standards
 
-Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-17
+> Conflicts with this document are defects. Fix them here first. This index
+> is the only document in this directory with a banner: every other file is a
+> standard's text, copied unmodified, so it carries none.
 
 The industry standards go-qrdb implements, one entry per document. Where a
 standard exists the code implements it precisely and designs nothing in its

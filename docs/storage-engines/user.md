@@ -2,6 +2,7 @@
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
 > note below.** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-storage-engines`; coverage row: `test/integration/COVERAGE.md` `[storage-engines](../../docs/storage-engines/)`.
 

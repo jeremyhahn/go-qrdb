@@ -1,6 +1,7 @@
 # Trust Anchors — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 `qrdb tenant trust-anchors` manages your own tenant's trust anchors. Every
 verb names the tenant with `--tenant-id`, and it must be yours: the

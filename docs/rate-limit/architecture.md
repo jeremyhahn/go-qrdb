@@ -1,6 +1,7 @@
 # Rate Limiting — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 A single request-throttling engine, enforced at the one place every
 transport already authorizes a request, so a caller is limited identically

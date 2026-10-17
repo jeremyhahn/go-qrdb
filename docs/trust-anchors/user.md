@@ -1,6 +1,7 @@
 # Trust Anchors — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 A trust anchor is a CA certificate your tenant registers so that certificates
 it issued can be enrolled on your tenant's accounts and log in as them. Use

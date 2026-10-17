@@ -2,6 +2,7 @@
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
 > implemented) · Scope: go-qrdb · Last verified: 2026-10-05
+> Conflicts with this document are defects. Fix them here first.
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
 database, plus the three governance planes that decide who may have which.

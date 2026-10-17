@@ -1,6 +1,7 @@
 # etcd Compatibility — API
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 This feature is **not** one of the six qrdb transports. It is a separate,
 per-database gRPC listener speaking upstream etcd's own v3 API

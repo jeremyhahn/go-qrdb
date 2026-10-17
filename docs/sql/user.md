@@ -1,6 +1,7 @@
 # SQL — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> Conflicts with this document are defects. Fix them here first.
 
 You can talk to the store with `mysql`, `psql`, a `database/sql` program, GORM,
 or the `qrdb sql query` verb. All of them run through the same engine.

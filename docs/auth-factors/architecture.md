@@ -1,6 +1,7 @@
 # Authentication Factors and PINs — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> Conflicts with this document are defects. Fix them here first.
 
 The `Factor` framework, the user-side N-factor model, and PIN custody with
 backend-native lockout.

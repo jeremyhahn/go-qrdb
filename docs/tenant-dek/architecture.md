@@ -1,6 +1,7 @@
 # Tenant DEK Keyring — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 A per-tenant, versioned keyring of AES-256-GCM data encryption keys. A caller
 encrypts and decrypts its own data through the server; the keys never leave

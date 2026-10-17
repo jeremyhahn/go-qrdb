@@ -1,6 +1,7 @@
 # Guarded Swap — Engineering
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-22
+> Conflicts with this document are defects. Fix them here first.
 
 ## Where it lives
 

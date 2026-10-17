@@ -1,6 +1,7 @@
 # Desktop GUI — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 The same binary that gives you the CLI also gives you a desktop application, and
 the same frontend runs in a browser against a remote server.

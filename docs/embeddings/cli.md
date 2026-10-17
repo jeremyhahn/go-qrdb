@@ -1,6 +1,7 @@
 # Embedding Service — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb embedding` — generate vector embeddings for text and list
 available models. All verbs accept the root persistent flags documented in

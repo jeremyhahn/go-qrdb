@@ -1,6 +1,7 @@
 # Certificate Authority — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb ca` — post-init Certificate Authority operations. **This
 is the canonical CA surface; it replaces the legacy `certs` group.**

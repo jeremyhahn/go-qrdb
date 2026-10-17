@@ -1,6 +1,7 @@
 # Key-Value Store — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-11
+> Conflicts with this document are defects. Fix them here first.
 
 ## Problem
 

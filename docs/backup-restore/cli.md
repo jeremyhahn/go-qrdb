@@ -1,6 +1,7 @@
 # Backup and Restore — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb backup` — create, list, inspect, verify, delete and restore
 backups. All verbs accept the root persistent flags documented in

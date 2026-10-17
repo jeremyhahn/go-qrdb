@@ -1,6 +1,7 @@
 # Audit — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb audit` — query and verify the compliance-grade audit
 event log. All verbs accept the root persistent flags documented in

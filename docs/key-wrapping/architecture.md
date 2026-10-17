@@ -2,6 +2,7 @@
 
 > **Status: NORMATIVE; lands incrementally — see each section's own note.**
 > Scope: go-qrdb · Last verified: 2026-10-06
+> Conflicts with this document are defects. Fix them here first.
 
 Envelope encryption for every data-encrypting key (DEK) go-qrdb mints, through
 **one** key-encrypting-key (KEK) seam that go-xkms and quicbaas compose
