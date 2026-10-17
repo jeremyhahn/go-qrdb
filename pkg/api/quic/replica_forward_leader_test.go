@@ -69,7 +69,7 @@ func removeMemberPayload(t *testing.T) []byte {
 func TestReplicaForwardQUIC_NotLeaderForwardsToTheLeaderAsTheCaller(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	leader := startQUICTarget(t, ca, "node-3", "raft-leader")
-	leader.answer = func(context.Context) (uint16, []byte, bool) { return wire.StatusOK, nil, false }
+	leader.setAnswer(func(context.Context) (uint16, []byte, bool) { return wire.StatusOK, nil, false })
 	c := newQUICFollower(t, ca, leader, "raft-leader")
 
 	if st, body := c.put(t, "admin.RemoveMember", removeMemberPayload(t)); st != wire.StatusOK {
@@ -84,9 +84,9 @@ func TestReplicaForwardQUIC_NotLeaderForwardsToTheLeaderAsTheCaller(t *testing.T
 func TestReplicaForwardQUIC_NotLeaderRelaysTheLeadersOwnError(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	leader := startQUICTarget(t, ca, "node-3", "raft-leader")
-	leader.answer = func(context.Context) (uint16, []byte, bool) {
+	leader.setAnswer(func(context.Context) (uint16, []byte, bool) {
 		return wire.StatusFailedPrecondition, []byte("replica 7 is not a member"), false
-	}
+	})
 	c := newQUICFollower(t, ca, leader, "raft-leader")
 
 	if st, body := c.put(t, "admin.RemoveMember", removeMemberPayload(t)); st != wire.StatusFailedPrecondition {

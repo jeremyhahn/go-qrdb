@@ -342,7 +342,6 @@ The following concerns are **not** provided by the builders and remain in `cmd/q
 | Leader forwarding | `server.WithLeaderForwarding(registry)` |
 | SIGHUP TLS reload | `signal.Notify` goroutine calling `bundle.Reloader.Reload()` |
 | Sealed-window listener | `lifecycle.BuildSealServicesOnly` + `awaitUnseal` before `initializeNode` |
-| Prometheus gatherer | `server.WithGatherer(reg)` |
 | Audit file logger | `server.WithAuditLogger(...)` |
 | Auth middleware | `server.WithAuthMiddleware(...)` |
 

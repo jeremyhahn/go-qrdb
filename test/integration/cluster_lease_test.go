@@ -83,7 +83,7 @@ func TestClusterFault_LeaseReadAfterLeaderChange(t *testing.T) {
 				c.signal(t, old, syscall.SIGSTOP)
 			}
 			if tc.isolated {
-				c.isolate(old)
+				c.isolate(t, old)
 			}
 			cut := time.Now()
 
@@ -200,13 +200,15 @@ type leaseRead struct {
 // over until stopped.
 type leaseProbe struct {
 	done  chan struct{}
+	once  sync.Once
 	wg    sync.WaitGroup
 	mu    sync.Mutex
 	reads []leaseRead
 }
 
 // startLeaseProbe starts leaseReaders clients, each on its own connection,
-// reading key through node i.
+// reading key through node i. The probe is stopped when t ends, so a test
+// that fails before stopping it does not leave its clients reading.
 func (c *faultCluster) startLeaseProbe(t *testing.T, i int, key string) *leaseProbe {
 	t.Helper()
 	p := &leaseProbe{done: make(chan struct{})}
@@ -230,13 +232,15 @@ func (c *faultCluster) startLeaseProbe(t *testing.T, i int, key string) *leasePr
 			}
 		})
 	}
+	// Registered after the clients, so it runs before their own cleanups.
+	t.Cleanup(func() { p.stop() })
 	return p
 }
 
 // stop stops the probe's clients, waits for their last reads and returns
-// every read.
+// every read. It may be called more than once.
 func (p *leaseProbe) stop() []leaseRead {
-	close(p.done)
+	p.once.Do(func() { close(p.done) })
 	p.wg.Wait()
 	return p.reads
 }

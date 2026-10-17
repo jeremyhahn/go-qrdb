@@ -72,29 +72,6 @@ const (
 	// ReadIndex slowdown fails over to it in well under a second. A healthy
 	// ReadIndex answers far faster.
 	resolveSyncTimeout = 500 * time.Millisecond
-
-	// resolveTimeout bounds the primary resolve for every tenant with no
-	// fallback to fail over to. It still turns a stall into a retryable
-	// *ResolveError instead of blocking the request on an outer deadline the
-	// caller may not have set, but it is sized to ride out one leader
-	// election on a multi-node shard at go-quicraft's default timing (a 2 s
-	// election timeout, randomized up to twice that) plus the new leader's
-	// first commit: cutting a read with nothing to fail over to any shorter
-	// does not make it faster, it only refuses a request that would have been
-	// answered. Matches the auth user lookup's budget (lookupUser).
-	resolveTimeout = 5 * time.Second
-
-	// resolveSettleBudget bounds how long one permission resolve waits out
-	// the role store's shard electing a leader or moving it
-	// (service.LeadershipTransient) before its error stands: the same bound
-	// the user lookup in front of it waits (pkg/auth/middleware), so a
-	// request that authenticated through an election is not then refused
-	// by it. The request's own context ends the wait sooner.
-	resolveSettleBudget = 10 * time.Second
-
-	// resolveSettlePoll paces the permission resolve's attempts while it
-	// waits out an election.
-	resolveSettlePoll = 100 * time.Millisecond
 )
 
 // soDeniedActions is the set of resource-specific cryptographic actions
@@ -252,9 +229,9 @@ type RBACAuthorizer struct {
 	// admitting value on error.
 	scopes permission.ScopeResolver
 
-	// settleBudget bounds how long resolvePermissionSet waits out an
-	// election of the role store's shard. Zero reads as resolveSettleBudget.
-	settleBudget time.Duration
+	// settle is how resolvePermissionSet waits out an election of the role
+	// store's shard. A zero field reads as service.DefaultSettlePolicy's.
+	settle service.SettlePolicy
 }
 
 // Option configures an RBACAuthorizer.
@@ -486,9 +463,9 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 	// attempt depends on whether anything can answer in the primary's place:
 	// with a fallback, resolveSyncTimeout fails over to it within a blip, at
 	// the cost of a marginally-staler read for the system tenant, which is
-	// safe for replicated role data; without one, resolveTimeout lets a read
-	// slowed by a leader election finish rather than refusing it. Mirrors the
-	// auth user-lookup guard, lookupUser.
+	// safe for replicated role data; without one, the attempt's whole bound
+	// (service.SettlePolicy's Attempt). Mirrors the auth user-lookup guard,
+	// lookupUser.
 	//
 	// An attempt that fails because the role store's shard is electing a
 	// leader or moving it (service.LeadershipTransient) is retried until a
@@ -496,12 +473,8 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 	// then stands. The user lookup in front of this resolve waits out the
 	// same election (lookupUser), so without this a request authenticated
 	// through it would be refused here with a 503.
-	budget := a.settleBudget
-	if budget == 0 {
-		budget = resolveSettleBudget
-	}
-	perms, err := service.SettleLeadership(resolveCtx, budget, resolveSettlePoll, func() ([]permission.Permission, error) {
-		return a.resolvePermissionsOnce(resolveCtx, roleIDs, useFallback)
+	perms, err := service.SettleLeadership(resolveCtx, a.settle, func(attemptCtx context.Context) ([]permission.Permission, error) {
+		return a.resolvePermissionsOnce(attemptCtx, roleIDs, useFallback)
 	})
 	if err != nil {
 		return nil, &ResolveError{Err: err}
@@ -518,13 +491,13 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 // when useFallback is set and the primary failed transiently, one fallback
 // resolve. On failure it returns the primary's error.
 func (a *RBACAuthorizer) resolvePermissionsOnce(resolveCtx context.Context, roleIDs []string, useFallback bool) ([]permission.Permission, error) {
-	budget := resolveTimeout
+	primaryCtx := resolveCtx
 	if useFallback {
-		budget = resolveSyncTimeout
+		var cancel context.CancelFunc
+		primaryCtx, cancel = context.WithTimeout(resolveCtx, resolveSyncTimeout)
+		defer cancel()
 	}
-	primaryCtx, cancel := context.WithTimeout(resolveCtx, budget)
 	perms, err := a.roles.ResolvePermissions(primaryCtx, roleIDs)
-	cancel()
 	if err != nil {
 		// A DEFINITIVE answer from the primary (linearizable) store: the role
 		// was deleted (or never existed; also the id-space RoleNotFoundError

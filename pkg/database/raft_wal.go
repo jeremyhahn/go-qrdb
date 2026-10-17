@@ -16,6 +16,7 @@ package database
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
@@ -78,13 +80,19 @@ type RaftWALConfig struct {
 // to pass to quicraft.NewHost and, on a clustered host whose system barrier
 // encrypts, the multiplex LogDB the options install.
 type RaftWAL struct {
-	// Options configure quicraft.NewHost's at-rest encryption and LogDB.
+	// Options configure quicraft.NewHost's at-rest encryption, LogDB and
+	// metrics collector.
 	Options []quicraft.HostOption
 
 	// Multiplex is the host's LogDB when it is the multiplex (shared system
 	// barrier WAL plus per-tenant dedicated WALs), nil otherwise. Hand it to
 	// the tenant infrastructure so dedicated-WAL shards register in it.
 	Multiplex *MultiplexLogDB
+
+	// Metrics is the collector Options hands the host: the process's shared
+	// go-quicraft collector, warning on a slow fsync of this WAL. The shared
+	// WAL under Multiplex reports its fsyncs to it as well.
+	Metrics *RaftMetrics
 
 	// Format is the WAL's format, recorded in its directory.
 	Format WALFormat
@@ -158,14 +166,18 @@ func NewRaftWAL(cfg RaftWALConfig) (*RaftWAL, error) {
 		return nil, err
 	}
 
+	collector := NewRaftMetrics(syncwatch.WithAttrs(slog.String("wal_dir", cfg.Dir)))
+	withMetrics := quicraft.WithMetrics(collector)
 	switch {
 	case cfg.SystemBarrier == nil:
-		return &RaftWAL{Format: want, Options: []quicraft.HostOption{quicraft.WithoutEncryption()}}, nil
+		return &RaftWAL{Format: want, Metrics: collector, Options: []quicraft.HostOption{quicraft.WithoutEncryption(), withMetrics}}, nil
 	case cfg.SingleNode || cfg.SystemBarrier.IsPlaintextMode():
-		return &RaftWAL{Format: want, Options: []quicraft.HostOption{quicraft.WithBarrier(cfg.SystemBarrier)}}, nil
+		return &RaftWAL{Format: want, Metrics: collector, Options: []quicraft.HostOption{quicraft.WithBarrier(cfg.SystemBarrier), withMetrics}}, nil
 	}
 
-	shared, err := waldb.Open(cfg.Dir, waldb.WithBarrier(cfg.SystemBarrier))
+	// quicraft threads the collector only into a WAL it opens itself, so the
+	// shared WAL under the multiplex is handed it here.
+	shared, err := waldb.Open(cfg.Dir, waldb.WithBarrier(cfg.SystemBarrier), waldb.WithMetrics(collector))
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +189,7 @@ func NewRaftWAL(cfg RaftWALConfig) (*RaftWAL, error) {
 	return &RaftWAL{
 		Format:    want,
 		Multiplex: mux,
+		Metrics:   collector,
 		Options: []quicraft.HostOption{
 			quicraft.WithLogDB(mux),
 			quicraft.WithBarrier(cfg.SystemBarrier),
@@ -186,6 +199,7 @@ func NewRaftWAL(cfg RaftWALConfig) (*RaftWAL, error) {
 				}
 				return nil
 			}),
+			withMetrics,
 		},
 	}, nil
 }

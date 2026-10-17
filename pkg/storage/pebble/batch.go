@@ -224,12 +224,7 @@ func (b *pebbleBatch) Commit() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	writeOpts := pebble.NoSync
-	if b.syncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := b.batch.Commit(writeOpts); err != nil {
+	if err := b.store.durably(b.syncWrites, b.batch.Commit); err != nil {
 		return &storage.BatchError{Op: "commit", Err: err}
 	}
 	b.closed.Store(true)

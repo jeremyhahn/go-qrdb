@@ -158,7 +158,7 @@ func (e *Engine) clearJournal() error {
 	if err := os.Remove(filepath.Join(e.dir, journalFileName)); err != nil && !os.IsNotExist(err) {
 		return &JournalWriteError{Err: err}
 	}
-	return fsync.Dir(e.dir)
+	return e.timedSync(func() error { return fsync.Dir(e.dir) })
 }
 
 // recoverJournal completes an interrupted batch commit at Open time: a

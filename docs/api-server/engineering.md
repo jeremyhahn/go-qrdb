@@ -316,7 +316,7 @@ request.
 | `GET /v1/config/initialized` | **public** |
 | `GET /v1/ca/bootstrap` | **public**, only when exactly one bundle source is configured (cluster CA or host bundle); unconfigured it is not even claimed, so a host never collides with it |
 | `GET /v1/cluster/nodekey`, `POST /v1/cluster/keydelivery` | **public**, only when a cluster key receiver is wired |
-| `GET /metrics` | **authenticated**, no specific permission, only when a gatherer is configured |
+| `GET /metrics` | **authenticated**, no specific permission; served by default, absent only under `server.WithGatherer(nil)` |
 | gRPC / Unix `/grpc.health.v1.Health/*` | **public**: liveness only |
 | gRPC / Unix server reflection (`/grpc.reflection.*`) | **not public**. qrdb registers none. One a composer registers is authenticated and default-denied like any other unmapped method, unless the composer declares it public through `GRPCPublicMethodLister` |
 | MCP `GET /.well-known/oauth-protected-resource` | **public**, only when `mcp.WithProtectedResourceMetadata` is configured |
@@ -511,7 +511,25 @@ follows the run mode ([../run-modes/](../run-modes/)).
 
 ## Observability
 
-- `GET /metrics` in Prometheus format, gated on a configured gatherer.
+- `GET /metrics` in Prometheus format, served by default: the process registry
+  and the shared go-quicraft collector together (`metricsGatherer`). Metric
+  names, including the sync-latency histograms
+  `quicraft_logdb_fsync_latency_seconds` and
+  `qrdb_storage_sync_duration_seconds{backend}`, are in [user.md](user.md#metrics).
+- A sync slower than the process's slow-sync threshold logs one `WARN` per
+  sync: `slow storage sync` with `backend`, `database`, `dir`, `took`,
+  `threshold`, or `slow raft WAL fsync` with `wal_dir`, `took`, `threshold`.
+  The threshold is `observability.slow_sync_threshold`
+  (`config.ObservabilityConfig`): default `config.DefaultSlowSyncThreshold`
+  (1 s), accepted in (0, `config.MaxSlowSyncThreshold` = 1 m], anything else a
+  `*config.ValidationError` with `Field` `observability.slow_sync_threshold`,
+  from `Config.Validate` and from `ApplySlowSyncThreshold`. `qrdbd start`
+  (`configureObservability`) and `node.NewStandaloneNode` /
+  `node.NewClusteredNode` call `ApplySlowSyncThreshold`, which sets
+  `syncwatch.SetSlowThreshold` before any storage opens; every observer reads
+  `syncwatch.SlowThreshold()` per sync unless `syncwatch.WithThreshold` pins
+  it. It is an observation threshold for the stall signal only, NOT a
+  durability knob: quicraft keeps per-entry fsync with no tunable.
 - `GET /health` public, `GET /status` and `GET /capabilities` authenticated —
   see [../clustering/](../clustering/api.md) and [../run-modes/](../run-modes/).
 

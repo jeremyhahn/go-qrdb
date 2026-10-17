@@ -49,6 +49,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -969,6 +971,30 @@ func TestWithGatherer_Applied(t *testing.T) {
 	)
 	if srv.opts.gatherer != g {
 		t.Fatal("gatherer not stored in opts")
+	}
+}
+
+// Both boot paths (qrdbd and the SDK node) build the server without
+// WithGatherer, so the default is what makes /metrics exist at all.
+func TestNew_DefaultGathererServesQuicraftAndQrdbMetrics(t *testing.T) {
+	database.NewRaftMetrics().ObserveFsyncLatency(time.Millisecond)
+	syncwatch.ForStorage(syncwatch.BackendPebble).Observe(time.Millisecond)
+
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{})
+	if srv.opts.gatherer == nil {
+		t.Fatal("no default gatherer: /metrics is not registered")
+	}
+	for _, name := range []string{"quicraft_logdb_fsync_latency_seconds", "qrdb_storage_sync_duration_seconds", "go_goroutines"} {
+		if !syncwatchtest.HasFamily(t, srv.opts.gatherer, name) {
+			t.Fatalf("default gatherer does not expose %s", name)
+		}
+	}
+}
+
+func TestWithGatherer_NilLeavesMetricsUnregistered(t *testing.T) {
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithGatherer(nil))
+	if srv.opts.gatherer != nil {
+		t.Fatal("WithGatherer(nil) did not override the default gatherer")
 	}
 }
 

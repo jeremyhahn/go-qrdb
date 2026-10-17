@@ -16,11 +16,13 @@ package database
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 )
 
 // BackendFactory creates Backend instances for a given database configuration.
@@ -127,14 +129,14 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 	case BackendMemory:
 		return memory.NewStorage(), nil
 	case BackendFile:
-		store, err := file.New(dataDir)
+		store, err := file.New(dataDir, file.WithSyncObserver(storageSyncs(syncwatch.BackendFile, name, dataDir)))
 		if err != nil {
 			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
 		}
 		return store, nil
 	case BackendPebble:
 		cfg := pebble.DefaultConfig(dataDir)
-		store, err := pebble.New(cfg)
+		store, err := pebble.New(cfg, pebble.WithSyncObserver(storageSyncs(syncwatch.BackendPebble, name, dataDir)))
 		if err != nil {
 			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
 		}
@@ -153,4 +155,11 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 	default:
 		return nil, &InvalidBackendError{Backend: string(backend)}
 	}
+}
+
+// storageSyncs is the sync observer for database name's storage: its syncs
+// record under backend, and a slow one warns naming the database and its
+// data directory.
+func storageSyncs(backend, name, dataDir string) *syncwatch.Observer {
+	return syncwatch.ForStorage(backend, syncwatch.WithAttrs(slog.String("database", name), slog.String("dir", dataDir)))
 }

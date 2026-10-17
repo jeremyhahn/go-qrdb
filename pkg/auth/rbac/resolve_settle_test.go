@@ -98,7 +98,7 @@ func TestResolvePermissionSet_ElectionOutlastsBudget(t *testing.T) {
 	svc := newSettlingRoleService(errs...)
 	identity := &auth.Identity{Subject: "reader-1", TenantID: "acme", Roles: []string{"reader"}}
 	authz := New(svc)
-	authz.settleBudget = 150 * time.Millisecond
+	authz.settle = service.SettlePolicy{Budget: 150 * time.Millisecond}
 
 	start := time.Now()
 	err := authz.Authorize(ctxFor("acme"), identity, "kv", "get")
@@ -122,7 +122,7 @@ func TestResolvePermissionSet_ContextEndsTheWait(t *testing.T) {
 	svc := newSettlingRoleService(errs...)
 	identity := &auth.Identity{Subject: "reader-1", TenantID: "acme", Roles: []string{"reader"}}
 
-	ctx, cancel := context.WithTimeout(ctxFor("acme"), 2*resolveSettlePoll+resolveSettlePoll/2)
+	ctx, cancel := context.WithTimeout(ctxFor("acme"), 2*service.DefaultSettlePolicy.Poll+service.DefaultSettlePolicy.Poll/2)
 	defer cancel()
 	err := New(svc).Authorize(ctx, identity, "kv", "get")
 	var re *ResolveError

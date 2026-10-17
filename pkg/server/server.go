@@ -425,7 +425,10 @@ func WithTLS(cfg *tls.Config) ServerOption {
 	}
 }
 
-// WithGatherer attaches a Prometheus Gatherer for the REST /metrics endpoint.
+// WithGatherer replaces the Prometheus Gatherer the REST /metrics endpoint
+// serves. Without it the server serves the process registry and the shared
+// go-quicraft collector (database.SharedRaftMetrics) together; a nil Gatherer leaves
+// /metrics unregistered.
 func WithGatherer(g prometheus.Gatherer) ServerOption {
 	return func(o *serverOptions) {
 		o.gatherer = g
@@ -1385,6 +1388,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 		logger:   slog.Default(),
 	}
 
+	s.opts.gatherer = metricsGatherer()
 	for _, opt := range opts {
 		opt(&s.opts)
 	}

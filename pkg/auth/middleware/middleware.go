@@ -131,9 +131,9 @@ type AuthMiddleware struct {
 	// stays lock-free.
 	publicGRPCMethods atomic.Pointer[map[string]struct{}]
 
-	// lookupSettleBudget bounds how long lookupUser waits out an election of
-	// the user store's shard. Zero reads as authLookupSettleBudget.
-	lookupSettleBudget time.Duration
+	// lookupSettle is how lookupUser waits out an election of the user
+	// store's shard. A zero field reads as service.DefaultSettlePolicy's.
+	lookupSettle service.SettlePolicy
 }
 
 // authLookupSyncTimeout bounds the per-request linearizable user lookup when a
@@ -143,30 +143,6 @@ type AuthMiddleware struct {
 // Kept sub-second so a brief blip cannot cascade into multi-second
 // per-request latency.
 const authLookupSyncTimeout = 500 * time.Millisecond
-
-// authLookupSettleBudget bounds how long one request's user lookup waits out
-// the user store's shard electing a leader or moving it
-// (service.LeadershipTransient) before its error stands. At the default
-// tuning an election times out in 2 s; the budget covers a few rounds of it,
-// a split vote and the new leader's ReadIndex warm-up. The request's own
-// context ends the wait sooner.
-const authLookupSettleBudget = 10 * time.Second
-
-// authLookupSettlePoll paces the user lookup's attempts while it waits out an
-// election.
-const authLookupSettlePoll = 100 * time.Millisecond
-
-// authLookupTimeout bounds the linearizable user lookup for every tenant the
-// fallback does not hold, where there is nothing to fail over to. Cutting such
-// a read short does not make it faster, it turns a slow ReadIndex into a 503
-// on a request that would have been answered. It is sized to ride out one
-// leader election on a multi-node shard at go-quicraft's default timing (a
-// 2 s election timeout, randomized up to twice that) plus the new leader's
-// first commit, which a ReadIndex waits for. The role resolve that follows
-// uses the same budget (rbac resolveTimeout). It bounds one attempt:
-// lookupUser retries an attempt that fails with an election error within
-// authLookupSettleBudget.
-const authLookupTimeout = 5 * time.Second
 
 // authFallbackTimeout bounds the StaleRead fallback lookup.
 const authFallbackTimeout = 2 * time.Second
@@ -776,17 +752,14 @@ func (k userKey) get(ctx context.Context, users user.UserServicer, tenantID stri
 //
 // An attempt that fails because the store's shard is electing a leader or
 // moving it (service.LeadershipTransient) is retried until a leader answers,
-// ctx ends, or authLookupSettleBudget passes; its error then stands. Every
+// ctx ends, or the settle budget passes; its error then stands. Every
 // transport authenticates through here, so each of them waits out an election
 // rather than answering the request with a 503. Any other error is final at
-// once.
+// once. Each attempt is bounded by the policy's Attempt, so a read lost with a
+// killed leader is re-issued to the next one instead of holding the budget.
 func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID string, key userKey) (*user.User, error) {
-	budget := m.lookupSettleBudget
-	if budget == 0 {
-		budget = authLookupSettleBudget
-	}
-	return service.SettleLeadership(ctx, budget, authLookupSettlePoll, func() (*user.User, error) {
-		return m.lookupUserOnce(ctx, tenantID, key)
+	return service.SettleLeadership(ctx, m.lookupSettle, func(attemptCtx context.Context) (*user.User, error) {
+		return m.lookupUserOnce(attemptCtx, tenantID, key)
 	})
 }
 
@@ -806,15 +779,15 @@ func (m *AuthMiddleware) lookupUserOnce(ctx context.Context, tenantID string, ke
 	// The fallback holds the system tenant only (see below). For every other
 	// tenant there is nothing to fail over to, so the short budget would only
 	// turn a slow read into a 503 for a correctly enrolled caller: those
-	// lookups get authLookupTimeout instead.
+	// lookups take the whole of ctx, the attempt's bound (lookupUser).
 	hasFallback := m.usersFallback != nil && tenantid.IsSystem(tenantID)
-	budget := authLookupTimeout
+	lookupCtx := ctx
 	if hasFallback {
-		budget = authLookupSyncTimeout
+		var cancel context.CancelFunc
+		lookupCtx, cancel = context.WithTimeout(ctx, authLookupSyncTimeout)
+		defer cancel()
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, budget)
 	u, err := key.get(lookupCtx, m.users, tenantID)
-	cancel()
 	if err == nil {
 		return u, nil
 	}

@@ -626,6 +626,7 @@ var testSupportPackages = map[string]bool{
 	"pkg/seal/sealtest":                     true,
 	"pkg/service/servicetest":               true,
 	"pkg/store/storetest":                   true,
+	"pkg/syncwatch/syncwatchtest":           true,
 	"pkg/volume/volumetest":                 true,
 }
 

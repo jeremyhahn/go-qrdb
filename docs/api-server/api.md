@@ -141,8 +141,9 @@ holding the `Node` directly reaches the identical capability through
 | `GET /v1/cluster/nodekey` | only when a cluster key receiver is wired |
 | `POST /v1/cluster/keydelivery` | only when a cluster key receiver is wired |
 
-`GET /metrics` requires an authenticated caller but no specific permission, and
-is registered only when a metrics gatherer is configured.
+`GET /metrics` requires an authenticated caller but no specific permission. It
+is registered by default and absent only when the embedder passed
+`server.WithGatherer(nil)`.
 
 **Nothing else is public.** A route not on this list and not carrying a
 permission fails the startup assertion.

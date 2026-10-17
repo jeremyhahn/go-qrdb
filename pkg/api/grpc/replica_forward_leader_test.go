@@ -98,9 +98,9 @@ func TestReplicaForwardGRPC_NotLeaderForwardsToTheLeaderAsTheCaller(t *testing.T
 func TestReplicaForwardGRPC_NotLeaderRelaysTheLeadersOwnError(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	leader := startTarget(t, ca, "node-3", "raft-leader")
-	leader.answer = func(context.Context) error {
+	leader.setAnswer(func(context.Context) error {
 		return status.Error(codes.FailedPrecondition, "replica 7 is not a member")
-	}
+	})
 	client, _ := newFollowerIngress(t, ca, leader, "raft-leader")
 
 	_, err := client.RemoveMember(context.Background(), &pb.RemoveMemberRequest{ShardId: 1, ReplicaId: 7})

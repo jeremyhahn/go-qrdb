@@ -193,6 +193,9 @@ import_session:
   max_chunks_per_session: 16384
   max_sessions_per_tenant: 16
   session_ttl_seconds: 3600
+
+observability:
+  slow_sync_threshold: 1s        # slow-sync WARN threshold, in (0, 1m]; observation only
 ```
 
 ---
@@ -1233,6 +1236,38 @@ import_session:
   `ImportAbort`) is reclaimed when `session_ttl_seconds` elapses, through
   the same lease-expiry mechanism as any other lease-bound key — see
   `docs/leases/`.
+
+---
+
+### observability
+
+Configures the signals a node emits about itself (see `docs/api-server/`).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slow_sync_threshold` | duration | `1s` | A durable sync — a Raft write-ahead-log fsync or a storage backend's sync — that takes longer logs one `WARN` (`slow raft WAL fsync` / `slow storage sync`) |
+
+**Example configuration:**
+
+```yaml
+observability:
+  slow_sync_threshold: 1s
+```
+
+**Notes:**
+
+- `slow_sync_threshold` must be greater than zero and at most `1m`. `0`, a
+  negative duration, anything above `1m` or a malformed duration is refused
+  by `Config.Validate()` with a `*ValidationError` on
+  `observability.slow_sync_threshold`, so `qrdbd start` and the Go SDK's node
+  constructors stop before opening any storage. Unset means `1s`, etcd's
+  slow-fdatasync threshold.
+- It is an observation threshold for the stall signal only, NOT a durability
+  knob: quicraft keeps per-entry fsync with no tunable. Every sync still
+  happens; the threshold only decides which ones are logged.
+- It applies to the Raft write-ahead log and to every storage backend in the
+  process. `QRDB_OBSERVABILITY_SLOW_SYNC_THRESHOLD` overrides the file; there
+  is no command-line flag.
 
 ---
 

@@ -63,6 +63,9 @@ type shardMigrTarget struct {
 func (f *RaftBackendFactory) tenantStartedShards(tenantID string) []shardMigrTarget {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// A start of the tenant's shard that began before the migration did is
+	// opened under the old barrier: it is listed, and migrated, once it ends.
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k.tenantID == tenantID })
 	var out []shardMigrTarget
 	for k, rs := range f.shards {
 		if k.tenantID != tenantID {

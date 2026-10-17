@@ -50,7 +50,7 @@ func (c *Client) StartFeatureGate(ctx context.Context, gate *featuregate.Gate, a
 		c.NewMembershipStoreAt(featuregate.AdvertisementPrefix),
 		cluster.Member{NodeID: self.ReplicaID, Address: self.Address, Features: featuregate.SupportedNames()},
 		cluster.AdvertiseConfig{},
-		opts...,
+		append([]cluster.AdvertiseOption{cluster.WithAdvertiseSettler(settleRegistration)}, opts...)...,
 	)
 	if err != nil {
 		return nil, err

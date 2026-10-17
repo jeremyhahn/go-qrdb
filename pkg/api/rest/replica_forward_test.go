@@ -16,6 +16,7 @@ package rest
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"io"
@@ -51,21 +52,39 @@ type restTarget struct {
 	addr     string
 	raftAddr string
 	calls    atomic.Int32
-	answer   func(w http.ResponseWriter, r *http.Request) bool
+	answer   atomic.Pointer[func(w http.ResponseWriter, r *http.Request) bool]
 
 	mu   sync.Mutex
 	seen []restSeen
 }
 
-func startRESTTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *restTarget {
+// setAnswer sets how the target answers. The serve goroutine reads it, so a
+// test may change it while the target serves.
+func (rt *restTarget) setAnswer(answer func(http.ResponseWriter, *http.Request) bool) {
+	rt.answer.Store(&answer)
+}
+
+func startRESTTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string, opts ...restTargetOption) *restTarget {
 	t.Helper()
-	return startRESTTargetTLS(t, ca.TLS(t, nodeID), nodeID, raftAddr)
+	return startRESTTargetTLS(t, ca.TLS(t, nodeID), nodeID, raftAddr, opts...)
+}
+
+// restTargetOption configures a restTarget before its server starts, so
+// the handler reads the field without a race.
+type restTargetOption func(*restTarget)
+
+// withRESTAnswer sets the target's answer at construction.
+func withRESTAnswer(answer func(http.ResponseWriter, *http.Request) bool) restTargetOption {
+	return func(rt *restTarget) { rt.setAnswer(answer) }
 }
 
 // startRESTTargetTLS starts a target serving tlsCfg, which names it nodeID.
-func startRESTTargetTLS(t *testing.T, tlsCfg *tls.Config, nodeID, raftAddr string) *restTarget {
+func startRESTTargetTLS(t *testing.T, tlsCfg *tls.Config, nodeID, raftAddr string, opts ...restTargetOption) *restTarget {
 	t.Helper()
 	rt := &restTarget{raftAddr: raftAddr}
+	for _, opt := range opts {
+		opt(rt)
+	}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rt.calls.Add(1)
 		body, _ := io.ReadAll(r.Body)
@@ -83,7 +102,7 @@ func startRESTTargetTLS(t *testing.T, tlsCfg *tls.Config, nodeID, raftAddr strin
 			writeErrorJSON(w, http.StatusUnauthorized, err)
 			return
 		}
-		if rt.answer != nil && rt.answer(w, r) {
+		if answer := rt.answer.Load(); answer != nil && (*answer)(w, r) {
 			return
 		}
 		w.Header().Set("X-Target-Says", "hello")
@@ -194,6 +213,34 @@ func (c *restFwdCluster) put(t *testing.T, body string, header ...string) restAn
 	return answerOf(t, resp)
 }
 
+// awaitConnected leaves the forwarder holding an idle connection to target,
+// so a forward to it starts with its headers rather than a handshake. A
+// handshake slower than the connect budget leaves the target unreachable,
+// with nothing sent, and the forward rightly goes on to the next replica.
+func (c *restFwdCluster) awaitConnected(t *testing.T, target *restTarget) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+target.addr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each attempt has the same connect budget a forward has; a loaded
+	// machine may need more than one.
+	for {
+		resp, err := c.forwarder.client.Do(req)
+		if err == nil {
+			// A body read to EOF has returned the connection to the pool.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the forwarder opened no connection to %s: %v", target.addr, err)
+		}
+	}
+}
+
 // refusalBody decodes resp as the ingress node's NotAReplica refusal.
 func refusalBody(t *testing.T, a restAnswer) *placement.NotAReplicaError {
 	t.Helper()
@@ -247,10 +294,10 @@ func TestReplicaForwardREST_NotLeaderRetriesTheNamedLeader(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startRESTTarget(t, ca, "node-1", "raft-b")
 	cc := startRESTTarget(t, ca, "node-2", "raft-c")
-	b.answer = func(w http.ResponseWriter, _ *http.Request) bool {
+	b.setAnswer(func(w http.ResponseWriter, _ *http.Request) bool {
 		writeErrorJSON(w, http.StatusServiceUnavailable, &service.NotLeaderError{ShardID: 42, LeaderID: 2, LeaderAddress: "raft-c"})
 		return true
-	}
+	})
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b, cc)
 
 	resp := c.put(t, "v")
@@ -289,12 +336,15 @@ func TestReplicaForwardREST_AFailureAfterSendingIsNotRetried(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := replicaforwardtest.NewCA(t)
-			b := startRESTTarget(t, ca, "node-1", "raft-b")
+			b := startRESTTarget(t, ca, "node-1", "raft-b", withRESTAnswer(answer))
 			cc := startRESTTarget(t, ca, "node-2", "raft-c")
-			b.answer = answer
 			c := newRESTFwdCluster(t, ca, 300*time.Millisecond, b, cc)
+			c.awaitConnected(t, b)
 
 			resp := c.put(t, "v")
+			if seen := b.lastSeen(t); seen.verifyErr != nil {
+				t.Fatalf("the forward never reached the target (answer %d %s)", resp.status, resp.body)
+			}
 			var body errorResponse
 			_ = json.Unmarshal([]byte(resp.body), &body)
 			if resp.status < 500 || body.Code == replicaforward.ReasonNotAReplica {
@@ -310,10 +360,10 @@ func TestReplicaForwardREST_AFailureAfterSendingIsNotRetried(t *testing.T) {
 func TestReplicaForwardREST_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startRESTTarget(t, ca, "node-1", "raft-b")
-	b.answer = func(w http.ResponseWriter, _ *http.Request) bool {
+	b.setAnswer(func(w http.ResponseWriter, _ *http.Request) bool {
 		writeErrorJSON(w, http.StatusNotFound, &service.KeyNotFoundError{Key: "k1"})
 		return true
-	}
+	})
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b)
 	if resp := c.put(t, "v"); resp.status != http.StatusNotFound {
 		t.Fatalf("answer %d; want the replica's 404", resp.status)
@@ -327,10 +377,10 @@ func TestReplicaForwardREST_AReconnectingReplicaIsWaitedOn(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	refusing, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
 	b := startRESTTargetTLS(t, refusing, "node-1", "raft-b")
-	b.answer = func(w http.ResponseWriter, _ *http.Request) bool {
+	b.setAnswer(func(w http.ResponseWriter, _ *http.Request) bool {
 		writeErrorJSON(w, http.StatusNotFound, &service.KeyNotFoundError{Key: "k1"})
 		return true
-	}
+	})
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b)
 	if resp := c.put(t, "v"); resp.status != http.StatusNotFound {
 		t.Fatalf("answer %d; want the reconnecting replica's 404", resp.status)
@@ -360,7 +410,8 @@ func TestReplicaForwardREST_RefusesWhatItCannotForward(t *testing.T) {
 			ca := replicaforwardtest.NewCA(t)
 			b := startRESTTarget(t, ca, "node-1", "raft-b")
 			cc := startRESTTarget(t, ca, "node-2", "raft-c")
-			b.answer, cc.answer = tc.answer, tc.answer
+			b.setAnswer(tc.answer)
+			cc.setAnswer(tc.answer)
 			c := newRESTFwdCluster(t, ca, 5*time.Second, b, cc)
 
 			if got := refusalBody(t, c.put(t, tc.body, tc.header...)); got.NodeID != "node-a" || len(got.Replicas) != 2 {

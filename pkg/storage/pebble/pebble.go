@@ -18,12 +18,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 )
 
 // Compile-time interface assertion.
@@ -68,11 +70,48 @@ type PebbleStorage struct {
 	closed   atomic.Bool
 	readSem  chan struct{}
 	writeSem chan struct{}
+	// syncs times every write committed with pebble.Sync.
+	syncs *syncwatch.Observer
+}
+
+// Option configures a PebbleStorage built by New or NewFromDB.
+type Option func(*PebbleStorage)
+
+// WithSyncObserver sets the observer that times the store's synced writes.
+// The default records them in qrdb_storage_sync_duration_seconds{backend=
+// "pebble"} and warns on a slow one; callers that know the database or
+// shard pass one whose attributes name it.
+func WithSyncObserver(o *syncwatch.Observer) Option {
+	return func(s *PebbleStorage) {
+		if o != nil {
+			s.syncs = o
+		}
+	}
+}
+
+func (s *PebbleStorage) apply(opts []Option) *PebbleStorage {
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// durably runs write with pebble.Sync when synced is set, timing it, and
+// with pebble.NoSync otherwise. A failed sync is timed too: a disk that
+// fails slowly is as much a stall as one that succeeds slowly.
+func (s *PebbleStorage) durably(synced bool, write func(*pebble.WriteOptions) error) error {
+	if !synced {
+		return write(pebble.NoSync)
+	}
+	start := s.syncs.Now()
+	err := write(pebble.Sync)
+	s.syncs.Since(start)
+	return err
 }
 
 // New creates a new PebbleDB storage instance. The config is validated,
 // defaults applied, and the database opened at config.DataDir.
-func New(config *Config) (*PebbleStorage, error) {
+func New(config *Config, opts ...Option) (*PebbleStorage, error) {
 	if config == nil {
 		return nil, &ConfigError{Field: "config", Message: "is required"}
 	}
@@ -82,19 +121,21 @@ func New(config *Config) (*PebbleStorage, error) {
 	}
 	config = config.WithDefaults()
 
-	opts := config.ToPebbleOptions()
+	pebbleOpts := config.ToPebbleOptions()
 
-	db, err := pebble.Open(config.DataDir, opts)
+	db, err := pebble.Open(config.DataDir, pebbleOpts)
 	if err != nil {
 		return nil, &storage.OpError{Op: "open", Err: err}
 	}
 
-	return &PebbleStorage{
+	s := &PebbleStorage{
 		db:       db,
 		config:   config,
 		readSem:  make(chan struct{}, config.MaxConcurrentReads),
 		writeSem: make(chan struct{}, config.MaxConcurrentWrites),
-	}, nil
+		syncs:    syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", config.DataDir))),
+	}
+	return s.apply(opts), nil
 }
 
 // NewFromDB wraps an existing PebbleDB instance as a storage.Storage.
@@ -102,8 +143,8 @@ func New(config *Config) (*PebbleStorage, error) {
 // returned PebbleStorage will close the underlying DB, so coordinate
 // accordingly. SyncWrites controls whether batch commits use pebble.Sync
 // or pebble.NoSync.
-func NewFromDB(db *pebble.DB, syncWrites bool) *PebbleStorage {
-	return &PebbleStorage{
+func NewFromDB(db *pebble.DB, syncWrites bool, opts ...Option) *PebbleStorage {
+	s := &PebbleStorage{
 		db: db,
 		config: &Config{
 			SyncWrites:          syncWrites,
@@ -112,7 +153,9 @@ func NewFromDB(db *pebble.DB, syncWrites bool) *PebbleStorage {
 		},
 		readSem:  make(chan struct{}, 100),
 		writeSem: make(chan struct{}, 100),
+		syncs:    syncwatch.ForStorage(syncwatch.BackendPebble),
 	}
+	return s.apply(opts)
 }
 
 // DB returns the underlying PebbleDB instance. This is used by subsystems
@@ -173,12 +216,9 @@ func (s *PebbleStorage) Set(key, value []byte) error {
 	s.writeSem <- struct{}{}
 	defer func() { <-s.writeSem }()
 
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := s.db.Set(key, value, writeOpts); err != nil {
+	if err := s.durably(s.config.SyncWrites, func(o *pebble.WriteOptions) error {
+		return s.db.Set(key, value, o)
+	}); err != nil {
 		return &storage.OpError{Op: "set", Err: err}
 	}
 	return nil
@@ -200,12 +240,9 @@ func (s *PebbleStorage) Delete(key []byte) error {
 	s.writeSem <- struct{}{}
 	defer func() { <-s.writeSem }()
 
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := s.db.Delete(key, writeOpts); err != nil {
+	if err := s.durably(s.config.SyncWrites, func(o *pebble.WriteOptions) error {
+		return s.db.Delete(key, o)
+	}); err != nil {
 		return &storage.OpError{Op: "delete", Err: err}
 	}
 	return nil
@@ -303,11 +340,9 @@ func (s *PebbleStorage) CompareAndSwap(ctx context.Context, key, expected, next 
 		return false, nil
 	}
 
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-	if err := s.db.Set(key, next, writeOpts); err != nil {
+	if err := s.durably(s.config.SyncWrites, func(o *pebble.WriteOptions) error {
+		return s.db.Set(key, next, o)
+	}); err != nil {
 		return false, &storage.OpError{Op: "compare-and-swap", Err: err}
 	}
 	return true, nil

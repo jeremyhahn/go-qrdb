@@ -760,12 +760,17 @@ func (g *faultLoad) finish(t *testing.T, l *writeLedger) {
 }
 
 // isolate cuts node i off from every other node in both directions, at the
-// relays in front of each Raft listener.
-func (c *faultCluster) isolate(i int) {
+// relays in front of each Raft listener. The heal is registered with t at
+// once, so a test that fails while the node is cut off does not leave the
+// cluster partitioned for the tests after it; heal is idempotent, so a test
+// that heals on its own path is unaffected.
+func (c *faultCluster) isolate(t *testing.T, i int) {
+	t.Helper()
 	for _, j := range c.others(i) {
 		c.nodes[i].relay.Block(c.nodes[j].listen)
 		c.nodes[j].relay.Block(c.nodes[i].listen)
 	}
+	t.Cleanup(c.heal)
 }
 
 // heal restores every path every relay carries.

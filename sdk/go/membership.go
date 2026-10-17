@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -46,8 +47,20 @@ const watchForwardBuffer = 64
 func (c *Client) NewMembershipManager(self cluster.Member, shardID uint64, cfg cluster.MembershipConfig, opts ...cluster.MembershipOption) (*cluster.MembershipManager, error) {
 	store := c.NewMembershipStore()
 	reconf := c.NewMembershipReconfigurer()
-	opts = append([]cluster.MembershipOption{cluster.WithReconfigurer(reconf)}, opts...)
+	opts = append([]cluster.MembershipOption{cluster.WithReconfigurer(reconf), cluster.WithMembershipSettler(settleRegistration)}, opts...)
 	return cluster.NewMembershipManager(store, self, shardID, cfg, opts...)
+}
+
+// settleRegistration is the cluster.Settler of every advertiser this client
+// builds: a registration proposed while the system shard elects a leader --
+// every node restarting in turn, as a rolling enable-encryption does -- is
+// retried until a leader takes it (service.LeadershipTransient), rather than
+// failing the node's boot. It waits under service.DefaultSettlePolicy, the
+// same window the user lookup and the permission resolve wait out an
+// election in: each attempt bounded at one election timeout, the whole wait
+// at a few rounds of it, and the registration's own context ends it sooner.
+func settleRegistration(ctx context.Context, attempt func(context.Context) error) error {
+	return service.Settle(ctx, service.DefaultSettlePolicy, attempt)
 }
 
 // NewNodeAdvertiser wires a cluster.Advertiser onto this client's lease + MVCC
@@ -65,6 +78,7 @@ func (c *Client) NewMembershipManager(self cluster.Member, shardID uint64, cfg c
 // addresses; the values come from the node's own configuration and are never
 // derived from the Raft address.
 func (c *Client) NewNodeAdvertiser(self cluster.Member, cfg cluster.AdvertiseConfig, opts ...cluster.AdvertiseOption) (*cluster.Advertiser, error) {
+	opts = append([]cluster.AdvertiseOption{cluster.WithAdvertiseSettler(settleRegistration)}, opts...)
 	return cluster.NewAdvertiser(c.NewMembershipStore(), self, cfg, opts...)
 }
 

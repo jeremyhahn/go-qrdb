@@ -321,6 +321,73 @@ ephemeral range, certifies each port on TCP and UDP together, and keeps a
 cross-process lock on it, so no other process in the network namespace is
 handed the same number.
 
+### Metrics: one gatherer, two registries
+
+`/metrics` serves two Prometheus registries through one gatherer
+(`pkg/server/metrics_gatherer.go`), the server's default unless the embedder
+passes `server.WithGatherer`:
+
+- the **process registry** (`pkg/util/metrics`) — the Go runtime and process
+  collectors and every `qrdb_*` series;
+- the **shared go-quicraft collector's registry**
+  (`database.SharedRaftMetrics`) — every `quicraft_*` series.
+
+The process registry is read on each scrape, so a test that swaps it is
+scraped as swapped. go-quicraft's registry carries no runtime collectors, so
+the two never yield the same family twice.
+
+**One collector per process.** go-quicraft's `PrometheusMetricsCollector` is
+created once, on first use, and every Raft host in the process reports to it
+through a `database.RaftMetrics` wrapper: the WAL that `database.NewRaftWAL`
+opens (the path both `qrdbd start` and `sdk/go/node` boot through), the
+per-database Raft hosts the backend factory builds, and the per-tenant hosts.
+The SDK runs several nodes in one test process; a collector per node would
+either collide on one registry or leave all but one unscraped. Two hosts can
+run replicas of the same shard ID, and go-quicraft deletes a shard's series on
+unregistration, so the wrapper reference-counts shard registrations and passes
+only the first and the last through.
+
+**Sync latency.** Every durable sync goes through a `pkg/syncwatch.Observer`,
+which records the duration and logs one warning when it crosses the slow-sync
+threshold. For the Raft WAL the observation point is qrdb's side of go-quicraft's
+`MetricsCollector.ObserveFsyncLatency` — `RaftMetrics` records into
+`quicraft_logdb_fsync_latency_seconds` and then checks the threshold, naming
+the WAL directory — so go-quicraft is unchanged. For storage, the pebble
+backend times each write committed with `pebble.Sync` and the file backend each
+record, rename and directory fsync, into
+`qrdb_storage_sync_duration_seconds{backend}`; `database.openStorage` and the
+store's pebble wrappers name the database and directory on the observer. The
+observer reads an injected `clock.Clock`, so tests time a sync exactly without
+touching a disk.
+
+Neither `syncwatch` nor the collector reaches the lean standalone import graph:
+`syncwatch` names Prometheus only through `pkg/util/metrics`, and the collector
+lives in `pkg/database`, which already carries the go-quicraft edge
+(`test/buildgates/lean_standalone_test.go`).
+
+**The threshold is configuration, held process-wide.** It is
+`observability.slow_sync_threshold` (`pkg/config`): a Go duration, default one
+second (`syncwatch.DefaultSlowThreshold`, etcd's slow-fdatasync default),
+refused by `Validate` with a typed `ValidationError` unless it is greater than
+zero and at most one minute. It is an observation threshold for the stall
+signal only, NOT a durability knob: quicraft keeps per-entry fsync with no
+tunable. `ObservabilityConfig.ApplySlowSyncThreshold` is the one place it
+reaches `syncwatch`: both boot paths call it before opening any storage —
+`qrdbd start` from `configureObservability`, beside the logger it sets there,
+and `NewStandaloneNode`/`NewClusteredNode` first thing after their nil check.
+It sets `syncwatch.SetSlowThreshold`, a process value every observer built
+without `WithThreshold` reads at `Observe` time, which is every production
+observer, so it reaches the Raft WAL and every storage backend however and
+whenever they were built.
+
+Process-wide rather than threaded through each constructor for the same reason
+the collector is: a storage backend opened with its default observer — and
+there are a dozen such sites, the CLI's embedded paths, restore, the partition
+factory among them — has no configuration in reach, and an observer that took
+the threshold at construction would miss one set later. The cost is the one
+the collector already pays: several SDK nodes in one process share one
+threshold, the last constructor's.
+
 ### Pre-bound sockets
 
 An embedder that needs a kernel-assigned port — a test process booting many
@@ -412,7 +479,7 @@ kernel-assigned port.
   two cluster key routes when a receiver is wired (they authorize the peer
   node themselves), and the MCP protected-resource metadata document when
   configured. `GET /metrics` requires authentication but no specific
-  permission. The full list is in
+  permission, and is served unless the embedder turns it off. The full list is in
   [engineering.md](engineering.md#public-and-authenticated-only-routes).
 - **MCP authenticates before the MCP layer reads anything.** With
   authentication configured, every request to the MCP endpoint is

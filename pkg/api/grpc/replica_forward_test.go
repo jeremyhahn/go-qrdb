@@ -60,16 +60,20 @@ type fakeTarget struct {
 	addr     string
 	raftAddr string
 	calls    atomic.Int32
-	answer   func(ctx context.Context) error
+	answer   atomic.Pointer[func(ctx context.Context) error]
 	unmarked bool
 
 	mu   sync.Mutex
 	seen []seenCall
 }
 
+// setAnswer sets how the target answers. The serve goroutine reads it, so a
+// test may change it while the target serves.
+func (f *fakeTarget) setAnswer(answer func(context.Context) error) { f.answer.Store(&answer) }
+
 func (f *fakeTarget) Put(ctx context.Context, _ *pb.PutRequest) (*pb.PutResponse, error) {
-	if f.answer != nil {
-		if err := f.answer(ctx); err != nil {
+	if answer := f.answer.Load(); answer != nil {
+		if err := (*answer)(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -77,8 +81,8 @@ func (f *fakeTarget) Put(ctx context.Context, _ *pb.PutRequest) (*pb.PutResponse
 }
 
 func (f *fakeTarget) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
-	if f.answer != nil {
-		if err := f.answer(ctx); err != nil {
+	if answer := f.answer.Load(); answer != nil {
+		if err := (*answer)(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -87,8 +91,8 @@ func (f *fakeTarget) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetRespon
 
 func (f *fakeTarget) CeremonyInitialize(ctx context.Context, _ *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
 	f.calls.Add(1)
-	if f.answer != nil {
-		if err := f.answer(ctx); err != nil {
+	if answer := f.answer.Load(); answer != nil {
+		if err := (*answer)(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -98,8 +102,8 @@ func (f *fakeTarget) CeremonyInitialize(ctx context.Context, _ *pb.CeremonyIniti
 // RemoveMember answers as the system shard's leader would: it is where a
 // follower's NotLeader refusal of a membership change must end up.
 func (f *fakeTarget) RemoveMember(ctx context.Context, _ *pb.RemoveMemberRequest) (*emptypb.Empty, error) {
-	if f.answer != nil {
-		if err := f.answer(ctx); err != nil {
+	if answer := f.answer.Load(); answer != nil {
+		if err := (*answer)(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -330,9 +334,9 @@ func TestReplicaForwardGRPC_NotLeaderRetriesTheNamedLeader(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	cc := startTarget(t, ca, "node-2", "raft-c")
-	b.answer = func(context.Context) error {
+	b.setAnswer(func(context.Context) error {
 		return mapServiceError(&service.NotLeaderError{ShardID: 42, LeaderID: 2, LeaderAddress: "raft-c"})
-	}
+	})
 	c := newFwdCluster(t, ca, 5*time.Second, b, cc)
 
 	var header metadata.MD
@@ -370,7 +374,7 @@ func TestReplicaForwardGRPC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 		// handler never marked it served.
 		"unmarked failure": func(_ *testing.T, b *fakeTarget) {
 			b.unmarked = true
-			b.answer = func(context.Context) error { return status.Error(codes.Internal, "on the way") }
+			b.setAnswer(func(context.Context) error { return status.Error(codes.Internal, "on the way") })
 		},
 		// The target took the request and did not answer in time. It holds
 		// the request until the subtest ends rather than until its own
@@ -381,7 +385,7 @@ func TestReplicaForwardGRPC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 		"timeout": func(t *testing.T, b *fakeTarget) {
 			hold := make(chan struct{})
 			t.Cleanup(func() { close(hold) })
-			b.answer = func(context.Context) error { <-hold; return status.Error(codes.Internal, "too late") }
+			b.setAnswer(func(context.Context) error { <-hold; return status.Error(codes.Internal, "too late") })
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -414,7 +418,7 @@ func TestReplicaForwardGRPC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 func TestReplicaForwardGRPC_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
-	b.answer = func(context.Context) error { return mapServiceError(&service.KeyNotFoundError{Key: "k"}) }
+	b.setAnswer(func(context.Context) error { return mapServiceError(&service.KeyNotFoundError{Key: "k"}) })
 	c := newFwdCluster(t, ca, 5*time.Second, b)
 
 	_, err := c.client.Get(callerCtx(), &pb.GetRequest{Key: "k"})
@@ -435,7 +439,7 @@ func TestReplicaForwardGRPC_AReconnectingReplicaIsWaitedOn(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	tlsCfg, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
 	b := startTargetTLS(t, tlsCfg, "node-1", "raft-b")
-	b.answer = func(context.Context) error { return mapServiceError(&service.KeyNotFoundError{Key: "k"}) }
+	b.setAnswer(func(context.Context) error { return mapServiceError(&service.KeyNotFoundError{Key: "k"}) })
 	c := newFwdCluster(t, ca, 5*time.Second, b)
 
 	_, err := c.client.Get(callerCtx(), &pb.GetRequest{Key: "k"})
@@ -464,7 +468,8 @@ func TestReplicaForwardGRPC_RefusesWhatItCannotForward(t *testing.T) {
 			ca := replicaforwardtest.NewCA(t)
 			b := startTarget(t, ca, "node-1", "raft-b")
 			cc := startTarget(t, ca, "node-2", "raft-c")
-			b.answer, cc.answer = tc.answer, tc.answer
+			b.setAnswer(tc.answer)
+			cc.setAnswer(tc.answer)
 			c := newFwdCluster(t, ca, 5*time.Second, b, cc)
 
 			_, err := c.client.Put(tc.ctx, &pb.PutRequest{Key: "k", Value: []byte("v")})
@@ -632,9 +637,9 @@ func TestForwardAdminWrite_StalledLeaderLookupDoesNotForward(t *testing.T) {
 func TestForwardAdminWrite_RelaysTheLeadersOwnError(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	leader := startTarget(t, ca, "node-1", "raft-leader")
-	leader.answer = func(context.Context) error {
+	leader.setAnswer(func(context.Context) error {
 		return status.Error(codes.Unauthenticated, "pin: invalid PIN")
-	}
+	})
 
 	members := replicaforwardtest.Members{
 		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: leader.addr}},

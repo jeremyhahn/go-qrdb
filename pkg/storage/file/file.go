@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +38,7 @@ import (
 	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
@@ -126,6 +128,21 @@ type Engine struct {
 	// the directory is already durable from before; the fsync it repeats
 	// is redundant work, not a correctness requirement.
 	durableShardDirs sync.Map
+
+	// syncs times every fsync the engine issues on its write path (see
+	// timedSync). Nil, in an Engine built by hand, times nothing.
+	syncs *syncwatch.Observer
+}
+
+// Option configures an Engine at New.
+// timedSync runs one fsync, recording its duration and warning when it was
+// slow. A failed fsync is timed too: a disk that fails slowly stalls the
+// write as much as one that succeeds slowly.
+func (e *Engine) timedSync(fsyncFn func() error) error {
+	start := e.syncs.Now()
+	err := fsyncFn()
+	e.syncs.Since(start)
+	return err
 }
 
 const (
@@ -203,12 +220,25 @@ type Option func(*options)
 // options is what the Options set.
 type options struct {
 	encryptor Encryptor
+	syncs     *syncwatch.Observer
 }
 
 // WithEncryptor encrypts every file's contents at rest under enc. A nil or
 // disabled enc leaves the engine plaintext.
 func WithEncryptor(enc Encryptor) Option {
 	return func(o *options) { o.encryptor = enc }
+}
+
+// WithSyncObserver times the engine's fsyncs through o instead of the
+// default observer, which records into the process registry under
+// backend="file" and names the data directory in its slow-sync warning. A
+// nil o keeps the default.
+func WithSyncObserver(o *syncwatch.Observer) Option {
+	return func(opts *options) {
+		if o != nil {
+			opts.syncs = o
+		}
+	}
 }
 
 // New creates a new file-based storage engine rooted at dir. The directory
@@ -249,7 +279,10 @@ func New(dir string, opts ...Option) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext, lock: lock}
+	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext, lock: lock, syncs: cfg.syncs}
+	if e.syncs == nil {
+		e.syncs = syncwatch.ForStorage(syncwatch.BackendFile, syncwatch.WithAttrs(slog.String("dir", dir)))
+	}
 	if cfg.encryptor != nil && cfg.encryptor.Enabled() {
 		e.fs = cfg.encryptor.Wrap(vfs.Default)
 		e.atRest = atRestEncrypted
@@ -670,7 +703,7 @@ func (e *Engine) mkdirShardDurable(dir string) error {
 		default:
 			return err
 		}
-		if err := fsync.Dir(filepath.Join(e.dir, cur)); err != nil {
+		if err := e.timedSync(func() error { return fsync.Dir(filepath.Join(e.dir, cur)) }); err != nil {
 			return err
 		}
 		cur = next
@@ -728,7 +761,7 @@ func (e *Engine) del(key []byte) error {
 	}
 	// Make the removal durable: fsync the directory so a crash cannot
 	// resurrect the deleted record.
-	return fsync.Dir(dir)
+	return e.timedSync(func() error { return fsync.Dir(dir) })
 }
 
 // DeleteRange removes every key in [start, end); an empty end is unbounded.
@@ -886,7 +919,7 @@ func (e *Engine) Sync() error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
-	return fsync.Dir(e.dir)
+	return e.timedSync(func() error { return fsync.Dir(e.dir) })
 }
 
 // Close marks the engine as closed and closes its lock file, releasing the
@@ -1019,14 +1052,14 @@ func (e *Engine) writeDurable(fs vfs.FS, path, tmpPrefix string, data []byte) er
 	if _, err := f.Write(data); err != nil {
 		return fail(err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := e.timedSync(f.Sync); err != nil {
 		return fail(err)
 	}
 	if err := f.Close(); err != nil {
 		e.discardTemp(tmpName)
 		return err
 	}
-	if err := fsync.Rename(tmpName, path); err != nil {
+	if err := e.timedSync(func() error { return fsync.Rename(tmpName, path) }); err != nil {
 		e.discardTemp(tmpName)
 		return err
 	}

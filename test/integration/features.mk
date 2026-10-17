@@ -51,7 +51,9 @@
 # (test/integration/api/{grpc,rest,mcp,unix,cli_multiprotocol}_test.go, run
 # by `make integration-test-standalone`) stays for CI; the kv command tree
 # and cluster topology/membership remain covered by the key_value and
-# clustering entries below, not duplicated here.
+# clustering entries below, not duplicated here. metrics_test.go scrapes a raft
+# node's Prometheus /metrics (the default gatherer, the WAL fsync histogram,
+# the authentication requirement).
 #
 # test/buildgates/feature_integration_coverage_test.go (run by
 # `make check-integration-feature-coverage` in the Lint job) is the other
@@ -90,7 +92,7 @@
 # pattern rule avoids the question entirely by computing the same
 # substitution on both sides: $(INTTEST_$(subst -,_,$*))).
 
-INTTEST_api_server          := cli_multiprotocol_test.go
+INTTEST_api_server          := cli_multiprotocol_test.go metrics_test.go
 INTTEST_attested_caller     :=
 INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go
 INTTEST_auth_factors        := auth_cli_test.go auth_factor_condition_cli_test.go auth/factors_test.go

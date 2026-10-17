@@ -946,8 +946,10 @@ not by how often leadership moves.
 
 ## Observability
 
-- **Metrics** are exposed on `GET /metrics` in Prometheus format, gated on a
-  configured gatherer.
+- **Metrics** are exposed on `GET /metrics` in Prometheus format, by default.
+  Storage syncs are timed in `qrdb_storage_sync_duration_seconds{backend}` and
+  a slow one logs a warning naming the backend and database; see
+  [../api-server/user.md](../api-server/user.md#disk-sync-latency).
 - **Health** is `GET /health`; it is a public route by design so a load balancer
   can probe an unauthenticated node.
 - **Audit**: KV mutations are recorded through [../audit/](../audit/) when the

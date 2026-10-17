@@ -1273,11 +1273,9 @@ tenant (the system tenant, with a fallback configured), `lookupUser` bounds
 the primary (linearizable) read to `authLookupSyncTimeout` (500 ms) and
 `resolvePermissionSet` bounds the primary resolve to `resolveSyncTimeout`
 (500 ms), so a blip fails over to the fallback promptly. For every other
-tenant there is nothing to fail over to, and the bounds are
-`authLookupTimeout` and `resolveTimeout` (5 s): sized to ride out one leader
-election on a multi-node shard at go-quicraft's default timing (a 2 s
-election timeout, randomized up to twice that) plus the new leader's first
-commit. A miss comes back as the retryable `StoreUnavailableError` or
+tenant there is nothing to fail over to, and the bound is the attempt bound
+of `service.DefaultSettlePolicy` (2 s, one election timeout at go-quicraft's
+default timing), which the wait below re-issues. A miss comes back as the retryable `StoreUnavailableError` or
 `*rbac.ResolveError`/503 the rows above describe; a correctly enrolled
 non-system tenant user gets the retryable error, never a silent deny.
 
@@ -1288,19 +1286,36 @@ that would have been answered. Every authenticated request pays the user
 lookup, and an MCP tool call is several requests, so under load this
 reddened the multi-node MCP replica-forwarding suite.
 
-**The user lookup waits out an election of its store's shard.** The budget above
-bounds one attempt, not the request. When an attempt fails because the
+**The user lookup waits out an election of its store's shard.** The bound above
+limits one attempt, not the request. When an attempt fails because the
 shard holding the user is electing a leader or moving it — quicraft's
 timeout, aborted, not-leader, shard-not-ready or ReadIndex-not-ready errors,
 or a `*service.NotLeaderError`, as `service.LeadershipTransient` names them —
 `lookupUser` tries again every 100 ms until a leader answers, the request's
-context ends, or `authLookupSettleBudget` (10 s) passes, and only then lets
-the error stand as the retryable 503. A request that arrived during an
-election otherwise failed outright: the resolver's tenant-metadata read timed
-out in Raft while a peer restarted, and every transport answered 503 for a
-tenant whose users were all intact. Any other error ends the lookup at once,
-so a wait never masks a definitive answer. The wait lives in `lookupUser`
-alone because every transport authenticates through it.
+context ends, or the settle budget (10 s) passes, and only then lets the
+error stand as the retryable 503. A request that arrived during an election
+otherwise failed outright: the resolver's tenant-metadata read timed out in
+Raft while a peer restarted, and every transport answered 503 for a tenant
+whose users were all intact. Any other error ends the lookup at once, so a
+wait never masks a definitive answer. The wait lives in `lookupUser` alone
+because every transport authenticates through it; `resolvePermissionSet`
+waits the same way, under the same policy.
+
+**The attempt bound is one election timeout, and the budget ends the last
+attempt.** `service.SettleLeadership` holds the policy for both waits: it
+derives each attempt's context, which ends at the attempt bound or at the end
+of the budget, whichever is first. The attempt bound is what lets the wait
+outlast an election. A follower forwards a ReadIndex to the replica it knows as
+leader, and go-quicraft answers one lost with a leader killed before it replied
+with nothing: the read waits for its context. So an attempt issued just after
+the leader dies costs its whole bound, and only a fresh attempt reaches the
+next leader. A bound longer than an election timeout buys nothing, because a
+live leader confirms a ReadIndex in one heartbeat round and one that cannot
+reach a quorum within an election timeout steps down. With a 5 s bound inside
+the 10 s budget, two lost reads spent the whole wait while a four-voter shard
+with three survivors was still electing, and a request through a node that
+does not hold the database was refused with `user store unavailable` after
+its leader was killed.
 
 **The two grant-voiding controls need no fallback, or any store lookup, at
 all.** A system role's identifier is always its canonical, deterministic

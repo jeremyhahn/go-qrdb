@@ -105,6 +105,7 @@ flags alone.
 | Per-database barrier on a database sharing the default store | refused |
 | Multicast discovery with no secret | the method does not run |
 | `raft.shard_id` at or above `shard.UserMin` (1000) in raft mode | validation error -- the node's own group sits below the user range, whose IDs the cluster issues to databases |
+| `observability.slow_sync_threshold` not in (0, 1m] or malformed (default `1s`) | `*ValidationError` on that field, from `Validate` and again from `ApplySlowSyncThreshold` on both boot paths. It is an observation threshold for the stall signal only, NOT a durability knob: quicraft keeps per-entry fsync with no tunable |
 
 ## Environment variables
 
@@ -120,6 +121,7 @@ Viper-bound, equivalent to their flags:
 | `QRDB_HOSTNAME` | `--hostname` |
 | `QRDB_SANS` | `--sans` |
 | `QRDB_SEAL_SHARE_TTL` | `seal.share_ttl` |
+| `QRDB_OBSERVABILITY_SLOW_SYNC_THRESHOLD` | `observability.slow_sync_threshold` |
 
 ## CLI flag to YAML mapping
 
@@ -180,7 +182,7 @@ the 0.18.0 message-receive-budget default change
 `mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `cors`,
 `databases` (with per-database `mysql`, `postgresql` and `sql.concurrency`),
 `embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`,
-`transport`, `import_session`, `mode`.
+`transport`, `import_session`, `observability`, `mode`.
 There is no `audit:` section (audit logging is always on) and no per-database
 etcd key (etcd is enabled through `qrdb database create --etcd`, not YAML).
 
@@ -205,7 +207,8 @@ Per-section detail also appears in the owning feature's folder — `seal` in
 [../multi-tenancy/](../multi-tenancy/), `embedding` and `rag` in
 [../embeddings/](../embeddings/) and [../rag/](../rag/), `audit` in
 [../audit/](../audit/), `discovery` in [../clustering/](../clustering/),
-`storage` and `raft.sm_storage` in [../storage-engines/](../storage-engines/).
+`storage` and `raft.sm_storage` in [../storage-engines/](../storage-engines/),
+`observability` in [../api-server/](../api-server/).
 
 ## Test strategy
 

@@ -334,7 +334,7 @@ func (s *PebbleStateMachine) SetTimeSeries(ts *timeseries.Storage) {
 // exactly the self-committing behaviour this state machine's time-series
 // support has always had.
 func (s *PebbleStateMachine) tsAutoCommit(fn func(storage.Batch) error) error {
-	batch := pebbleStorage.NewFromDB(s.db, true).Batch()
+	batch := pebbleStorage.NewFromDB(s.db, true, pebbleSyncs(s.dir)).Batch()
 	defer func() { _ = batch.Close() }()
 	if err := fn(batch); err != nil {
 		return err
@@ -387,7 +387,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// Create time-series storage if enabled. Uses the same PebbleDB
 	// instance so that TS data shares the same durability guarantees.
 	if s.enableTimeSeries && s.ts == nil {
-		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true))
+		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true, pebbleSyncs(initialDir)))
 		if tsErr != nil {
 			_ = db.Close()
 			s.db = nil

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -63,8 +64,8 @@ func TestLookupUser_NoFallbackGetsTheFullBudget(t *testing.T) {
 				t.Fatalf("lookup budget = %v, want more than the %v fail-over budget: nothing can answer in its place",
 					primary.budget, authLookupSyncTimeout)
 			}
-			if primary.budget > authLookupTimeout {
-				t.Fatalf("lookup budget = %v, want at most %v", primary.budget, authLookupTimeout)
+			if attempt := service.DefaultSettlePolicy.Attempt; primary.budget > attempt {
+				t.Fatalf("lookup budget = %v, want at most the %v attempt bound", primary.budget, attempt)
 			}
 		})
 	}

@@ -98,8 +98,77 @@ curl --cert client.pem --key client-key.pem --cacert ca.pem \
      https://db.example.com/metrics
 ```
 
-Prometheus format. Authenticated, but no specific permission — and present only
-when the server was configured with a metrics gatherer.
+Prometheus format. Authenticated, but no specific permission. Every server
+serves it — `qrdbd` and a node embedded through the Go SDK alike — unless the
+embedder passed `server.WithGatherer(nil)` to leave it off.
+
+A scrape carries the Go runtime and process series, qrdb's own `qrdb_*` series,
+and go-quicraft's `quicraft_*` series for the Raft groups this process hosts.
+The `quicraft_*` series are the process's aggregate over every Raft host in it;
+the per-shard ones carry a `shard_id` label.
+
+### Disk sync latency
+
+Two histograms answer "are my disks keeping up":
+
+| Metric | What one sample is |
+|---|---|
+| `quicraft_logdb_fsync_latency_seconds` | one fsync of the Raft write-ahead log |
+| `qrdb_storage_sync_duration_seconds{backend}` | one durable sync by a storage backend: a pebble write committed with sync (`backend="pebble"`), or one file or directory fsync (`backend="file"`) |
+
+A pebble database opened without per-write sync (the default for a standalone
+pebble database) records nothing under `pebble`: none of its writes is a sync.
+
+The other go-quicraft series:
+
+- Raft: `quicraft_raft_proposals_dropped_total{shard_id}`,
+  `quicraft_raft_elections_total{shard_id}`, `quicraft_raft_commit_batch_size`,
+  `quicraft_raft_proposal_latency_seconds`, `quicraft_raft_commit_latency_seconds`,
+  `quicraft_raft_apply_latency_seconds`, `quicraft_raft_read_index_latency_seconds`,
+  `quicraft_raft_proposal_batch_size`, `quicraft_raft_snapshots_total`,
+  `quicraft_raft_piggyback_commits_total`, `quicraft_metrics_per_shard_enabled`;
+- log storage: `quicraft_logdb_write_latency_seconds`,
+  `quicraft_logdb_compaction_latency_seconds`, `quicraft_logdb_write_bytes_total`;
+- transport: `quicraft_transport_send_latency_seconds`,
+  `quicraft_transport_messages_sent_total`, `quicraft_transport_messages_received_total`
+  (and their `_detailed_total` forms), `quicraft_transport_messages_dropped_total`,
+  `quicraft_transport_snapshots_sent_total`, `quicraft_transport_snapshots_received_total`,
+  `quicraft_transport_snapshots_rejected_total` and the snapshot byte counters;
+- security: `quicraft_security_unauthorized_messages_dropped_total`,
+  `quicraft_security_unauthorized_snapshots_dropped_total`.
+
+### Slow-sync warning
+
+A sync slower than one second logs one warning per sync, at `WARN`, whatever
+the scrape interval:
+
+```text
+level=WARN msg="slow storage sync" backend=file database=orders dir=<install-dir>/data/orders took=1.42s threshold=1s
+level=WARN msg="slow raft WAL fsync" wal_dir=<install-dir>/data/wal took=1.18s threshold=1s
+```
+
+`took` is the sync's duration and `threshold` the limit it crossed; `backend`,
+`database` and `dir` name the storage, `wal_dir` the write-ahead log.
+
+The threshold is `observability.slow_sync_threshold`, a Go duration. It
+defaults to one second, which is etcd's slow-fdatasync threshold. It must be
+greater than zero and at most one minute: `0`, a negative value or anything
+above `1m` stops the node at startup with a configuration error naming the
+key. It is an observation threshold for the stall signal only, NOT a
+durability knob: quicraft keeps per-entry fsync with no tunable. Lowering it
+makes the warning more sensitive and changes nothing about how data is
+written. It covers the Raft write-ahead log and every storage backend, on
+`qrdbd` and on a node embedded through the Go SDK.
+
+```yaml
+observability:
+  slow_sync_threshold: 1s
+```
+
+`QRDB_OBSERVABILITY_SLOW_SYNC_THRESHOLD=250ms` overrides the file.
+
+A steady stream of these warnings means the disk under that directory cannot
+keep up with the write rate; the histograms above show by how much.
 
 ## Extending the server
 
@@ -122,7 +191,8 @@ the binary lacks. `qrdb admin capabilities` distinguishes them.
 
 **A route 404s that you are sure exists.** Some routes are registered
 conditionally — `/v1/ca/bootstrap` only with a bootstrap certificate,
-`/metrics` only with a gatherer. An unregistered route is a 404, not a 501.
+`/metrics` unless the embedder turned it off. An unregistered route is a 404,
+not a 501.
 `/v1/barrier/enable-encryption` is *not* one of these: it is always
 registered, and refuses with a 501 (not a 404) when no encryption migrator is
 configured for the deployment (standalone mode) — see

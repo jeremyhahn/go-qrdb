@@ -2814,6 +2814,12 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	if cfg == nil {
 		return nil, &ConfigError{Field: "cfg", Message: "must not be nil"}
 	}
+	// The slow-sync threshold every Raft WAL and storage backend observer
+	// applies is process-wide, like the metrics registry: set it before any
+	// of them opens.
+	if err := cfg.Observability.ApplySlowSyncThreshold(); err != nil {
+		return nil, err
+	}
 
 	nOpts := &nodeOptions{}
 	for _, o := range nodeOpts {
@@ -3029,6 +3035,12 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 
 	if cfg == nil {
 		return nil, &ConfigError{Field: "cfg", Message: "must not be nil"}
+	}
+	// The slow-sync threshold every Raft WAL and storage backend observer
+	// applies is process-wide, like the metrics registry: set it before any
+	// of them opens.
+	if err := cfg.Observability.ApplySlowSyncThreshold(); err != nil {
+		return nil, err
 	}
 	if len(members) == 0 {
 		return nil, &ConfigError{Field: "members", Message: "must not be empty"}

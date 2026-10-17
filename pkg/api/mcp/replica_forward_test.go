@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,21 +52,37 @@ type mcpTarget struct {
 	srv      *Server
 	raftAddr string
 	calls    atomic.Int32
-	answer   func(ctx context.Context) error
+	answer   atomic.Pointer[func(ctx context.Context) error]
 
 	mu   sync.Mutex
 	seen []string
 }
 
-func startMCPTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *mcpTarget {
+// setAnswer sets how the target answers. The serve goroutine reads it, so a
+// test may change it while the target serves.
+func (mt *mcpTarget) setAnswer(answer func(context.Context) error) { mt.answer.Store(&answer) }
+
+func startMCPTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string, opts ...mcpTargetOption) *mcpTarget {
 	t.Helper()
-	return startMCPTargetTLS(t, ca.TLS(t, nodeID), raftAddr)
+	return startMCPTargetTLS(t, ca.TLS(t, nodeID), raftAddr, opts...)
+}
+
+// mcpTargetOption configures an mcpTarget before its server starts, so
+// the handler reads the field without a race.
+type mcpTargetOption func(*mcpTarget)
+
+// withMCPAnswer sets the target's answer at construction.
+func withMCPAnswer(answer func(context.Context) error) mcpTargetOption {
+	return func(mt *mcpTarget) { mt.setAnswer(answer) }
 }
 
 // startMCPTargetTLS starts a target serving tlsCfg.
-func startMCPTargetTLS(t *testing.T, tlsCfg *tls.Config, raftAddr string) *mcpTarget {
+func startMCPTargetTLS(t *testing.T, tlsCfg *tls.Config, raftAddr string, opts ...mcpTargetOption) *mcpTarget {
 	t.Helper()
 	mt := &mcpTarget{raftAddr: raftAddr}
+	for _, opt := range opts {
+		opt(mt)
+	}
 	kv := newMockKVService()
 	kv.putFn = func(ctx context.Context, _ string, _ []byte) error {
 		mt.calls.Add(1)
@@ -76,8 +93,8 @@ func startMCPTargetTLS(t *testing.T, tlsCfg *tls.Config, raftAddr string) *mcpTa
 		mt.mu.Lock()
 		mt.seen = append(mt.seen, subject)
 		mt.mu.Unlock()
-		if mt.answer != nil {
-			return mt.answer(ctx)
+		if answer := mt.answer.Load(); answer != nil {
+			return (*answer)(ctx)
 		}
 		return nil
 	}
@@ -130,6 +147,35 @@ func newMCPFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Dura
 	t.Cleanup(c.srv.Stop)
 	c.client = dialMCP(t, c.srv.Addr(), &http.Client{Transport: &http.Transport{TLSClientConfig: ca.TLS(t, "")}})
 	return c
+}
+
+// awaitConnected leaves the forwarder holding an idle connection to target,
+// so a forward to it starts with its session rather than a handshake. A
+// handshake slower than the connect budget leaves the target unreachable,
+// with nothing sent, and the forward rightly goes on to the next replica.
+func (c *mcpFwdCluster) awaitConnected(t *testing.T, target *mcpTarget) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+target.endpoint()+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: c.srv.forwarder.base}
+	// Each attempt has the same connect budget a forward has; a loaded
+	// machine may need more than one.
+	for {
+		resp, err := client.Do(req)
+		if err == nil {
+			// A body read to EOF has returned the connection to the pool.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the forwarder opened no connection to %s: %v", target.endpoint(), err)
+		}
+	}
 }
 
 // endpoint is the target's MCP endpoint as a member record names it; a
@@ -385,9 +431,9 @@ func TestReplicaForwardMCP_NotLeaderRetriesTheNamedLeader(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startMCPTarget(t, ca, "node-1", "raft-b")
 	cc := startMCPTarget(t, ca, "node-2", "raft-c")
-	b.answer = func(context.Context) error {
+	b.setAnswer(func(context.Context) error {
 		return &service.NotLeaderError{ShardID: 42, LeaderID: 2, LeaderAddress: "raft-c"}
-	}
+	})
 	c := newMCPFwdCluster(t, ca, 5*time.Second, b, cc)
 
 	if res := putCall(t, c.client); res.IsError || forwardedTo(res) != "2" {
@@ -411,12 +457,15 @@ func TestReplicaForwardMCP_UnreachableRetriesTheNextReplica(t *testing.T) {
 
 func TestReplicaForwardMCP_AFailureAfterSendingIsNotRetried(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
-	b := startMCPTarget(t, ca, "node-1", "raft-b")
+	b := startMCPTarget(t, ca, "node-1", "raft-b", withMCPAnswer(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }))
 	cc := startMCPTarget(t, ca, "node-2", "raft-c")
-	b.answer = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
 	c := newMCPFwdCluster(t, ca, 500*time.Millisecond, b, cc)
+	c.awaitConnected(t, b)
 
 	res := putCall(t, c.client)
+	if b.calls.Load() != 1 {
+		t.Fatalf("the forward never reached the target (result %+v)", res)
+	}
 	p, ok := wire.DecodeErrorPayload(res.StructuredContent)
 	if !res.IsError || !ok || p.Reason == replicaforward.ReasonNotAReplica {
 		t.Fatalf("result %+v (%+v); want the failure, not the refusal", res, p)
@@ -429,7 +478,7 @@ func TestReplicaForwardMCP_AFailureAfterSendingIsNotRetried(t *testing.T) {
 func TestReplicaForwardMCP_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startMCPTarget(t, ca, "node-1", "raft-b")
-	b.answer = func(context.Context) error { return &service.KeyNotFoundError{Key: "k1"} }
+	b.setAnswer(func(context.Context) error { return &service.KeyNotFoundError{Key: "k1"} })
 	c := newMCPFwdCluster(t, ca, 5*time.Second, b)
 
 	res := putCall(t, c.client)
@@ -445,7 +494,7 @@ func TestReplicaForwardMCP_AReconnectingReplicaIsWaitedOn(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	refusing, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
 	b := startMCPTargetTLS(t, refusing, "raft-b")
-	b.answer = func(context.Context) error { return &service.KeyNotFoundError{Key: "k1"} }
+	b.setAnswer(func(context.Context) error { return &service.KeyNotFoundError{Key: "k1"} })
 	c := newMCPFwdCluster(t, ca, 5*time.Second, b)
 
 	res := putCall(t, c.client)
@@ -467,7 +516,8 @@ func TestReplicaForwardMCP_EveryReplicaRefusingIsTheRefusal(t *testing.T) {
 	}
 	b := startMCPTarget(t, ca, "node-1", "raft-b")
 	cc := startMCPTarget(t, ca, "node-2", "raft-c")
-	b.answer, cc.answer = refuse, refuse
+	b.setAnswer(refuse)
+	cc.setAnswer(refuse)
 	c := newMCPFwdCluster(t, ca, 5*time.Second, b, cc)
 	if got := mcpRefusal(t, putCall(t, c.client)); got.NodeID != "node-a" || len(got.Replicas) != 2 {
 		t.Fatalf("refusal = %+v; want the ingress node's, with its replica set", got)

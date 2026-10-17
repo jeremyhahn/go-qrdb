@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"log/slog"
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statedigest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -68,6 +70,13 @@ type MVCCStateMachine struct {
 	// does not wait for the OS to flush data to disk. This trades durability
 	// for performance and is appropriate only for testing environments.
 	noSync bool
+}
+
+// pebbleSyncs times the synced commits of a storage wrapper over the state
+// machine database in dir, whose path names the shard in a slow-sync
+// warning.
+func pebbleSyncs(dir string) pebbleStorage.Option {
+	return pebbleStorage.WithSyncObserver(syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", dir))))
 }
 
 // NewMVCCStateMachine creates a new MVCCStateMachine with the given PebbleDB
@@ -190,7 +199,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	// syncWrites=true for durability by default; noSync=true disables fsync
 	// (suitable for testing where fsync latency causes proposal timeouts).
 	syncWrites := !s.noSync
-	s.storage = pebbleStorage.NewFromDB(db, syncWrites)
+	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir))
 
 	// Build engine options from pre-Open configuration.
 	var engineOpts []engine.MVCCOption

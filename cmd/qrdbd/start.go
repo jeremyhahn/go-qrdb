@@ -135,6 +135,9 @@ type startFlags struct {
 	// (docs/replica-forwarding).
 	replicaForwarding        bool
 	replicaForwardingTimeout string
+	// observability is the config file's observability section; no flag
+	// moves it. configureObservability applies it.
+	observability qrdbconfig.ObservabilityConfig
 	// host is the bind host every API listener uses (REST/HTTP3, gRPC,
 	// QUIC, MCP, MySQL, PgSQL). It reaches them through buildServerConfig
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
@@ -491,6 +494,27 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 	return validateCfg.Validate()
 }
 
+// configureObservability sets the process-wide signals start resolves
+// before anything else runs: the global logger, early, so every pre-host log
+// line (auto-generated replica ID, etc.) uses the requested format and
+// level; and the slow-sync threshold every Raft WAL and storage backend
+// observer applies, before any of them opens.
+func configureObservability(f *startFlags) error {
+	logCfg := quicraftconfig.LogConfig{
+		Format: quicraftconfig.LogFormat(f.logFormat),
+		Level:  quicraftconfig.LogLevel(f.logLevel),
+	}
+	logCfg.SetDefaults()
+	if f.debugRaft {
+		logCfg.Level = quicraftconfig.LogLevelDebug
+	}
+	if err := logCfg.Validate(); err != nil {
+		return err
+	}
+	quicraftconfig.SetDefaultLogger(logCfg)
+	return f.observability.ApplySlowSyncThreshold()
+}
+
 // compiledProtocolListeners lists the wire protocols --host actually binds
 // on this binary: the four tier-1 transports every build carries, plus
 // MySQL and/or PgSQL only when their build tag compiled a listener for
@@ -536,21 +560,9 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 				return err
 			}
 
-			// Configure the global logger early so all pre-host log
-			// lines (auto-generated replica ID, etc.) use the
-			// requested format and level.
-			logCfg := quicraftconfig.LogConfig{
-				Format: quicraftconfig.LogFormat(f.logFormat),
-				Level:  quicraftconfig.LogLevel(f.logLevel),
-			}
-			logCfg.SetDefaults()
-			if f.debugRaft {
-				logCfg.Level = quicraftconfig.LogLevelDebug
-			}
-			if err := logCfg.Validate(); err != nil {
+			if err := configureObservability(f); err != nil {
 				return err
 			}
-			quicraftconfig.SetDefaultLogger(logCfg)
 
 			if err := resolveAutoConfig(cmd, f); err != nil {
 				return err
@@ -762,6 +774,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if !cmd.Flags().Changed("replica-forwarding-timeout") && cfg.ReplicaForwarding.Timeout != "" {
 		f.replicaForwardingTimeout = cfg.ReplicaForwarding.Timeout
 	}
+	f.observability = cfg.Observability
 	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
 		f.advertiseHost = cfg.Server.AdvertiseHost
 	}

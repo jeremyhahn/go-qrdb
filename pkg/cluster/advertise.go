@@ -210,6 +210,34 @@ func WithAdvertiseLogger(l *slog.Logger) AdvertiseOption {
 	}
 }
 
+// Settler runs attempt until it answers with anything but its shard electing
+// a leader or moving it, ctx ends, or the settler's own window passes, and
+// returns the last answer. A registration at boot lands on a system shard a
+// restarting peer may just have taken the leader from, and the election's
+// errors say nothing about the registration itself. The composer supplies
+// one built on service.SettleLeadership, whose classification
+// (service.LeadershipTransient) this package cannot import: pkg/service
+// imports it. Each attempt runs on the context the settler hands it, which
+// may end before ctx: a write no leader ever answers is abandoned for a fresh
+// attempt rather than holding the whole window.
+type Settler func(ctx context.Context, attempt func(context.Context) error) error
+
+// settleOnce is the Settler of an Advertiser given none: one attempt, whose
+// answer stands.
+func settleOnce(ctx context.Context, attempt func(context.Context) error) error {
+	return attempt(ctx)
+}
+
+// WithAdvertiseSettler has Register wait out an election through s. A nil s
+// is ignored, leaving one attempt.
+func WithAdvertiseSettler(s Settler) AdvertiseOption {
+	return func(a *Advertiser) {
+		if s != nil {
+			a.settle = s
+		}
+	}
+}
+
 // SealProbe reports whether the node barrier is sealed. While it is, the
 // node's replicated log cannot take an entry, and an entry proposed into it
 // halts the shard, so a write that is not a client's request must not be
@@ -244,6 +272,7 @@ type Advertiser struct {
 	cfg    AdvertiseConfig
 	logger *slog.Logger
 	seal   SealProbe
+	settle Settler
 
 	mu        sync.Mutex
 	started   bool
@@ -268,6 +297,7 @@ func NewAdvertiser(store MembershipStore, self Member, cfg AdvertiseConfig, opts
 		self:   self,
 		cfg:    cfg.withDefaults(),
 		logger: slog.Default(),
+		settle: settleOnce,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -332,6 +362,14 @@ func (a *Advertiser) startableLocked() error {
 // Register writes the local node's descriptor once, without starting the
 // refresh loop. MembershipManager calls it directly so it can roll back a
 // failed start before any goroutine exists.
+//
+// The write waits out its shard electing a leader through the Settler
+// (WithAdvertiseSettler); any other error, and an election that outlasts the
+// settler, stands. Retrying a write whose outcome is unknown -- one a leader
+// stepping down had already accepted -- cannot register the node twice: the
+// record is the one key of this node's ID, and a retry writes it the same
+// bytes again. A retry that holds a fresh lease rebinds the key to it, so the
+// earlier lease's revocation or expiry no longer removes the record.
 func (a *Advertiser) Register(ctx context.Context) error {
 	if a.sealed() {
 		return &NodeSealedError{Op: "register"}
@@ -340,7 +378,9 @@ func (a *Advertiser) Register(ctx context.Context) error {
 	if err != nil {
 		return &MembershipCauseError{Reason: "failed to marshal self", Cause: err}
 	}
-	if err := a.store.PutMember(ctx, a.self.NodeID, data, a.cfg.LeaseTTL); err != nil {
+	if err := a.settle(ctx, func(attemptCtx context.Context) error {
+		return a.store.PutMember(attemptCtx, a.self.NodeID, data, a.cfg.LeaseTTL)
+	}); err != nil {
 		return &MembershipCauseError{Reason: "failed to register self", Cause: err}
 	}
 	a.logger.Info("registered cluster member",

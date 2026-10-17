@@ -23,13 +23,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // hangingRoleService never answers on its own: ResolvePermissions blocks
 // until the context passed to it is done, then reports the context's own
 // error. It is the faithful double for a stalled ReadIndex pipeline -- the
-// condition resolveSyncTimeout and resolveTimeout exist to bound -- rather than one that
+// condition resolveSyncTimeout and the settle attempt bound exist for -- rather than one that
 // returns an error immediately, which would never exercise the timeout at
 // all. The embedded nil role.RoleServicer panics if any other method is
 // called, which no path under test should reach.
@@ -54,7 +55,7 @@ func (hangingRoleService) ResolvePermissions(ctx context.Context, _ []string) ([
 // deadline of its own, so the test can only pass if resolvePermissionSet
 // applies its OWN bound.
 func TestResolvePermissionSet_BoundsThePrimaryResolveForANonSystemTenant(t *testing.T) {
-	// Waits out resolveTimeout; parallel so the package pays it once.
+	// Waits out the settle policy's attempt bound; parallel so the package pays it once.
 	t.Parallel()
 	identity := &auth.Identity{Subject: "reader", TenantID: "acme", Roles: []string{"acme-reader-role"}}
 
@@ -82,7 +83,7 @@ func TestResolvePermissionSet_BoundsThePrimaryResolveForANonSystemTenant(t *test
 // a.rolesFallback != nil, which is nil here) -- the budget is no longer tied
 // to fallback availability at all.
 func TestResolvePermissionSet_SystemTenantStillBoundedWithoutFallback(t *testing.T) {
-	// Waits out resolveTimeout; parallel so the package pays it once.
+	// Waits out the settle policy's attempt bound; parallel so the package pays it once.
 	t.Parallel()
 	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"admin"}}
 
@@ -130,9 +131,9 @@ func TestResolvePermissionSet_BudgetFollowsTheFallback(t *testing.T) {
 		fallback bool
 		min, max time.Duration
 	}{
-		"non-system tenant, no fallback":               {tenantID: "acme", min: resolveSyncTimeout, max: resolveTimeout},
-		"non-system tenant, fallback holds another":    {tenantID: "acme", fallback: true, min: resolveSyncTimeout, max: resolveTimeout},
-		"system tenant, no fallback configured":        {tenantID: tenantid.System, min: resolveSyncTimeout, max: resolveTimeout},
+		"non-system tenant, no fallback":               {tenantID: "acme", min: resolveSyncTimeout, max: service.DefaultSettlePolicy.Attempt},
+		"non-system tenant, fallback holds another":    {tenantID: "acme", fallback: true, min: resolveSyncTimeout, max: service.DefaultSettlePolicy.Attempt},
+		"system tenant, no fallback configured":        {tenantID: tenantid.System, min: resolveSyncTimeout, max: service.DefaultSettlePolicy.Attempt},
 		"system tenant, fallback answers in its place": {tenantID: tenantid.System, fallback: true, max: resolveSyncTimeout},
 	} {
 		t.Run(name, func(t *testing.T) {

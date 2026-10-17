@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -118,6 +119,10 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 	host, err := quicraft.NewHost(hostCfg,
 		quicraft.WithoutTransport(),
 		quicraft.WithBarrier(tb.Barrier().EpochBarrier()),
+		quicraft.WithMetrics(database.NewRaftMetrics(
+			syncwatch.WithLogger(logger),
+			syncwatch.WithAttrs(slog.String("tenant", tenantID), slog.String("wal_dir", hostCfg.WALDir)),
+		)),
 	)
 	if err != nil {
 		return nil, &TenantHostError{TenantID: tenantID, Op: "new-host", Err: err}

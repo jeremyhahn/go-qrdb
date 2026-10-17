@@ -59,7 +59,7 @@ func TestClusterFault_PartitionIsolatesLeader(t *testing.T) {
 
 	old, term := c.leader(t, []int{0, 1, 2}, 0, faultRecoveryTimeout)
 	majority := c.others(old)
-	c.isolate(old)
+	c.isolate(t, old)
 	cut := time.Now()
 
 	// Writes through the isolated leader, issued while it still believes it

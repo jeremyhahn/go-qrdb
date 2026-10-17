@@ -22,7 +22,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest"
 )
 
 // encryptingEpochBarrier is an initialized barrier under a software strategy:
@@ -66,10 +69,10 @@ func TestNewRaftWAL_ChoosesTheAcceptedPosture(t *testing.T) {
 		options   int
 		multiplex bool
 	}{
-		{"seal disabled", func(*testing.T) *seal.EpochBarrier { return nil }, false, WALFormatPlaintext, 1, false},
-		{"single node, encrypting", encryptingEpochBarrier, true, WALFormatBarrier, 1, false},
-		{"cluster, plaintext-mode barrier", newInitializedEpochBarrier, false, WALFormatBarrier, 1, false},
-		{"cluster, encrypting", encryptingEpochBarrier, false, WALFormatBarrier, 3, true},
+		{"seal disabled", func(*testing.T) *seal.EpochBarrier { return nil }, false, WALFormatPlaintext, 2, false},
+		{"single node, encrypting", encryptingEpochBarrier, true, WALFormatBarrier, 2, false},
+		{"cluster, plaintext-mode barrier", newInitializedEpochBarrier, false, WALFormatBarrier, 2, false},
+		{"cluster, encrypting", encryptingEpochBarrier, false, WALFormatBarrier, 4, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -82,10 +85,45 @@ func TestNewRaftWAL_ChoosesTheAcceptedPosture(t *testing.T) {
 				t.Fatalf("got format %s, %d options, multiplex %v; want %s, %d, %v",
 					wal.Format, len(wal.Options), wal.Multiplex != nil, c.format, c.options, c.multiplex)
 			}
+			if wal.Metrics == nil {
+				t.Fatal("no metrics collector: the host would report to nothing /metrics serves")
+			}
 			if got := readMarker(t, dir); got != c.format {
 				t.Fatalf("marker = %q, want %q", got, c.format)
 			}
 		})
+	}
+}
+
+// quicraft hands its collector only to a WAL it opens itself; the shared WAL
+// under the multiplex is opened here, so its fsyncs reach /metrics only if
+// NewRaftWAL passes the collector to waldb.Open.
+func TestNewRaftWAL_MultiplexSharedWALReportsFsyncs(t *testing.T) {
+	const fsyncFamily = "quicraft_logdb_fsync_latency_seconds"
+	wal, err := NewRaftWAL(RaftWALConfig{Dir: t.TempDir(), SystemBarrier: encryptingEpochBarrier(t), UnmarkedFormat: WALFormatBarrier})
+	if err != nil {
+		t.Fatalf("NewRaftWAL: %v", err)
+	}
+	defer func() { _ = wal.Close() }()
+	if wal.Multiplex == nil {
+		t.Fatal("an encrypting cluster WAL did not build the multiplex")
+	}
+	before, _ := syncwatchtest.HistogramSample(t, SharedRaftMetrics().Registry, fsyncFamily, "", "")
+
+	if err := wal.Multiplex.SaveBootstrap(1, 1, logdb.Bootstrap{Addresses: map[uint64]string{1: "127.0.0.1:1"}, Type: 7}); err != nil {
+		t.Fatalf("SaveBootstrap: %v", err)
+	}
+	if err := wal.Multiplex.SaveState([]logdb.Update{{
+		ShardID: 1, ReplicaID: 1,
+		State:   logdb.State{Term: 1, Vote: 1, Commit: 1},
+		Entries: []logdb.Entry{{Index: 1, Term: 1, Cmd: []byte("fsync-me")}},
+	}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	after, _ := syncwatchtest.HistogramSample(t, SharedRaftMetrics().Registry, fsyncFamily, "", "")
+	if after <= before {
+		t.Fatalf("%s sample count %d -> %d: the shared WAL's fsync was not observed", fsyncFamily, before, after)
 	}
 }
 

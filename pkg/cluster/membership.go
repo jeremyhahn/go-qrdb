@@ -227,6 +227,15 @@ func WithMembershipSealProbe(p SealProbe) MembershipOption {
 	}
 }
 
+// WithMembershipSettler hands s to the manager's advertiser (see
+// WithAdvertiseSettler), so the local node's registration waits out the
+// system shard electing a leader rather than failing the start.
+func WithMembershipSettler(s Settler) MembershipOption {
+	return func(m *MembershipManager) {
+		m.settle = s
+	}
+}
+
 // MembershipManager maintains a node's cluster membership registration and,
 // when a Reconfigurer is supplied and the local node is the leader, reconciles
 // the Raft group as members join and leave. It is built on a MembershipStore
@@ -244,6 +253,7 @@ type MembershipManager struct {
 	cfg      MembershipConfig
 	logger   *slog.Logger
 	seal     SealProbe
+	settle   Settler
 
 	// advertiser owns the local node's registration: writing the Member
 	// descriptor (Raft address + advertised API endpoints) and refreshing its
@@ -330,7 +340,7 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 	advertiser, err := NewAdvertiser(m.store, m.self, AdvertiseConfig{
 		LeaseTTL:          m.cfg.LeaseTTL,
 		KeepAliveInterval: m.cfg.KeepAliveInterval,
-	}, WithAdvertiseLogger(m.logger), WithAdvertiseSealProbe(m.seal))
+	}, WithAdvertiseLogger(m.logger), WithAdvertiseSealProbe(m.seal), WithAdvertiseSettler(m.settle))
 	if err != nil {
 		m.abortStart(runCtx)
 		return err

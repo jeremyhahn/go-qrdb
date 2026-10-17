@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -238,8 +239,36 @@ type RaftBackendFactory struct {
 	// such hosts always fall back to the shared system-barrier WAL.
 	walMux *database.MultiplexLogDB
 
+	// mu guards shards, starting, pendingRestore and generation. It is never
+	// held across a Raft read or propose, nor across a wait for an election:
+	// a shard start resolves its placement and its members' identities with
+	// mu released (planStart), since those read the system shard, and waits
+	// for the shard to serve with mu released (startPlanned), since that
+	// lasts as long as the shard's election. A system shard that stalls, or
+	// a shard whose quorum has not formed, must not stall every other
+	// database's resolve and stop on this node behind it.
 	mu     sync.Mutex
 	shards map[raftShardKey]*raftShard
+
+	// starting holds the starts in flight: a shard started on the host and
+	// waiting to serve, cached in shards only once it does. A caller that
+	// would have queued behind the start on mu waits on its ready channel
+	// instead (awaitStartsLocked), so what each caller observes is what it
+	// observed when the start held mu throughout.
+	starting map[raftShardKey]*startingShard
+
+	// generation counts the shards removed from shards (forgetLocked,
+	// CloseAll). A start planned with mu released re-checks it before
+	// starting: a change means another pass stopped a shard while the plan
+	// read, so the plan may rest on a placement that no longer holds and is
+	// made again.
+	generation uint64
+
+	// identitiesOverride, when non-nil, replaces service.MemberIdentities
+	// in planStart. It is a TEST-ONLY seam, used to hold the system-shard
+	// read a start makes and show no lock is held across it. Production
+	// leaves it nil.
+	identitiesOverride func(ctx context.Context, shardID, replicaID uint64, join bool, peers map[uint64]string) (map[uint64]string, error)
 
 	// pendingRestore tracks shards evicted from shards by StopForRestore that
 	// have not yet been restarted by RestartAfterRestore, keyed by shard ID
@@ -416,17 +445,18 @@ func NewRaftBackendFactoryFromManager(
 		&managerRaftInfoSource{manager: manager}, logger, opts...)
 }
 
-// refuseIfDroppingLocked re-checks the replicated placement fence for
-// (tenantID, db) against a shard already known to be cached (rs), and is
-// what Services' cache-hit branch and RefuseIfDropping both delegate to.
-// The caller MUST already hold f.mu.
+// refusalForCached re-checks the replicated placement fence for (tenantID,
+// db) against a shard already known to be cached (rs), and is what Services'
+// cache-hit branch and RefuseIfDropping both delegate to. pInfo, infoOK are
+// the placement entry the caller read for the database with f.mu released:
+// the read is a Raft read of the system shard.
 //
 // pInfo, infoOK are re-read from the info source on every call rather than
 // cached on rs, because the whole point is to observe a fence set (or an
 // entry deleted) AFTER rs was populated (go-qrdb#482).
 //
-// A shard ID mismatch (the stale-incarnation case cachedServicesLocked
-// evicts on) is deliberately NOT checked here. RefuseIfDropping, this
+// A shard ID mismatch (the stale-incarnation case cachedServices evicts
+// on) is deliberately NOT checked here. RefuseIfDropping, this
 // function's other caller, re-reads f.shards fresh on every call (see its
 // own comment), so rs by the time it gets here is already whatever the
 // cache currently holds -- not a shard pinned once when some earlier handle
@@ -440,11 +470,7 @@ func NewRaftBackendFactoryFromManager(
 // scenario RefuseIfDropping was written to guard against cannot occur on
 // this path at all. See the analogous, and reachable, fix on the
 // shared-store side instead (restServiceRegistry.refuseIfDropping).
-func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raftShard) error {
-	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
-	if err != nil {
-		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
-	}
+func refusalForCached(db string, rs *raftShard, pInfo *placement.Placement, infoOK bool) error {
 	if infoOK {
 		return refusalFromPlacement(db, pInfo)
 	}
@@ -466,8 +492,9 @@ func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raf
 	return nil
 }
 
-// cachedServicesLocked decides what a cached shard may serve. The caller
-// MUST hold f.mu.
+// cachedServices decides what a cached shard may serve. It reads the
+// database's placement, a Raft read of the system shard, so the caller MUST
+// NOT hold f.mu: it takes f.mu itself only to evict.
 //
 // A shard is cached by (tenant, database) NAME, but a database dropped and
 // created again under that name is a different database on a different
@@ -476,9 +503,10 @@ func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raf
 // against the current placement on every call:
 //
 //   - placement names a DIFFERENT shard: the cached one belongs to a dropped
-//     incarnation. It is removed from the cache and reported stale, and the
-//     caller retires it (stop, purge its state-machine directory) and
-//     resolves the current shard instead. Serving it would route the new
+//     incarnation. It is removed from the cache and retired here (stop, purge
+//     its state-machine directory), and again tells the caller to resolve
+//     the current shard instead. If another caller removed it during the
+//     read, that caller retires it. Serving it would route the new
 //     database's writes into the old one; fencing through it would unfence
 //     a shard being torn down.
 //   - placement is GONE for a shard resolved through placement: its database
@@ -490,27 +518,51 @@ func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raf
 //   - otherwise the cached services are served, after Services re-consults
 //     the replicated drop marker (a drop that started after the shard was
 //     cached).
-func (f *RaftBackendFactory) cachedServicesLocked(tenantID, db string, rs *raftShard, honorFence bool) (svcs *DatabaseServices, stale bool, err error) {
+func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, honorFence bool) (svcs *DatabaseServices, again bool, err error) {
+	tenantID, db := key.tenantID, key.database
 	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
 	if err != nil {
 		return nil, false, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
 	}
 	switch {
 	case infoOK && pInfo.ShardID != rs.shardID:
-		delete(f.shards, raftShardKey{tenantID: tenantID, database: db})
-		f.logger.Info("evicting a dropped incarnation's shard; the database was created again on a new shard",
-			slog.String("tenant", tenantID), slog.String("database", db),
-			slog.Uint64("old_shard_id", rs.shardID), slog.Uint64("shard_id", pInfo.ShardID))
+		if f.forgetIfCached(key, rs) {
+			f.logger.Info("evicting a dropped incarnation's shard; the database was created again on a new shard",
+				slog.String("tenant", tenantID), slog.String("database", db),
+				slog.Uint64("old_shard_id", rs.shardID), slog.Uint64("shard_id", pInfo.ShardID))
+			f.retireShard(rs)
+		}
 		return nil, true, nil
 	case !infoOK && rs.hadPlacement && !honorFence:
 		return nil, false, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrRaftDatabaseUnknown}
 	}
 	if honorFence {
-		if err := f.refuseIfDroppingLocked(tenantID, db, rs); err != nil {
+		if err := refusalForCached(db, rs, pInfo, infoOK); err != nil {
 			return nil, false, err
 		}
 	}
 	return rs.services, false, nil
+}
+
+// forgetLocked drops key's shard from the cache and advances generation, so
+// a start planned before the removal is planned again. The caller MUST hold
+// f.mu.
+func (f *RaftBackendFactory) forgetLocked(key raftShardKey) {
+	delete(f.shards, key)
+	f.generation++
+}
+
+// forgetIfCached drops rs from the cache if the cache still holds it under
+// key, and reports whether it did: a decision made on a read taken with f.mu
+// released holds only for the shard it was made on.
+func (f *RaftBackendFactory) forgetIfCached(key raftShardKey, rs *raftShard) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.shards[key] != rs {
+		return false
+	}
+	f.forgetLocked(key)
+	return true
 }
 
 // retireShard stops a shard evicted from the cache and removes its own
@@ -556,12 +608,16 @@ func (f *RaftBackendFactory) RefuseIfDropping(tenantID, db string) error {
 		return nil
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	f.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	return f.refuseIfDroppingLocked(tenantID, db, rs)
+	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
+	if err != nil {
+		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
+	}
+	return refusalForCached(db, rs, pInfo, infoOK)
 }
 
 // Services returns the data-plane service set backing the dedicated raft
@@ -601,36 +657,100 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 	}
 
 	key := raftShardKey{tenantID: tenantID, database: db}
-	f.mu.Lock()
+	// f.mu is taken only to read and change the cache, never across a Raft
+	// read: each pass snapshots the cache, reads the system shard with f.mu
+	// released, and acts only if the cache still says what the read was
+	// decided on. A pass whose snapshot went stale makes way for the next.
+	forceJoin := false
 	for {
-		rs, ok := f.shards[key]
-		if !ok {
-			break
-		}
-		services, stale, err := f.cachedServicesLocked(tenantID, db, rs, honorFence)
-		if !stale {
-			f.mu.Unlock()
-			return services, err
-		}
-		// The cached shard belonged to a dropped incarnation of the name
-		// and is already out of the cache. It is stopped and purged with
-		// f.mu RELEASED -- stopping a shard waits on the Raft host -- and
-		// the cache is consulted again, in case another caller started
-		// the current incarnation's shard meanwhile.
-		f.mu.Unlock()
-		f.retireShard(rs)
 		f.mu.Lock()
-	}
-	defer f.mu.Unlock()
-	// Do not lazily rebuild any shard whose TENANT barrier is mid-recycle: it would
-	// open the stale (pre-migration) barrier against data being re-encrypted and
-	// cache the broken shard. Guard is tenant-granular (keyed by tenantID) so a db
-	// that was not yet started when the recycle began is also blocked. The caller
-	// retries once the migration completes.
-	if _, migrating := f.migrating.Load(tenantID); migrating {
-		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrShardMigrationInProgress}
-	}
+		rs, cached := f.shards[key]
+		inFlight := f.starting[key]
+		generation := f.generation
+		f.mu.Unlock()
 
+		switch {
+		case cached:
+			services, again, err := f.cachedServices(key, rs, honorFence)
+			if !again {
+				return services, err
+			}
+		case inFlight != nil:
+			// Another caller's start of this shard is waiting for it to
+			// serve. The next pass serves the shard it cached or, if that
+			// start failed, makes a start of its own -- what this caller did
+			// when it queued behind the start on f.mu, ctx or no ctx.
+			<-inFlight.ready
+			continue
+		default:
+			// Do not lazily rebuild any shard whose TENANT barrier is mid-recycle:
+			// it would open the stale (pre-migration) barrier against data being
+			// re-encrypted and cache the broken shard. Guard is tenant-granular
+			// (keyed by tenantID) so a db that was not yet started when the
+			// recycle began is also blocked. The caller retries once the
+			// migration completes.
+			if _, migrating := f.migrating.Load(tenantID); migrating {
+				return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrShardMigrationInProgress}
+			}
+			plan, err := f.planStart(ctx, tenantID, db, honorFence, forceJoin)
+			if err != nil {
+				return nil, err
+			}
+			rs, again, err := f.startPlanned(ctx, key, plan, generation)
+			switch {
+			case again:
+			case err == nil:
+				return rs.services, nil
+			case !forceJoin && plan.isObserver && !plan.join && errors.Is(err, quicraft.ErrNonVotingRoleInMembers):
+				// An ObserverReady replica with NO persisted shard state: its
+				// prior join bootstrap was wiped (demotion purge racing a
+				// re-add, an operator clearing the volume) while the placement
+				// still records the post-bootstrap state. Starting it
+				// join=false would seed a fresh voting membership naming an
+				// observer, which go-quicraft rejects on first start. Re-enter
+				// the join bootstrap window instead — the replica has no data,
+				// so streaming the leader's snapshot again is exactly the
+				// recovery it needs.
+				f.logger.Warn("observer replica has no persisted state; re-entering join bootstrap window",
+					slog.String("tenant", tenantID),
+					slog.String("database", db),
+					slog.Uint64("shard_id", plan.shardID),
+					slog.Uint64("replica_id", plan.replicaID))
+				forceJoin = true
+			default:
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: err}
+		}
+	}
+}
+
+// shardStartPlan is what starting a database's shard was decided on: the
+// barrier, placement and member identities planStart read with f.mu
+// released. startPlanned acts on it only while the cache still agrees.
+type shardStartPlan struct {
+	tenantID     string
+	db           string
+	shardID      uint64
+	dataDir      string
+	tb           *seal.TenantBarrier
+	replicaID    uint64
+	join         bool
+	isObserver   bool
+	members      map[uint64]string
+	peers        map[uint64]string
+	identities   map[uint64]string
+	dedicatedWAL bool
+	hadPlacement bool
+}
+
+// planStart resolves everything starting (tenantID, db)'s shard needs. The
+// placement entry and the members' identities are Raft reads of the system
+// shard, so the caller MUST NOT hold f.mu. forceJoin re-enters the join
+// bootstrap window for an ObserverReady replica that has no persisted state.
+func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string, honorFence, forceJoin bool) (*shardStartPlan, error) {
 	tb, err := f.barrierReg.GetTenant(tenantID)
 	if err != nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "barrier-lookup", Err: err}
@@ -739,9 +859,20 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 		dedicatedWAL = f.dbInfo.dedicatedWAL(tenantID, db)
 	}
 
+	local := map[uint64]string{f.localReplicaID: f.localRaftAddr}
+	plan := &shardStartPlan{
+		tenantID:     tenantID,
+		db:           db,
+		shardID:      shardID,
+		dataDir:      dataDir,
+		tb:           tb,
+		replicaID:    f.localReplicaID,
+		members:      local,
+		peers:        local,
+		dedicatedWAL: dedicatedWAL,
+	}
 	if pInfo != nil {
-		localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr)
-		if rOK {
+		if localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr); rOK {
 			members := pInfo.Members()
 			// Every replica the placement names, kept apart from members
 			// (which the join path clears): it is who the founding
@@ -762,43 +893,125 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 			// members map seeds a fresh voting membership and must not name
 			// a non-voting replica (go-quicraft NonVotingRoleInMembersError),
 			// so the join path passes none at all.
+			if forceJoin && isObserver {
+				join = true
+			}
 			if join {
 				members = nil
 			}
-			rs, merr := f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
-				localReplica.ReplicaID, join, isObserver, members, peers, dedicatedWAL, true)
-			if merr != nil && isObserver && !join && errors.Is(merr, quicraft.ErrNonVotingRoleInMembers) {
-				// An ObserverReady replica with NO persisted shard state: its
-				// prior join bootstrap was wiped (demotion purge racing a
-				// re-add, an operator clearing the volume) while the placement
-				// still records the post-bootstrap state. Starting it
-				// join=false would seed a fresh voting membership naming an
-				// observer, which go-quicraft rejects on first start. Re-enter
-				// the join bootstrap window instead — the replica has no data,
-				// so streaming the leader's snapshot again is exactly the
-				// recovery it needs.
-				f.logger.Warn("observer replica has no persisted state; re-entering join bootstrap window",
-					slog.String("tenant", tenantID),
-					slog.String("database", db),
-					slog.Uint64("shard_id", shardID),
-					slog.Uint64("replica_id", localReplica.ReplicaID))
-				rs, merr = f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
-					localReplica.ReplicaID, true, true, nil, peers, dedicatedWAL, true)
-			}
-			if merr != nil {
-				return nil, merr
-			}
-			f.shards[key] = rs
-			return rs.services, nil
+			plan.replicaID = localReplica.ReplicaID
+			plan.join, plan.isObserver = join, isObserver
+			plan.members, plan.peers = members, peers
+			plan.hadPlacement = true
 		}
 	}
 
-	rs, err := f.startShard(ctx, tenantID, db, shardID, dataDir, tb, dedicatedWAL)
+	// Every peer is placed on an existing cluster node, whose identity the
+	// system shard has already committed.
+	identities, err := f.memberIdentities(ctx, plan.shardID, plan.replicaID, plan.join, plan.peers)
 	if err != nil {
-		return nil, err
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "member-identities", Err: err}
 	}
-	f.shards[key] = rs
-	return rs.services, nil
+	plan.identities = identities
+	return plan, nil
+}
+
+// memberIdentities resolves the identities plan's peers committed to the
+// system shard, through identitiesOverride when a test set one.
+func (f *RaftBackendFactory) memberIdentities(ctx context.Context, shardID, replicaID uint64, join bool, peers map[uint64]string) (map[uint64]string, error) {
+	if f.identitiesOverride != nil {
+		return f.identitiesOverride(ctx, shardID, replicaID, join, peers)
+	}
+	return service.MemberIdentities(ctx, f.host, shardID, replicaID, join, peers)
+}
+
+// startingShard is a start in flight (RaftBackendFactory.starting). ready
+// closes when the start ends, served or failed.
+type startingShard struct {
+	shardID uint64
+	ready   chan struct{}
+}
+
+// startPlanned starts plan's shard and caches it, unless the cache moved
+// while the plan was read: another pass started the shard or is starting it
+// (the next pass serves it), a shard was removed (the plan may rest on a
+// placement that no longer holds), or the tenant's migration began. again
+// reports that case, and the caller plans again.
+//
+// The start on the host runs under f.mu, so two passes never start one
+// shard; it is local -- it registers the WAL and starts the shard -- and
+// reads nothing from the system shard. A founding replica then waits for
+// the shard to serve with f.mu released, recorded in f.starting, and is
+// cached only once it serves: until then no caller is handed a shard that
+// cannot answer, and a failed start leaves nothing behind.
+func (f *RaftBackendFactory) startPlanned(ctx context.Context, key raftShardKey, plan *shardStartPlan, generation uint64) (rs *raftShard, again bool, err error) {
+	f.mu.Lock()
+	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.generation != generation {
+		f.mu.Unlock()
+		return nil, true, nil
+	}
+	if _, migrating := f.migrating.Load(key.tenantID); migrating {
+		f.mu.Unlock()
+		return nil, true, nil
+	}
+	rs, err = f.startShardAsMember(plan)
+	if err != nil {
+		f.mu.Unlock()
+		return nil, false, err
+	}
+	// Wait for leadership only when this node is a founding replica
+	// (join=false). A joining follower is never the initial leader; waiting
+	// on it would block until the leader is elected on another node.
+	if plan.join {
+		f.shards[key] = rs
+		f.mu.Unlock()
+		return rs, false, nil
+	}
+	start := &startingShard{shardID: plan.shardID, ready: make(chan struct{})}
+	if f.starting == nil {
+		f.starting = make(map[raftShardKey]*startingShard)
+	}
+	f.starting[key] = start
+	f.mu.Unlock()
+
+	if werr := WaitForShardServing(ctx, f.host, plan.shardID); werr != nil {
+		_ = f.stopShard(rs)
+		err = &RaftBackendError{TenantID: plan.tenantID, Database: plan.db, Op: "await-leader", Err: werr}
+	}
+	f.mu.Lock()
+	delete(f.starting, key)
+	if err == nil {
+		f.shards[key] = rs
+	}
+	close(start.ready)
+	f.mu.Unlock()
+	if err != nil {
+		return nil, false, err
+	}
+	return rs, false, nil
+}
+
+// awaitStartsLocked returns once no start in flight matches, waiting on
+// each match's ready channel with f.mu released: a stop, a restore or a
+// migration that would have queued behind the start on f.mu acts on the
+// start's outcome, as it did then. The caller MUST hold f.mu, and holds it
+// again on return.
+func (f *RaftBackendFactory) awaitStartsLocked(match func(raftShardKey, *startingShard) bool) {
+	for {
+		var pending *startingShard
+		for key, start := range f.starting {
+			if match(key, start) {
+				pending = start
+				break
+			}
+		}
+		if pending == nil {
+			return
+		}
+		f.mu.Unlock()
+		<-pending.ready
+		f.mu.Lock()
+	}
 }
 
 // LeadsDatabase reports whether this node's replica currently leads the
@@ -882,41 +1095,22 @@ func (f *RaftBackendFactory) StartedAsObserver(tenantID, db string) bool {
 	return ok && rs.startedObserver
 }
 
-// startShard starts a single-node dedicated shard using the factory's local
-// replica ID and address. It is the Phase-4b compatibility path: a single local
-// replica bootstrapped with join=false. Caller holds f.mu.
-func (f *RaftBackendFactory) startShard(ctx context.Context, tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
-	members := map[uint64]string{f.localReplicaID: f.localRaftAddr}
-	return f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, members, dedicatedWAL, false)
-}
-
-// startShardAsMember builds the per-shard subsystems and starts the shard on
-// the shared host with explicit membership control. replicaID is the
-// placement-assigned replica ID for the local node. When join is false, this
-// node bootstraps as leader with members containing all initial replicas; when
-// join is true, this node joins an existing group (members is ignored and may
-// be empty). The caller holds f.mu.
-//
-// Leader shards wait for leadership election before binding services. Joining
-// followers do not wait for leadership — they are not the leader.
-func (f *RaftBackendFactory) startShardAsMember(
-	ctx context.Context,
-	tenantID, db string,
-	shardID uint64,
-	dataDir string,
-	tb *seal.TenantBarrier,
-	replicaID uint64,
-	join bool,
-	isObserver bool,
-	members map[uint64]string,
-	peers map[uint64]string,
-	dedicatedWAL bool,
-	hadPlacement bool,
-) (*raftShard, error) {
+// startShardAsMember builds the per-shard subsystems and starts plan's shard
+// on the shared host with explicit membership control. plan.replicaID is the
+// placement-assigned replica ID for the local node (the factory's own for a
+// Phase-4b single-node shard). When plan.join is false, this node bootstraps
+// with plan.members containing all initial replicas; when it is true, this
+// node joins an existing group (members is ignored and may be empty). The
+// caller holds f.mu, and the plan already carries every system-shard read
+// the start needs (planStart). It does not wait for the shard to serve:
+// startPlanned does, with f.mu released.
+func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShard, error) {
+	tenantID, db, shardID, replicaID := plan.tenantID, plan.db, plan.shardID, plan.replicaID
+	join, isObserver, tb := plan.join, plan.isObserver, plan.tb
 	// quicraftconfig.Config.DataDir must be an absolute path; the volume-pool
 	// DataRoot is contained but normalize defensively so a relative pool path
 	// does not fail shard start.
-	absDir, err := filepath.Abs(dataDir)
+	absDir, err := filepath.Abs(plan.dataDir)
 	if err != nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "data-dir", Err: err}
 	}
@@ -934,32 +1128,22 @@ func (f *RaftBackendFactory) startShardAsMember(
 	// tenant barrier. If the opt-in cannot be honored (no multiplex, sealed/absent
 	// barrier, or the WAL fails to open) the shard falls back to the shared
 	// system-barrier WAL (Route A) so it still starts; the fallback is logged.
-	registeredWAL := f.openAndRegisterDedicatedWAL(tenantID, db, shardID, absDir, tb, dedicatedWAL)
+	registeredWAL := f.openAndRegisterDedicatedWAL(tenantID, db, shardID, absDir, tb, plan.dedicatedWAL)
 
 	shardCfg := quicraftconfig.Config{
 		ShardID:    shardID,
 		ReplicaID:  replicaID,
 		DataDir:    absDir,
 		IsObserver: isObserver,
+
+		MemberIdentities: plan.identities,
 	}
-	// Every peer is placed on an existing cluster node, whose identity the
-	// system shard has already committed.
-	identities, err := service.MemberIdentities(ctx, f.host, shardID, replicaID, join, peers)
-	if err != nil {
-		if registeredWAL != nil {
-			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {
-				_ = detached.Close()
-			}
-		}
-		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "member-identities", Err: err}
-	}
-	shardCfg.MemberIdentities = identities
 	// Only the start itself is held against a seal's pause: once StartShard
 	// returns, the pause lists the shard and pauses it, so a slow election
 	// below never holds a seal back.
 	done, err := f.startGate.Load().beginStart()
 	if err == nil {
-		err = f.host.StartShard(members, join, createFn, shardCfg)
+		err = f.host.StartShard(plan.members, join, createFn, shardCfg)
 		done()
 	}
 	if err != nil {
@@ -969,21 +1153,6 @@ func (f *RaftBackendFactory) startShardAsMember(
 			}
 		}
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "start-shard", Err: err}
-	}
-
-	// Wait for leadership only when this node is the bootstrap leader (join=false).
-	// A joining follower is never the initial leader; waiting on it would block
-	// indefinitely until the leader is elected on another node.
-	if !join {
-		if err := WaitForShardServing(ctx, f.host, shardID); err != nil {
-			_ = f.host.StopShard(shardID)
-			if registeredWAL != nil {
-				if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {
-					_ = detached.Close()
-				}
-			}
-			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "await-leader", Err: err}
-		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1000,7 +1169,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		dedicatedWAL: registeredWAL,
 
 		startedObserver: isObserver,
-		hadPlacement:    hadPlacement,
+		hadPlacement:    plan.hadPlacement,
 	}
 	rs.services.Name = db
 
@@ -1073,7 +1242,11 @@ func (f *RaftBackendFactory) openAndRegisterDedicatedWAL(
 	}
 	barrier := tb.Barrier().EpochBarrier()
 	walDir := filepath.Join(absDir, dedicatedWALSubdir)
-	dedDB, err := waldb.Open(walDir, waldb.WithBarrier(barrier))
+	collector := database.NewRaftMetrics(
+		syncwatch.WithLogger(f.logger),
+		syncwatch.WithAttrs(slog.Uint64("shard_id", shardID), slog.String("database", db), slog.String("wal_dir", walDir)),
+	)
+	dedDB, err := waldb.Open(walDir, waldb.WithBarrier(barrier), waldb.WithMetrics(collector))
 	if err != nil {
 		f.logger.Error("failed to open dedicated tenant WAL; falling back to shared WAL",
 			slog.String("tenant", tenantID), slog.String("database", db),
@@ -1099,9 +1272,10 @@ func (f *RaftBackendFactory) openAndRegisterDedicatedWAL(
 func (f *RaftBackendFactory) Close(tenantID, db string) error {
 	f.mu.Lock()
 	key := raftShardKey{tenantID: tenantID, database: db}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
 	rs, ok := f.shards[key]
 	if ok {
-		delete(f.shards, key)
+		f.forgetLocked(key)
 	}
 	f.mu.Unlock()
 	if !ok {
@@ -1122,9 +1296,10 @@ func (f *RaftBackendFactory) Close(tenantID, db string) error {
 func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	f.mu.Lock()
 	key := raftShardKey{tenantID: tenantID, database: db}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
 	rs, ok := f.shards[key]
 	if ok {
-		delete(f.shards, key)
+		f.forgetLocked(key)
 	}
 	f.mu.Unlock()
 	if !ok {
@@ -1168,8 +1343,10 @@ func (f *RaftBackendFactory) IsShardJoining(shardID uint64) bool {
 // closed.
 func (f *RaftBackendFactory) CloseAll() error {
 	f.mu.Lock()
+	f.awaitStartsLocked(func(raftShardKey, *startingShard) bool { return true })
 	shards := f.shards
 	f.shards = make(map[raftShardKey]*raftShard)
+	f.generation++
 	f.mu.Unlock()
 
 	var errs []error
@@ -1237,13 +1414,14 @@ func (f *RaftBackendFactory) shardOwner(shardID uint64) (raftShardKey, bool) {
 // on a different node).
 func (f *RaftBackendFactory) StopForRestore(shardID uint64) error {
 	f.mu.Lock()
+	f.awaitStartsLocked(func(_ raftShardKey, start *startingShard) bool { return start.shardID == shardID })
 	key, ok := f.shardOwner(shardID)
 	if !ok {
 		f.mu.Unlock()
 		return &ShardNotManagedError{ShardID: shardID}
 	}
 	rs := f.shards[key]
-	delete(f.shards, key)
+	f.forgetLocked(key)
 	f.mu.Unlock()
 
 	if err := f.stopShard(rs); err != nil {

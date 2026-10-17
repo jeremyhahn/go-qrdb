@@ -145,6 +145,10 @@ type Config struct {
 	Logging   LoggingConfig   `yaml:"logging"`
 	Discovery DiscoveryConfig `yaml:"discovery"`
 
+	// Observability configures the signals the node emits about itself:
+	// the slow-sync warning's threshold.
+	Observability ObservabilityConfig `yaml:"observability"`
+
 	// ReplicaForwarding configures forwarding a request for a database this
 	// node holds no replica of to a node that does.
 	ReplicaForwarding ReplicaForwardingConfig `yaml:"replica_forwarding"`
@@ -2395,6 +2399,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if _, err := c.ReplicaForwarding.TimeoutDuration(); err != nil {
+		return err
+	}
+	if _, err := c.Observability.SlowSyncThresholdDuration(); err != nil {
 		return err
 	}
 

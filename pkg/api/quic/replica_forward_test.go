@@ -57,7 +57,7 @@ type quicTarget struct {
 	addr     string
 	raftAddr string
 	calls    atomic.Int32
-	answer   func(ctx context.Context) (status uint16, body []byte, drop bool)
+	answer   atomic.Pointer[func(ctx context.Context) (status uint16, body []byte, drop bool)]
 	// stop ends the listener and its socket, as the process dying does.
 	stop func()
 
@@ -65,13 +65,28 @@ type quicTarget struct {
 	seen []quicSeen
 }
 
-func startQUICTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *quicTarget {
+// setAnswer sets how the target answers. The serve goroutine reads it, so a
+// test may change it while the target serves.
+func (qt *quicTarget) setAnswer(answer func(context.Context) (uint16, []byte, bool)) {
+	qt.answer.Store(&answer)
+}
+
+func startQUICTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string, opts ...quicTargetOption) *quicTarget {
 	t.Helper()
-	return startQUICTargetTLS(t, ca.TLS(t, nodeID), raftAddr)
+	return startQUICTargetTLS(t, ca.TLS(t, nodeID), raftAddr, opts...)
+}
+
+// quicTargetOption configures a quicTarget before its serve goroutine
+// starts, so the goroutine reads the field without a race.
+type quicTargetOption func(*quicTarget)
+
+// withQUICAnswer sets the target's answer at construction.
+func withQUICAnswer(answer func(context.Context) (uint16, []byte, bool)) quicTargetOption {
+	return func(qt *quicTarget) { qt.setAnswer(answer) }
 }
 
 // startQUICTargetTLS starts a target serving cfg.
-func startQUICTargetTLS(t *testing.T, cfg *tls.Config, raftAddr string) *quicTarget {
+func startQUICTargetTLS(t *testing.T, cfg *tls.Config, raftAddr string, opts ...quicTargetOption) *quicTarget {
 	t.Helper()
 	cfg.NextProtos = []string{wire.ProtocolV3}
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -89,6 +104,9 @@ func startQUICTargetTLS(t *testing.T, cfg *tls.Config, raftAddr string) *quicTar
 	stop := func() { cancel(); _ = udp.Close(); _ = tr.Close() }
 	t.Cleanup(stop)
 	qt := &quicTarget{addr: ln.Addr().String(), raftAddr: raftAddr, stop: stop}
+	for _, opt := range opts {
+		opt(qt)
+	}
 	go func() {
 		for {
 			conn, err := ln.Accept(ctx)
@@ -130,9 +148,9 @@ func (qt *quicTarget) serve(ctx context.Context, conn *quicgo.Conn) {
 		st, body := wire.StatusOK, []byte("served by "+qt.raftAddr)
 		if seen.verifyErr != nil {
 			st, body = errorFrame(wire.StatusUnauthenticated, seen.verifyErr)
-		} else if qt.answer != nil {
+		} else if answer := qt.answer.Load(); answer != nil {
 			var drop bool
-			if st, body, drop = qt.answer(ctx); drop {
+			if st, body, drop = (*answer)(ctx); drop {
 				_ = conn.CloseWithError(1, "dropped")
 				return
 			}
@@ -182,6 +200,20 @@ func newQUICFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Dur
 	c.client = ca.TLS(t, "")
 	c.client.NextProtos = []string{wire.ProtocolV3}
 	return c
+}
+
+// awaitConnected leaves the forwarder holding a connection to target, so a
+// forward to it starts with its stream rather than a handshake. A handshake
+// slower than the connect budget leaves the target unreachable, with nothing
+// sent, and the forward rightly goes on to the next replica.
+func (c *quicFwdCluster) awaitConnected(t *testing.T, target *quicTarget) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cc, ok := c.srv.forwarder.dialOnce(ctx, target.addr)
+	if !ok || !c.srv.forwarder.keep(target.addr, cc) {
+		t.Fatalf("the forwarder opened no connection to %s", target.addr)
+	}
 }
 
 // put sends a kv.Put for key=value on database orders through the ingress
@@ -246,13 +278,13 @@ func (f fixedErrCeremonyService) CeremonyStatus(context.Context) (*service.Cerem
 func TestQUIC_CeremonyInitialize_ForwardsOnAdminCredentialNotLeaderError(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	leader := startQUICTarget(t, ca, "node-1", "raft-leader")
-	leader.answer = func(context.Context) (uint16, []byte, bool) {
+	leader.setAnswer(func(context.Context) (uint16, []byte, bool) {
 		body, err := proto.Marshal(&pb.CeremonyInitializeResponse{SpkiPin: "leader-answered"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return wire.StatusOK, body, false
-	}
+	})
 
 	cache := replicaforward.NewLeaderCache()
 	members := replicaforwardtest.Members{
@@ -375,10 +407,10 @@ func TestReplicaForwardQUIC_NotLeaderRetriesTheNamedLeader(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startQUICTarget(t, ca, "node-1", "raft-b")
 	cc := startQUICTarget(t, ca, "node-2", "raft-c")
-	b.answer = func(context.Context) (uint16, []byte, bool) {
+	b.setAnswer(func(context.Context) (uint16, []byte, bool) {
 		st, body := mapServiceError(&service.NotLeaderError{ShardID: 42, LeaderID: 2, LeaderAddress: "raft-c"})
 		return st, body, false
-	}
+	})
 	c := newQUICFwdCluster(t, ca, 5*time.Second, b, cc)
 
 	if st, body := c.put(t, "kv.Put", putPayload(t)); st != wire.StatusOK || string(body) != "served by raft-c" {
@@ -435,22 +467,25 @@ func TestReplicaForwardQUIC_ADeadTargetsConnectionIsNotReused(t *testing.T) {
 func TestReplicaForwardQUIC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 	for name, answer := range map[string]func(ctx context.Context) (uint16, []byte, bool){
 		"connection dropped": func(context.Context) (uint16, []byte, bool) { return 0, nil, true },
+		// The target holds the request until the subtest stops it, well
+		// after the forward's deadline: an answer it gave on a timer could
+		// beat that deadline on a loaded machine and be relayed.
 		"timeout": func(ctx context.Context) (uint16, []byte, bool) {
-			select {
-			case <-ctx.Done():
-			case <-time.After(5 * time.Second):
-			}
+			<-ctx.Done()
 			return wire.StatusOK, nil, false
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := replicaforwardtest.NewCA(t)
-			b := startQUICTarget(t, ca, "node-1", "raft-b")
+			b := startQUICTarget(t, ca, "node-1", "raft-b", withQUICAnswer(answer))
 			cc := startQUICTarget(t, ca, "node-2", "raft-c")
-			b.answer = answer
 			c := newQUICFwdCluster(t, ca, 400*time.Millisecond, b, cc)
+			c.awaitConnected(t, b)
 
 			st, body := c.put(t, "kv.Put", putPayload(t))
+			if b.calls.Load() != 1 {
+				t.Fatalf("the forward never reached the target (answer %s)", wire.StatusName(st))
+			}
 			if p, _ := wire.DecodeErrorPayload(body); st != wire.StatusUnavailable || (p.Info != nil && p.Info.Reason == replicaforward.ReasonNotAReplica) {
 				t.Fatalf("answer %s %+v; want the failure, not the refusal", wire.StatusName(st), p)
 			}
@@ -464,10 +499,10 @@ func TestReplicaForwardQUIC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 func TestReplicaForwardQUIC_TheTargetsErrorIsTheAnswer(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startQUICTarget(t, ca, "node-1", "raft-b")
-	b.answer = func(context.Context) (uint16, []byte, bool) {
+	b.setAnswer(func(context.Context) (uint16, []byte, bool) {
 		st, body := mapServiceError(&service.KeyNotFoundError{Key: "k1"})
 		return st, body, false
-	}
+	})
 	c := newQUICFwdCluster(t, ca, 5*time.Second, b)
 	if st, _ := c.put(t, "kv.Put", putPayload(t)); st != wire.StatusNotFound {
 		t.Fatalf("answer %s; want the replica's not found", wire.StatusName(st))
@@ -481,10 +516,10 @@ func TestReplicaForwardQUIC_AReconnectingReplicaIsWaitedOn(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	refusing, offered := replicaforwardtest.RefuseHandshakes(ca.TLS(t, "node-1"), 2)
 	b := startQUICTargetTLS(t, refusing, "raft-b")
-	b.answer = func(context.Context) (uint16, []byte, bool) {
+	b.setAnswer(func(context.Context) (uint16, []byte, bool) {
 		st, body := mapServiceError(&service.KeyNotFoundError{Key: "k1"})
 		return st, body, false
-	}
+	})
 	c := newQUICFwdCluster(t, ca, 5*time.Second, b)
 	if st, _ := c.put(t, "kv.Put", putPayload(t)); st != wire.StatusNotFound {
 		t.Fatalf("answer %s; want the reconnecting replica's not found", wire.StatusName(st))
@@ -505,7 +540,8 @@ func TestReplicaForwardQUIC_EveryReplicaRefusingIsTheRefusal(t *testing.T) {
 	}
 	b := startQUICTarget(t, ca, "node-1", "raft-b")
 	cc := startQUICTarget(t, ca, "node-2", "raft-c")
-	b.answer, cc.answer = refuse, refuse
+	b.setAnswer(refuse)
+	cc.setAnswer(refuse)
 	c := newQUICFwdCluster(t, ca, 5*time.Second, b, cc)
 	st, body := c.put(t, "kv.Put", putPayload(t))
 	if got := refusalOf(t, st, body); got.NodeID != "node-a" || len(got.Replicas) != 2 {
