@@ -1095,10 +1095,26 @@ jobs:
           echo "trivy ${v} install failed after 5 attempts" >&2
           exit 1
 
+      # The forge publishes a current vulnerability database in its own
+      # container registry, as agent-infrastructure/trivy-db, over plain HTTP
+      # (CA m450). It goes FIRST in the upstream list, ahead of trivy's
+      # documented pair, which stays as the fallback. The registry address is
+      # derived from the runner's server URL at run time, never written here:
+      # the tracked tree is publicly releasable. The `http://` prefix tells
+      # scripts/trivy-certified-db.sh to pass trivy's --insecure for this
+      # entry alone. The age limit does not change with the source.
+      - name: Prefer the forge's Trivy DB bridge
+        if: github.server_url != 'https://github.com'
+        run: |
+          forge="${GITHUB_SERVER_URL#*://}"
+          forge="${forge%/}"
+          echo "TRIVY_DB_UPSTREAMS=http://${forge}/agent-infrastructure/trivy-db:2 mirror.gcr.io/aquasec/trivy-db:2 ghcr.io/aquasecurity/trivy-db:2" >> "$GITHUB_ENV"
+
       # `make trivy` refreshes the database and refuses to certify one older
       # than TRIVY_DB_MAX_AGE_HOURS before scanning (#451) -- falling back from
-      # the runner's cache to upstream when the cache is stale -- so a green result
-      # means a current database found nothing -- not merely that a scan ran.
+      # the runner's cache to the forge's bridge, then upstream, when the cache
+      # is stale -- so a green result means a current database found nothing --
+      # not merely that a scan ran.
       - name: Trivy gate (fail on CRITICAL/HIGH)
         run: make trivy
 

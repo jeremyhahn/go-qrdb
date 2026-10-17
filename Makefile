@@ -3393,7 +3393,9 @@ TRIVY_DB_MAX_AGE_HOURS := 24
 # The download goes through the environment's configured db repository (the
 # runner's pull-through cache) first. When that yields a database older than
 # the limit -- or none -- scripts/trivy-certified-db.sh discards it and
-# downloads from trivy's upstream repositories, names the source that served
+# downloads from each repository in TRIVY_DB_UPSTREAMS in turn (trivy's
+# upstream pair by default; on the forge, CI puts the forge's own Trivy DB
+# bridge, served over plain HTTP, ahead of them), names the source that served
 # it, and still fails closed if every source is stale. The limit does not move.
 define trivy-certified-db
 	@./scripts/trivy-certified-db.sh $(TRIVY_DB_MAX_AGE_HOURS)

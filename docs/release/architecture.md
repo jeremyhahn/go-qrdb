@@ -150,6 +150,21 @@ No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`.
 
+`trivy` scans only with a vulnerability database younger than
+`TRIVY_DB_MAX_AGE_HOURS` (24). `scripts/trivy-certified-db.sh` tries the
+runner's configured cache first, then each repository in `TRIVY_DB_UPSTREAMS`
+in order, certifying each with the same age check, and fails closed when none
+is fresh. By default that list is trivy's documented pair,
+`mirror.gcr.io/aquasec/trivy-db:2` then `ghcr.io/aquasecurity/trivy-db:2`. On
+the project's own forge, both the `ci.yml` and `nightly.yml` Trivy jobs put the
+forge's own Trivy DB bridge (a `trivy-db:2` package the forge's infrastructure
+team publishes in its container registry) ahead of that pair. The jobs build its address from the
+runner's server URL at run time, so no tracked file names the forge. The
+bridge is served over plain HTTP, so its entry is written `http://...`, and the
+script passes trivy's `--insecure` for that entry alone; it never reaches the
+TLS upstreams. A fallback widens where the database may come from, never how
+old it may be.
+
 `integration-features` is one job with a matrix leg per feature: each leg runs
 `make integration-test-<feature>` under its own 45-minute limit, and the legs
 run in parallel. `ci-gate` needs the job once and reads its aggregate result,
