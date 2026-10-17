@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jeremyhahn/go-enclave v0.8.0-alpha
 	github.com/jeremyhahn/go-objstore v0.4.0-alpha
-	github.com/jeremyhahn/go-qrdb v0.49.0-alpha
+	github.com/jeremyhahn/go-qrdb v0.50.0-alpha
 	// go-quicraft: the newest tag, in lockstep with the root module (#659).
 	github.com/jeremyhahn/go-quicraft v0.22.0-alpha
 	github.com/mark3labs/mcp-go v0.45.0

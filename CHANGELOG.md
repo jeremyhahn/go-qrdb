@@ -11,32 +11,31 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A user auth factor add or rotate naming an id already in use is refused
-  instead of overwriting it.** The new factor's primary record was written
-  unconditionally, so an add reusing an existing id replaced that factor's
-  record (another user's included), and an add rolled back afterwards deleted
-  it. The record is now reserved behind an absence guard: the add or rotate
-  returns `ErrFactorAlreadyExists` (`409` / `ALREADY_EXISTS`) before anything
-  is written, the original factor keeps authenticating, and a rollback only
-  removes a record its own add created.
-- **Reads wait out a new leader's first commit** (go-qrdb#668). A leader
-  elected a moment ago refuses a ReadIndex with `quicraft.ErrReadIndexNotReady`
-  until its no-op commits in its term; the Raft host adapter now holds a
-  linearizable, follower or committed-membership read (`SyncRead`,
-  `FollowerRead`, `SyncGetShardMembership`) through that refusal within its
-  10 s leader-wait bound and the caller's deadline, as etcd holds a
-  linearizable read through an election. An admin `member add` /
-  `add-observer` right after a membership change that triggered an election
-  no longer fails its member-identity read `UNAVAILABLE`. At the bound the
-  read fails with `*raft.LeaderWaitError` wrapping the sentinel, still
-  `UNAVAILABLE` / REST 503. Proposals are not held for it.
-
-## [0.49.0-alpha] - 2026-10-15
+## [0.50.0-alpha] - 2026-10-16
 
 ### Added
 
+- **A one-time factor claim: a conditional auth factor add** (go-qrdb#655).
+  `qrdb auth factor add` takes `--if-no-active-type` (enroll only when the
+  user has no active factor of that type) and `--expected-version N` (enroll
+  only when the user's factor set is at that version), and reports the
+  committed factor-set version beside the record (JSON `factor_set_version`,
+  omitted for an unconditional add); `qrdb auth factor list` prints it. The
+  decision is one guarded write on a per-user factor-set record, committed
+  with `PutIfAbsent` or `CompareAndSwap` on the exact bytes it was decided
+  against, so of N racing callers exactly one lands. No new Raft opcode. A
+  failed condition is `*auth.FactorConditionFailedError` (`errors.Is`
+  `auth.ErrFactorConditionFailed`), classified `AlreadyExists`, and travels as
+  a structured refusal, reason `FACTOR_CONDITION_FAILED` in the `qrdb.v1`
+  domain, on REST, gRPC, Unix, QUIC and MCP; the SDK clients decode it back
+  into the typed error on every transport, embedded included, and the SDK
+  re-exports the condition surface. A contended factor-set commit is
+  `Aborted`, and a conditional add over a store with no guarded write is
+  refused with `ErrUserAuthFactorAtomicStoreRequired`. On a store with
+  multi-guarded batches, Add, Remove and Rotate commit their records and
+  indexes in one batch with the factor set, so a hard Delete landing first
+  refuses the add with `FactorNotFoundError` instead of leaving indexes that
+  name a deleted factor.
 - **A hard Delete for a user auth factor, so a rolled-back add frees its
   credential** (go-qrdb#684). `Remove` revokes and keeps the factor's
   credential and SPKI claims, so a caller undoing an add it had just made
@@ -119,13 +118,6 @@ are not reconstructed here — their history is in the git log.
   declaration, and the unambiguous store-level removed selectors are blocked.
   Protobuf wire RPC methods with the same names are allowed because they return
   protobuf response messages, not credential heap slices (#22).
-- **`node.WithIdentityHydrator`.** A composer supplies the
-  `embedded.IdentityHydrator` the unified-login ceremony uses to turn the
-  resolved account and verified factor into the session identity, for example
-  to make the login Subject the immutable user id (`Principal.ID`). Without it
-  the Subject stays the username. Only the login ceremony is affected; network
-  requests still take their identity from the authentication chain. See
-  `docs/identity-rbac/api.md`, "Login identity".
 - **`lease.checkpoint_interval` (default `5m`, at most `1h`) and
   `lease.failover_grace` (default `5s`)** configure the lease checkpoints and
   the extra life a new leader gives every lease (see Changed).
@@ -135,6 +127,268 @@ are not reconstructed here — their history is in the git log.
   records its own applied index, and every replica discards a lease's
   checkpoint when a renewal applied after the sample, so a restarted replica
   never restores a TTL shorter than the holder's last renewal (#681).
+- **One-entry range deletes for keyspace reclaim** (go-qrdb#457).
+  `protocol.OpDeleteRange` removes every live key in `[start, end)` in one
+  Raft entry, and `KVService.DeleteRange` proposes it only once the
+  range-delete cluster feature gate is active for the shard, so a
+  mixed-version cluster never applies an opcode an old replica would refuse.
+  `storage.Storage` and `storage.Batch` gain `DeleteRange` on memory, file,
+  pebble, objstore, partition and namespace. Both engines, every `sm_type`
+  and the Pebble state machine apply it as the batch of single deletes over
+  the live client keys in the range: one entry, one revision, index entries
+  and lease bindings released, one watch DELETE per key in key order, as etcd
+  reports a DeleteRange. Vector records are left in place;
+  `SimpleStateMachine` refuses the opcode, and bounds that are not a range
+  are `statemachine.InvalidRangeError`, not an apply halt. Dropping a
+  database reclaims each owned prefix in range deletes of at most 1,024 keys,
+  falling back to per-key deletes on a shard that has not activated the gate.
+  A buffered batch's reads and iterators now cost the range rather than every
+  pending op.
+- **`dao.SecretBytes`, an entity field held in protected memory**
+  (go-qrdb#633). It holds key material in a go-enclave `secure.Buffer`.
+  MessagePack encodes it as one raw bin item into an exact-size record and
+  decodes the item straight into a new protected buffer; JSON, YAML, TOML,
+  BSON, CBOR and ProtoBuf are refused at codec build (`CodecCreationError`
+  wrapping `SecretCodecUnsupportedError`). The type refuses `encoding/json`
+  and `TextMarshaler` and redacts under `fmt`; a secret field cannot be
+  indexed (`SecretFieldIndexedError`) and gets no SQL bridge column. The DAO
+  destroys the secrets of every entity it decodes for its own use and does
+  not hand back, and every buffer a failed decode allocated. The SDK
+  re-exports the type, constructors and errors.
+- **A rebalance reports why each failed move failed.** `ExecuteRebalance`
+  records one `RebalanceMoveFailure` per failed move -- shard, source,
+  destination, the dedicated-group phase that failed and the cause -- and
+  REST, gRPC, QUIC, Unix, MCP, embedded, the SDK and the `qrdb` CLI carry it.
+- **The SDK re-exports the ABAC condition parser** (go-qrdb#755, go-qrdb#760).
+
+### Changed
+
+- **The `(qrdb.v1.permission)` method option is public** (**BREAKING**,
+  go-qrdb#626). Its file moved to `qrdb/v1/permission.proto` under the sdk/go
+  module's `proto/` directory, with Go package
+  `github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1`, so a service module
+  built outside go-qrdb can annotate its RPCs and be authorized by the shared
+  interceptor. The option's name and field number (51000) are unchanged, and so
+  is every annotated RPC. `pkg/api/grpc/proto/qrdbv1/authz.proto` and its
+  `E_Permission` are deleted; import the SDK package instead. `make proto`
+  puts `sdk/go/proto` first on the include path.
+- **Lease keep-alive is answered by the leader from memory** (go-qrdb#275).
+  A renewal no longer waits on a Raft log write: the leader renews in memory,
+  following etcd's lessor. Every `lease.checkpoint_interval` (default `5m`)
+  it checkpoints the remaining TTL of each lease longer than the interval, and
+  it checkpoints every lease before a scale-down or replica move transfers
+  leadership away. A renewal of a checkpointed lease goes through the log and
+  clears the checkpoint. A new leader first applies its predecessor's log, then
+  counts every lease from its checkpoint (or full TTL) plus the failover grace;
+  a restarted replica counts from the checkpoint too. A new leader therefore
+  never grants a lease more than its holder was renewed to, plus the grace.
+  When the leader cannot answer locally, the replicated renewal is answered
+  from its apply result rather than a second linearized read. The etcd
+  `LeaseKeepAlive` stream answers TTL 0 for a lease that is gone, as etcd does.
+  Until the `lease-checkpoint` gate is open, every renewal, the leader's
+  included, still goes through the log. Only the leader answers a held
+  lease's remaining TTL: a follower refuses with `LeaseTTLNotLeaderError`,
+  which gRPC, Unix, QUIC, MCP, REST and embedded forward to the leader and the
+  etcd listener answers Unavailable.
+  `TestRaft_LeaseKeepAliveLatencyTail` holds p90/median under 3x on real disk,
+  including under a disk-sync writer; test/performance/lease-keepalive.md
+  records the before/after table.
+- **The file backend encrypts at rest through the barrier's encfs**
+  (go-qrdb#630). Every node composition opens it as it opens pebble: the
+  standalone daemon, the SDK node, the embedded server and a raft replica's
+  `sm_storage: file`. Record files and the commit journal are ciphertext.
+  Format version 3 records the at-rest posture in the marker (`3/plaintext` or
+  `3/encrypted`) and a store is refused under the other posture with
+  `AtRestMismatchError`; under a sealed barrier record reads and writes fail
+  with `seal.ErrSealed`. A node encryption migration re-encrypts a file store
+  in the same journaled swap as a Pebble one (`database.ReencryptFileStore`,
+  `VerifyReencryptedFileStore`), and qrdbd's raft system migration names its
+  stores by sm type and sm storage, so `enable-encryption` no longer fails on
+  a storage-generic or in-memory state machine. The seal-time refusal of
+  disk/fast over file `sm_storage` is deleted
+  (`statemachine.SMStorageUnencryptedError`, qrdbd's
+  `SealedSMStoragePlaintextError` and the SDK mapping). `atrest.Encryptor`
+  gains `Wrap(base)`.
+- **Tenant onboarding is bounded in the service, the same on every
+  transport.** `OnboardTenant` runs under `DefaultTenantOnboardingTimeout`
+  (30 s; `TenantOnboardingDeps.Timeout` overrides it), a caller's sooner
+  deadline still applies, and the audit outcome is recorded under the
+  caller's context. REST ran onboarding under a 5 s bound sized for one read,
+  so a loaded cluster ended onboardings part-way and the undo retired the
+  tenant id; gRPC, QUIC and MCP had no bound. Every other REST tenant
+  endpoint, barrier init included, now passes the caller's deadline through
+  instead of a fixed 5 s, as gRPC, QUIC, MCP and the Unix socket do.
+- **A stalled database create is answered within the server's deadline.**
+  `CreateWithCredentials` and `CreateForTenantWithCredentials` run under
+  `DefaultDatabaseCreateTimeout` (10 s, the replica-forwarding bound). A
+  create that runs out of it is rolled back -- quota reservations, the
+  half-created database and its placement -- and refused as
+  `DatabaseCreateTimeoutError`, 503 / `UNAVAILABLE`, on every transport; a
+  caller's own deadline or cancellation is returned as it is. `errclass`
+  classifies go-quicraft's `ErrTimeout` as DeadlineExceeded, `ErrCanceled` as
+  Canceled, and a temporary refusal (busy, dropped, shard not ready, no
+  leader yet) as Unavailable.
+- **Key material stays in protected memory through the unwrap and the SO PIN
+  check** (go-qrdb#145). A new tenant DEK is generated into a go-enclave
+  buffer and wrapped from it; a completed Shamir quorum hands the
+  reconstructed key to the unwrap in place, and the SO gate hands the
+  verifier the opened PIN in place, with no heap copy. The `pkg/secure`
+  borrow guard now reports only a goroutine reentering a buffer it is
+  borrowing.
+- **Auth lookups with no fallback outlast a leader election** (go-qrdb#654).
+  The user lookup and the RBAC role resolve keep their 500 ms read bound where
+  the system tenant's stale-read fallback can answer, and take 5 s for every
+  other tenant, so a ReadIndex slowed by an election no longer becomes a 503.
+- **Lease-read linearizability documented against go-quicraft's monotonic
+  lease** (go-qrdb#678). Lease reads are linearizable, with no stale-read
+  window, while replica clock rates differ by under 1 %; wall-clock steps do
+  not affect the lease; near or after expiry the read falls back to the
+  heartbeat round. `docs/deployment` requires chrony on every replica and
+  identical `ElectionRTT` and `RTTMillisecond`.
+- **Listener and Raft configuration docs read from the code** (go-qrdb#671,
+  go-qrdb#669). `docs/deployment/user.md` carries the one canonical listener
+  table and a 3-voter firewall recipe, and `docs/configuration` documents
+  every `qrdbd start` Raft flag and `raft.*` key. Corrected along the way:
+  `snapshot_entries: 0` selects go-quicraft's default of 100000 rather than
+  disabling snapshots, and the enrollment listener runs on every admitted
+  member, not only the first node.
+- **Docs clean-up** (go-qrdb#735, go-qrdb#745). The docs bodies, stamps,
+  records, legacy layout and dated rulings are cleaned up.
+
+### Fixed
+
+- **Tenant create answers only once this node trusts the certificate it
+  returns** (go-qrdb#740). A CSR-issued admin certificate is signed by the
+  tenant's new login CA. Before answering, the create rebuilds the answering
+  node's client-certificate trust, so the next TLS handshake on that node
+  admits the certificate. Other nodes pick it up within their 2-second rebuild
+  interval. If the rebuild fails, the failure is logged and the create still
+  answers; the next periodic rebuild admits the certificate.
+
+- **Shared hooked TLS config no longer leaks one listener's tuning into
+  another** (go-qrdb#741). `clienttrust.ReassertListenerTLS` applies a
+  listener's ALPN and version floor to a clone of what the dynamic hook
+  returns, never to the returned config itself, so listeners sharing one
+  hooked config (native QUIC ALPN among them) no longer race to overwrite each
+  other's settings.
+- **A user auth factor add or rotate naming an id already in use is refused
+  instead of overwriting it.** The new factor's primary record was written
+  unconditionally, so an add reusing an existing id replaced that factor's
+  record (another user's included), and an add rolled back afterwards deleted
+  it. The record is now reserved behind an absence guard: the add or rotate
+  returns `ErrFactorAlreadyExists` (`409` / `ALREADY_EXISTS`) before anything
+  is written, the original factor keeps authenticating, and a rollback only
+  removes a record its own add created.
+- **Reads wait out a new leader's first commit** (go-qrdb#668). A leader
+  elected a moment ago refuses a ReadIndex with `quicraft.ErrReadIndexNotReady`
+  until its no-op commits in its term; the Raft host adapter now holds a
+  linearizable, follower or committed-membership read (`SyncRead`,
+  `FollowerRead`, `SyncGetShardMembership`) through that refusal within its
+  10 s leader-wait bound and the caller's deadline, as etcd holds a
+  linearizable read through an election. An admin `member add` /
+  `add-observer` right after a membership change that triggered an election
+  no longer fails its member-identity read `UNAVAILABLE`. At the bound the
+  read fails with `*raft.LeaderWaitError` wrapping the sentinel, still
+  `UNAVAILABLE` / REST 503. Proposals are not held for it.
+- **A submitted Shamir share no longer outlives its quorum round**
+  (go-qrdb#79). Shares were already held in go-enclave protected memory, but
+  an expired round was destroyed only when the next share for the same
+  operation arrived, and nothing destroyed a round on seal, close, unseal or a
+  change of share set. Now a round arms an expiry timer when it opens. Seal and
+  close destroy every open round. Redistributing a domain (rekey, revocation,
+  recovery-key generation) or deleting its recovery keys destroys the rounds
+  opened on the old share set. An unseal destroys the unseal and recovery
+  rounds it ends. Admission re-checks the barrier's state under the round
+  lock, so a submission racing a seal or unseal cannot open a round after the
+  sweep.
+- **A rebalance move or scale-down no longer strands a two-voter group without
+  quorum.** The departing replica was dropped from the placement before its
+  Raft removal committed, so its node's reconciler stopped and purged it while
+  the removal still needed its vote. The surviving leader then lost quorum,
+  and the move failed at `remove-node`. Now the replica is evicted from Raft
+  first, after a compare-and-swap confirms the caller's placement snapshot.
+  The new `placement.Store.RemoveReplica` then drops it from the placement.
+- **A forwarded admin write no longer waits past its deadline for a leader.**
+  The replica-forwarding leader lookup in QUIC `ForwardToLeader`, gRPC
+  `forwardAdminWrite` and MCP `forwardToLeader` is bounded by the forward
+  timeout; when no leader is known in time the write is refused with
+  `AdminCredentialNotLeaderError`.
+- **Cluster seal and clear survive a leader election** (go-qrdb#654).
+  `clusterseal` retries the seal and clear writes within a 15 s
+  `SettleBudget`, adopts a write that timed out but committed, and retries the
+  acknowledgement within `AckTimeout`.
+- **A row-lock deadlock aborts exactly one victim per cycle.** Two requests
+  on one cycle could both find it and both abort, so the survivor of a
+  two-party deadlock failed with 1213 too. Each wait-for edge now carries the
+  create revision of the waiter record that made it, and a requester is the
+  victim only of a cycle whose newest edge is its own, so a cycle has exactly
+  one victim, as in InnoDB; an older request waits for the victim to release.
+- **A sealed node's volume reporter closes with a typed refusal.**
+  `volume.Reporter.Close` on a sealed node returns
+  `*volume.NodeSealedError{Op: "revoke"}`.
+- **The boot tenant restore waits out a settling system shard.** Each of
+  `RestoreVolumeTenants`' system-shard reads was attempted once, so a read
+  lost to the restart's leaderless window left a tenant unrestored on that
+  node until the next restart, or restored an auto-unseal tenant sealed.
+  `BarrierRegistry` gains `WithStartupReadRetry`, wired to
+  `server.WhileSystemShardSettling`, so each read is retried within that
+  bound on the settling class only.
+- **Keyspace reclaim reports a non-MVCC system shard's index refusal once**
+  (go-qrdb#457).
+- **The CLI watch integration tests wait for the event, not a fixed sleep**
+  (go-qrdb#750). `startCLIWatch` runs `qrdb watch --timeout 0`, issues probe
+  puts until the watch reports one, and waits for the expected event under a
+  30 s deadline, reading the watch output through a mutex-guarded buffer.
+- **The RBAC permission resolve waits out a system-shard election, as the
+  user lookup does** (go-qrdb#749). `resolvePermissionSet` made one bounded
+  attempt and, for every tenant but the system tenant, failed at once with
+  `*ResolveError` on a not-leader or leader-unknown error, so a request that
+  authenticated through an election was then refused by the authorizer. The
+  settle loop moves out of `AuthMiddleware.lookupUser` into one helper,
+  `service.SettleLeadership`, used by both. Each attempt keeps its 500 ms bound
+  and the system-tenant StaleRead fallback; a definitive `RoleNotFoundError`
+  or `ValidationError` is still final at once.
+- **A REST tenant create is bounded by the server's WriteTimeout, not the 5 s
+  read bound** (go-qrdb#749). The whole provisioning chain ran under
+  `tenantRequestTimeout`, so on a loaded standalone node the CA-key proposal
+  could time out as 503 and the create was undone. Create is now bounded by
+  `tenantProvisionTimeout`, the server's WriteTimeout (30 s, now a named
+  constant).
+- **A node joins the trust pool's refresh loop before closing the storage it
+  reads** (go-qrdb#749). `clienttrust.Pool.Run` ran as a bare goroutine that
+  `Close` only cancelled, so a refresh in flight could still hold a Pebble
+  iterator when the storage closed, and Pebble panicked with "element has
+  outstanding references"; a migration rebuild never stopped the old loop.
+  The loop now runs on a cancellable context with a done channel, and `Close`,
+  `teardownDataPlane` and a failed wiring pass stop it and wait before the
+  storage is closed.
+
+### Removed
+
+- **Breaking: the `[]byte` credential retrieve methods** (#22):
+  `credentials.CredentialService.RetrieveCredential`,
+  `RetrieveCredentialVersion`, `service.CredentialServicer.CredentialRetrieve`,
+  `CredentialRetrieveVersion`, and the SDK transport `CredentialClient` /
+  transport implementations' `CredentialRetrieve` and
+  `CredentialRetrieveVersion`. Go callers use `RetrieveCredentialBuffer`,
+  `RetrieveCredentialVersionBuffer`, `CredentialRetrieveBuffer`, or
+  `CredentialRetrieveVersionBuffer` and `Destroy` the returned
+  `*secure.Buffer`. `secret.CredentialRetrieveFunc` and
+  `secret.CredentialRetriever` take the Buffer form. REST, gRPC, QUIC, MCP and
+  Unix wire operations keep their endpoint/RPC/tool names and payloads; only
+  the exported Go byte-returning surface is removed.
+
+## [0.49.0-alpha] - 2026-10-15
+
+### Added
+
+- **`node.WithIdentityHydrator`.** A composer supplies the
+  `embedded.IdentityHydrator` the unified-login ceremony uses to turn the
+  resolved account and verified factor into the session identity, for example
+  to make the login Subject the immutable user id (`Principal.ID`). Without it
+  the Subject stays the username. Only the login ceremony is affected; network
+  requests still take their identity from the authentication chain. See
+  `docs/identity-rbac/api.md`, "Login identity".
 - **Numeric secondary indexes with a documented total order** (go-qrdb#35).
   A numeric index stores exact, order-preserving decimal terms
   (`index.EncodeNumericValue`): `-Inf` < negatives < `0` < positives < `+Inf`,
@@ -190,16 +444,6 @@ are not reconstructed here — their history is in the git log.
   `storage.Exclusive`, which runs a read-check-write under that lock.
 
 ### Changed
-
-- **The `(qrdb.v1.permission)` method option is public** (**BREAKING**,
-  go-qrdb#626). Its file moved to `qrdb/v1/permission.proto` under the sdk/go
-  module's `proto/` directory, with Go package
-  `github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1`, so a service module
-  built outside go-qrdb can annotate its RPCs and be authorized by the shared
-  interceptor. The option's name and field number (51000) are unchanged, and so
-  is every annotated RPC. `pkg/api/grpc/proto/qrdbv1/authz.proto` and its
-  `E_Permission` are deleted; import the SDK package instead. `make proto`
-  puts `sdk/go/proto` first on the include path.
 
 - **Sealing a node's barrier pauses every shard on it first, and unsealing
   resumes them.** After the seal record commits and before the keys leave
@@ -298,22 +542,6 @@ are not reconstructed here — their history is in the git log.
   and `TenantBarrierInitWithStrategy` takes variadic
   `tenant.TenantBarrierInitOption`s. See `docs/barrier-seal/architecture.md`,
   "The barrier key seam".
-- **Lease keep-alive is answered by the leader from memory** (go-qrdb#275).
-  A renewal no longer waits on a Raft log write: the leader renews in memory,
-  following etcd's lessor. Every `lease.checkpoint_interval` (default `5m`)
-  it checkpoints the remaining TTL of each lease longer than the interval, and
-  it checkpoints every lease before a scale-down or replica move transfers
-  leadership away. A renewal of a checkpointed lease goes through the log and
-  clears the checkpoint. A new leader first applies its predecessor's log, then
-  counts every lease from its checkpoint (or full TTL) plus the failover grace;
-  a restarted replica counts from the checkpoint too. A new leader therefore
-  never grants a lease more than its holder was renewed to, plus the grace.
-  When the leader cannot answer locally, the replicated renewal is answered
-  from its apply result rather than a second linearized read. The etcd
-  `LeaseKeepAlive` stream answers TTL 0 for a lease that is gone, as etcd does.
-  `TestRaft_LeaseKeepAliveLatencyTail` holds p90/median under 3x on real disk,
-  including under a disk-sync writer; test/performance/lease-keepalive.md
-  records the before/after table.
 
 - **Deleting a role takes it away from everyone who holds it** (go-qrdb#697).
   `qrdb roles delete` strips the role from every account holding it before it
@@ -369,24 +597,6 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
-- **A submitted Shamir share no longer outlives its quorum round**
-  (go-qrdb#79). Shares were already held in go-enclave protected memory, but
-  an expired round was destroyed only when the next share for the same
-  operation arrived, and nothing destroyed a round on seal, close, unseal or a
-  change of share set. Now a round arms an expiry timer when it opens. Seal and
-  close destroy every open round. Redistributing a domain (rekey, revocation,
-  recovery-key generation) or deleting its recovery keys destroys the rounds
-  opened on the old share set. An unseal destroys the unseal and recovery
-  rounds it ends. Admission re-checks the barrier's state under the round
-  lock, so a submission racing a seal or unseal cannot open a round after the
-  sweep.
-- **A rebalance move or scale-down no longer strands a two-voter group without
-  quorum.** The departing replica was dropped from the placement before its
-  Raft removal committed, so its node's reconciler stopped and purged it while
-  the removal still needed its vote. The surviving leader then lost quorum,
-  and the move failed at `remove-node`. Now the replica is evicted from Raft
-  first, after a compare-and-swap confirms the caller's placement snapshot.
-  The new `placement.Store.RemoveReplica` then drops it from the placement.
 - **A membership change no longer fails because it arrived mid-election.**
   `admin member add`, `add-observer`, `promote` and `remove` were refused
   with `not leader for shard N, leader unknown` -- a refusal no transport can
@@ -574,18 +784,6 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
-- **Breaking: the `[]byte` credential retrieve methods** (#22):
-  `credentials.CredentialService.RetrieveCredential`,
-  `RetrieveCredentialVersion`, `service.CredentialServicer.CredentialRetrieve`,
-  `CredentialRetrieveVersion`, and the SDK transport `CredentialClient` /
-  transport implementations' `CredentialRetrieve` and
-  `CredentialRetrieveVersion`. Go callers use `RetrieveCredentialBuffer`,
-  `RetrieveCredentialVersionBuffer`, `CredentialRetrieveBuffer`, or
-  `CredentialRetrieveVersionBuffer` and `Destroy` the returned
-  `*secure.Buffer`. `secret.CredentialRetrieveFunc` and
-  `secret.CredentialRetriever` take the Buffer form. REST, gRPC, QUIC, MCP and
-  Unix wire operations keep their endpoint/RPC/tool names and payloads; only
-  the exported Go byte-returning surface is removed.
 - **`ceremony.IssuedCert.KeyPEM`.** A CA no longer generates or returns a leaf
   private key; the caller holds it.
 - **`lifecycle.RaftTenantClusterConfig.CertPEM` and `KeyPEM`.** Replaced by

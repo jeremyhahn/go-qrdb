@@ -32,7 +32,7 @@ require (
 	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-enclave v0.8.0-alpha
 	github.com/jeremyhahn/go-objstore v0.4.0-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.49.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.50.0-alpha
 	// go-quicraft: the newest tag (#659), the planned 0.21.0-rc.3 cut as an
 	// alpha. It carries the sealed-shard hold (go-quicraft#296).
 	github.com/jeremyhahn/go-quicraft v0.22.0-alpha
