@@ -283,7 +283,7 @@ destroyed when the round:
 |---|---|
 | completes, or fails to reconstruct or to open the blob | `submitAgainst`, `finishRound` |
 | expires (`seal.share_ttl`, default 15m, `ErrShamirQuorumExpired`) | the round's expiry timer |
-| is replaced: its roster changed, or an expired rekey round is reopened | `roundLocked`, `StartRekey` |
+| is replaced: its roster changed, its TTL lapsed before its timer fired, or an expired rekey round is reopened | `roundLocked`, `StartRekey` |
 | loses its share set: the domain is redistributed (rekey, revocation, recovery-key generation) or the recovery keys are deleted | `redistributeTo`, `DeleteRecoveryKeys` |
 | can no longer run: a quorum unseals the barrier, which ends every unseal and recovery round | `unsealFromRootKey` |
 | outlives the session: the barrier is sealed or closed | `Seal`, `Close` |
@@ -538,7 +538,7 @@ and policy are per distribution, not configuration.
   detection, each admission refusal, factor policies, round expiry (swept eagerly,
   with no further share) and replacement, destruction of every round's shares
   on each exit in the table above (`quorum_sweep_test.go`,
-  `quorum_custody_test.go`, asserted through the protected share's destroyed
+  `quorum_custody_test.go`, `quorum_replace_test.go`, asserted through the protected share's destroyed
   state) and of the submitted plain buffer on every outcome, rekey and
   revocation refusal, envelope binding, one-time claim,
   share TTL. Zeroization is asserted, not assumed.
