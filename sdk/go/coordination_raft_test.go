@@ -174,23 +174,31 @@ func assertLeaseKeyReaped(t *testing.T, coord *sdk.Coordinator, key string) {
 	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
 	defer cancel()
 
-	l, err := coord.AcquireLease(ctx, key, 1*time.Second)
-	if err != nil {
-		t.Fatalf("AcquireLease(%q): %v", key, err)
-	}
-
-	got, err := coord.Get(ctx, key)
-	if err != nil {
-		t.Fatalf("Get(%q) while lease held: %v", key, err)
-	}
-	if got == nil {
-		t.Fatalf("bound key %q must exist while the lease is held; the reap "+
-			"assertion below would otherwise prove nothing", key)
+	// The precondition below — the key is bound while the lease is held — can
+	// only be observed inside the lease's TTL, and a loaded host can spend the
+	// whole TTL between the grant and the read (go-qrdb#746: 1 s did not cover
+	// AcquireLease plus Get on a loaded runner). A read that misses the window
+	// is not evidence either way, so it is retried under a doubled TTL until a
+	// read lands inside its window. A read that finds the key absent while
+	// still inside its window is the defect and fails at once.
+	var l sdk.Lease
+	ttl := time.Second
+	for {
+		var held bool
+		if l, held = acquireObservedHeld(t, ctx, coord, key, ttl); held {
+			break
+		}
+		if ttl >= maxObservedHeldTTL {
+			t.Fatalf("bound key %q was never read back inside its lease's TTL, up "+
+				"to %v: the host is too slow to observe the precondition the reap "+
+				"assertion below rests on", key, ttl)
+		}
+		ttl *= 2
 	}
 
 	select {
 	case <-l.Done():
-	case <-time.After(20 * time.Second):
+	case <-time.After(ttl + 20*time.Second):
 		t.Fatal("Done did not close after the un-renewed lease should have expired")
 	}
 
@@ -219,6 +227,55 @@ func assertLeaseKeyReaped(t *testing.T, coord *sdk.Coordinator, key string) {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+// maxObservedHeldTTL caps the TTL assertLeaseKeyReaped doubles to while trying
+// to read a bound key back inside its lease's lifetime. A failure bound: an
+// idle machine is done at the first, 1 s, attempt.
+const maxObservedHeldTTL = 8 * time.Second
+
+// acquireObservedHeld acquires key under a lease of ttl and reads the key back.
+// It reports whether the read found the key while the lease was certainly still
+// held, and returns that lease. The certainty comes from the clock: the server
+// starts the TTL when it applies the grant, which is after the request is sent,
+// so nothing may reap the key earlier than ttl after the send. A key found
+// absent, or a grant swept before its bind, before that instant fails the test;
+// after it, the observation missed the window and the caller tries again.
+func acquireObservedHeld(t *testing.T, ctx context.Context, coord *sdk.Coordinator, key string, ttl time.Duration) (sdk.Lease, bool) {
+	t.Helper()
+
+	sent := time.Now()
+	l, err := coord.AcquireLease(ctx, key, ttl)
+	var expired *sdk.LeaseExpiredBeforeBindError
+	switch {
+	case errors.As(err, &expired):
+		if elapsed := time.Since(sent); elapsed < ttl {
+			t.Fatalf("AcquireLease(%q): grant swept %v after it was requested, "+
+				"inside its %v TTL: %v", key, elapsed, ttl, err)
+		}
+		t.Logf("AcquireLease(%q): the %v grant expired before its bind on this "+
+			"host; retrying with a longer TTL", key, ttl)
+		return nil, false
+	case err != nil:
+		t.Fatalf("AcquireLease(%q): %v", key, err)
+	}
+
+	got, err := coord.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get(%q) while lease held: %v", key, err)
+	}
+	if got != nil {
+		return l, true
+	}
+	elapsed := time.Since(sent)
+	if elapsed < ttl {
+		t.Fatalf("bound key %q must exist while the lease is held (read %v into "+
+			"its %v TTL); the reap assertion below would otherwise prove nothing",
+			key, elapsed, ttl)
+	}
+	t.Logf("Get(%q) landed %v after the request, past its %v TTL; retrying with "+
+		"a longer TTL", key, elapsed, ttl)
+	return nil, false
 }
 
 // awaitWritable blocks until the single-replica raft group has completed its

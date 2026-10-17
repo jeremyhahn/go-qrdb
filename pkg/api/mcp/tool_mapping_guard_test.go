@@ -133,6 +133,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_add_member":                     permission.AdminAddMember,
 	"qrdb_remove_member":                  permission.AdminRemoveMember,
 	"qrdb_promote_member":                 permission.AdminAddMember,
+	"qrdb_transfer_leadership":            permission.AdminRemoveMember,
 	"qrdb_snapshot":                       permission.AdminSnapshot,
 	"qrdb_drain":                          permission.AdminDrain,
 	"qrdb_capabilities":                   permission.AdminCapabilities,

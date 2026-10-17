@@ -92,7 +92,7 @@ func TestStartClusterJoin_NoClusterCAKeyStartsNothing(t *testing.T) {
 	n.ClusterCAProv = nil
 	for _, enabled := range []bool{false, true} {
 		j, err := lifecycle.StartClusterJoin(context.Background(), n, joinConfig(t, enabled))
-		if err != nil || j.Running() || j.Addr() != "" || j.PublicKey() != nil || j.ServerOptions() != nil {
+		if err != nil || j.Running() || j.Addr() != "" || j.PublicKey() != nil || j.P256PublicKey() != nil || j.ServerOptions() != nil {
 			t.Fatalf("enabled=%v: %+v, %v; want a join that runs nothing", enabled, j, err)
 		}
 		j.Stop()
@@ -116,13 +116,6 @@ func TestStartClusterJoin_NotEnabledStartsNoListener(t *testing.T) {
 // Enabled with a cluster CA key, the listener runs, its HTTPS twin route is a
 // server option, and the join-token verb mints into the listener's store.
 func TestStartClusterJoin_EnabledRunsAndBindsTheVerb(t *testing.T) {
-	if !clusterenroll.NoiseAvailable() {
-		// The member-side CSR join listener needs a real Noise NK
-		// handshake (an X25519 static key), which GODEBUG=fips140=only
-		// refuses to generate at all; permanently unreachable under
-		// FIPS -- see docs/seal/fips140-mode.md.
-		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
-	}
 	n := joinNode(t)
 	n.ClusterCAProv = staticClusterCA(t)
 	j, err := lifecycle.StartClusterJoin(context.Background(), n, joinConfig(t, true))
@@ -130,8 +123,13 @@ func TestStartClusterJoin_EnabledRunsAndBindsTheVerb(t *testing.T) {
 		t.Fatalf("StartClusterJoin: %v", err)
 	}
 	defer j.Stop()
-	if !j.Running() || j.Addr() == "" || len(j.PublicKey()) == 0 || len(j.ServerOptions()) != 1 {
-		t.Fatalf("join = running %v, addr %q, key %d bytes, %d options; want a running listener", j.Running(), j.Addr(), len(j.PublicKey()), len(j.ServerOptions()))
+	if !j.Running() || j.Addr() == "" || len(j.P256PublicKey()) != 65 || len(j.ServerOptions()) != 1 {
+		t.Fatalf("join = running %v, addr %q, P-256 key %d bytes, %d options; want a running listener", j.Running(), j.Addr(), len(j.P256PublicKey()), len(j.ServerOptions()))
+	}
+	// The P-256 suite is always served; the Noise suite only where X25519 is
+	// approved, so its key is present exactly when NoiseAvailable says so.
+	if got := len(j.PublicKey()) != 0; got != clusterenroll.NoiseAvailable() {
+		t.Fatalf("Noise public key present = %v, want %v", got, clusterenroll.NoiseAvailable())
 	}
 	token, _, err := n.Admin.(service.ClusterJoinTokenMinter).MintJoinToken(context.Background(), "n2", time.Minute)
 	if err != nil || token == "" {

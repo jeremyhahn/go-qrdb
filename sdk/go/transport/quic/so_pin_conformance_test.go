@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	quicserver "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
@@ -43,7 +42,7 @@ func startSOConformance(t *testing.T, f *sotest.Fixture) *Transport {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(srv.Stop)
-	tr, err := New(transport.WithAddress(srv.Addr()), transport.WithTLSConfig(f.ClientTLS), transport.WithTimeout(5*time.Second))
+	tr, err := New(transport.WithAddress(srv.Addr()), transport.WithTLSConfig(f.ClientTLS), transport.WithTimeout(sotest.RequestTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

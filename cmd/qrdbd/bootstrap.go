@@ -144,6 +144,7 @@ func flagsToEnrollOptions(f *startFlags) (*clusterenroll.Options, error) {
 		SingleNode:  isSingleNode(f),
 		Bootstrap: clusterenroll.BootstrapOptions{
 			NoiseKey:                 f.bootstrapNoiseKey,
+			P256Key:                  f.bootstrapP256Key,
 			NoiseAddr:                f.bootstrapNoiseAddr,
 			SPKIPin:                  f.bootstrapSPKIPin,
 			ServerAddr:               f.bootstrapAddr,
@@ -156,6 +157,7 @@ func flagsToEnrollOptions(f *startFlags) (*clusterenroll.Options, error) {
 			AdminPort:                f.adminPort,
 			JoinAddr:                 f.bootstrapJoinAddr,
 			JoinKey:                  f.bootstrapJoinKey,
+			JoinP256Key:              f.bootstrapJoinP256Key,
 			JoinHTTPURL:              f.bootstrapJoinHTTPURL,
 			JoinToken:                joinToken,
 			JoinApprovalPollInterval: f.bootstrapJoinApprovalPollInterval,
@@ -188,6 +190,7 @@ func joinerToken(f *startFlags) (string, error) {
 func hasBootstrapFlags(f *startFlags) bool {
 	return clusterenroll.BootstrapOptions{
 		NoiseKey:  f.bootstrapNoiseKey,
+		P256Key:   f.bootstrapP256Key,
 		NoiseAddr: f.bootstrapNoiseAddr,
 		SPKIPin:   f.bootstrapSPKIPin,
 		DANEDNS:   f.bootstrapDANEDNS,

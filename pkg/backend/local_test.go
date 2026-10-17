@@ -385,6 +385,31 @@ func TestLocalBackend_RequestRemoveNode_ReturnsNilState(t *testing.T) {
 	}
 }
 
+func TestLocalBackend_RequestLeaderTransfer(t *testing.T) {
+	lb := newTestLocalBackend()
+	defer func() { _ = lb.Close() }()
+
+	err := lb.RequestLeaderTransfer(context.Background(), 1, 2)
+	var coe *ClusterOperationError
+	if !errors.As(err, &coe) {
+		t.Fatalf("expected ClusterOperationError, got %T: %v", err, err)
+	}
+	if coe.Op != "LeaderTransfer" {
+		t.Fatalf("expected Op LeaderTransfer, got %q", coe.Op)
+	}
+}
+
+func TestLocalBackend_RequestLeaderTransfer_ToSelf(t *testing.T) {
+	// Even naming the only replica is refused: a standalone node has no
+	// leadership to move.
+	lb := newTestLocalBackend()
+	defer func() { _ = lb.Close() }()
+
+	if err := lb.RequestLeaderTransfer(context.Background(), 1, 1); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestLocalBackend_RequestSnapshot(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()

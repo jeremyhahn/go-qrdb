@@ -286,7 +286,8 @@ func TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller(t *testing.T) 
 // queued behind a start on the factory lock -- the same database's resolve,
 // its Close -- wait for that start's outcome instead, and act on it as they
 // did then: the resolve makes its own start once the first fails, and the
-// Close finds nothing to stop.
+// Close, whether it acts before that start or after it fails, finds nothing
+// to stop.
 func TestRaftBackendFactory_StartInFlightIsAwaitedNotRepeated(t *testing.T) {
 	f, reg, src := newRaftFactory(t)
 	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
@@ -321,12 +322,16 @@ func TestRaftBackendFactory_StartInFlightIsAwaitedNotRepeated(t *testing.T) {
 
 	cancelFirst()
 	requireAwaitLeader(t, "first Services(a)", (<-first).err)
-	if err := <-closed; err != nil {
-		t.Fatalf("Close(a) after the failed start = %v, want nil", err)
-	}
+	// The failed start wakes the second caller and Close together, in either
+	// order. Close waits on every start of a it finds in flight, so when the
+	// second caller's start is registered first, Close waits on that one too
+	// and returns only after it ends: Close is judged once both have.
 	awaitStarting(t, f, "rt", "a")
 	cancelSecond()
 	requireAwaitLeader(t, "second Services(a)", (<-second).err)
+	if err := <-closed; err != nil {
+		t.Fatalf("Close(a) after the failed starts = %v, want nil", err)
+	}
 	if n := reads.Load(); n != 2 {
 		t.Fatalf("plans = %d, want 2: the second caller starts again once the first start fails", n)
 	}

@@ -745,7 +745,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateIsolationModeAgainstPolicy(isolationType, EffectiveIsolationPolicy(floor, cfg.isolationPolicy)); err != nil {
+	if err := ValidateIsolationModeAgainstPolicy(id, isolationType, EffectiveIsolationPolicy(floor, cfg.isolationPolicy)); err != nil {
 		return nil, err
 	}
 	if err := s.admitIsolated(isolationType); err != nil {

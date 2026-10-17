@@ -1993,6 +1993,43 @@ func TestApplyConfigToFlags_BootstrapCLIPrecedence(t *testing.T) {
 	assert.Equal(t, "cli-baddr", f.bootstrapAddr)
 }
 
+// The P-256 responder keys follow the same overlay rule as every other
+// bootstrap key: YAML fills an unset flag, an explicit flag wins.
+func TestApplyConfigToFlags_BootstrapP256Keys(t *testing.T) {
+	cfg := &qrdbconfig.Config{
+		Bootstrap: qrdbconfig.BootstrapConfig{
+			P256Key:     "yaml-p256",
+			JoinP256Key: "yaml-join-p256",
+		},
+	}
+
+	t.Run("config fills unset flags", func(t *testing.T) {
+		f := &startFlags{host: testBindHost}
+		applyConfigToFlags(newStartCmd(), f, cfg)
+		assert.Equal(t, "yaml-p256", f.bootstrapP256Key)
+		assert.Equal(t, "yaml-join-p256", f.bootstrapJoinP256Key)
+	})
+
+	t.Run("explicit flags win", func(t *testing.T) {
+		cmd := newStartCmd()
+		require.NoError(t, cmd.Flags().Set("bootstrap-p256-key", "cli-p256"))
+		require.NoError(t, cmd.Flags().Set("bootstrap-join-p256-key", "cli-join-p256"))
+		f := &startFlags{bootstrapP256Key: "cli-p256", bootstrapJoinP256Key: "cli-join-p256"}
+		applyConfigToFlags(cmd, f, cfg)
+		assert.Equal(t, "cli-p256", f.bootstrapP256Key)
+		assert.Equal(t, "cli-join-p256", f.bootstrapJoinP256Key)
+	})
+
+	t.Run("flags reach the enrollment options", func(t *testing.T) {
+		f := &startFlags{bootstrapP256Key: "a", bootstrapJoinP256Key: "b"}
+		opts, err := flagsToEnrollOptions(f)
+		require.NoError(t, err)
+		assert.Equal(t, "a", opts.Bootstrap.P256Key)
+		assert.Equal(t, "b", opts.Bootstrap.JoinP256Key)
+		assert.True(t, hasBootstrapFlags(f))
+	})
+}
+
 // ---------------------------------------------------------------------------
 // newStartCmd + config file: bootstrap section loaded and applied
 // ---------------------------------------------------------------------------

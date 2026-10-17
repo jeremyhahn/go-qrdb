@@ -389,3 +389,21 @@ var IsCircuitOpen = dberrors.IsCircuitOpen
 // bootstrap work while a cluster's initial election settles) without
 // importing pkg/service.
 type NotLeaderError = service.NotLeaderError
+
+// LeaderTransferTimeoutError is returned by a leadership transfer whose
+// named replica has not taken over within the bound -- a stopped or
+// partitioned target never does. Nothing was changed; it may be retried.
+type LeaderTransferTimeoutError = service.LeaderTransferTimeoutError
+
+// UnknownShardError is returned by a leadership transfer naming a shard the
+// node does not hold.
+type UnknownShardError = service.UnknownShardError
+
+// UnknownReplicaError is returned by a leadership transfer naming replica 0
+// or a replica the shard has never had.
+type UnknownReplicaError = service.UnknownReplicaError
+
+// LeaderTransferTargetError is returned by a leadership transfer naming a
+// replica that cannot lead the shard: an observer, a witness, or one that
+// was removed.
+type LeaderTransferTargetError = service.LeaderTransferTargetError

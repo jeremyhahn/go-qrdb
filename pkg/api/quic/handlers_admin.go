@@ -167,6 +167,31 @@ func (s *Server) handlePromoteMember(ctx context.Context, payload []byte) ([]byt
 	return resp, nil
 }
 
+// handleTransferLeadership unmarshals a TransferLeadershipRequest, hands the
+// shard's leadership to the named voter via the admin service's
+// LeaderTransferrer capability, and returns an empty serialized response
+// once that voter leads.
+func (s *Server) handleTransferLeadership(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.TransferLeadershipRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	transferrer, ok := s.adminSvc.(service.LeaderTransferrer)
+	if !ok {
+		return nil, &service.LeaderTransferUnsupportedError{}
+	}
+	if err := transferrer.TransferLeadership(ctx, req.GetShardId(), req.GetReplicaId()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
 // handleRequestSnapshot unmarshals a RequestSnapshotMessage, triggers a
 // snapshot for the given shard, and returns an empty serialized response.
 func (s *Server) handleRequestSnapshot(ctx context.Context, payload []byte) ([]byte, error) {

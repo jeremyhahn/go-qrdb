@@ -56,6 +56,7 @@ import (
 
 	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
 	qrdbgorm "github.com/jeremyhahn/go-qrdb/sdk/go/gorm"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 
 	// Registers the node:// DSN scheme with sdk/go/driver. It is a separate
 	// package, and therefore a separate import, because it pulls in the whole
@@ -418,6 +419,9 @@ func TestMain(m *testing.M) {
 	if recorder != nil {
 		// Explicit rather than deferred: TestMain ends in os.Exit.
 		_ = recorder.Close()
+	}
+	if err := qrdbdharness.RemoveBuilds(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
 	os.Exit(code)
 }

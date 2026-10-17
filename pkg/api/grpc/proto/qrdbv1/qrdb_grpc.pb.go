@@ -108,6 +108,7 @@ const (
 	QRDBService_AddMember_FullMethodName                         = "/qrdb.v1.QRDBService/AddMember"
 	QRDBService_RemoveMember_FullMethodName                      = "/qrdb.v1.QRDBService/RemoveMember"
 	QRDBService_PromoteMember_FullMethodName                     = "/qrdb.v1.QRDBService/PromoteMember"
+	QRDBService_TransferLeadership_FullMethodName                = "/qrdb.v1.QRDBService/TransferLeadership"
 	QRDBService_RequestSnapshot_FullMethodName                   = "/qrdb.v1.QRDBService/RequestSnapshot"
 	QRDBService_Drain_FullMethodName                             = "/qrdb.v1.QRDBService/Drain"
 	QRDBService_Capabilities_FullMethodName                      = "/qrdb.v1.QRDBService/Capabilities"
@@ -452,6 +453,12 @@ type QRDBServiceClient interface {
 	// PromoteMember promotes a committed observer of a shard to a voter,
 	// keeping the address and identity the shard already committed for it.
 	PromoteMember(ctx context.Context, in *PromoteMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// TransferLeadership hands a shard's leadership to a named voter and
+	// returns once it leads. A target that has not taken over within the
+	// server's bound fails with UNAVAILABLE (LeaderTransferTimeoutError).
+	// It carries the permission RemoveMember needs for the leadership move
+	// it makes before removing a leader.
+	TransferLeadership(ctx context.Context, in *TransferLeadershipRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// RequestSnapshot triggers a snapshot for the given shard.
 	RequestSnapshot(ctx context.Context, in *RequestSnapshotMessage, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Drain transitions the node into drain mode.
@@ -1630,6 +1637,16 @@ func (c *qRDBServiceClient) PromoteMember(ctx context.Context, in *PromoteMember
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_PromoteMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TransferLeadership(ctx context.Context, in *TransferLeadershipRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TransferLeadership_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3391,6 +3408,12 @@ type QRDBServiceServer interface {
 	// PromoteMember promotes a committed observer of a shard to a voter,
 	// keeping the address and identity the shard already committed for it.
 	PromoteMember(context.Context, *PromoteMemberRequest) (*emptypb.Empty, error)
+	// TransferLeadership hands a shard's leadership to a named voter and
+	// returns once it leads. A target that has not taken over within the
+	// server's bound fails with UNAVAILABLE (LeaderTransferTimeoutError).
+	// It carries the permission RemoveMember needs for the leadership move
+	// it makes before removing a leader.
+	TransferLeadership(context.Context, *TransferLeadershipRequest) (*emptypb.Empty, error)
 	// RequestSnapshot triggers a snapshot for the given shard.
 	RequestSnapshot(context.Context, *RequestSnapshotMessage) (*emptypb.Empty, error)
 	// Drain transitions the node into drain mode.
@@ -4047,6 +4070,9 @@ func (UnimplementedQRDBServiceServer) RemoveMember(context.Context, *RemoveMembe
 }
 func (UnimplementedQRDBServiceServer) PromoteMember(context.Context, *PromoteMemberRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method PromoteMember not implemented")
+}
+func (UnimplementedQRDBServiceServer) TransferLeadership(context.Context, *TransferLeadershipRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TransferLeadership not implemented")
 }
 func (UnimplementedQRDBServiceServer) RequestSnapshot(context.Context, *RequestSnapshotMessage) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestSnapshot not implemented")
@@ -5861,6 +5887,24 @@ func _QRDBService_PromoteMember_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).PromoteMember(ctx, req.(*PromoteMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TransferLeadership_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransferLeadershipRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TransferLeadership(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TransferLeadership_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TransferLeadership(ctx, req.(*TransferLeadershipRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8989,6 +9033,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PromoteMember",
 			Handler:    _QRDBService_PromoteMember_Handler,
+		},
+		{
+			MethodName: "TransferLeadership",
+			Handler:    _QRDBService_TransferLeadership_Handler,
 		},
 		{
 			MethodName: "RequestSnapshot",

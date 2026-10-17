@@ -319,7 +319,6 @@ func TestHandleJoinRequest_AdvertiserFailureDoesNotRefuseTheJoin(t *testing.T) {
 }
 
 func TestJoinServer_SignsAValidCSR(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -346,9 +345,10 @@ func TestJoinServer_SignsAValidCSR(t *testing.T) {
 	}
 
 	certPEM, err := JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  js.PublicKey(),
-		Token:      token,
+		ServerAddr:    js.Addr(),
+		ServerKey:     js.PublicKey(),
+		ServerP256Key: js.P256PublicKey(),
+		Token:         token,
 	}, csrDER, "spiffe://attacker.example/node/anything")
 	if err != nil {
 		t.Fatalf("JoinCSR: %v", err)
@@ -382,7 +382,6 @@ func TestJoinServer_SignsAValidCSR(t *testing.T) {
 }
 
 func TestJoinServer_WrongTokenRefused(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -405,9 +404,10 @@ func TestJoinServer_WrongTokenRefused(t *testing.T) {
 	}
 
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  js.PublicKey(),
-		Token:      "never-minted-token",
+		ServerAddr:    js.Addr(),
+		ServerKey:     js.PublicKey(),
+		ServerP256Key: js.P256PublicKey(),
+		Token:         "never-minted-token",
 	}, csrDER, "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -416,7 +416,6 @@ func TestJoinServer_WrongTokenRefused(t *testing.T) {
 }
 
 func TestJoinServer_TokenCannotBeReused(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -434,7 +433,7 @@ func TestJoinServer_TokenCannotBeReused(t *testing.T) {
 	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
 
 	if _, err := JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), Token: token,
+		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), ServerP256Key: js.P256PublicKey(), Token: token,
 	}, csrDER, nodeURI); err != nil {
 		t.Fatalf("first JoinCSR (token must be accepted once): %v", err)
 	}
@@ -444,7 +443,7 @@ func TestJoinServer_TokenCannotBeReused(t *testing.T) {
 	// identity check, so the matching URI pairing is kept here too.
 	_, otherCSR := buildMatchingJoinCSR(t, nodeURI)
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), Token: token,
+		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), ServerP256Key: js.P256PublicKey(), Token: token,
 	}, otherCSR, nodeURI)
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -453,7 +452,6 @@ func TestJoinServer_TokenCannotBeReused(t *testing.T) {
 }
 
 func TestJoinServer_InvalidCSRRefused(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -467,9 +465,10 @@ func TestJoinServer_InvalidCSRRefused(t *testing.T) {
 
 	token := mintTestJoinToken(t, store, "127.0.0.1:9103")
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  js.PublicKey(),
-		Token:      token,
+		ServerAddr:    js.Addr(),
+		ServerKey:     js.PublicKey(),
+		ServerP256Key: js.P256PublicKey(),
+		Token:         token,
 	}, []byte("not a csr"), "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -521,7 +520,7 @@ func TestStartJoinServer_RequiresProvider(t *testing.T) {
 // to a closed port still fails, but with *FetchError, never a
 // token-related refusal.
 func TestJoinCSR_EmptyTokenIsAllowed(t *testing.T) {
-	_, err := JoinCSR(context.Background(), &JoinClientOptions{ServerAddr: "127.0.0.1:1"}, []byte{}, "")
+	_, err := JoinCSR(context.Background(), &JoinClientOptions{ServerAddr: "127.0.0.1:1", ServerP256Key: newTestP256PublicKey(t)}, []byte{}, "")
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
 		t.Fatalf("JoinCSR with no token = %v, want *FetchError (dial failure)", err)
@@ -549,7 +548,6 @@ func TestJoinCSR_ErrorStrings(t *testing.T) {
 }
 
 func TestJoinServerOptions_PortDefault(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
@@ -574,7 +572,6 @@ func TestJoinServer_NilReceiver(t *testing.T) {
 }
 
 func TestLoadOrGenerateJoinKey_ReusesExistingKey(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	dir := t.TempDir()
@@ -584,9 +581,10 @@ func TestLoadOrGenerateJoinKey_ReusesExistingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJoinServer (first): %v", err)
 	}
-	// Copied before Stop: Stop destroys the key's protected pages, and
-	// PublicKey's slice aliases them.
+	// Copied before Stop: Stop destroys the keys' protected pages, and the
+	// accessors' slices alias them.
 	pub1 := bytes.Clone(js1.PublicKey())
+	p256Pub1 := bytes.Clone(js1.P256PublicKey())
 	js1.Stop()
 
 	port2 := freePort(t)
@@ -595,10 +593,15 @@ func TestLoadOrGenerateJoinKey_ReusesExistingKey(t *testing.T) {
 		t.Fatalf("StartJoinServer (second, same dir): %v", err)
 	}
 	defer js2.Stop()
-	pub2 := js2.PublicKey()
 
-	if !bytes.Equal(pub1, pub2) {
+	// The Noise key exists only where this runtime may use Noise; under FIPS
+	// 140-3 mode both listeners hold none, and the P-256 key below is the one
+	// whose reuse decides whether a pinned joiner still reaches this member.
+	if !bytes.Equal(pub1, js2.PublicKey()) {
 		t.Fatal("second StartJoinServer over the same data dir generated a NEW key instead of reusing join-key.hex")
+	}
+	if len(p256Pub1) == 0 || !bytes.Equal(p256Pub1, js2.P256PublicKey()) {
+		t.Fatal("second StartJoinServer over the same data dir generated a NEW P-256 key instead of reusing join-p256-key.hex")
 	}
 }
 
@@ -622,7 +625,6 @@ func TestJoin_AnchorFetchFailure(t *testing.T) {
 }
 
 func TestJoin_InvalidJoinKeyHex(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	// A real anchor so the failure under test is the hex decode, not the
 	// anchor fetch: start a first node purely to serve the anchor.
 	_, boot := startFirstNode(t)
@@ -633,6 +635,7 @@ func TestJoin_InvalidJoinKeyHex(t *testing.T) {
 		DataDir:     t.TempDir(),
 		Bootstrap: BootstrapOptions{
 			NoiseKey:  boot.NoiseKey,
+			P256Key:   boot.P256Key,
 			NoiseAddr: boot.NoiseAddr,
 			JoinAddr:  "127.0.0.1:1",
 			JoinKey:   "not-valid-hex",
@@ -659,7 +662,6 @@ func TestJoinKeyDecodeError_ErrorAndUnwrap(t *testing.T) {
 }
 
 func TestJoinServer_GarbageBeforeHandshakeDoesNotPanic(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -687,7 +689,6 @@ func TestJoinServer_GarbageBeforeHandshakeDoesNotPanic(t *testing.T) {
 }
 
 func TestJoinCSR_WrongServerKeyLength(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -697,14 +698,21 @@ func TestJoinCSR_WrongServerKeyLength(t *testing.T) {
 	}
 	defer js.Stop()
 
+	// Both suites' keys are malformed, so whichever suite this runtime selects
+	// -- Noise, or P-256 under FIPS 140-3 mode -- is handed a bad key.
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  []byte{0x01, 0x02}, // wrong length
-		Token:      "tok",
-		Timeout:    2 * time.Second,
+		ServerAddr:    js.Addr(),
+		ServerKey:     []byte{0x01, 0x02}, // wrong length
+		ServerP256Key: []byte{0x01, 0x02}, // wrong length
+		Token:         "tok",
+		Timeout:       2 * time.Second,
 	}, []byte{}, "")
 	if err == nil {
 		t.Fatal("JoinCSR with a malformed server key succeeded, want an error")
+	}
+	var fipsErr *NoiseFIPSUnavailableError
+	if errors.As(err, &fipsErr) {
+		t.Fatalf("JoinCSR = %v: refused for the suite, never reaching the malformed key under test", err)
 	}
 }
 
@@ -720,7 +728,6 @@ func TestBuildJoinCSR_InvalidNodeURI(t *testing.T) {
 }
 
 func TestStartJoinServer_PortInUse(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -1070,7 +1077,6 @@ func TestHandleJoinRequest_ConcurrentTokensForOneIdentityYieldExactlyOneLeaf(t *
 }
 
 func TestJoinServer_SigningFailureRefused(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())
 	if err != nil {
@@ -1095,9 +1101,10 @@ func TestJoinServer_SigningFailureRefused(t *testing.T) {
 	}
 
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  js.PublicKey(),
-		Token:      token,
+		ServerAddr:    js.Addr(),
+		ServerKey:     js.PublicKey(),
+		ServerP256Key: js.P256PublicKey(),
+		Token:         token,
 	}, csrDER, "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -1106,10 +1113,10 @@ func TestJoinServer_SigningFailureRefused(t *testing.T) {
 }
 
 // TestJoinServer_GarbageAfterHandshakeDoesNotPanic completes a genuine
-// Noise_NK handshake as a raw client, then sends an undecryptable
-// ciphertext frame, exercising handle's Decrypt-failure branch.
+// handshake as a raw client -- Noise_NK, or P-256 under FIPS 140-3 mode -- then
+// sends an undecryptable ciphertext frame, exercising handle's
+// Decrypt-failure branch.
 func TestJoinServer_GarbageAfterHandshakeDoesNotPanic(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -1125,32 +1132,11 @@ func TestJoinServer_GarbageAfterHandshakeDoesNotPanic(t *testing.T) {
 	}
 	defer conn.Close()
 
-	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
-		Pattern:       noise.HandshakeNK,
-		PeerStaticKey: js.PublicKey(),
-		IsInitiator:   true,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	if err := sess.InitHandshake(); err != nil {
-		t.Fatalf("InitHandshake: %v", err)
-	}
 	deadline := time.Now().Add(2 * time.Second)
-
-	msg1, _, err := sess.HandshakeMessage(nil)
-	if err != nil {
-		t.Fatalf("HandshakeMessage (msg1): %v", err)
-	}
-	if err := noiseboot.WriteFrame(conn, msg1, deadline); err != nil {
-		t.Fatalf("WriteFrame (msg1): %v", err)
-	}
-	msg2, err := noiseboot.ReadFrame(conn, deadline)
-	if err != nil {
-		t.Fatalf("ReadFrame (msg2): %v", err)
-	}
-	if _, done, err := sess.HandshakeMessage(msg2); err != nil || !done {
-		t.Fatalf("HandshakeMessage (msg2): done=%v err=%v", done, err)
+	if NoiseAvailable() {
+		completeNoiseJoinHandshake(t, conn, js.PublicKey(), deadline)
+	} else {
+		completeP256JoinHandshake(t, conn, js.P256PublicKey(), deadline)
 	}
 
 	// A frame the server will successfully READ but fail to DECRYPT.
@@ -1162,12 +1148,48 @@ func TestJoinServer_GarbageAfterHandshakeDoesNotPanic(t *testing.T) {
 	_, _ = conn.Read(buf) // expect EOF; must not hang or panic
 }
 
+// completeNoiseJoinHandshake drives the Noise_NK suite's handshake over conn as
+// a raw initiator, leaving the connection at the point the server expects its
+// first encrypted frame. It needs X25519, so a caller reaches it only where
+// NoiseAvailable() holds.
+func completeNoiseJoinHandshake(t *testing.T, conn net.Conn, serverKey []byte, deadline time.Time) {
+	t.Helper()
+	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
+		Pattern:       noise.HandshakeNK,
+		PeerStaticKey: serverKey,
+		IsInitiator:   true,
+		Prologue:      noiseboot.NoiseSuiteHeader(),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := sess.InitHandshake(); err != nil {
+		t.Fatalf("InitHandshake: %v", err)
+	}
+	msg1, _, err := sess.HandshakeMessage(nil)
+	if err != nil {
+		t.Fatalf("HandshakeMessage (msg1): %v", err)
+	}
+	// The join exchange opens with the version||suite header, as the bootstrap
+	// wire does.
+	if err := noiseboot.WriteFrame(conn, append(noiseboot.NoiseSuiteHeader(), msg1...), deadline); err != nil {
+		t.Fatalf("WriteFrame (msg1): %v", err)
+	}
+	msg2, err := noiseboot.ReadFrame(conn, deadline)
+	if err != nil {
+		t.Fatalf("ReadFrame (msg2): %v", err)
+	}
+	if _, done, err := sess.HandshakeMessage(msg2); err != nil || !done {
+		t.Fatalf("HandshakeMessage (msg2): done=%v err=%v", done, err)
+	}
+}
+
 func TestJoinCSR_DialFailureIsFetchError(t *testing.T) {
 	_, err := JoinCSR(context.Background(), &JoinClientOptions{
-		ServerAddr: "127.0.0.1:1",
-		ServerKey:  make([]byte, 32),
-		Token:      "tok",
-		Timeout:    200 * time.Millisecond,
+		ServerAddr:    "127.0.0.1:1",
+		ServerP256Key: newTestP256PublicKey(t),
+		Token:         "tok",
+		Timeout:       200 * time.Millisecond,
 	}, []byte{}, "")
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {

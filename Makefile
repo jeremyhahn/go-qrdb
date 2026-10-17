@@ -3,6 +3,21 @@
 
 .DEFAULT_GOAL := build
 
+# The release targets' command-line inputs, kept out of every child
+# environment, and FIRST because the first $(shell ...) is a few lines down.
+# From GNU Make 4.4 a $(shell ...) runs with the exported variables in its
+# environment, and a command-line variable is exported, so building that
+# environment expands `VERSION=v0.0.0-alpha$(shell ...)` while this file is
+# still being read -- before any recipe or guard runs. Make 4.3 exported
+# nothing to $(shell ...), which is why this used to sit beside the recipes.
+# The defaults and the sanitiser that read these names are with
+# check-version-reconciled and release-alpha below.
+unexport VERSION RELEASE_REMOTE REPO_NAME AGENT_GIT SUBMODULE_TAGS
+unexport REL_VERSION REL_REMOTE REL_REPO REL_AGENT_GIT REL_SUBMODULE_TAGS
+unexport REL_ORIGIN_VERSION REL_ORIGIN_REMOTE REL_ORIGIN_REPO
+unexport REL_ORIGIN_AGENT REL_ORIGIN_SUBMOD
+unexport RELEASE_TAG REL_RELEASE_TAG
+
 # Project metadata
 MODULE        := github.com/jeremyhahn/go-qrdb
 SERVER_BINARY := qrdbd
@@ -19,6 +34,11 @@ BUILD_VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.1-alpha")
 GIT_COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE    := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS       := -X main.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
+
+# Every pinned tool version (handbook devcontainer.md section 2): the same file
+# the CI image's toolchain stage sources, so make and CI use one set of pins.
+TOOL_PINS := scripts/tool-pins.sh
+include $(TOOL_PINS)
 
 # Go tooling
 GO            := go
@@ -588,6 +608,73 @@ build-client:
 .PHONY: _build-client
 _build-client: build-frontend
 	CGO_ENABLED=1 $(GOBUILD) $(DESKTOP_TAG_FLAG) -o bin/$(CLIENT_BINARY) ./cmd/qrdb
+
+# ============================================================================
+# Release artifacts (docs/release/architecture.md, "Release artifacts")
+# ============================================================================
+#
+# One cross-build path for every platform the release publishes. Each platform
+# ships four binaries -- qrdbd and the headless qrdb CLI, each plain and FIPS:
+#
+#   dist/qrdbd-<BUILD_VERSION>-<goos>-<goarch>[-fips]
+#   dist/qrdb-<BUILD_VERSION>-<goos>-<goarch>[-fips]
+#   dist/SHA256SUMS                       (release-artifacts only)
+#
+# CGO_ENABLED=0 makes linux/arm64 a plain `go build` with no cross toolchain
+# and every artifact a static binary. Nothing under cmd/ or pkg/ imports "C";
+# the one cgo dependency of qrdbd and qrdb is go-mysql-server's MySQL REGEXP
+# engine, which links the system ICU (libicui18n/libicuuc) through
+# go-icu-regex, so a native `make build-server` binary needs that exact ICU
+# soname on the host. RELEASE_TAGS adds gms_pure_go, go-mysql-server's own
+# switch to Go's regexp (RE2 syntax) for the REGEXP family -- the only
+# behaviour a release binary does not share with the native build. The
+# Wails desktop client (_build-client) also needs cgo and is not a release
+# artifact.
+#
+# The FIPS variant links Go's native FIPS 140-3 module, selected at BUILD time
+# by GOFIPS140 -- the same `latest` the nightly FIPS leg tests against
+# (docs/seal/fips140-mode.md). Enforcement is still the operator's GODEBUG at
+# run time; the plain variant is built with GOFIPS140=off so a GOFIPS140 in
+# the caller's environment cannot turn it into a second FIPS binary.
+#
+# -trimpath keeps the build host's paths out of a published binary.
+RELEASE_DIR         := dist
+RELEASE_PLATFORMS   ?= linux/amd64 linux/arm64
+RELEASE_FIPS_MODULE := latest
+RELEASE_TAGS        := $(strip $(BUILD_TAGS) gms_pure_go)
+
+# release-build expands to ONE shell command that builds qrdbd and the
+# headless qrdb CLI for $(1)=GOOS $(2)=GOARCH, with $(3) the artifact suffix
+# ("" or "-fips") and $(4) the GOFIPS140 value.
+release-build = for cmd in $(SERVER_BINARY) $(CLIENT_BINARY); do \
+	GOOS=$(1) GOARCH=$(2) GOFIPS140=$(4) CGO_ENABLED=0 \
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -tags "$(RELEASE_TAGS)" \
+	-o $(RELEASE_DIR)/$$cmd-$(BUILD_VERSION)-$(1)-$(2)$(3) ./cmd/$$cmd || exit 1; \
+	done
+
+# release-platform expands to the plain and the FIPS build of $(1)=goos/goarch.
+release-platform = $(call release-build,$(word 1,$(subst /, ,$(1))),$(word 2,$(subst /, ,$(1))),,off) && \
+	$(call release-build,$(word 1,$(subst /, ,$(1))),$(word 2,$(subst /, ,$(1))),-fips,$(RELEASE_FIPS_MODULE))
+
+# release-cross builds ONE platform, plain and FIPS:
+#   make release-cross PLATFORM=linux/arm64
+# CI's image job runs it for linux/arm64 so a change that breaks the arm64
+# build fails the pull request rather than the release.
+.PHONY: release-cross
+release-cross:
+	@case "$(PLATFORM)" in */*) ;; *) echo "release-cross: set PLATFORM=<goos>/<goarch>, e.g. make release-cross PLATFORM=linux/arm64" >&2; exit 2 ;; esac
+	@mkdir -p $(RELEASE_DIR)
+	$(call release-platform,$(PLATFORM))
+
+# release-artifacts builds every RELEASE_PLATFORMS entry into a clean
+# $(RELEASE_DIR) and writes SHA256SUMS over the result; release.yml's publish
+# job attaches the whole directory to the release.
+.PHONY: release-artifacts
+release-artifacts:
+	rm -rf $(RELEASE_DIR)
+	mkdir -p $(RELEASE_DIR)
+	$(foreach p,$(RELEASE_PLATFORMS),$(call release-platform,$(p)) && ) true
+	cd $(RELEASE_DIR) && sha256sum $(SERVER_BINARY)-* $(CLIENT_BINARY)-* > SHA256SUMS
 
 # TypeScript SDK and frontend build targets
 .PHONY: install-sdk
@@ -1188,13 +1275,55 @@ integration-image:
 	  -f .devcontainer/Dockerfile \
 	  -t $(INT_IMAGE) .
 
-# integration-test runs BOTH suites in isolated stages so the standalone
-# (multi-protocol CLI vs the single-node docker servers) and cluster
-# (self-spawned single-node + 3-node clusters) tests never run concurrently
-# and never contend for host CPU. Each stage builds, runs, and tears down its
-# own stack. Fail-fast: a failing standalone stage stops before cluster.
+# integration-test is CI's integration stage (handbook ci-standard.md): it runs
+# IT_CMD in the integration image (build/docker/devcontainer, `make
+# docker-build-it`) under its hardened compose service -- read-only, no
+# network, no capabilities -- and tears the project down, pass or fail.
+#
+# The default IT_CMD is every self-spawned qrdbdharness suite
+# (./test/integration and ./test/integration/auth). IT_FEATURE=<feature>
+# narrows it to that feature's features.mk selection, exactly what
+# `make integration-test-<feature>` runs on the host; CI's integration-features
+# legs are `make integration-test IT_FEATURE=<feature>`. A feature that selects
+# nothing says so and passes, as integration-test-<feature> does, before any
+# image is built. The Docker-based
+# test/integration/api stack needs a daemon the hardened service does not
+# have, so it is integration-test-docker below, CI's integration-standalone job.
+#
+# GOMAXPROCS is the half of the cluster stage's #682 budget that reaches the
+# spawned processes: the harness hands its environment to every qrdbd and qrdb
+# it starts, so each sizes its scheduler to 8 Ps rather than the host's
+# threads. The compose service sets it.
+IT_FEATURE ?=
+IT_CMD     ?= $(if $(IT_FEATURE),$(call int_cmd,$(IT_FEATURE)),$(GO) test -race -count=1 -v -timeout=$(INTEGRATION_GO_TIMEOUT) -p 1 -parallel $(CLUSTER_PARALLEL) -tags "$(INT_FEATURE_TAGS)" $(INT_TEST_DIR) $(INT_TEST_DIR)/auth)
+
 .PHONY: integration-test
-integration-test: integration-test-auth integration-test-standalone integration-test-cluster
+integration-test:
+	@if [ -n "$(IT_FEATURE)" ] && [ -z "$(strip $(call int_files,$(IT_FEATURE)))" ]; then \
+		echo "==> integration-test IT_FEATURE=$(IT_FEATURE): no non-Docker integration test is mapped to this feature yet (see test/integration/features.mk)"; \
+		exit 0; \
+	fi; \
+	if [ -n "$(IT_FEATURE)" ] && [ -z '$(call int_names,$(IT_FEATURE))' ]; then \
+		echo "==> integration-test IT_FEATURE=$(IT_FEATURE): mapped files contain no Test function"; \
+		exit 0; \
+	fi; \
+	$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?; \
+	echo "==> Running integration tests in $(IT_IMAGE) (project $(IT_PROJECT))..."; \
+	status=0; \
+	QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
+		run --rm integration $(IT_CMD) || status=$$?; \
+	QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
+		down --volumes >/dev/null 2>&1 || true; \
+	exit $$status
+
+# integration-test-docker runs the suites that need the .devcontainer stacks in
+# isolated stages, so the standalone (multi-protocol CLI vs the single-node
+# docker servers) and cluster (self-spawned single-node + 3-node clusters)
+# tests never run concurrently and never contend for host CPU. Each stage
+# builds, runs, and tears down its own stack. Fail-fast: a failing standalone
+# stage stops before cluster.
+.PHONY: integration-test-docker
+integration-test-docker: integration-test-auth integration-test-standalone integration-test-cluster
 	@echo "==> All integration stages passed (auth + standalone + cluster)."
 
 # test/integration/auth was named by no target and run by no workflow (#228),
@@ -1382,7 +1511,7 @@ ifeq ($(HAS_GPU),1)
 	@$(MAKE) integration-test-gpu
 else
 	@echo "==> No NVIDIA GPU detected — falling back to CPU integration tests..."
-	@$(MAKE) integration-test
+	@$(MAKE) integration-test-docker
 endif
 
 # Run integration tests locally (requires running qrdbd server with all protocols).
@@ -1448,31 +1577,37 @@ print-integration-features:
 # the explicit recipe); test/buildgates/feature_target_shadow_test.go refuses
 # one, and test/buildgates/feature_integration_coverage_test.go fails if a
 # feature name would collide with this target itself.
+#
+# The selection is computed by make, not by the recipe's shell, so the same
+# functions give `make integration-test IT_FEATURE=<feature>` the identical
+# command to run inside the integration image:
+#   int_files  the feature's features.mk files, under INT_TEST_DIR
+#   int_dirs   the packages those files are in
+#   int_names  their Test functions, `|`-joined (empty without files, so sed
+#              is never handed no file and left reading stdin)
+#   int_tags   INT_FEATURE_TAGS plus the feature's optional INTTAGS_<feature>
+#   int_cmd    the go test command over all of the above
+int_var   = $(subst -,_,$(1))
+int_files = $(addprefix $(INT_TEST_DIR)/,$(strip $(INTTEST_$(call int_var,$(1)))))
+int_dirs  = $(sort $(patsubst %/,%,$(dir $(call int_files,$(1)))))
+INT_TEST_NAME_SED := s/^func \(Test[A-Za-z0-9_]*\)[(].*/\1/p
+int_names = $(if $(call int_files,$(1)),$(shell sed -n '$(INT_TEST_NAME_SED)' $(call int_files,$(1)) | paste -sd '|' -))
+int_tags  = $(INT_FEATURE_TAGS)$(if $(strip $(INTTAGS_$(call int_var,$(1)))),$(comma)$(strip $(INTTAGS_$(call int_var,$(1)))))
+int_cmd   = $(GOTEST) -tags "$(call int_tags,$(1))" -run '^($(call int_names,$(1)))$$' $(call int_dirs,$(1))
+
 .PHONY: integration-test-feature
 integration-test-feature:
 	@test -n "$(FEATURE)" || { echo "integration-test-feature: FEATURE=<feature> is required"; exit 2; }
-	@files="$(strip $(INTTEST_$(subst -,_,$(FEATURE))))"; \
-	if [ -z "$$files" ]; then \
+	@if [ -z "$(strip $(call int_files,$(FEATURE)))" ]; then \
 		echo "==> integration-test-$(FEATURE): no non-Docker integration test is mapped to this feature yet (see test/integration/features.mk)"; \
 		exit 0; \
 	fi; \
-	paths=""; dirs=""; \
-	for f in $$files; do \
-		paths="$$paths $(INT_TEST_DIR)/$$f"; \
-		d=$$(dirname "$$f"); \
-		if [ "$$d" = "." ]; then p="$(INT_TEST_DIR)"; else p="$(INT_TEST_DIR)/$$d"; fi; \
-		case " $$dirs " in *" $$p "*) ;; *) dirs="$$dirs $$p" ;; esac; \
-	done; \
-	names=$$(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' $$paths | paste -sd '|' -); \
-	if [ -z "$$names" ]; then \
+	if [ -z '$(call int_names,$(FEATURE))' ]; then \
 		echo "==> integration-test-$(FEATURE): mapped files contain no Test function"; \
 		exit 0; \
 	fi; \
-	tags="$(INT_FEATURE_TAGS)"; \
-	extra_tags="$(strip $(INTTAGS_$(subst -,_,$(FEATURE))))"; \
-	if [ -n "$$extra_tags" ]; then tags="$$tags,$$extra_tags"; fi; \
-	echo "==> integration-test-$(FEATURE): running $$(echo $$names | tr '|' ' ')"; \
-	$(GOTEST) -tags "$$tags" -run "^($$names)$$"$$dirs
+	echo "==> integration-test-$(FEATURE): running $(subst |, ,$(call int_names,$(FEATURE)))"; \
+	$(call int_cmd,$(FEATURE))
 
 .PHONY: integration-test-%
 integration-test-%:
@@ -2022,7 +2157,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2085,10 +2220,10 @@ NOPGSQL_TAGS      := $(subst $(space),$(comma),$(strip $(filter-out qrdb_pgsql,$
 NOSQLFAMILY_TAGS  := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql qrdb_pgsql qrdb_sql,$(BUILD_TAGS))))
 NOETCD_TAGS       := $(subst $(space),$(comma),$(strip $(filter-out qrdb_etcd,$(BUILD_TAGS))))
 
-# ACTIONLINT_VERSION is the actionlint the runner and lane images bake; ci.yml
-# pins the same value and asserts it with scripts/require-tool.sh before the
-# Lint job reaches this target (#636). Never installed over the network.
-ACTIONLINT_VERSION := v1.7.12
+# ACTIONLINT_VERSION (scripts/tool-pins.sh) is the actionlint the toolchain,
+# runner and lane images bake; ci.yml pins the same value and asserts it with
+# scripts/require-tool.sh before the Lint job reaches this target (#636).
+# Never installed over the network.
 export ACTIONLINT_VERSION
 
 # WORKFLOW_FILES is every workflow file that exists: .github/workflows/ always,
@@ -2929,8 +3064,6 @@ test-tag-lockstep:
 # passes it.
 RELEASE_TAG :=
 
-unexport RELEASE_TAG REL_RELEASE_TAG
-
 .PHONY: check-version-reconciled
 check-version-reconciled: override export REL_RELEASE_TAG := $(value RELEASE_TAG)
 check-version-reconciled:
@@ -3007,51 +3140,34 @@ endef
 # job on every branch, main included, on code nobody had touched since April.
 # A hint that says `@latest` would hand a developer exactly that.
 #
-# THESE FOUR LITERALS ARE WHAT EVERY `make` ENTRYPOINT BUILDS THE IMAGE WITH
-# (#322). They were three, they were hand-synced, and the Dockerfiles restated
-# their own -- gosec and govulncheck at `@latest`, golangci-lint at v2.7.2
-# against ci.yml's pin, so the gate image and CI could analyse one commit
-# with different analysers and neither result would say so.
+# THE PINS LIVE IN scripts/tool-pins.sh (#738), included at the top of this
+# file. That one file is read by this Makefile, by the CI image's toolchain
+# stage (build/docker/devcontainer/Dockerfile) and, through that image, by
+# every CI stage that runs in it -- so `make`, lane-verify and CI judge a
+# commit with the same analysers (handbook devcontainer.md section 2).
 #
-# The Dockerfiles now take these as build ARGs, and their ARG DEFAULTS ARE
-# THESE SAME NUMBERS. That is a deliberate second copy: a build that goes
-# around make -- VS Code "Reopen in Container", a bare `docker compose build`
-# -- has to keep working (#302, ruled 2026-09-05), and it can only do that if
-# the Dockerfile can supply a version on its own. The copy is guarded by a
-# check rather than by its absence: #323 asserts the Makefile, ci.yml and the
-# Dockerfile defaults agree. Changing a pin means changing it in all three.
+# Two copies are still allowed, and both are held to the pin file by
+# `make check-tool-versions`, which runs first in `_ci`:
+#   - the literal env pins in .github/workflows/ci.yml for the jobs that run
+#     on the runner rather than in the image (the runner image bakes them);
+#   - the ARG DEFAULTS of .devcontainer/Dockerfile{,.gpu}, the developer
+#     devcontainer, so a build that goes around make -- VS Code "Reopen in
+#     Container", a bare `docker compose build` -- still gets the pinned
+#     analysers (#302, ruled 2026-09-05).
+# Changing a pin means changing it in scripts/tool-pins.sh; forgetting a copy
+# is a red gate naming the file, rather than two images wearing one tag.
 #
 # `export` rather than passing them per-recipe: every `docker compose` call in
 # this file builds one of those Dockerfiles, directly or through a service that
-# builds one, and compose reads these from its own
-# environment. Exporting covers all of them, including the ones added after
-# this comment -- naming the call sites instead would leave the next one to be
-# found by a failed build. The compose files take them through the
-# environment-PASSTHROUGH form (`GOSEC_VERSION:` with no value), so an unset
-# variable omits the arg and the Dockerfile default applies; `${GOSEC_VERSION}`
-# there would pass an empty string and defeat the default. Measured, and
-# written up in .devcontainer/docker-compose.yml.
+# builds one, and compose reads these from its own environment. The compose
+# files take them through the environment-PASSTHROUGH form (`GOSEC_VERSION:`
+# with no value), so an unset variable omits the arg and the Dockerfile
+# default applies; `${GOSEC_VERSION}` there would pass an empty string and
+# defeat the default. Measured, and written up in .devcontainer/docker-compose.yml.
 #
-# THAT THESE AGREE WITH `.github/workflows/ci.yml` IS NOW ASSERTED, by
-# `make check-tool-versions`, which runs first in `_ci` (#323). ci.yml's env
-# block is the authority for the three Go analysers -- it is what the runner
-# installs, so it is what actually judges a pull request -- and neither a
-# Makefile nor a Dockerfile can read it. trivy is the exception: ci.yml carries
-# no trivy pin, so for that one the value here is the authority and the CPU
-# Dockerfile is held to it.
-#
-# Changing a pin still means changing it in ci.yml, here, and in both
-# Dockerfiles. The difference is that forgetting one is now a red gate naming
-# the file, rather than two images wearing one tag.
-#
-# WHAT IS STILL NOT ASSERTED BY THAT CHECK: that the version pinned is the
-# version INSTALLED. A pin says which analyser should be in the image, not which
-# one is; require-tool.sh answers that, inside both Dockerfiles at build time
-# and again in ci.yml. The two halves together are the guarantee.
-GOLANGCI_LINT_VERSION := v2.14.0
-GOSEC_VERSION         := v2.29.0
-GOVULNCHECK_VERSION   := v1.8.0
-TRIVY_VERSION         := v0.75.0
+# WHAT check-tool-versions DOES NOT ASSERT: that the version pinned is the
+# version INSTALLED. require-tool.sh answers that, inside the Dockerfiles at
+# build time and again in ci.yml. The two halves together are the guarantee.
 
 # A FIFTH VERSION, and it is NOT A PIN (#295). golangci-lint bundles a gosec of
 # its own, and that is the one `lint` and `lint-sdk` judge this tree with --
@@ -3514,6 +3630,7 @@ trivy-report: ## Report sub-threshold (MEDIUM/LOW) advisories; advisory in night
 test-trivy-db: ## Test the trivy database-age guard
 	@./scripts/check-trivy-db_test.sh
 	@./scripts/trivy-certified-db_test.sh
+	@./scripts/trivy-db-upstreams_test.sh
 
 # The contract CI calls (devops.md §8): gosec, govulncheck, go mod verify and
 # trivy fs, in the same form a developer runs locally.
@@ -3535,39 +3652,147 @@ test-trivy-db: ## Test the trivy database-age guard
 security: gosec gosec-sdk vuln mod-verify trivy
 	@echo "Security suite passed: $^"
 
+# The latest-version check (handbook ci-standard.md §1): every direct
+# requirement of every tracked module is at its latest release, or its go.mod
+# line carries the comment naming why it is held (devops.md §9). Asks the
+# module proxy, so it needs a network; CI runs it in the toolchain image with
+# IN_IMAGE_NETWORK=bridge.
+.PHONY: deps-check
+deps-check:
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	GO="$(GO)" ./scripts/deps-check.sh
+
+.PHONY: test-deps-check
+test-deps-check:
+	@./scripts/deps-check_test.sh
+
 # ============================================================================
 # Docker
 # ============================================================================
 
-# docker-build builds the release image from the root Dockerfile, whose
+# docker-build-release builds the release image from the root Dockerfile, whose
 # `go mod download` needs the same internal Gitea credentials every other image
 # build here does -- so it opens with the same $(stage-gomodauth) prelude and
 # passes the same secret id. Before #305 it passed none and the Dockerfile
 # swallowed the resulting failure, so this target produced an image-less build
 # error naming a missing package instead of a missing token.
-.PHONY: docker-build
-docker-build:
+.PHONY: docker-build-release
+docker-build-release:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
 	  --secret id=gomodauth,env=GOMODAUTH \
 	  -t qrdbd:$(BUILD_VERSION) .
 
-.PHONY: docker-build-integration
-docker-build-integration:
-	@$(stage-gomodauth) \
-	DOCKER_BUILDKIT=1 docker build \
-	  --secret id=gomodauth,env=GOMODAUTH \
-	  $(SCANNER_BUILD_ARGS) \
-	  -t go-qrdb-integration:$(DOCKER_TAG) -f .devcontainer/Dockerfile .
-
-.PHONY: docker-run
-docker-run:
+.PHONY: docker-run-release
+docker-run-release:
 	docker run --rm -p 63001:63001 -p 63002:63002 -p 63003:63003 qrdbd:$(BUILD_VERSION)
 
 .PHONY: docker-run-devcontainer
 docker-run-devcontainer:
 	@$(stage-gomodauth) \
 	docker compose -f $(COMPOSE_FILE) run --rm --build devcontainer
+
+# ----------------------------------------------------------------------------
+# The CI image (#738; handbook devcontainer.md and ci-standard.md)
+#
+# build/docker/devcontainer/Dockerfile is the ONE image every CI stage runs
+# in: build, unit tests, security and deps-check in its `toolchain` stage,
+# the integration suites in its `integration` stage. .devcontainer/ is the
+# developer's VS Code container and the image of the Docker-based
+# test/integration/api stack; it runs no CI stage of its own.
+#
+# The toolchain tag is a hash of everything the image is built from -- the
+# Dockerfile, the pin file and every module's go.mod/go.sum the modules stage
+# downloads -- so `make toolchain-image` names the image a tree needs, and two
+# trees that need the same image share it. lane-verify's VERIFY_IMAGE is that
+# tag (handbook devcontainer.md section 8).
+#
+# DEVCONTAINER_MODULES is every module in the tree, in the layout their
+# `replace` directives expect; the Dockerfile's modules stage copies and
+# downloads the same list, so the toolchain image runs any of their targets
+# with GOPROXY=off.
+DEVCONTAINER_DIR     := build/docker/devcontainer
+DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
+DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
+	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
+	test/performance/qrdb test/performance/tikv
+TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
+TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
+
+# The integration image and its compose project. CI passes a per-run IT_IMAGE
+# and IT_PROJECT so legs sharing a daemon never share a tag or a stack.
+IT_IMAGE   ?= qrdb-it:$(DOCKER_TAG)
+IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
+
+REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
+
+# The module credentials are the same $(stage-gomodauth) secret every other
+# image build here passes; without them the build resolves from the public
+# proxy. GO_BUILD_PROXY is passed only when the caller sets it (handbook
+# devcontainer.md section 4). IT_TAGS is the tag set the integration stage
+# compiles its suites under, the same set the per-feature targets use.
+DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
+	--secret id=gomodauth,env=GOMODAUTH \
+	--build-arg GO_IMAGE=$(GO_IMAGE) \
+	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
+	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY=$(GO_BUILD_PROXY)) \
+	-f $(DEVCONTAINER_DIR)/Dockerfile
+
+.PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
+docker-build: docker-build-toolchain docker-build-it
+
+docker-build-toolchain:
+	$(REQUIRE_BUILDX)
+	@$(stage-gomodauth) \
+	$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .
+
+docker-build-it:
+	$(REQUIRE_BUILDX)
+	@$(stage-gomodauth) \
+	$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) .
+
+# docker-down-it removes an integration-test run: its compose project and its
+# image. integration-test downs its own stack and keeps the image for the next
+# run; CI's legs run this under always(), so a cancelled leg leaves nothing on
+# the runner. A name nobody created is not an error.
+.PHONY: docker-down-it
+docker-down-it:
+	@QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
+		down --volumes --remove-orphans >/dev/null 2>&1 || true
+	@docker image rm '$(IT_IMAGE)' >/dev/null 2>&1 || true
+
+toolchain-image:
+	@echo $(TOOLCHAIN_IMAGE)
+
+# docker-run runs CMD in the toolchain compose service: the checkout
+# bind-mounted, the invoking uid, no network, the integration service's
+# ulimits. `make docker-run CMD='make lint'`.
+CMD ?= make build
+docker-run: docker-build-toolchain
+	QRDB_TOOLCHAIN_TAG=$(TOOLCHAIN_TAG) QRDB_UID=$$(id -u) QRDB_GID=$$(id -g) \
+		docker compose -f $(DEVCONTAINER_COMPOSE) -p qrdb-tc-$(DOCKER_TAG) run --rm toolchain sh -c '$(CMD)'
+
+# trivy-image scans the integration image, the one CI stage image that is
+# not rebuilt from source by the stage that runs it. Same floor as `trivy`,
+# and the same certified database: a fresh container has no cache, and an
+# uncertified `trivy image` would download from the same upstreams the age
+# check exists to refuse when they are stale. TRIVY_IMAGE_INPUT scans a
+# `docker save` tar instead of a daemon image, which is how CI runs it in the
+# toolchain container, where there is no daemon.
+#
+# TRIVY_IMAGE_SECRET_CONFIG keeps the SECRET scanner off the image's Go module
+# cache, /gomodcache, and nothing else: third-party releases ship doc examples
+# and test-fixture keys (run 55673) that are not this project's secrets. The
+# vulnerability scanner does not read the file, so every module in the image is
+# still scanned; the reason is in the file, beside its one rule.
+TRIVY_IMAGE_INPUT ?=
+TRIVY_IMAGE_SECRET_CONFIG := build/trivy/image-secret.yaml
+.PHONY: trivy-image
+trivy-image:
+	$(call require-scanner,trivy,$(TRIVY_INSTALL))
+	$(trivy-certified-db)
+	trivy image --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update --secret-config $(TRIVY_IMAGE_SECRET_CONFIG) $(if $(TRIVY_IMAGE_INPUT),--input $(TRIVY_IMAGE_INPUT),$(IT_IMAGE))
 
 # ============================================================================
 # Dev Cluster (local 3-node cluster for testing)
@@ -3958,8 +4183,9 @@ help:
 	@echo "  test-playwright        Alias for test-e2e"
 	@echo ""
 	@echo "Integration Tests (devcontainer with qrdbd + all protocols):"
-	@echo "  integration-test           Run ALL integration tests (docker compose)"
-	@echo "  integration-test-api       Alias for integration-test"
+	@echo "  integration-test           The CI stage: every self-spawned suite in the integration image (IT_FEATURE=<f> for one)"
+	@echo "  integration-test-docker    The Docker api suites: auth, standalone and cluster stacks"
+	@echo "  integration-test-api       The standalone multi-protocol suite (integration-test-standalone)"
 	@echo "  integration-test-gpu       Run GPU-accelerated integration tests"
 	@echo "  integration-test-embedding Run embedding integration tests"
 	@echo "  integration-test-rag-ollama Run RAG e2e tests (Ollama overlay)"
@@ -4010,6 +4236,7 @@ help:
 	@echo ""
 	@echo "Security:"
 	@echo "  security               Blocking suite: gosec, govulncheck, go mod verify, trivy"
+	@echo "  deps-check             Fail on a direct dependency behind its latest release without a go.mod reason"
 	@echo "  gosec                  Run gosec security scanner"
 	@echo "  vuln                   Run govulncheck vulnerability scanner"
 	@echo "  vulncheck              Alias for vuln (root + sdk/go)"
@@ -4022,9 +4249,13 @@ help:
 	@echo "  dev-cluster-clean        Stop and remove dev cluster data"
 	@echo ""
 	@echo "Docker:"
-	@echo "  docker-build                 Build production image"
-	@echo "  docker-build-integration     Build integration test image"
-	@echo "  docker-run                   Run production container"
+	@echo "  docker-build                 Build the CI toolchain and integration images (build/docker/devcontainer)"
+	@echo "  docker-run CMD=...           Run CMD in the toolchain compose service (checkout bind-mounted)"
+	@echo "  toolchain-image              Print the content-hashed toolchain image tag"
+	@echo "  trivy-image                  Scan the integration image (IT_IMAGE) with trivy"
+	@echo "  docker-down-it               Remove an integration-test run's stack and image (IT_PROJECT, IT_IMAGE)"
+	@echo "  docker-build-release         Build production image"
+	@echo "  docker-run-release           Run production container"
 	@echo "  docker-run-devcontainer      Run devcontainer shell"
 	@echo ""
 	@echo "GORM Conformance (separate module at sdk/go/gorm/conformance; RED by design, see README):"
@@ -4225,19 +4456,16 @@ export GOWORK=off
 # come from the command line, so the file assignment exists only to neutralise
 # an inherited one.
 #
-# The defaults also come BEFORE the unexport lines. `unexport FOO` DEFINES FOO
-# as empty when it is not already set, which silently turned a `?=` default
-# into a no-op here before these became `:=`. The order no longer matters for
-# `:=`, and is kept because it is the order that reads correctly.
+# The unexport lines are at the TOP of this file, ahead of the first
+# $(shell ...), which under GNU Make 4.4 would otherwise expand an injected
+# value while the file is read. `unexport FOO` DEFINES FOO as empty when it is
+# not already set, which silently turned a `?=` default into a no-op before
+# these became `:=`; with `:=` the assignment below wins wherever the unexport
+# sits.
 VERSION        :=
 AGENT_GIT      := agent-git.sh
 REPO_NAME      := go-qrdb
 RELEASE_REMOTE := dev
-
-unexport VERSION RELEASE_REMOTE REPO_NAME AGENT_GIT SUBMODULE_TAGS
-unexport REL_VERSION REL_REMOTE REL_REPO REL_AGENT_GIT REL_SUBMODULE_TAGS
-unexport REL_ORIGIN_VERSION REL_ORIGIN_REMOTE REL_ORIGIN_REPO
-unexport REL_ORIGIN_AGENT REL_ORIGIN_SUBMOD
 
 release-alpha: override export REL_VERSION        := $(value VERSION)
 release-alpha: override export REL_REMOTE         := $(value RELEASE_REMOTE)

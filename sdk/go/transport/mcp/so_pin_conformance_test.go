@@ -17,7 +17,6 @@ package mcp
 import (
 	"context"
 	"testing"
-	"time"
 
 	mcpserver "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -37,7 +36,7 @@ func TestSOPINConformance(t *testing.T) {
 			t.Fatalf("Start: %v", err)
 		}
 		t.Cleanup(srv.Stop)
-		tr, err := New(transport.WithAddress("https://"+srv.Addr()+"/mcp"), transport.WithTLSConfig(f.ClientTLS), transport.WithTimeout(5*time.Second))
+		tr, err := New(transport.WithAddress("https://"+srv.Addr()+"/mcp"), transport.WithTLSConfig(f.ClientTLS), transport.WithTimeout(sotest.RequestTimeout))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

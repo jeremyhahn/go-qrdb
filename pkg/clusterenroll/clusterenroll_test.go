@@ -630,12 +630,9 @@ func TestStartAdvertiser_DataDirUnusableIsAServerError(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	// Reachable in every runtime: the P-256 key is generated and persisted
+	// whether or not the Noise suite is available.
 	opts := AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}
-	if !noiseAvailable() {
-		assertNoiseFaultUnreachable(t, mat, opts, blocked)
-		return
-	}
-
 	_, err = StartAdvertiser(mat, opts, blocked, discardLogger())
 	var serverErr *ServerError
 	if !errors.As(err, &serverErr) {
@@ -668,11 +665,9 @@ func TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise(t *testing.T) {
 
 	opts := AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}
 	dir := t.TempDir()
-	if !noiseAvailable() {
-		assertNoiseFaultUnreachable(t, mat, opts, dir)
-		return
-	}
 
+	// Reachable in every runtime: the listener is bound whether or not the
+	// Noise suite is available.
 	adv, err := StartAdvertiser(mat, opts, dir, discardLogger())
 	if err == nil {
 		adv.Stop()
@@ -695,9 +690,6 @@ func TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise(t *testing.T) {
 // injectable seam ca_key_never_leaves_test.go uses to observe the bundle
 // provider.
 func TestStartAdvertiser_NewNoiseServerFails(t *testing.T) {
-	if !noiseAvailable() {
-		t.Skip("FIPS 140-3 mode: this node never constructs a Noise server")
-	}
 	mat, err := clustertls.GenerateCABundle()
 	if err != nil {
 		t.Fatalf("GenerateCABundle: %v", err)
@@ -723,12 +715,17 @@ func TestStartAdvertiser_NewNoiseServerFails(t *testing.T) {
 	if !errors.Is(err, injected) {
 		t.Fatalf("ServerError does not wrap the injected construction failure: %v", err)
 	}
-	// The static key is generated and persisted before newNoiseServer is ever
-	// called (so a restart need not regenerate it), so a construction failure
-	// here leaves it on disk -- unlike a bind failure, this is not a defect:
-	// the same key is simply reloaded and retried on the next attempt.
-	if !fileExists(filepath.Join(dir, NoiseKeyFile)) {
-		t.Fatal("expected the static key to have been persisted before the construction failure")
+	// The static keys are generated and persisted before newNoiseServer is ever
+	// called (so a restart need not regenerate them), so a construction failure
+	// here leaves them on disk -- unlike a bind failure, this is not a defect:
+	// the same keys are simply reloaded and retried on the next attempt. The
+	// P-256 key exists in every runtime; the Noise key only where this runtime
+	// may use Noise, and never under FIPS 140-3 mode.
+	if !fileExists(filepath.Join(dir, P256KeyFile)) {
+		t.Fatal("expected the P-256 static key to have been persisted before the construction failure")
+	}
+	if got, want := fileExists(filepath.Join(dir, NoiseKeyFile)), noiseAvailable(); got != want {
+		t.Fatalf("Noise static key persisted = %v, want %v (Noise available = %v)", got, want, want)
 	}
 }
 
@@ -736,9 +733,6 @@ func TestStartAdvertiser_NewNoiseServerFails(t *testing.T) {
 // DefaultNoisePort rather than failing or an OS-chosen ephemeral port, by
 // reading the address the advertiser hands its Noise server.
 func TestStartAdvertiser_DefaultsNoisePort(t *testing.T) {
-	if !noiseAvailable() {
-		t.Skip("FIPS 140-3 mode: this node starts no Noise listener")
-	}
 	// The address the advertiser asks for is read at the newNoiseServer seam
 	// and the listener is then moved to an ephemeral port. Binding 63006 for
 	// real made this test the one thing in the repository that contended for

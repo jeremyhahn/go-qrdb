@@ -17,7 +17,6 @@ package grpc
 import (
 	"context"
 	"testing"
-	"time"
 
 	grpcserver "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -37,7 +36,7 @@ func TestSOPINConformance(t *testing.T) {
 			t.Fatalf("Start: %v", err)
 		}
 		t.Cleanup(srv.Stop)
-		tr, err := New(transport.WithAddress(srv.Addr()), transport.WithTLSConfig(f.ClientTLS), transport.WithTimeout(5*time.Second))
+		tr, err := New(transport.WithAddress(srv.Addr()), transport.WithTLSConfig(f.ClientTLS), transport.WithTimeout(sotest.RequestTimeout))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

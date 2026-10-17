@@ -79,7 +79,7 @@ const (
 // integration-features (featureJob) is one job with a matrix leg per feature;
 // ci-gate reads its aggregate result.
 var (
-	prTierJobs   = []string{"lint", "build", "test", "test-sdk", "test-typescript", "security"}
+	prTierJobs   = []string{"lint", "build", "image", "test", "test-sdk", "test-typescript", "security"}
 	fullTierJobs = []string{"integration-standalone", featureJob, "trivy"}
 )
 

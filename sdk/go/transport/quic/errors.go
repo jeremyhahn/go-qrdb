@@ -30,6 +30,47 @@ func (e *dialError) Error() string {
 	return "quic transport: dial failed: " + e.Err.Error()
 }
 
+// healthCheckError reports that a connection was established but the server
+// did not answer the health check that confirms it. Err is the probe's
+// failure; it is nil when the server answered with an empty status.
+type healthCheckError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *healthCheckError) Error() string {
+	if e.Err == nil {
+		return "health check failed: empty status"
+	}
+	return "health check failed: " + e.Err.Error()
+}
+
+// Unwrap returns the probe's failure.
+func (e *healthCheckError) Unwrap() error {
+	return e.Err
+}
+
+// connectBoundError reports that Connect spent the caller's bound without a
+// healthy connection. Err is the bound's context error (deadline or
+// cancellation) and Last the failure of the last attempt the bound did not
+// cut short.
+type connectBoundError struct {
+	Attempts int
+	Err      error
+	Last     error
+}
+
+// Error returns a human-readable description.
+func (e *connectBoundError) Error() string {
+	return "quic transport: no healthy connection after " + strconv.Itoa(e.Attempts) +
+		" attempt(s): " + e.Err.Error() + "; last attempt: " + e.Last.Error()
+}
+
+// Unwrap returns the bound's context error and the last attempt's failure.
+func (e *connectBoundError) Unwrap() []error {
+	return []error{e.Err, e.Last}
+}
+
 // Unwrap returns the underlying error.
 func (e *dialError) Unwrap() error {
 	return e.Err

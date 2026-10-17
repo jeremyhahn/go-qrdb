@@ -105,6 +105,13 @@ type PromoteMemberRequest struct {
 	ReplicaID uint64 `json:"replica_id"`
 }
 
+// TransferLeadershipRequest is the JSON payload for handing a shard's
+// leadership to a named replica.
+type TransferLeadershipRequest struct {
+	ShardID   uint64 `json:"shard_id"`
+	ReplicaID uint64 `json:"replica_id"`
+}
+
 // SnapshotRequest is the JSON payload for requesting a shard snapshot.
 type SnapshotRequest struct {
 	ShardID uint64 `json:"shard_id"`
@@ -341,13 +348,17 @@ type OKResponse struct {
 	Status string `json:"status"`
 }
 
-// ErrorResponse is a simple error response.
+// ErrorResponse is the REST error body. Code and Metadata carry a
+// structured refusal when the server sent one (RequestError.Reason and
+// RequestError.Metadata).
 type ErrorResponse struct {
 	Error string `json:"error"`
 
 	// Code and Metadata are the structured refusal the server sent beside
-	// Error, if any -- SEALED for a sealed node's refusal; RefusalError
-	// rebuilds the typed error the others name. Both are empty otherwise.
+	// Error, if any -- SEALED for a sealed node's refusal,
+	// LEADER_TRANSFER_TIMEOUT for a leadership transfer past its bound;
+	// RefusalError rebuilds the typed error the others name. Both are empty
+	// otherwise.
 	Code     string            `json:"code,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }

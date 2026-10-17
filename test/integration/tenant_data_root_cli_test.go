@@ -380,7 +380,9 @@ func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T)
 	}
 
 	key, value := "greeting", "hello-raft-pool-plaintext-marker"
-	out, err = runQRDB(t, cli, tenantConnArgs, "--database", dbName, "kv", "put", key, value)
+	// database create returns before the new group has elected a leader, so
+	// this first write can meet the documented retryable 503 on a loaded host.
+	out, err = runQRDBRetryingUnavailable(t, cli, tenantConnArgs, "--database", dbName, "kv", "put", key, value)
 	if err != nil {
 		t.Fatalf("kv put: %v\noutput: %s", err, out)
 	}
@@ -393,4 +395,21 @@ func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T)
 	}
 
 	assertPlaintextAbsentInDir(t, tenantRoot, []byte(value))
+}
+
+// runQRDBRetryingUnavailable runs an idempotent CLI command, retrying it while
+// the server answers 503 / UNAVAILABLE: a raft wait that ran out, which the
+// tenancy API documents as retryable. It returns the last attempt's result
+// once the command stops answering 503 or retryableCreateWindow has passed.
+func runQRDBRetryingUnavailable(t *testing.T, cli string, connArgs []string, subArgs ...string) (string, error) {
+	t.Helper()
+	deadline := time.Now().Add(retryableCreateWindow)
+	for {
+		out, err := runQRDB(t, cli, connArgs, subArgs...)
+		if err == nil || !strings.Contains(out, "(status 503)") || !time.Now().Before(deadline) {
+			return out, err
+		}
+		t.Logf("qrdb %s refused for now, retrying: %s", strings.Join(subArgs, " "), strings.TrimSpace(out))
+		time.Sleep(250 * time.Millisecond)
+	}
 }

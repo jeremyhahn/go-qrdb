@@ -21,7 +21,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/refusalinfo"
 )
 
 func refusalBody(t *testing.T, domain string, refusal *auth.FactorConditionFailedError) []byte {
@@ -38,7 +37,7 @@ func refusalBody(t *testing.T, domain string, refusal *auth.FactorConditionFaile
 
 func TestMapWireError_factorConditionRefusalIsTyped(t *testing.T) {
 	want := &auth.FactorConditionFailedError{UserID: 42, Type: auth.AuthFactorMTLS, Condition: auth.FactorConditionNoActiveOfType, CurrentVersion: 1, ExistingFactorID: "f-1"}
-	got := mapWireError("userauthfactor.Add", wire.StatusAlreadyExists, refusalBody(t, refusalinfo.ErrorDomain, want))
+	got := mapWireError("userauthfactor.Add", wire.StatusAlreadyExists, refusalBody(t, transport.RefusalDomain, want))
 
 	if !errors.Is(got, auth.ErrFactorConditionFailed) {
 		t.Fatalf("err = %v, want ErrFactorConditionFailed", got)

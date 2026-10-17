@@ -600,6 +600,24 @@ func (s *qrdbServiceServer) PromoteMember(ctx context.Context, req *pb.PromoteMe
 	return &emptypb.Empty{}, nil
 }
 
+// TransferLeadership hands a shard's leadership to a named voter and returns
+// once it leads. A follower's NotLeaderError is forwarded to the leader by
+// the ReplicaForwarder interceptor; a timeout carries the
+// LEADER_TRANSFER_TIMEOUT refusal so a client rebuilds the typed error.
+func (s *qrdbServiceServer) TransferLeadership(ctx context.Context, req *pb.TransferLeadershipRequest) (*emptypb.Empty, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	transferrer, ok := s.adminSvc.(service.LeaderTransferrer)
+	if !ok {
+		return nil, mapServiceError(&service.LeaderTransferUnsupportedError{})
+	}
+	if err := transferrer.TransferLeadership(ctx, req.GetShardId(), req.GetReplicaId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
 // RequestSnapshot triggers a snapshot for the given shard.
 func (s *qrdbServiceServer) RequestSnapshot(ctx context.Context, req *pb.RequestSnapshotMessage) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {

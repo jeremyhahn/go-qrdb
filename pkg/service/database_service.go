@@ -737,13 +737,27 @@ func transferLeadershipAwayFromRemoved(ctx context.Context, raftHost RaftHost, h
 		return terr
 	}
 
-	deadline := time.Now().Add(defaultLeaderTransferWaitTimeout)
+	return awaitLeaderTransfer(ctx,
+		func() (uint64, bool, error) { return raftHost.LeaderReplicaID(ctx, shardID) },
+		func(id uint64) bool { return id != replicaID },
+		&LeaderTransferTimeoutError{ShardID: shardID, FromReplicaID: replicaID, Timeout: defaultLeaderTransferWaitTimeout})
+}
+
+// awaitLeaderTransfer is the bounded wait that follows a
+// RequestLeaderTransfer, which only starts the transfer. It polls leaderOf
+// every defaultLeaderTransferWaitInterval and returns nil once it reports a
+// leader that settled accepts. A failed or leaderless poll is a mid-election
+// reading, not an answer, so it is polled again. It returns timeoutErr once
+// timeoutErr.Timeout has passed without that, and ctx.Err() if ctx ends
+// first.
+func awaitLeaderTransfer(ctx context.Context, leaderOf func() (uint64, bool, error), settled func(leaderID uint64) bool, timeoutErr *LeaderTransferTimeoutError) error {
+	deadline := time.Now().Add(timeoutErr.Timeout)
 	for {
-		if id, ok, lerr := raftHost.LeaderReplicaID(ctx, shardID); lerr == nil && ok && id != replicaID {
+		if id, ok, err := leaderOf(); err == nil && ok && settled(id) {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return &LeaderTransferTimeoutError{ShardID: shardID, FromReplicaID: replicaID, Timeout: defaultLeaderTransferWaitTimeout}
+			return timeoutErr
 		}
 		select {
 		case <-ctx.Done():

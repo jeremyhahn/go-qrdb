@@ -143,6 +143,7 @@ type errorResponse struct {
 
 	// Code and Metadata carry a refusal's structured form (errclass.Refusal)
 	// -- NOT_A_REPLICA with the replica set, NOT_LEADER with the leader,
+	// LEADER_TRANSFER_TIMEOUT with the shard and replicas,
 	// FACTOR_CONDITION_FAILED with the failed condition -- so a forwarding
 	// node classifies the answer, and a client redials or rebuilds the typed
 	// error, without parsing Error.
@@ -168,6 +169,13 @@ type membershipRemoveRequest struct {
 
 // membershipPromoteRequest is the JSON payload for POST /membership/promote.
 type membershipPromoteRequest struct {
+	ShardID   uint64 `json:"shard_id"`
+	ReplicaID uint64 `json:"replica_id"`
+}
+
+// leaderTransferRequest is the JSON payload for POST
+// /membership/transfer-leadership: ReplicaID is the voter that is to lead.
+type leaderTransferRequest struct {
 	ShardID   uint64 `json:"shard_id"`
 	ReplicaID uint64 `json:"replica_id"`
 }
@@ -843,6 +851,46 @@ func (s *Server) handleMembershipPromote(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		writeErrorJSON(w, membershipChangeStatus(err), &MembershipError{Op: "promote", Err: err})
+		return
+	}
+
+	writeJSON(w, okResponse{Status: "ok"})
+}
+
+// handleMembershipTransferLeadership handles POST
+// /membership/transfer-leadership, handing a shard's leadership to a named
+// voter and answering once it leads. A follower forwards to the leader as
+// handleMembershipPromote does. The error is written unwrapped so
+// writeErrorJSON's replicaforward.Refusal finds a
+// *service.LeaderTransferTimeoutError and adds its LEADER_TRANSFER_TIMEOUT
+// code, from which a client rebuilds the typed error.
+func (s *Server) handleMembershipTransferLeadership(w http.ResponseWriter, r *http.Request) {
+	transferrer, ok := s.adminSvc.(service.LeaderTransferrer)
+	if !ok {
+		writeErrorJSON(w, http.StatusNotImplemented, &service.LeaderTransferUnsupportedError{})
+		return
+	}
+
+	body, ok := readBoundedBody(w, r, maxControlPlaneRequestBytes)
+	if !ok {
+		return
+	}
+
+	var req leaderTransferRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	// No apiRequestTimeout here: TransferLeadership bounds its own wait and
+	// answers *LeaderTransferTimeoutError when the bound passes. A deadline
+	// as long as that bound would race it and turn the typed refusal into a
+	// bare context error.
+	if err := transferrer.TransferLeadership(r.Context(), req.ShardID, req.ReplicaID); err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 

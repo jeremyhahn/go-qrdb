@@ -16,8 +16,10 @@ package buildgates
 
 // CI runs the self-spawned integration suites (test/integration and
 // test/integration/auth) as one job per feature: ci.yml's integration-features
-// job is a matrix whose legs each run `make integration-test-<feature>` under
-// their own limit, in parallel (owner ruling 10, 2026-10-14). The legs are
+// job is a matrix whose legs each run `make integration-test IT_FEATURE=<feature>`
+// -- the selection `make integration-test-<feature>` runs on a host, in the
+// integration image -- under their own limit, in parallel (owner ruling 10,
+// 2026-10-14). The legs are
 // every feature test/integration/features.mk maps at least one file to;
 // `make -s print-integration-features` prints them.
 //
@@ -36,7 +38,9 @@ package buildgates
 //   - a leg that runs something other than the per-feature target, or a job
 //     that leaves the full tier or stops running on push;
 //   - a leg with no always() teardown, so a cancelled leg leaves its compose
-//     project and image tags on the runner, under names no later run derives.
+//     project and image on the runner;
+//   - a leg whose project or image name another leg or run shares, or that
+//     the reap step's prefix does not cover.
 //
 // That the gate goes red when one leg fails is ci_tiers_test.go's
 // TestCIGateScriptHonoursTheTiers: a matrix is one needs entry, and its
@@ -67,13 +71,22 @@ const (
 	// featureMatrixKey is the job's one matrix axis.
 	featureMatrixKey = "feature"
 
-	// featureStep is the one test command each leg runs.
-	featureStep = "make integration-test-${{ matrix.feature }}"
+	// featureReapPrefix is the name prefix every leg's stack and image carry,
+	// and the one featureReap removes stale leftovers under.
+	featureReapPrefix = "qrdb-ci-"
+
+	// featureReap is each leg's first step: it removes stacks a killed run
+	// left on the runner's daemon, so they do not collide with this one.
+	featureReap = "scripts/reap-stale-ci-stacks.sh " + featureReapPrefix
+
+	// featureStep is the one test command each leg runs: the feature's
+	// features.mk selection, in the integration image, under the leg's names.
+	featureStep = `make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"`
 
 	// featureTeardown is the leg's last step, run under always(): it removes
-	// the compose project and image tags featureStep's names derive, so a
-	// cancelled leg leaves nothing on the runner.
-	featureTeardown = "make integration-down-${{ matrix.feature }}"
+	// the compose project and image featureStep ran under, so a cancelled leg
+	// leaves nothing on the runner.
+	featureTeardown = `make docker-down-it IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"`
 
 	// featureLegFloor is a discovery floor: 40 features map files today, and
 	// a parse that finds fewer than this has found too little to check.
@@ -84,8 +97,9 @@ const (
 type featureWorkflow struct {
 	On   yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
-		If             string `yaml:"if"`
-		TimeoutMinutes *int   `yaml:"timeout-minutes"`
+		If             string            `yaml:"if"`
+		TimeoutMinutes *int              `yaml:"timeout-minutes"`
+		Env            map[string]string `yaml:"env"`
 		Strategy       struct {
 			FailFast *bool     `yaml:"fail-fast"`
 			Matrix   yaml.Node `yaml:"matrix"`
@@ -143,13 +157,28 @@ func featureJobProblems(body []byte, want []string) []string {
 			conds = append(conds, strings.TrimSpace(s.If))
 		}
 	}
-	if !slices.Equal(runs, []string{featureStep, featureTeardown}) {
+	if !slices.Equal(runs, []string{featureReap, featureStep, featureTeardown}) {
 		problems = append(problems, featureJob+" runs "+strconv.Quote(strings.Join(runs, "; "))+
-			"; want exactly `"+featureStep+"`, then `"+featureTeardown+"`")
-	} else if conds[0] != "" || conds[1] != "always()" {
-		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(conds[0])+" and "+
-			strconv.Quote(conds[1])+"; want the tests unconditional and the teardown under always(), "+
+			"; want exactly `"+featureReap+"`, `"+featureStep+"`, then `"+featureTeardown+"`")
+	} else if conds[0] != "" || conds[1] != "" || conds[2] != "always()" {
+		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
+			"; want the reap and the tests unconditional and the teardown under always(), "+
 			"so a failed or cancelled leg still removes its stack")
+	}
+	// The names the steps pass must be this leg's alone: legs of one run, and
+	// runs sharing a daemon, would otherwise share a stack or an image tag.
+	for _, name := range []string{"IT_PROJECT", "IT_IMAGE"} {
+		v := job.Env[name]
+		if !strings.HasPrefix(v, featureReapPrefix) {
+			problems = append(problems, featureJob+"'s "+name+" is "+strconv.Quote(v)+
+				"; want it under "+strconv.Quote(featureReapPrefix)+", the prefix the reap step removes")
+		}
+		for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix.feature }}"} {
+			if !strings.Contains(v, part) {
+				problems = append(problems, featureJob+"'s "+name+" is "+strconv.Quote(v)+
+					"; want it to carry "+part+", so no other leg or run shares it")
+			}
+		}
 	}
 	return problems
 }
@@ -244,17 +273,22 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
     timeout-minutes: 45
+    env:
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
     strategy:
       fail-fast: false
       matrix:
         feature: [audit, key-value, sql]
     steps:
       - uses: actions/checkout@0000000000000000000000000000000000000000 # v6
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
       - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test-${{ matrix.feature }}
+        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
       - name: Tear down (${{ matrix.feature }})
         if: always()
-        run: make integration-down-${{ matrix.feature }}
+        run: make docker-down-it IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
 `
 
 var featureFixtureWant = []string{"audit", "key-value", "sql"}
@@ -289,13 +323,21 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},
 		{name: "fail-fast true", old: "fail-fast: false", new: "fail-fast: true"},
 		{name: "left the full tier", old: "    if: github.event_name == 'push' || ", new: "    if: "},
-		{name: "a fixed target", old: "run: make integration-test-${{ matrix.feature }}", new: "run: make integration-test-cluster"},
-		{name: "a second run step", old: "        run: make integration-test-${{ matrix.feature }}\n", new: "        run: make integration-test-${{ matrix.feature }}\n      - run: make integration-test-auth\n"},
-		{name: "no teardown", old: "      - name: Tear down (${{ matrix.feature }})\n        if: always()\n        run: make integration-down-${{ matrix.feature }}\n", new: ""},
+		{name: "a fixed target", old: "IT_FEATURE=${{ matrix.feature }}", new: "IT_FEATURE=cluster"},
+		{name: "the whole suite", old: " IT_FEATURE=${{ matrix.feature }}", new: ""},
+		{name: "on the host", old: "run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"", new: "run: make integration-test-${{ matrix.feature }}"},
+		{name: "a second run step", old: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n", new: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n      - run: make integration-test-auth\n"},
+		{name: "no reap", old: "      - name: Reap stale CI stacks\n        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-\n", new: ""},
+		{name: "reap of another prefix", old: "reap-stale-ci-stacks.sh qrdb-ci-", new: "reap-stale-ci-stacks.sh qrdb-"},
+		{name: "no teardown", old: "      - name: Tear down (${{ matrix.feature }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n", new: ""},
 		{name: "teardown not always", old: "        if: always()\n", new: ""},
 		{name: "teardown on success only", old: "if: always()", new: "if: success()"},
-		{name: "teardown of another leg", old: "run: make integration-down-${{ matrix.feature }}", new: "run: make integration-down"},
+		{name: "teardown of the default names", old: "run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"", new: "run: make docker-down-it"},
 		{name: "tests made conditional", old: "      - name: Integration tests (${{ matrix.feature }})\n", new: "      - name: Integration tests (${{ matrix.feature }})\n        if: always()\n"},
+		{name: "project shared by every leg", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
+		{name: "image shared by every attempt", old: "qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-", new: "qrdb-ci-it:${{ github.run_id }}-"},
+		{name: "project outside the reaped prefix", old: "      IT_PROJECT: qrdb-ci-", new: "      IT_PROJECT: qrdb-it-"},
+		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
 		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},

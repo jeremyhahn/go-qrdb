@@ -41,7 +41,7 @@ type ClusterJoinConfig struct {
 	AdminPort int
 	// TrustDomain is the cluster trust domain join identities are minted in.
 	TrustDomain string
-	// DataDir is the node's data directory (the listener's Noise key).
+	// DataDir is the node's data directory (the listener's Noise and P-256 keys).
 	DataDir string
 	// NodeCertPEM is this node's own certificate, whose node identity is
 	// recorded as admitted.
@@ -77,6 +77,16 @@ func (j *ClusterJoin) PublicKey() []byte {
 		return nil
 	}
 	return j.server.PublicKey()
+}
+
+// P256PublicKey is the join listener's FIPS-approved P-256 static public key --
+// what a joiner pins under --bootstrap-join-p256-key -- or nil when the
+// listener is not running.
+func (j *ClusterJoin) P256PublicKey() []byte {
+	if !j.Running() {
+		return nil
+	}
+	return j.server.P256PublicKey()
 }
 
 // ServerOptions returns the server option registering the HTTPS join route

@@ -90,28 +90,39 @@ REPO="${1:-.}"
 BIN="${2:-golangci-lint}"
 
 MAKEFILE="$REPO/Makefile"
+PINS="$REPO/scripts/tool-pins.sh"
 GOSEC_MODULE="github.com/securego/gosec/v2"
 GOLANGCI_MODULE="github.com/golangci/golangci-lint/v2"
 
-[ -f "$MAKEFILE" ] || {
-	echo "FAIL: $MAKEFILE does not exist -- this check cannot verify what it claims to." >&2
-	echo "      A moved file must fail here rather than silently narrow the gate." >&2
-	exit 1
-}
+for f in "$MAKEFILE" "$PINS"; do
+	[ -f "$f" ] || {
+		echo "FAIL: $f does not exist -- this check cannot verify what it claims to." >&2
+		echo "      A moved file must fail here rather than silently narrow the gate." >&2
+		exit 1
+	}
+done
 
-# `NAME := vX.Y.Z` at the left margin, the same form check-tool-versions.sh
-# reads the four analyser pins in.
+# `NAME := vX.Y.Z` at the left margin of the Makefile: GOLANGCI_GOSEC_VERSION
+# is a measurement recorded beside the code that relies on it, not a tool pin.
 make_pin() {
 	sed -n "s/^$1[[:space:]]*:=[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p" \
 		"$MAKEFILE" | head -n 1
 }
 
-measured=$(make_pin GOLANGCI_GOSEC_VERSION)
-direct=$(make_pin GOSEC_VERSION)
+# `NAME=vX.Y.Z` at the left margin of the pin file, the form
+# check-tool-versions.sh reads every tool pin in.
+pin() {
+	sed -n "s/^$1=\([^[:space:]]*\)[[:space:]]*$/\1/p" "$PINS" | head -n 1
+}
 
-for pair in "GOLANGCI_GOSEC_VERSION:$measured" "GOSEC_VERSION:$direct"; do
-	[ -n "${pair#*:}" ] && continue
-	echo "FAIL: no ${pair%%:*} pin found in $MAKEFILE." >&2
+measured=$(make_pin GOLANGCI_GOSEC_VERSION)
+direct=$(pin GOSEC_VERSION)
+
+for pair in "GOLANGCI_GOSEC_VERSION:$measured:$MAKEFILE" "GOSEC_VERSION:$direct:$PINS"; do
+	name=${pair%%:*}
+	rest=${pair#*:}
+	[ -n "${rest%%:*}" ] && continue
+	echo "FAIL: no $name pin found in ${rest#*:}." >&2
 	echo "      The pattern that reads it has stopped matching -- a renamed variable" >&2
 	echo "      or a reformatted assignment. This is a failure and not a pass because" >&2
 	echo "      an empty value compares equal to another empty value." >&2

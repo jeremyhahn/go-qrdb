@@ -1,6 +1,6 @@
 # Clustering — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 Covers peer discovery, cluster formation, membership, node administration and
 shard rebalancing. **Raft mode only** — see
@@ -337,6 +337,43 @@ member and completing the handshake (Noise) or the TLS connection
 (SPKI/Direct) proves nothing about whether this joiner should be issued a
 certificate — that is what the join token (or the approval queue below)
 decides, before the CSR is signed, not after.
+
+### Bootstrap handshake suites
+
+Both places this feature runs an encrypted bootstrap exchange — the
+trust-anchor fetch against a node's enrollment listener, and the CSR exchange
+against a member's join listener — speak **two handshake suites**, chosen per
+connection by the first frame, which is `version || suite`:
+
+| Suite | Byte | Key agreement | Available |
+|---|---|---|---|
+| `Noise_NK_25519` | `0x01` | X25519 | Not in FIPS 140-3 mode |
+| `TSBOOT1_P256_AESGCM_SHA256` | `0x02` | ECDH over P-256 | Always |
+
+Both are one-way-authenticated in the same shape: the initiator pins the
+responder's static public key, so a joining node learns whom it is talking to
+before it sends a byte it needs protected. One listener serves both suites, so
+a node holds **two responder keys per listener** where the runtime allows it —
+a Noise key (`noise-key.hex`, `join-key.hex`) and a P-256 key (`p256-key.hex`,
+`join-p256-key.hex`) — and publishes both public keys in its log. In FIPS mode
+the Noise key is never generated and the listener runs P-256 only.
+
+A joining node is configured with whichever keys it has: the Noise key, the
+P-256 key, or both. With both, it uses Noise where the runtime allows it and
+P-256 under FIPS. With only a Noise key it cannot enroll under FIPS and is
+refused at configuration time.
+
+**The CSR exchange now carries the header.** The anchor fetch always did; the
+CSR exchange did not, and used the Noise handshake with no prologue. It now
+opens with the same `version || suite` frame — and, for the Noise suite, binds
+that header into the handshake as its prologue — so a downgrade of the suite by
+an attacker on the wire fails the handshake rather than succeeding on a weaker
+one. This is a **wire break**: a node from before this change cannot join
+through a member's join listener after it, and a member from before it cannot
+admit a node after it, over **either** suite. A cluster upgrades every member
+before any node joins through a changed listener; members already admitted
+keep serving, because only the bootstrap exchanges changed and no Raft or data
+path did. The HTTPS twin route (`POST /v1/enroll/join`) is unaffected.
 
 ## Approval queue (tokenless join)
 
@@ -707,12 +744,11 @@ control-plane operations — it adds no new wire RPCs:
 ```go
 cc := client.Cluster()
 members, _ := cc.Members(ctx, shardID)          // filtered from Peers()
-
-## SDK `Cluster()` client
-
+leader, ok, _ := cc.Leader(ctx, shardID)        // from GetShardState()
 _ = cc.AddReplica(ctx, shardID, id, raftAddr, "") // delegates to AddMember; "" = committed identity
 _ = cc.RemoveReplica(ctx, shardID, id)           // delegates to RemoveMember
 _ = cc.PromoteReplica(ctx, shardID, id)          // delegates to PromoteMember
+_ = cc.TransferLeadership(ctx, shardID, id)      // waits until id leads
 ch, _ := cc.WatchMembership(ctx, shardID)        // polls + emits deltas
 for ev := range ch {
     // ev.Members, ev.Added, ev.Removed, ev.LeaderChanged
@@ -722,6 +758,31 @@ for ev := range ch {
 `WatchMembership` polls (rather than using a dedicated streaming RPC) so it
 works over every transport, including the unary-only REST transport. The poll
 cadence is `DefaultMembershipPollInterval`.
+
+`TransferLeadership` type-asserts the admin client for
+`transport.LeaderTransferrer`, which every transport implements — embedded,
+REST, gRPC, Unix, QUIC and MCP — and returns `*transport.NotImplementedError`
+on one that does not. Each server binding authorizes it as
+`admin:remove_member` and, like every membership change, a follower that
+receives it forwards it to the shard's leader, so any node serves it. Server-side it is
+`AdminService.TransferLeadership`, which reuses the leadership move
+`RemoveMember` already makes before removing a leader: it asks the Raft host
+to start the transfer, then polls the shard's leader until the named replica
+holds it, within a five-second bound. Raft only *starts* a transfer when asked
+— the target must catch up and win an election — so a target that is stopped
+or partitioned never takes over, and the call fails with
+`LeaderTransferTimeoutError` (naming the shard, the replica it moved away
+from and the one it moved to) rather than hanging or reporting success. On
+the wire that error is the refusal `LEADER_TRANSFER_TIMEOUT`, class
+Unavailable, whose metadata (`shard_id`, `from_replica_id`, `to_replica_id`,
+`timeout_ms`) the SDK rebuilds into the typed error, so a caller matches it
+with `errors.As` whichever transport carried it ([api.md](api.md)). The
+server's bound is the only deadline on the call: a transport binding adds
+none of its own, since one as long as the bound would race it and answer a
+bare context error in place of the typed refusal. The
+same wait loop, `awaitLeaderTransfer`, serves both callers; `RemoveMember`
+settles when anyone other than the removed replica leads, `TransferLeadership`
+when the named replica does.
 
 ### Alternatives rejected
 
@@ -739,14 +800,17 @@ cadence is `DefaultMembershipPollInterval`.
   is exactly the machinery that can destroy a cluster during a transient
   liveness blip. It is opt-in, leader-only, and quorum-guarded.
 - **Refusing to start a first node in FIPS 140-3 mode.** Rejected. The Noise NK
-  enrollment listener cannot run there — its X25519 handshake is not an approved
+  suite cannot run there — its X25519 handshake is not an approved
   key-agreement scheme — but nothing about being a first node requires Noise:
-  SPKI-pinned TLS, DANE and direct HTTPS all fetch the same CA bundle from
-  `/v1/ca/bootstrap`, and the operator never chose a method in the first place
-  (there is no advertise-method option to choose). Refusing would mean go-qrdb
-  cannot form a multi-node cluster under FIPS at all, over a method a FIPS
-  deployment could not have used. So Noise is excluded, loudly, and the node
-  advertises the approved methods.
+  the listener serves the FIPS-approved P-256 suite instead, and SPKI-pinned
+  TLS, DANE and direct HTTPS all fetch the same CA bundle from
+  `/v1/ca/bootstrap`. Refusing would mean go-qrdb cannot form a multi-node
+  cluster under FIPS at all. So the Noise suite is excluded, loudly, and the node
+  advertises the P-256 suite and the other approved methods.
+- **Replacing Noise with the P-256 suite outright.** Rejected. A fleet that is
+  not under FIPS keeps its existing Noise keys and pinned configuration, and a
+  mixed fleet must keep joining while it is upgraded. Both suites are served by
+  one listener, P-256 is required under FIPS, and neither is removed.
 - **Falling back from Noise without saying so.** Rejected on both sides. A
   bootstrap method downgraded in silence is its own defect: the operator is
   running a smaller enrollment surface than the documentation describes, and the
@@ -934,9 +998,10 @@ already running. A diagnostic must never be what starts a tenant.
 - **No service discovery.** Application service registries are a consumer
   concern built on lease + watch + KV.
 - **No trust bootstrap.** See [../trust-bootstrap/](../trust-bootstrap/).
-- **No FIPS-approved replacement for Noise NK.** Noise_NK_25519 has no approved
-  DH to substitute; in FIPS 140-3 mode the method is excluded rather than
-  swapped. See [../seal/fips140-mode.md](../seal/fips140-mode.md).
+- **No X25519 in FIPS 140-3 mode.** The Noise_NK_25519 suite has no approved DH
+  to substitute, so under FIPS it is excluded and the P-256 suite carries
+  enrollment instead. See [Bootstrap handshake suites](#bootstrap-handshake-suites)
+  and [../seal/fips140-mode.md](../seal/fips140-mode.md).
 - **No automatic rebalancing.** Plans are generated and executed deliberately.
 - **No cross-cluster federation.**
 - **No automatic divergence repair.** `admin state-hash` reports divergence;

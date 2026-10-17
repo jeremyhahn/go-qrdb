@@ -39,6 +39,14 @@ const (
 	// NoiseKeyFile is the filename used to persist the Noise static key in
 	// the data directory.
 	NoiseKeyFile = clusterenroll.NoiseKeyFile
+
+	// P256KeyFile is the filename used to persist the bootstrap listener's
+	// FIPS-approved P-256 static key in the data directory.
+	P256KeyFile = clusterenroll.P256KeyFile
+
+	// JoinP256KeyFile is the filename used to persist the member-side join
+	// listener's P-256 static key in the data directory.
+	JoinP256KeyFile = clusterenroll.JoinP256KeyFile
 )
 
 // Options holds the parameters for cluster-TLS enrollment orchestration.
@@ -281,11 +289,11 @@ var ResolveServerURL = clusterenroll.ResolveServerURL
 // the format "id=host:port".
 var ExtractHostFromPeer = clusterenroll.ExtractHostFromPeer
 
-// NoiseAvailable reports whether the Noise NK enrollment method may be used in
-// this process. It is false in FIPS 140-3 mode, where Noise's X25519 handshake
-// is not an approved key-agreement scheme: a first node then advertises over
-// the approved methods only (SPKI-pinned TLS, DANE, direct HTTPS against
-// /v1/ca/bootstrap) and a join configured with Noise alone is refused.
+// NoiseAvailable reports whether the Noise NK suite may be used in this
+// process. It is false in FIPS 140-3 mode, where Noise's X25519 handshake is
+// not an approved key-agreement scheme: a first node then serves the
+// FIPS-approved P-256 suite alone on the same listener, and a join configured
+// with Noise alone is refused.
 //
 // Consumers call this to describe the enrollment surface they are about to
 // stand up. Reading crypto/fips140 directly gives a different answer on
@@ -298,3 +306,15 @@ var NoiseAvailable = clusterenroll.NoiseAvailable
 // Its message names FIPS and the approved methods rather than the misleading
 // "noise: invalid key size" the Noise library reports for a FIPS refusal.
 type NoiseFIPSUnavailableError = clusterenroll.NoiseFIPSUnavailableError
+
+// P256KeyFileSizeError is returned when a persisted P-256 key file does not
+// hold the expected hex-encoded static key.
+type P256KeyFileSizeError = clusterenroll.P256KeyFileSizeError
+
+// JoinSuiteUnavailableError is returned when no handshake suite the join
+// listener serves is usable by this process.
+type JoinSuiteUnavailableError = clusterenroll.JoinSuiteUnavailableError
+
+// MissingJoinServerKeyError is returned when a join listener is started with
+// no static key for any suite.
+type MissingJoinServerKeyError = clusterenroll.MissingJoinServerKeyError

@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func TestEffectiveIsolationPolicy(t *testing.T) {
@@ -49,20 +50,23 @@ func TestEffectiveIsolationPolicy(t *testing.T) {
 func TestValidateIsolationModeAgainstPolicy(t *testing.T) {
 	tests := []struct {
 		name          string
+		tenantID      string
 		isolationType IsolationType
 		effective     ClusterIsolationPolicy
 		wantErr       bool
 	}{
-		{"prefix under strict refused", IsolationPrefix, ClusterIsolationPolicyStrict, true},
-		{"empty (defaults to prefix) under strict refused", "", ClusterIsolationPolicyStrict, true},
-		{"prefix under operator-access allowed", IsolationPrefix, ClusterIsolationPolicyOperatorAccess, false},
-		{"barrier under strict allowed", IsolationBarrier, ClusterIsolationPolicyStrict, false},
-		{"volume under strict allowed", IsolationVolume, ClusterIsolationPolicyStrict, false},
-		{"raft under strict allowed", IsolationRaft, ClusterIsolationPolicyStrict, false},
+		{"prefix under strict refused", "acme", IsolationPrefix, ClusterIsolationPolicyStrict, true},
+		{"empty (defaults to prefix) under strict refused", "acme", "", ClusterIsolationPolicyStrict, true},
+		{"prefix under operator-access allowed", "acme", IsolationPrefix, ClusterIsolationPolicyOperatorAccess, false},
+		{"barrier under strict allowed", "acme", IsolationBarrier, ClusterIsolationPolicyStrict, false},
+		{"volume under strict allowed", "acme", IsolationVolume, ClusterIsolationPolicyStrict, false},
+		{"raft under strict allowed", "acme", IsolationRaft, ClusterIsolationPolicyStrict, false},
+		{"system tenant prefix under strict allowed", tenantid.System, IsolationPrefix, ClusterIsolationPolicyStrict, false},
+		{"empty id is the system tenant", "", IsolationPrefix, ClusterIsolationPolicyStrict, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateIsolationModeAgainstPolicy(tc.isolationType, tc.effective)
+			err := ValidateIsolationModeAgainstPolicy(tc.tenantID, tc.isolationType, tc.effective)
 			if tc.wantErr {
 				var want *StrictRequiresDedicatedStorageError
 				if !errors.As(err, &want) {
@@ -226,6 +230,25 @@ func TestTenantService_CreateTenant_S2_PrefixRefusedUnderStrictFloor(t *testing.
 	}
 }
 
+// TestTenantService_CreateTenant_S2_SystemTenantUnderStrictFloor: first boot
+// creates the system tenant as a prefix tenant, the only type CreateTenant
+// allows it, after a FIPS 140-3 node has set the strict floor. S2 must not
+// refuse it, on the first boot or on a restart.
+func TestTenantService_CreateTenant_S2_SystemTenantUnderStrictFloor(t *testing.T) {
+	ctx := WithInternalCall(context.Background())
+	svc, _ := newTestService(t)
+	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict); err != nil {
+		t.Fatalf("SetClusterIsolationPolicy: %v", err)
+	}
+
+	if _, err := svc.CreateTenant(ctx, tenantid.System, "System", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant(system) under a strict floor = %v, want success", err)
+	}
+	if _, err := svc.CreateTenant(ctx, tenantid.System, "System", IsolationPrefix); !errors.Is(err, ErrTenantAlreadyExists) {
+		t.Fatalf("second CreateTenant(system) = %v, want ErrTenantAlreadyExists", err)
+	}
+}
+
 func TestTenantService_CreateTenant_S2_PrefixRefusedWithExplicitIsolationPolicy(t *testing.T) {
 	ctx := context.Background()
 	// The floor is untouched (operator-access), but the caller directly asks
@@ -359,6 +382,27 @@ func TestKVCreateTenant_S2_RefusedUnderStrictFloor(t *testing.T) {
 	var want *StrictRequiresDedicatedStorageError
 	if !errors.As(err, &want) {
 		t.Fatalf("CreateTenant under a strict floor = %v, want *StrictRequiresDedicatedStorageError", err)
+	}
+}
+
+// TestKVCreateTenant_S2_SystemTenantUnderStrictFloor: the system tenant is
+// the one prefix tenant S2 does not refuse, since its prefix is the system
+// store it owns; a FIPS 140-3 node sets the strict floor before first boot
+// creates it.
+func TestKVCreateTenant_S2_SystemTenantUnderStrictFloor(t *testing.T) {
+	ctx := context.Background()
+	svc := &kvTenantService{store: newMemKVStore(), logger: slog.Default()}
+	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict); err != nil {
+		t.Fatalf("SetClusterIsolationPolicy: %v", err)
+	}
+	if _, err := svc.CreateTenant(WithInternalCall(ctx), tenantid.System, "System", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant(system) under a strict floor = %v, want success", err)
+	}
+	// Exempting the system tenant did not open S2 for anyone else.
+	_, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix)
+	var want *StrictRequiresDedicatedStorageError
+	if !errors.As(err, &want) {
+		t.Fatalf("CreateTenant(acme) under a strict floor = %v, want *StrictRequiresDedicatedStorageError", err)
 	}
 }
 

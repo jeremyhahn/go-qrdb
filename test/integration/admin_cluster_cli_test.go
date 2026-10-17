@@ -61,6 +61,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -118,8 +119,17 @@ type adminClusterSpareReplica struct {
 // every other node's write is an idempotent no-op once raft replicates it.
 func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
 	t.Helper()
+	return startMultiProtocolCluster(t, len(multiProtocols))
+}
 
-	n := 3 + len(multiProtocols)
+// startMultiProtocolCluster is start3NodeMultiProtocolCluster with the
+// number of spare genesis members as a parameter; spareCount 0 boots a plain
+// 3-node cluster. Each control node's handle carries its process, for a test
+// that stops one.
+func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
+	t.Helper()
+
+	n := 3 + spareCount
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
@@ -148,6 +158,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spa
 
 	dataDirs := make([]string, n)
 	unixSockets := make([]string, n)
+	cmds := make([]*exec.Cmd, n)
 
 	for i := range n {
 		dataDirs[i] = t.TempDir()
@@ -185,7 +196,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spa
 		}
 		args = append(args, nodeTLS[i]...)
 
-		startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
+		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
 	}
 
 	// "qrdb init" is the only system bootstrap (go-qrdb#548): each node's
@@ -269,6 +280,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spa
 			mcpPort:    mcpPorts[idx],
 			quicPort:   quicPorts[idx],
 			passphrase: adminClusterPassphrase,
+			proc:       cmds[idx],
 		}
 	}
 

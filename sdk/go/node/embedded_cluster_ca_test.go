@@ -103,13 +103,6 @@ func (ca operatorCA) nodeIdentity(t *testing.T, raftAddr string) (certPEM, keyPE
 // token is minted and refused for the node's own identity, and a joiner's
 // CSR is signed by the operator CA through the join listener.
 func TestEmbeddedNode_InjectedClusterCAKeySignsAndMintsJoinTokens(t *testing.T) {
-	if !clusterenroll.NoiseAvailable() {
-		// The member-side CSR join listener needs a real Noise NK
-		// handshake (an X25519 static key), which GODEBUG=fips140=only
-		// refuses to generate at all; permanently unreachable under
-		// FIPS -- see docs/seal/fips140-mode.md.
-		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
-	}
 	ca := newOperatorCA(t)
 	raftPorts, err := qrdbdharness.ReserveUDPPorts(1)
 	if err != nil {
@@ -182,7 +175,10 @@ func TestEmbeddedNode_InjectedClusterCAKeySignsAndMintsJoinTokens(t *testing.T) 
 		t.Fatal(err)
 	}
 	signed, err := clusterenroll.JoinCSR(ctx, &clusterenroll.JoinClientOptions{
-		ServerAddr: n.clusterJoin.Addr(), ServerKey: n.clusterJoin.PublicKey(), Token: token,
+		ServerAddr: n.clusterJoin.Addr(), Token: token,
+		// Both suites pinned: Noise where this runtime may use it, P-256
+		// under FIPS 140-3 mode, where the listener holds no Noise key.
+		ServerKey: n.clusterJoin.PublicKey(), ServerP256Key: n.clusterJoin.P256PublicKey(),
 	}, csrDER, nodeURI)
 	if err != nil {
 		t.Fatalf("JoinCSR: %v", err)

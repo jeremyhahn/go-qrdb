@@ -1,6 +1,6 @@
 # Clustering — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 Two command groups: `qrdb admin` (node and shard administration) and
 `qrdb rebalance` (shard distribution). Both accept the root persistent flags
@@ -193,6 +193,32 @@ Permission `admin:add_member` — the same reconfiguration grant `member add`
 needs, since a promotion is a Raft membership change too. Works over every
 transport (see [api.md](api.md#capability-matrix--node-administration)).
 
+## `qrdb admin member transfer-leadership <replica-id>`
+
+Hand a shard's leadership to a voter and wait until it leads. Prints `OK`
+once the named replica leads the shard.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--shard-id` | uint | shard ID (required) |
+
+```bash
+qrdb admin member transfer-leadership 3 --shard-id 1
+```
+
+A target that does not take over within the server's five-second bound — one
+that is stopped or partitioned — fails the command with a non-zero exit and
+the message `leadership transfer away from replica <from> to replica <to> did
+not complete after 5s`; on the wire that is the code `LEADER_TRANSFER_TIMEOUT`
+([api.md](api.md)). Nothing changed, and the command may be run again. Naming
+an observer, a witness or a removed replica is refused; so is a replica the
+shard never had. Naming the current leader succeeds at once.
+
+Permission `admin:remove_member` — moving leadership is the step
+`member remove` already takes when the replica it removes leads the shard.
+Like every `member` command it works on any node over every transport: a
+follower forwards it to the leader.
+
 ## `qrdb admin snapshot`
 
 Request a shard snapshot.
@@ -339,18 +365,22 @@ write. See [user.md](user.md#adding-a-node-member-side-csr-join).
 | Flag | Method |
 |---|---|
 | `--bootstrap-noise-key` with `--bootstrap-noise-addr` | Noise NK — **not available in FIPS 140-3 mode** |
+| `--bootstrap-p256-key` with `--bootstrap-noise-addr` | P-256 suite (`TSBOOT1_P256_AESGCM_SHA256`) — FIPS 140-3 approved |
 | `--bootstrap-spki-pin` with `--bootstrap-addr` | SPKI-pinned TLS |
 | `--bootstrap-dane-dns` | DANE TLSA |
 | `--bootstrap-direct-url` | direct HTTPS |
 
+Both key flags may be given; the Noise suite is preferred where it is usable and
+the P-256 suite is used otherwise.
+
 Under `GODEBUG=fips140=only` or `fips140=on`, Noise NK is excluded: its X25519
 handshake is not a FIPS 140-3 approved key-agreement scheme.
 `--bootstrap-noise-key` on its own is refused at startup with an error that
-names FIPS and lists the approved flags; given alongside one of them, it is
-dropped with a WARN and the approved method is used. The first node's
-`--bootstrap-noise-port` / `--bootstrap-noise-host` are still accepted and
-validated, and open no listener. See
-[user.md](user.md#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
+names FIPS and the P-256 flag that replaces it; given alongside another key or
+method, it is dropped with a WARN and the approved one is used. The first node's
+`--bootstrap-noise-port` / `--bootstrap-noise-host` still apply: the listener
+opens and serves the P-256 suite only, publishing its P-256 public key. See
+[user.md](user.md#in-fips-140-3-mode-use-the-p-256-bootstrap-suite).
 
 ### Member-side CSR join
 
@@ -366,6 +396,7 @@ transport is configured per joining node:
 | Flag | Transport |
 |---|---|
 | `--bootstrap-join-addr` with `--bootstrap-join-key` | Noise_NK — **not available in FIPS 140-3 mode** |
+| `--bootstrap-join-addr` with `--bootstrap-join-p256-key` | P-256 suite — FIPS 140-3 approved |
 | `--bootstrap-join-url` | SPKI/Direct, plain HTTPS against an admitted member's admin listener (`/v1/enroll/join`) |
 
 | Flag | Meaning |

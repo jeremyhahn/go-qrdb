@@ -130,8 +130,9 @@ run "everything stale: fails closed" reject "no source served"
 FAKE_CACHE=$OLD FAKE_MIRROR=fail FAKE_GHCR=fail
 run "stale cache, upstream unreachable: fails closed" reject "no source served"
 
-# The forge's Trivy DB bridge, first in the list as CI configures it.
-TRIVY_DB_UPSTREAMS="http://bridge.example.com/agent-infrastructure/trivy-db:2 mirror.gcr.io/aquasec/trivy-db:2 ghcr.io/aquasecurity/trivy-db:2"
+# The forge's Trivy DB bridge, first in the list, from the one definition CI
+# configures it with.
+TRIVY_DB_UPSTREAMS=$("${SCRIPT_DIR}/trivy-db-upstreams.sh" https://bridge.example.com)
 export TRIVY_DB_UPSTREAMS
 
 FAKE_CACHE=$OLD FAKE_BRIDGE=$NOW FAKE_MIRROR=$NOW FAKE_GHCR=$NOW

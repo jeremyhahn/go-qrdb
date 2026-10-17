@@ -24,7 +24,8 @@ import (
 
 // refusalDetail returns the structured refusal err carries (errclass.Refusal)
 // -- a node that holds no replica of the database, a follower refusing a
-// write, a conditional factor add whose condition failed -- as a
+// write, a leadership transfer that timed out, a conditional factor add whose
+// condition failed -- as a
 // google.rpc.ErrorInfo detail. Any other error carries none.
 func refusalDetail(err error) *errdetails.ErrorInfo {
 	reason, md, ok := errclass.Refusal(err)

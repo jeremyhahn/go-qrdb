@@ -297,6 +297,7 @@ var operationPermissions = map[string]permission.Permission{
 	"AddMember":               permission.AdminAddMember,
 	"RemoveMember":            permission.AdminRemoveMember,
 	"PromoteMember":           permission.AdminAddMember,
+	"TransferLeadership":      permission.AdminRemoveMember,
 	"RequestSnapshot":         permission.AdminSnapshot,
 	"Drain":                   permission.AdminDrain,
 	"Capabilities":            permission.AdminCapabilities,

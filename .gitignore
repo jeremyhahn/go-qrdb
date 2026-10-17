@@ -55,6 +55,8 @@ go.work.sum
 
 # compiled binaries never enter the module tree
 /bin/
+# `make release-artifacts` / `make release-cross` output: release binaries.
+/dist/
 # `make cluster-proof` writes evidence bundles here by default: run output,
 # carrying cluster addresses, never source.
 /clusterproof-out/

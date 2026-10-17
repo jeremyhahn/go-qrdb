@@ -134,6 +134,7 @@ func (s *Server) buildHandlers() {
 	s.handleIf(adminOn, "admin.AddMember", permission.AdminAddMember, s.handleAddMember)
 	s.handleIf(adminOn, "admin.RemoveMember", permission.AdminRemoveMember, s.handleRemoveMember)
 	s.handleIf(adminOn, "admin.PromoteMember", permission.AdminAddMember, s.handlePromoteMember)
+	s.handleIf(adminOn, "admin.TransferLeadership", permission.AdminRemoveMember, s.handleTransferLeadership)
 	s.handleIf(adminOn, "admin.RequestSnapshot", permission.AdminSnapshot, s.handleRequestSnapshot)
 	s.handleIf(adminOn, "admin.Drain", permission.AdminDrain, s.handleDrain)
 	s.handleIf(adminOn, "admin.Capabilities", permission.AdminCapabilities, s.handleCapabilities)

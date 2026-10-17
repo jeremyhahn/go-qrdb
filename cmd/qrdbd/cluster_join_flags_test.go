@@ -104,7 +104,8 @@ func buildClusterJoinFlagsTestCSR(t *testing.T, nodeURI string) []byte {
 // --cluster-join-listen-host, --cluster-join-listen-port and
 // --cluster-trust-domain resolved through the real cobra parse + YAML merge
 // (resolveStartFlags), then fed into clusterenroll.StartJoinServer exactly
-// as runStart does, and dialed with a real Noise_NK join client -- presenting
+// as runStart does, and dialed with a real join client pinning both suites --
+// Noise_NK where this runtime may use it, P-256 under FIPS 140-3 mode -- presenting
 // a single-use, identity-bound token minted into the replicated store, the
 // SAME store the listener validates against -- to prove the resolved values
 // describe a listener that actually signs. There is no token-file/-env flag
@@ -112,13 +113,6 @@ func buildClusterJoinFlagsTestCSR(t *testing.T, nodeURI string) []byte {
 // an admin mints join tokens into the store out of band
 // (clusterenroll.MintJoinToken), which is what this test does directly.
 func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
-	if !clusterenroll.NoiseAvailable() {
-		// The member-side CSR join listener needs a real Noise NK
-		// handshake (an X25519 static key), which GODEBUG=fips140=only
-		// refuses to generate at all; permanently unreachable under
-		// FIPS -- see docs/seal/fips140-mode.md.
-		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
-	}
 	provider := newClusterJoinFlagsTestCA(t)
 	caCert, err := provider.Certificate(context.Background())
 	require.NoError(t, err)
@@ -151,9 +145,10 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 	nodeURI := spiffe.NodeURI(f.clusterTrustDomain, "member-1")
 	csrDER := buildClusterJoinFlagsTestCSR(t, nodeURI)
 	certPEM, err := clusterenroll.JoinCSR(context.Background(), &clusterenroll.JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  js.PublicKey(),
-		Token:      token,
+		ServerAddr:    js.Addr(),
+		ServerKey:     js.PublicKey(),
+		ServerP256Key: js.P256PublicKey(),
+		Token:         token,
 	}, csrDER, nodeURI)
 	require.NoError(t, err)
 
@@ -170,10 +165,6 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 // a mistaken or stale value is silent until the join is attempted -- is
 // refused by the listener rather than silently signing.
 func TestClusterJoinFlags_WrongTokenRefused(t *testing.T) {
-	if !clusterenroll.NoiseAvailable() {
-		// See TestClusterJoinFlags_NoiseListenerSignsAValidCSR.
-		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
-	}
 	provider := newClusterJoinFlagsTestCA(t)
 	store := kvstore.NewMemoryKVStore()
 
@@ -199,9 +190,10 @@ func TestClusterJoinFlags_WrongTokenRefused(t *testing.T) {
 
 	csrDER := buildClusterJoinFlagsTestCSR(t, "")
 	_, err = clusterenroll.JoinCSR(context.Background(), &clusterenroll.JoinClientOptions{
-		ServerAddr: js.Addr(),
-		ServerKey:  js.PublicKey(),
-		Token:      "never-minted-token",
+		ServerAddr:    js.Addr(),
+		ServerKey:     js.PublicKey(),
+		ServerP256Key: js.P256PublicKey(),
+		Token:         "never-minted-token",
 	}, csrDER, "")
 	var refused *clusterenroll.JoinRefusedError
 	require.ErrorAs(t, err, &refused, "a wrong-token join must be refused, not signed")

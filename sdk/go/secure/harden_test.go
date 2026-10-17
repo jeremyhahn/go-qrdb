@@ -31,7 +31,7 @@ import (
 // it would make this test binary non-dumpable for the rest of its life. The
 // mechanism itself is proven from a subprocess in pkg/secure.
 
-// The opt-out is honoured, or — under a FIPS build, which the nightly FIPS job
+// The opt-out is honoured, or — under a FIPS build, which CI's FIPS 140-3 job
 // runs this suite as — refused with the typed error. Both answers are asserted
 // exactly; which one applies is the stack's own FIPS predicate, not a guess.
 func TestHardenProcess_OptOutIsHonouredThroughTheSDK(t *testing.T) {

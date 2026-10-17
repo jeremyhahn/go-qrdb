@@ -43,7 +43,12 @@ import (
 type Store struct {
 	storage  storage.Storage
 	revision atomic.Int64
-	floors   atomic.Pointer[compactionFloors]
+	// committed is the highest revision whose writes have committed to
+	// storage. revision runs ahead of it while an apply batch is open: the
+	// batch assigns revisions as it goes, and none of them is readable until
+	// the batch commits.
+	committed atomic.Int64
+	floors    atomic.Pointer[compactionFloors]
 }
 
 // New creates a new MVCC store backed by the given storage.Storage instance.
@@ -75,6 +80,7 @@ func (s *Store) loadRevision() error {
 		return err
 	}
 	s.revision.Store(rev)
+	s.committed.Store(rev)
 	return nil
 }
 
@@ -121,9 +127,32 @@ func (s *Store) nextRevision() int64 {
 	return s.revision.Add(1)
 }
 
-// CurrentRevision returns the current global revision.
+// CurrentRevision returns the current global revision. While an apply batch
+// is open it names revisions that batch has assigned but not yet committed;
+// CommittedRevision is the bound for anything that reads storage.
 func (s *Store) CurrentRevision() int64 {
 	return s.revision.Load()
+}
+
+// CommittedRevision returns the highest revision whose writes have committed
+// to storage: every change at or below it is visible to Get, Range and
+// ScanChanges.
+func (s *Store) CommittedRevision() int64 {
+	return s.committed.Load()
+}
+
+// MarkCommitted records that every revision through rev has committed. The
+// apply loop calls it once its batch commits and before it delivers that
+// batch's watch notifications: a watch replay bounded by CommittedRevision
+// then finds every revision at or below the bound in storage, and receives
+// every one above it live. It never moves the watermark backward.
+func (s *Store) MarkCommitted(rev int64) {
+	for {
+		cur := s.committed.Load()
+		if rev <= cur || s.committed.CompareAndSwap(cur, rev) {
+			return
+		}
+	}
 }
 
 // Put stores a key-value pair at a new revision. Returns the resulting
@@ -178,6 +207,7 @@ func (s *Store) Put(key, value []byte, leaseID int64) (*service.KeyValue, error)
 	if err := batch.Commit(); err != nil {
 		return nil, &StoreError{Op: "put commit", Err: err}
 	}
+	s.MarkCommitted(rev)
 
 	return &service.KeyValue{
 		Key:            key,
@@ -327,6 +357,7 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 	if err := batch.Commit(); err != nil {
 		return nil, &StoreError{Op: "delete commit", Err: err}
 	}
+	s.MarkCommitted(rev)
 
 	return &service.KeyValue{
 		Key:            key,
@@ -346,31 +377,36 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 // number of matched keys (when RangeOptions.CountOnly is set, every match is
 // counted regardless of any Limit; otherwise count reflects the number of
 // returned results, capped by Limit if set). revision is always the store's
-// current MVCC revision at the time of the read (or the store's current
+// committed MVCC revision at the time of the read (or the store's committed
 // revision when a historical RangeOptions.Revision was requested — the
 // revision the scan targeted is available via that option, not this return
-// value).
+// value). Range reads committed storage, so it answers at CommittedRevision,
+// never at a revision an open apply batch has claimed: a caller resuming a
+// watch from that revision + 1 would skip the batch's changes for good.
 //
 // When RangeOptions.SortOrder/SortTarget request a non-default ordering, all
 // matches are collected before sorting so that Limit is applied to the
 // sorted result set rather than to whatever order the underlying storage
 // iterator happens to produce.
 func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
-	return s.rangeFrom(s.storage, start, end, opts...)
+	return s.rangeFrom(s.storage, s.CommittedRevision(), start, end, opts...)
 }
 
 // RangeInBatch is Range as seen through batch: it includes the keys written by
 // earlier entries in the same apply batch and excludes the ones they deleted.
 // Apply-path handlers that scan (index backfill, for example) must use it, or
 // the state they derive would depend on how the apply loop grouped the log.
+// It answers at the apply counter, CurrentRevision, which covers the batch's
+// own writes.
 func (s *Store) RangeInBatch(batch storage.Batch, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
-	return s.rangeFrom(batch, start, end, opts...)
+	return s.rangeFrom(batch, s.CurrentRevision(), start, end, opts...)
 }
 
-// rangeFrom implements Range against an arbitrary reader.
-func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+// rangeFrom implements Range against an arbitrary reader. currentRev is the
+// newest revision r can see: the read's default target and the revision it
+// reports.
+func (s *Store) rangeFrom(r storage.Reader, currentRev int64, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	ro := service.ApplyRangeOptions(opts)
-	currentRev := s.CurrentRevision()
 
 	targetRev := currentRev
 	if ro.Revision > 0 {

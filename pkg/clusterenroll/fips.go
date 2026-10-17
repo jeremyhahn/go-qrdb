@@ -36,7 +36,7 @@ import "crypto/fips140"
 //
 // It is a variable for the reason readFileFn is one, and the reason is sharper
 // here: the suite runs under GODEBUG=fips140=off in the ordinary CI job and
-// under fips140=only in the nightly FIPS job, so a test that read the real
+// under fips140=only in the FIPS 140-3 job, so a test that read the real
 // runtime could assert only ONE of the two rulings in each job and the other
 // would have to be skipped. Skips are forbidden in this suite
 // (docs/seal/fips140-mode.md, "Handling a failure"), and a rule that is only
@@ -46,10 +46,10 @@ import "crypto/fips140"
 // live X25519 handshake to make it.
 var noiseAvailable = func() bool { return !fips140.Enabled() }
 
-// NoiseAvailable reports whether the Noise NK enrollment method may be used in
-// this process. It is false in FIPS 140-3 mode, where a first node advertises
-// over the approved methods only and a join configured with Noise alone is
-// refused.
+// NoiseAvailable reports whether the Noise NK suite may be used in this
+// process. It is false in FIPS 140-3 mode, where a first node serves the
+// approved P-256 suite only (TSBOOT1_P256_AESGCM_SHA256) and a join configured
+// with a Noise key and no P-256 key is refused.
 //
 // It is exported because the answer is a property of the RUNTIME rather than of
 // any one call, and composers need it before they call anything: cmd/qrdbd to
@@ -84,13 +84,16 @@ func (e *NoiseFIPSUnavailableError) Error() string {
 	return "clusterenroll: FIPS 140-3 mode is enabled and " + e.Operation +
 		" was configured with the Noise NK method as its only option; Noise NK performs an " +
 		"X25519 handshake, which is not a FIPS 140-3 approved key-agreement scheme. " +
-		"Configure an approved bootstrap method instead -- SPKI-pinned TLS " +
-		"(--bootstrap-spki-pin with --bootstrap-addr), DANE (--bootstrap-dane-dns) or " +
-		"direct HTTPS (--bootstrap-direct-url) -- or start this node without FIPS 140-3 mode"
+		"Configure an approved bootstrap method instead -- the P-256 suite " +
+		"(--bootstrap-p256-key for the anchor fetch, --bootstrap-join-p256-key for the " +
+		"CSR join), SPKI-pinned TLS (--bootstrap-spki-pin with --bootstrap-addr), DANE " +
+		"(--bootstrap-dane-dns) or direct HTTPS (--bootstrap-direct-url) -- or start " +
+		"this node without FIPS 140-3 mode"
 }
 
 // fipsNoiseAdvisory is the sentence both the advertise and the join side log
-// when Noise is dropped in FIPS mode. It is one constant so that an operator
-// grepping their logs finds the same wording from either end of the enrollment.
+// when Noise is dropped in FIPS mode and the P-256 suite carries the enrollment
+// instead. It is one constant so that an operator grepping their logs finds the
+// same wording from either end of the enrollment.
 const fipsNoiseAdvisory = "FIPS 140-3 mode: the Noise NK enrollment method is unavailable " +
 	"because its X25519 handshake is not FIPS 140-3 approved"

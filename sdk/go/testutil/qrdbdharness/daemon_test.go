@@ -272,6 +272,137 @@ func TestBuildBinaryDefaultsToRepositoryRoot(t *testing.T) {
 	}
 }
 
+// harnessTempDirs lists the qrdbdharness-* build directories under root.
+func harnessTempDirs(t *testing.T, root string) []string {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join(root, "qrdbdharness-*"))
+	if err != nil {
+		t.Fatalf("glob build directories: %v", err)
+	}
+	return dirs
+}
+
+func TestRemoveBuildsDeletesEveryBuildDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	dir := newBuildableModule(t)
+
+	first, err := BuildBinary(".", WithRepoRoot(dir), WithBinaryName("harnessbuild"), WithBuildTags("harness_build_test"))
+	if err != nil {
+		t.Fatalf("BuildBinary: %v", err)
+	}
+	second, err := BuildBinary(".", WithRepoRoot(dir), WithBinaryName("harnessbuild2"), WithBuildTags("harness_build_test"))
+	if err != nil {
+		t.Fatalf("BuildBinary (second name): %v", err)
+	}
+	if got := harnessTempDirs(t, tmp); len(got) != 2 {
+		t.Fatalf("build directories before RemoveBuilds = %v, want 2", got)
+	}
+
+	if err := RemoveBuilds(); err != nil {
+		t.Fatalf("RemoveBuilds: %v", err)
+	}
+	if got := harnessTempDirs(t, tmp); len(got) != 0 {
+		t.Errorf("build directories after RemoveBuilds = %v, want none", got)
+	}
+	for _, binary := range []string{first, second} {
+		if _, err := os.Stat(binary); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("stat %s after RemoveBuilds = %v, want not-exist", binary, err)
+		}
+	}
+}
+
+func TestRemoveBuildsForgetsTheCache(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	dir := newBuildableModule(t)
+
+	first, err := BuildBinary(".", WithRepoRoot(dir), WithBinaryName("harnessbuild"), WithBuildTags("harness_build_test"))
+	if err != nil {
+		t.Fatalf("BuildBinary: %v", err)
+	}
+	if err := RemoveBuilds(); err != nil {
+		t.Fatalf("RemoveBuilds: %v", err)
+	}
+
+	// A caller after RemoveBuilds gets a fresh, runnable build rather than
+	// the cached path of a binary that no longer exists.
+	again, err := BuildBinary(".", WithRepoRoot(dir), WithBinaryName("harnessbuild"), WithBuildTags("harness_build_test"))
+	if err != nil {
+		t.Fatalf("BuildBinary after RemoveBuilds: %v", err)
+	}
+	t.Cleanup(func() { _ = RemoveBuilds() })
+	if again == first {
+		t.Errorf("BuildBinary after RemoveBuilds returned the removed path %q", first)
+	}
+	if _, err := os.Stat(again); err != nil {
+		t.Errorf("stat rebuilt binary: %v", err)
+	}
+}
+
+func TestRemoveBuildsWithNothingBuilt(t *testing.T) {
+	if err := RemoveBuilds(); err != nil {
+		t.Fatalf("RemoveBuilds (first): %v", err)
+	}
+	if err := RemoveBuilds(); err != nil {
+		t.Errorf("RemoveBuilds on an empty cache = %v, want nil", err)
+	}
+}
+
+func TestRemoveBuildsReportsADirectoryItCannotRemove(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	dir := newBuildableModule(t)
+
+	binary, err := BuildBinary(".", WithRepoRoot(dir), WithBinaryName("harnessbuild"), WithBuildTags("harness_build_test"))
+	if err != nil {
+		t.Fatalf("BuildBinary: %v", err)
+	}
+	// The removal fails through the remover rather than through permission
+	// bits on the directory, which root, the uid CI runs as, overrides.
+	buildDir := filepath.Dir(binary)
+	removeErr := &os.PathError{Op: "unlinkat", Path: binary, Err: errors.New("device or resource busy")}
+	var removed []string
+	removeBuildDir = func(dir string) error {
+		removed = append(removed, dir)
+		return removeErr
+	}
+	t.Cleanup(func() {
+		removeBuildDir = os.RemoveAll
+		_ = os.RemoveAll(buildDir)
+	})
+
+	err = RemoveBuilds()
+	if len(removed) != 1 || removed[0] != buildDir {
+		t.Fatalf("RemoveBuilds removed %q, want only %q", removed, buildDir)
+	}
+	var cleanupErr *BuildCleanupError
+	if !errors.As(err, &cleanupErr) {
+		t.Fatalf("RemoveBuilds = %v, want *BuildCleanupError", err)
+	}
+	if cleanupErr.Dir != buildDir {
+		t.Errorf("Dir = %q, want %q", cleanupErr.Dir, buildDir)
+	}
+	if !errors.Is(err, removeErr) {
+		t.Errorf("RemoveBuilds = %v, want it to wrap %v", err, removeErr)
+	}
+	if !strings.Contains(cleanupErr.Error(), buildDir) {
+		t.Errorf("Error() = %q, want it to name %s", cleanupErr.Error(), buildDir)
+	}
+}
+
+func TestBuildBinaryFailureLeavesNoDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	dir := newBuildableModule(t)
+
+	if _, err := BuildBinary("./missing", WithRepoRoot(dir), WithBuildTags("harness_build_test")); err == nil {
+		t.Fatal("BuildBinary of a missing package succeeded")
+	}
+	if got := harnessTempDirs(t, tmp); len(got) != 0 {
+		t.Errorf("a failed build left %v behind", got)
+	}
+}
+
 func TestBuildBinaryDefaults(t *testing.T) {
 	cfg := buildConfig{tags: DefaultBuildTags, binaryName: filepath.Base(DaemonPackage)}
 	if cfg.binaryName != "qrdbd" {

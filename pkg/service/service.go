@@ -384,6 +384,12 @@ type Host interface {
 	// RequestSnapshot requests an asynchronous snapshot for a shard.
 	RequestSnapshot(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
 
+	// RequestLeaderTransfer asks this host, which must lead shardID, to hand
+	// leadership to targetReplicaID, a current voter. It validates the
+	// target and returns; the transfer itself completes asynchronously (see
+	// AdminService.TransferLeadership for the bounded wait).
+	RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error
+
 	// ProposeWithMode proposes a write with specified durability guarantee.
 	// Allows trading consistency for performance: Sync (quorum), WALDurable
 	// (local WAL), or Batched (aggregated writes).
@@ -1151,6 +1157,10 @@ type AdminService struct {
 	// replicated KV store exists) and must be safe to read concurrently
 	// with that bind.
 	joinToken clusterJoinTokenState
+
+	// leaderTransferTimeout bounds TransferLeadership's wait for the named
+	// replica to take over; zero means defaultLeaderTransferWaitTimeout.
+	leaderTransferTimeout time.Duration
 
 	// tenantReplicaHosts lists the started isolated-tenant hosts whose
 	// replicas StateHashes reports beside this host's (see

@@ -34,7 +34,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/refusalinfo"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv"
 )
 
@@ -127,36 +126,95 @@ func New(opts ...transport.Option) (*Transport, error) {
 	return &Transport{config: cfg}, nil
 }
 
-// Connect establishes the QUIC connection to the QRDB server. QUIC
-// always requires TLS; ALPN must select wire.ProtocolV3 (see
-// buildTLSConfig), and any other selection is refused.
-// quicConnectBudget bounds QUIC connection establishment (dial + health
-// probe) so a stalled UDP handshake fails fast rather than hanging until the
-// caller's outer deadline, leaving the rest of that deadline for the RPC.
-const quicConnectBudget = 10 * time.Second
+// connectBackoffInitial and connectBackoffMax bound the pause between connect
+// attempts: it doubles from the first to the second, so a refused attempt is
+// retried promptly and a server that stays away is not hammered.
+const (
+	connectBackoffInitial = 50 * time.Millisecond
+	connectBackoffMax     = time.Second
+)
 
+// Connect establishes the QUIC connection to the QRDB server and confirms
+// it answers a health check. QUIC always requires TLS; ALPN must select
+// wire.ProtocolV3 (see buildTLSConfig), and any other selection is refused.
+//
+// The bound on connecting is the caller's: ctx's deadline narrowed by the
+// configured timeout (transport.WithTimeout, the CLI's --timeout), exactly
+// as every call is bounded. Within it a failed attempt -- a handshake lost
+// on a busy host, a server that sheds the connection, a health probe that
+// does not complete -- is retried with bounded backoff, as the gRPC
+// transport waits for its connection to become ready. A failure no retry
+// can cure (an unverifiable certificate, a foreign ALPN) ends Connect at
+// once. With no bound at all there is nothing to retry within, so one
+// attempt is made.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, quicConnectBudget)
+	cctx, cancel := t.callContext(ctx)
 	defer cancel()
 
-	if err := t.dial(cctx); err != nil {
+	_, bounded := cctx.Deadline()
+	backoff := connectBackoffInitial
+	var last error
+	for attempt := 1; ; attempt++ {
+		err := t.connectOnce(cctx)
+		if err == nil {
+			return nil
+		}
+		// An attempt the bound itself cut short says nothing about the
+		// server; the failure before it does.
+		if last == nil || cctx.Err() == nil {
+			last = err
+		}
+		if !bounded || !retryableConnect(err) || t.closed.Load() {
+			return err
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-cctx.Done():
+			timer.Stop()
+			return &transport.ConnectionError{
+				Address: t.config.Address,
+				Err:     &connectBoundError{Attempts: attempt, Err: cctx.Err(), Last: last},
+			}
+		case <-timer.C:
+		}
+		backoff = min(2*backoff, connectBackoffMax)
+	}
+}
+
+// connectOnce makes one connection attempt: a dial, then a health probe on
+// the new connection. A failed probe closes the connection it ran on.
+func (t *Transport) connectOnce(ctx context.Context) error {
+	if err := t.dial(ctx); err != nil {
 		return err
 	}
-
-	// Verify connectivity with a health check.
-	if !t.Healthy(cctx) {
+	if err := t.probeHealth(ctx); err != nil {
 		_ = t.conn.CloseWithError(0, "health check failed")
+		t.conn = nil
 		return &transport.ConnectionError{
 			Address: t.config.Address,
-			Err:     &dialError{Err: errors.New("health check failed")},
+			Err:     &dialError{Err: err},
 		}
 	}
-
 	return nil
+}
+
+// retryableConnect reports whether another connect attempt could succeed
+// where err failed: anything but a TLS handshake failure -- a certificate
+// either side does not accept, or no protocol in common, raised as a QUIC
+// CRYPTO_ERROR by whichever side refused -- or a server that is not a qrdb
+// QUIC listener. Those are configuration, and a retry meets them again.
+func retryableConnect(err error) bool {
+	var tlsErr *quicgo.TransportError
+	if errors.As(err, &tlsErr) && tlsErr.ErrorCode.IsCryptoError() {
+		return false
+	}
+	var alpn *alpnMismatchError
+	return !errors.As(err, &alpn)
 }
 
 // dial opens the QUIC connection and negotiates ProtocolV3, without the
@@ -179,12 +237,8 @@ func (t *Transport) dial(ctx context.Context) error {
 		MaxIncomingStreams: 1000,
 	}
 
-	// Bound connection establishment. QUIC rides UDP, so a degraded datagram
-	// path (small kernel buffers, loss under load) can stall the handshake;
-	// without a deadline DialAddr/Healthy would hang until the caller's outer
-	// deadline (or indefinitely on a background context), surfacing as an
-	// opaque process kill. Cap it so a stalled connect fails fast and leaves
-	// the rest of the caller's budget for the actual RPC.
+	// ctx bounds the handshake; Connect retries a failed one within the
+	// caller's bound.
 	conn, err := quicgo.DialAddr(ctx, addr, tlsCfg, quicCfg)
 	if err != nil {
 		return &transport.ConnectionError{
@@ -243,11 +297,24 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 		return false
 	}
 
+	return t.probeHealth(ctx) == nil
+}
+
+// probeHealth returns nil when the server answers a health check. A server
+// that refuses the caller (PermissionDenied) or is sealed counts as
+// answering: it is up, and an operator must be able to reach it.
+func (t *Transport) probeHealth(ctx context.Context) error {
 	resp, err := t.Health(ctx)
-	if err == nil {
-		return resp.Status != ""
+	switch {
+	case err == nil && resp.Status != "":
+		return nil
+	case err == nil:
+		return &healthCheckError{}
+	case reachableButUnauthorized(err) || reachableButSealed(err):
+		return nil
+	default:
+		return &healthCheckError{Err: err}
 	}
-	return reachableButUnauthorized(err) || reachableButSealed(err)
 }
 
 // reachableButUnauthorized reports whether err is a *transport.RequestError
@@ -885,6 +952,27 @@ func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID ui
 
 var _ transport.ObserverMemberAdder = (*Transport)(nil)
 
+// TransferLeadership hands shardID's leadership to replicaID and returns once
+// it leads. Implements transport.LeaderTransferrer.
+func (t *Transport) TransferLeadership(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TransferLeadershipRequest{
+		ShardId:   shardID,
+		ReplicaId: replicaID,
+	})
+	if err != nil {
+		return &transport.RequestError{Method: "TransferLeadership", Err: err}
+	}
+
+	_, err = t.call(ctx, "admin.TransferLeadership", payload)
+	return err
+}
+
+var _ transport.LeaderTransferrer = (*Transport)(nil)
+
 // ListPendingJoinRequests lists tokenless member-side CSR join requests
 // awaiting an operator's decision. Implements transport.JoinRequestReviewer.
 func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
@@ -1178,10 +1266,12 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 		return &transport.BarrierSealedError{Message: msg}
 	}
 
-	var typed error
-	if info := decoded.Info; info != nil && info.Domain == refusalinfo.ErrorDomain {
-		typed = transport.RefusalError(info.Reason, info.Metadata)
+	var reason string
+	var md map[string]string
+	if info := decoded.Info; info != nil && info.Domain == transport.RefusalDomain {
+		reason, md = info.Reason, info.Metadata
 	}
+	typed := transport.RefusalError(reason, md)
 	if build, ok := typedWireErrors[statusCode]; ok && typed == nil {
 		return build(msg)
 	}
@@ -1197,6 +1287,8 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 	if decoded.HasRetryAfter {
 		reqErr.RetryAfter = decoded.RetryAfter
 	}
+	reqErr.Reason = reason
+	reqErr.Metadata = md
 	return reqErr
 }
 

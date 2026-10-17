@@ -32,11 +32,12 @@ const (
 	//     path, and the process Sealer's own key material is locked too;
 	//   - Shamir shares submitted toward an unseal quorum, held in go-quicraft
 	//     ProtectedShare enclaves (go-quicraft#204);
-	//   - memguard, still linked through go-truststrap's noiseproto for the
-	//     Noise enrollment handshake, which mlocks its own buffers.
+	//   - the bootstrap responder static keys (Noise and P-256), held in
+	//     go-enclave buffers by go-truststrap's noiseproto and p256proto for
+	//     the enrollment handshakes.
 	//
 	// All of them are page-scale and bounded by the protocol that drives them
-	// (a handful of shares, one key per seal, one Noise session at a time), so
+	// (a handful of shares, one key per seal, one key per bootstrap suite), so
 	// 2 MiB — 512 pages on a 4 KiB-page host — is generous for them while
 	// still giving the budget three quarters of a stock 8 MiB container limit.
 	secureMemoryHeadroomBytes int64 = 2 << 20

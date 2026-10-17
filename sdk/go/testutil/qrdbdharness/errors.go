@@ -109,6 +109,21 @@ func (e *BuildError) Error() string {
 // Unwrap returns the underlying error.
 func (e *BuildError) Unwrap() error { return e.Err }
 
+// BuildCleanupError is returned when RemoveBuilds cannot remove the directory
+// holding a compiled binary.
+type BuildCleanupError struct {
+	Dir string
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BuildCleanupError) Error() string {
+	return errPrefix + "remove build directory " + e.Dir + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BuildCleanupError) Unwrap() error { return e.Err }
+
 // DaemonStartError is returned when the qrdbd subprocess cannot be started.
 type DaemonStartError struct {
 	Binary string

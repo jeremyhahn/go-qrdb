@@ -1,6 +1,6 @@
 # Release — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -91,7 +91,7 @@ that creates a tag:
 tag only, since the lockstep tags (`sdk/go/v*`, `sdk/go/gorm/conformance/v*`)
 do not themselves start with `v`. It does not create anything; it validates
 what the operator just published and, once validated, publishes the release
-notes:
+notes and the release binaries:
 
 1. **`validate`** — re-derives the facts `release-alpha` already checked
    locally, against what the server now holds: the tag is a well-formed
@@ -109,9 +109,53 @@ notes:
    a question that cannot have changed. What is worth re-running is the
    functional result — a checkout resolving the wrong object, a toolchain
    mismatch on this runner, a race the first run got lucky on.
-3. **`publish`** — needs both of the above green, then lifts the matching
-   `## [X.Y.Z]` section out of `CHANGELOG.md` and publishes it as this tag's
-   release notes through the forge's own releases API.
+3. **`publish`** — needs both of the above green, then builds the release
+   artifacts (`make release-artifacts`, below), lifts the matching
+   `## [X.Y.Z]` section out of `CHANGELOG.md`, publishes it as this tag's
+   release notes through the forge's own releases API, and attaches every
+   artifact to that release through the release's own `upload_url`. The
+   artifacts are built first, so a build failure publishes nothing.
+
+## Release artifacts
+
+One Makefile path builds every published binary. `make release-artifacts`
+runs it for each platform in `RELEASE_PLATFORMS` (`linux/amd64 linux/arm64`)
+into a clean `dist/`, then writes `dist/SHA256SUMS`; `make release-cross
+PLATFORM=<goos>/<goarch>` runs it for one platform. Per platform it builds
+qrdbd and the headless qrdb CLI twice:
+
+```
+ GOOS/GOARCH from the platform, CGO_ENABLED=0, -trimpath,
+ the default feature tags + gms_pure_go, the version stamp (-X main.version/gitCommit/buildDate)
+        │
+        ├── GOFIPS140=off     ──▶  dist/<binary>-<VERSION>-<goos>-<goarch>
+        └── GOFIPS140=latest  ──▶  dist/<binary>-<VERSION>-<goos>-<goarch>-fips
+```
+
+- **No cgo, so no cross toolchain.** Nothing under `cmd/` or `pkg/` imports
+  `"C"`. The one cgo dependency of qrdbd and qrdb is go-mysql-server's MySQL
+  `REGEXP` engine, which links the system ICU libraries, so a native
+  `make build-server` binary needs that ICU version on the host. The release
+  builds add go-mysql-server's `gms_pure_go` tag, which swaps that engine for
+  Go's `regexp` (RE2 syntax). That makes linux/arm64 a plain `go build` and
+  every artifact a static binary. It is also the one behaviour a release
+  binary does not share with a native build: `REGEXP`, `RLIKE` and the
+  `REGEXP_*` functions take RE2 patterns, so backreferences and lookaround
+  are refused. The Wails desktop client also needs cgo and is not a release
+  artifact.
+- **FIPS is a build-time choice.** `GOFIPS140` links Go's native FIPS 140-3
+  module, at the same `latest` the nightly FIPS leg tests. The plain build
+  sets `GOFIPS140=off` explicitly, so the caller's environment cannot turn it
+  into a second FIPS binary. The enforcement level stays the operator's
+  `GODEBUG` ([seal/fips140-mode.md](../seal/fips140-mode.md)).
+- **Integrity is `SHA256SUMS`,** over every binary, attached with them. The
+  release carries no separate signature; the signed tag is the provenance of
+  the tree the binaries were built from.
+- **CI cross-builds arm64 on every pull request.** The `image` job runs
+  `make release-cross PLATFORM=linux/arm64` in the toolchain image beside its
+  native build, so a change that breaks the arm64 build, plain or FIPS, fails
+  the pull request rather than the tag. Nothing runs on arm64 in CI: the
+  arm64 integration run is a separate, pre-RC step.
 
 The workflow does not build a consumer program against the published tags.
 The integration suites already exercise every SDK and API surface, and the
@@ -134,7 +178,7 @@ always runs the full tier. CI runs in two tiers:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `lint`, `build`, `test`, `test-sdk`, `test-typescript`, `security`, `ci-gate` |
+| PR | every run | `lint`, `build`, `image`, `test`, `test-sdk`, `test-typescript`, `security`, `ci-gate` |
 | Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone`, `integration-features` (one job per feature), `trivy` |
 
 `ci-gate` is the one required check in both. It fails on any result other
@@ -150,25 +194,38 @@ No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`.
 
-`trivy` scans only with a vulnerability database younger than
+`image` runs the five stages of the handbook CI standard (`ci-standard.md`)
+in the one image built from `build/docker/devcontainer/Dockerfile` at the
+commit under test: build, test, security and deps-check in its `toolchain`
+stage, then `trivy image` over its `integration` stage. The other PR-tier jobs
+still run the same make targets on the runner, and every gate they held is
+kept.
+
+`trivy`, and `image`'s two scans (`make security`'s trivy leg and
+`make trivy-image`), scan only with a vulnerability database younger than
 `TRIVY_DB_MAX_AGE_HOURS` (24). `scripts/trivy-certified-db.sh` tries the
 runner's configured cache first, then each repository in `TRIVY_DB_UPSTREAMS`
 in order, certifying each with the same age check, and fails closed when none
 is fresh. By default that list is trivy's documented pair,
 `mirror.gcr.io/aquasec/trivy-db:2` then `ghcr.io/aquasecurity/trivy-db:2`. On
-the project's own forge, both the `ci.yml` and `nightly.yml` Trivy jobs put the
-forge's own Trivy DB bridge (a `trivy-db:2` package the forge's infrastructure
-team publishes in its container registry) ahead of that pair. The jobs build its address from the
-runner's server URL at run time, so no tracked file names the forge. The
+the project's own forge, the `ci.yml` Trivy and `image` jobs and the
+`nightly.yml` Trivy job put the forge's own Trivy DB bridge (a `trivy-db:2`
+package the forge's infrastructure team publishes in its container registry)
+ahead of that pair. All three take the list from its one definition,
+`scripts/trivy-db-upstreams.sh`, which builds the bridge's address from the
+runner's server URL at run time, so no tracked file names the forge;
+`scripts/in-toolchain-image.sh` forwards it into the toolchain container. The
 bridge is served over plain HTTP, so its entry is written `http://...`, and the
 script passes trivy's `--insecure` for that entry alone; it never reaches the
 TLS upstreams. A fallback widens where the database may come from, never how
 old it may be.
 
 `integration-features` is one job with a matrix leg per feature: each leg runs
-`make integration-test-<feature>` under its own 45-minute limit, and the legs
-run in parallel. `ci-gate` needs the job once and reads its aggregate result,
-which is `failure` when any leg fails.
+`make integration-test IT_FEATURE=<feature>` in that `integration` image,
+under its own 45-minute limit, and the legs run in parallel. `ci-gate` needs
+the job once and reads its aggregate result, which is `failure` when any leg
+fails. `integration-standalone` still runs the Docker `test/integration/api`
+suites on the `.devcontainer/` image.
 
 `test/buildgates/ci_tiers_test.go` and
 `test/buildgates/feature_jobs_gate_test.go` hold the tiers, the gate, the

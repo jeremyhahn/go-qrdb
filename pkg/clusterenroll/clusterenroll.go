@@ -53,6 +53,7 @@ import (
 
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
+	"github.com/jeremyhahn/go-truststrap/pkg/p256proto"
 	"github.com/jeremyhahn/go-truststrap/pkg/truststrap"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -142,7 +143,14 @@ type BootstrapOptions struct {
 	// NoiseKey is the hex Curve25519 public key of the Noise bootstrap server.
 	NoiseKey string
 
-	// NoiseAddr is the host:port of the Noise bootstrap server.
+	// P256Key is the hex uncompressed P-256 responder public key (65 bytes,
+	// 130 hex characters) of the bootstrap server, for the FIPS-approved
+	// TSBOOT1_P256_AESGCM_SHA256 suite. It is the same listener NoiseKey names,
+	// pinned for the other suite: set both and a non-FIPS node negotiates Noise
+	// while a FIPS node uses P-256; set only this and every node uses P-256.
+	P256Key string
+
+	// NoiseAddr is the host:port of the bootstrap server, for either suite.
 	NoiseAddr string
 
 	// SPKIPin is the hex SHA-256 SPKI pin for SPKI-pinned TLS bootstrap.
@@ -190,6 +198,12 @@ type BootstrapOptions struct {
 	// over Noise.
 	JoinKey string
 
+	// JoinP256Key is the hex uncompressed P-256 responder public key of that
+	// listener (JoinServer.P256PublicKey, hex-encoded), for the FIPS-approved
+	// suite. With JoinKey also set, a non-FIPS node negotiates Noise and a FIPS
+	// node uses P-256; set alone, every node uses P-256.
+	JoinP256Key string
+
 	// JoinHTTPURL is the base admin HTTPS URL of an admitted member (e.g.
 	// "https://10.0.0.2:8443"), for the SPKI/Direct transport
 	// (JoinHTTPPath). Required for member-side join over SPKI/Direct;
@@ -229,16 +243,18 @@ func (b BootstrapOptions) JoinConfigured() bool {
 	return b.joinNoiseConfigured() || b.JoinHTTPURL != ""
 }
 
-// joinNoiseConfigured reports whether the Noise_NK join transport is
-// configured, independent of the admission token.
+// joinNoiseConfigured reports whether the join listener transport (either of
+// its suites: Noise_NK or P-256) is configured, independent of the admission
+// token.
 func (b BootstrapOptions) joinNoiseConfigured() bool {
-	return b.JoinAddr != "" && b.JoinKey != ""
+	return b.JoinAddr != "" && (b.JoinKey != "" || b.JoinP256Key != "")
 }
 
 // HasFlags returns true when at least one bootstrap method is configured,
 // indicating this node should join an existing cluster (path 4).
 func (b BootstrapOptions) HasFlags() bool {
 	return b.NoiseKey != "" ||
+		b.P256Key != "" ||
 		b.NoiseAddr != "" ||
 		b.SPKIPin != "" ||
 		b.DANEDNS != "" ||
@@ -277,14 +293,16 @@ type AdvertiseOptions struct {
 // that decides this node owes the cluster one, and must be stopped during
 // graceful shutdown.
 //
-// It USUALLY holds a running Noise NK bootstrap server, which lets joining
-// nodes fetch the cluster CA bundle using only the server's Curve25519 public
-// key as the trust anchor. In FIPS 140-3 mode it holds no Noise server at all
-// (see noiseAvailable), and a non-nil Advertiser whose NoiseEnabled reports
-// false is the ordinary expected value there rather than a failure.
+// It holds a running bootstrap server, which lets joining nodes fetch the
+// cluster CA bundle using only the server's public key as the trust anchor. The
+// one listener serves two suites chosen per connection by the client's first
+// frame: the FIPS 140-3 approved P-256 suite, always, and the Noise NK suite
+// over X25519 where noiseAvailable allows it. In FIPS 140-3 mode it serves P-256
+// only, and a non-nil Advertiser whose NoiseEnabled reports false is the
+// ordinary expected value there rather than a failure.
 //
-// A NON-NIL ADVERTISER MEANS "THIS NODE ADVERTISES ENROLLMENT", NOT "A NOISE
-// LISTENER IS RUNNING". Callers gate on it accordingly: cmd/qrdbd uses it to
+// A NON-NIL ADVERTISER MEANS "THIS NODE ADVERTISES ENROLLMENT", NOT "THE NOISE
+// SUITE IS SERVED". Callers gate on it accordingly: cmd/qrdbd uses it to
 // decide whether to register the /v1/ca/bootstrap endpoint, which is the
 // approved-method (SPKI-pinned TLS, DANE, direct HTTPS) half of the same
 // surface. The two were the same pointer while Noise was the only advertise
@@ -292,12 +310,20 @@ type AdvertiseOptions struct {
 // EVERY method rather than by one, silently, which is the go-qrdb#241 shape.
 type Advertiser struct {
 	noiseSrv *noiseboot.Server
+
+	// noiseKey is the Noise NK suite's static key. It is nil where the suite
+	// is unavailable (see noiseAvailable), and the server then serves P-256
+	// only.
 	noiseKey *noiseproto.StaticKey
+
+	// p256Key is the FIPS-approved suite's responder key. It is set on every
+	// Advertiser that has a server.
+	p256Key *p256proto.StaticKey
 
 	// stopOnce makes Stop idempotent. It has to be: the daemon now defers a
 	// Stop as soon as resolveTLS hands back a live advertiser AND still stops
 	// it explicitly on the signal-shutdown path, so the ordinary run calls it
-	// twice. Stop destroys the Noise static key's protected pages, and
+	// twice. Stop destroys the static keys' protected enclaves, and
 	// destroying them twice is not a no-op in the general case.
 	stopOnce sync.Once
 }
@@ -320,7 +346,18 @@ func (a *Advertiser) Stop() {
 		defer cancel()
 		_ = a.noiseSrv.Stop(ctx)
 		a.noiseKey.Destroy()
+		a.p256Key.Destroy()
 	})
+}
+
+// P256PublicKey returns the P-256 responder public key as the 65-byte
+// uncompressed point a joining node configures as --bootstrap-p256-key. Returns
+// nil when the Advertiser is nil or has no server.
+func (a *Advertiser) P256PublicKey() []byte {
+	if a == nil || a.p256Key == nil {
+		return nil
+	}
+	return a.p256Key.PublicBytes()
 }
 
 // NoisePublicKey returns the Curve25519 public key as raw bytes. Returns nil
@@ -332,10 +369,10 @@ func (a *Advertiser) NoisePublicKey() []byte {
 	return a.noiseKey.PublicBytes()
 }
 
-// Addr returns the listen address of the Noise server, as bound (the
-// configured NoiseHost joined with NoisePort, e.g. "10.0.0.1:63006").
-// Returns an empty string when the Advertiser is nil or the server is not
-// running.
+// Addr returns the listen address of the bootstrap server, as bound (the
+// configured NoiseHost joined with NoisePort, e.g. "10.0.0.1:63006"), which
+// serves both suites. Returns an empty string when the Advertiser is nil or the
+// server is not running.
 func (a *Advertiser) Addr() string {
 	if a == nil || a.noiseSrv == nil || a.noiseSrv.Addr() == nil {
 		return ""
@@ -343,16 +380,17 @@ func (a *Advertiser) Addr() string {
 	return a.noiseSrv.Addr().String()
 }
 
-// NoiseEnabled reports whether this Advertiser is running a Noise NK listener.
-// It is false on a nil Advertiser and on the Advertiser a first node gets in
-// FIPS 140-3 mode, where the method is unavailable (see noiseAvailable) and
-// joining nodes bootstrap over SPKI-pinned TLS, DANE or direct HTTPS instead.
+// NoiseEnabled reports whether this Advertiser serves the Noise NK suite. It is
+// false on a nil Advertiser and on the Advertiser a first node gets in FIPS
+// 140-3 mode, where the suite is unavailable (see noiseAvailable) and joining
+// nodes bootstrap over the P-256 suite, SPKI-pinned TLS, DANE or direct HTTPS
+// instead. The P-256 suite is served whenever Addr is non-empty.
 //
 // Callers that need to know whether Noise is being served ask this rather than
 // testing the Advertiser pointer, which answers a different question -- see the
 // Advertiser doc comment.
 func (a *Advertiser) NoiseEnabled() bool {
-	return a != nil && a.noiseSrv != nil
+	return a != nil && a.noiseSrv != nil && a.noiseKey != nil
 }
 
 // FetchError is returned when fetching the CA bundle from a bootstrap server
@@ -766,14 +804,19 @@ func joinCSRWithApprovalRetry(ctx context.Context, opts *Options, csrDER []byte,
 			if kerr != nil {
 				return nil, &JoinKeyDecodeError{Err: kerr}
 			}
-			logger.Info("joining existing cluster via member-side CSR (Noise_NK)",
+			joinP256Key, kerr := hex.DecodeString(opts.Bootstrap.JoinP256Key)
+			if kerr != nil {
+				return nil, &JoinKeyDecodeError{Err: kerr}
+			}
+			logger.Info("joining existing cluster via member-side CSR (join listener)",
 				"join_addr", opts.Bootstrap.JoinAddr)
 			certPEM, err = JoinCSR(ctx, &JoinClientOptions{
-				ServerAddr: opts.Bootstrap.JoinAddr,
-				ServerKey:  joinKey,
-				Token:      opts.Bootstrap.JoinToken,
-				ReplicaID:  opts.ReplicaID,
-				Features:   featuregate.SupportedNames(),
+				ServerAddr:    opts.Bootstrap.JoinAddr,
+				ServerKey:     joinKey,
+				ServerP256Key: joinP256Key,
+				Token:         opts.Bootstrap.JoinToken,
+				ReplicaID:     opts.ReplicaID,
+				Features:      featuregate.SupportedNames(),
 			}, csrDER, nodeURI)
 		} else {
 			logger.Info("joining existing cluster via member-side CSR (SPKI/Direct)",
@@ -929,47 +972,88 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 	// must not have its enrollment listener quietly opened on all of them,
 	// and this package cannot know which containment the operator asked for
 	// -- only the configuration layer can. Rejecting it up here also means a
-	// refused configuration leaves no freshly generated Noise static key on
-	// disk, which the key-generation branch below would otherwise persist
+	// refused configuration leaves no freshly generated static key on
+	// disk, which the key-generation branches below would otherwise persist
 	// before the address was ever looked at.
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
 
-	// FIPS 140-3 mode: this node still advertises enrollment, over the approved
-	// methods only. It is NOT a refusal, because the operator never chose Noise
-	// here -- there is no advertise-method option to choose; NoisePort and
-	// NoiseHost say where a listener binds, not whether enrollment happens.
-	// What was asked for is "be the first node of a multi-node cluster", and
-	// that is still satisfiable: SPKI-pinned TLS, DANE and direct HTTPS all
-	// fetch /v1/ca/bootstrap from this node's admin server, which cmd/qrdbd
-	// registers for exactly the nodes that get an Advertiser back.
+	// One listener serves both suites of the bootstrap wire, and the first
+	// frame a client sends picks the suite per connection. The P-256 suite
+	// (TSBOOT1_P256_AESGCM_SHA256) is FIPS 140-3 approved and is always served.
+	// The Noise suite performs an X25519 handshake, so it is served only where
+	// noiseAvailable allows it; in FIPS mode this node still advertises, over
+	// P-256, and a joining node in FIPS mode is required to use that suite.
 	//
-	// Refusing to boot instead would mean go-qrdb cannot form a multi-node
-	// cluster under FIPS at all, for a method that is not the one a FIPS
-	// deployment can use anyway. Returning nil instead -- "no advertiser" --
-	// would be worse than either: nil is how this package says "this node owes
-	// the cluster nothing", and a first node saying that is the silently
-	// unjoinable node of go-qrdb#241.
-	//
-	// It is not a silent downgrade. The advisory is logged at WARN here, the
-	// caller logs it again through logAdvertiserInfo with the admin port the
-	// joining nodes need, and the state is readable afterwards through
-	// Advertiser.NoiseEnabled.
-	if !noiseAvailable() {
-		logger.Warn(fipsNoiseAdvisory+"; this node advertises enrollment over the approved "+
-			"methods only, so joining nodes must use SPKI-pinned TLS, DANE or direct HTTPS "+
-			"against its admin endpoint rather than --bootstrap-noise-key",
+	// It is NOT a refusal, and it is not "no advertiser": nil is how this
+	// package says "this node owes the cluster nothing", and a first node saying
+	// that is the silently unjoinable node of go-qrdb#241. The advisory is
+	// logged at WARN here, the caller logs it again through logAdvertiserInfo
+	// with the admin port the joining nodes need, and the state is readable
+	// afterwards through Advertiser.NoiseEnabled.
+	var noiseKey *noiseproto.StaticKey
+	if noiseAvailable() {
+		var err error
+		noiseKey, err = loadOrGenerateAdvertiserNoiseKey(filepath.Join(dataDir, NoiseKeyFile), logger)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		logger.Warn(fipsNoiseAdvisory+"; this node's enrollment listener serves the FIPS-approved "+
+			"P-256 suite only, so joining nodes must configure --bootstrap-p256-key (or use "+
+			"SPKI-pinned TLS, DANE or direct HTTPS against its admin endpoint)",
 			"admin_port", opts.AdminPort,
 		)
-		return &Advertiser{}, nil
 	}
 
-	keyPath := filepath.Join(dataDir, NoiseKeyFile)
+	p256Key, err := loadOrGenerateP256Key(filepath.Join(dataDir, P256KeyFile), "noise", "bootstrap", logger)
+	if err != nil {
+		noiseKey.Destroy()
+		return nil, err
+	}
 
-	var noiseKey *noiseproto.StaticKey
-	var err error
+	listenPort := opts.NoisePort
+	if listenPort == 0 {
+		listenPort = DefaultNoisePort
+	}
+	listenAddr := net.JoinHostPort(opts.NoiseHost, strconv.Itoa(listenPort))
 
+	// Each StaticKey keeps its private scalar in protected memory; the
+	// Advertiser owns them from here and releases them in Stop. A nil
+	// StaticKey leaves that suite unserved.
+	srv, err := newNoiseServer(&noiseboot.ServerConfig{
+		ListenAddr:    listenAddr,
+		StaticKey:     noiseKey,
+		P256StaticKey: p256Key,
+		CABundler:     provider,
+		Logger:        logger,
+	})
+	if err != nil {
+		noiseKey.Destroy()
+		p256Key.Destroy()
+		return nil, &ServerError{Protocol: "noise", Err: err}
+	}
+
+	if err := srv.Start(); err != nil {
+		noiseKey.Destroy()
+		p256Key.Destroy()
+		return nil, &ServerError{Protocol: "noise", Err: err}
+	}
+
+	logger.Info("bootstrap server started", "addr", srv.Addr().String(),
+		"noise_nk", noiseKey != nil, "p256", true)
+
+	return &Advertiser{
+		noiseSrv: srv,
+		noiseKey: noiseKey,
+		p256Key:  p256Key,
+	}, nil
+}
+
+// loadOrGenerateAdvertiserNoiseKey loads the anchor advertiser's Noise static
+// key from keyPath, generating and persisting a new one when the file is absent.
+func loadOrGenerateAdvertiserNoiseKey(keyPath string, logger *slog.Logger) (*noiseproto.StaticKey, error) {
 	if fileExists(keyPath) {
 		hexData, readErr := readFileFn(keyPath)
 		if readErr != nil {
@@ -979,72 +1063,43 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 		// memory, so the hex never passes through an immutable Go string.
 		// The file bytes are ours to wipe once decoded.
 		trimmed := bytes.TrimSpace(hexData)
-		noiseKey, err = noiseproto.DecodeStaticKey(trimmed)
+		noiseKey, err := noiseproto.DecodeStaticKey(trimmed)
 		noiseproto.WipeBytes(hexData)
 		if err != nil {
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}
 		logger.Info("loaded existing Noise static key", "path", keyPath)
-	} else {
-		noiseKey, err = noiseproto.GenerateStaticKey()
-		if err != nil {
-			return nil, &ServerError{Protocol: "noise", Err: err}
-		}
-		// The hex encoding is as sensitive as the key itself: wipe the buffer
-		// once it has reached the file.
-		hexEncoded := make([]byte, noiseproto.HexKeySize)
-		defer noiseproto.WipeBytes(hexEncoded)
-		if err := noiseproto.EncodeStaticKey(hexEncoded, noiseKey); err != nil {
-			noiseKey.Destroy()
-			return nil, &ServerError{Protocol: "noise", Err: err}
-		}
-		if err := os.MkdirAll(dataDir, 0o700); err != nil {
-			noiseKey.Destroy()
-			return nil, &ServerError{Protocol: "noise", Err: err}
-		}
-		// Atomic, for the reason persistRole is: os.WriteFile truncates in
-		// place, and a crash mid-write leaves a partial hex key that
-		// DecodeStaticKey refuses on every later boot. Since go-qrdb#241 this
-		// path runs on EVERY boot of a first node rather than only the one
-		// that generated the CA, so a truncated key file now bricks every
-		// start instead of one.
-		if err := securefile.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
-			noiseKey.Destroy()
-			return nil, &ServerError{Protocol: "noise", Err: err}
-		}
-		logger.Info("generated and persisted Noise static key", "path", keyPath)
+		return noiseKey, nil
 	}
 
-	listenPort := opts.NoisePort
-	if listenPort == 0 {
-		listenPort = DefaultNoisePort
-	}
-	listenAddr := net.JoinHostPort(opts.NoiseHost, strconv.Itoa(listenPort))
-
-	// The StaticKey keeps its private scalar in protected memory; the
-	// Advertiser owns it from here and releases it in Stop.
-	srv, err := newNoiseServer(&noiseboot.ServerConfig{
-		ListenAddr: listenAddr,
-		StaticKey:  noiseKey,
-		CABundler:  provider,
-		Logger:     logger,
-	})
+	noiseKey, err := noiseproto.GenerateStaticKey()
 	if err != nil {
+		return nil, &ServerError{Protocol: "noise", Err: err}
+	}
+	// The hex encoding is as sensitive as the key itself: wipe the buffer
+	// once it has reached the file.
+	hexEncoded := make([]byte, noiseproto.HexKeySize)
+	defer noiseproto.WipeBytes(hexEncoded)
+	if err := noiseproto.EncodeStaticKey(hexEncoded, noiseKey); err != nil {
 		noiseKey.Destroy()
 		return nil, &ServerError{Protocol: "noise", Err: err}
 	}
-
-	if err := srv.Start(); err != nil {
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
 		noiseKey.Destroy()
 		return nil, &ServerError{Protocol: "noise", Err: err}
 	}
-
-	logger.Info("Noise NK bootstrap server started", "addr", srv.Addr().String())
-
-	return &Advertiser{
-		noiseSrv: srv,
-		noiseKey: noiseKey,
-	}, nil
+	// Atomic, for the reason persistRole is: os.WriteFile truncates in
+	// place, and a crash mid-write leaves a partial hex key that
+	// DecodeStaticKey refuses on every later boot. Since go-qrdb#241 this
+	// path runs on EVERY boot of a first node rather than only the one
+	// that generated the CA, so a truncated key file now bricks every
+	// start instead of one.
+	if err := securefile.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
+		noiseKey.Destroy()
+		return nil, &ServerError{Protocol: "noise", Err: err}
+	}
+	logger.Info("generated and persisted Noise static key", "path", keyPath)
+	return noiseKey, nil
 }
 
 // ResolveServerURL derives the HTTPS URL of the bootstrap server from
@@ -1153,22 +1208,38 @@ func buildAutoConfig(opts *Options, logger *slog.Logger) (*truststrap.AutoConfig
 
 	var methods []truststrap.Method
 
-	// Configure Noise NK if both key and address are provided.
+	// Configure the bootstrap wire if a server address and at least one suite's
+	// key are provided. One listener speaks both suites; the Noise key is
+	// offered only where this process may use it, and the P-256 key always.
+	// The suite itself is left to the client's policy (Suite zero): FIPS
+	// requires P-256, and otherwise Noise is preferred when its key is present.
 	noiseConfigured := opts.Bootstrap.NoiseKey != "" && opts.Bootstrap.NoiseAddr != ""
+	p256Configured := opts.Bootstrap.P256Key != "" && opts.Bootstrap.NoiseAddr != ""
 	noiseDroppedForFIPS := noiseConfigured && !noiseAvailable()
 	if noiseDroppedForFIPS {
-		logger.Warn(fipsNoiseAdvisory+"; the configured Noise bootstrap server is excluded "+
-			"from this node's join attempt",
+		logger.Warn(fipsNoiseAdvisory+"; the Noise suite is excluded from this node's join attempt",
 			"noise_addr", opts.Bootstrap.NoiseAddr,
+			"p256_configured", p256Configured,
 		)
 	}
-	if noiseConfigured && noiseAvailable() {
-		cfg.Noise = &truststrap.NoiseConfig{
-			ServerAddr:      opts.Bootstrap.NoiseAddr,
-			ServerStaticKey: opts.Bootstrap.NoiseKey,
-			Logger:          logger,
+	if noiseConfigured || p256Configured {
+		noiseCfg := &truststrap.NoiseConfig{
+			ServerAddr: opts.Bootstrap.NoiseAddr,
+			Logger:     logger,
 		}
-		methods = append(methods, truststrap.MethodNoise)
+		offered := false
+		if noiseConfigured && noiseAvailable() {
+			noiseCfg.ServerStaticKey = opts.Bootstrap.NoiseKey
+			offered = true
+		}
+		if p256Configured {
+			noiseCfg.ServerP256StaticKey = opts.Bootstrap.P256Key
+			offered = true
+		}
+		if offered {
+			cfg.Noise = noiseCfg
+			methods = append(methods, truststrap.MethodNoise)
+		}
 	}
 
 	// Configure SPKI-pinned TLS if pin and server address are provided.
@@ -1233,37 +1304,37 @@ func buildAutoConfig(opts *Options, logger *slog.Logger) (*truststrap.AutoConfig
 // other thing that ever reports it is a peer's join failing on another machine,
 // which is the failure mode go-qrdb#241 exists to keep out of this package.
 func logAdvertiserInfo(adv *Advertiser, opts AdvertiseOptions) {
-	if adv == nil {
+	if adv == nil || adv.p256Key == nil {
 		return
 	}
-	// No Noise identity is the FIPS 140-3 case, and it is the ONLY case: the
-	// advertiser is constructed with a key whenever it is constructed with a
-	// server, so "no key" and "no listener" are one condition and are tested as
-	// one. A second, separately-reachable-looking guard here would be code that
-	// cannot run.
-	if adv.noiseKey == nil {
+	// The advertiser is constructed with a P-256 key whenever it is constructed
+	// with a server, so that key is what every joining node can rely on. The
+	// Noise key is absent exactly in the FIPS 140-3 case, and its absence is
+	// reported rather than hidden: an operator who copies the published keys to
+	// a joining node must know which of them that node may use.
+	attrs := []any{
+		"p256_public_key", hex.EncodeToString(adv.p256Key.PublicBytes()),
+		"noise_addr", adv.Addr(),
+	}
+	if adv.noiseKey != nil {
+		attrs = append(attrs, "noise_public_key", hex.EncodeToString(adv.noiseKey.PublicBytes()))
+	} else {
 		slog.Warn(fipsNoiseAdvisory+"; no Noise public key is advertised. Joining nodes must "+
-			"bootstrap over an approved method -- SPKI-pinned TLS, DANE or direct HTTPS -- "+
+			"bootstrap with --bootstrap-p256-key, or over SPKI-pinned TLS, DANE or direct HTTPS "+
 			"against this node's /v1/ca/bootstrap endpoint",
 			"admin_port", opts.AdminPort,
 		)
-		return
 	}
 	// The admin port is reported as configured. Substituting a literal here
 	// would hand operators a port to configure on joining nodes that this
 	// node is not listening on (go-qrdb#167).
 	if opts.AdminPort == 0 {
 		slog.Warn("bootstrap enrollment: admin port is unconfigured; joining nodes cannot be told which port to use",
-			"noise_public_key", hex.EncodeToString(adv.noiseKey.PublicBytes()),
-			"noise_addr", adv.Addr(),
-		)
+			attrs...)
 		return
 	}
 	slog.Info("bootstrap enrollment information for joining nodes",
-		"noise_public_key", hex.EncodeToString(adv.noiseKey.PublicBytes()),
-		"noise_addr", adv.Addr(),
-		"admin_port", opts.AdminPort,
-	)
+		append(attrs, "admin_port", opts.AdminPort)...)
 }
 
 // fileExists returns true when path refers to an existing regular file.

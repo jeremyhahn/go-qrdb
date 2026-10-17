@@ -109,9 +109,9 @@ func featureMapping(t *testing.T, root string) (files map[string][]string, decla
 }
 
 // nonDockerTestFunctions maps every top-level Test function declared in the
-// non-Docker integration packages to the file that declares it, named the
-// way features.mk names it: relative to test/integration/, so the auth
-// subpackage's files read "auth/<name>".
+// non-Docker integration packages, TestMain aside, to the file that declares
+// it, named the way features.mk names it: relative to test/integration/, so
+// the auth subpackage's files read "auth/<name>".
 func nonDockerTestFunctions(t *testing.T, root string) map[string]string {
 	t.Helper()
 	fn := regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]+)\(`)
@@ -131,6 +131,12 @@ func nonDockerTestFunctions(t *testing.T, root string) map[string]string {
 			}
 			rel := prefix + e.Name()
 			for _, m := range fn.FindAllSubmatch(b, -1) {
+				// TestMain is the package's setup and teardown hook, not a
+				// test: it runs under every -run selection, so no feature
+				// selects it.
+				if string(m[1]) == "TestMain" {
+					continue
+				}
 				out[string(m[1])] = rel
 			}
 		}

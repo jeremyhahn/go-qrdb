@@ -103,6 +103,11 @@ type buildResult struct {
 // calls for the same target are free.
 var builds sync.Map
 
+// removeBuildDir removes one build directory for RemoveBuilds. It is a
+// variable so a test can make the removal fail for every uid: permission bits
+// do not stop root, which is the uid CI runs as.
+var removeBuildDir = os.RemoveAll
+
 // BuildBinary compiles pkg (for example DaemonPackage) from the repository
 // root and returns the path to the resulting executable. The binary is built
 // at most once per process for each root/package/tag combination.
@@ -110,7 +115,7 @@ var builds sync.Map
 // The output directory is an os.MkdirTemp directory rather than a t.TempDir()
 // one on purpose: the cache outlives the test that first populated it, and a
 // t.TempDir() would be removed as soon as that test finished, breaking every
-// later caller.
+// later caller. RemoveBuilds removes them once the process is done with them.
 func BuildBinary(pkg string, opts ...BuildOption) (string, error) {
 	cfg := buildConfig{tags: DefaultBuildTags, binaryName: path.Base(pkg)}
 	for _, opt := range opts {
@@ -142,6 +147,30 @@ func BuildBinary(pkg string, opts ...BuildOption) (string, error) {
 	return result.path, result.err
 }
 
+// RemoveBuilds removes the directory of every binary BuildBinary compiled in
+// this process and empties the cache, so a later BuildBinary compiles afresh.
+// The cache outlives every test, so nothing else removes those directories:
+// a test binary calls it from TestMain once m.Run has returned, and a program
+// before it exits. Each binary is a full race-built qrdbd or qrdb, and a
+// process that skips this leaves them in os.TempDir. A directory that cannot
+// be removed is reported as a *BuildCleanupError; the rest are still removed.
+func RemoveBuilds() error {
+	var errs []error
+	builds.Range(func(key, entry any) bool {
+		builds.Delete(key)
+		result, ok := entry.(*buildResult)
+		if !ok || result.path == "" {
+			return true
+		}
+		dir := filepath.Dir(result.path)
+		if err := removeBuildDir(dir); err != nil {
+			errs = append(errs, &BuildCleanupError{Dir: dir, Err: err})
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
+
 // build shells out to the Go toolchain once for a cache miss.
 func build(pkg string, cfg buildConfig) (string, error) {
 	dir, err := os.MkdirTemp("", "qrdbdharness-*")
@@ -162,6 +191,10 @@ func build(pkg string, cfg buildConfig) (string, error) {
 	cmd.Dir = cfg.root
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// A failed build has no binary for RemoveBuilds to find, so its
+		// directory goes now. The removal error is dropped: the build failure
+		// is the one the caller needs.
+		_ = os.RemoveAll(dir)
 		return "", &BuildError{Package: pkg, Tags: cfg.tags, Output: string(out), Err: err}
 	}
 	return binary, nil

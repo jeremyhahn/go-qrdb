@@ -1,6 +1,6 @@
 # Clustering — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -22,6 +22,7 @@ and refuses in standalone with `requires mode: raft`.
 | Add member as observer | `POST /membership/add-observer` | `AddObserverMember` | `admin.AddObserverMember` | `qrdb_add_observer_member` | `AddObserverMember` | `admin:add_member` |
 | Remove member | `POST /membership/remove` | `RemoveMember` | `admin.RemoveMember` | `qrdb_remove_member` | `RemoveMember` | `admin:remove_member` |
 | Promote member (observer → voter) | `POST /membership/promote` | `PromoteMember` | `admin.PromoteMember` | `qrdb_promote_member` | `PromoteMember` | `admin:add_member` |
+| Transfer leadership | `POST /membership/transfer-leadership` | `TransferLeadership` | `admin.TransferLeadership` | `qrdb_transfer_leadership` | `TransferLeadership` (`transport.LeaderTransferrer`) | `admin:remove_member` |
 | List pending join requests | `GET /v1/cluster/join-requests` | `ListPendingJoinRequests` | `admin.ListPendingJoinRequests` | `qrdb_list_pending_join_requests` | `ListPendingJoinRequests` | `cluster:join_token` |
 | Approve join request | `POST /v1/cluster/join-requests/approve` | `ApproveJoinRequest` | `admin.ApproveJoinRequest` | `qrdb_approve_join_request` | `ApproveJoinRequest` | `cluster:join_token` |
 | Reject join request | `POST /v1/cluster/join-requests/reject` | `RejectJoinRequest` | `admin.RejectJoinRequest` | `qrdb_reject_join_request` | `RejectJoinRequest` | `cluster:join_token` |
@@ -53,6 +54,66 @@ counterpart promote's success path depends on — a plain `AddMember` always
 votes, so a cluster running only the original verbs could never produce a
 replica `PromoteMember` succeeds against.
 
+**Transfer leadership is `service.LeaderTransferrer`**, a capability
+interface for the same reason `MemberPromoter` is one, and it is on every
+transport: REST `POST /membership/transfer-leadership` with the body
+`{"shard_id": 1, "replica_id": 3}`, gRPC/Unix `TransferLeadership`
+(`TransferLeadershipRequest{shard_id, replica_id}`, answering `Empty`), QUIC
+`admin.TransferLeadership`, MCP tool `qrdb_transfer_leadership` (arguments
+`shard_id`, `replica_id`), the embedded transport, and the CLI
+(`qrdb admin member transfer-leadership`, [cli.md](cli.md)). A caller
+type-asserts `client.Admin().(transport.LeaderTransferrer)`, or calls
+`Client.Cluster().TransferLeadership(ctx, shardID, replicaID)`, which does the
+assertion and returns `*transport.NotImplementedError` on a transport without
+it.
+
+The call asks Raft to hand the shard's leadership to the named voter and
+returns once the shard's leader observes that voter leading, bounded by five
+seconds on the server. **Every node serves it**: a follower forwards the call
+to the shard's leader (`replica_forwarding`), and relays the leader's answer.
+It carries `admin:remove_member` because moving leadership is the step
+`RemoveMember` already takes on its own when the replica it removes leads the
+shard. A server whose admin service lacks the capability answers `501` /
+`UNIMPLEMENTED`, which the SDK reports as `*transport.CapabilityUnsupportedError`.
+
+**`LEADER_TRANSFER_TIMEOUT` is the one stable code for a transfer that did not
+finish**, on every wire transport. Its class is Unavailable (`503` /
+`UNAVAILABLE`): nothing changed and the call may be retried; leadership may
+still move later if the target recovers. The refusal carries the code and four
+metadata keys beside the message:
+
+| Key | Value |
+|---|---|
+| `shard_id` | the shard |
+| `from_replica_id` | the replica that led when the call began |
+| `to_replica_id` | the target |
+| `timeout_ms` | the bound that passed, in milliseconds |
+
+| Transport | Where the code and metadata travel |
+|---|---|
+| REST | the error body: `{"error": "...", "code": "LEADER_TRANSFER_TIMEOUT", "metadata": {...}}` |
+| gRPC / Unix | a `google.rpc.ErrorInfo` status detail, domain `qrdb.v1` |
+| QUIC | the error frame's `ErrorInfo`, domain `qrdb.v1` |
+| MCP | the tool result's structured error envelope, `reason` and `metadata` |
+
+The SDK rebuilds `*sdk.LeaderTransferTimeoutError` from that metadata, so
+`errors.As(err, &timeout)` matches on every transport, embedded included; a
+refusal whose metadata does not decode is returned as the
+`*transport.RequestError` the server sent. The typed errors, re-exported from
+the SDK package:
+
+| Error | Class | Cause |
+|---|---|---|
+| `sdk.LeaderTransferTimeoutError` | Unavailable (`503`) | the target has not taken over within the bound — a stopped or partitioned target produces this |
+| `sdk.UnknownShardError` | NotFound (`404`) | the shard is not loaded on the leader |
+| `sdk.UnknownReplicaError` | NotFound (`404`) | the target is replica 0 or one the shard has never had |
+| `sdk.LeaderTransferTargetError` | FailedPrecondition (`409`) | the target is an observer, a witness, or was removed |
+| `transport.NotLeaderError` | — | embedded only: this node does not lead the shard; `LeaderID` names the one that does |
+
+Over a wire transport only the timeout is rebuilt as its typed error; the
+other three arrive as the transport's error for their class. Naming the
+current leader succeeds at once.
+
 **List/approve/reject pending join requests are `service.
 JoinRequestReviewer`**, likewise a capability interface, implemented by
 `AdminService` once member-side CSR join is configured
@@ -62,7 +123,7 @@ since the approval queue lives in the identical replicated store. See
 admission-vs-signing split: `ApproveJoinRequest` only records a decision,
 and never itself calls the cluster CA.
 
-**Drain, snapshot, add/remove member, start/stop shard, shard state,
+**Drain, snapshot, add/remove member, leadership transfer, start/stop shard, shard state,
 topology, replica state hashes, replica states and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
 route: they act on, or describe, shards every tenant shares, and name no
 tenant. A tenant's Admin or SO -- whose built-in roles carry several of these
@@ -94,9 +155,9 @@ are separate calls, so a plan can be reviewed (or stored) before it runs.
 
 ## Membership through the SDK facade
 
-`Client.Cluster()` exposes `Members`, `Leader`, `AddReplica`, `RemoveReplica`
-and `WatchMembership`. **It adds no wire RPCs** — every method is a composition
-of the rows above. `WatchMembership` polls at `DefaultMembershipPollInterval`
+`Client.Cluster()` exposes `Members`, `Leader`, `AddReplica`, `RemoveReplica`,
+`TransferLeadership` and `WatchMembership`. **It adds no wire RPCs** — every
+method is a composition of the rows above. `WatchMembership` polls at `DefaultMembershipPollInterval`
 rather than streaming, so it works over unary-only REST.
 
 ## Forming a cluster from the SDK node
@@ -357,6 +418,9 @@ Nothing was changed; resubmit the plan.
 | Add/remove of an already-present/absent replica | 200 | `OK` — idempotent, skipped |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Node draining | 503 | `UNAVAILABLE` |
+| Leadership transfer did not complete in its bound | 503 | `UNAVAILABLE` |
+| Leadership transfer to an unknown replica | 404 | `NOT_FOUND` |
+| Leadership transfer to an observer, witness or removed replica | 409 | `FAILED_PRECONDITION` |
 | Consensus refused the request for now (busy, dropped, shard not ready, no leader yet) | 503 | `UNAVAILABLE` — retry |
 | A consensus proposal or read timed out | 504 | `DEADLINE_EXCEEDED` — retry |
 
@@ -514,11 +578,15 @@ their own; their Go surface is in `pkg/clusterenroll`, re-exported from
 
 | Symbol | Meaning |
 |---|---|
-| `NoiseAvailable() bool` | whether this runtime may use the Noise NK method; false in FIPS 140-3 mode |
-| `*NoiseFIPSUnavailableError` | a join configured with Noise as its only method, in FIPS 140-3 mode; the message names FIPS and the approved methods |
+| `NoiseAvailable() bool` | whether this runtime may use the Noise NK suite; false in FIPS 140-3 mode |
+| `*NoiseFIPSUnavailableError` | a join configured with Noise as its only method, in FIPS 140-3 mode; the message names FIPS and the P-256 flag and approved methods to use |
+| `P256KeyFile`, `JoinP256KeyFile` | file names of the persisted P-256 responder keys (`p256-key.hex`, `join-p256-key.hex`) |
+| `*P256KeyFileSizeError` | a persisted P-256 key file that is not a 32-byte hex key; never regenerated |
+| `*JoinSuiteUnavailableError`, `*MissingJoinServerKeyError` | a join exchange with no usable suite for this runtime, or with no server key configured for the suite chosen |
+| `(*Advertiser).P256PublicKey()` | the P-256 responder public key joiners pin; always available, FIPS or not |
 | `(*Advertiser).NoiseEnabled() bool` | whether THIS node is running a Noise listener; a non-nil `Advertiser` means the node advertises enrollment, which is a different question. Every admitted, unsealed member gets one -- see [architecture.md](architecture.md#member-side-csr-join-key-a-cluster-ca) -- not only the node that generated the cluster CA |
 
-See [engineering.md](engineering.md#fips-140-3--the-noise-nk-method-is-unavailable)
+See [engineering.md](engineering.md#fips-140-3--the-p-256-suite-replaces-noise-nk)
 and [architecture.md](architecture.md) for the member-side CSR join design.
 
 The cluster feature gate is not an API surface either: a node refused under a

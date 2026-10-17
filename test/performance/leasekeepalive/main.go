@@ -81,7 +81,11 @@ func (e *benchError) Unwrap() error { return e.Err }
 
 func main() {
 	flag.Parse()
-	if err := run(); err != nil {
+	err := run()
+	if cleanupErr := qrdbdharness.RemoveBuilds(); cleanupErr != nil {
+		fmt.Fprintln(os.Stderr, cleanupErr)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

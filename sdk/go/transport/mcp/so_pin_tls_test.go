@@ -23,7 +23,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -74,7 +73,7 @@ func (p *pinProbe) handler() http.Handler {
 
 func connectMCP(t *testing.T, address string, tlsCfg *tls.Config) *Transport {
 	t.Helper()
-	opts := []transport.Option{transport.WithAddress(address), transport.WithTimeout(5 * time.Second)}
+	opts := []transport.Option{transport.WithAddress(address), transport.WithTimeout(sotest.RequestTimeout)}
 	if tlsCfg != nil {
 		opts = append(opts, transport.WithTLSConfig(tlsCfg))
 	}

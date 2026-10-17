@@ -47,7 +47,16 @@ FAILURES=0
 fixture() {
 	DIR="${WORK}/$1"
 	rm -rf "${DIR}"
-	mkdir -p "${DIR}/.github/workflows" "${DIR}/.devcontainer"
+	mkdir -p "${DIR}/.github/workflows" "${DIR}/.devcontainer" "${DIR}/scripts"
+
+	cat > "${DIR}/scripts/tool-pins.sh" <<-'EOF'
+		GO_IMAGE=golang:1.27.2-alpine3.24@sha256:0000
+		GOLANGCI_LINT_VERSION=v2.14.0
+		ACTIONLINT_VERSION=v1.7.12
+		GOSEC_VERSION=v2.29.0
+		GOVULNCHECK_VERSION=v1.8.0
+		TRIVY_VERSION=v0.75.0
+	EOF
 
 	cat > "${DIR}/.github/workflows/ci.yml" <<-'EOF'
 		name: CI
@@ -55,13 +64,14 @@ fixture() {
 		  GOLANGCI_LINT_VERSION: "v2.14.0"
 		  GOSEC_VERSION: "v2.29.0"
 		  GOVULNCHECK_VERSION: "v1.8.0"
+		  ACTIONLINT_VERSION: "v1.7.12"
 	EOF
 
 	cat > "${DIR}/Makefile" <<-'EOF'
-		GOLANGCI_LINT_VERSION := v2.14.0
-		GOSEC_VERSION         := v2.29.0
-		GOVULNCHECK_VERSION   := v1.8.0
-		TRIVY_VERSION         := v0.75.0
+		TOOL_PINS := scripts/tool-pins.sh
+		include $(TOOL_PINS)
+		export ACTIONLINT_VERSION
+		GOLANGCI_GOSEC_VERSION := v2.27.0
 	EOF
 
 	cat > "${DIR}/.devcontainer/Dockerfile" <<-'EOF'
@@ -119,55 +129,77 @@ assert() {
 # ---------------------------------------------------------------------------
 
 DIR=$(fixture agree)
-assert "pins that agree pass" 0 "scanner pins agree" "${DIR}"
+assert "pins that agree pass" 0 "tool pins agree" "${DIR}"
 
 # ---------------------------------------------------------------------------
-# Disagreement, once per file that is held to ci.yml. Each is asserted
+# Disagreement, once per copy held to the pin file. Each is asserted
 # separately: a comparison loop that dropped one file would still pass the
-# other two, and the gap would be invisible.
+# others, and the gap would be invisible.
 # ---------------------------------------------------------------------------
 
-DIR=$(fixture makefile-drift)
-sed -i 's/GOSEC_VERSION         := v2.29.0/GOSEC_VERSION         := v2.28.0/' "${DIR}/Makefile"
-assert "a Makefile pin behind ci.yml is rejected" 1 \
-	"GOSEC_VERSION is v2.28.0 in Makefile but v2.29.0" "${DIR}"
+DIR=$(fixture ci-drift)
+sed -i 's/GOSEC_VERSION: "v2.29.0"/GOSEC_VERSION: "v2.28.0"/' "${DIR}/.github/workflows/ci.yml"
+assert "a ci.yml pin off the pin file is rejected" 1 \
+	"GOSEC_VERSION is v2.28.0 in .github/workflows/ci.yml but v2.29.0" "${DIR}"
+
+DIR=$(fixture actionlint-drift)
+sed -i 's/ACTIONLINT_VERSION: "v1.7.12"/ACTIONLINT_VERSION: "v1.7.11"/' "${DIR}/.github/workflows/ci.yml"
+assert "a ci.yml actionlint pin off the pin file is rejected" 1 \
+	"ACTIONLINT_VERSION is v1.7.11 in .github/workflows/ci.yml" "${DIR}"
 
 DIR=$(fixture dockerfile-drift)
 sed -i 's/ARG GOLANGCI_LINT_VERSION=v2.14.0/ARG GOLANGCI_LINT_VERSION=v2.7.2/' "${DIR}/.devcontainer/Dockerfile"
-assert "a CPU Dockerfile default behind ci.yml is rejected" 1 \
+assert "a CPU Dockerfile default off the pin file is rejected" 1 \
 	"GOLANGCI_LINT_VERSION is v2.7.2 in .devcontainer/Dockerfile" "${DIR}"
 
 DIR=$(fixture gpu-drift)
 sed -i 's/ARG GOVULNCHECK_VERSION=v1.8.0/ARG GOVULNCHECK_VERSION=v1.6.0/' "${DIR}/.devcontainer/Dockerfile.gpu"
-assert "a GPU Dockerfile default behind ci.yml is rejected" 1 \
+assert "a GPU Dockerfile default off the pin file is rejected" 1 \
 	"GOVULNCHECK_VERSION is v1.6.0 in .devcontainer/Dockerfile.gpu" "${DIR}"
+
+DIR=$(fixture trivy-drift)
+sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
+assert "a trivy default off the pin file is rejected" 1 \
+	"TRIVY_VERSION is v0.60.0 in .devcontainer/Dockerfile but v0.75.0" "${DIR}"
 
 # The authority is named in the diagnostic, because "these disagree" does not
 # tell the next person which one to change.
 DIR=$(fixture names-authority)
 sed -i 's/ARG GOSEC_VERSION=v2.29.0/ARG GOSEC_VERSION=v2.28.0/' "${DIR}/.devcontainer/Dockerfile"
-assert "the diagnostic names ci.yml as the authority" 1 \
-	"ci.yml is the authority" "${DIR}"
+assert "the diagnostic names the pin file as the authority" 1 \
+	"scripts/tool-pins.sh is the authority" "${DIR}"
+
+# A pin moved in the pin file alone is drift in every copy, and each says so.
+DIR=$(fixture pin-file-moved)
+sed -i 's/^GOSEC_VERSION=v2.29.0/GOSEC_VERSION=v2.30.0/' "${DIR}/scripts/tool-pins.sh"
+assert "a bump in the pin file alone names the copies left behind" 1 \
+	"GOSEC_VERSION is v2.29.0 in .devcontainer/Dockerfile.gpu but v2.30.0" "${DIR}"
 
 # ---------------------------------------------------------------------------
-# trivy, whose authority is the Makefile rather than ci.yml.
+# One pin file: the Makefile reads it and does not copy it.
 # ---------------------------------------------------------------------------
 
-DIR=$(fixture trivy-drift)
-sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
-assert "a trivy pin that disagrees with the Makefile is rejected" 1 \
-	"TRIVY_VERSION is v0.60.0 in .devcontainer/Dockerfile but v0.75.0" "${DIR}"
+DIR=$(fixture makefile-assigns)
+printf 'GOSEC_VERSION := v2.28.0\n' >> "${DIR}/Makefile"
+assert "a Makefile assignment overriding the pin file is rejected" 1 \
+	"the Makefile assigns GOSEC_VERSION" "${DIR}"
 
-DIR=$(fixture trivy-authority)
-sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
-assert "and says the Makefile is trivy's authority, not ci.yml" 1 \
-	"ci.yml pins no trivy" "${DIR}"
+DIR=$(fixture makefile-conditional)
+printf 'TRIVY_VERSION ?= v0.60.0\n' >> "${DIR}/Makefile"
+assert "a conditional Makefile assignment is rejected too" 1 \
+	"the Makefile assigns TRIVY_VERSION" "${DIR}"
 
-# A trivy pin absent from ci.yml is CORRECT and must not be reported. Without
-# this case, a future edit that held trivy to ci.yml like the other three would
-# reject the tree this repository actually has.
-DIR=$(fixture trivy-absent-from-ci)
-assert "trivy missing from ci.yml is not a finding" 0 "scanner pins agree" "${DIR}"
+DIR=$(fixture makefile-no-include)
+sed -i '/^include/d' "${DIR}/Makefile"
+assert "a Makefile that stops including the pin file is rejected" 1 \
+	"the Makefile does not include scripts/tool-pins.sh" "${DIR}"
+
+# Copies that are correctly absent must not be reported. Without these cases a
+# future edit that held trivy to ci.yml, or actionlint to the Dockerfiles,
+# would reject the tree this repository actually has.
+DIR=$(fixture absent-where-not-installed)
+assert "trivy absent from ci.yml and actionlint from the Dockerfiles is not a finding" 0 \
+	"tool pins agree" "${DIR}"
 
 DIR=$(fixture gpu-trivy)
 printf 'ARG TRIVY_VERSION=v0.75.0\n' >> "${DIR}/.devcontainer/Dockerfile.gpu"
@@ -180,14 +212,14 @@ assert "an ARG TRIVY_VERSION in the GPU image is rejected" 1 \
 # ---------------------------------------------------------------------------
 
 DIR=$(fixture pin-removed)
-sed -i '/GOSEC_VERSION/d' "${DIR}/Makefile"
-assert "a pin that vanished from the Makefile is a failure, not a pass" 1 \
-	"no GOSEC_VERSION pin found in Makefile" "${DIR}"
+sed -i '/^GOSEC_VERSION/d' "${DIR}/scripts/tool-pins.sh"
+assert "a pin that vanished from the pin file is a failure, not a pass" 1 \
+	"no GOSEC_VERSION pin found in scripts/tool-pins.sh" "${DIR}"
 
 DIR=$(fixture reformatted)
-sed -i 's/GOVULNCHECK_VERSION   := v1.8.0/GOVULNCHECK_VERSION ?= v1.8.0/' "${DIR}/Makefile"
+sed -i 's/^GOVULNCHECK_VERSION=v1.8.0/GOVULNCHECK_VERSION = v1.8.0/' "${DIR}/scripts/tool-pins.sh"
 assert "an assignment the pattern no longer matches is a failure" 1 \
-	"no GOVULNCHECK_VERSION pin found in Makefile" "${DIR}"
+	"no GOVULNCHECK_VERSION pin found in scripts/tool-pins.sh" "${DIR}"
 
 DIR=$(fixture floor-explains)
 sed -i '/GOSEC_VERSION/d' "${DIR}/.github/workflows/ci.yml"
@@ -198,6 +230,11 @@ DIR=$(fixture file-moved)
 rm "${DIR}/.devcontainer/Dockerfile.gpu"
 assert "a moved file fails rather than narrowing the gate" 1 \
 	"does not exist" "${DIR}"
+
+DIR=$(fixture pin-file-missing)
+rm "${DIR}/scripts/tool-pins.sh"
+assert "a missing pin file fails rather than passing over nothing" 1 \
+	"tool-pins.sh does not exist" "${DIR}"
 
 # ---------------------------------------------------------------------------
 

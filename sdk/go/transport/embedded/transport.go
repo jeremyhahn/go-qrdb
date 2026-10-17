@@ -940,6 +940,28 @@ func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64
 	return translateError(promoter.PromoteMember(ctx, shardID, replicaID))
 }
 
+// TransferLeadership hands shardID's leadership to targetReplicaID through
+// the embedded admin service and returns once that replica leads. Implements
+// transport.LeaderTransferrer.
+func (t *Transport) TransferLeadership(ctx context.Context, shardID, targetReplicaID uint64) error {
+	if err := t.gate("TransferLeadership"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "TransferLeadership"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	transferrer, ok := t.adminSvc.(service.LeaderTransferrer)
+	if !ok {
+		return translateError(&service.LeaderTransferUnsupportedError{})
+	}
+	return translateError(transferrer.TransferLeadership(ctx, shardID, targetReplicaID))
+}
+
+var _ transport.LeaderTransferrer = (*Transport)(nil)
+
 // MintJoinToken mints a single-use, identity-bound member-side CSR join
 // token through the embedded admin service. Implements
 // transport.ClusterJoinTokenMinter. Returns

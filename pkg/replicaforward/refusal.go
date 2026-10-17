@@ -16,7 +16,9 @@ package replicaforward
 
 import (
 	"errors"
+	"math"
 	"strconv"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -37,6 +39,12 @@ const (
 	// ReasonNotLeader marks a write refused by a follower; its metadata
 	// names the leader's Raft address when the follower knows it.
 	ReasonNotLeader = "NOT_LEADER"
+
+	// ReasonLeaderTransferTimeout marks a *service.LeaderTransferTimeoutError:
+	// the named replica did not take a shard's leadership within the bound.
+	// Its metadata names the shard, both replicas and the bound, so a client
+	// rebuilds the typed error rather than parsing the message.
+	ReasonLeaderTransferTimeout = "LEADER_TRANSFER_TIMEOUT"
 
 	// ReasonSealStateUnconfirmed marks a node that cannot confirm the
 	// cluster seal state (*clusterseal.SealStateUnconfirmedError): its lease
@@ -70,14 +78,22 @@ const (
 	keyLeaderReplicaID = "leader_replica_id"
 	keyReplicas        = "replicas"
 	keyLeaderRaftAddr  = "leader_raft_addr"
+	keyFromReplicaID   = "from_replica_id"
+	keyToReplicaID     = "to_replica_id"
+	keyTimeoutMillis   = "timeout_ms"
 )
 
 // Refusal returns the structured form of the refusal err carries -- a node
 // that holds no replica of the database (ReasonNotAReplica), a follower
-// refusing a write (ReasonNotLeader), or a node that cannot confirm the
-// cluster seal state (ReasonSealStateUnconfirmed) -- for a transport to put
-// on the wire beside the message. Any other error is not one.
+// refusing a write (ReasonNotLeader), a leadership transfer that did not
+// finish within its bound (ReasonLeaderTransferTimeout), or a node that
+// cannot confirm the cluster seal state (ReasonSealStateUnconfirmed) -- for
+// a transport to put on the wire beside the message. Any other error is not
+// one.
 func Refusal(err error) (reason string, md map[string]string, ok bool) {
+	if lte, isLTE := errors.AsType[*service.LeaderTransferTimeoutError](err); isLTE {
+		return ReasonLeaderTransferTimeout, LeaderTransferTimeoutMetadata(lte), true
+	}
 	if nar, isNAR := errors.AsType[*placement.NotAReplicaError](err); isNAR {
 		return ReasonNotAReplica, NotAReplicaMetadata(nar), true
 	}
@@ -154,6 +170,40 @@ func NotLeaderMetadata(leaderRaftAddr string) map[string]string {
 
 // LeaderRaftAddr returns the leader NotLeaderMetadata encoded.
 func LeaderRaftAddr(md map[string]string) string { return md[keyLeaderRaftAddr] }
+
+// LeaderTransferTimeoutMetadata encodes e as refusal metadata.
+func LeaderTransferTimeoutMetadata(e *service.LeaderTransferTimeoutError) map[string]string {
+	return map[string]string{
+		keyShard:         strconv.FormatUint(e.ShardID, 10),
+		keyFromReplicaID: strconv.FormatUint(e.FromReplicaID, 10),
+		keyToReplicaID:   strconv.FormatUint(e.ToReplicaID, 10),
+		keyTimeoutMillis: strconv.FormatInt(e.Timeout.Milliseconds(), 10),
+	}
+}
+
+// ParseLeaderTransferTimeout decodes refusal metadata
+// LeaderTransferTimeoutMetadata encoded. A missing or malformed key is
+// *RefusalDecodeError.
+func ParseLeaderTransferTimeout(md map[string]string) (*service.LeaderTransferTimeoutError, error) {
+	keys := [...]string{keyShard, keyFromReplicaID, keyToReplicaID, keyTimeoutMillis}
+	var vals [len(keys)]uint64
+	for i, k := range keys {
+		v, err := uintKey(md, k)
+		if err != nil {
+			return nil, err
+		}
+		vals[i] = v
+	}
+	if vals[3] > uint64(math.MaxInt64/int64(time.Millisecond)) {
+		return nil, &RefusalDecodeError{Key: keyTimeoutMillis}
+	}
+	return &service.LeaderTransferTimeoutError{
+		ShardID:       vals[0],
+		FromReplicaID: vals[1],
+		ToReplicaID:   vals[2],
+		Timeout:       time.Duration(vals[3]) * time.Millisecond,
+	}, nil
+}
 
 // replicaKeyPrefix is replica i's metadata key prefix.
 func replicaKeyPrefix(i int) string { return "replica_" + strconv.Itoa(i) + "_" }

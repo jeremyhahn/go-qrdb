@@ -23,7 +23,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest"
@@ -85,7 +84,7 @@ func redirectingServer(rec *pinRecorder, target string) http.Handler {
 
 func connectREST(t *testing.T, address string, tlsCfg *tls.Config) *Transport {
 	t.Helper()
-	opts := []transport.Option{transport.WithAddress(address), transport.WithTimeout(5 * time.Second)}
+	opts := []transport.Option{transport.WithAddress(address), transport.WithTimeout(sotest.RequestTimeout)}
 	if tlsCfg != nil {
 		opts = append(opts, transport.WithTLSConfig(tlsCfg))
 	}

@@ -1,6 +1,6 @@
 # Clustering — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 **Raft mode only.** In standalone every capability here refuses with
 `requires mode: raft`.
@@ -347,7 +347,7 @@ is fully exercised by the package's own tests and does nothing at all for the
 daemon, which is the only production consumer — so the assertion that pins this
 lives in `cmd/qrdbd`, against `resolveTLS`, not against `Resolve`.
 
-### FIPS 140-3 — the Noise NK method is unavailable
+### FIPS 140-3 — the P-256 suite replaces Noise NK
 
 Noise_NK_25519_ChaChaPoly_SHA256 mandates X25519 key agreement, which is not an
 approved scheme under SP 800-56A Rev. 3. Under `GODEBUG=fips140=only` the Go
@@ -358,32 +358,58 @@ for FIPS mode should not be handed non-approved cryptography because the runtime
 tolerates it. The predicate is therefore `crypto/fips140.Enabled()`, not
 `Enforced()`, and it is read through `clusterenroll.NoiseAvailable()`.
 
-**The ruling has two halves, and what separates them is the operator's stated
+What takes its place is the second suite of the bootstrap handshake,
+`TSBOOT1_P256_AESGCM_SHA256` (see [architecture.md](architecture.md#bootstrap-handshake-suites)),
+which is always available. A listener serves both suites and picks per
+connection from the first frame; under FIPS it serves only the P-256 one.
+
+**The ruling has three parts, and what separates them is the operator's stated
 intent.**
 
 | Situation | Behaviour |
 |---|---|
-| **First node** — no advertise-method option exists to choose; the operator asked to be the first node of a multi-node cluster | Noise is **excluded**. `StartAdvertiser` returns a non-nil `Advertiser` whose `NoiseEnabled()` is false, binds nothing, publishes no key and writes no `noise-key.hex`. The node advertises the approved methods. |
+| **First node** — no advertise-method option exists to choose; the operator asked to be the first node of a multi-node cluster | The Noise suite is **excluded**. `StartAdvertiser` returns an `Advertiser` whose `NoiseEnabled()` is false and whose listener serves the P-256 suite only; it writes `p256-key.hex` and no `noise-key.hex`, and logs `p256_public_key`. The node also advertises the other approved methods. |
+| **Member join listener** | Same: P-256 only under FIPS, `join-p256-key.hex` and no `join-key.hex`, logged as `join_p256_public_key`. |
+| **Joining node, P-256 key configured** | Carries the anchor fetch and the CSR exchange over P-256. A Noise key configured beside it is ignored under FIPS and preferred elsewhere. |
 | **Joining node, Noise configured alongside an approved method** | Noise is **excluded** from the truststrap `MethodOrder`; SPKI, DANE or direct HTTPS carry the join. `truststrap.AutoFetch` is a fallback chain by construction, so a preference list is exactly what the operator gave. |
-| **Joining node, Noise configured as the ONLY method** | **Refused**, at configuration time, with `*NoiseFIPSUnavailableError`. There is nothing to select among: the operator named Noise and this runtime cannot provide it. |
+| **Joining node, Noise configured as the ONLY method** | **Refused**, at configuration time, with `*NoiseFIPSUnavailableError`, naming `--bootstrap-p256-key` / `--bootstrap-join-p256-key` as the flags that replace the Noise ones. There is nothing to select among: the operator named Noise and this runtime cannot provide it. |
 
-**None of the three is silent.** The two exclusions log at WARN — from
-`startNoiseAdvertiser` and again from `logAdvertiserInfo` on the advertise side,
-and from `buildAutoConfig` on the join side — naming FIPS, naming the method
-that was dropped, and naming the approved methods to configure instead. The
-refusal's message leads with FIPS. A bootstrap method downgraded without saying
-so is its own defect.
+**None of the exclusions is silent.** They log at WARN — from
+`startNoiseAdvertiser`, `StartJoinServer` and again from `logAdvertiserInfo` on
+the advertise side, and from `buildAutoConfig` on the join side — naming FIPS,
+naming the suite that was dropped, and naming the approved flags to configure
+instead. The refusal's message leads with FIPS. A bootstrap method downgraded
+without saying so is its own defect.
 
 **An `Advertiser` means "this node advertises enrollment", not "a Noise listener
-is running."** The two were the same pointer while Noise was the only advertise
-mechanism, and they are not any more: `cmd/qrdbd` registers the
-`/v1/ca/bootstrap` endpoint — which is what SPKI, DANE and direct HTTPS all
-fetch — on exactly the condition that produced a non-`nil` advertiser. Gating
-that endpoint on a live Noise server instead would leave a FIPS first node
-unreachable by *every* method rather than by one, silently, which is the shape
-[Enrollment role](#enrollment-role) exists to keep out of this package. Ask
-`Advertiser.NoiseEnabled()` when you need to know about the Noise listener
-specifically.
+is running."** `cmd/qrdbd` registers the `/v1/ca/bootstrap` endpoint — which is
+what SPKI, DANE and direct HTTPS all fetch — on exactly the condition that
+produced a non-`nil` advertiser. Gating that endpoint on the Noise suite instead
+would leave a FIPS first node unreachable by *every* method rather than by one,
+silently, which is the shape [Enrollment role](#enrollment-role) exists to keep
+out of this package. Ask `Advertiser.NoiseEnabled()` when you need to know about
+the Noise suite specifically; `Advertiser.P256PublicKey()` is the key every
+joining node can rely on.
+
+**Keys.** Each listener owns one key file per suite, written once and reloaded
+on every later boot: `noise-key.hex` / `join-key.hex` (Noise, only where
+`NoiseAvailable()`), `p256-key.hex` / `join-p256-key.hex` (P-256). A P-256 file
+holds the 32-byte static key hex-encoded, written atomically with mode `0600`
+through `p256proto.EncodeStaticKey` from an enclave buffer, and read back into
+one through `DecodeStaticKey`; a file of any other size is refused with
+`*P256KeyFileSizeError` rather than regenerated, because regenerating would
+silently change the identity every joiner pinned. The public halves are what
+`--bootstrap-p256-key` and `--bootstrap-join-p256-key` pin, and are validated at
+configuration load (`pkg/config`): hex, uncompressed, on the curve.
+
+**One header, two exchanges.** The anchor fetch (`truststrap.AutoFetch`, with
+`NoiseConfig.ServerP256StaticKey` and `Suite`) and the CSR exchange
+(`JoinServer`/`JoinCSR`, `joinServerSuites`/`joinClientSuites`) both open with
+`version || suite`. The join server dispatches on that second byte through a map
+(`joinServerSuites`) — a suite is one entry — and the client selects its suite
+in `selectJoinSuite`, preferring Noise where `noiseAvailable()` and a Noise key
+are both present. A first frame naming no known suite closes the connection
+without a reply.
 
 **The bind host stays required in FIPS mode.** `AdvertiseOptions.validate()` is
 a configuration-completeness check and does not read the runtime: a
@@ -397,10 +423,10 @@ binaries whose enrollment surfaces differ and whose difference is invisible in
 the artifact. One binary that reads the runtime it was started in is the smaller
 claim, and it is the claim `GODEBUG` itself makes.
 
-**What this does NOT do.** It does not make the Noise transport work under FIPS —
-nothing can, short of a different handshake — and it does not decide whether the
-shared-CA-key enrollment mode should be served over Noise at all, which is a
-separate open question. See
+**What this does NOT do.** It does not make the Noise suite work under FIPS —
+nothing can, short of a different handshake, which is why the P-256 suite
+exists — and it does not decide whether the shared-CA-key enrollment mode should
+be served over either suite at all, which is a separate open question. See
 [fips140-mode.md](../seal/fips140-mode.md) for the FIPS register and the
 remaining gaps.
 
@@ -755,12 +781,47 @@ leader, ok, _ := cc.Leader(ctx, shardID)      // from GetShardState()
 _ = cc.AddReplica(ctx, shardID, id, raftAddr, identity) // delegates to AddMember
 _ = cc.RemoveReplica(ctx, shardID, id)        // delegates to RemoveMember
 _ = cc.PromoteReplica(ctx, shardID, id)       // delegates to PromoteMember
+_ = cc.TransferLeadership(ctx, shardID, id)   // transport.LeaderTransferrer
 ch, _ := cc.WatchMembership(ctx, shardID)     // polls, emits deltas
 // ev.Members, ev.Added, ev.Removed, ev.LeaderChanged
 ```
 
 `WatchMembership` **polls** at `DefaultMembershipPollInterval` rather than using
 a streaming RPC, so it works over every transport including unary-only REST.
+
+`TransferLeadership` type-asserts `transport.LeaderTransferrer` and answers
+`*transport.NotImplementedError` when the transport lacks it; every SDK
+transport implements it. Each server binding — REST
+`POST /membership/transfer-leadership`, gRPC/Unix `TransferLeadership`, QUIC
+`admin.TransferLeadership`, MCP `qrdb_transfer_leadership`, embedded —
+authorizes it as `admin:remove_member`, then type-asserts
+`service.LeaderTransferrer` and answers
+`*service.LeaderTransferUnsupportedError` (`Unimplemented`) when the
+configured `AdminServicer` lacks it. A follower's `NotLeaderError` is
+forwarded to the leader by `replicaforward`, as every membership change is.
+No binding wraps the call in a deadline of its own: the service's bound ends
+a stalled transfer, and a binding deadline as long as it (REST's
+`apiRequestTimeout` is 5 s) would race it and answer a bare context error.
+
+`replicaforward.Refusal` encodes a `LeaderTransferTimeoutError` as reason
+`LEADER_TRANSFER_TIMEOUT` with metadata `shard_id`, `from_replica_id`,
+`to_replica_id` and `timeout_ms` (`LeaderTransferTimeoutMetadata`); each
+transport puts it where it puts every refusal (REST error body `code` +
+`metadata`, gRPC `ErrorInfo` detail, QUIC error-frame `ErrorInfo`, MCP error
+envelope `reason` + `metadata`). The SDK transports decode it into
+`transport.RequestError.Reason`/`Metadata`, and `ClusterClient.TransferLeadership`
+rebuilds the typed error with `replicaforward.ParseLeaderTransferTimeout`
+(`leaderTransferError`); metadata that does not decode leaves the
+`RequestError` as sent. `AdminService.TransferLeadership` reads
+the current leader, calls `Host.RequestLeaderTransfer`, and waits with
+`awaitLeaderTransfer` — the loop `transferLeadershipAwayFromRemoved` uses —
+bounded by `defaultLeaderTransferWaitTimeout` (5 s). The host's refusals are
+translated to typed errors: quicraft `NotLeaderError` → `NotLeaderError`,
+`ReplicaNotFoundError` → `UnknownReplicaError` (`NotFound`),
+`InvalidMemberError` → `LeaderTransferTargetError` (`FailedPrecondition`),
+`ErrShardNotFound` → `UnknownShardError` (`NotFound`); anything else stays a
+`MembershipError`. An expired bound is `LeaderTransferTimeoutError`
+(`Unavailable`). `LocalBackend` refuses it with `ClusterOperationError`.
 
 ### Rebalance — `sdk/go/transport`
 
@@ -973,11 +1034,12 @@ type ImbalanceReport struct {
   The node that generated Key A being gone for good no longer strands the
   rest of the cluster's enrollment surface.
 - **In FIPS 140-3 mode a first node still advertises, over the approved methods
-  only.** The Noise NK listener is excluded — its X25519 handshake is not
-  approved — and the node comes up serving `/v1/ca/bootstrap` for SPKI, DANE and
-  direct HTTPS, saying so at WARN. A join configured with Noise as its only
-  method is refused at configuration time instead. See
-  [FIPS 140-3](#fips-140-3--the-noise-nk-method-is-unavailable).
+  only.** The Noise NK suite is excluded — its X25519 handshake is not
+  approved — and the node comes up with a P-256-only enrollment listener, also
+  serving `/v1/ca/bootstrap` for SPKI, DANE and direct HTTPS, saying so at WARN.
+  A join configured with Noise as its only method is refused at configuration
+  time instead. See
+  [FIPS 140-3](#fips-140-3--the-p-256-suite-replaces-noise-nk).
 - **A node whose data directory holds cluster CA material with no recorded
   enrollment role refuses to start.** The role cannot be recovered from the
   material, so the node cannot know whether it owes the cluster a listener, and
@@ -1075,7 +1137,10 @@ database's owning tenant.
 | `/v1/ca/bootstrap` or the Noise advertiser handed key material | filtered to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`, `ValidateAnchorBundle`); the CA private key is never served | **yes** |
 | FIPS 140-3 mode, anchor fetch configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
 | FIPS 140-3 mode, anchor fetch configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the fetch | n/a |
-| FIPS 140-3 mode, first node | advertises the approved methods with a WARN naming FIPS; no Noise listener, no `noise-key.hex` | n/a |
+| FIPS 140-3 mode, anchor fetch configured with the P-256 key | the fetch runs over the P-256 suite; nothing is dropped | n/a |
+| FIPS 140-3 mode, first node | enrollment listener serves the P-256 suite only, with a WARN naming FIPS; no Noise suite, no `noise-key.hex`, `p256-key.hex` published | n/a |
+| A persisted P-256 key file that is not a 32-byte hex key | `*P256KeyFileSizeError`; the node does not regenerate (the identity joiners pinned would change) | **yes** |
+| A join exchange whose first frame names no known suite, or a version other than the current one | connection closed without a reply | n/a |
 | `AddMember` for an existing replica | skipped (idempotent) | n/a |
 | `RemoveMember` for an absent replica | skipped (idempotent) | n/a |
 | Reconfiguration transient failure | retried with capped exponential backoff | — |
@@ -1105,10 +1170,12 @@ Discovery lives under the `discovery` block — see
 | DNS SRV target | — | `{service}.{proto}.{domain}`, default `_raft._udp` |
 | `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the Noise trust-anchor listener, which every admitted, unsealed member runs when qrdbd manages the cluster CA — never on operator-supplied `--tls-*-file` certificates (the CA-generating node from first boot, every other member once it has joined or restarted from a cached data directory); **zero means the fixed default 63006, not an ephemeral port** |
 | `bootstrap.noise_host` | `--bootstrap-noise-host` | bind host for that listener; falls back to `server.host` so a node confined to one interface does not expose enrollment on all of them |
+| `bootstrap.p256_key` | `--bootstrap-p256-key` | joiner side: the first node's published P-256 responder public key (hex, 130 characters); requires `bootstrap.noise_addr` |
+| `bootstrap.join_p256_key` | `--bootstrap-join-p256-key` | joiner side: the join listener's published P-256 responder public key; `bootstrap.join_addr` then needs this OR `bootstrap.join_key` |
 
-Both `bootstrap.noise_*` settings are accepted and validated in FIPS 140-3 mode
-and neither opens a listener there — see
-[FIPS 140-3](#fips-140-3--the-noise-nk-method-is-unavailable).
+`bootstrap.noise_*` is accepted and validated in FIPS 140-3 mode and the Noise
+suite is not served there — the listener still opens, for the P-256 suite — see
+[FIPS 140-3](#fips-140-3--the-p-256-suite-replaces-noise-nk).
 
 ## Test strategy
 

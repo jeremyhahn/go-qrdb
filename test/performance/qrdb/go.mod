@@ -3,11 +3,15 @@ module github.com/jeremyhahn/go-qrdb/test/performance/qrdb
 go 1.27.2
 
 require (
-	// go-qrdb and sdk/go: held at v0.7.0-alpha. ./Dockerfile, the only build
-	// of this module, replaces go-qrdb with the build context, so the go-qrdb
-	// line selects nothing there. Moving both to the newest tag is pending a
-	// build of this module against that tag's published source.
+	// go-qrdb: held at v0.7.0-alpha. ./Dockerfile, the only build of this
+	// module, replaces go-qrdb with the build context, so this line selects
+	// nothing there. Moving it to the newest tag is pending a build of this
+	// module against that tag's published source.
 	github.com/jeremyhahn/go-qrdb v0.7.0-alpha
+	// sdk/go: held at v0.7.0-alpha, with go-qrdb above. In ./Dockerfile the
+	// replaced go-qrdb requires the newest sdk/go, which minimal version
+	// selection prefers over this line, so it selects nothing there either.
+	// Moving it to the newest tag is pending the same build.
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha
 	// go-quicraft/test/performance: the newest tag, in lockstep with the root
 	// module's go-quicraft (#659).

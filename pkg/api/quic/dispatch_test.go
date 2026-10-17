@@ -40,6 +40,7 @@ var expectedMethods = []string{
 	"admin.AddMember",
 	"admin.RemoveMember",
 	"admin.PromoteMember",
+	"admin.TransferLeadership",
 	"admin.RequestSnapshot",
 	"admin.Drain",
 	"admin.Capabilities",
@@ -274,6 +275,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 196 = 195 + admin.TransferLeadership, handing a shard's leadership to a
+	// named voter and waiting until it leads (docs/clustering).
 	// 195 = 194 + cert.Delegate, a tenant-issued delegation certificate for a
 	// service principal (docs/certificate-authority).
 	// 194 = 193 + admin.GetStateHashes, every local replica's applied index
@@ -339,7 +342,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 195
+	const wantCount = 196
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -430,7 +433,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 
 	expectedCounts := map[string]int{
 		"kv":       8,
-		"admin":    23,
+		"admin":    24,
 		"mvcc":     7,
 		"tx":       1,
 		"batch":    5,

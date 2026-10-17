@@ -34,7 +34,7 @@
 //     created-after-R, --dry-run writing nothing, the request-shape/
 //     internal-key/compaction-floor guards, and --output json shape with
 //     plaintext keys) and a "conflict" subtest (a genuine CAS conflict
-//     produced by racing a live external writer against the restore's own
+//     produced by an external write ordered inside the restore's own
 //     internal plan-then-apply window, proving the non-zero exit code on an
 //     unforced partial apply and that --force then converges and exits 0).
 //   - TestKVRestore_CLI_TenantIsolation_PerProtocol: a restore scoped to one
@@ -90,11 +90,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -470,38 +470,83 @@ func testKVRestoreLifecycleOverProtocol(t *testing.T, node *multiProtoNode, prot
 // Conflict + exit code
 // ---------------------------------------------------------------------------
 
-// raceOverwriteUntilStopped repeatedly PUTs a fresh value to url (an
-// authenticated /kv/<key> REST endpoint) until stop is closed. It is test
-// scaffolding to induce a genuine, non-simulated CAS conflict -- see
+// kvRestoreRace is what raceAfterFirstRestoreWrite did: whether its one
+// write to the raced key committed, and the error that stopped it, if any.
+type kvRestoreRace struct {
+	wrote bool
+	err   error
+}
+
+// kvRestoreRaceStatusError reports a racer request the node answered with a
+// status other than the one the request expects.
+type kvRestoreRaceStatusError struct {
+	Method string
+	URL    string
+	Status int
+}
+
+func (e *kvRestoreRaceStatusError) Error() string {
+	return e.Method + " " + e.URL + ": unexpected status " + strconv.Itoa(e.Status)
+}
+
+// raceAfterFirstRestoreWrite polls firstURL (an authenticated /kv/<key> REST
+// endpoint) until it holds firstRestored, the value the restore under test
+// writes to the first key of its plan, and then PUTs a new value to raceURL
+// exactly once. It gives up without writing when stop is closed first.
+//
+// The observed write is what orders the race. RestoreToRevision computes its
+// whole plan in one read before it writes anything, so a write issued after
+// the first key is seen restored is necessarily ordered after that read: the
+// plan cannot already contain it, and the raced key's compare-and-swap
+// expects the revision the plan saw. The raced key is applied last, after
+// every other key's own Raft-replicated compare-and-swap, which is the
+// window this one read and one write have to land in.
+//
+// It is test scaffolding to induce a genuine CAS conflict -- see
 // testKVRestoreConflictExitCodeOverProtocol -- not the feature under test, so
-// it deliberately uses a raw mTLS HTTP client rather than the CLI: spawning a
-// fresh `qrdb kv put` process per iteration would add process-start latency
-// that shrinks the very race window this loop exists to hit. Errors are
-// logged, not fatal: a transient failure here reflects contention with the
-// restore call under test, not a defect.
-func raceOverwriteUntilStopped(t *testing.T, client *http.Client, url string, stop <-chan struct{}) {
-	t.Helper()
-	i := 0
+// it uses a raw mTLS HTTP client rather than the CLI: a `qrdb` process per
+// request would spend that window on process start. Each poll is a full
+// round trip to the node, which paces the loop without a sleep. Any failed
+// request is returned rather than retried: on a healthy node there is none,
+// and a swallowed one is how the race silently stops racing.
+func raceAfterFirstRestoreWrite(client *http.Client, firstURL string, firstRestored []byte, raceURL string, stop <-chan struct{}) kvRestoreRace {
 	for {
 		select {
 		case <-stop:
-			return
+			return kvRestoreRace{}
 		default:
 		}
-		i++
-		body := []byte(fmt.Sprintf("racer-%d", i))
-		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+		resp, err := client.Get(firstURL)
 		if err != nil {
-			continue
+			return kvRestoreRace{err: err}
 		}
-		resp, doErr := client.Do(req)
-		if doErr != nil {
-			t.Logf("raceOverwriteUntilStopped: transient PUT error (expected under contention): %v", doErr)
-		} else {
-			resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return kvRestoreRace{err: err}
 		}
-		time.Sleep(2 * time.Millisecond)
+		if resp.StatusCode != http.StatusOK {
+			return kvRestoreRace{err: &kvRestoreRaceStatusError{Method: http.MethodGet, URL: firstURL, Status: resp.StatusCode}}
+		}
+		if bytes.Equal(body, firstRestored) {
+			break
+		}
 	}
+
+	req, err := http.NewRequest(http.MethodPut, raceURL, strings.NewReader("racer"))
+	if err != nil {
+		return kvRestoreRace{err: err}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return kvRestoreRace{err: err}
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		return kvRestoreRace{err: &kvRestoreRaceStatusError{Method: http.MethodPut, URL: raceURL, Status: resp.StatusCode}}
+	}
+	return kvRestoreRace{wrote: true}
 }
 
 // startAsyncKVRestore starts `qrdb kv restore <restoreArgs...>` against node
@@ -543,14 +588,20 @@ func startAsyncKVRestore(t *testing.T, node *multiProtoNode, proto multiProtocol
 }
 
 // testKVRestoreConflictExitCodeOverProtocol proves the default (non-Force)
-// CAS-conflict contract with a REAL race, not a simulated one: a live
-// external writer is raced against a single `kv restore` apply call's own
-// internal plan-then-apply window (see pkg/service/mvcc_restore.go's
+// CAS-conflict contract with a REAL race, not a simulated one: an external
+// write lands inside a single `kv restore` apply call's own internal
+// plan-then-apply window (see pkg/service/mvcc_restore.go's
 // RestoreToRevision doc comment -- the plan is a single upfront read and the
 // apply is a sequential, per-key, Raft-replicated compare-and-swap in
-// ascending key order), so that the LAST key in the scope -- applied only
-// after every other key's own Raft round trip -- has a wide, real wall-clock
-// window for the external write to land in before its own CAS runs.
+// ascending key order). The write is ordered by an event, not by timing:
+// raceAfterFirstRestoreWrite issues it only once the FIRST key is seen
+// restored, which is after the plan was read, and aims it at the LAST key,
+// which is applied only after every other key's own Raft round trip.
+//
+// A writer that simply overwrites in a loop does not order anything. Its
+// writes can land before the plan, which then already includes them, and
+// nothing guarantees one more lands before the last apply; that is how this
+// test once exited 0 on one transport and passed on the rest.
 //
 // This deliberately does NOT try to reproduce the conflict as "dry-run,
 // mutate, then apply" via two separate CLI invocations: RestoreToRevision
@@ -588,27 +639,45 @@ func testKVRestoreConflictExitCodeOverProtocol(t *testing.T, node *multiProtoNod
 	// represent, so keys[n-1] is applied LAST -- after n-1 other Raft round
 	// trips have already happened inside the SAME restore call.
 	raceKey := keys[n-1]
-	raceURL := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", node.restPort, raceKey)
+	keyURL := func(key string) string { return fmt.Sprintf("https://127.0.0.1:%d/kv/%s", node.restPort, key) }
 	racer := mtlsHTTPClient(t, node.ca, 10*time.Second)
+	wantRestored := fmt.Sprintf("v1-%d", n-1)
 
 	cmd, stdoutBuf, stderrBuf := startAsyncKVRestore(t, node, proto, "--revision", strconv.FormatInt(targetRevision, 10), "--prefix", racePrefix)
 
 	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
+	raced := make(chan kvRestoreRace, 1)
 	go func() {
-		defer wg.Done()
-		raceOverwriteUntilStopped(t, racer, raceURL, stop)
+		raced <- raceAfterFirstRestoreWrite(racer, keyURL(keys[0]), []byte("v1-0"), keyURL(raceKey), stop)
 	}()
 
 	waitErr := cmd.Wait()
 	close(stop)
-	wg.Wait()
+	race := <-raced
 	out := stdoutBuf.String()
 	errOut := stderrBuf.String()
 
+	if race.err != nil {
+		t.Fatalf("[%s] racer against %s: %v (restore stdout: %s, stderr: %s)", proto.name, raceKey, race.err, out, errOut)
+	}
 	if waitErr == nil {
-		t.Fatalf("[%s] kv restore with a raced (conflicted) key exited 0, want non-zero (stdout: %s, stderr: %s)", proto.name, out, errOut)
+		// Say which of the three ways a zero exit can come about, so a
+		// failure names its cause rather than leaving it to be inferred.
+		got, err := runCLIProto(t, node, proto, "kv", "get", raceKey)
+		if err != nil {
+			t.Fatalf("[%s] kv restore with a raced key exited 0, and kv get %s failed: %v\noutput: %s", proto.name, raceKey, err, got)
+		}
+		switch {
+		case !race.wrote:
+			t.Fatalf("[%s] kv restore exited 0 before the racer saw %s restored, so %s was never raced (stdout: %s, stderr: %s)",
+				proto.name, keys[0], raceKey, out, errOut)
+		case strings.TrimSpace(got) == wantRestored:
+			t.Fatalf("[%s] kv restore exited 0 and %s holds the restored value %q: the restore overwrote a write that committed after its plan (stdout: %s, stderr: %s)",
+				proto.name, raceKey, wantRestored, out, errOut)
+		default:
+			t.Fatalf("[%s] kv restore exited 0 and the racer's write to %s landed after the restore applied it (holds %q), not inside the plan-to-apply window (stdout: %s, stderr: %s)",
+				proto.name, raceKey, strings.TrimSpace(got), out, errOut)
+		}
 	}
 	if !strings.Contains(errOut, "unrestored due to conflicts") && !strings.Contains(errOut, "retry with --force") {
 		t.Fatalf("[%s] kv restore non-zero exit: stderr does not mention the conflict/--force remedy: %q (stdout: %s)", proto.name, errOut, out)
@@ -639,7 +708,6 @@ func testKVRestoreConflictExitCodeOverProtocol(t *testing.T, node *multiProtoNod
 	// The conflicted key must have been left untouched by the restore --
 	// i.e. it must NOT hold the restored (target) value.
 	got, err := runCLIProto(t, node, proto, "kv", "get", raceKey)
-	wantRestored := fmt.Sprintf("v1-%d", n-1)
 	if err != nil {
 		t.Fatalf("[%s] kv get %s after conflicted restore: %v\noutput: %s", proto.name, raceKey, err, got)
 	}

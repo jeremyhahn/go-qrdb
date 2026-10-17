@@ -251,16 +251,18 @@ submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env
 | Field | Type | Default | CLI Flag | Description |
 |---|---|---|---|---|
 | `noise_key`   | string | `""` | `--bootstrap-noise-key`  | Hex Curve25519 public key of the Noise server named by `noise_addr` |
-| `noise_addr`  | string | `""` | `--bootstrap-noise-addr` | `host:port` of the Noise server to fetch from |
-| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port of the Noise trust-anchor listener every admitted, unsealed member runs (see [Network ports](clustering/user.md#network-ports)) |
-| `noise_host`  | string | `server.host` | `--bootstrap-noise-host` | Bind host for this node's Noise trust-anchor listener |
+| `p256_key`    | string | `""` | `--bootstrap-p256-key`   | Hex uncompressed P-256 public key (65 bytes) of the same server's FIPS-approved P-256 suite |
+| `noise_addr`  | string | `""` | `--bootstrap-noise-addr` | `host:port` of the bootstrap server to fetch from, over either suite |
+| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port of the trust-anchor listener (Noise NK and P-256) every admitted, unsealed member runs (see [Network ports](clustering/user.md#network-ports)) |
+| `noise_host`  | string | `server.host` | `--bootstrap-noise-host` | Bind host for this node's trust-anchor listener |
 | `spki_pin`    | string | `""` | `--bootstrap-spki-pin`   | Hex SHA-256 SPKI pin of the bootstrap server's TLS certificate |
 | `dane_dns`    | string | `""` | `--bootstrap-dane-dns`   | DNS server for DANE TLSA lookup |
 | `dane_dot`    | bool   | `false` | `--bootstrap-dane-dot`  | Use DNS-over-TLS for DANE lookups |
 | `direct_url`  | string | `""` | `--bootstrap-direct-url` | Full HTTPS URL for direct CA bundle download |
 | `addr`        | string | `""` | `--bootstrap-addr`       | `host:port` of the first node's admin server |
-| `join_addr`       | string | `""` | `--bootstrap-join-addr`       | `host:port` of an admitted member's Noise_NK join listener (member-side CSR join) |
-| `join_key`        | string | `""` | `--bootstrap-join-key`        | Hex Curve25519 public key of that join listener |
+| `join_addr`       | string | `""` | `--bootstrap-join-addr`       | `host:port` of an admitted member's join listener (member-side CSR join, Noise_NK or P-256) |
+| `join_key`        | string | `""` | `--bootstrap-join-key`        | Hex Curve25519 public key of that join listener (Noise_NK) |
+| `join_p256_key`   | string | `""` | `--bootstrap-join-p256-key`   | Hex uncompressed P-256 public key (65 bytes) of that join listener (P-256 suite) |
 | `join_http_url`   | string | `""` | `--bootstrap-join-url`        | Base admin HTTPS URL of an admitted member, for the SPKI/Direct join transport |
 | `join_token_file` | string | `""` | `--bootstrap-join-token-file` | Path to a file holding the join-admission secret |
 | `join_token_env`  | string | `""` | `--bootstrap-join-token-env`  | Name of an environment variable holding the join-admission secret |
@@ -281,9 +283,15 @@ submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env
   either `join_addr`/`join_key` or `join_http_url` without one of them fails
   config validation with a typed `*ValidationError` — the join-admission
   secret is never configured inline in YAML.
-- `join_addr` requires `join_key` and vice versa; `join_http_url` needs neither.
-  Both transports may be configured together — the Noise_NK transport is
+- `join_addr` requires `join_key` or `join_p256_key`, and each of those
+  requires `join_addr`; `p256_key` requires `noise_addr`. Both P-256 keys are
+  validated as 65-byte uncompressed P-256 points. `join_http_url` needs none of
+  them. Both transports may be configured together — the join listener is
   preferred when both are set.
+- With both a Noise and a P-256 key for the same listener, the node uses
+  Noise_NK where its runtime allows it and P-256 in FIPS 140-3 mode. With only
+  a Noise key, a node in FIPS 140-3 mode is refused before it dials; see
+  [docs/seal/fips140-mode.md](seal/fips140-mode.md).
 
 ---
 

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-truststrap/pkg/p256proto"
 	"github.com/jeremyhahn/go-truststrap/pkg/truststrap"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
@@ -59,50 +60,38 @@ func forceNoiseAvailable(t *testing.T, available bool) {
 	noiseAvailable = func() bool { return available }
 }
 
-// skipIfNoiseUnavailable skips a test that needs a REAL, working Noise NK
-// listener or handshake -- not merely the gating decision forceNoiseAvailable
-// simulates. Under GODEBUG=fips140=only the underlying X25519 static key can
-// never be generated (go-truststrap's noiseproto has no FIPS awareness of its
-// own, and the Go module refuses the key at generation), so forcing
-// noiseAvailable past NoiseAvailable()'s real answer here would not bring the
-// listener up -- it would just move the failure one call deeper, into
-// StartJoinServer itself. This is the permanent, documented gap: see
-// docs/seal/fips140-mode.md and ../clustering/architecture.md.
-func skipIfNoiseUnavailable(t *testing.T) {
-	t.Helper()
-	if !NoiseAvailable() {
-		t.Skip("Noise NK is unavailable under FIPS 140 mode; a real listener or handshake cannot be constructed")
-	}
-}
-
 // assertAdvertises asserts the half of the first-node enrollment contract that
 // holds in EVERY runtime, and reports whether this runtime also serves Noise so
 // the caller can go on to assert the Noise-specific half.
 //
 // A caller that returns on a false result has not skipped anything. Under
-// GODEBUG=fips140=only there is no X25519 in the process, so a Noise listener
+// GODEBUG=fips140=only there is no X25519 in the process, so the Noise suite
 // cannot exist to be asserted about; what exists instead is a different and
-// equally definite contract -- the advertiser is present, runs no Noise server,
-// binds no address and publishes no key -- and that is what this asserts before
-// reporting false. The ordinary CI job runs this suite under fips140=off and
-// the nightly FIPS job runs it under fips140=only, so between the two every
+// equally definite contract -- the advertiser is present, its listener is bound
+// and serves the P-256 suite under a published 65-byte key, and it publishes no
+// Noise key -- and that is what this asserts before reporting false. The
+// ordinary CI job runs this suite under fips140=off and the FIPS 140-3 job
+// runs it under fips140=only, both on every push, so between the two every
 // branch below is exercised on every commit.
 func assertAdvertises(t *testing.T, adv *Advertiser) bool {
 	t.Helper()
 	if adv == nil {
 		t.Fatal("a first node must get a non-nil Advertiser; nil is how this package says a node owes the cluster no enrollment listener at all")
 	}
+	if got := adv.Addr(); got == "" {
+		t.Error("Addr() is empty: the listener serving the P-256 suite must be bound in every runtime")
+	}
+	if got := len(adv.P256PublicKey()); got != p256proto.PublicKeySize {
+		t.Errorf("len(P256PublicKey()) = %d, want %d: the P-256 suite is served in every runtime", got, p256proto.PublicKeySize)
+	}
 	if noiseAvailable() {
 		if !adv.NoiseEnabled() {
-			t.Fatal("Noise is available in this runtime, so the advertiser must be running a Noise listener")
+			t.Fatal("Noise is available in this runtime, so the advertiser must serve the Noise suite")
 		}
 		return true
 	}
 	if adv.NoiseEnabled() {
-		t.Fatal("Noise is unavailable in this runtime, so the advertiser must not be running a Noise listener")
-	}
-	if got := adv.Addr(); got != "" {
-		t.Errorf("Addr() = %q, want empty: no Noise listener is bound in FIPS 140-3 mode", got)
+		t.Fatal("Noise is unavailable in this runtime, so the advertiser must not serve the Noise suite")
 	}
 	if got := adv.NoisePublicKey(); len(got) != 0 {
 		t.Errorf("NoisePublicKey() = %x, want empty: no Noise key exists in FIPS 140-3 mode", got)
@@ -155,7 +144,7 @@ func TestNoiseFIPSUnavailableError_NamesFIPSRatherThanAKeySize(t *testing.T) {
 			t.Errorf("message %q does not mention %q", msg, want)
 		}
 	}
-	for _, approved := range []string{"--bootstrap-spki-pin", "--bootstrap-dane-dns", "--bootstrap-direct-url"} {
+	for _, approved := range []string{"--bootstrap-p256-key", "--bootstrap-join-p256-key", "--bootstrap-spki-pin", "--bootstrap-dane-dns", "--bootstrap-direct-url"} {
 		if !strings.Contains(msg, approved) {
 			t.Errorf("message %q does not offer the approved method %q", msg, approved)
 		}
@@ -253,7 +242,7 @@ func TestBuildAutoConfig_DropsNoiseButKeepsApprovedMethodsUnderFIPS(t *testing.T
 // exactly as it did before this change. It forces availability true, which is
 // safe here because buildAutoConfig performs no cryptography -- see
 // forceNoiseAvailable -- so this assertion holds in the ordinary CI job and in
-// the nightly FIPS job alike.
+// the FIPS 140-3 job alike.
 func TestBuildAutoConfig_SelectsNoiseWhenItIsAvailable(t *testing.T) {
 	forceNoiseAvailable(t, true)
 
@@ -353,11 +342,17 @@ func TestStartAdvertiser_UnderFIPSAdvertisesWithoutNoise(t *testing.T) {
 	if adv.NoiseEnabled() {
 		t.Error("NoiseEnabled() = true, want false in FIPS 140-3 mode")
 	}
-	if got := adv.Addr(); got != "" {
-		t.Errorf("Addr() = %q, want empty", got)
+	if got := adv.Addr(); got == "" {
+		t.Error("Addr() is empty: FIPS 140-3 mode must still serve the P-256 suite")
 	}
 	if got := adv.NoisePublicKey(); len(got) != 0 {
 		t.Errorf("NoisePublicKey() = %x, want empty", got)
+	}
+	if got := len(adv.P256PublicKey()); got != p256proto.PublicKeySize {
+		t.Errorf("len(P256PublicKey()) = %d, want %d", got, p256proto.PublicKeySize)
+	}
+	if !fileExists(filepath.Join(dir, P256KeyFile)) {
+		t.Errorf("%s must be persisted in FIPS 140-3 mode", P256KeyFile)
 	}
 	// No Noise static key is generated or persisted. Writing one would put a
 	// key produced by a non-approved primitive on the disk of a deployment that
@@ -633,7 +628,13 @@ func TestLogAdvertiserInfo_SaysSoWhenThereIsNoNoiseKey(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(restore) })
 
-	logAdvertiserInfo(&Advertiser{}, AdvertiseOptions{AdminPort: 9443})
+	p256Key, err := p256proto.GenerateStaticKey()
+	if err != nil {
+		t.Fatalf("GenerateStaticKey: %v", err)
+	}
+	defer p256Key.Destroy()
+
+	logAdvertiserInfo(&Advertiser{p256Key: p256Key}, AdvertiseOptions{AdminPort: 9443})
 
 	out := buf.String()
 	if out == "" {

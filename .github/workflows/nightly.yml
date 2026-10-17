@@ -343,14 +343,13 @@ jobs:
 
       # The forge's Trivy DB bridge first, trivy's documented pair after it,
       # for both `make trivy` and `make trivy-report` below (CA m450). Same
-      # step as ci.yml's Trivy job, which carries the reasoning; the address
-      # is derived from the server URL, never written into the tree.
+      # step as ci.yml's Trivy job, which carries the reasoning; the list's one
+      # definition, scripts/trivy-db-upstreams.sh, derives the address from
+      # the server URL, never written into the tree.
       - name: Prefer the forge's Trivy DB bridge
-        if: github.server_url != 'https://github.com'
         run: |
-          forge="${GITHUB_SERVER_URL#*://}"
-          forge="${forge%/}"
-          echo "TRIVY_DB_UPSTREAMS=http://${forge}/agent-infrastructure/trivy-db:2 mirror.gcr.io/aquasec/trivy-db:2 ghcr.io/aquasecurity/trivy-db:2" >> "$GITHUB_ENV"
+          upstreams=$(scripts/trivy-db-upstreams.sh)
+          echo "TRIVY_DB_UPSTREAMS=${upstreams}" >> "$GITHUB_ENV"
 
       # ONE gate, on both hosts, through the Makefile (devops.md §4, #451).
       #

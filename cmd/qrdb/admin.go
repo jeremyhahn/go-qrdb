@@ -160,6 +160,7 @@ func newAdminMemberCmd() *cobra.Command {
 		newAdminMemberAddObserverCmd(),
 		newAdminMemberRemoveCmd(),
 		newAdminMemberPromoteCmd(),
+		newAdminMemberTransferLeadershipCmd(),
 	)
 
 	return cmd
@@ -287,6 +288,38 @@ func newAdminMemberPromoteCmd() *cobra.Command {
 			}
 
 			if err := client.Admin().PromoteMember(cmd.Context(), shardID, replicaID); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Shard ID")
+	_ = cmd.MarkFlagRequired("shard-id")
+
+	return cmd
+}
+
+// newAdminMemberTransferLeadershipCmd returns the admin member
+// transfer-leadership subcommand: it hands a shard's leadership to the named
+// voter and returns once that replica leads, or fails with the typed
+// *qrdb.LeaderTransferTimeoutError when it does not within the wait bound.
+func newAdminMemberTransferLeadershipCmd() *cobra.Command {
+	var shardID uint64
+
+	cmd := &cobra.Command{
+		Use:   "transfer-leadership <replica-id>",
+		Short: "Hand a shard's leadership to a voter and wait until it leads",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			replicaID, err := strconv.ParseUint(args[0], 10, 64)
+			if err != nil {
+				return &InvalidReplicaIDError{Input: args[0]}
+			}
+
+			if err := client.Cluster().TransferLeadership(cmd.Context(), shardID, replicaID); err != nil {
 				return err
 			}
 

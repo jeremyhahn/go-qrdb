@@ -33,8 +33,12 @@ func newMVCCHistoryAdapter(store *mvcc.Store) *mvccHistoryAdapter {
 	return &mvccHistoryAdapter{store: store}
 }
 
-// CurrentRevision implements watch.HistoryReplayer.
-func (a *mvccHistoryAdapter) CurrentRevision() int64 { return a.store.CurrentRevision() }
+// CurrentRevision implements watch.HistoryReplayer with the store's committed
+// revision, not its apply counter. The counter names revisions an open apply
+// batch has assigned but not committed: a replay bounded by it finds nothing
+// at those revisions, and the post-replay progress watermark would still
+// claim them, so a cursor resumed from that watermark skips them for good.
+func (a *mvccHistoryAdapter) CurrentRevision() int64 { return a.store.CommittedRevision() }
 
 // CompactedRevision implements watch.HistoryReplayer: the floor covering the
 // single key key when rangeEnd is nil, otherwise the highest floor

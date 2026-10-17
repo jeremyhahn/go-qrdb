@@ -270,6 +270,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"POST", "/membership/add", permission.AdminAddMember},
 		{"POST", "/membership/remove", permission.AdminRemoveMember},
 		{"POST", "/membership/promote", permission.AdminAddMember},
+		{"POST", "/membership/transfer-leadership", permission.AdminRemoveMember},
 		{"POST", "/snapshot", permission.AdminSnapshot},
 		{"POST", "/drain", permission.AdminDrain},
 		{"GET", "/capabilities", permission.AdminCapabilities},

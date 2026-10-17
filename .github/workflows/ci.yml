@@ -144,12 +144,16 @@ env:
   # company agent). Do NOT add a `go install` back to move a
   # version: a skew between this file and the image must fail the job, which is
   # what the require-tool.sh assertions below are for.
+  #
+  # Every value here must equal its line in scripts/tool-pins.sh, the pin file
+  # the Makefile and the CI image's Dockerfile read; `make check-tool-versions`
+  # fails on any difference.
   GOLANGCI_LINT_VERSION: "v2.14.0"
   GOSEC_VERSION: "v2.29.0"
   GOVULNCHECK_VERSION: "v1.8.0"
   # ACTIONLINT_VERSION is baked into the runner and lane images like
   # GOLANGCI_LINT_VERSION and asserted the same way; `make lint` runs it over
-  # the workflows (#636). It must equal ACTIONLINT_VERSION in the Makefile.
+  # the workflows (#636). It must equal ACTIONLINT_VERSION in scripts/tool-pins.sh.
   ACTIONLINT_VERSION: "v1.7.12"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
@@ -267,6 +271,12 @@ jobs:
       # the defect it exists to catch. No network, no Go build.
       - name: Test the scanner-pin guard
         run: make test-tool-versions
+
+      # The latest-version check's branches against a fake `go`: the check
+      # itself asks the module proxy and runs in the image job; these cases
+      # need neither, so they run here on every push.
+      - name: Test the latest-version check
+        run: make test-deps-check
 
       # #451. The pins above say WHICH scanner runs; this is about the DATA it
       # rules with. trivy decides whether to refresh by reading NextUpdate out
@@ -608,6 +618,94 @@ jobs:
         working-directory: sdk/go
         run: go build ./...
 
+  # CUSTOMIZE (ci-template v1.18, image job): builds the devcontainer images
+  # from build/docker/devcontainer/Dockerfile at this commit, runs the
+  # toolchain stages in the toolchain image (handbook ci-standard.md §1-§2),
+  # and gates the integration image with trivy image. The checkout is copied
+  # into each toolchain container (scripts/in-toolchain-image.sh): the daemon
+  # is reached through a socket, so a bind mount would resolve on its host.
+  # make security and make deps-check get a network, for the vulnerability
+  # databases and the module proxy; build and test run without one. Both
+  # trivy scans certify their database's age as the Trivy job does, from the
+  # same TRIVY_DB_UPSTREAMS (scripts/trivy-db-upstreams.sh). The scan is a
+  # gate only: nothing is uploaded to code scanning.
+  #
+  # go-qrdb: the names are under qrdb-ci-, the prefix every CI stack here is
+  # reaped by. Module credentials reach the build through the job environment
+  # the runner injects (GIT_CONFIG_*), which `make docker-build` stages as the
+  # gomodauth BuildKit secret through the one $(stage-gomodauth) prelude every
+  # Docker target in the Makefile shares, so no credential file is written and
+  # there is none to remove. `make build` is build-server plus build-client,
+  # and build-client is the Wails desktop build in its own compose container,
+  # which the toolchain image does not carry; this job builds the server and
+  # the headless CLI. The runner jobs beside it stay until it has a record of
+  # its own.
+  image:
+    name: Devcontainer image [build, test, security, deps-check, trivy image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-image
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Build the toolchain and integration images
+        run: |
+          make docker-build IT_IMAGE="$IT_IMAGE"
+          echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)" >> "$GITHUB_ENV"
+
+      - name: make build-server build-cli-headless (toolchain image)
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make build-server build-cli-headless
+
+      # The release publishes linux/arm64 binaries (release.yml, publish), so a
+      # change that breaks the arm64 build -- plain or FIPS -- fails here, on
+      # the pull request, rather than on the tag. A cgo-free cross-compile:
+      # nothing runs on arm64 and nothing is emulated.
+      - name: make release-cross (linux/arm64, plain and FIPS, toolchain image)
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make release-cross PLATFORM=linux/arm64
+
+      - name: make test (toolchain image)
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make test
+
+      # The same upstream list as the Trivy job, from its one definition, for
+      # the two scans below that certify a database: `make security`'s trivy
+      # leg and `make trivy-image`. scripts/in-toolchain-image.sh forwards it
+      # into the container on a networked stage.
+      - name: Prefer the forge's Trivy DB bridge
+        run: |
+          upstreams=$(scripts/trivy-db-upstreams.sh)
+          echo "TRIVY_DB_UPSTREAMS=${upstreams}" >> "$GITHUB_ENV"
+
+      - name: make security (toolchain image)
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make security
+
+      - name: make deps-check (toolchain image)
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
+
+      # Each in-toolchain-image.sh call is a fresh container, so the database
+      # `make security` certified is gone; `make trivy-image` certifies its
+      # own, from the same sources, before it scans with --skip-db-update.
+      - name: trivy image (integration image)
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: |
+          docker save -o it-image.tar "$IT_IMAGE"
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" \
+            make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
+
+      - name: Tear down
+        if: always()
+        run: |
+          rm -f it-image.tar
+          docker image rm "$IT_IMAGE" || true
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -841,8 +939,9 @@ jobs:
   # The self-spawned qrdbdharness suites (./test/integration and
   # ./test/integration/auth: single-node and real 3-node Raft clusters, no
   # compose stack), one job per feature (owner ruling 10). Each leg is
-  # `make integration-test-<feature>`, the target a developer or lane runs for
-  # that feature, selected by test/integration/features.mk. A feature mapped
+  # `make integration-test IT_FEATURE=<feature>`: the selection
+  # `make integration-test-<feature>` runs on a host (test/integration/
+  # features.mk), run in the integration image. A feature mapped
   # to nothing is not a leg. Every test in these packages is mapped to some
   # feature (make check-integration-feature-coverage), so the legs together
   # run the whole suite; a test mapped to two features runs in both.
@@ -864,18 +963,35 @@ jobs:
   # cancel the others' results. ci-gate reads the job's aggregate result,
   # which is failure when any leg fails.
   #
-  # GOMAXPROCS is the half of the cluster stage's #682 budget that reaches a
-  # job outside compose: the harness hands its environment to every qrdbd and
-  # qrdb it spawns, so each sizes its scheduler and GC to 8 Ps rather than the
-  # runner's 80 threads and stops starving its own Raft tickers under load.
+  # GOMAXPROCS is the half of the cluster stage's #682 budget that reaches the
+  # spawned processes: the compose service sets it, and the harness hands its
+  # environment to every qrdbd and qrdb it spawns, so each sizes its scheduler
+  # and GC to 8 Ps rather than the runner's 80 threads and stops starving its
+  # own Raft tickers under load.
   integration-features:
     name: Integration (${{ matrix.feature }})
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
     timeout-minutes: 45
+    # CUSTOMIZE (ci-template v1.18, integration job that starts containers):
+    # the suite runs in the devcontainer `integration` image built at this
+    # commit, under the hardened compose service in
+    # build/docker/devcontainer/compose.yaml (handbook ci-standard.md §2).
+    # The compose project is qrdb-ci-<run>-<attempt>-<feature>, the reaper
+    # runs first, and the teardown runs last under if: always().
+    #
+    # go-qrdb: one leg per feature (above), so the names also carry the
+    # feature and legs sharing a daemon never share an image tag or a stack.
+    # The teardown is `make docker-down-it`, not a bare `docker compose down`:
+    # test/buildgates/integration_image_tag_test.go keeps every compose call
+    # behind a make target. Credentials come from the job environment, as in
+    # the image job. The template's UDP buffer step is not carried: go-qrdb's
+    # integration jobs have never run it, and the gate above holds the leg to
+    # exactly the reap, the run and the teardown.
     env:
-      GOMAXPROCS: "8"
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
     strategy:
       fail-fast: false
       matrix:
@@ -883,21 +999,17 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
       - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test-${{ matrix.feature }}
+        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
 
-      # Removes this leg's compose project, networks, volumes and image tags,
-      # pass, fail or cancel. The names carry the run, attempt and feature, so
-      # nothing later would ever match a leg's leftovers. The target derives
-      # them the way the test step's does (Makefile, INT_GOAL), rather than
-      # repeating that here; a name nobody created is not an error.
+      # integration-test downs its own stack; this covers a cancelled leg and
+      # removes the image, pass, fail or cancel.
       - name: Tear down (${{ matrix.feature }})
         if: always()
-        run: make integration-down-${{ matrix.feature }}
+        run: make docker-down-it IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
 
   security:
     name: Security
@@ -1098,17 +1210,18 @@ jobs:
       # The forge publishes a current vulnerability database in its own
       # container registry, as agent-infrastructure/trivy-db, over plain HTTP
       # (CA m450). It goes FIRST in the upstream list, ahead of trivy's
-      # documented pair, which stays as the fallback. The registry address is
-      # derived from the runner's server URL at run time, never written here:
-      # the tracked tree is publicly releasable. The `http://` prefix tells
+      # documented pair, which stays as the fallback. The list has ONE
+      # definition, scripts/trivy-db-upstreams.sh, shared with the image job
+      # and nightly.yml: it derives the registry address from the runner's
+      # server URL at run time, never written here (the tracked tree is
+      # publicly releasable), and prints the documented pair alone on
+      # github.com. The bridge's `http://` prefix tells
       # scripts/trivy-certified-db.sh to pass trivy's --insecure for this
       # entry alone. The age limit does not change with the source.
       - name: Prefer the forge's Trivy DB bridge
-        if: github.server_url != 'https://github.com'
         run: |
-          forge="${GITHUB_SERVER_URL#*://}"
-          forge="${forge%/}"
-          echo "TRIVY_DB_UPSTREAMS=http://${forge}/agent-infrastructure/trivy-db:2 mirror.gcr.io/aquasec/trivy-db:2 ghcr.io/aquasecurity/trivy-db:2" >> "$GITHUB_ENV"
+          upstreams=$(scripts/trivy-db-upstreams.sh)
+          echo "TRIVY_DB_UPSTREAMS=${upstreams}" >> "$GITHUB_ENV"
 
       # `make trivy` refreshes the database and refuses to certify one older
       # than TRIVY_DB_MAX_AGE_HOURS before scanning (#451) -- falling back from
@@ -1158,12 +1271,13 @@ jobs:
     # A matrix job is ONE entry here, not one per leg: needs.<job>.result is
     # the aggregate over its legs, `failure` when any leg fails, so one red
     # integration-features leg fails this gate.
-    needs: [lint, build, test, test-sdk, test-typescript, integration-standalone, integration-features, security, trivy]
+    needs: [lint, build, image, test, test-sdk, test-typescript, integration-standalone, integration-features, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_BUILD: ${{ needs.build.result }}
+          RESULT_IMAGE: ${{ needs.image.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
@@ -1204,6 +1318,7 @@ jobs:
           }
           check lint "$RESULT_LINT" pr
           check build "$RESULT_BUILD" pr
+          check image "$RESULT_IMAGE" pr
           check test "$RESULT_TEST" pr
           check test-sdk "$RESULT_TEST_SDK" pr
           check test-typescript "$RESULT_TEST_TYPESCRIPT" pr

@@ -98,11 +98,14 @@ func TestShareEnvelope_OpenWithDeviceKeyOfOtherKEM(t *testing.T) {
 	}
 	env := sealTestEnvelope(t, keydelivery.KEMP256, key.PublicKey().Bytes(), []byte("c2hhcmU="))
 
-	other, err := ecdh.X25519().GenerateKey(rand.Reader)
+	// P-384 rather than X25519: both differ from the envelope's P-256 KEM,
+	// and P-384 is FIPS 140-3 approved, so the mismatch is asserted under
+	// GODEBUG=fips140=only too, which refuses X25519 key generation.
+	other, err := ecdh.P384().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	dec, err := keydelivery.NewDecrypter(keydelivery.KEMX25519, &deviceExchanger{key: other}, nil)
+	dec, err := keydelivery.NewDecrypter(keydelivery.KEMP384, &deviceExchanger{key: other}, nil)
 	if err != nil {
 		t.Fatalf("NewDecrypter: %v", err)
 	}

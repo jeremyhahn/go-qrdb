@@ -115,6 +115,8 @@ func mapToolError(tool string, payload *wire.ErrorPayload) error {
 		StatusCode: int(payload.Code),
 		Err:        typed,
 		RetryAfter: time.Duration(payload.RetryAfterSeconds) * time.Second,
+		Reason:     payload.Reason,
+		Metadata:   payload.Metadata,
 	}
 }
 

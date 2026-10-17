@@ -1,6 +1,6 @@
 # Clustering — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 Forming a cluster, watching it, changing its membership, and moving shards
 around when the load goes lopsided.
@@ -74,13 +74,14 @@ Joining has two independent halves, and both must be configured on the
 joining node:
 
 1. **Fetch the trust anchor** — the CA **certificate** only — using one of the
-   existing bootstrap methods: `--bootstrap-noise-key` (with
-   `--bootstrap-noise-addr`), `--bootstrap-spki-pin` (with `--bootstrap-addr`),
+   existing bootstrap methods: `--bootstrap-noise-key` or
+   `--bootstrap-p256-key` (with `--bootstrap-noise-addr`), `--bootstrap-spki-pin` (with `--bootstrap-addr`),
    `--bootstrap-dane-dns`, or `--bootstrap-direct-url`.
 2. **Submit the CSR** to an admitted member's join listener, over one of two
    transports:
-   - Noise_NK: `--bootstrap-join-addr` with `--bootstrap-join-key` (that
-     member's join-listener address and public key).
+   - Noise_NK or P-256: `--bootstrap-join-addr` with `--bootstrap-join-key`
+     (Noise) or `--bootstrap-join-p256-key` (P-256, the one to use in FIPS
+     mode) — that member's join-listener address and public key.
    - SPKI/Direct, plain HTTPS: `--bootstrap-join-url` (that member's admin
      HTTPS URL), pinned the same way `--bootstrap-spki-pin` pins the anchor
      fetch.
@@ -264,37 +265,33 @@ Rotate the cluster CA:
 6. Reissue every client and Security Officer certificate that chains to the
    old CA.
 
-### In FIPS 140-3 mode, do not use the Noise bootstrap method
+### In FIPS 140-3 mode, use the P-256 bootstrap suite
 
 If you run the daemon with `GODEBUG=fips140=only` (or `fips140=on`), the Noise
-NK enrollment method is unavailable: its handshake uses X25519, which is not a
-FIPS 140-3 approved key-agreement scheme.
+NK enrollment suite is unavailable: its handshake uses X25519, which is not a
+FIPS 140-3 approved key-agreement scheme. The bootstrap listeners serve a second
+suite, P-256 (`TSBOOT1_P256_AESGCM_SHA256`), that is approved and is the only
+one they serve in FIPS mode.
 
-Nothing about forming a cluster is blocked by this, but the way peers enroll
-changes, and the node tells you so at startup:
+- **The first node still advertises.** Its enrollment listener serves the P-256
+  suite, writes `p256-key.hex` (not `noise-key.hex`) and logs
+  `p256_public_key` plus a WARN saying Noise is excluded. Joining nodes pin that
+  key with `--bootstrap-p256-key` (with `--bootstrap-noise-addr`), or reach its
+  `/v1/ca/bootstrap` endpoint on the admin port.
+- **The member join listener** (`--cluster-join-enabled`) does the same:
+  `join-p256-key.hex`, logged as `join_p256_public_key`. Joining nodes pin it
+  with `--bootstrap-join-p256-key` (with `--bootstrap-join-addr`).
+- **`--bootstrap-noise-key` / `--bootstrap-join-key` on their own are refused at
+  startup**, with an error that names FIPS and the P-256 flag to use instead.
+  Given alongside a P-256 key or an approved method, they are dropped with a
+  WARN.
+- **Outside FIPS mode you may give both keys**; Noise is preferred where it is
+  usable and P-256 otherwise.
 
-- **The first node still advertises.** It comes up without a Noise listener and
-  logs a WARN saying so. Joining nodes reach its `/v1/ca/bootstrap` endpoint on
-  the admin port instead.
-- **Joining nodes must use an approved method for the anchor fetch**:
-  `--bootstrap-spki-pin` (with `--bootstrap-addr`), `--bootstrap-dane-dns`, or
-  `--bootstrap-direct-url`.
-- **`--bootstrap-noise-key` on its own is refused at startup**, with an error
-  that names FIPS and lists the methods to use instead. If you give it
-  alongside an approved method, the approved one is used and the Noise entry is
-  dropped with a WARN.
-
-`--bootstrap-noise-port` and `--bootstrap-noise-host` are still accepted and
-validated; they simply configure a listener that is not opened.
-
-**The member-side CSR join's Noise_NK transport is unavailable for the same
-reason**, independent of the anchor-fetch method: `--cluster-join-enabled`
-starts no Noise_NK join listener in FIPS mode (`StartJoinServer` refuses with
-an error naming FIPS), and a joining node's `--bootstrap-join-addr` /
-`--bootstrap-join-key` fail the same way `--bootstrap-noise-key` does. Use the
+`--bootstrap-noise-port` and `--bootstrap-noise-host` apply as before. The
 SPKI/Direct join transport (`--bootstrap-join-url`, with `--bootstrap-spki-pin`
-or `--bootstrap-direct-url` for the anchor) on both sides instead — it is TLS
-only and carries no FIPS restriction of its own.
+or `--bootstrap-direct-url` for the anchor) is TLS only and also carries no FIPS
+restriction of its own.
 
 ## Watching the cluster
 
@@ -458,6 +455,34 @@ for ev := range ch {
 `WatchMembership` polls rather than streaming, so it works on every transport
 including REST.
 
+**Moving leadership by hand.** Ask the cluster to hand a shard's leadership to
+another voter -- from the SDK on any transport, or from the CLI:
+
+```go
+err := client.Cluster().TransferLeadership(ctx, shardID, 2)
+var timeout *sdk.LeaderTransferTimeoutError
+if errors.As(err, &timeout) {
+	// replica 2 did not take over within five seconds: it is stopped,
+	// partitioned, or too far behind. Nothing changed; retry when it is back.
+}
+```
+
+```bash
+qrdb admin member transfer-leadership 2 --shard-id 1
+```
+
+The call returns once replica 2 leads the shard. Any node will do: a follower
+forwards the call to the shard's leader. The timeout is the same typed error
+whichever transport carried it -- on the wire it is the code
+`LEADER_TRANSFER_TIMEOUT` (`503` / `UNAVAILABLE`), and the SDK rebuilds
+`*sdk.LeaderTransferTimeoutError` from it, naming the shard, the replica that
+led, the target and the bound. A replica the shard does not have, a shard the
+leader does not run, and an observer, witness or removed replica are refused
+(on an embedded node as `*sdk.UnknownReplicaError`, `*sdk.UnknownShardError`
+and `*sdk.LeaderTransferTargetError`). Naming the current leader succeeds at
+once. It needs the `admin:remove_member` permission, the same as removing a
+member, and is system-tenant only.
+
 The replica state hashes are a capability every SDK transport implements:
 
 ```go
@@ -509,9 +534,16 @@ withdraws its advertisement at once. After a crash its advertisement lapses
 only when its lease expires, so **after a crash, wait out the lease TTL (10
 seconds by default) before starting the node on an older release**.
 
-### The Noise bootstrap wire is not version-skewed
+### The bootstrap wire is version-skewed across this release
 
-Every admitted, unsealed member runs the Noise NK bootstrap **server**
+This release puts a `version || suite` header on the first frame of both the
+trust-anchor fetch and the CSR join exchange, so one listener can serve the
+Noise NK and the P-256 suites. A node on this release cannot complete either
+handshake against a node on an earlier one, in either direction: **finish
+rolling every node forward before adding a member.**
+
+Every admitted, unsealed member runs the bootstrap **server**, serving both
+the Noise NK and the P-256 suites
 (`pkg/clusterenroll`'s `Advertiser`: on the CA-generating node from the boot
 that generates the cluster CA, on every other member once it has joined or
 restarted from its data directory) that a joining node's enrollment dials as a **client**.
@@ -617,9 +649,10 @@ so a second pass picks up where the first stopped.
 
 **A joining node refuses to start with "joining an existing cluster is
 unavailable in this release".** An anchor-fetch method is configured
-(`--bootstrap-noise-key`, `--bootstrap-spki-pin`, `--bootstrap-dane-dns` or
-`--bootstrap-direct-url`) but neither join-transport is: set
-`--bootstrap-join-addr`/`--bootstrap-join-key` or `--bootstrap-join-url`, with
+(`--bootstrap-noise-key`, `--bootstrap-p256-key`, `--bootstrap-spki-pin`,
+`--bootstrap-dane-dns` or `--bootstrap-direct-url`) but neither join-transport
+is: set `--bootstrap-join-addr` with `--bootstrap-join-key` or
+`--bootstrap-join-p256-key`, or `--bootstrap-join-url`, with
 `--bootstrap-join-token-file` or `--bootstrap-join-token-env`, to reach an
 admitted member's join listener — or issue the node's certificate out of band
 and start it with the explicit TLS file flags instead. See
@@ -627,9 +660,10 @@ and start it with the explicit TLS file flags instead. See
 
 **A joining node reports that Noise NK is not FIPS 140-3 approved.** The daemon
 is running in FIPS mode, where that method cannot be used. Configure
+`--bootstrap-p256-key` (and `--bootstrap-join-p256-key` for the join),
 `--bootstrap-spki-pin` (with `--bootstrap-addr`), `--bootstrap-dane-dns` or
 `--bootstrap-direct-url` instead — see
-[Forming a cluster](#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
+[Forming a cluster](#in-fips-140-3-mode-use-the-p-256-bootstrap-suite).
 The refusal happens before the node dials anything, so nothing was written.
 
 **The node that generated the cluster CA is gone for good.** Point a new
@@ -640,10 +674,11 @@ replicated Key A, not only the node that happened to generate it. See
 [Adding a node](#adding-a-node-member-side-csr-join).
 
 **A FIPS first node logs no Noise public key.** That is correct there. It logs a
-WARN naming FIPS and the admin port instead; point joining nodes at
-`/v1/ca/bootstrap` with an approved method. `noise-key.hex` is not written in
-FIPS mode, because it would be a key produced by a primitive the deployment has
-declared it may not use.
+WARN naming FIPS, and a `p256_public_key` line instead; point joining nodes at
+that key with `--bootstrap-p256-key`, or at `/v1/ca/bootstrap` with another
+approved method. `noise-key.hex` is not written in FIPS mode, because it would
+be a key produced by a primitive the deployment has declared it may not use;
+`p256-key.hex` is written instead.
 
 **Cluster verbs return "requires mode: raft".** The server is standalone.
 

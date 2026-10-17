@@ -480,3 +480,61 @@ func TestMVCCWatch_Update_Compact_NoNotifications(t *testing.T) {
 		t.Fatalf("value after compact = %q, want %q", kv.Value, "v2")
 	}
 }
+
+// TestMVCCWatch_Update_MarksTheBatchCommitted: Update publishes its batch's
+// revision as committed once the batch commits, so the watch replay boundary
+// keeps pace with the apply counter between batches.
+func TestMVCCWatch_Update_MarksTheBatchCommitted(t *testing.T) {
+	s, _ := newTestMVCCWithHub(t)
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("key1"), []byte("a"), 0),
+		mvccPutEntry(2, []byte("key1"), []byte("b"), 0),
+	})
+
+	store := s.engine.Store()
+	if got, want := store.CommittedRevision(), store.CurrentRevision(); got != want || got != 2 {
+		t.Fatalf("CommittedRevision after Update = %d, want the apply counter %d (2)", got, want)
+	}
+}
+
+// TestMVCCWatch_Update_ReplayReachesTheCommittedRevision: a start-revision
+// watch opened after Update replays every committed change and reports the
+// committed revision as its progress watermark.
+func TestMVCCWatch_Update_ReplayReachesTheCommittedRevision(t *testing.T) {
+	s, hub := newTestMVCCWithHub(t)
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("key1"), []byte("a"), 0),
+		mvccPutEntry(2, []byte("key1"), []byte("b"), 0),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w, err := hub.Watch(ctx, "key1", watch.WithStartRevision(1), watch.WithProgressNotify())
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	var revs []int64
+	for {
+		select {
+		case resp, ok := <-w.Events():
+			if !ok {
+				t.Fatalf("watch closed before its progress watermark: %v", w.Err())
+			}
+			for _, ev := range resp.Events {
+				revs = append(revs, ev.Kv.ModRevision)
+			}
+			if resp.Progress {
+				if resp.Revision != 2 || len(revs) != 2 || revs[0] != 1 || revs[1] != 2 {
+					t.Fatalf("progress %d after replaying %v, want progress 2 after [1 2]", resp.Revision, revs)
+				}
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no progress watermark; replayed %v", revs)
+		}
+	}
+}

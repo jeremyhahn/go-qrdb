@@ -11,6 +11,63 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **A FIPS-approved P-256 bootstrap suite beside Noise NK** (#118). The anchor
+  advertiser and the member join listener serve `TSBOOT1_P256_AESGCM_SHA256`
+  as well as Noise NK, and log and expose both public keys. A node in FIPS
+  140-3 mode holds no Noise key and enrolls over P-256 only; outside it, a
+  joiner holding both keys uses Noise. New: `qrdbd --bootstrap-p256-key` and
+  `--bootstrap-join-p256-key`, config `bootstrap.p256_key` and
+  `bootstrap.join_p256_key` (validated), and the P-256 enrollment surface
+  re-exported from the SDK. **Breaking (wire):** the CSR join exchange now
+  opens with the `version || suite` header, so every member upgrades before
+  a node joins through a changed listener. See
+  `docs/clustering/architecture.md`.
+
+### Fixed
+
+- **A user auth factor add or rotate naming an id already in use is refused
+  instead of overwriting it.** The new factor's primary record was written
+  unconditionally, so an add reusing an existing id replaced that factor's
+  record (another user's included), and an add rolled back afterwards deleted
+  it. The record is now reserved behind an absence guard: the add or rotate
+  returns `ErrFactorAlreadyExists` (`409` / `ALREADY_EXISTS`) before anything
+  is written, the original factor keeps authenticating, and a rollback only
+  removes a record its own add created.
+- **Reads wait out a new leader's first commit** (go-qrdb#668). A leader
+  elected a moment ago refuses a ReadIndex with `quicraft.ErrReadIndexNotReady`
+  until its no-op commits in its term; the Raft host adapter now holds a
+  linearizable, follower or committed-membership read (`SyncRead`,
+  `FollowerRead`, `SyncGetShardMembership`) through that refusal within its
+  10 s leader-wait bound and the caller's deadline, as etcd holds a
+  linearizable read through an election. An admin `member add` /
+  `add-observer` right after a membership change that triggered an election
+  no longer fails its member-identity read `UNAVAILABLE`. At the bound the
+  read fails with `*raft.LeaderWaitError` wrapping the sentinel, still
+  `UNAVAILABLE` / REST 503. Proposals are not held for it.
+### Added
+
+- **Transfer a shard's leadership to a named replica, on every transport.**
+  `Client.Cluster().TransferLeadership(ctx, shardID, replicaID)` and
+  `qrdb admin member transfer-leadership <replica-id> --shard-id N` ask the
+  shard's leader to hand leadership to a voter and return once that voter
+  leads, or fail within five seconds with `sdk.LeaderTransferTimeoutError`
+  (a stopped or partitioned target). It is served on REST
+  (`POST /membership/transfer-leadership`), gRPC/Unix (`TransferLeadership`),
+  QUIC (`admin.TransferLeadership`), MCP (`qrdb_transfer_leadership`) and the
+  embedded transport; any node serves it, a follower forwarding it to the
+  leader. On the wire the timeout is the refusal `LEADER_TRANSFER_TIMEOUT`
+  (`503` / `UNAVAILABLE`, metadata `shard_id`, `from_replica_id`,
+  `to_replica_id`, `timeout_ms`), which the SDK rebuilds so `errors.As`
+  matches on every transport; `transport.RequestError` gains `Reason` and
+  `Metadata` to carry it. An unknown shard or replica is
+  `sdk.UnknownShardError` / `sdk.UnknownReplicaError`; an observer, witness or
+  removed target is `sdk.LeaderTransferTargetError`. Server-side it is
+  `service.LeaderTransferrer`, implemented by `AdminService` on the same wait
+  loop `RemoveMember` uses to move leadership off a leader it removes, and
+  authorized as `admin:remove_member`. `LeaderTransferTimeoutError` gains
+  `ToReplicaID`. See `docs/clustering/api.md`.
 ### Changed
 
 - **Every direct dependency on its latest release** (go-qrdb#764), in the

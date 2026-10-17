@@ -169,32 +169,40 @@ tightest case is `pkg/seal/encfs`, whose AEAD is bound to one file's DEK and
 seals once per 4 KiB block write — 2^32 blocks is 16 TiB of writes through a
 single DEK.
 
-### X25519 — Noise NK enrollment excluded in FIPS mode
+### X25519 — Noise NK enrollment replaced by the P-256 suite in FIPS mode
 
 Noise_NK_25519_ChaChaPoly_SHA256 mandates X25519 key agreement, which
-`crypto/ecdh` rejects under `only`. There is no approved DH to substitute, so
-the METHOD is what goes rather than the primitive within it.
+`crypto/ecdh` rejects under `only`. The bootstrap handshake therefore has two
+suites, chosen per connection by the first frame's `version || suite` header:
+the Noise_NK suite, and a FIPS-approved P-256 suite (`TSBOOT1_P256_AESGCM_SHA256`:
+ECDH over P-256, SHA-256 key derivation, AES-GCM) with the same shape — an
+initiator that pins the responder's static public key before it dials. The
+P-256 suite is always available; the Noise suite is not.
 
 `pkg/clusterenroll` reads `crypto/fips140.Enabled()` through
 `clusterenroll.NoiseAvailable()` and, when it is false:
 
-- a **first node** starts its advertiser WITHOUT the Noise listener and serves
-  the approved methods — SPKI-pinned TLS, DANE and direct HTTPS all fetch the
-  same bundle from `/v1/ca/bootstrap` — writing no `noise-key.hex`;
-- a **joining node** has Noise dropped from the truststrap method order when an
-  approved method is also configured;
+- a **first node** serves the **P-256 suite alone** on its enrollment listener,
+  generating and publishing `p256-key.hex` and no `noise-key.hex`. SPKI-pinned
+  TLS, DANE and direct HTTPS fetch the same bundle from `/v1/ca/bootstrap`;
+- a **member's join listener** does the same, serving P-256 only
+  (`join-p256-key.hex`, no `join-key.hex`);
+- a **joining node** configured with the P-256 key (`--bootstrap-p256-key`,
+  `--bootstrap-join-p256-key`) enrolls over P-256 in the anchor fetch and in the
+  CSR exchange alike; a Noise key configured beside it is not used;
 - a **joining node with Noise as its only method** is refused with
   `*NoiseFIPSUnavailableError`, before the first dial and before anything is
-  written to the data directory.
+  written to the data directory. The error names FIPS and the P-256 flag that
+  replaces the Noise one.
 
+Outside FIPS mode a node that holds both keys uses Noise where it can and falls
+back to P-256, and both suites stay available so a mixed fleet keeps joining.
 Every exclusion logs at WARN naming FIPS. `Enabled()` rather than `Enforced()`,
 for the reason given below for share-holder envelope suites.
 
-The cost is stated plainly in
-[../clustering/architecture.md](../clustering/architecture.md): a FIPS
-deployment cannot use the Noise bootstrap method, in either the shared-CA-key or
-the attested anchor mode, and that is permanent rather than pending an upstream
-fix.
+The mechanism is described in
+[../clustering/architecture.md](../clustering/architecture.md#bootstrap-handshake-suites)
+and the flags in [../clustering/cli.md](../clustering/cli.md).
 
 ### X25519 — share-holder envelope suites refused in FIPS mode
 
@@ -374,17 +382,14 @@ faster.
    `fips140=only` runtime does not make `go-truststrap`'s
    `noiseproto.GenerateStaticKey` able to generate an X25519 key; it just
    moves the failure one call deeper, into `StartJoinServer` itself, which
-   this lane learned by trying it. `pkg/clusterenroll/fips_test.go` now
-   also carries `skipIfNoiseUnavailable`, keyed on the real
-   `NoiseAvailable()`, for every test that needs the listener to actually
-   come up: roughly twenty of them, across `join_csr_test.go`,
-   `join_fault_test.go`, `join_test.go` and `ca_key_never_leaves_test.go`,
-   plus the same shape one level up in `pkg/server/lifecycle`, `cmd/qrdbd`
-   and `sdk/go/node` (each importing `clusterenroll.NoiseAvailable()`
-   directly, since `forceNoiseAvailable` is unexported). This is the same
-   "permanently unreachable" conclusion as [Noise NK peer
-   enrollment](#x25519--noise-nk-enrollment-excluded-in-fips-mode) above,
-   just reached from the join SERVER side rather than the advertiser side.
+   this lane learned by trying it. The listener now serves the P-256 suite
+   beside Noise and holds no Noise key under FIPS, so none of these tests
+   skips: each pins both suites' keys, a normal runtime negotiates Noise and
+   a `fips140=only` runtime selects P-256. The same holds one level up in
+   `pkg/server/lifecycle`, `cmd/qrdbd`, `sdk/go/node` and
+   `sdk/go/clusterenroll` (see
+   [Noise NK enrollment replaced by the P-256
+   suite](#x25519--noise-nk-enrollment-replaced-by-the-p-256-suite-in-fips-mode)).
 6. **A capability gap neither of the other five classes names**, closed on
    2026-10-06: see [Strict separation of duties and `cluster:join_token`
    under FIPS](#strict-separation-of-duties-and-clusterjoin_token-under-fips)
@@ -462,6 +467,44 @@ re-run, not a new full-suite measurement -- see [Reproducing this
 measurement](#reproducing-this-measurement) before treating [Measured
 status](#measured-status) as current for anything beyond these packages.
 
+### The system tenant under the strict isolation floor
+
+**Fixed 2026-10-16.** A FIPS build raises the cluster-wide isolation floor to
+`strict` as `qrdbd start` brings the node up, before first boot creates the
+system tenant. First boot creates that tenant as a prefix tenant, the only
+isolation type `CreateTenant` allows it. The S2 rule (a prefix tenant has no
+store and no key of its own, so it cannot be strict) then refused it with
+`StrictRequiresDedicatedStorageError`, so **no FIPS node could finish first
+boot, or restart**: S2 runs before the already-exists check. Every
+`cmd/qrdbd` `TestRunStart_*` case that reaches first boot failed in the nightly.
+
+Here two rules that are each right on their own combined into a failure. S2's
+premise does not hold for the system tenant: its prefix is the system store,
+which it owns along with the system barrier. `ValidateIsolationModeAgainstPolicy`
+now takes the tenant id and exempts the system tenant alone. Every other
+prefix tenant is still refused under a strict floor
+(`TestTenantService_CreateTenant_S2_SystemTenantUnderStrictFloor`,
+`TestKVCreateTenant_S2_SystemTenantUnderStrictFloor`).
+
+The same nightly run also failed on tests rather than product code, fixed in
+the same change:
+
+- Device-KEM mismatch cases (`pkg/ceremony`, `pkg/server/lifecycle`) mismatch
+  against P-384, which FIPS approves, instead of X25519.
+- `pkg/keydelivery`'s decrypter tests assert `*SuiteNotApprovedError` for the
+  X25519 suites under FIPS, instead of opening through them.
+- `sdk/go/clusterenroll`'s CSR-join tests run over each bootstrap suite: the
+  listener serves P-256 alone under FIPS, so the P-256 join succeeds there and
+  a Noise NK join is refused with `*NoiseFIPSUnavailableError` (class 5
+  above).
+- The SO PIN conformance suite on every SDK transport builds its client with
+  `sotest.RequestTimeout`. The five-second deadline was a hang guard sized
+  for Argon2id; under FIPS the SO PIN verifier runs PBKDF2-HMAC-SHA256 at
+  600,000 iterations, which is over a second of CPU under `-race` and several
+  times that beside the rest of the SDK module on a CI runner, so the bound is
+  60 seconds. The KDF
+  cost is the mode's contract and is unchanged.
+
 ## Exemption register
 
 One exemption. Every other non-approved primitive in this repository is either
@@ -494,7 +537,20 @@ count: read `--- SKIP` here as *unreachable code*, not *hidden red*.
 | `TestParsePrivateKeyBlock_RefusesUnknownTypesAndWeakKeys`'s weak-key case (`pkg/cert`) | Same RSA-1024 generation refusal | The full non-FIPS suite |
 | `TestParseAnchors_RefusesSHA1Signature` (`pkg/trustanchor`) | `crypto/sha1` **panics** (not an error return) when `x509.CreateCertificate` is asked to sign with `SHA1WithRSA`, so the fixture cannot be built at all | The full non-FIPS suite |
 | `TestRegisterOfficer_EnvelopeKEMs`'s `dhkem-x25519`/`mlkem768-x25519` cases (`pkg/ceremony`), `TestSuite_RoundTripEveryKEM`'s same two cases (`pkg/keydelivery`) | The KEM under test is itself refused by `keydelivery.LookupSuite`, which is exactly the behaviour `TestLookupSuite_FIPSModeRefusesX25519Suites` already covers directly | `TestLookupSuite_FIPSModeRefusesX25519Suites`, plus the full non-FIPS suite |
-| ~20 tests needing a real Noise NK listener across `pkg/clusterenroll` (`join_csr_test.go`, `join_fault_test.go`, `join_test.go`, `ca_key_never_leaves_test.go`), `pkg/server/lifecycle`, `cmd/qrdbd` and `sdk/go/node` | `StartJoinServer`/`newTestJoinServer` need `noiseproto.GenerateStaticKey` (X25519) to actually succeed, not merely the gating decision to say yes; this is class 5 from the nightly regression described above | The full non-FIPS suite |
+
+Where the X25519 path is itself under test, a newer test asserts the
+refusal rather than skipping. Under `fips140=only` it passes only if the
+refusal is the documented typed error, and any other result fails it:
+
+| Test | What it asserts under `fips140=only` |
+|---|---|
+| `TestNewDecrypter_DHKEMOpensThroughTheDevice`'s `dhkem-x25519` case, `TestNewDecrypter_HybridOpensThroughTheDevice`, and the hybrid key-shape cases of `TestNewDecrypter_Refusals` (`pkg/keydelivery`) | `LookupSuite` and `NewDecrypter` both return `*SuiteNotApprovedError` |
+| The `noise-nk` subtests of `TestJoinCSR_DeviceHeldKeyJoinsThroughTheSDK` and `TestJoinCSR_RefusedTokenIsAJoinRefusedError` (`sdk/go/clusterenroll`) | `JoinCSR` pinned to a Noise key alone returns `*NoiseFIPSUnavailableError` before it dials; their `p256` subtests join (or are refused the bad token) in both modes |
+
+A test that only needs *a KEM other than the device's*, such as
+`TestShareEnvelope_OpenWithDeviceKeyOfOtherKEM` (`pkg/ceremony`) or the
+mismatched-decrypter case in `pkg/server/lifecycle`, uses P-384 rather than
+X25519. It therefore runs in full in both modes.
 
 `BarrierConfig.AEADProvider` accepts both nonce conventions go-quicraft's
 `AEADProvider` contract defines — caller-nonce (`NonceSize() > 0`) and
@@ -541,8 +597,8 @@ worth keeping rather than flattening into "clean".
 
 The Noise X25519 handshake is closed here because `pkg/clusterenroll` no longer
 reaches those call sites under `crypto/fips140.Enabled()`. go-truststrap still
-performs X25519 in `pkg/noiseproto`; the method is *unavailable* to a FIPS
-deployment, not substituted.
+performs X25519 in `pkg/noiseproto`; the Noise *suite* is unavailable to a FIPS
+deployment, and the FIPS-approved P-256 suite carries enrollment in its place.
 
 The `cipher.NewGCM` fixture is closed here by replacing the constructor.
 
@@ -565,7 +621,7 @@ turn this page false again in exactly the same silence.
 
 | Finding | Call sites | Status |
 |---|---|---|
-| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | **closed here**: `pkg/clusterenroll` no longer reaches those call sites when `crypto/fips140.Enabled()`. Still open upstream, and still the reason the method is unavailable rather than substituted. |
+| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | **closed here**: `pkg/clusterenroll` no longer reaches those call sites when `crypto/fips140.Enabled()`. Still open upstream, and still the reason the Noise suite is unavailable in FIPS mode; the P-256 suite is what enrolls there. |
 | `pkg/tenant`'s teardown-fence test fixture built its AEAD with `cipher.NewGCM` | `teardown_fence_test.go` | **closed here**: the fixture uses `cipher.NewGCMWithRandomNonce`, which generates and prefixes the nonce itself. Test fixture only; no product path was involved. |
 | `go-quicraft` `pkg/seal` built the barrier AEAD with `cipher.NewGCM` | — | **closed** by the v0.8.0-alpha bump; see below |
 
@@ -581,18 +637,22 @@ enrollment when `fips140.Enabled()` [...] Neither is go-qrdb's call to make."*
 refused at run time on `fips140.Enabled()`, as `pkg/keydelivery` refuses an
 X25519 envelope suite — not compiled out under a build tag, because a build tag would
 ship two binaries whose enrollment surfaces differ invisibly while `GODEBUG` is
-a run-time switch. The correction is that **enrollment itself is not refused**:
+a run-time switch. The correction is that **enrollment itself is not refused**,
+and, since the P-256 suite was added beside Noise, that **the Noise handshake no
+longer has to be given up to enroll under FIPS**:
 
-- A **first node** excludes Noise and advertises the approved methods —
-  SPKI-pinned TLS, DANE and direct HTTPS, all of which fetch the same CA bundle
-  from `/v1/ca/bootstrap`. The operator never chose a transport (there is no
-  advertise-method option), so refusing the node's whole reason for existing
-  over a method a FIPS deployment could not use would have been the wrong
-  trade.
+- A **first node** serves the P-256 suite alone on its enrollment listener and
+  keeps advertising SPKI-pinned TLS, DANE and direct HTTPS, all of which fetch
+  the same CA bundle from `/v1/ca/bootstrap`. The operator never chose a
+  transport (there is no advertise-method option), so refusing the node's whole
+  reason for existing over a method a FIPS deployment could not use would have
+  been the wrong trade.
 - A **joining node** that named Noise alongside an approved method has Noise
-  dropped from the candidate list.
+  dropped from the candidate list; with a P-256 key configured, the P-256 suite
+  is the approved method.
 - A **joining node that named Noise and nothing else** IS refused, at
-  configuration time, with an error whose first clause names FIPS.
+  configuration time, with an error whose first clause names FIPS and the P-256
+  flag to use instead.
 
 Every exclusion logs at WARN. A bootstrap method downgraded in silence is its
 own defect.
@@ -617,7 +677,7 @@ accurate gap list is worth more than a claim of completeness:
 
 | Capability | Status under `fips140=only` | Consequence |
 |---|---|---|
-| **Noise NK peer enrollment** (`--bootstrap-noise-key`, the members' Noise trust-anchor listener) | **unavailable, permanently** | Noise_NK_25519_ChaChaPoly_SHA256 has no FIPS-approved DH to substitute. Peers enroll over SPKI, DANE or direct HTTPS. This does not go away when the dependency is fixed — there is nothing to fix it to. |
+| **Noise NK peer enrollment** (`--bootstrap-noise-key`, the Noise suite of the members' trust-anchor listener) | **unavailable, permanently — replaced by the P-256 suite** | Noise_NK_25519_ChaChaPoly_SHA256 has no FIPS-approved DH to substitute. Peers enroll over the P-256 suite (`--bootstrap-p256-key`, `--bootstrap-join-p256-key`), SPKI, DANE or direct HTTPS. |
 | **Attested (anchor-mode) enrollment over Noise** — `StartAnchorAdvertiser` / `FetchAnchor` | **unavailable over Noise** | Same cause. `FetchAnchor` over SPKI / DANE / direct HTTPS is unaffected. |
 | X25519 and ML-KEM-768 + X25519 share-holder envelope suites | refused | see [X25519](#x25519--share-holder-envelope-suites-refused-in-fips-mode) |
 | PKCS#12 export | refused under `Enforced()` | see the [exemption register](#exemption-register) |

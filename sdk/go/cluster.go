@@ -16,9 +16,11 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -319,6 +321,49 @@ func (cc *ClusterClient) RemoveReplica(ctx context.Context, shardID, replicaID u
 // delegates to the already-wired PromoteMember control-plane operation.
 func (cc *ClusterClient) PromoteReplica(ctx context.Context, shardID, replicaID uint64) error {
 	return cc.admin.PromoteMember(ctx, shardID, replicaID)
+}
+
+// TransferLeadership asks the node this client talks to, which must lead the
+// shard, to hand leadership to replicaID, a current voter, and returns once
+// replicaID leads. A replica that does not take over within the bound -- one
+// that is stopped, say -- fails with *LeaderTransferTimeoutError on every
+// transport. Over the embedded transport the other refusals are typed too: an
+// unknown shard or replica is *UnknownShardError or *UnknownReplicaError; an
+// observer, witness or removed replica is *LeaderTransferTargetError; and a
+// node that does not lead the shard is *transport.NotLeaderError naming the
+// one that does. Over a wire transport the serving node forwards the call to
+// the shard's leader, so any node will do, and those other refusals arrive as
+// the transport's error for their class (not found, failed precondition).
+//
+// It delegates to transport.LeaderTransferrer, which every transport
+// implements. A wire transport carries the timeout as a *transport.RequestError
+// whose Reason is LEADER_TRANSFER_TIMEOUT; this method rebuilds the
+// *LeaderTransferTimeoutError from its metadata, so errors.As matches on every
+// transport alike. A transport without the capability answers
+// *transport.NotImplementedError.
+func (cc *ClusterClient) TransferLeadership(ctx context.Context, shardID, replicaID uint64) error {
+	transferrer, ok := cc.admin.(transport.LeaderTransferrer)
+	if !ok {
+		return &transport.NotImplementedError{Method: "TransferLeadership"}
+	}
+	return leaderTransferError(transferrer.TransferLeadership(ctx, shardID, replicaID))
+}
+
+// leaderTransferError rebuilds the typed *LeaderTransferTimeoutError from a
+// wire transport's LEADER_TRANSFER_TIMEOUT refusal and returns every other
+// error unchanged. A refusal whose metadata does not decode is returned as
+// sent: the caller still sees the server's message and status, and nothing
+// is invented in place of fields the server did not send.
+func leaderTransferError(err error) error {
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.Reason != replicaforward.ReasonLeaderTransferTimeout {
+		return err
+	}
+	timeout, parseErr := replicaforward.ParseLeaderTransferTimeout(reqErr.Metadata)
+	if parseErr != nil {
+		return err
+	}
+	return timeout
 }
 
 // WatchMembership returns a channel that emits a MembershipEvent whenever the

@@ -19,7 +19,6 @@ import (
 	"errors"
 	"net"
 	"testing"
-	"time"
 
 	googlegrpc "google.golang.org/grpc"
 
@@ -42,7 +41,7 @@ func TestSOPIN_PlaintextConnectionNeverCarriesThePIN(t *testing.T) {
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
-	tr, err := New(transport.WithAddress(lis.Addr().String()), transport.WithTimeout(5*time.Second))
+	tr, err := New(transport.WithAddress(lis.Addr().String()), transport.WithTimeout(sotest.RequestTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

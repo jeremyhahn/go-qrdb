@@ -61,6 +61,17 @@ const (
 	PIN    = "correct horse battery staple"
 )
 
+// RequestTimeout is the per-request deadline every transport's SO PIN test
+// gives its client. A request the gate admits verifies the PIN through the
+// real software PIN backend, and under GOFIPS140 that is PBKDF2-HMAC-SHA256
+// at 600,000 iterations rather than Argon2id: about 1.5s per verification
+// under -race on an idle development box, and several times that with the
+// rest of the SDK module's packages running beside it on a CI runner. A 5s
+// deadline sized for Argon2id expired there (go-qrdb#608). This bounds a
+// hung request; it is not a performance assertion, and a request that
+// succeeds or is refused returns as soon as it does.
+const RequestTimeout = 60 * time.Second
+
 // Fixture holds the server-side pieces a transport's start function wires.
 type Fixture struct {
 	// Roles is the real role store, holding Tenant's built-in roles.

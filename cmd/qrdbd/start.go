@@ -214,6 +214,7 @@ type startFlags struct {
 	tlsClientAuth      string
 	tlsClientAuthSet   bool
 	bootstrapNoiseKey  string
+	bootstrapP256Key   string
 	bootstrapNoiseAddr string
 	bootstrapNoisePort int
 	bootstrapNoiseHost string
@@ -230,6 +231,7 @@ type startFlags struct {
 	// environment variable (never inline). See config.ResolveJoinToken.
 	bootstrapJoinAddr      string
 	bootstrapJoinKey       string
+	bootstrapJoinP256Key   string
 	bootstrapJoinHTTPURL   string
 	bootstrapJoinTokenFile string
 	bootstrapJoinTokenEnv  string
@@ -641,6 +643,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.tlsCertFile, "tls-cert-file", "", "Path to TLS certificate PEM file")
 	cmd.Flags().StringVar(&f.tlsKeyFile, "tls-key-file", "", "Path to TLS private key PEM file")
 	cmd.Flags().StringVar(&f.bootstrapNoiseKey, "bootstrap-noise-key", "", "Hex Curve25519 public key for Noise bootstrap")
+	cmd.Flags().StringVar(&f.bootstrapP256Key, "bootstrap-p256-key", "", "Hex uncompressed P-256 public key of the bootstrap server, for the FIPS-approved suite (required under FIPS 140-3 only mode)")
 	cmd.Flags().StringVar(&f.bootstrapNoiseAddr, "bootstrap-noise-addr", "", "host:port of Noise bootstrap server")
 	cmd.Flags().IntVar(&f.bootstrapNoisePort, "bootstrap-noise-port", 63006, "TCP port for the Noise bootstrap (trust-anchor) server every admitted, unsealed member runs")
 	cmd.Flags().StringVar(&f.bootstrapNoiseHost, "bootstrap-noise-host", "", "Bind host for the Noise bootstrap server; maps to bootstrap.noise_host, defaults to --host")
@@ -651,6 +654,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.bootstrapAddr, "bootstrap-addr", "", "host:port of first node's admin server (for SPKI/DANE)")
 	cmd.Flags().StringVar(&f.bootstrapJoinAddr, "bootstrap-join-addr", "", "host:port of an admitted member's Noise_NK join listener (member-side CSR join)")
 	cmd.Flags().StringVar(&f.bootstrapJoinKey, "bootstrap-join-key", "", "Hex Curve25519 public key of that join listener")
+	cmd.Flags().StringVar(&f.bootstrapJoinP256Key, "bootstrap-join-p256-key", "", "Hex uncompressed P-256 public key of that join listener, for the FIPS-approved suite (required under FIPS 140-3 only mode)")
 	cmd.Flags().StringVar(&f.bootstrapJoinHTTPURL, "bootstrap-join-url", "", "Base admin HTTPS URL of an admitted member, for the SPKI/Direct join transport (e.g. https://10.0.0.2:8443)")
 	cmd.Flags().StringVar(&f.bootstrapJoinTokenFile, "bootstrap-join-token-file", "", "Path to a file holding the member-side join admission secret")
 	cmd.Flags().StringVar(&f.bootstrapJoinTokenEnv, "bootstrap-join-token-env", "", "Name of an environment variable holding the member-side join admission secret")
@@ -893,6 +897,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if !cmd.Flags().Changed("bootstrap-noise-key") && cfg.Bootstrap.NoiseKey != "" {
 		f.bootstrapNoiseKey = cfg.Bootstrap.NoiseKey
 	}
+	if !cmd.Flags().Changed("bootstrap-p256-key") && cfg.Bootstrap.P256Key != "" {
+		f.bootstrapP256Key = cfg.Bootstrap.P256Key
+	}
 	if !cmd.Flags().Changed("bootstrap-noise-addr") && cfg.Bootstrap.NoiseAddr != "" {
 		f.bootstrapNoiseAddr = cfg.Bootstrap.NoiseAddr
 	}
@@ -922,6 +929,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("bootstrap-join-key") && cfg.Bootstrap.JoinKey != "" {
 		f.bootstrapJoinKey = cfg.Bootstrap.JoinKey
+	}
+	if !cmd.Flags().Changed("bootstrap-join-p256-key") && cfg.Bootstrap.JoinP256Key != "" {
+		f.bootstrapJoinP256Key = cfg.Bootstrap.JoinP256Key
 	}
 	if !cmd.Flags().Changed("bootstrap-join-url") && cfg.Bootstrap.JoinHTTPURL != "" {
 		f.bootstrapJoinHTTPURL = cfg.Bootstrap.JoinHTTPURL

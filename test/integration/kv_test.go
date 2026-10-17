@@ -435,13 +435,12 @@ func TestKV_ThreeNode_PutGetFromAnyNode(t *testing.T) {
 	// Write on leader.
 	httpPut(t, ca, leaderPort, "cluster-key", []byte("cluster-value"))
 
-	// Read from each node (linearizable reads go through leader).
-	for i, port := range adminPorts {
+	// Read from each node (linearizable reads go through leader). A node
+	// that knows no leader for the moment answers the read 503 NOT_LEADER,
+	// which docs/clustering/engineering.md documents as retryable, so each
+	// node's read is waitForKV's bounded retry rather than a single GET.
+	for _, port := range adminPorts {
 		waitForKV(t, ca, port, "cluster-key", []byte("cluster-value"), 60*time.Second)
-		val := httpGet(t, ca, port, "cluster-key")
-		if !bytes.Equal(val, []byte("cluster-value")) {
-			t.Errorf("node %d: got %q, want %q", i+1, val, "cluster-value")
-		}
 	}
 }
 

@@ -132,6 +132,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"admin.AddMember":                    permission.AdminAddMember,
 	"admin.RemoveMember":                 permission.AdminRemoveMember,
 	"admin.PromoteMember":                permission.AdminAddMember,
+	"admin.TransferLeadership":           permission.AdminRemoveMember,
 	"admin.RequestSnapshot":              permission.AdminSnapshot,
 	"admin.Drain":                        permission.AdminDrain,
 	"admin.Capabilities":                 permission.AdminCapabilities,

@@ -1,6 +1,6 @@
 # Release — User guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -60,6 +60,26 @@ tracked on purpose is listed by exact path, with the reason, in
 list is empty. Other binaries, such as images and test fixtures, are scanned
 like any other file.
 
+## Running CI's stages yourself
+
+CI runs its stages in the image built from `build/docker/devcontainer/`, at
+the commit under test. The same targets run it anywhere Docker with BuildKit
+is available; nothing is installed on the host.
+
+| Command | Does |
+|---|---|
+| `make docker-build` | builds the `toolchain` and `integration` stages, with the versions in `scripts/tool-pins.sh` |
+| `make -s toolchain-image` | prints the toolchain image's tag |
+| `make docker-run CMD='make test'` | runs one command in the toolchain image, this checkout bind-mounted, as your uid, with no network |
+| `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them |
+| `make docker-down-it` | removes an integration run's stack and image (`IT_PROJECT`, `IT_IMAGE`) |
+| `make deps-check` | fails when a direct requirement is behind its latest release with no reason in its `go.mod` |
+
+To raise a tool, change its line in `scripts/tool-pins.sh` and the matching
+line in ci.yml's `env:`; `make check-tool-versions` fails while the two
+differ. To hold a module below its latest release, put the reason in a `//`
+comment on its `require` line, or on the comment line directly above it.
+
 ## Cutting a release
 
 1. **Prepare it as a change.** In one commit, set `VERSION` to the new version
@@ -73,7 +93,8 @@ like any other file.
    push. This is the whole release action — nothing else to dispatch.
 3. **Watch the Release workflow.** The tag push just started it. It
    re-validates the tag, VERSION and CHANGELOG, re-runs the build/lint/test
-   gate against the tagged tree, and publishes the release notes. If it
+   gate against the tagged tree, builds the release artifacts, and publishes
+   the release notes with the artifacts attached. If it
    fails, the tags are already published and immutable: diagnose from its
    logs, repair the cause, and release the next PATCH version. Never move or
    delete a tag.
@@ -103,4 +124,43 @@ the next PATCH version rather than trying to retarget the tag:
 |---|---|
 | `validate` | the tag, VERSION or CHANGELOG drifted from what `release-alpha` checked locally (should not happen if it ran to completion), or a lockstep tag genuinely never arrived after ten retries |
 | `gate` | the tagged tree fails a build/lint/test check that passed on `main` moments earlier — investigate the runner and the checkout before assuming the code regressed |
-| `publish` | the forge's releases API rejected the request (for example, a release for this tag already exists) |
+| `publish` | a release artifact failed to build (nothing is published), or the forge's releases API rejected the request (for example, a release for this tag already exists) |
+
+## Release artifacts
+
+Each release carries these files, `<v>` being `VERSION` (for example
+`0.49.0-alpha`):
+
+| File | What it is |
+|---|---|
+| `qrdbd-<v>-linux-amd64` | the server, x86-64 |
+| `qrdbd-<v>-linux-amd64-fips` | the server, x86-64, Go FIPS 140-3 module |
+| `qrdbd-<v>-linux-arm64` | the server, 64-bit Arm (for example a Raspberry Pi 4) |
+| `qrdbd-<v>-linux-arm64-fips` | the server, 64-bit Arm, Go FIPS 140-3 module |
+| `qrdb-<v>-linux-amd64`, `-linux-amd64-fips`, `-linux-arm64`, `-linux-arm64-fips` | the headless `qrdb` CLI, the same four ways |
+| `SHA256SUMS` | the SHA-256 of every binary above |
+
+Every binary is statically linked (no cgo) and built with the default feature
+set (`make -s print-build-tags`) plus `gms_pure_go`. Because of that tag, the
+MySQL `REGEXP` family (`REGEXP`, `RLIKE`, `REGEXP_LIKE`, `REGEXP_REPLACE`,
+`REGEXP_SUBSTR`, `REGEXP_INSTR`) uses Go's RE2 syntax rather than ICU's:
+backreferences and lookaround are refused. A binary built from source with
+`make build-server` keeps ICU and needs the ICU shared libraries on the host.
+The desktop `qrdb` client is not a release artifact.
+
+To verify a download, put it beside `SHA256SUMS` and run:
+
+```
+sha256sum --check --ignore-missing SHA256SUMS
+file qrdbd-<v>-linux-arm64          # ELF 64-bit LSB executable, ARM aarch64, statically linked
+go version -m qrdbd-<v>-linux-arm64 # build settings: GOARCH=arm64, CGO_ENABLED=0
+./qrdbd-<v>-linux-arm64 version     # version and commit match the release tag
+```
+
+`go version -m` on a `-fips` binary also lists `GOFIPS140`. A FIPS binary
+selects the module at build time; the enforcement level is still the
+operator's, `GODEBUG=fips140=only` at run time, as
+[seal/fips140-mode.md](../seal/fips140-mode.md) explains.
+
+To build the same files locally, run `make release-artifacts`; to build one
+platform, `make release-cross PLATFORM=linux/arm64` ([cli.md](cli.md)).

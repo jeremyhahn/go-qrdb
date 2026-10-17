@@ -1192,22 +1192,70 @@ func (e *ShardLeaderTimeoutError) Error() string {
 		": no raft leader known after " + e.Timeout.String()
 }
 
-// LeaderTransferTimeoutError is returned by
-// transferLeadershipAwayFromRemoved when a requested leadership transfer
-// (issued so a replica about to be removed is not still the shard's leader
-// when RemoveFollowerNode is called -- see that function's doc comment for
-// the race this avoids) does not complete within the bounded wait.
+// LeaderTransferTimeoutError is returned when a requested leadership
+// transfer does not complete within its bound: by
+// AdminService.TransferLeadership when ToReplicaID has not become the
+// leader (it may be down, or not caught up), and by
+// transferLeadershipAwayFromRemoved when a replica about to be removed is
+// still the shard's leader (see that function's doc comment for the race
+// this avoids). Nothing else was changed; the transfer may be retried.
 type LeaderTransferTimeoutError struct {
 	ShardID       uint64
 	FromReplicaID uint64
-	Timeout       time.Duration
+	// ToReplicaID is the replica the transfer named, or 0 when the
+	// transfer only had to move leadership away from FromReplicaID.
+	ToReplicaID uint64
+	Timeout     time.Duration
 }
 
 // Error returns a human-readable description.
 func (e *LeaderTransferTimeoutError) Error() string {
+	to := ""
+	if e.ToReplicaID != 0 {
+		to = " to replica " + strconv.FormatUint(e.ToReplicaID, 10)
+	}
 	return "service: shard " + strconv.FormatUint(e.ShardID, 10) +
-		": leadership transfer away from replica " + strconv.FormatUint(e.FromReplicaID, 10) +
+		": leadership transfer away from replica " + strconv.FormatUint(e.FromReplicaID, 10) + to +
 		" did not complete after " + e.Timeout.String()
+}
+
+// UnknownShardError is returned by AdminService.TransferLeadership when
+// ShardID is not loaded on this host.
+type UnknownShardError struct {
+	ShardID uint64
+}
+
+// Error returns a human-readable description.
+func (e *UnknownShardError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) + " is not loaded on this host"
+}
+
+// UnknownReplicaError is returned by AdminService.TransferLeadership when
+// ReplicaID is 0 or a replica the shard has never had.
+type UnknownReplicaError struct {
+	ShardID   uint64
+	ReplicaID uint64
+}
+
+// Error returns a human-readable description.
+func (e *UnknownReplicaError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) +
+		" has no replica " + strconv.FormatUint(e.ReplicaID, 10)
+}
+
+// LeaderTransferTargetError is returned by AdminService.TransferLeadership
+// when the named replica is known to the shard but cannot lead it: it is a
+// non-voting observer, a witness, or was removed. Reason says which.
+type LeaderTransferTargetError struct {
+	ShardID   uint64
+	ReplicaID uint64
+	Reason    string
+}
+
+// Error returns a human-readable description.
+func (e *LeaderTransferTargetError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) +
+		": replica " + strconv.FormatUint(e.ReplicaID, 10) + " cannot take leadership: " + e.Reason
 }
 
 // DatabaseCreateTimeoutError is returned when a database create does not

@@ -1832,6 +1832,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(adminOn, http.MethodPost, "/membership/add-observer", permission.AdminAddMember, s.handleMembershipAddObserver)
 	s.routeIf(adminOn, http.MethodPost, "/membership/remove", permission.AdminRemoveMember, s.handleMembershipRemove)
 	s.routeIf(adminOn, http.MethodPost, "/membership/promote", permission.AdminAddMember, s.handleMembershipPromote)
+	s.routeIf(adminOn, http.MethodPost, "/membership/transfer-leadership", permission.AdminRemoveMember, s.handleMembershipTransferLeadership)
 	s.routeIf(adminOn, http.MethodPost, "/snapshot", permission.AdminSnapshot, s.handleSnapshot)
 	s.routeIf(adminOn, http.MethodPost, "/admin/shards", permission.AdminStartShard, s.handleStartShard)
 	s.routeIf(adminOn, http.MethodGet, "/admin/topology", permission.AdminTopology, s.handleGetTopology)

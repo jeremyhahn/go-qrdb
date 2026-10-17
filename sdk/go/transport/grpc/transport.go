@@ -37,7 +37,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/refusalinfo"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/errorinfo"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/retryinfo"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealedinfo"
@@ -743,6 +743,25 @@ func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID ui
 
 var _ transport.ObserverMemberAdder = (*Transport)(nil)
 
+// TransferLeadership hands shardID's leadership to replicaID and returns once
+// it leads. Implements transport.LeaderTransferrer.
+func (t *Transport) TransferLeadership(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.TransferLeadership(ctx, &pb.TransferLeadershipRequest{
+		ShardId:   shardID,
+		ReplicaId: replicaID,
+	})
+	if err != nil {
+		return mapGRPCError("TransferLeadership", err)
+	}
+	return nil
+}
+
+var _ transport.LeaderTransferrer = (*Transport)(nil)
+
 // ListPendingJoinRequests lists tokenless member-side CSR join requests
 // awaiting an operator's decision. Implements transport.JoinRequestReviewer.
 func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
@@ -964,10 +983,18 @@ func mapGRPCError(method string, err error) error {
 		// embedded, instead of matching message text (go-qrdb#141).
 		return &transport.CapabilityUnsupportedError{Message: st.Message()}
 	default:
-		if typed := refusalinfo.Error(st); typed != nil {
+		reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
+		if typed := transport.RefusalError(reason, md); typed != nil {
 			err = typed
 		}
-		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err, RetryAfter: retryinfo.Delay(st)}
+		return &transport.RequestError{
+			Method:     method,
+			StatusCode: int(st.Code()),
+			Err:        err,
+			RetryAfter: retryinfo.Delay(st),
+			Reason:     reason,
+			Metadata:   md,
+		}
 	}
 }
 

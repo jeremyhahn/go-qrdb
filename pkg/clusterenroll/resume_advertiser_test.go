@@ -38,21 +38,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
-// dialable asserts something is accepting connections at the advertiser's
-// bound address.
 // dialable asserts that the enrollment listener a first node owes the cluster
-// is really there, and reports whether this runtime serves Noise at all so a
-// caller can go on to assert Noise-specific properties of it.
-//
-// In FIPS 140-3 mode there is no socket to dial and assertAdvertises has
-// already asserted the contract that replaces one -- an advertiser that is
-// present and serving the approved methods. A caller that returns on false has
-// therefore asserted the whole of the contract that holds in its runtime.
+// is really there -- accepting connections at the advertiser's bound address in
+// every runtime, since the P-256 suite is served under FIPS 140-3 mode too -- and
+// reports whether this runtime also serves Noise so a caller can go on to assert
+// Noise-specific properties of it.
 func dialable(t *testing.T, adv *Advertiser) bool {
 	t.Helper()
-	if !assertAdvertises(t, adv) {
-		return false
-	}
+	servesNoise := assertAdvertises(t, adv)
 	conn, err := net.DialTimeout("tcp", adv.Addr(), 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial %s: %v; the advertiser is non-nil but nothing is listening", adv.Addr(), err)
@@ -60,7 +53,7 @@ func dialable(t *testing.T, adv *Advertiser) bool {
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close probe conn: %v", err)
 	}
-	return true
+	return servesNoise
 }
 
 func firstNodeOpts(t *testing.T, dir string, port int) *Options {
@@ -93,6 +86,7 @@ func TestResolve_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 	}
 	servesNoise := dialable(t, adv1)
 	key1 := append([]byte(nil), adv1.NoisePublicKey()...)
+	p256Key1 := append([]byte(nil), adv1.P256PublicKey()...)
 	adv1.Stop() // the process exits
 
 	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
@@ -107,17 +101,19 @@ func TestResolve_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 	if dialable(t, adv2) != servesNoise {
 		t.Fatal("the two boots disagree about whether Noise is served; the ruling is a property of the runtime, not of the boot")
 	}
+	// The resumed listener must carry the SAME identities. A joining node pins
+	// these keys; coming back on a fresh one would be a listener that is
+	// running and still unusable, which is why the key files are persisted
+	// "for reuse across restarts" in the first place.
+	if !bytes.Equal(p256Key1, adv2.P256PublicKey()) {
+		t.Error("the resumed listener came back on a DIFFERENT P-256 responder key; " +
+			"every peer pinned to the original key can no longer enroll")
+	}
 	if !servesNoise {
-		// FIPS 140-3: there is no static key, so the identity-stability
-		// assertion below has no subject. What go-qrdb#241 is about -- boot 2
-		// coming back advertising -- has just been asserted.
+		// FIPS 140-3: there is no Noise static key, so that identity-stability
+		// assertion has no subject.
 		return
 	}
-
-	// The resumed listener must carry the SAME Noise identity. A joining node
-	// pins this key; coming back on a fresh one would be a listener that is
-	// running and still unusable, which is why noise-key.hex is persisted
-	// "for reuse across restarts" in the first place.
 	if !bytes.Equal(key1, adv2.NoisePublicKey()) {
 		t.Error("the resumed listener came back on a DIFFERENT Noise static key; " +
 			"every peer pinned to the original key can no longer enroll")
@@ -135,28 +131,6 @@ func TestResolve_FirstNodeResumesAfterAnAdvertiserStartFailure(t *testing.T) {
 		t.Fatalf("occupy the Noise port: %v", err)
 	}
 	opts := firstNodeOpts(t, dir, port)
-
-	if !noiseAvailable() {
-		// No port is bound in FIPS 140-3 mode, so the fault this test injects
-		// cannot occur: attempt 1 succeeds. The property that matters -- the
-		// node advertises on both boots -- still gets asserted, and a
-		// regression that started binding a port here would fail on the
-		// occupied one.
-		defer func() { _ = blocker.Close() }()
-		_, advA, errA := Resolve(context.Background(), opts, discardLogger())
-		if errA != nil {
-			t.Fatalf("attempt 1 must not bind a port when the Noise method is unavailable: %v", errA)
-		}
-		dialable(t, advA)
-		advA.Stop()
-		_, advB, errB := Resolve(context.Background(), opts, discardLogger())
-		if errB != nil {
-			t.Fatalf("attempt 2 (cached path): %v", errB)
-		}
-		t.Cleanup(advB.Stop)
-		dialable(t, advB)
-		return
-	}
 
 	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err == nil {
 		if adv != nil {
@@ -454,6 +428,7 @@ func TestResolveCA_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 	}
 	servesNoise := dialable(t, adv1)
 	key1 := append([]byte(nil), adv1.NoisePublicKey()...)
+	p256Key1 := append([]byte(nil), adv1.P256PublicKey()...)
 	adv1.Stop()
 
 	_, _, adv2, err := ResolveCA(context.Background(), opts, discardLogger())
@@ -466,6 +441,9 @@ func TestResolveCA_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 	t.Cleanup(adv2.Stop)
 	if dialable(t, adv2) != servesNoise {
 		t.Fatal("the two boots disagree about whether Noise is served; the ruling is a property of the runtime, not of the boot")
+	}
+	if !bytes.Equal(p256Key1, adv2.P256PublicKey()) {
+		t.Error("the resumed listener came back on a different P-256 responder key")
 	}
 	if !servesNoise {
 		return

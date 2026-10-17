@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -33,6 +34,7 @@ import (
 	"github.com/flynn/noise"
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
+	"github.com/jeremyhahn/go-truststrap/pkg/p256proto"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
@@ -510,8 +512,13 @@ const joinServerMaxConcurrentConns = 64
 // JoinServer is a running member-side CSR-sign listener. It must be stopped
 // during graceful shutdown.
 type JoinServer struct {
-	ln          net.Listener
+	ln net.Listener
+
+	// key is the Noise_NK suite's static key, nil where the suite is
+	// unavailable (see noiseAvailable). p256Key is the approved suite's
+	// responder key and is always set.
 	key         *noiseproto.StaticKey
+	p256Key     *p256proto.StaticKey
 	store       kvstore.AtomicKVStore
 	trustDomain string
 	provider    cakey.Provider
@@ -527,11 +534,14 @@ type JoinServer struct {
 
 // StartJoinServer starts the member-side CSR-sign listener. provider is the
 // cluster CA (Key A); any cakey.Provider works, including an injected
-// HSM/TPM/KMS one. Returns *NoiseFIPSUnavailableError in FIPS 140-3 mode:
-// Noise_NK's X25519 handshake is not an approved key-agreement scheme, and
-// unlike the anchor advertiser (which still has SPKI/DANE/Direct to fall
-// back to for serving the public CA certificate), member-side CSR signing
-// has no approved-method fallback of its own yet.
+// HSM/TPM/KMS one.
+//
+// The listener serves both suites of the join exchange, chosen per connection
+// by the first frame's version||suite header: the FIPS-approved P-256 suite is
+// always served, and the Noise_NK suite -- whose X25519 handshake is not an
+// approved key-agreement scheme -- only where noiseAvailable allows it. In
+// FIPS 140-3 mode the listener therefore runs P-256 only and generates no
+// Noise key.
 func StartJoinServer(provider cakey.Provider, opts JoinServerOptions, dataDir string, logger *slog.Logger) (*JoinServer, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
@@ -539,13 +549,22 @@ func StartJoinServer(provider cakey.Provider, opts JoinServerOptions, dataDir st
 	if provider == nil {
 		return nil, &NilProviderError{}
 	}
-	if !noiseAvailable() {
-		logger.Warn(fipsNoiseAdvisory + "; member-side CSR join is unavailable")
-		return nil, &NoiseFIPSUnavailableError{Operation: "member-side CSR join"}
+
+	var key *noiseproto.StaticKey
+	if noiseAvailable() {
+		var err error
+		key, err = loadOrGenerateJoinKey(filepath.Join(dataDir, JoinKeyFile), logger)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		logger.Warn(fipsNoiseAdvisory + "; the member-side CSR join listener serves the " +
+			"FIPS-approved P-256 suite only")
 	}
 
-	key, err := loadOrGenerateJoinKey(filepath.Join(dataDir, JoinKeyFile), logger)
+	p256Key, err := loadOrGenerateP256Key(filepath.Join(dataDir, JoinP256KeyFile), "join", "join", logger)
 	if err != nil {
+		key.Destroy()
 		return nil, err
 	}
 
@@ -553,12 +572,14 @@ func StartJoinServer(provider cakey.Provider, opts JoinServerOptions, dataDir st
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		key.Destroy()
+		p256Key.Destroy()
 		return nil, &ServerError{Protocol: "join", Err: err}
 	}
 
 	js := &JoinServer{
 		ln:          ln,
 		key:         key,
+		p256Key:     p256Key,
 		store:       opts.Store,
 		trustDomain: opts.TrustDomain,
 		provider:    provider,
@@ -569,8 +590,15 @@ func StartJoinServer(provider cakey.Provider, opts JoinServerOptions, dataDir st
 	js.wg.Add(1)
 	go js.serve()
 
-	logger.Info("member-join CSR listener started",
-		"addr", ln.Addr().String(), "admin_port", opts.AdminPort)
+	attrs := []any{
+		"addr", ln.Addr().String(),
+		"admin_port", opts.AdminPort,
+		"join_p256_public_key", hex.EncodeToString(js.P256PublicKey()),
+	}
+	if pub := js.PublicKey(); pub != nil {
+		attrs = append(attrs, "join_noise_public_key", hex.EncodeToString(pub))
+	}
+	logger.Info("member-join CSR listener started", attrs...)
 	return js, nil
 }
 
@@ -594,13 +622,23 @@ func (s *JoinServer) Addr() string {
 }
 
 // PublicKey returns the join listener's Curve25519 public key, the value a
-// joiner configures as its dial target's identity. Returns nil on a nil
-// JoinServer.
+// joiner configures as its dial target's Noise identity. Returns nil on a nil
+// JoinServer and where the Noise suite is unavailable (FIPS 140-3 mode).
 func (s *JoinServer) PublicKey() []byte {
 	if s == nil || s.key == nil {
 		return nil
 	}
 	return s.key.PublicBytes()
+}
+
+// P256PublicKey returns the join listener's P-256 responder public key as the
+// 65-byte uncompressed point a joiner configures as its dial target's
+// FIPS-approved identity. Returns nil on a nil JoinServer.
+func (s *JoinServer) P256PublicKey() []byte {
+	if s == nil || s.p256Key == nil {
+		return nil
+	}
+	return s.p256Key.PublicBytes()
 }
 
 // Stop gracefully shuts down the listener and releases the static key's
@@ -613,6 +651,7 @@ func (s *JoinServer) Stop() {
 		_ = s.ln.Close()
 		s.wg.Wait()
 		s.key.Destroy()
+		s.p256Key.Destroy()
 	})
 }
 
@@ -660,8 +699,9 @@ func (s *JoinServer) serve() {
 	}
 }
 
-// handle drives one connection's Noise_NK handshake (as responder) and one
-// encrypted request/response exchange, then closes it. conn is any
+// handle drives one connection's handshake (as responder, in whichever suite the
+// first frame's header selects) and one encrypted request/response exchange,
+// then closes it. conn is any
 // net.Conn, which is what lets a test drive this with an in-memory fake
 // that fails a specific Read or Write deterministically, rather than racing
 // real socket timing to reach these branches.
@@ -675,30 +715,29 @@ func (s *JoinServer) handle(conn net.Conn) {
 		return
 	}
 
-	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
-		Pattern:        noise.HandshakeNK,
-		LocalStaticKey: s.key,
-		IsInitiator:    false,
-	})
-	if err != nil {
-		s.logger.Error("join: session init failed", "error", err)
-		return
-	}
-	if err := sess.InitHandshake(); err != nil {
-		s.logger.Error("join: handshake init failed", "error", err)
-		return
-	}
-
-	msg1, err := noiseboot.ReadFrame(conn, deadline)
+	// The first frame opens with the version||suite header; it selects the
+	// handshake, and both suites bind it into their transcript so a tampered
+	// header breaks the handshake rather than downgrading it.
+	first, err := noiseboot.ReadFrame(conn, deadline)
 	if err != nil {
 		s.logger.Debug("join: read handshake message 1 failed", "error", err)
 		return
 	}
-	msg2, done, err := sess.HandshakeMessage(msg1)
-	if err != nil || !done {
-		s.logger.Debug("join: handshake failed", "error", err)
+	if len(first) < joinSuiteHeaderSize || first[0] != p256proto.Version {
+		s.logger.Debug("join: refused, unsupported protocol version or short first frame")
 		return
 	}
+	handshake, ok := joinServerSuites[first[1]]
+	if !ok {
+		s.logger.Debug("join: refused, unsupported suite", "suite", first[1])
+		return
+	}
+	ch, msg2, release, err := handshake(s, first)
+	if err != nil {
+		s.logger.Debug("join: handshake failed", "suite", first[1], "error", err)
+		return
+	}
+	defer release()
 	if err := noiseboot.WriteFrame(conn, msg2, deadline); err != nil {
 		s.logger.Debug("join: write handshake message 2 failed", "error", err)
 		return
@@ -709,7 +748,7 @@ func (s *JoinServer) handle(conn net.Conn) {
 		s.logger.Debug("join: read request failed", "error", err)
 		return
 	}
-	plaintext, err := sess.Decrypt(ciphertext)
+	plaintext, err := ch.Decrypt(ciphertext)
 	if err != nil {
 		s.logger.Debug("join: decrypt request failed", "error", err)
 		return
@@ -733,7 +772,7 @@ func (s *JoinServer) handle(conn net.Conn) {
 		s.logger.Error("join: marshal response failed", "error", err)
 		return
 	}
-	respCiphertext, err := sess.Encrypt(respData)
+	respCiphertext, err := ch.Encrypt(respData)
 	if err != nil {
 		s.logger.Error("join: encrypt response failed", "error", err)
 		return
@@ -743,14 +782,113 @@ func (s *JoinServer) handle(conn net.Conn) {
 	}
 }
 
+// joinSuiteHeaderSize is the length of the version||suite header that opens a
+// join exchange's first frame.
+const joinSuiteHeaderSize = 2
+
+// joinChannel is the encrypted request/response channel a completed handshake
+// yields, abstracting the two suites so the exchange is written once. Each
+// direction carries exactly one message, which both backings satisfy.
+type joinChannel interface {
+	Encrypt(plaintext []byte) ([]byte, error)
+	Decrypt(ciphertext []byte) ([]byte, error)
+}
+
+// p256Channel adapts a p256proto one-shot Transport to joinChannel.
+type p256Channel struct {
+	t *p256proto.Transport
+}
+
+func (c *p256Channel) Encrypt(plaintext []byte) ([]byte, error) { return c.t.Seal(plaintext, nil) }
+
+func (c *p256Channel) Decrypt(ciphertext []byte) ([]byte, error) { return c.t.Open(ciphertext, nil) }
+
+// joinServerSuites dispatches a first frame's suite byte to the responder
+// handshake for that suite. A byte absent from the map is a suite this listener
+// does not speak.
+var joinServerSuites = map[byte]func(*JoinServer, []byte) (joinChannel, []byte, func(), error){
+	p256proto.SuiteNoiseNK:    (*JoinServer).handshakeNoise,
+	p256proto.SuiteP256AESGCM: (*JoinServer).handshakeP256,
+}
+
+// JoinSuiteUnavailableError is returned when a join exchange selects a suite
+// this process cannot run: the Noise suite on a listener that holds no Noise
+// key because FIPS 140-3 mode is enabled.
+type JoinSuiteUnavailableError struct {
+	Suite byte
+}
+
+// Error returns a human-readable description.
+func (e *JoinSuiteUnavailableError) Error() string {
+	return "clusterenroll: join suite 0x" + strconv.FormatUint(uint64(e.Suite), 16) +
+		" is unavailable in this process"
+}
+
+// handshakeNoise answers a Noise_NK first frame. The version||suite header is
+// the Noise prologue, so the two ends agree on it or the handshake fails.
+func (s *JoinServer) handshakeNoise(first []byte) (joinChannel, []byte, func(), error) {
+	if s.key == nil || !noiseAvailable() {
+		return nil, nil, nil, &JoinSuiteUnavailableError{Suite: p256proto.SuiteNoiseNK}
+	}
+	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
+		Pattern:        noise.HandshakeNK,
+		LocalStaticKey: s.key,
+		IsInitiator:    false,
+		Prologue:       first[:joinSuiteHeaderSize:joinSuiteHeaderSize],
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := sess.InitHandshake(); err != nil {
+		sess.Destroy()
+		return nil, nil, nil, err
+	}
+	msg2, done, err := sess.HandshakeMessage(first[joinSuiteHeaderSize:])
+	if err != nil || !done {
+		sess.Destroy()
+		if err == nil {
+			err = ErrHandshakeIncomplete
+		}
+		return nil, nil, nil, err
+	}
+	return sess, msg2, sess.Destroy, nil
+}
+
+// handshakeP256 answers a P-256 first frame. Message 1 carries the
+// version||suite header itself.
+func (s *JoinServer) handshakeP256(first []byte) (joinChannel, []byte, func(), error) {
+	r, err := p256proto.NewResponder(s.p256Key)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := r.ReadMessage1(first); err != nil {
+		r.Destroy()
+		return nil, nil, nil, err
+	}
+	msg2, transport, err := r.WriteMessage2()
+	if err != nil {
+		r.Destroy()
+		return nil, nil, nil, err
+	}
+	return &p256Channel{t: transport}, msg2, r.Destroy, nil
+}
+
 // JoinClientOptions configures a joiner's CSR submission to an admitted
 // member's join listener.
 type JoinClientOptions struct {
 	// ServerAddr is the host:port of an admitted member's join listener.
 	ServerAddr string
 
-	// ServerKey is the join listener's Curve25519 public key (JoinServer.PublicKey).
+	// ServerKey is the join listener's Curve25519 public key
+	// (JoinServer.PublicKey), for the Noise_NK suite. May be empty when
+	// ServerP256Key is set.
 	ServerKey []byte
+
+	// ServerP256Key is the join listener's uncompressed P-256 public key
+	// (JoinServer.P256PublicKey), for the FIPS-approved suite. May be empty when
+	// ServerKey is set. With both set, Noise is used where this process may use
+	// it and P-256 otherwise (FIPS 140-3 mode).
+	ServerP256Key []byte
 
 	// Token is the join-admission secret. Empty submits the CSR into the
 	// signing member's replicated approval queue instead (see JoinCSR).
@@ -777,8 +915,9 @@ func (o *JoinClientOptions) timeout() time.Duration {
 	return o.Timeout
 }
 
-// JoinCSR dials an admitted member's join listener, performs the Noise_NK
-// handshake (as initiator, pinned to opts.ServerKey), and submits csrDER for
+// JoinCSR dials an admitted member's join listener, performs the handshake (as
+// initiator, pinned to opts.ServerKey for Noise_NK or opts.ServerP256Key for the
+// FIPS-approved P-256 suite; see selectJoinSuite), and submits csrDER for
 // signing. nodeURI, when non-empty, is carried to the signing member so the
 // issued leaf carries it as a URI SAN (see clustertls.NodeLeafTemplate).
 //
@@ -787,6 +926,11 @@ func (o *JoinClientOptions) timeout() time.Duration {
 // handshake or framing failure. Neither this node's private key nor the
 // cluster CA's ever appears on the wire in either direction.
 func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeURI string) ([]byte, error) {
+	suite, serverKey, err := selectJoinSuite(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	dialer := net.Dialer{Timeout: opts.timeout()}
 	conn, err := dialer.DialContext(ctx, "tcp", opts.ServerAddr)
 	if err != nil {
@@ -794,7 +938,42 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 	}
 	defer conn.Close()
 
-	return joinClientExchange(conn, opts.ServerKey, opts.timeout(), opts.Token, csrDER, nodeURI, opts.ReplicaID, opts.Features)
+	return joinClientSuites[suite](conn, serverKey, opts.timeout(), opts.Token, csrDER, nodeURI, opts.ReplicaID, opts.Features)
+}
+
+// joinClientSuites dispatches a selected suite to its initiator exchange.
+var joinClientSuites = map[byte]func(net.Conn, []byte, time.Duration, string, []byte, string, uint64, []string) ([]byte, error){
+	p256proto.SuiteNoiseNK:    joinClientExchange,
+	p256proto.SuiteP256AESGCM: joinClientExchangeP256,
+}
+
+// MissingJoinServerKeyError is returned when a join client is configured with
+// neither a Noise nor a P-256 server key to pin the listener's identity by.
+type MissingJoinServerKeyError struct{}
+
+// Error returns a human-readable description.
+func (e *MissingJoinServerKeyError) Error() string {
+	return "clusterenroll: no join listener key configured; member-side CSR join requires " +
+		"the listener's P-256 public key (--bootstrap-join-p256-key) or its Noise public key (--bootstrap-join-key)"
+}
+
+// selectJoinSuite chooses the suite a join client offers and the server key
+// that suite pins. Noise is used when its key is configured and this process
+// may use it; otherwise P-256 when its key is configured. A client that holds
+// only a Noise key in FIPS 140-3 mode is refused, before any connection, with
+// *NoiseFIPSUnavailableError rather than being downgraded or handed an
+// X25519 failure.
+func selectJoinSuite(opts *JoinClientOptions) (byte, []byte, error) {
+	switch {
+	case len(opts.ServerKey) > 0 && noiseAvailable():
+		return p256proto.SuiteNoiseNK, opts.ServerKey, nil
+	case len(opts.ServerP256Key) > 0:
+		return p256proto.SuiteP256AESGCM, opts.ServerP256Key, nil
+	case len(opts.ServerKey) > 0:
+		return 0, nil, &NoiseFIPSUnavailableError{Operation: "member-side CSR join"}
+	default:
+		return 0, nil, &MissingJoinServerKeyError{}
+	}
 }
 
 // joinClientExchange drives the initiator side of one join exchange over an
@@ -808,14 +987,19 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, token string, csrDER []byte, nodeURI string, replicaID uint64, features []string) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
 
+	// The version||suite header is both the first bytes of the first frame and
+	// the Noise prologue, so a header altered in flight breaks the handshake.
+	header := noiseboot.NoiseSuiteHeader()
 	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
 		Pattern:       noise.HandshakeNK,
 		PeerStaticKey: serverKey,
 		IsInitiator:   true,
+		Prologue:      header,
 	})
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
+	defer sess.Destroy()
 	if err := sess.InitHandshake(); err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
@@ -824,7 +1008,7 @@ func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, 
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
-	if err := noiseboot.WriteFrame(conn, msg1, deadline); err != nil {
+	if err := noiseboot.WriteFrame(conn, append(header, msg1...), deadline); err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
 
@@ -839,12 +1023,53 @@ func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, 
 		return nil, &FetchError{Method: "join", Err: err}
 	}
 
+	return joinClientRequest(conn, sess, deadline, token, csrDER, nodeURI, replicaID, features)
+}
+
+// joinClientExchangeP256 drives the initiator side of one join exchange over an
+// already-established conn using the FIPS-approved P-256 suite
+// (TSBOOT1_P256_AESGCM_SHA256), pinned to serverKey, the listener's
+// uncompressed P-256 public key. It has the same shape as joinClientExchange
+// so the two dispatch from one table.
+func joinClientExchangeP256(conn net.Conn, serverKey []byte, timeout time.Duration, token string, csrDER []byte, nodeURI string, replicaID uint64, features []string) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+
+	initiator, err := p256proto.NewInitiator(serverKey)
+	if err != nil {
+		return nil, &FetchError{Method: "join", Err: err}
+	}
+	defer initiator.Destroy()
+
+	msg1, err := initiator.WriteMessage1()
+	if err != nil {
+		return nil, &FetchError{Method: "join", Err: err}
+	}
+	if err := noiseboot.WriteFrame(conn, msg1, deadline); err != nil {
+		return nil, &FetchError{Method: "join", Err: err}
+	}
+
+	msg2, err := noiseboot.ReadFrame(conn, deadline)
+	if err != nil {
+		return nil, &FetchError{Method: "join", Err: err}
+	}
+	transport, err := initiator.ReadMessage2(msg2)
+	if err != nil {
+		return nil, &FetchError{Method: "join", Err: err}
+	}
+
+	return joinClientRequest(conn, &p256Channel{t: transport}, deadline, token, csrDER, nodeURI, replicaID, features)
+}
+
+// joinClientRequest sends the join request over a completed handshake's
+// channel and decodes the member's answer. It is the suite-independent half of
+// the initiator exchange.
+func joinClientRequest(conn net.Conn, ch joinChannel, deadline time.Time, token string, csrDER []byte, nodeURI string, replicaID uint64, features []string) ([]byte, error) {
 	req := JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: replicaID, Features: features}
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
-	ciphertext, err := sess.Encrypt(reqData)
+	ciphertext, err := ch.Encrypt(reqData)
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
@@ -856,7 +1081,7 @@ func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, 
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}
-	plaintext, err := sess.Decrypt(respCiphertext)
+	plaintext, err := ch.Decrypt(respCiphertext)
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}

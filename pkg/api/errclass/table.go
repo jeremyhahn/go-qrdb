@@ -568,9 +568,17 @@ var placementRules = []rule{
 	as(&service.NotDedicatedRaftDatabaseError{}, InvalidArgument),
 	// The dedicated shard's leader was not stable within the wait bound.
 	as(&service.ShardLeaderTimeoutError{}, Unavailable),
-	// A leadership transfer ahead of a replica removal did not finish within
-	// its bound: the removal is retryable, nothing was changed.
+	// A leadership transfer (asked for, or ahead of a replica removal) did
+	// not finish within its bound: retryable, nothing was changed.
 	as(&service.LeaderTransferTimeoutError{}, Unavailable),
+	// TransferLeadership named a shard this node does not hold, or a replica
+	// the shard never had.
+	as(&service.UnknownShardError{}, NotFound),
+	as(&service.UnknownReplicaError{}, NotFound),
+	// The named replica is a member but cannot lead: an observer, a witness,
+	// or removed. The caller picks a voter.
+	as(&service.LeaderTransferTargetError{}, FailedPrecondition),
+	as(&service.LeaderTransferUnsupportedError{}, Unimplemented),
 	as(&service.InvalidRaftTopologyError{}, InvalidArgument),
 	// Distributed topology requested and placement is not wired: fail closed
 	// rather than collapse to one local replica.

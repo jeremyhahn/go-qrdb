@@ -305,7 +305,7 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = catalog.CreatePool(ctx, volume.CreatePoolRequest{Name: efPool})
+		_, err = catalog.CreatePool(ctx, volume.CreatePoolRequest{Name: efPool, CapacityBytes: fixtureVolumePoolCapacityBytes})
 		var exists *volume.PoolAlreadyExistsError
 		if errors.As(err, &exists) {
 			return nil

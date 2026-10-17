@@ -204,11 +204,13 @@ func TestComposeRaftTenantCluster_WithoutAPieceTheKeyPlaneIsOff(t *testing.T) {
 			c.Decrypter = newDeviceDecrypter(t, nil)
 		},
 		"a decrypter of another KEM": func(c *lifecycle.RaftTenantClusterConfig) {
-			key, err := ecdh.X25519().GenerateKey(rand.Reader)
+			// P-384: another KEM than the plane's P-256 that FIPS 140-3
+			// mode also serves (it refuses X25519 key generation).
+			key, err := ecdh.P384().GenerateKey(rand.Reader)
 			if err != nil {
 				t.Fatal(err)
 			}
-			dec, err := keydelivery.NewDecrypter(keydelivery.KEMX25519, &deviceExchanger{key: key}, nil)
+			dec, err := keydelivery.NewDecrypter(keydelivery.KEMP384, &deviceExchanger{key: key}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

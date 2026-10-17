@@ -43,6 +43,7 @@ func TestClusterAdminScope(t *testing.T) {
 		{"qrdb_add_member", map[string]any{"shard_id": 1, "replica_id": 9, "raft_addr": "127.0.0.1:1"}},
 		{"qrdb_remove_member", map[string]any{"shard_id": 1, "replica_id": 2}},
 		{"qrdb_promote_member", map[string]any{"shard_id": 1, "replica_id": 2}},
+		{"qrdb_transfer_leadership", map[string]any{"shard_id": 1, "replica_id": 2}},
 		{"qrdb_snapshot", map[string]any{"shard_id": 1}},
 		{"qrdb_drain", nil},
 		// The node keyspace's compaction policy: the platform's, and its

@@ -95,6 +95,19 @@ func dialQUIC(t *testing.T, addr string, clientCfg *tls.Config, n int) []*quicgo
 	return conns
 }
 
+// loopbackPeerAddr returns the address the server sees for client
+// connection c. A dialer binds the unspecified address, so c's local
+// address is [::]:port while the server observes the loopback source
+// 127.0.0.1:port; only the port identifies the connection.
+func loopbackPeerAddr(t *testing.T, c *quicgo.Conn) string {
+	t.Helper()
+	local, ok := c.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("client local address is %T, want *net.UDPAddr", c.LocalAddr())
+	}
+	return (&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: local.Port}).String()
+}
+
 func TestQUICListenerRefusesOverLimitFromSamePeer(t *testing.T) {
 	serverCfg, clientCfg := generateQUICTestTLS(t)
 
@@ -131,24 +144,41 @@ func TestQUICListenerRefusesOverLimitFromSamePeer(t *testing.T) {
 	}()
 
 	// Exactly two of the three connections from this peer should be
-	// admitted; the third's context ends with the over-cap error code,
-	// since the server side refuses it at Accept.
-	admitted := 0
+	// admitted and the remaining one refused at Accept with the over-cap
+	// error code. Which one is refused is NOT fixed by dial order: the
+	// server queues a connection for Accept when ITS side of the handshake
+	// completes, which can trail the client's DialAddr returning, so the
+	// first connection dialed can be the last one the listener sees. Under
+	// GODEBUG=fips140=only the module's lazy self-tests and pairwise
+	// consistency checks slow the early handshakes enough to reorder them
+	// routinely (go-qrdb#608), and a test that assumed conns[2] failed
+	// there. The refused connection is therefore identified by elimination
+	// against the admitted ones' addresses.
+	admittedAddrs := make(map[string]bool, 2)
 	timeout := time.After(3 * time.Second)
-	for admitted < 2 {
+	for len(admittedAddrs) < 2 {
 		select {
-		case <-accepted:
-			admitted++
+		case c := <-accepted:
+			admittedAddrs[c.RemoteAddr().String()] = true
 		case <-timeout:
-			t.Fatalf("timed out waiting for admitted connections, got %d", admitted)
+			t.Fatalf("timed out waiting for admitted connections, got %d", len(admittedAddrs))
 		}
 	}
 
-	third := conns[2]
+	var refused []*quicgo.Conn
+	for _, c := range conns {
+		if !admittedAddrs[loopbackPeerAddr(t, c)] {
+			refused = append(refused, c)
+		}
+	}
+	if len(refused) != 1 {
+		t.Fatalf("expected exactly one connection outside the admitted set, got %d", len(refused))
+	}
+	third := refused[0]
 	select {
 	case <-third.Context().Done():
 	case <-time.After(3 * time.Second):
-		t.Fatal("third connection was not refused within timeout")
+		t.Fatal("the connection over the cap was not refused within timeout")
 	}
 
 	var appErr *quicgo.ApplicationError

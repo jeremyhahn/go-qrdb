@@ -77,7 +77,22 @@ type RequestError struct {
 	// QUIC's error-frame RetryInfo, MCP's retry_after_seconds, and, in
 	// process, the refusal's own delay.
 	RetryAfter time.Duration
+
+	// Reason and Metadata are the server's structured refusal, when it sent
+	// one (pkg/replicaforward.Refusal, domain RefusalDomain): a stable code
+	// such as "LEADER_TRANSFER_TIMEOUT" and the fields that rebuild the typed
+	// error, so a caller never parses the message. Every wire transport fills
+	// them from what the server sent: REST's code/metadata body fields, gRPC's
+	// and the Unix socket's google.rpc.ErrorInfo detail, QUIC's error-frame
+	// info and MCP's envelope reason/metadata. Both are empty otherwise.
+	Reason   string
+	Metadata map[string]string
 }
+
+// RefusalDomain is the google.rpc.ErrorInfo domain of qrdb's structured
+// refusals (pkg/replicaforward.ErrorDomain). A detail in any other domain is
+// not one, and does not fill RequestError.Reason.
+const RefusalDomain = "qrdb.v1"
 
 // Error returns a human-readable description.
 func (e *RequestError) Error() string {

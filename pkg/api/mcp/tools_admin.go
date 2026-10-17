@@ -62,6 +62,11 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Handler: handlePromoteMember(adminSvc),
 		},
 		{
+			Tool:    toolTransferLeadership(),
+			Perm:    permission.AdminRemoveMember,
+			Handler: handleTransferLeadership(adminSvc),
+		},
+		{
 			Tool:    toolSnapshot(),
 			Perm:    permission.AdminSnapshot,
 			Handler: handleSnapshot(adminSvc),
@@ -342,6 +347,48 @@ func handlePromoteMember(adminSvc service.AdminServicer) mcpserver.ToolHandlerFu
 
 		if err := promoter.PromoteMember(ctx, shardID, replicaID); err != nil {
 			return nil, &ToolError{Tool: "qrdb_promote_member", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolTransferLeadership defines the qrdb_transfer_leadership tool schema.
+func toolTransferLeadership() mcp.Tool {
+	return mcp.NewTool("qrdb_transfer_leadership",
+		mcp.WithDescription("Hand a shard's leadership to a named voter and return once it leads."),
+		mcp.WithNumber("shard_id",
+			mcp.Required(),
+			mcp.Description("The shard ID whose leadership moves."),
+		),
+		mcp.WithNumber("replica_id",
+			mcp.Required(),
+			mcp.Description("The voter's replica ID that is to lead the shard."),
+		),
+	)
+}
+
+// handleTransferLeadership returns a tool handler that delegates to
+// adminSvc's LeaderTransferrer capability (see service.LeaderTransferrer).
+func handleTransferLeadership(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		transferrer, ok := adminSvc.(service.LeaderTransferrer)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_transfer_leadership", Err: &service.LeaderTransferUnsupportedError{}}
+		}
+
+		shardID := mcp.ParseUInt64(req, "shard_id", 0)
+		replicaID := mcp.ParseUInt64(req, "replica_id", 0)
+
+		if shardID == 0 {
+			return mcp.NewToolResultError("shard_id is required"), nil
+		}
+		if replicaID == 0 {
+			return mcp.NewToolResultError("replica_id is required"), nil
+		}
+
+		if err := transferrer.TransferLeadership(ctx, shardID, replicaID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_transfer_leadership", Err: err}
 		}
 
 		return mcp.NewToolResultText("ok"), nil

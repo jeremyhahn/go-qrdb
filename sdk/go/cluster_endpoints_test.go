@@ -720,6 +720,62 @@ func TestClusterClient_PromoteReplica_ErrorPropagates(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ClusterClient.TransferLeadership
+// ---------------------------------------------------------------------------
+
+// fakeLeaderTransferTransport adds transport.LeaderTransferrer to
+// fakeClusterTransport, which lacks it.
+type fakeLeaderTransferTransport struct {
+	*fakeClusterTransport
+	transfer func(ctx context.Context, shardID, replicaID uint64) error
+}
+
+func (f *fakeLeaderTransferTransport) TransferLeadership(ctx context.Context, shardID, replicaID uint64) error {
+	return f.transfer(ctx, shardID, replicaID)
+}
+
+var _ transport.LeaderTransferrer = (*fakeLeaderTransferTransport)(nil)
+
+func TestClusterClient_TransferLeadership_Delegates(t *testing.T) {
+	var gotShard, gotReplica uint64
+	ft := &fakeLeaderTransferTransport{
+		fakeClusterTransport: &fakeClusterTransport{},
+		transfer: func(_ context.Context, shardID, replicaID uint64) error {
+			gotShard, gotReplica = shardID, replicaID
+			return nil
+		},
+	}
+	client, err := sdk.NewClient(ft)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := client.Cluster().TransferLeadership(context.Background(), 3, 7); err != nil {
+		t.Fatalf("TransferLeadership: %v", err)
+	}
+	if gotShard != 3 || gotReplica != 7 {
+		t.Fatalf("transfer got (%d, %d), want (3, 7)", gotShard, gotReplica)
+	}
+
+	timeout := &sdk.LeaderTransferTimeoutError{ShardID: 3, ToReplicaID: 7}
+	ft.transfer = func(context.Context, uint64, uint64) error { return timeout }
+	var lte *sdk.LeaderTransferTimeoutError
+	if err := client.Cluster().TransferLeadership(context.Background(), 3, 7); !errors.As(err, &lte) || lte != timeout {
+		t.Fatalf("got %T (%v), want the transport's *LeaderTransferTimeoutError", err, err)
+	}
+}
+
+func TestClusterClient_TransferLeadership_NotImplemented(t *testing.T) {
+	cc := newFakeClusterClient(t, &fakeClusterTransport{})
+
+	var nie *transport.NotImplementedError
+	if err := cc.TransferLeadership(context.Background(), 3, 7); !errors.As(err, &nie) || nie.Method != "TransferLeadership" {
+		t.Fatalf("got %T (%v), want *transport.NotImplementedError{TransferLeadership}", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ClusterClient.WithPollInterval
 // ---------------------------------------------------------------------------
 

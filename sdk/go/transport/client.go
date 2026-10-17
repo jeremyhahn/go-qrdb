@@ -240,6 +240,28 @@ type ObserverMemberAdder interface {
 	AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 }
 
+// LeaderTransferrer hands a shard's leadership to a named replica. It is a
+// distinct interface from AdminClient, as ObserverMemberAdder is: a caller
+// type-asserts for it (client.Admin().(transport.LeaderTransferrer)). Every
+// transport implements it. Over the wire the typed errors below arrive as a
+// *RequestError whose Reason names them (LEADER_TRANSFER_TIMEOUT for the
+// timeout); qrdb.ClusterClient.TransferLeadership rebuilds the typed value.
+//
+// permission.AdminRemoveMember (ScopeCross) gates it -- the permission
+// RemoveMember already requires for the leadership move it makes before
+// removing a leader.
+type LeaderTransferrer interface {
+	// TransferLeadership asks the node, which must lead shardID, to hand
+	// leadership to targetReplicaID, a current voter, and returns once that
+	// replica leads. It fails with *service.LeaderTransferTimeoutError when
+	// the target has not taken over within the bound (a stopped target
+	// never does), *service.UnknownShardError or *service.UnknownReplicaError
+	// for an unknown shard or replica, *service.LeaderTransferTargetError
+	// for an observer, witness or removed target, and *NotLeaderError, as
+	// the other membership operations do, when the node does not lead.
+	TransferLeadership(ctx context.Context, shardID, targetReplicaID uint64) error
+}
+
 // ReplicaStateHasher reports the applied index and SHA-256 state digest of
 // every replica the answering node runs, isolated tenants' included, so a
 // caller can compare replicas by asking every node: two replicas of a shard

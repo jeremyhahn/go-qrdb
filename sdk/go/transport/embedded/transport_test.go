@@ -208,6 +208,8 @@ type mockAdminService struct {
 	removeCalled    bool
 	promoteCalled   bool
 	mintJoinTokenFn func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
+	// transferLeadershipFn answers TransferLeadership; nil succeeds.
+	transferLeadershipFn func(ctx context.Context, shardID, targetReplicaID uint64) error
 }
 
 // MintJoinToken implements service.ClusterJoinTokenMinter. A
@@ -268,6 +270,16 @@ func (m *mockAdminService) PromoteMember(_ context.Context, _, _ uint64) error {
 	m.promoteCalled = true
 	return nil
 }
+
+// TransferLeadership implements service.LeaderTransferrer.
+func (m *mockAdminService) TransferLeadership(ctx context.Context, shardID, targetReplicaID uint64) error {
+	if m.transferLeadershipFn != nil {
+		return m.transferLeadershipFn(ctx, shardID, targetReplicaID)
+	}
+	return nil
+}
+
+var _ service.LeaderTransferrer = (*mockAdminService)(nil)
 
 func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
 	m.snapshotCalled = true
@@ -747,6 +759,65 @@ func TestPromoteMember_AfterClose(t *testing.T) {
 	err := tr.PromoteMember(context.Background(), 0, 2)
 	if err == nil {
 		t.Fatal("expected error after close")
+	}
+}
+
+func TestTransferLeadership_Success(t *testing.T) {
+	var gotShard, gotTarget uint64
+	adminSvc := &mockAdminService{transferLeadershipFn: func(_ context.Context, shardID, target uint64) error {
+		gotShard, gotTarget = shardID, target
+		return nil
+	}}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	if err := tr.TransferLeadership(context.Background(), 4, 2); err != nil {
+		t.Fatalf("TransferLeadership failed: %v", err)
+	}
+	if gotShard != 4 || gotTarget != 2 {
+		t.Fatalf("service got (%d, %d), want (4, 2)", gotShard, gotTarget)
+	}
+}
+
+func TestTransferLeadership_KeepsTypedErrors(t *testing.T) {
+	timeout := &service.LeaderTransferTimeoutError{ShardID: 4, FromReplicaID: 1, ToReplicaID: 3, Timeout: time.Second}
+	adminSvc := &mockAdminService{transferLeadershipFn: func(context.Context, uint64, uint64) error {
+		return timeout
+	}}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	err := tr.TransferLeadership(context.Background(), 4, 3)
+	var lte *service.LeaderTransferTimeoutError
+	if !errors.As(err, &lte) || lte != timeout {
+		t.Fatalf("got %T (%v), want the service's *LeaderTransferTimeoutError", err, err)
+	}
+
+	adminSvc.transferLeadershipFn = func(context.Context, uint64, uint64) error {
+		return &service.NotLeaderError{ShardID: 4, LeaderID: 2}
+	}
+	var nle *transport.NotLeaderError
+	if err := tr.TransferLeadership(context.Background(), 4, 3); !errors.As(err, &nle) || nle.LeaderID != 2 {
+		t.Fatalf("got %T (%v), want *transport.NotLeaderError naming replica 2", err, err)
+	}
+}
+
+func TestTransferLeadership_AfterClose(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	_ = tr.Close()
+
+	var ce *transport.ClosedError
+	if err := tr.TransferLeadership(context.Background(), 4, 2); !errors.As(err, &ce) {
+		t.Fatalf("got %T (%v), want *transport.ClosedError", err, err)
+	}
+}
+
+func TestTransferLeadership_Unsupported(t *testing.T) {
+	// Embedding the interface hides every method AdminServicer does not
+	// declare, TransferLeadership among them.
+	tr, _ := New(newMockKVService(), struct{ service.AdminServicer }{&mockAdminService{}})
+
+	var lue *service.LeaderTransferUnsupportedError
+	if err := tr.TransferLeadership(context.Background(), 4, 2); !errors.As(err, &lue) {
+		t.Fatalf("got %T (%v), want *service.LeaderTransferUnsupportedError", err, err)
 	}
 }
 

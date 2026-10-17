@@ -653,7 +653,7 @@ func writeNodeConfigYAML(t *testing.T, peerAdminURLs map[string]string) string {
 	return writeSealYAML(t, yaml)
 }
 
-func startFoundingSelfIssuedCANode(t *testing.T, raftPort, adminPort, grpcPort, noisePort, joinPort int, peers, memberIDs string, peerAdminURLs map[string]string) *clusterCAAnchorNode {
+func startFoundingSelfIssuedCANode(t *testing.T, raftPort, adminPort, grpcPort, noisePort, joinPort int, peers, memberIDs string, peerAdminURLs map[string]string, tee ...io.Writer) *clusterCAAnchorNode {
 	t.Helper()
 	bin := buildBinary(t)
 	dataDir := t.TempDir()
@@ -682,7 +682,7 @@ func startFoundingSelfIssuedCANode(t *testing.T, raftPort, adminPort, grpcPort, 
 		"--cluster-join-listen-port", fmt.Sprintf("%d", joinPort),
 		"--cluster-join-listen-host", "127.0.0.1",
 	}
-	cmd := startNode(t, bin, args, "[node1] ")
+	cmd := startNode(t, bin, args, "[node1] ", tee...)
 
 	certPath := filepath.Join(dataDir, "node-cert.pem")
 	caPath := filepath.Join(dataDir, "ca.pem")
@@ -789,6 +789,7 @@ func startJoiningSelfIssuedCANode(
 	anchor *clusterCAAnchorNode,
 	token string,
 	peerAdminURLs map[string]string,
+	transport ...string,
 ) *clusterCAAnchorNode {
 	t.Helper()
 	bin := buildBinary(t)
@@ -796,6 +797,17 @@ func startJoiningSelfIssuedCANode(
 	cfgPath := writeNodeConfigYAML(t, peerAdminURLs)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 	tokenFile := writeTokenFile(t, token)
+
+	// The default join transport is SPKI-pinned HTTPS against anchor's admin
+	// port. A caller exercising another transport (the Noise_NK or P-256
+	// listeners) passes its flags in transport, which replace these.
+	if len(transport) == 0 {
+		transport = []string{
+			"--bootstrap-spki-pin", anchor.spkiPin,
+			"--bootstrap-addr", fmt.Sprintf("127.0.0.1:%d", anchor.adminPort),
+			"--bootstrap-join-url", fmt.Sprintf("https://127.0.0.1:%d", anchor.adminPort),
+		}
+	}
 
 	args := []string{
 		"start",
@@ -819,11 +831,9 @@ func startJoiningSelfIssuedCANode(
 		"--bootstrap-noise-host", "127.0.0.1",
 		"--cluster-join-listen-port", fmt.Sprintf("%d", joinPort),
 		"--cluster-join-listen-host", "127.0.0.1",
-		"--bootstrap-spki-pin", anchor.spkiPin,
-		"--bootstrap-addr", fmt.Sprintf("127.0.0.1:%d", anchor.adminPort),
-		"--bootstrap-join-url", fmt.Sprintf("https://127.0.0.1:%d", anchor.adminPort),
 		"--bootstrap-join-token-file", tokenFile,
 	}
+	args = append(args, transport...)
 	cmd := startNode(t, bin, args, fmt.Sprintf("[node%d] ", replicaID))
 
 	certPath := filepath.Join(dataDir, "node-cert.pem")

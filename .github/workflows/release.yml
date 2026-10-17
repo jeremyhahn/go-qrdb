@@ -45,14 +45,17 @@
 #      the re-run, is the FUNCTIONAL signal: a checkout that resolved the
 #      wrong object, a toolchain mismatch on this runner, a race the first
 #      run got lucky on.
-#   3. publish -- needs both of the above green, then lifts the matching
-#      `## [X.Y.Z]` section out of CHANGELOG.md and publishes it as this
-#      tag's release notes, through the forge's own releases API
-#      (`${{ github.api_url }}`, which resolves to the right base on Gitea
-#      and on GitHub without this file knowing which one it is running on).
+#   3. publish -- needs both of the above green, then builds the release
+#      binaries (`make release-artifacts`: qrdbd and the headless qrdb CLI
+#      for linux/amd64 and linux/arm64, each plain and FIPS, plus
+#      SHA256SUMS), lifts the matching `## [X.Y.Z]` section out of
+#      CHANGELOG.md and publishes it as this tag's release notes, through the
+#      forge's own releases API (`${{ github.api_url }}`, which resolves to
+#      the right base on Gitea and on GitHub without this file knowing which
+#      one it is running on), and attaches the binaries to that release.
 #
 # NOT A PUBLICATION STEP. Nothing here pushes anywhere; it only reads the tag
-# that already exists and writes release notes for it. Publishing the tag set
+# that already exists and writes release notes and binaries for it. Publishing the tag set
 # itself to github.com is version-control.md §5a's separate, owner-approved
 # step, and when that push lands, this same workflow validates and annotates
 # the mirrored tag there too -- there is no bot secret guarding it off that
@@ -187,7 +190,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      # No persisted credentials: this job's token can write releases, and
+      # the build below has no use for it.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # qrdbd and the headless qrdb CLI for linux/amd64 and linux/arm64, each
+      # plain and FIPS, plus SHA256SUMS -- built BEFORE the release exists, so
+      # a failed build leaves no release with missing binaries behind it.
+      - name: Build the release artifacts
+        run: make release-artifacts
 
       # The section between this version's `## [X.Y.Z]` heading and the next
       # one, exclusive of both -- `validate` already proved this heading
@@ -228,4 +245,31 @@ jobs:
             -H "Authorization: Bearer ${FORGE_TOKEN}" \
             -H "Content-Type: application/json" \
             "${{ github.api_url }}/repos/${{ github.repository }}/releases" \
-            -d @"${RUNNER_TEMP}/release-payload.json"
+            -d @"${RUNNER_TEMP}/release-payload.json" \
+            -o "${RUNNER_TEMP}/release.json"
+
+      # Every file make release-artifacts wrote, SHA256SUMS included. The
+      # release's own upload_url is the asset endpoint on both forges (GitHub
+      # serves it from a different host than its API), so it is read from
+      # the response rather than built from github.api_url; its URI-template
+      # suffix ({?name,label}) is dropped and the name passed as a query.
+      # Gitea returns upload_url from 1.21 on, as
+      # <api>/repos/{owner}/{repo}/releases/{id}/assets with no template, so
+      # the strip leaves it unchanged. The body is the raw file as
+      # application/octet-stream, which GitHub requires and Gitea 1.22 or
+      # later accepts beside multipart/form-data, naming the asset from the
+      # ?name= query; the forge runs Gitea 1.27 (ci.yml).
+      - name: Attach the release artifacts
+        env:
+          FORGE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          UPLOAD_URL="$(jq -er '.upload_url' "${RUNNER_TEMP}/release.json")"
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
+          for f in dist/*; do
+            curl -fsS -X POST \
+              -H "Authorization: Bearer ${FORGE_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"${f}" \
+              "${UPLOAD_URL}?name=$(basename "${f}")" > /dev/null
+          done

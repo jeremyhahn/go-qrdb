@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 const (
@@ -28,6 +31,12 @@ const (
 	// margin leaves that proposal the same loaded-runner headroom as the
 	// 7.3s grant-to-put round trip measured above.
 	leaseExpiryMargin = 10 * time.Second
+
+	// leaseExpiryRounds caps how many times awaitLeaseExpiryDelete finds the
+	// lease still live and extends its wait to the lease's remaining TTL. One
+	// leader change or seal hold costs one round; more rounds than this is a
+	// lease the lessor is not expiring.
+	leaseExpiryRounds = 3
 )
 
 // TestCLIMultiProtocolLeaseLifecycle tests the full lease lifecycle
@@ -258,16 +267,84 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 			}
 
 			// Do not keep-alive: the lease expires and the lessor deletes the
-			// attached key, which the watch reports. The wait is bounded by the
-			// grant, the TTL and the expiry margin, not by the watch's start.
-			want := "DELETE " + key
-			if output, ok := watch.await(want, grantStart.Add(leaseExpiryTTL+leaseExpiryMargin)); !ok {
-				t.Fatalf("[%s] watch output does not contain %q within %s of the grant; output: %q",
-					proto, want, leaseExpiryTTL+leaseExpiryMargin, output)
-			}
+			// attached key, which the watch reports. The first wait is bounded
+			// by the grant, the TTL and the expiry margin, not by the watch's
+			// start; a lease the cluster legitimately kept alive past it is
+			// waited on by its own remaining TTL.
+			awaitLeaseExpiryDelete(t, cfg, proto, watch, leaseID, "DELETE "+key,
+				grantStart.Add(leaseExpiryTTL+leaseExpiryMargin))
 
 			t.Logf("[%s] lease-expiry delete observed by watch for prefix: %s", proto, prefix)
 		})
+	}
+}
+
+// awaitLeaseExpiryDelete waits for the watch to print want, the DELETE of a
+// key attached to the never-renewed lease leaseID, judging first at until.
+//
+// A fixed deadline from the grant is not the lessor's bound. A leader change
+// floors every lease's expiry at the promotion plus its TTL plus
+// lease.DefaultFailoverGrace (Lessor.Promote), and a seal hold renews every
+// lease to a full TTL (Lessor.renewAfterHold), so a correct cluster can expire
+// the lease after until. While the lease is live the wait is therefore judged
+// again at its own remaining TTL, plus one second for RemainingTTL's
+// truncation to whole seconds, plus the margin. A remaining TTL above the TTL
+// plus the grace is one neither path produces, and fails. Once the lease is
+// not found its expiry has applied and deleted the key, so a DELETE the watch
+// has not printed within one more margin is a missed watch event.
+func awaitLeaseExpiryDelete(t *testing.T, cfg *TestConfig, proto ProtocolType, watch *cliWatch, leaseID, want string, until time.Time) {
+	t.Helper()
+
+	id, err := strconv.ParseInt(leaseID, 10, 64)
+	if err != nil {
+		t.Fatalf("[%s] lease ID %q is not an integer: %v", proto, leaseID, err)
+	}
+	notFound := (&transport.LeaseNotFoundError{LeaseID: id}).Error()
+	bound := leaseExpiryTTL + lease.DefaultFailoverGrace
+
+	for round := 1; ; round++ {
+		output, ok := watch.await(want, until)
+		if ok {
+			return
+		}
+		if round > leaseExpiryRounds {
+			t.Fatalf("[%s] watch output does not contain %q: lease %s still live after %d waits on its remaining TTL; output: %q",
+				proto, want, leaseID, leaseExpiryRounds, output)
+		}
+
+		stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "ttl", leaseID)
+		if err != nil {
+			if strings.TrimSpace(stderr) != notFound {
+				t.Fatalf("[%s] lease ttl %s failed: %v\nstdout: %s\nstderr: %s", proto, leaseID, err, stdout, stderr)
+			}
+			if output, ok := watch.await(want, time.Now().Add(leaseExpiryMargin)); !ok {
+				t.Fatalf("[%s] lease %s expired, deleting its key, but the watch did not report %q within %s; output: %q",
+					proto, leaseID, want, leaseExpiryMargin, output)
+			}
+			return
+		}
+
+		var remaining time.Duration
+		parsed := false
+		for _, line := range strings.Split(stdout, "\n") {
+			if v, found := strings.CutPrefix(line, "RemainingTTL:"); found {
+				secs, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+				if err != nil {
+					t.Fatalf("[%s] lease ttl %s: RemainingTTL %q is not an integer: %v", proto, leaseID, v, err)
+				}
+				remaining, parsed = time.Duration(secs)*time.Second, true
+				break
+			}
+		}
+		if !parsed {
+			t.Fatalf("[%s] lease ttl %s printed no RemainingTTL: %s", proto, leaseID, stdout)
+		}
+		if remaining > bound {
+			t.Fatalf("[%s] lease %s has %s remaining, beyond its %s TTL plus the %s failover grace",
+				proto, leaseID, remaining, leaseExpiryTTL, lease.DefaultFailoverGrace)
+		}
+		t.Logf("[%s] lease %s still live with %s remaining (round %d); waiting on it", proto, leaseID, remaining, round)
+		until = time.Now().Add(remaining + time.Second + leaseExpiryMargin)
 	}
 }
 

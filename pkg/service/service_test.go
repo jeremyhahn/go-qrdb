@@ -46,28 +46,29 @@ type mockHost struct {
 	addedObserverIdentities []string
 	addedObserverReplicaIDs []uint64
 
-	idFn                  func() string
-	raftAddressFn         func() string
-	shardCountFn          func() int
-	getNodeHostInfoFn     func(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
-	healthCheckFn         func() *quicraft.HealthStatus
-	drainFn               func() error
-	isDrainingFn          func() bool
-	syncProposeFn         func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error)
-	syncReadFn            func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
-	requestAddNodeFn      func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
-	requestAddObserverFn  func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
-	requestRemoveNodeFn   func(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error)
-	requestSnapshotFn     func(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
-	proposeWithModeFn     func(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error)
-	staleReadFn           func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
-	readWithConsistencyFn func(ctx context.Context, shardID uint64, query interface{}, opts consistency.ReadOptions) (interface{}, error)
-	followerReadFn        func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
-	getLeaderIDFn         func(shardID uint64) (uint64, bool, error)
-	getShardRaftStateFn   func(shardID uint64) (uint64, uint64, error)
-	startShardFn          func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error
-	stopShardFn           func(shardID uint64) error
-	closeFn               func() error
+	idFn                    func() string
+	raftAddressFn           func() string
+	shardCountFn            func() int
+	getNodeHostInfoFn       func(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
+	healthCheckFn           func() *quicraft.HealthStatus
+	drainFn                 func() error
+	isDrainingFn            func() bool
+	syncProposeFn           func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error)
+	syncReadFn              func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	requestAddNodeFn        func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
+	requestAddObserverFn    func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
+	requestRemoveNodeFn     func(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error)
+	requestSnapshotFn       func(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
+	requestLeaderTransferFn func(ctx context.Context, shardID, targetReplicaID uint64) error
+	proposeWithModeFn       func(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error)
+	staleReadFn             func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	readWithConsistencyFn   func(ctx context.Context, shardID uint64, query interface{}, opts consistency.ReadOptions) (interface{}, error)
+	followerReadFn          func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	getLeaderIDFn           func(shardID uint64) (uint64, bool, error)
+	getShardRaftStateFn     func(shardID uint64) (uint64, uint64, error)
+	startShardFn            func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error
+	stopShardFn             func(shardID uint64) error
+	closeFn                 func() error
 }
 
 func (m *mockHost) ID() string {
@@ -172,6 +173,13 @@ func (m *mockHost) RequestRemoveNode(ctx context.Context, shardID, replicaID uin
 		return m.requestRemoveNodeFn(ctx, shardID, replicaID)
 	}
 	return nil, nil
+}
+
+func (m *mockHost) RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error {
+	if m.requestLeaderTransferFn != nil {
+		return m.requestLeaderTransferFn(ctx, shardID, targetReplicaID)
+	}
+	return nil
 }
 
 func (m *mockHost) RequestSnapshot(ctx context.Context, shardID uint64) (*quicraft.RequestState, error) {

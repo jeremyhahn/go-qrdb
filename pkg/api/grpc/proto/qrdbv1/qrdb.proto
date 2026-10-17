@@ -469,6 +469,15 @@ service QRDBService {
         option (qrdb.v1.permission) = "admin:add_member";
     }
 
+    // TransferLeadership hands a shard's leadership to a named voter and
+    // returns once it leads. A target that has not taken over within the
+    // server's bound fails with UNAVAILABLE (LeaderTransferTimeoutError).
+    // It carries the permission RemoveMember needs for the leadership move
+    // it makes before removing a leader.
+    rpc TransferLeadership(TransferLeadershipRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:remove_member";
+    }
+
     // RequestSnapshot triggers a snapshot for the given shard.
     rpc RequestSnapshot(RequestSnapshotMessage) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "admin:snapshot";
@@ -2310,6 +2319,13 @@ message RemoveMemberRequest {
 // PromoteMemberRequest is the request payload for PromoteMember.
 message PromoteMemberRequest {
     uint64 shard_id = 1;
+    uint64 replica_id = 2;
+}
+
+// TransferLeadershipRequest is the request payload for TransferLeadership.
+message TransferLeadershipRequest {
+    uint64 shard_id = 1;
+    // replica_id is the voter that is to lead shard_id.
     uint64 replica_id = 2;
 }
 

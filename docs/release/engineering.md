@@ -63,7 +63,8 @@ limitations under the License.
   ci.yml step — see architecture.md for why the rest is skipped.
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
-  the pinned `ACTIONLINT_VERSION` (Makefile, mirrored in ci.yml's env). The
+  the pinned `ACTIONLINT_VERSION` (`scripts/tool-pins.sh`, mirrored in ci.yml's
+  env). The
   tool is baked into the runner and lane images and never installed over the
   network; a missing or mismatched actionlint fails the gate (#636).
 - **`publish` needs both `validate` and `gate`**, and addresses the forge's
@@ -102,7 +103,7 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs only `make integration-test-${{ matrix.feature }}`; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly three steps, the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` and `IT_IMAGE` that start `qrdb-ci-` and carry the run, the attempt and the feature; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
@@ -113,6 +114,56 @@ other whole-tree test/buildgates gates this file already tracks.
 in isolation" first; this table is the engineering-level index of where that
 tooling lives, kept beside this folder's other test/buildgates entries rather
 than duplicated.
+
+### The CI image
+
+CI's stages run in one image, built from `build/docker/devcontainer/Dockerfile`
+at the commit under test (handbook `ci-standard.md` §2, `devcontainer.md` §1).
+`.devcontainer/` is a different image, the developer's VS Code container and
+the Docker `test/integration/api` stack, and runs none of these stages.
+
+| Stage | Holds | Runs |
+|---|---|---|
+| `base` | the Go toolchain by digest, gcc for `-race`, a non-root user, every module's verified cache; `GOPROXY=off` | nothing itself |
+| `toolchain` | base plus every tool the Makefile calls, at the versions in `scripts/tool-pins.sh` | `make build-server build-cli-headless`, `make release-cross PLATFORM=linux/arm64`, `make test`, `make security`, `make deps-check` |
+| `integration` | base plus the source, its suites compiled at build time | `make integration-test IT_FEATURE=<feature>`, hardened by `compose.yaml` |
+
+`scripts/tool-pins.sh` is the one pin file: `make docker-build` passes its
+values to the Dockerfile as build arguments, the Makefile includes it, and
+`make check-tool-versions` holds ci.yml's env and `.devcontainer/`'s ARG
+defaults to it. Module credentials reach the build only as the `gomodauth`
+BuildKit secret (`$(stage-gomodauth)`), from the `GIT_CONFIG_*` variables the
+runner already puts in the job environment; no layer and no command line holds
+them.
+
+The `image` job, in the PR tier, builds both stages (`make docker-build`;
+`make -s toolchain-image` prints the toolchain tag), then runs each stage in a
+toolchain container through `scripts/in-toolchain-image.sh`. A runner reaches
+its Docker daemon through a socket, so the script copies the checkout into the
+container rather than bind-mounting it. Its files sit where a host's do:
+`/tmp`, which holds `HOME`, go's `$WORK` and every `t.TempDir`, is on the
+container's own layer, not a size-capped tmpfs that a full `make test` fills,
+and `/dev/shm` is 2 GiB, not Docker's 64 MiB. Build and test run with no
+network: the container joins the network namespace of a holder container that
+has only loopback, which the holder (granted `NET_ADMIN` and nothing else)
+marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
+discovery tests join their group as they do on a host and nothing leaves the
+namespace. `make security` and `make deps-check` run on the bridge network, because
+govulncheck reads the vulnerability database and deps-check asks the module
+proxy. Last, `trivy image` scans the integration image, saved to
+`it-image.tar`, and fails on a HIGH or CRITICAL finding; the job removes the
+tarball and the image under `always()`. Its secret scanner skips the image's
+Go module cache, `/gomodcache`, whose third-party releases carry their own doc
+examples and test-fixture keys (`build/trivy/image-secret.yaml`); the
+vulnerability scanner still covers every module in it.
+
+`make deps-check` (`scripts/deps-check.sh`) is the latest-version check
+(`ci-standard.md` §1, `devops.md` §9): every direct requirement of every
+tracked module is at its latest release, or its `go.mod` require line carries a
+`//` comment saying why it is held. A module whose lookup fails, offline or
+without credentials, fails the check: the question was not answered.
+`scripts/deps-check_test.sh` (`make test-deps-check`, in the Lint job) proves
+each branch with a fake `go`.
 
 ### Per-run integration images
 
@@ -145,22 +196,34 @@ one machine still need distinct `INT_PROJECT` values.
 CI runs the self-spawned integration suites (`test/integration` and
 `test/integration/auth`, no Docker) as `integration-features` in
 `.github/workflows/ci.yml`: one matrix leg per feature, each running
-`make integration-test-<feature>`, the same target a developer or lane runs
-for one feature. The legs run in parallel, each under its own
+`make integration-test IT_FEATURE=<feature>`. That target builds the
+integration image (`build/docker/devcontainer/Dockerfile`, stage
+`integration`: base plus the source) and runs the feature's selection, the
+same one `make integration-test-<feature>` runs on a host, inside the hardened
+`integration` service of `build/docker/devcontainer/compose.yaml`: read-only
+root filesystem, every capability dropped, `no-new-privileges`, `/tmp` (also
+`HOME`) an anonymous volume on the daemon's disk, removed with the container,
+no network, and `GOMAXPROCS=8`. The legs run in parallel, each under its own
 `timeout-minutes: 45`; the 45-minute limit is not raised. A feature whose
 `features.mk` entry is empty is not a leg: it would run zero tests and pass.
 `fail-fast` is `false`, so one red leg does not cancel the others.
 
-Each leg ends with a teardown step under `if: always()`,
-`make integration-down-<feature>`, which runs on a pass, a failure or a
-cancellation. A leg's compose project and image tags carry the run, the attempt
-and the feature (the Makefile's `INT_GOAL` and `INT_PROJECT`), so no
-later run would ever remove a cancelled leg's leftovers. The target derives the
-same names `make integration-test-<feature>` does and hands them to
-`make integration-down`; the workflow repeats none of the naming. A leg's
-selection starts no compose stack today, and removing names nobody created is
-not an error. `test/buildgates/integration_job_names_test.go` holds the two
-goals to one set of names, and `feature_jobs_gate_test.go` requires the step.
+Each leg names its own compose project and image, `IT_PROJECT` and `IT_IMAGE`,
+from the run, the attempt and the feature, under the `qrdb-ci-` prefix, so legs
+running at once on one runner never share a stack or a tag. It starts by
+running `scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
+projects and images older than the longest job can live (about three hours),
+and so never touches a live leg's; it ends with a teardown step under
+`if: always()`, `make docker-down-it`, which removes that leg's project and
+image on a pass, a failure or a cancellation. Removing names nobody created is
+not an error. No workflow runs `docker compose` itself
+(`integration_image_tag_test.go`); `feature_jobs_gate_test.go` requires the
+three steps, the names and the `always()`.
+
+A feature that selects nothing says so and passes, before any image is built,
+as `integration-test-<feature>` does. On a host, `make integration-test-<feature>`
+and `make integration-down-<feature>` still run a feature without Docker;
+`integration_job_names_test.go` holds those two goals to one set of names.
 
 The leg list is `make -s print-integration-features`. Gitea cannot expand a
 matrix computed at run time (handbook devops.md §1, "Write matrices
@@ -191,11 +254,10 @@ a `ci:full` pull request runs all of them from its next push, update-branch or d
 Each leg runs on a shared `ubuntu-latest` (bare-metal) runner, like every other
 job. Those runners are loaded (load averages of 40 to 70 on 80 threads), and
 load breaks a 3-node cluster's elections and a CLI call's 10-second deadline
-first. A leg runs outside compose, so it carries the CPU half of the cluster
-stage's budget (below) as job env, `GOMAXPROCS: "8"`: the `go test` process
-and every qrdbd and qrdb process the harness spawns inherit it, rather than
-sizing themselves to the runner's 80 threads. `make integration-test-<feature>`
-runs `go test -timeout=30m` per package, under the job's limit, so a hung test
+first. The `integration` compose service carries the CPU half of the cluster
+stage's budget (below) as `GOMAXPROCS=8`: the `go test` process and every
+qrdbd and qrdb process the harness spawns inherit it, rather than sizing
+themselves to the runner's 80 threads. The selection runs `go test -timeout=30m` per package, under the job's limit, so a hung test
 still dumps its goroutines.
 
 Measured on a shared host (load average about 66 on 80 threads, no

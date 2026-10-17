@@ -287,6 +287,7 @@ func (e *MVCCEngine) update(entries []sm.Entry, results []sm.Result) error {
 	if err := batch.Commit(); err != nil {
 		return err
 	}
+	e.store.MarkCommitted(rev)
 
 	e.DeliverNotifications(notifications)
 	e.ApplyVectorIndexEffects(vectorEffects)
@@ -502,7 +503,9 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		return &service.MVCCRangeResult{KeyValues: kvs, Count: count, Revision: rev}, nil
 
 	case service.MVCCRevisionQuery:
-		return e.store.CurrentRevision(), nil
+		// The latest committed revision: an open apply batch's revisions are
+		// not readable yet, so reporting them lets a watch cursor skip them.
+		return e.store.CommittedRevision(), nil
 
 	case service.MVCCScanChangesQuery:
 		return e.scanChanges(q)
@@ -2441,7 +2444,10 @@ func skipInternalKeyFilter(prefix string) bool {
 // is propagated unchanged so the caller cannot mistake a truncated history for
 // a complete one.
 func (e *MVCCEngine) scanChanges(q service.MVCCScanChangesQuery) (*service.MVCCScanChangesResult, error) {
-	result := &service.MVCCScanChangesResult{Revision: e.store.CurrentRevision()}
+	// The scan reads committed storage, so it reports the committed revision:
+	// a caller resuming after the apply counter would skip an open batch's
+	// changes, which this scan cannot see yet.
+	result := &service.MVCCScanChangesResult{Revision: e.store.CommittedRevision()}
 
 	// The change log of a compacted keyspace is gone at and below its floor,
 	// so a window starting there would report an incomplete set of changed

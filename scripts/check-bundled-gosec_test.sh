@@ -48,17 +48,19 @@ export PATH
 pass=0
 fail=0
 
-# repo <name> <golangci-gosec-pin> <gosec-pin> -- a Makefile carrying the two
-# values the check reads. Cases mutate the arguments, not a copy of the tree.
+# repo <name> <golangci-gosec-pin> <gosec-pin> -- a Makefile and a pin file
+# carrying the two values the check reads. Cases mutate the arguments, not a
+# copy of the tree.
 repo() {
 	dir="$work/repo-$1"
 	rm -rf "$dir"
-	mkdir -p "$dir"
+	mkdir -p "$dir/scripts"
+	[ "$2" = "-" ] || echo "GOLANGCI_GOSEC_VERSION := $2" > "$dir/Makefile"
+	[ -f "$dir/Makefile" ] || : > "$dir/Makefile"
 	{
-		echo "GOLANGCI_LINT_VERSION := v2.14.0"
-		[ "$2" = "-" ] || echo "GOLANGCI_GOSEC_VERSION := $2"
-		[ "$3" = "-" ] || echo "GOSEC_VERSION         := $3"
-	} > "$dir/Makefile"
+		echo "GOLANGCI_LINT_VERSION=v2.14.0"
+		[ "$3" = "-" ] || echo "GOSEC_VERSION=$3"
+	} > "$dir/scripts/tool-pins.sh"
 	echo "$dir"
 }
 
@@ -202,9 +204,9 @@ expect reject "go cannot read the build info" \
 echo "== the discovery floor: a lookup that finds nothing must FAIL =="
 fakego "$(buildinfo_lines v2.29.0)"
 expect reject "GOLANGCI_GOSEC_VERSION absent from the Makefile" \
-	"no GOLANGCI_GOSEC_VERSION pin" "$(repo nopin - v2.30.0)"
-expect reject "GOSEC_VERSION absent from the Makefile" \
-	"no GOSEC_VERSION pin" "$(repo nogosec v2.29.0 -)"
+	"no GOLANGCI_GOSEC_VERSION pin found in $work/repo-nopin/Makefile" "$(repo nopin - v2.30.0)"
+expect reject "GOSEC_VERSION absent from the pin file" \
+	"no GOSEC_VERSION pin found in $work/repo-nogosec/scripts/tool-pins.sh" "$(repo nogosec v2.29.0 -)"
 expect reject "Makefile absent" \
 	"does not exist" "$work/no-such-repo"
 

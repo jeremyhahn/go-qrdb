@@ -74,8 +74,10 @@ type multiProtoNode struct {
 	quicPort     int
 	passphrase   string
 
-	// bin, startArgs and proc are retained only by a fixture whose node
-	// restarts (startTenantEntitlementNode); see restart.
+	// proc is the node's process when its fixture retains it: a fixture whose
+	// node restarts (startTenantEntitlementNode), which also keeps bin and
+	// startArgs for restart, or startMultiProtocolCluster, for a test that
+	// stops the node.
 	bin       string
 	startArgs []string
 	proc      *exec.Cmd
@@ -87,7 +89,7 @@ type multiProtoNode struct {
 // restart; any other fails the test.
 func (n *multiProtoNode) restart(t *testing.T, prefix string) {
 	t.Helper()
-	if n.proc == nil {
+	if n.proc == nil || n.bin == "" {
 		t.Fatal("restart: this node's fixture did not retain its process")
 	}
 	stopNode(t, n.proc, 15*time.Second)

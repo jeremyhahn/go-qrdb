@@ -232,6 +232,12 @@ func (b *LocalBackend) RequestRemoveNode(_ context.Context, _, _ uint64, _ uint6
 	return nil, &ClusterOperationError{Op: "RemoveNode"}
 }
 
+// RequestLeaderTransfer returns ClusterOperationError because a standalone
+// node has no other replica to lead.
+func (b *LocalBackend) RequestLeaderTransfer(_ context.Context, _, _ uint64) error {
+	return &ClusterOperationError{Op: "LeaderTransfer"}
+}
+
 // RequestSnapshot returns ClusterOperationError since LocalBackend does
 // not support Raft snapshots.
 func (b *LocalBackend) RequestSnapshot(_ context.Context, _ uint64) (*quicraft.RequestState, error) {

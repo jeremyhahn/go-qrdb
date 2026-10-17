@@ -1166,18 +1166,22 @@ func waitForKV(t *testing.T, ca *testCA, port int, key string, expected []byte, 
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key)
 	deadline := time.Now().Add(timeout)
 	client := mtlsHTTPClient(t, ca, 2*time.Second)
+	last := "no answer"
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url)
-		if err == nil {
+		if err != nil {
+			last = err.Error()
+		} else {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK && bytes.Equal(body, expected) {
 				return
 			}
+			last = fmt.Sprintf("status %d, body %q", resp.StatusCode, body)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("timed out after %v waiting for key %q to equal %q", timeout, key, expected)
+	t.Fatalf("timed out after %v waiting for key %q to equal %q; last answer: %s", timeout, key, expected, last)
 }
 
 // awaitClusterCondition runs check until it succeeds, failing the test with
@@ -2833,6 +2837,17 @@ func iraftAPIGetTolerant(t *testing.T, client *http.Client, rawURL string) ([]by
 	return body, resp.StatusCode
 }
 
+// fixtureVolumePoolCapacityBytes is the explicit capacity every fixture pool
+// is created with. A pool created without one derives its capacity from the
+// smallest filesystem a healthy node reports (decision D4), and a fixture's
+// pool path is a t.TempDir: its capacity would be the size of whatever /tmp
+// the suite happens to run on. In the integration image that is a 3 GiB
+// tmpfs, and with every tenant reserving its 1 GiB default quota the fourth
+// tenant create failed with 0 bytes available. Reservations are catalog
+// accounting only -- nothing is allocated on disk -- so a large fixed figure
+// costs nothing and makes the suites independent of the host.
+const fixtureVolumePoolCapacityBytes int64 = 1 << 40 // 1 TiB
+
 // createVolumePoolREST registers a named pool in the replicated catalog via
 // POST /v1/volume-pools against the given admin port, ahead of any tenant
 // placement onto it. docs/volume-pools/architecture.md decision D2: a
@@ -2840,11 +2855,13 @@ func iraftAPIGetTolerant(t *testing.T, client *http.Client, rawURL string) ([]by
 // implicitly from a node's storage.volume_pools config -- every fixture
 // that configures a volume pool and then creates a volume/raft-isolation
 // tenant against it must call this (or createVolumePoolCLI) first.
+//
+// The pool is created at fixtureVolumePoolCapacityBytes, never derived.
 func createVolumePoolREST(t *testing.T, client *http.Client, adminPort int, name string) {
 	t.Helper()
 	body, status := iraftAPIPost(t, client,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/volume-pools", adminPort),
-		map[string]interface{}{"name": name},
+		map[string]interface{}{"name": name, "capacityBytes": fixtureVolumePoolCapacityBytes},
 	)
 	if status != http.StatusCreated && status != http.StatusOK {
 		t.Fatalf("create volume pool %q: status %d, body: %s", name, status, body)
@@ -2896,7 +2913,8 @@ func waitForVolumePoolReady(t *testing.T, client *http.Client, adminPort int, na
 // the CLI binary rather than raw REST calls.
 func createVolumePoolCLI(t *testing.T, cli string, connArgs []string, name string) {
 	t.Helper()
-	if out, err := runQRDB(t, cli, connArgs, "volume-pool", "create", name); err != nil {
+	if out, err := runQRDB(t, cli, connArgs, "volume-pool", "create", name,
+		"--capacity", fmt.Sprint(fixtureVolumePoolCapacityBytes)); err != nil {
 		t.Fatalf("volume-pool create %q: %v\noutput: %s", name, err, out)
 	}
 }

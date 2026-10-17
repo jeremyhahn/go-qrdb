@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Fault-injection tests for handle (the Noise_NK join listener's responder
-// side) and joinClientExchange (its initiator side). Both take a net.Conn
-// precisely so a test can fail a specific Read or Write deterministically --
-// see their own doc comments -- rather than racing real socket timing to
-// reach a mid-exchange peer-close or frame-failure branch. This file is that
-// test: a faultyConn wraps one real net.Pipe() end and fails Read or Write
-// from a configured call number onward, while the other end runs the real
-// counterpart (a genuine Noise_NK session), so the failure lands exactly on
+// Fault-injection tests for handle (the join listener's responder side) and
+// the initiator exchanges, joinClientExchange and joinClientExchangeP256. All
+// take a net.Conn precisely so a test can fail a specific Read or Write
+// deterministically -- see their own doc comments -- rather than racing real
+// socket timing to reach a mid-exchange peer-close or frame-failure branch.
+// This file is that test: a faultyConn wraps one real net.Pipe() end and fails
+// Read or Write from a configured call number onward, while the other end runs
+// the real counterpart (a genuine session of the suite this runtime selects --
+// Noise_NK, or P-256 under FIPS 140-3 mode), so the failure lands exactly on
 // the frame it targets rather than approximately.
 package clusterenroll
 
@@ -33,6 +34,7 @@ import (
 	"github.com/flynn/noise"
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
+	"github.com/jeremyhahn/go-truststrap/pkg/p256proto"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -77,65 +79,139 @@ func (c *faultyConn) Write(p []byte) (int, error) {
 // token store and trust domain: every fault test in this file targets a
 // transport-level failure (a Read/Write that never completes), which is
 // reached before -- or regardless of -- whether the presented token is
-// valid, so none of them need a token actually minted into it.
+// valid, so none of them need a token actually minted into it. Like
+// StartJoinServer it always holds a P-256 key and holds a Noise key only
+// where this runtime may use Noise.
 func newTestJoinServer(t *testing.T, provider cakey.Provider) *JoinServer {
 	t.Helper()
-	skipIfNoiseUnavailable(t)
-	key, err := noiseproto.GenerateStaticKey()
+	p256Key, err := p256proto.GenerateStaticKey()
 	if err != nil {
-		t.Fatalf("GenerateStaticKey: %v", err)
+		t.Fatalf("p256proto.GenerateStaticKey: %v", err)
 	}
-	t.Cleanup(key.Destroy)
-	return &JoinServer{
-		key:         key,
+	t.Cleanup(p256Key.Destroy)
+	js := &JoinServer{
+		p256Key:     p256Key,
 		store:       kvstore.NewMemoryKVStore(),
 		trustDomain: testTrustDomain,
 		provider:    provider,
 		logger:      discardLogger(),
 	}
+	if NoiseAvailable() {
+		key, err := noiseproto.GenerateStaticKey()
+		if err != nil {
+			t.Fatalf("noiseproto.GenerateStaticKey: %v", err)
+		}
+		t.Cleanup(key.Destroy)
+		js.key = key
+	}
+	return js
 }
 
-// clientSendMsg1 builds a fresh initiator session against serverPub, writes
-// handshake message 1 to conn, and returns the session for the caller to
-// continue (or abandon) the handshake. It never calls t.Fatalf: it runs in a
-// goroutine in every caller, where FailNow is unsafe.
-func clientSendMsg1(conn net.Conn, serverPub []byte, deadline time.Time) (*noiseproto.Session, error) {
-	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
-		Pattern:       noise.HandshakeNK,
-		PeerStaticKey: serverPub,
-		IsInitiator:   true,
-	})
+// joinClientExchangeFunc is the shape both suites' initiator exchanges share.
+type joinClientExchangeFunc func(net.Conn, []byte, time.Duration, string, []byte, string, uint64, []string) ([]byte, error)
+
+// testJoinClient returns the initiator exchange, and the server key it pins,
+// for the suite a dual-key client selects against js in this runtime: Noise
+// where it is available, P-256 under FIPS 140-3 mode. It goes through
+// selectJoinSuite, so the choice is JoinCSR's own.
+func testJoinClient(t *testing.T, js *JoinServer) (joinClientExchangeFunc, []byte) {
+	t.Helper()
+	suite, key, err := selectJoinSuite(&JoinClientOptions{ServerKey: js.PublicKey(), ServerP256Key: js.P256PublicKey()})
 	if err != nil {
-		return nil, err
+		t.Fatalf("selectJoinSuite: %v", err)
 	}
-	if err := sess.InitHandshake(); err != nil {
-		return nil, err
-	}
-	msg1, _, err := sess.HandshakeMessage(nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := noiseboot.WriteFrame(conn, msg1, deadline); err != nil {
-		return nil, err
-	}
-	return sess, nil
+	return joinClientSuites[suite], key
 }
 
-// clientCompleteHandshake reads handshake message 2 from conn and completes
-// sess. See clientSendMsg1 on why this returns rather than fails.
-func clientCompleteHandshake(conn net.Conn, sess *noiseproto.Session, deadline time.Time) error {
+// rawClientStop names the point at which rawJoinClient stops playing the
+// initiator.
+type rawClientStop int
+
+const (
+	// stopAfterMsg1 sends handshake message 1 and stops.
+	stopAfterMsg1 rawClientStop = iota + 1
+	// stopAfterRequest completes the handshake, sends the encrypted request and
+	// stops.
+	stopAfterRequest
+	// stopAfterResponse also reads the response frame.
+	stopAfterResponse
+)
+
+// rawJoinClient plays the initiator against js over conn, in the suite this
+// runtime selects, as far as stop. Each first frame opens with the
+// version||suite header handle dispatches on, so the server reaches the frame a
+// caller faults rather than refusing the first one. It never calls t.Fatalf:
+// it runs in a goroutine in every caller, where FailNow is unsafe, and a step
+// that fails simply ends it.
+func rawJoinClient(conn net.Conn, js *JoinServer, request []byte, stop rawClientStop) {
+	deadline := time.Now().Add(5 * time.Second)
+	var (
+		msg1   []byte
+		finish func(msg2 []byte) (joinChannel, error)
+	)
+	if NoiseAvailable() {
+		header := noiseboot.NoiseSuiteHeader()
+		sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
+			Pattern:       noise.HandshakeNK,
+			PeerStaticKey: js.PublicKey(),
+			IsInitiator:   true,
+			Prologue:      header,
+		})
+		if err != nil {
+			return
+		}
+		defer sess.Destroy()
+		if err := sess.InitHandshake(); err != nil {
+			return
+		}
+		m1, _, err := sess.HandshakeMessage(nil)
+		if err != nil {
+			return
+		}
+		msg1 = append(header, m1...)
+		finish = func(msg2 []byte) (joinChannel, error) {
+			if _, done, err := sess.HandshakeMessage(msg2); err != nil || !done {
+				return nil, ErrHandshakeIncomplete
+			}
+			return sess, nil
+		}
+	} else {
+		ini, err := p256proto.NewInitiator(js.P256PublicKey())
+		if err != nil {
+			return
+		}
+		defer ini.Destroy()
+		if msg1, err = ini.WriteMessage1(); err != nil {
+			return
+		}
+		finish = func(msg2 []byte) (joinChannel, error) {
+			transport, err := ini.ReadMessage2(msg2)
+			if err != nil {
+				return nil, err
+			}
+			return &p256Channel{t: transport}, nil
+		}
+	}
+
+	if err := noiseboot.WriteFrame(conn, msg1, deadline); err != nil || stop == stopAfterMsg1 {
+		return
+	}
 	msg2, err := noiseboot.ReadFrame(conn, deadline)
 	if err != nil {
-		return err
+		return
 	}
-	_, done, err := sess.HandshakeMessage(msg2)
+	ch, err := finish(msg2)
 	if err != nil {
-		return err
+		return
 	}
-	if !done {
-		return ErrHandshakeIncomplete
+	ciphertext, err := ch.Encrypt(request)
+	if err != nil {
+		return
 	}
-	return nil
+	if err := noiseboot.WriteFrame(conn, ciphertext, deadline); err != nil || stop == stopAfterRequest {
+		return
+	}
+	_, _ = noiseboot.ReadFrame(conn, deadline)
 }
 
 // TestHandle_ReadMsg1Fails exercises handle's "read handshake message 1
@@ -173,8 +249,7 @@ func TestHandle_WriteMsg2Fails(t *testing.T) {
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
-		deadline := time.Now().Add(5 * time.Second)
-		_, _ = clientSendMsg1(clientConn, js.PublicKey(), deadline)
+		rawJoinClient(clientConn, js, nil, stopAfterMsg1)
 	}()
 
 	done := make(chan struct{})
@@ -205,19 +280,7 @@ func TestHandle_ReadRequestFails(t *testing.T) {
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
-		deadline := time.Now().Add(5 * time.Second)
-		sess, err := clientSendMsg1(clientConn, js.PublicKey(), deadline)
-		if err != nil {
-			return
-		}
-		if err := clientCompleteHandshake(clientConn, sess, deadline); err != nil {
-			return
-		}
-		ciphertext, err := sess.Encrypt([]byte(`{"token":"tok"}`))
-		if err != nil {
-			return
-		}
-		_ = noiseboot.WriteFrame(clientConn, ciphertext, deadline)
+		rawJoinClient(clientConn, js, []byte(`{"token":"tok"}`), stopAfterRequest)
 	}()
 
 	done := make(chan struct{})
@@ -246,29 +309,14 @@ func TestHandle_WriteResponseFails(t *testing.T) {
 	fc := &faultyConn{Conn: serverConn, failReadAfter: -1, failWriteAfter: 2}
 
 	_, csrDER := generateTestCSR(t)
+	reqJSON, err := json.Marshal(JoinRequest{Token: "tok", CSRDER: csrDER})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
-		deadline := time.Now().Add(5 * time.Second)
-		sess, err := clientSendMsg1(clientConn, js.PublicKey(), deadline)
-		if err != nil {
-			return
-		}
-		if err := clientCompleteHandshake(clientConn, sess, deadline); err != nil {
-			return
-		}
-		reqJSON, err := json.Marshal(JoinRequest{Token: "tok", CSRDER: csrDER})
-		if err != nil {
-			return
-		}
-		ciphertext, err := sess.Encrypt(reqJSON)
-		if err != nil {
-			return
-		}
-		if err := noiseboot.WriteFrame(clientConn, ciphertext, deadline); err != nil {
-			return
-		}
-		_, _ = noiseboot.ReadFrame(clientConn, deadline)
+		rawJoinClient(clientConn, js, reqJSON, stopAfterResponse)
 	}()
 
 	done := make(chan struct{})
@@ -284,7 +332,7 @@ func TestHandle_WriteResponseFails(t *testing.T) {
 	<-clientDone
 }
 
-// TestJoinClientExchange_WriteMsg1Fails exercises joinClientExchange's
+// TestJoinClientExchange_WriteMsg1Fails exercises the initiator exchange's
 // "write handshake message 1" failure branch.
 func TestJoinClientExchange_WriteMsg1Fails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
@@ -300,7 +348,8 @@ func TestJoinClientExchange_WriteMsg1Fails(t *testing.T) {
 	}()
 
 	_, csrDER := generateTestCSR(t)
-	_, err := joinClientExchange(fc, js.PublicKey(), 5*time.Second, "tok", csrDER, "", 0, nil)
+	exchange, serverKey := testJoinClient(t, js)
+	_, err := exchange(fc, serverKey, 5*time.Second, "tok", csrDER, "", 0, nil)
 	fc.Close()
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
@@ -313,7 +362,7 @@ func TestJoinClientExchange_WriteMsg1Fails(t *testing.T) {
 	}
 }
 
-// TestJoinClientExchange_ReadMsg2Fails exercises joinClientExchange's "read
+// TestJoinClientExchange_ReadMsg2Fails exercises the initiator exchange's "read
 // handshake message 2" failure branch: msg1 is really sent, then the client's
 // read fails.
 func TestJoinClientExchange_ReadMsg2Fails(t *testing.T) {
@@ -330,7 +379,8 @@ func TestJoinClientExchange_ReadMsg2Fails(t *testing.T) {
 	}()
 
 	_, csrDER := generateTestCSR(t)
-	_, err := joinClientExchange(fc, js.PublicKey(), 5*time.Second, "tok", csrDER, "", 0, nil)
+	exchange, serverKey := testJoinClient(t, js)
+	_, err := exchange(fc, serverKey, 5*time.Second, "tok", csrDER, "", 0, nil)
 	fc.Close()
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
@@ -343,7 +393,7 @@ func TestJoinClientExchange_ReadMsg2Fails(t *testing.T) {
 	}
 }
 
-// TestJoinClientExchange_WriteRequestFails exercises joinClientExchange's
+// TestJoinClientExchange_WriteRequestFails exercises the initiator exchange's
 // "write request ciphertext" failure branch: a genuine handshake completes
 // (the client's first two writes, message 1's header and payload, succeed),
 // then the client's next write (the request frame) fails.
@@ -361,7 +411,8 @@ func TestJoinClientExchange_WriteRequestFails(t *testing.T) {
 	}()
 
 	_, csrDER := generateTestCSR(t)
-	_, err := joinClientExchange(fc, js.PublicKey(), 5*time.Second, "tok", csrDER, "", 0, nil)
+	exchange, serverKey := testJoinClient(t, js)
+	_, err := exchange(fc, serverKey, 5*time.Second, "tok", csrDER, "", 0, nil)
 	fc.Close()
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
@@ -374,7 +425,7 @@ func TestJoinClientExchange_WriteRequestFails(t *testing.T) {
 	}
 }
 
-// TestJoinClientExchange_ReadResponseFails exercises joinClientExchange's
+// TestJoinClientExchange_ReadResponseFails exercises the initiator exchange's
 // "read response ciphertext" failure branch: a genuine handshake and request
 // write complete, then the client's read of the response fails.
 func TestJoinClientExchange_ReadResponseFails(t *testing.T) {
@@ -391,7 +442,8 @@ func TestJoinClientExchange_ReadResponseFails(t *testing.T) {
 	}()
 
 	_, csrDER := generateTestCSR(t)
-	_, err := joinClientExchange(fc, js.PublicKey(), 5*time.Second, "tok", csrDER, "", 0, nil)
+	exchange, serverKey := testJoinClient(t, js)
+	_, err := exchange(fc, serverKey, 5*time.Second, "tok", csrDER, "", 0, nil)
 	fc.Close()
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
@@ -404,11 +456,11 @@ func TestJoinClientExchange_ReadResponseFails(t *testing.T) {
 	}
 }
 
-// TestJoinClientExchange_HandshakeMessage2Invalid exercises
-// joinClientExchange's handshake-incomplete branch: the counterpart is not a
-// real Noise_NK responder, so message 2 is garbage.
+// TestJoinClientExchange_HandshakeMessage2Invalid exercises the
+// initiator exchange's handshake-failure branch, in the suite this runtime
+// selects: the counterpart is not a real responder of either suite, so message
+// 2 is garbage. The keys it pins belong to a server that is never started.
 func TestJoinClientExchange_HandshakeMessage2Invalid(t *testing.T) {
-	skipIfNoiseUnavailable(t)
 	clientConn, serverConn := net.Pipe()
 	serverDone := make(chan struct{})
 	go func() {
@@ -421,14 +473,10 @@ func TestJoinClientExchange_HandshakeMessage2Invalid(t *testing.T) {
 		_ = noiseboot.WriteFrame(serverConn, []byte("not a real handshake message"), deadline)
 	}()
 
-	key, err := noiseproto.GenerateStaticKey()
-	if err != nil {
-		t.Fatalf("GenerateStaticKey: %v", err)
-	}
-	defer key.Destroy()
+	exchange, serverKey := testJoinClient(t, newTestJoinServer(t, nil))
 
 	_, csrDER := generateTestCSR(t)
-	_, err = joinClientExchange(clientConn, key.PublicBytes(), 5*time.Second, "tok", csrDER, "", 0, nil)
+	_, err := exchange(clientConn, serverKey, 5*time.Second, "tok", csrDER, "", 0, nil)
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
 		t.Fatalf("joinClientExchange against a garbage msg2 = %v, want *FetchError", err)

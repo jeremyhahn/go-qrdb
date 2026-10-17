@@ -26,9 +26,9 @@ import (
 )
 
 // Admin is a service.AdminServicer that implements the platform-only methods
-// -- AddMember, RemoveMember, RequestSnapshot, Drain and the node-keyspace
-// compaction policy's NodeCompaction and SetNodeCompaction, and StateHashes
-// -- and counts the
+// -- AddMember, RemoveMember, PromoteMember, TransferLeadership,
+// RequestSnapshot, Drain, the node-keyspace compaction policy's
+// NodeCompaction and SetNodeCompaction, and StateHashes -- and counts the
 // calls that reached them, so a test can tell a refused request from one
 // the service performed. Every other method is delegated to the embedded
 // AdminServicer, which a test sets to its package's own admin double when the
@@ -54,6 +54,14 @@ func (a *Admin) AddMember(context.Context, uint64, uint64, string, string) error
 // service.MemberPromoter so Admin stays usable with the REST promote
 // handler's type assertion.
 func (a *Admin) PromoteMember(context.Context, uint64, uint64) error {
+	a.changes.Add(1)
+	return nil
+}
+
+// TransferLeadership records the membership change. Implements
+// service.LeaderTransferrer so Admin stays usable with every transport's
+// transfer-leadership handler's type assertion.
+func (a *Admin) TransferLeadership(context.Context, uint64, uint64) error {
 	a.changes.Add(1)
 	return nil
 }

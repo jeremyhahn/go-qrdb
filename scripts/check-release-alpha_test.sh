@@ -234,6 +234,9 @@ fixture() {
 	cp "${MAKEFILE}" "${DIR}/Makefile"
 	mkdir -p "${DIR}/test/integration"
 	cp "$(dirname "${MAKEFILE}")/test/integration/features.mk" "${DIR}/test/integration/"
+	# The Makefile includes the tool pin file too (#738); without it make stops
+	# before reading a single target.
+	cp "${SCRIPT_DIR}/tool-pins.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/check-tag-lockstep.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/check-version-reconciled.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/lockstep-modules.sh" "${DIR}/scripts/"

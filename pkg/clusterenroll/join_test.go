@@ -93,8 +93,12 @@ func startFirstNode(t *testing.T) (*Advertiser, BootstrapOptions) {
 	}
 	t.Cleanup(adv.Stop)
 
+	// Both suites' keys are pinned, as an operator configures a mixed fleet:
+	// a runtime that may use Noise negotiates it, and a FIPS 140-3 runtime --
+	// whose advertiser holds no Noise key, so NoiseKey is empty -- uses P-256.
 	return adv, BootstrapOptions{
 		NoiseKey: hex.EncodeToString(adv.NoisePublicKey()),
+		P256Key:  hex.EncodeToString(adv.P256PublicKey()),
 		// Addr() now reports the host the advertiser was actually bound
 		// to, so the joining node dials exactly that.
 		NoiseAddr: adv.Addr(),
@@ -211,13 +215,18 @@ func (m *clusterMember) stop() {
 	m.js.Stop()
 }
 
+// bootstrap pins both suites on both listeners, so the joiner negotiates Noise
+// where this runtime may use it and P-256 under FIPS 140-3 mode, where the
+// member holds no Noise key and the Noise fields are empty.
 func (m *clusterMember) bootstrap(token string) BootstrapOptions {
 	return BootstrapOptions{
-		NoiseKey:  hex.EncodeToString(m.adv.NoisePublicKey()),
-		NoiseAddr: m.adv.Addr(),
-		JoinAddr:  m.js.Addr(),
-		JoinKey:   hex.EncodeToString(m.js.PublicKey()),
-		JoinToken: token,
+		NoiseKey:    hex.EncodeToString(m.adv.NoisePublicKey()),
+		P256Key:     hex.EncodeToString(m.adv.P256PublicKey()),
+		NoiseAddr:   m.adv.Addr(),
+		JoinAddr:    m.js.Addr(),
+		JoinKey:     hex.EncodeToString(m.js.PublicKey()),
+		JoinP256Key: hex.EncodeToString(m.js.P256PublicKey()),
+		JoinToken:   token,
 	}
 }
 
@@ -229,7 +238,6 @@ func (m *clusterMember) bootstrap(token string) BootstrapOptions {
 // cluster does.
 func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte, store kvstore.AtomicKVStore) *clusterMember {
 	t.Helper()
-	skipIfNoiseUnavailable(t)
 
 	anchorPort := freePort(t)
 	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: anchorPort, NoiseHost: testBindHost}, t.TempDir(), discardLogger())

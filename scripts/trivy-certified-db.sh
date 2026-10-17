@@ -41,7 +41,8 @@
 # `http://<registry>/<repository>:<tag>` names a registry served over plain
 # HTTP: the scheme is stripped and trivy's `--insecure` is passed for that
 # entry ALONE, so it never reaches a TLS upstream. CI puts the forge's own
-# Trivy DB bridge first this way (docs/release/architecture.md, "CI tiers").
+# Trivy DB bridge first this way, with the list scripts/trivy-db-upstreams.sh
+# prints (docs/release/architecture.md, "CI tiers").
 
 set -u
 

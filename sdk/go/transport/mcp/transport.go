@@ -900,6 +900,22 @@ func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID ui
 
 var _ transport.ObserverMemberAdder = (*Transport)(nil)
 
+// TransferLeadership hands shardID's leadership to replicaID and returns once
+// it leads. Implements transport.LeaderTransferrer.
+func (t *Transport) TransferLeadership(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_transfer_leadership", map[string]any{
+		"shard_id":   shardID,
+		"replica_id": replicaID,
+	})
+	return err
+}
+
+var _ transport.LeaderTransferrer = (*Transport)(nil)
+
 // ListPendingJoinRequests lists tokenless member-side CSR join requests
 // awaiting an operator's decision. Calls the
 // qrdb_list_pending_join_requests MCP tool. Implements

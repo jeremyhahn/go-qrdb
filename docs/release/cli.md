@@ -1,6 +1,6 @@
 # Release — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -54,6 +54,20 @@ the audit's own fixtures.
 Reconciles `VERSION`, `CHANGELOG.md`'s newest released section and, when
 `RELEASE_TAG` is given, the tag itself. The same check `release-alpha`,
 `release.yml`'s `validate` job, and the Release Lockstep workflow all run.
+
+## `make release-artifacts` / `make release-cross PLATFORM=<goos>/<goarch>`
+
+Build the release binaries into `dist/`: qrdbd and the headless qrdb CLI,
+each plain and FIPS, named `<binary>-<VERSION>-<goos>-<goarch>[-fips]`.
+`release-artifacts` empties `dist/`, builds every platform in
+`RELEASE_PLATFORMS` and writes `dist/SHA256SUMS`; it is what `release.yml`'s
+`publish` job runs. `release-cross` builds one platform, and is what CI runs
+for `linux/arm64`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RELEASE_PLATFORMS` | `linux/amd64 linux/arm64` | the platforms `release-artifacts` builds |
+| `PLATFORM` | *(required by `release-cross`)* | the one platform `release-cross` builds |
 
 ## `make test-release-alpha`
 

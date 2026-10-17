@@ -125,7 +125,7 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateIsolationModeAgainstPolicy(isolationType, floor); err != nil {
+	if err := ValidateIsolationModeAgainstPolicy(id, isolationType, floor); err != nil {
 		return nil, err
 	}
 

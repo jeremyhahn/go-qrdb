@@ -672,6 +672,7 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_add_member",
 		"qrdb_remove_member",
 		"qrdb_promote_member",
+		"qrdb_transfer_leadership",
 		"qrdb_snapshot",
 		"qrdb_drain",
 		"qrdb_capabilities",

@@ -179,9 +179,9 @@ func adminCSRArgsForTenant(t *testing.T, cfg *TestConfig, proto ProtocolType, ad
 // subtests that followed it then failed a 2-second socket probe in ~24-26s
 // each — the servers were answering, just not inside 2s. A probe timeout has
 // to be read as "did not respond in time", never as "is not there"; 10s
-// tracks quicConnectBudget (sdk/go/transport/quic/transport.go), the budget
-// the QUIC transport itself gives a real connection attempt under the same
-// contention, and is well inside the 45m the docker-compose integration job
+// matches the CLI's default --timeout, which is the bound the QUIC transport
+// gives a real connection attempt, retries included, under the same
+// contention (Connect, sdk/go/transport/quic/transport.go), and is well inside the 45m the docker-compose integration job
 // budgets per test binary.
 const probeTimeout = 10 * time.Second
 

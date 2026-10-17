@@ -683,6 +683,24 @@ func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID ui
 
 var _ transport.ObserverMemberAdder = (*Transport)(nil)
 
+// TransferLeadership hands shardID's leadership to replicaID and returns once
+// it leads. Maps to POST /membership/transfer-leadership. Implements
+// transport.LeaderTransferrer.
+func (t *Transport) TransferLeadership(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.TransferLeadershipRequest{
+		ShardID:   shardID,
+		ReplicaID: replicaID,
+	}
+
+	return t.postJSON(ctx, "TransferLeadership", "/membership/transfer-leadership", payload)
+}
+
+var _ transport.LeaderTransferrer = (*Transport)(nil)
+
 // restPendingJoinRequest is the wire shape GET /v1/cluster/join-requests
 // returns one entry as.
 type restPendingJoinRequest struct {
@@ -1061,6 +1079,8 @@ func (t *Transport) decodeErrorResponse(method string, resp *http.Response) erro
 		StatusCode: resp.StatusCode,
 		Err:        err,
 		RetryAfter: retryAfterHeader(resp.Header.Get("Retry-After")),
+		Reason:     errResp.Code,
+		Metadata:   errResp.Metadata,
 	}
 }
 

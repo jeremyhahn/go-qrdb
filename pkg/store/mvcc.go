@@ -324,6 +324,7 @@ func (s *MVCCStateMachine) update(entries []sm.Entry, results []sm.Result) error
 	if err := batch.Commit(); err != nil {
 		return &WriteError{Err: err}
 	}
+	s.engine.Store().MarkCommitted(rev)
 
 	// Deliver watch notifications and apply vector index effects after the
 	// batch is committed.

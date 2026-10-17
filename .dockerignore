@@ -39,6 +39,9 @@ coverage/
 *.log
 gosec.sarif
 trivy-results.sarif
+# The integration image the CI image job saves for `trivy image`; the next
+# build's context must not carry the last image.
+it-image.tar
 
 # Node and frontend artifacts. The Go integration suite needs none of it, and
 # node_modules alone dwarfs the rest of the context.

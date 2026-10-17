@@ -73,7 +73,7 @@ func TestRun_HardeningRefusalExitsNonZero(t *testing.T) {
 // The opt-out warning goes to the writer hardenAtStartup is given (stderr in
 // production), never to the CLI's stdout. It runs the REAL HardenProcess, which
 // is safe here only because the opt-out skips the mechanism. Under a FIPS
-// build (the nightly FIPS job runs this suite so) the opt-out is refused
+// build (CI's FIPS 140-3 job runs this suite so) the opt-out is refused
 // instead, and that answer is asserted exactly.
 func TestHardenAtStartup_OptOutWarnsOnTheGivenWriter(t *testing.T) {
 	t.Setenv(secure.AllowProcessInspectionEnv, "true")

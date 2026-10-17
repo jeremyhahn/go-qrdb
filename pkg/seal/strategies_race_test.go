@@ -54,7 +54,7 @@ const (
 // selects Argon2id EXPLICITLY and fails with ErrKDFNotFIPSApproved under FIPS
 // by design -- go-quicraft keeps the symbol in every build so consumers still
 // compile, and refuses the call at runtime. Calling it unconditionally would
-// therefore pass locally and fail only on the nightly FIPS leg, which is the
+// therefore pass locally and fail only on the FIPS 140-3 CI leg, which is the
 // slowest possible way to find out.
 func cheapSoftwareStrategy(t *testing.T, passphrase string) *SoftwareStrategy {
 	t.Helper()

@@ -1519,6 +1519,15 @@ type BootstrapConfig struct {
 	// bootstrap server on the first node. Required for Noise method.
 	NoiseKey string `yaml:"noise_key"`
 
+	// P256Key is the hex-encoded uncompressed P-256 public key (65 bytes) of
+	// the same bootstrap server's FIPS-approved suite
+	// (TSBOOT1_P256_AESGCM_SHA256), published by the first node under the same
+	// name. It pins the server when this node fetches the anchor over the
+	// bootstrap wire, and is the only suite a node in FIPS 140-3 mode may use
+	// there. Requires NoiseAddr; may be set alongside NoiseKey, in which case
+	// Noise is used where the process may use it and P-256 otherwise.
+	P256Key string `yaml:"p256_key"`
+
 	// NoiseAddr is the host:port of the Noise bootstrap server.
 	NoiseAddr string `yaml:"noise_addr"`
 
@@ -1559,8 +1568,14 @@ type BootstrapConfig struct {
 	JoinAddr string `yaml:"join_addr"`
 
 	// JoinKey is the hex-encoded Curve25519 public key of that listener.
-	// Required alongside JoinAddr.
+	// Required alongside JoinAddr unless JoinP256Key is set.
 	JoinKey string `yaml:"join_key"`
+
+	// JoinP256Key is the hex-encoded uncompressed P-256 public key (65 bytes)
+	// of that listener's FIPS-approved suite. Required alongside JoinAddr
+	// unless JoinKey is set; with both, Noise is used where the process may
+	// use it and P-256 otherwise (FIPS 140-3 mode).
+	JoinP256Key string `yaml:"join_p256_key"`
 
 	// JoinHTTPURL is the base admin HTTPS URL of an admitted member (e.g.
 	// "https://10.0.0.2:8443"), for the SPKI/Direct member-side join
@@ -2525,11 +2540,25 @@ func (c *Config) Validate() error {
 	// queue" rather than "present an admission secret" -- see
 	// clusterenroll.BootstrapOptions.JoinToken's own doc comment and
 	// docs/clustering/architecture.md's "Approval queue" section.
-	if c.Bootstrap.JoinAddr != "" && c.Bootstrap.JoinKey == "" {
-		return &ValidationError{Field: "bootstrap.join_key", Reason: "required when bootstrap.join_addr is set"}
+	if c.Bootstrap.JoinAddr != "" && c.Bootstrap.JoinKey == "" && c.Bootstrap.JoinP256Key == "" {
+		return &ValidationError{Field: "bootstrap.join_key", Reason: "required when bootstrap.join_addr is set (or set bootstrap.join_p256_key)"}
 	}
 	if c.Bootstrap.JoinKey != "" && c.Bootstrap.JoinAddr == "" {
 		return &ValidationError{Field: "bootstrap.join_addr", Reason: "required when bootstrap.join_key is set"}
+	}
+	if c.Bootstrap.JoinP256Key != "" && c.Bootstrap.JoinAddr == "" {
+		return &ValidationError{Field: "bootstrap.join_addr", Reason: "required when bootstrap.join_p256_key is set"}
+	}
+	if c.Bootstrap.P256Key != "" && c.Bootstrap.NoiseAddr == "" {
+		return &ValidationError{Field: "bootstrap.noise_addr", Reason: "required when bootstrap.p256_key is set"}
+	}
+	for _, k := range []struct{ field, value string }{
+		{"bootstrap.p256_key", c.Bootstrap.P256Key},
+		{"bootstrap.join_p256_key", c.Bootstrap.JoinP256Key},
+	} {
+		if err := validateP256PublicKeyHex(k.field, k.value); err != nil {
+			return err
+		}
 	}
 	if c.Bootstrap.JoinHTTPURL != "" && !strings.HasPrefix(c.Bootstrap.JoinHTTPURL, "https://") {
 		return &ValidationError{Field: "bootstrap.join_http_url", Reason: "must use https://; the SPKI/Direct join transport carries the join token and the issued leaf under TLS only"}

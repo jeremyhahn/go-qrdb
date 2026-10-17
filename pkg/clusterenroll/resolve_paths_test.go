@@ -290,15 +290,9 @@ func TestStartAdvertiserRejectsAnUnusablePort(t *testing.T) {
 	t.Cleanup(func() { _ = occupied.Close() })
 	port := occupied.Addr().(*net.TCPAddr).Port
 
+	// The fault is reachable in every runtime: the listener is bound whether or
+	// not the Noise suite is available, because the P-256 suite is served on it.
 	opts := AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}
-	if !noiseAvailable() {
-		// No listener is opened at all, so there is no address to collide
-		// with -- and an advertiser that reported a bind failure here would
-		// mean the FIPS branch had stopped short-circuiting the listen.
-		assertNoiseFaultUnreachable(t, mat, opts, dir)
-		return
-	}
-
 	_, err = StartAdvertiser(mat, opts, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected StartAdvertiser to fail on an already-bound port")

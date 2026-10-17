@@ -14,7 +14,11 @@
 
 package tenant
 
-import "context"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
 
 // ---------------------------------------------------------------------------
 // The isolation policy — a cluster floor and a per-tenant setting.
@@ -107,8 +111,17 @@ func EffectiveIsolationPolicy(floor ClusterIsolationPolicy, tenantPolicy TenantI
 
 // ValidateIsolationModeAgainstPolicy enforces S2: a prefix tenant (no store,
 // no key of its own) cannot be strict. isolationType "" is treated as
-// IsolationPrefix, matching TenantInfo.EffectiveIsolationType.
-func ValidateIsolationModeAgainstPolicy(isolationType IsolationType, effective ClusterIsolationPolicy) error {
+// IsolationPrefix, matching TenantInfo.EffectiveIsolationType. tenantID
+// exempts the system tenant, which owns the store its prefix names.
+func ValidateIsolationModeAgainstPolicy(tenantID string, isolationType IsolationType, effective ClusterIsolationPolicy) error {
+	// The system tenant is the exception S2's premise does not cover: its
+	// prefix is the system store itself, which it owns along with the
+	// system barrier, and CreateTenant refuses it any other isolation type.
+	// Holding it to S2 would refuse the system tenant on every first boot
+	// under a strict floor, which FIPS 140-3 mode always sets.
+	if tenantid.IsSystem(tenantID) {
+		return nil
+	}
 	et := isolationType
 	if et == "" {
 		et = IsolationPrefix
@@ -265,7 +278,7 @@ func checkIsolationPolicyChangeFor(ctx context.Context, reader ClusterIsolationP
 	if err != nil {
 		return err
 	}
-	return ValidateIsolationModeAgainstPolicy(isolationType, EffectiveIsolationPolicy(floor, patch.IsolationPolicy))
+	return ValidateIsolationModeAgainstPolicy(info.ID, isolationType, EffectiveIsolationPolicy(floor, patch.IsolationPolicy))
 }
 
 // ClusterIsolationPolicy returns the cluster-wide isolation floor.
