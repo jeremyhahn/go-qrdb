@@ -70,13 +70,18 @@ func (s *stallingQuotaUsage) DecrementQuotaUsage(ctx context.Context, _ string, 
 }
 
 // stallingClearSealer is an active cluster sealer whose seal-record write
-// cannot reach consensus: Clear blocks until the caller's context ends.
+// cannot reach consensus: Clear signals entered, blocks until the caller's
+// context ends, then sends the context's error on released.
 type stallingClearSealer struct {
 	*clustersealtest.Sealer
+	entered  chan<- struct{}
+	released chan<- error
 }
 
 func (s stallingClearSealer) Clear(ctx context.Context, _ clusterseal.Barrier, _ clusterseal.Principal) (clusterseal.Record, error) {
+	s.entered <- struct{}{}
 	<-ctx.Done()
+	s.released <- ctx.Err()
 	return clusterseal.Record{}, ctx.Err()
 }
 
@@ -176,12 +181,23 @@ func TestCreateForTenant_CallerCancelled_ReturnsCallerError(t *testing.T) {
 	}
 }
 
+// TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers pins two
+// bounds, each on its own clock. The service's create deadline must release
+// the stalled seal-record write: the watchdog judges that, from the moment
+// the write starts, so the manager's create before it is not on its clock. The rollback
+// that follows is deliberately not under that deadline -- it runs under
+// database.DropRollbackContext, and the manager's create and drop write
+// meta.json through a file and directory fsync that no context bounds -- so
+// the answer is awaited under the rollback's own bound, and the test's verdict
+// does not depend on the host disk's latency.
 func TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
+	entered := make(chan struct{}, 1)
+	released := make(chan error, 1)
 	svc := NewDatabaseService(mgr,
-		WithDatabaseClusterSealer(stallingClearSealer{clustersealtest.New(true)}),
+		WithDatabaseClusterSealer(stallingClearSealer{Sealer: clustersealtest.New(true), entered: entered, released: released}),
 		WithDatabaseCreateTimeout(50*time.Millisecond),
 	)
 	dc, ok := svc.(DatabaseCredentialCreator)
@@ -189,10 +205,37 @@ func TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers(t *testing.
 		t.Fatalf("%T is not a DatabaseCredentialCreator", svc)
 	}
 
-	err := createWithin(t, func() (*database.DatabaseInfo, error) {
-		return dc.CreateWithCredentials(context.Background(), testDBConfig("app"), seal.Credentials{})
-	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := dc.CreateWithCredentials(context.Background(), testDBConfig("app"), seal.Credentials{})
+		done <- err
+	}()
 
+	// The manager's create runs first and writes to disk, which no context
+	// bounds; it is awaited under the same load-tolerant bound as the answer.
+	// The deadline's work starts at the seal-record write.
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("create answered %v before reaching the seal-record write", err)
+	case <-time.After(database.DropRollbackTimeout + createDeadlineWatchdog):
+		t.Fatalf("create did not reach the seal-record write within %v: the manager's create did not finish", database.DropRollbackTimeout+createDeadlineWatchdog)
+	}
+	select {
+	case err := <-released:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("seal-record write released by %v, want the create deadline's context.DeadlineExceeded", err)
+		}
+	case <-time.After(createDeadlineWatchdog):
+		t.Fatalf("seal-record write not released within %v: it is not bounded by the service's create deadline", createDeadlineWatchdog)
+	}
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(database.DropRollbackTimeout + createDeadlineWatchdog):
+		t.Fatalf("create did not answer within the rollback bound %v after its deadline", database.DropRollbackTimeout)
+	}
 	var timeoutErr *DatabaseCreateTimeoutError
 	if !errors.As(err, &timeoutErr) {
 		t.Fatalf("err = %v (%T), want *DatabaseCreateTimeoutError", err, err)
