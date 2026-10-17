@@ -166,6 +166,55 @@ const signalDeadlineMargin = 30 * time.Second
 // The bound is the test's own deadline less a margin for the rest of the
 // package, never a guess at how long startup takes: whatever the run was
 // already going to allow.
+// signalSelf sends sig to this process and returns once the os/signal
+// dispatcher has handed it to every channel registered for it.
+//
+// syscall.Kill returning says only that the kernel queued a process-directed
+// signal: a thread may not have taken it yet, and the runtime may not have
+// passed it to the os/signal goroutine. Not even signal.Stop's wait for an
+// idle dispatcher covers the first of those. A retry loop that sends again
+// after runStart's deferred sigStop, and then sees runStart return, leaves
+// that signal in flight; whatever registers next receives it -- the following
+// test's runStart, which ended its unseal wait 25 ms in (CI run 55245).
+//
+// The probe is registered before the send, so its delivery is the send's
+// delivery to every other handler too: process hands one signal to all of
+// them under one lock. The retry loops below send only through here, one
+// signal at a time, so none of theirs is outstanding to be mistaken for it.
+func signalSelf(sig syscall.Signal, limit time.Time) error {
+	probe := make(chan os.Signal, 1)
+	signal.Notify(probe, sig)
+	defer signal.Stop(probe)
+
+	if err := syscall.Kill(os.Getpid(), sig); err != nil {
+		return &signalSelfError{Signal: sig, Err: err}
+	}
+	timer := time.NewTimer(time.Until(limit))
+	defer timer.Stop()
+	select {
+	case <-probe:
+		return nil
+	case <-timer.C:
+		return &signalSelfError{Signal: sig}
+	}
+}
+
+// signalSelfError is a signal signalSelf could not send, or that was not
+// delivered by its deadline (Err nil).
+type signalSelfError struct {
+	Signal syscall.Signal
+	Err    error
+}
+
+func (e *signalSelfError) Error() string {
+	if e.Err == nil {
+		return "signal " + e.Signal.String() + " was sent but never delivered"
+	}
+	return "signal " + e.Signal.String() + ": " + e.Err.Error()
+}
+
+func (e *signalSelfError) Unwrap() error { return e.Err }
+
 func signalAfterReady(t *testing.T, done <-chan error, sig syscall.Signal, ready func() bool) error {
 	t.Helper()
 
@@ -179,8 +228,8 @@ func signalAfterReady(t *testing.T, done <-chan error, sig syscall.Signal, ready
 	defer ticker.Stop()
 
 	for {
-		if err := syscall.Kill(os.Getpid(), sig); err != nil {
-			t.Fatalf("Kill(%v) error = %v", sig, err)
+		if err := signalSelf(sig, limit); err != nil {
+			t.Fatalf("%v", err)
 		}
 		select {
 		case runErr := <-done:
@@ -213,7 +262,7 @@ func stopDaemon(done <-chan error, limit time.Time) bool {
 	ticker := time.NewTicker(signalRetryInterval)
 	defer ticker.Stop()
 	for {
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		_ = signalSelf(syscall.SIGTERM, limit)
 		select {
 		case <-done:
 			return true
