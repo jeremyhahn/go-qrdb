@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/dolthub/go-mysql-server/sql"
+	wire "github.com/jeroenrinzema/psql-wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -45,7 +46,7 @@ func TestPGWire_StatementResolvesEachTableOnce(t *testing.T) {
 	require.NoError(t, err)
 	run := func(q string) {
 		t.Helper()
-		_, err := h.HandleParse(ctx, q)
+		_, err := h.HandleParse(ctx, wire.Query{Query: q})
 		require.NoError(t, err, q)
 	}
 
@@ -72,10 +73,10 @@ func TestPGWire_PrepareResolvesEachTableOnce(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 
-	_, err = h.HandleParse(ctx, "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))")
+	_, err = h.HandleParse(ctx, wire.Query{Query: "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))"})
 	require.NoError(t, err)
 	counting.Reset()
-	_, err = h.HandleParse(ctx, "SELECT body FROM notes WHERE id = $1")
+	_, err = h.HandleParse(ctx, wire.Query{Query: "SELECT body FROM notes WHERE id = $1"})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), counting.Gets(), "describing a statement reads its table's definition once")
 }
@@ -126,17 +127,17 @@ func newScopeHandler(t *testing.T) (*ParseHandler, context.Context, *provider.QR
 // statement writes nothing.
 func TestPGWire_StatementWhileACommandIsOpenIsRefused(t *testing.T) {
 	h, ctx, sess := newScopeHandler(t)
-	_, err := h.HandleParse(ctx, "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))")
+	_, err := h.HandleParse(ctx, wire.Query{Query: "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))"})
 	require.NoError(t, err)
 
 	require.NoError(t, sess.CommandBegin())
 	var inProgress *provider.CommandInProgressError
 
-	_, err = h.HandleParse(ctx, "INSERT INTO notes (id, body) VALUES (1, 'a')")
+	_, err = h.HandleParse(ctx, wire.Query{Query: "INSERT INTO notes (id, body) VALUES (1, 'a')"})
 	require.ErrorAs(t, err, &inProgress, "a statement executed at Parse")
 
 	const query = "SELECT body FROM notes WHERE id = $1"
-	_, err = h.HandleParse(ctx, query)
+	_, err = h.HandleParse(ctx, wire.Query{Query: query})
 	require.ErrorAs(t, err, &inProgress, "a parameterized statement's describe")
 
 	translated, err := h.translator.Translate(query)
@@ -167,13 +168,13 @@ func TestPGWire_SequenceDDL(t *testing.T) {
 	}
 
 	for _, q := range []string{"CREATE SEQUENCE orders_seq", "ALTER SEQUENCE orders_seq AS bigint"} {
-		_, err := h.HandleParse(ctx, q)
+		_, err := h.HandleParse(ctx, wire.Query{Query: q})
 		require.NoError(t, err, q)
 	}
 	assert.EqualValues(t, 1, nextval())
 	assert.EqualValues(t, 2, nextval())
 
-	_, err := h.HandleParse(ctx, "DROP SEQUENCE IF EXISTS orders_seq")
+	_, err := h.HandleParse(ctx, wire.Query{Query: "DROP SEQUENCE IF EXISTS orders_seq"})
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, nextval(), "a dropped sequence starts again at 1")
 

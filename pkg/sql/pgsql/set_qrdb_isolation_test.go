@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	wire "github.com/jeroenrinzema/psql-wire"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
@@ -43,7 +44,7 @@ func TestPGWire_SetQrdbIsolation_TakesEffect(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 	run := func(q string) error {
-		_, err := h.HandleParse(ctx, q)
+		_, err := h.HandleParse(ctx, wire.Query{Query: q})
 		return err
 	}
 

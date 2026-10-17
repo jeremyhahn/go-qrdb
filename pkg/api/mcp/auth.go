@@ -476,6 +476,13 @@ func (s *Server) visibleTools(ctx context.Context, tools []mcpgo.Tool) []mcpgo.T
 	return visible
 }
 
+// filterToolList is the tools/list after-hook that narrows the listing a
+// caller receives to visibleTools. The server sets no pagination limit, so
+// the result holds the whole tool set.
+func (s *Server) filterToolList(ctx context.Context, _ any, _ *mcpgo.ListToolsRequest, result *mcpgo.ListToolsResult) {
+	result.Tools = s.visibleTools(ctx, result.Tools)
+}
+
 // registerPublicTools records every tool a module declares public
 // (apimodule.MCPPublicToolLister) in the tool registry. It runs after every
 // built-in and module permission registration, so the registry can refuse a

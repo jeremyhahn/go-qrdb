@@ -193,7 +193,7 @@ func (h *ParseHandler) refuseWhileSealed() error {
 // literal "?": the latter also matches a "?" that appears inside a string
 // literal with zero real parameters (e.g. "WHERE msg = 'what?'"), which
 // would incorrectly defer a query that has no bind variables at all.
-func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.PreparedStatements, error) {
+func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.PreparedStatements, error) {
 	// Fail closed while the storage barrier is sealed: every query is
 	// rejected with SQLSTATE 57P03 until the operator drives the unseal
 	// API, mirroring the 503 / Unavailable envelope on the other
@@ -202,7 +202,7 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 		return nil, err
 	}
 
-	trimmed := strings.TrimSpace(query)
+	trimmed := strings.TrimSpace(query.Query)
 	if trimmed == "" {
 		return h.emptyResult()
 	}
@@ -218,11 +218,11 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	if statements := engine.SplitTopLevelStatements(trimmed); len(statements) > 1 &&
 		!engine.MatchesOutsideLiterals(trimmed, wire.QueryParameters) {
 		for _, statement := range statements[:len(statements)-1] {
-			if _, err := h.HandleParse(ctx, statement); err != nil {
+			if _, err := h.HandleParse(ctx, wire.Query{Query: statement, SimpleQuery: query.SimpleQuery}); err != nil {
 				return nil, err
 			}
 		}
-		return h.HandleParse(ctx, statements[len(statements)-1])
+		return h.HandleParse(ctx, wire.Query{Query: statements[len(statements)-1], SimpleQuery: query.SimpleQuery})
 	}
 
 	// PostgreSQL's END/END WORK/END TRANSACTION are aliases for COMMIT that

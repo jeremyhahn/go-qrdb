@@ -63,7 +63,7 @@ func TestNewParseHandler(t *testing.T) {
 
 func TestHandleParse_EmptyQuery(t *testing.T) {
 	h := newTestParseHandler(t)
-	stmts, err := h.HandleParse(context.Background(), "")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: ""})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 	assert.Len(t, stmts, 1)
@@ -71,7 +71,7 @@ func TestHandleParse_EmptyQuery(t *testing.T) {
 
 func TestHandleParse_WhitespaceOnly(t *testing.T) {
 	h := newTestParseHandler(t)
-	stmts, err := h.HandleParse(context.Background(), "   \t\n  ")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "   \t\n  "})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 	assert.Len(t, stmts, 1)
@@ -92,7 +92,7 @@ func TestHandleParse_TransactionControlNoops(t *testing.T) {
 
 	for _, query := range noops {
 		t.Run(query, func(t *testing.T) {
-			stmts, err := h.HandleParse(context.Background(), query)
+			stmts, err := h.HandleParse(context.Background(), wire.Query{Query: query})
 			require.NoError(t, err)
 			require.NotNil(t, stmts)
 			assert.Len(t, stmts, 1)
@@ -114,7 +114,7 @@ func TestHandleParse_SessionCommandNoops(t *testing.T) {
 
 	for _, query := range noops {
 		t.Run(query, func(t *testing.T) {
-			stmts, err := h.HandleParse(context.Background(), query)
+			stmts, err := h.HandleParse(context.Background(), wire.Query{Query: query})
 			require.NoError(t, err)
 			require.NotNil(t, stmts)
 			assert.Len(t, stmts, 1)
@@ -135,7 +135,7 @@ func TestHandleParse_SelectFromKV(t *testing.T) {
 	translator := engine.NewTranslator()
 	h := NewParseHandler(sqlEngine, translator, "qrdb")
 
-	stmts, err := h.HandleParse(context.Background(), "SELECT * FROM kv")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "SELECT * FROM kv"})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 	assert.Len(t, stmts, 1)
@@ -143,7 +143,7 @@ func TestHandleParse_SelectFromKV(t *testing.T) {
 
 func TestHandleParse_InvalidSQL(t *testing.T) {
 	h := newTestParseHandler(t)
-	_, err := h.HandleParse(context.Background(), "INVALID SYNTAX HERE !@#$")
+	_, err := h.HandleParse(context.Background(), wire.Query{Query: "INVALID SYNTAX HERE !@#$"})
 	require.Error(t, err)
 
 	var queryErr *QueryError
@@ -152,7 +152,7 @@ func TestHandleParse_InvalidSQL(t *testing.T) {
 
 func TestHandleParse_NonExistentTable(t *testing.T) {
 	h := newTestParseHandler(t)
-	_, err := h.HandleParse(context.Background(), "SELECT * FROM nonexistent")
+	_, err := h.HandleParse(context.Background(), wire.Query{Query: "SELECT * FROM nonexistent"})
 	require.Error(t, err)
 
 	var queryErr *QueryError
@@ -174,7 +174,7 @@ func TestHandleParse_WithIdentity(t *testing.T) {
 	}
 	ctx := context.WithValue(context.Background(), identityContextKey{}, identity)
 
-	stmts, err := h.HandleParse(ctx, "SELECT * FROM kv")
+	stmts, err := h.HandleParse(ctx, wire.Query{Query: "SELECT * FROM kv"})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 }
@@ -645,7 +645,7 @@ func TestHandleParse_InsertAndSelect(t *testing.T) {
 	h := NewParseHandler(sqlEngine, translator, "qrdb")
 
 	// Insert a row.
-	stmts, err := h.HandleParse(context.Background(), "INSERT INTO kv (`key`, `value`) VALUES ('test-key', 'test-value')")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "INSERT INTO kv (`key`, `value`) VALUES ('test-key', 'test-value')"})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 	assert.Len(t, stmts, 1)
@@ -662,7 +662,7 @@ func TestHandleParse_Delete(t *testing.T) {
 	translator := engine.NewTranslator()
 	h := NewParseHandler(sqlEngine, translator, "qrdb")
 
-	stmts, err := h.HandleParse(context.Background(), "DELETE FROM kv WHERE `key` = 'key1'")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "DELETE FROM kv WHERE `key` = 'key1'"})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 }
@@ -675,7 +675,7 @@ func TestHandleParse_PGSyntaxTranslation(t *testing.T) {
 	h := NewParseHandler(sqlEngine, translator, "qrdb")
 
 	// PG-style double-quoted identifier should be translated.
-	stmts, err := h.HandleParse(context.Background(), `SELECT "key" FROM kv`)
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: `SELECT "key" FROM kv`})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 }
@@ -1015,7 +1015,7 @@ func TestHandleParse_ParameterizedInsert(t *testing.T) {
 	// A parameterized INSERT with $1/$2 placeholders should take the
 	// deferred execution path and return a PreparedStatement without
 	// executing immediately.
-	stmts, err := h.HandleParse(context.Background(), `INSERT INTO kv ("key", "value") VALUES ($1, $2)`)
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: `INSERT INTO kv ("key", "value") VALUES ($1, $2)`})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 	assert.Len(t, stmts, 1)
@@ -1039,14 +1039,14 @@ func TestHandleParse_NoParams_EagerExecution(t *testing.T) {
 	// A non-parameterized SELECT should execute eagerly during HandleParse.
 	// The query contains no $N placeholders, so it takes the eager path
 	// and the result is returned successfully with one prepared statement.
-	stmts, err := h.HandleParse(context.Background(), "SELECT * FROM kv")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "SELECT * FROM kv"})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 	assert.Len(t, stmts, 1)
 
 	// Contrast with a parameterized variant: adding $1 should take the
 	// deferred path instead, producing a different code path.
-	stmtsDeferred, err := h.HandleParse(context.Background(), `SELECT * FROM kv WHERE "key" = $1`)
+	stmtsDeferred, err := h.HandleParse(context.Background(), wire.Query{Query: `SELECT * FROM kv WHERE "key" = $1`})
 	require.NoError(t, err)
 	require.NotNil(t, stmtsDeferred)
 	assert.Len(t, stmtsDeferred, 1)
@@ -1753,7 +1753,7 @@ func TestHandleParse_TruncateRestartIdentity_ClausedStrippedBeforeTranslation(t 
 	// fail with a *TranslationError before ever reaching the engine. It
 	// must instead fail with a *QueryError from the engine rejecting the
 	// (real) missing table, proving the clause was stripped first.
-	_, err = h.HandleParse(connCtx, "TRUNCATE missing_table RESTART IDENTITY")
+	_, err = h.HandleParse(connCtx, wire.Query{Query: "TRUNCATE missing_table RESTART IDENTITY"})
 	require.Error(t, err)
 	var queryErr *QueryError
 	assert.ErrorAs(t, err, &queryErr)
@@ -1772,9 +1772,9 @@ func TestHandleParse_EndCommitsRealTransaction(t *testing.T) {
 	connCtx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 
-	_, err = h.HandleParse(connCtx, "BEGIN")
+	_, err = h.HandleParse(connCtx, wire.Query{Query: "BEGIN"})
 	require.NoError(t, err)
-	_, err = h.HandleParse(connCtx, "END")
+	_, err = h.HandleParse(connCtx, wire.Query{Query: "END"})
 	require.NoError(t, err, "END must be accepted as a real COMMIT, not rejected as invalid syntax")
 }
 

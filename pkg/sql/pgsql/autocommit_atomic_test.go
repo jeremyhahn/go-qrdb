@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	wire "github.com/jeroenrinzema/psql-wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -46,7 +47,7 @@ func TestPGWire_AutocommitStatementIsAtomic(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 	run := func(q string) error {
-		_, err := h.HandleParse(ctx, q)
+		_, err := h.HandleParse(ctx, wire.Query{Query: q})
 		return err
 	}
 
@@ -104,6 +105,6 @@ func TestPGWire_CommitFailureIsReported(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 
-	_, err = h.HandleParse(ctx, "INSERT INTO notes (id) VALUES (7)")
+	_, err = h.HandleParse(ctx, wire.Query{Query: "INSERT INTO notes (id) VALUES (7)"})
 	require.Error(t, err, "the statement's commit lost to a concurrent insert of the same key")
 }

@@ -11,6 +11,42 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **Every direct dependency on its latest release** (go-qrdb#764), in the
+  root, `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof` modules
+  in lockstep: `github.com/go-chi/chi/v5` v5.3.2 -> v5.5.0,
+  `github.com/jeroenrinzema/psql-wire` v0.18.0 -> v0.20.0,
+  `github.com/mark3labs/mcp-go` v0.45.0 -> v1.3.0,
+  `github.com/quic-go/quic-go` v0.63.0 -> v0.64.0,
+  `github.com/wailsapp/wails/v2` v2.12.0 -> v2.16.0,
+  `golang.org/x/net` v0.60.0 -> v0.61.0,
+  `golang.org/x/tools` v0.51.0 -> v0.52.0,
+  `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260810153831-ec0a7760b754
+  -> v0.0.0-20261012220534-4341edf3f941,
+  `google.golang.org/grpc` v1.83.2 -> v1.84.0 and
+  `software.sslmate.com/src/go-pkcs12` v0.7.3 -> v0.7.4. `test/performance/qrdb`
+  takes `github.com/quic-go/quic-go` v0.61.0 -> v0.64.0 and
+  `google.golang.org/grpc` v1.83.0 -> v1.84.0. mcp-go v1 replaces
+  `github.com/invopop/jsonschema` with `github.com/google/jsonschema-go` and
+  `github.com/santhosh-tekuri/jsonschema/v6` in the indirect graph.
+  - **grpc v1.84.0 is taken.** The 0.31.0-alpha hold for GO-2026-6443 no
+    longer applies: `govulncheck` does not flag v1.84.0.
+  - **psql-wire v0.20:** the PostgreSQL server's `HandleParse` takes the new
+    `wire.Query` parse argument.
+  - **mcp-go v1:** `tools/list` is narrowed to the tools the caller may call
+    in an after-list hook rather than with `WithToolFilter`, because since v1 a
+    tool filter also refuses `tools/call` ahead of the authorization
+    middleware, so a refused call would answer "tool not found" without
+    `AuthorizeMCP`'s `permission_denied`, its audit record or its rate-limit
+    charge.
+  - **Held:** go-enclave stays at v0.8.0-alpha in the root and `sdk/go`;
+    v0.9.0-alpha is released, but go-quicraft, go-objstore and go-truststrap
+    have not yet released on it. `test/performance/qrdb` keeps go-qrdb and
+    `sdk/go` at v0.7.0-alpha: its Dockerfile, the module's only build,
+    replaces go-qrdb with the build context, and moving both to the newest
+    tag waits on a build of the module against that tag's published source.
+
 ## [0.50.0-alpha] - 2026-10-16
 
 ### Added

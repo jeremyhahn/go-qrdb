@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	wire "github.com/jeroenrinzema/psql-wire"
 	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 	"github.com/stretchr/testify/assert"
@@ -75,7 +76,7 @@ func TestHandleParse_Sealed_RejectsQuery(t *testing.T) {
 	h := NewParseHandler(nil, nil, "qrdb")
 	h.sealedProbe = probe
 
-	stmts, err := h.HandleParse(context.Background(), "SELECT 1")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "SELECT 1"})
 	require.Nil(t, stmts)
 	require.Error(t, err)
 
@@ -95,12 +96,12 @@ func TestHandleParse_ReSeal_EngagesGate(t *testing.T) {
 	h.sealedProbe = probe
 
 	// Unsealed: an empty query passes the gate and hits the no-op path.
-	stmts, err := h.HandleParse(context.Background(), "")
+	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: ""})
 	require.NoError(t, err)
 	require.NotNil(t, stmts)
 
 	probe.sealed.Store(true)
-	stmts, err = h.HandleParse(context.Background(), "")
+	stmts, err = h.HandleParse(context.Background(), wire.Query{Query: ""})
 	require.Nil(t, stmts)
 	var sealedErr *BarrierSealedError
 	require.ErrorAs(t, err, &sealedErr)
@@ -148,13 +149,13 @@ func TestSealedSessionHandler_Unconfirmed_IsNotSealed(t *testing.T) {
 func TestHandleParse_Unconfirmed_IsNotSealed(t *testing.T) {
 	h := NewParseHandler(nil, nil, "qrdb")
 	h.sealedProbe = stateSealedProbe{sealed: true, unconfirmed: true}
-	_, err := h.HandleParse(context.Background(), "SELECT 1")
+	_, err := h.HandleParse(context.Background(), wire.Query{Query: "SELECT 1"})
 	var unconfirmed *SealStateUnconfirmedError
 	require.ErrorAs(t, err, &unconfirmed)
 	assert.Equal(t, psqlerr.LevelError, psqlerr.Flatten(err).Severity)
 
 	h.sealedProbe = stateSealedProbe{sealed: true}
-	_, err = h.HandleParse(context.Background(), "SELECT 1")
+	_, err = h.HandleParse(context.Background(), wire.Query{Query: "SELECT 1"})
 	var sealedErr *BarrierSealedError
 	require.ErrorAs(t, err, &sealedErr)
 	assert.NotErrorAs(t, err, &unconfirmed)

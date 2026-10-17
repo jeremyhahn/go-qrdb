@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	wire "github.com/jeroenrinzema/psql-wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -59,7 +60,7 @@ func (h *ParseHandler) lockConn(t *testing.T) *pgLockConn {
 }
 
 func (c *pgLockConn) exec(query string) error {
-	_, err := c.h.HandleParse(c.ctx, query)
+	_, err := c.h.HandleParse(c.ctx, wire.Query{Query: query})
 	return err
 }
 

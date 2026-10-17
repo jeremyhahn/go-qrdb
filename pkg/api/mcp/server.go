@@ -742,9 +742,15 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	for _, mw := range s.toolMiddlewares {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(mw))
 	}
-	// tools/list shows each caller what it may call (visibleTools).
+	// tools/list shows each caller what it may call (visibleTools). It is
+	// narrowed in an after-list hook, not by WithToolFilter: since mcp-go v1 a
+	// tool filter also refuses tools/call, ahead of toolAuthzMiddleware, so a
+	// refused call would answer "tool not found" without AuthorizeMCP's
+	// permission_denied, audit record or rate-limit charge.
 	if s.authMW != nil {
-		mcpOpts = append(mcpOpts, mcpserver.WithToolFilter(s.visibleTools))
+		hooks := &mcpserver.Hooks{}
+		hooks.AddAfterListTools(s.filterToolList)
+		mcpOpts = append(mcpOpts, mcpserver.WithHooks(hooks))
 	}
 	s.mcpSrv = mcpserver.NewMCPServer(
 		"qrdb",

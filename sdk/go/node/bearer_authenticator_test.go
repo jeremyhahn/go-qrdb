@@ -19,6 +19,7 @@ package node
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -256,9 +257,11 @@ func bearerTransports() []bearerTransport {
 				}
 				return nil
 			},
+			// A 401 surfaces from mcp-go's transport as ErrAuthorizationRequired;
+			// a refusal inside the tool gate as an unauthenticated tool error.
 			unauthenticated: func(err error) bool {
-				msg := strings.ToLower(err.Error())
-				return strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized") || strings.Contains(msg, "unauthenticated")
+				return errors.Is(err, mcptransport.ErrAuthorizationRequired) ||
+					strings.Contains(strings.ToLower(err.Error()), "unauthenticated")
 			},
 		},
 	}
