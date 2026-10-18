@@ -457,7 +457,14 @@ func TestReplicaForwardMCP_UnreachableRetriesTheNextReplica(t *testing.T) {
 
 func TestReplicaForwardMCP_AFailureAfterSendingIsNotRetried(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
-	b := startMCPTarget(t, ca, "node-1", "raft-b", withMCPAnswer(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }))
+	// The target holds the call until the test ends, not until its request
+	// context does: the forwarder gives up by closing the connection, which
+	// ends that context while the connection may still carry an answer, and
+	// an answer written then would be the target's own, relayed.
+	hold := make(chan struct{})
+	b := startMCPTarget(t, ca, "node-1", "raft-b", withMCPAnswer(func(context.Context) error { <-hold; return nil }))
+	// Registered after b starts, so it runs before b's server closes.
+	t.Cleanup(func() { close(hold) })
 	cc := startMCPTarget(t, ca, "node-2", "raft-c")
 	c := newMCPFwdCluster(t, ca, 500*time.Millisecond, b, cc)
 	c.awaitConnected(t, b)

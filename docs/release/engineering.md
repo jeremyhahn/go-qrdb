@@ -250,6 +250,11 @@ cancelled and a skipped leg. The job is in the full tier (architecture.md, "CI
 tiers"): every leg shares its full-tier `if:`, so a plain pull request skips
 them together and `ci-gate` excuses that skip; a push to `main`, a dispatch or
 a `ci:full` pull request runs all of them from its next push, update-branch or dispatch (a label change alone starts no run).
+No leg starts before `lint`, `test` and `test-sdk` have passed: the job needs
+all three, as do `integration-standalone` and `trivy`, so a tree the PR tier
+fails holds no runner for the legs. The label goes on once, when the pull
+request is green on the PR tier and ready to merge (architecture.md, "CI
+tiers").
 
 Each leg runs on a shared `ubuntu-latest` (bare-metal) runner, like every other
 job. Those runners are loaded (load averages of 40 to 70 on 80 threads), and

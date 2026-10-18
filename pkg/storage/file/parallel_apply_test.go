@@ -54,7 +54,12 @@ func distinctKeys(n int) [][]byte {
 // the commit waits about one directory sync for all of them rather than one
 // per key in a row.
 func TestCommit_RecordSyncsOverlap(t *testing.T) {
-	const n, delay = 32, 25 * time.Millisecond
+	// The delay dominates the commit's own CPU so the bound below measures
+	// sync depth, not instrumentation: under -race with GOFIPS140 every
+	// record's temp name draws on a FIPS DRBG that sync.Pool's race-mode
+	// eviction keeps reseeding from the jitter entropy source, which at
+	// 25ms pushed a fully overlapped commit past the bound (go-qrdb#20).
+	const n, delay = 32, 100 * time.Millisecond
 	e, err := New(memdir.TempDir(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)

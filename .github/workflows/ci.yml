@@ -869,10 +869,15 @@ jobs:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    # needs deliberately EXCLUDES lint, and now actually does (#143) — see the
-    # `test` job above for the full reasoning and for what this list used to
-    # say. `ci-gate` requires lint directly and fails closed on `skipped`.
-    needs: [build]
+    # needs is the whole PR tier, lint included (#785): a full-tier leg runs
+    # only once lint, test and test-sdk have passed, so a pull request that
+    # fails one of them never holds the shared runners for the long legs. This
+    # is the one place #143's lint decoupling (see the `test` job above) does
+    # not reach: #143 keeps a result that could exist existing, and an
+    # integration leg on a tree whose unit tests are red is not one worth the
+    # runners. `build` stays upstream through `test`; no `if:` here reads its
+    # outputs. `ci-gate` requires lint directly and fails closed on `skipped`.
+    needs: [lint, test, test-sdk]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -948,8 +953,10 @@ jobs:
   # other than the full one, and on a step that narrows the target.
   #
   # Full tier (#674): every push to main, every dispatch, and a pull request
-  # labelled `ci:full`, which a change touching clustering, tenancy,
-  # bootstrap or seal should carry. fail-fast is off so one red leg does not
+  # labelled `ci:full`, which goes on once, when the PR is green on the PR
+  # tier and ready to merge (#785). Like `integration-standalone` it needs
+  # lint, test and test-sdk, so no leg starts on a tree the PR tier has
+  # already failed. fail-fast is off so one red leg does not
   # cancel the others' results. ci-gate reads the job's aggregate result,
   # which is failure when any leg fails.
   #
@@ -962,7 +969,7 @@ jobs:
     name: Integration (${{ matrix.feature }})
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [build]
+    needs: [lint, test, test-sdk]
     timeout-minutes: 45
     # CUSTOMIZE (ci-template v1.18, integration job that starts containers):
     # the suite runs in the devcontainer `integration` image built at this
@@ -1017,8 +1024,8 @@ jobs:
     # burns, cancellation sheds a SUPERSEDED one — so keep both, and do not
     # drop `needs: [lint, build]`.
     #
-    # This job KEEPS `lint` in needs while the three test jobs above dropped it
-    # (#143), and the asymmetry is deliberate rather than an oversight. #143's
+    # This job KEEPS `lint` in needs while `test` and `test-sdk` above dropped
+    # it (#143), and the asymmetry is deliberate rather than an oversight. #143's
     # argument is that a test result which could have existed should exist; a
     # gosec and govulncheck pass over the whole module graph is the expensive
     # tier the owner ruling stages precisely to avoid burning, and its findings
@@ -1149,21 +1156,23 @@ jobs:
   #
   # Full tier since #674 (devops.md §8a: `trivy fs` runs in the full tier or
   # the nightly, not per pull request): every push to main, every dispatch,
-  # and a PR labelled `ci:full` -- which a dependency bump should carry, so
-  # the advisory surfaces before the merge rather than at it.
+  # and a PR labelled `ci:full` -- which goes on once, when the PR is green on
+  # the PR tier and ready to merge (#785), so the advisory surfaces before the
+  # merge rather than at it.
   #
   # Only the CRITICAL/HIGH gate runs here. The MEDIUM/LOW report stays in
   # nightly.yml, where it "blocks no merge" by design, and so does the
   # dispatched run on a quiet tree -- which is what catches advisories
   # published against a tree that nobody pushes to.
   #
-  # Same DAG position as `security` (needs lint + build) under the staged
-  # fail-fast ruling, though trivy itself needs neither.
+  # Same DAG position as the integration jobs (needs lint, test and test-sdk,
+  # #785): a full-tier job starts only once the PR tier has passed, though
+  # trivy itself needs none of them.
   trivy:
     name: Trivy
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [lint, build]
+    needs: [lint, test, test-sdk]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 

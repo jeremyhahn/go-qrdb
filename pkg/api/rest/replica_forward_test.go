@@ -321,22 +321,37 @@ func TestReplicaForwardREST_UnreachableRetriesTheNextReplica(t *testing.T) {
 }
 
 func TestReplicaForwardREST_AFailureAfterSendingIsNotRetried(t *testing.T) {
-	for name, answer := range map[string]func(w http.ResponseWriter, r *http.Request) bool{
-		"connection dropped": func(w http.ResponseWriter, _ *http.Request) bool {
-			conn, _, err := http.NewResponseController(w).Hijack()
-			if err == nil {
-				_ = conn.Close()
+	for name, answer := range map[string]func(hold <-chan struct{}) func(w http.ResponseWriter, r *http.Request) bool{
+		"connection dropped": func(<-chan struct{}) func(w http.ResponseWriter, r *http.Request) bool {
+			return func(w http.ResponseWriter, _ *http.Request) bool {
+				conn, _, err := http.NewResponseController(w).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+				return true
 			}
-			return true
 		},
-		"timeout": func(_ http.ResponseWriter, r *http.Request) bool {
-			<-r.Context().Done()
-			return true
+		// The target took the request and did not answer in time. It holds
+		// the request until the subtest ends, not until its request context
+		// does: the forwarder gives up by closing the connection, and the
+		// TLS close_notify sent first ends that context while the connection
+		// can still carry an answer. An answer written then races the close,
+		// and net/http's transport, given both, relays the answer -- the
+		// target's own 200, not the failure this subtest is about.
+		"timeout": func(hold <-chan struct{}) func(w http.ResponseWriter, r *http.Request) bool {
+			return func(http.ResponseWriter, *http.Request) bool {
+				<-hold
+				return true
+			}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := replicaforwardtest.NewCA(t)
-			b := startRESTTarget(t, ca, "node-1", "raft-b", withRESTAnswer(answer))
+			hold := make(chan struct{})
+			b := startRESTTarget(t, ca, "node-1", "raft-b", withRESTAnswer(answer(hold)))
+			// Registered after b starts, so it runs before b's server
+			// closes and waits on the held request.
+			t.Cleanup(func() { close(hold) })
 			cc := startRESTTarget(t, ca, "node-2", "raft-c")
 			c := newRESTFwdCluster(t, ca, 300*time.Millisecond, b, cc)
 			c.awaitConnected(t, b)
@@ -348,7 +363,7 @@ func TestReplicaForwardREST_AFailureAfterSendingIsNotRetried(t *testing.T) {
 			var body errorResponse
 			_ = json.Unmarshal([]byte(resp.body), &body)
 			if resp.status < 500 || body.Code == replicaforward.ReasonNotAReplica {
-				t.Fatalf("answer %d %+v; want the failure, not the refusal", resp.status, body)
+				t.Fatalf("answer %d %s (b %d calls, c %d); want the failure, not the refusal", resp.status, resp.body, b.calls.Load(), cc.calls.Load())
 			}
 			if cc.calls.Load() != 0 {
 				t.Fatalf("a request that may have applied was sent again (%d)", cc.calls.Load())

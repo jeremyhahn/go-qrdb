@@ -190,6 +190,17 @@ cancelled the PR's run in progress), so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
 `workflow_dispatch`.
 
+The full-tier jobs wait on the PR tier: `integration-standalone`,
+`integration-features` and `trivy` each need `lint`, `test` and `test-sdk`
+(and `build` through them), so none starts until all three have passed, and a
+pull request that fails lint or a unit suite never holds the shared runners
+for the long legs. A full-tier run on a tree whose PR tier is red therefore
+reports those jobs `skipped`, which `ci-gate` fails.
+
+The `ci:full` label goes on a pull request once, when it is green on the PR
+tier and ready to merge, never earlier and never twice; a `workflow_dispatch`
+of the full tier on the PR branch is the accepted alternative.
+
 No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`.

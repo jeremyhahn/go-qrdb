@@ -98,14 +98,27 @@ func TestIntegration_MaxConnsPerPeer_RefusesOverCapHTTP3Connection(t *testing.T)
 	}
 	t.Cleanup(func() { _ = second.CloseWithError(0, "test done") })
 
+	// The client's dial returns when its side of the handshake completes;
+	// the server admits a connection only when its own side completes, so
+	// the two can be admitted in either order. Under -race with GOFIPS140
+	// the server finished the second handshake first in about one fresh
+	// process in five (go-qrdb#20) and refused the first connection. The
+	// cap is one per peer, so the behaviour to assert is that exactly one
+	// of the two is refused and the other stays open.
+	refused, admitted := second, first
 	select {
 	case <-second.Context().Done():
+	case <-first.Context().Done():
+		refused, admitted = first, second
 	case <-time.After(3 * time.Second):
 		t.Fatal("over-cap HTTP/3 connection was not refused within timeout")
 	}
+	if err := admitted.Context().Err(); err != nil {
+		t.Fatalf("both connections from one peer were closed under a cap of one: %v", context.Cause(admitted.Context()))
+	}
 
 	var appErr *quicgo.ApplicationError
-	closeErr := context.Cause(second.Context())
+	closeErr := context.Cause(refused.Context())
 	if !errors.As(closeErr, &appErr) {
 		t.Fatalf("expected an ApplicationError closing the refused connection, got %v (%T)", closeErr, closeErr)
 	}
