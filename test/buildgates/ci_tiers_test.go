@@ -31,8 +31,11 @@ package buildgates
 //   - a PR-tier job that needs a full-tier one, and so skips with it;
 //   - a pull_request trigger with `labeled`, so every label change starts a
 //     run that cancels the PR's run in progress (#853);
-//   - a pull_request workflow without the ref-keyed concurrency group whose
-//     cancel-in-progress spares main (devops.md §9, ci-template v1.22.1), or any workflow regaining a `schedule:` (owner ruling
+//   - ci.yml without ci-template v1.23's concurrency block (a main group per
+//     event and commit, a literal cancel-in-progress; Company Agent m701);
+//   - any other pull_request workflow without the ref-keyed concurrency group
+//     whose cancel-in-progress spares main (devops.md §9, ci-template
+//     v1.22.1), or any workflow regaining a `schedule:` (owner ruling
 //     2026-10-11: no workflow runs on a cron).
 //
 // The gate's own shell is executed, not read: TestCIGateScriptHonoursTheTiers
@@ -72,6 +75,21 @@ const (
 	// cancelOffMain is ci-template v1.22.1's cancel-in-progress (devops.md
 	// §9): a PR ref's newer run cancels the older, a run on main never is.
 	cancelOffMain = "${{ github.ref != 'refs/heads/main' }}"
+
+	// ciWorkflowName is the one workflow on ci-template v1.23's concurrency block
+	// (Company Agent m701); every other pull_request workflow keeps the
+	// v1.22.1 pair above.
+	ciWorkflowName = "ci.yml"
+
+	// mainKeyedGroup is ci-template v1.23's concurrency group: a PR ref is
+	// one group, and on main the group carries the event and the commit, so
+	// no main run cancels or waits for another.
+	mainKeyedGroup = "${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}"
+
+	// cancelLiteral is ci-template v1.23's cancel-in-progress. Gitea 1.27.1
+	// never released go-qrdb main runs 57063 and 57200 while it was an
+	// expression, so no expression reaches it.
+	cancelLiteral = "true"
 
 	// scheduleExempt is the one workflow allowed a `schedule:`. automerge.yml
 	// is under owner hold and out of #674's scope.
@@ -578,15 +596,20 @@ func workflowTriggerProblems(name string, wf workflowFile) []string {
 			}
 		}
 	}
-	if group != refKeyedGroup {
-		problems = append(problems, name+" runs on pull_request but its concurrency group is "+
-			strconv.Quote(group)+", not "+refKeyedGroup+" (devops.md §9)")
-	}
-	// The canonical value (ci-template v1.22.1): a PR ref's newer run cancels
+	// ci.yml takes ci-template v1.23's pair (Company Agent m701); the other
+	// pull_request workflows keep v1.22.1's: a PR ref's newer run cancels
 	// the older, and a run on main is never cancelled.
-	if cancel != cancelOffMain {
+	wantGroup, wantCancel := refKeyedGroup, cancelOffMain
+	if name == ciWorkflowName {
+		wantGroup, wantCancel = mainKeyedGroup, cancelLiteral
+	}
+	if group != wantGroup {
+		problems = append(problems, name+" runs on pull_request but its concurrency group is "+
+			strconv.Quote(group)+", not "+wantGroup+" (devops.md §9)")
+	}
+	if cancel != wantCancel {
 		problems = append(problems, name+" runs on pull_request but cancel-in-progress is "+
-			strconv.Quote(cancel)+", not "+cancelOffMain+" (devops.md §9)")
+			strconv.Quote(cancel)+", not "+wantCancel+" (devops.md §9)")
 	}
 	return problems
 }
@@ -647,17 +670,34 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	if p := workflowTriggerProblems(scheduleExempt, parse("on:\n  schedule:\n    - cron: '0 3 * * *'\n")); len(p) != 0 {
 		t.Fatalf("%s is exempt from the schedule rule, got %v", scheduleExempt, p)
 	}
-	cases := map[string]string{
-		"schedule":                "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n",
-		"no concurrency":          "on:\n  pull_request:\n",
-		"group not ref-keyed":     strings.Replace(good, refKeyedGroup, "${{ github.workflow }}", 1),
-		"cancel-in-progress off":  strings.Replace(good, cancelOffMain, "false", 1),
-		"cancels on main too":     strings.Replace(good, cancelOffMain, "true", 1),
-		"cancel-in-progress gone": strings.Replace(good, "  cancel-in-progress: "+cancelOffMain+"\n", "", 1),
+	const ciGood = "on:\n  pull_request:\n  workflow_dispatch:\nconcurrency:\n  group: " + mainKeyedGroup + "\n  cancel-in-progress: " + cancelLiteral + "\n"
+	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {
+		t.Fatalf("the valid %s fixture must have no problems, got %v", ciWorkflowName, p)
 	}
-	for name, body := range cases {
+	type fixture struct{ file, body string }
+	cases := map[string]fixture{
+		"schedule":                {"x.yml", "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n"},
+		"no concurrency":          {"x.yml", "on:\n  pull_request:\n"},
+		"group not ref-keyed":     {"x.yml", strings.Replace(good, refKeyedGroup, "${{ github.workflow }}", 1)},
+		"cancel-in-progress off":  {"x.yml", strings.Replace(good, cancelOffMain, "false", 1)},
+		"cancels on main too":     {"x.yml", strings.Replace(good, cancelOffMain, "true", 1)},
+		"cancel-in-progress gone": {"x.yml", strings.Replace(good, "  cancel-in-progress: "+cancelOffMain+"\n", "", 1)},
+		"other workflow on v1.23": {"x.yml", ciGood},
+		"ci.yml cancel expression": {ciWorkflowName,
+			strings.Replace(ciGood, "cancel-in-progress: "+cancelLiteral, "cancel-in-progress: "+cancelOffMain, 1)},
+		"ci.yml main group lacks sha": {ciWorkflowName,
+			strings.Replace(ciGood, "format('main-{0}-{1}', github.event_name, github.sha)", "format('main-{0}', github.event_name)", 1)},
+		"ci.yml v1.22.1 group":  {ciWorkflowName, strings.Replace(ciGood, mainKeyedGroup, refKeyedGroup, 1)},
+		"ci.yml v1.22.1 block":  {ciWorkflowName, good},
+		"ci.yml no concurrency": {ciWorkflowName, "on:\n  pull_request:\n"},
+		"ci.yml cancel false":   {ciWorkflowName, strings.Replace(ciGood, "cancel-in-progress: "+cancelLiteral, "cancel-in-progress: false", 1)},
+	}
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			if p := workflowTriggerProblems("x.yml", parse(body)); len(p) == 0 {
+			if c.file == ciWorkflowName && c.body == ciGood {
+				t.Fatal("the mutation left the valid fixture unchanged")
+			}
+			if p := workflowTriggerProblems(c.file, parse(c.body)); len(p) == 0 {
 				t.Fatal("expected at least one problem, got none")
 			}
 		})

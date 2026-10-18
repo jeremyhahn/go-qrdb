@@ -171,7 +171,7 @@ owner ruled a post-release consumer build unnecessary.
 The **Release Lockstep** workflow still audits every tag push and every push
 to `main`. It catches what `release-alpha`'s own pre-flight cannot see: a tag
 that is deleted or moved after the fact. It runs on pull requests too, under
-the same ref-keyed concurrency group as CI, whose
+ci-template v1.22.1's ref-keyed concurrency group, whose
 `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` spares `main`:
 it publishes nothing, so a superseded audit is safe to cancel, and a tag push
 is its own ref, so it supersedes only a re-push of the same tag. `release.yml`,
@@ -208,12 +208,17 @@ The `ci:full` label goes on a pull request once, when it is green on the PR
 tier and ready to merge, never earlier and never twice; a `workflow_dispatch`
 of the full tier on the PR branch is the accepted alternative.
 
-Every workflow on pull requests has one concurrency group per ref
-(ci-template v1.22.1, handbook `devops.md` §9): a newer push to a pull
-request's ref cancels that ref's older run, but a push to `main` never
-cancels an in-flight `main` run. The newer `main` run waits for it, so every
-commit on `main` keeps its run and every merge is validated.
-`test/buildgates/ci_tiers_test.go` holds the value.
+`ci.yml` takes ci-template v1.23's concurrency block (Company Agent m701): a
+literal `cancel-in-progress: true` and a `main`-specific group. A pull
+request's ref is one group, so a newer push to it cancels that ref's older
+run. On `main` the group carries the event and the commit, so each `main`
+commit and event has its own group, and no `main` run cancels or waits for
+another: every commit on `main` keeps its run and every merge is validated.
+No expression reaches `cancel-in-progress`; Gitea 1.27.1 never released two
+`main` runs while it was one. The other workflows on pull requests keep
+v1.22.1's one group per ref (handbook `devops.md` §9), whose
+`cancel-in-progress` expression spares `main`.
+`test/buildgates/ci_tiers_test.go` holds both values.
 
 No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
