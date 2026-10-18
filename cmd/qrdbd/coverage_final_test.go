@@ -315,35 +315,6 @@ func TestGenerateReplicaID_NeverExceedsMaxUint48(t *testing.T) {
 // covering the lines that reach PEM encoding (previously at 73-81%)
 // ---------------------------------------------------------------------------
 
-func TestGenerateCA_PEMOutputNonEmpty(t *testing.T) {
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(24 * time.Hour)
-	require.NoError(t, err)
-	assert.NotEmpty(t, caCertPEM)
-	assert.NotEmpty(t, caKeyPEM)
-	require.NotNil(t, caCert)
-	require.NotNil(t, caKey)
-	assert.True(t, caCert.IsCA)
-}
-
-func TestGenerateCA_IsCA(t *testing.T) {
-	_, _, caCert, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-	assert.True(t, caCert.IsCA, "CA certificate must have IsCA=true")
-	assert.Equal(t, "qrdb-ca", caCert.Subject.CommonName)
-}
-
-func TestGenerateCATLS_ReturnsFullBundle(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	require.NotNil(t, bundle)
-	assert.NotEmpty(t, bundle.CACertPEM)
-	assert.NotEmpty(t, bundle.CAKeyPEM)
-	assert.NotEmpty(t, bundle.CertPEM)
-	assert.NotEmpty(t, bundle.KeyPEM)
-	require.NotNil(t, bundle.TLSConfig)
-	require.NotNil(t, bundle.CACertPool)
-}
-
 // ---------------------------------------------------------------------------
 // tls.go: canonicalizePath — missing branches
 // ---------------------------------------------------------------------------

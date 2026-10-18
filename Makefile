@@ -536,7 +536,6 @@ PKG_TENANT         := ./pkg/tenant/...
 PKG_KVSTORE        := ./pkg/kvstore/...
 PKG_STORAGE        := ./pkg/storage/...
 PKG_STORAGE_FILE      := ./pkg/storage/file/...
-PKG_STORAGE_PARTITION := ./pkg/storage/partition/...
 PKG_SHARD          := ./pkg/shard/...
 PKG_CAPABILITIES   := ./pkg/capabilities/...
 PKG_PERMISSION     := ./pkg/permission/...
@@ -1008,10 +1007,6 @@ test-storage:
 .PHONY: test-storage-file
 test-storage-file:
 	$(GOTEST) $(TAG_FLAG) $(PKG_STORAGE_FILE)
-
-.PHONY: test-storage-partition
-test-storage-partition:
-	$(GOTEST) $(TAG_FLAG) $(PKG_STORAGE_PARTITION)
 
 .PHONY: test-shard
 test-shard:
@@ -1974,11 +1969,6 @@ coverage-storage: | _cover-dir
 coverage-storage-file: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/storage-file.out $(PKG_STORAGE_FILE)
 	$(call check-coverage,$(COVER_DIR)/storage-file.out,storage-file)
-
-.PHONY: coverage-storage-partition
-coverage-storage-partition: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/storage-partition.out $(PKG_STORAGE_PARTITION)
-	$(call check-coverage,$(COVER_DIR)/storage-partition.out,storage-partition)
 
 .PHONY: coverage-shard
 coverage-shard: | _cover-dir

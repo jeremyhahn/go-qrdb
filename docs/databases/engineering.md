@@ -270,9 +270,9 @@ must hold, at the entry's own log position, for it to apply:
   payload), so a trailing optional guard could not be told apart from it.
   A command with no guard is therefore byte-for-byte what it always was and
   applies unconditionally, including every command already in a Raft log.
-- **Served by**: the four state machines in `pkg/statemachine`
-  (`KVStateMachine`, `RegularStateMachine`, `FastStateMachine`,
-  `ConcurrentStateMachine`), `pkg/store`'s `PebbleStateMachine` and
+- **Served by**: the three state machines in `pkg/statemachine`
+  (`KVStateMachine`, `RegularStateMachine`, `FastStateMachine`),
+  `pkg/store`'s `PebbleStateMachine` and
   `MVCCStateMachine`, and `pkg/engine`'s `KVEngine` and `MVCCEngine`.
   `pkg/backend`'s `SimpleStateMachine` does not serve it and refuses it in
   the result.
@@ -346,7 +346,7 @@ A range delete removes every key in `[start, end)` in one Raft entry:
 - **Served by**: `KVStateMachine` on every backend an `sm_type` selects
   (`memory`/`standard`, `concurrent`, `highperf`, `fast`, and `disk` over
   every `sm_storage`), `RegularStateMachine`, `FastStateMachine`,
-  `ConcurrentStateMachine`, `pkg/store`'s `PebbleStateMachine` and
+  `pkg/store`'s `PebbleStateMachine` and
   `MVCCStateMachine`, and `pkg/engine`'s `KVEngine` and `MVCCEngine` on every
   storage backend. `pkg/statemachine/delete_range_test.go` drives the same
   contract through every state machine and backend, so an `sm_type` that

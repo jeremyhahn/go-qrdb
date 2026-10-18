@@ -15,30 +15,17 @@
 package main
 
 import (
-	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"sync/atomic"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
-)
-
-const (
-	// caValidity is the default validity duration for auto-generated CA
-	// certificates.
-	caValidity = clustertls.CAValidity
-
-	// nodeValidity is the default validity duration for auto-generated
-	// node (leaf) certificates.
-	nodeValidity = clustertls.NodeValidity
 )
 
 // TLSBundle holds the CA and leaf certificate material generated for a
@@ -225,38 +212,6 @@ func (b *TLSBundle) wireClientTrustPool() {
 	}
 	b.trustPool = clienttrust.New()
 	b.trustPool.Wire(b.TLSConfig)
-}
-
-// localSANs discovers all local DNS names and IP addresses suitable for
-// TLS certificate Subject Alternative Names. It always includes localhost,
-// 127.0.0.1, and ::1, and additionally adds the machine hostname and all
-// non-loopback unicast interface IPs.
-func localSANs() (dnsNames []string, ips []net.IP) {
-	return clustertls.LocalSANs()
-}
-
-// generateCA creates a self-signed ECDSA P-256 CA certificate with the
-// given validity duration.
-func generateCA(validity time.Duration) (caCertPEM, caKeyPEM []byte, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, err error) {
-	return clustertls.GenerateCA(validity)
-}
-
-// generateNodeCert creates an ECDSA P-256 leaf certificate signed by the
-// given CA with SANs for all local hostnames and interface IPs. When nodeURI
-// is provided and non-empty it is embedded as a URI SAN.
-func generateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validity time.Duration, nodeURI ...string) (certPEM, keyPEM []byte, err error) {
-	return clustertls.GenerateNodeCert(caCert, caKey, validity, nodeURI...)
-}
-
-// generateCATLS creates an ephemeral ECDSA P-256 CA and a leaf certificate
-// signed by that CA. nodeURI is an optional SPIFFE node URI SAN (see
-// generateNodeCert); callers that do not need the SAN omit the argument.
-func generateCATLS(nodeURI ...string) (*TLSBundle, error) {
-	m, err := clustertls.GenerateCABundle(nodeURI...)
-	if err != nil {
-		return nil, err
-	}
-	return tlsBundleFromMaterial(m)
 }
 
 // loadTLSFromDir attempts to load TLS certificate material from the

@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -273,55 +272,9 @@ func TestHostAdapter_ProposeWithMode_AllModes_NoError(t *testing.T) {
 // tls.go: generateCA happy path
 // ---------------------------------------------------------------------------
 
-func TestGenerateCA_ReturnsPEMAndParsedCert(t *testing.T) {
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	assert.NotEmpty(t, caCertPEM)
-	assert.NotEmpty(t, caKeyPEM)
-	assert.NotNil(t, caCert)
-	assert.NotNil(t, caKey)
-	assert.True(t, caCert.IsCA)
-	assert.Equal(t, "qrdb-ca", caCert.Subject.CommonName)
-}
-
-func TestGenerateCA_ShortValidity(t *testing.T) {
-	// Verify that very short validity durations are accepted.
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(24 * 60 * 60 * 1e9) // 24 hours in ns
-	require.NoError(t, err)
-
-	assert.NotEmpty(t, caCertPEM)
-	assert.NotEmpty(t, caKeyPEM)
-	assert.NotNil(t, caCert)
-	assert.NotNil(t, caKey)
-}
-
 // ---------------------------------------------------------------------------
 // tls.go: generateNodeCert happy path
 // ---------------------------------------------------------------------------
-
-func TestGenerateNodeCert_ReturnsPEM(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity)
-	require.NoError(t, err)
-
-	assert.NotEmpty(t, certPEM)
-	assert.NotEmpty(t, keyPEM)
-}
-
-func TestGenerateNodeCert_ValidKeyPair(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity)
-	require.NoError(t, err)
-
-	// Verify that the PEM pair is a valid tls.Certificate.
-	_, err = tls.X509KeyPair(certPEM, keyPEM)
-	require.NoError(t, err)
-}
 
 // ---------------------------------------------------------------------------
 // tls.go: wireCertReloader happy path

@@ -56,12 +56,6 @@ func TestFSMs_IndexOwnershipRefusalIsAnApplicationResult(t *testing.T) {
 		// Built from the exported constructors rather than the
 		// !integration-constrained helpers in *_subsystem_test.go, so this
 		// file carries no build constraint of its own.
-		"concurrent": func(im *mockIndexManager, cmd []byte) (sm.Result, error) {
-			csm := NewConcurrentStateMachine(1, 1, newMemStorage(), WithConcurrentIndexManager(im))
-			results := make([]sm.Result, 1)
-			err := csm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results)
-			return results[0], err
-		},
 		"regular": func(im *mockIndexManager, cmd []byte) (sm.Result, error) {
 			rsm := NewRegularStateMachine(WithRegularIndexManager(im))
 			results := make([]sm.Result, 1)

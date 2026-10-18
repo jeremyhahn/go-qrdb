@@ -102,15 +102,6 @@ func conformanceTargets() map[string]func(t *testing.T) conformanceTarget {
 				handlers: f.handlers,
 			}
 		},
-		"ConcurrentStateMachine": func(t *testing.T) conformanceTarget {
-			t.Helper()
-			c := NewConcurrentStateMachine(1, 1, newMemStorage())
-			return conformanceTarget{
-				apply:    updaterWithContext(c.Update),
-				lookup:   lookupWithContext(c.Lookup),
-				handlers: c.handlers,
-			}
-		},
 	}
 }
 
@@ -285,7 +276,7 @@ func TestStateMachines_PutIfAbsentContract(t *testing.T) {
 // two with no coverage, and a regression in either (including the documented
 // fail-open one) would have passed the suite (go-qrdb#86).
 //
-// Only FastStateMachine and ConcurrentStateMachine have this path; the other
+// Only FastStateMachine has this path; the other
 // two hold no cache in front of their backend.
 type shardedCacheTarget struct {
 	build  func(storage.Storage) conformanceTarget
@@ -300,14 +291,6 @@ func shardedCacheTargets() map[string]func(storage.Storage) conformanceTarget {
 				apply:    updaterWithContext(f.Update),
 				lookup:   lookupWithContext(f.Lookup),
 				handlers: f.handlers,
-			}
-		},
-		"ConcurrentStateMachine": func(store storage.Storage) conformanceTarget {
-			c := NewConcurrentStateMachine(1, 1, store)
-			return conformanceTarget{
-				apply:    updaterWithContext(c.Update),
-				lookup:   lookupWithContext(c.Lookup),
-				handlers: c.handlers,
 			}
 		},
 	}
@@ -559,14 +542,6 @@ func shardedPersistTargets() map[string]func(storage.Storage) (conformanceTarget
 				lookup:   lookupWithContext(f.Lookup),
 				handlers: f.handlers,
 			}, f
-		},
-		"ConcurrentStateMachine": func(store storage.Storage) (conformanceTarget, persistCloser) {
-			c := NewConcurrentStateMachine(1, 1, store)
-			return conformanceTarget{
-				apply:    updaterWithContext(c.Update),
-				lookup:   lookupWithContext(c.Lookup),
-				handlers: c.handlers,
-			}, c
 		},
 		// The third target is a COMPOSITION rather than a state machine that
 		// owns its storage, and it is the one go-qrdb#216 is about: sm_type

@@ -200,46 +200,11 @@ func (f *FastStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (s
 	return sm.Result{Value: kv.ResultStored}, nil
 }
 
-// handlePutIfAbsent stores the pair only when the key is absent.
-func (c *ConcurrentStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (sm.Result, error) {
-	key, value, err := decodeKeyValuePayload(payload, "put_if_absent")
-	if err != nil {
-		return sm.Result{}, err
-	}
-	k := string(key)
-
-	ownedValue := make([]byte, len(value))
-	copy(ownedValue, value)
-
-	s := c.concurrentShardFor(k)
-	claimed, serr := setIfAbsentLocked(&s.mu, s.data, s.claims, &s.order, k, ownedValue, c.storage.Get)
-	if serr != nil {
-		return sm.Result{}, serr
-	}
-	if !claimed.stored {
-		return sm.Result{Value: kv.ResultNotStored}, nil
-	}
-
-	// Synchronous for the same reason as FastStateMachine's — see the comment
-	// there (owner ruling 2026-08-23, go-qrdb#94).
-	if err := c.persistClaim(s, claimed, k, ownedValue, "put_if_absent_set"); err != nil {
-		return sm.Result{}, err
-	}
-
-	if c.watchManager != nil {
-		c.watchManager.Notify(k, ownedValue, revision, false)
-	}
-
-	return sm.Result{Value: kv.ResultStored}, nil
-}
-
-// setIfAbsentLocked is the guarded write for the two sharded-cache state
-// machines.
+// setIfAbsentLocked is the guarded write for the sharded-cache state machine.
 //
-// It takes the lock and the map rather than a shard because FastStateMachine
-// and ConcurrentStateMachine have structurally identical but distinct shard
-// types; passing the two fields keeps one implementation of the guard instead
-// of two that could drift, which is the failure this whole change is about.
+// It takes the lock and the map rather than a shard so the guard is one
+// implementation independent of the shard type, which is the failure this whole
+// change is about.
 //
 // The check and the write happen under ONE acquisition of the shard lock, so
 // no other apply can land between them.
@@ -376,9 +341,8 @@ func cacheClaimLocked(
 // ahead run on their own goroutines and need nothing this one holds.
 //
 // It takes the lock, the map and the storage write rather than a shard for the
-// same reason setIfAbsentLocked does: FastStateMachine and
-// ConcurrentStateMachine have structurally identical but distinct shard types,
-// and one implementation cannot drift from itself.
+// same reason setIfAbsentLocked does: the guard is one implementation
+// independent of the shard type.
 //
 // write is the storage call this claim settles through and op names it in the
 // StorageError. They are parameters because the guarded DELETE settles through

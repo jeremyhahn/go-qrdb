@@ -30,9 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/namespace"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/partition"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -54,22 +52,12 @@ func newBatchParityBackends(t *testing.T) []namedBackend {
 	if err != nil {
 		t.Fatalf("objstore.New: %v", err)
 	}
-	pm, err := partition.NewManager(
-		partition.NewHashRouter(4),
-		partition.NewMemoryFactory(),
-		&partition.Config{PartitionCount: 4, BackendType: partition.BackendMemory},
-	)
-	if err != nil {
-		t.Fatalf("partition.NewManager: %v", err)
-	}
 
 	backends := []namedBackend{
 		{"memory", memory.NewStorage()},
 		{"pebble", pdb},
 		{"file", fdb},
 		{"objstore", obj},
-		{"partition", pm},
-		{"namespace", namespace.New(memory.NewStorage(), []byte("tenant"))},
 	}
 	t.Cleanup(func() {
 		for _, b := range backends {

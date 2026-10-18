@@ -15,6 +15,10 @@
 #   * a composer-injected boundary (Factor, SealStrategy).
 # If none does, the symbol is dead -- delete it, or WIRE it. go-qrdb#340 is the
 # case where wiring was the answer and deleting would have been the defect.
+.	exported	errortype	github.com/jeremyhahn/go-qrdb/internal/netport.EphemeralRangeError
+.	exported	errortype	github.com/jeremyhahn/go-qrdb/internal/netport.PortExhaustedError
+.	exported	errortype	github.com/jeremyhahn/go-qrdb/internal/netport.PortReservationError
+.	exported	errortype	github.com/jeremyhahn/go-qrdb/internal/netport.PortWindowError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/api.AEADLimitExceededError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/api.AccountLockedError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/api.AdminUserCreateError
@@ -363,6 +367,7 @@
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/codec.ConfigValidationError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/codec.TranscodeError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/dao.AtomicBatchUnsupportedError
+.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/dao.DatabaseStoreUnresolvedError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/database.BackendIsolationConflictError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/database.BarrierRequiresPersistentBackendError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/database.BindingRootUnresolvedError
@@ -423,12 +428,6 @@
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/shard.ShardAlreadyRegisteredError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/shard.ShardNotRegisteredError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.RowTransactionTooLargeError
-.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.BatchCommitError
-.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.ConfigError
-.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.MergeIteratorError
-.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionCloseError
-.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionCreateError
-.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionNotFoundError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/timeseries.EmptyDirError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/timeseries.InvalidBatchPointError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/timeseries.OpenDirError
@@ -452,6 +451,7 @@
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.InvalidValueTypeError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.UnsupportedQueryOpError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.UnsupportedScalarIndexTypeError
+.	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/vlog.IndexOutOfRangeError
 .	exported	errortype	github.com/jeremyhahn/go-qrdb/pkg/watch.WatchCreateError
 .	exported	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.NewAdminBinding
 .	exported	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.NewAuditBinding
@@ -484,6 +484,13 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.NewVectorBinding
 .	exported	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.NewWatchBinding
 .	exported	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.NewWatchBindingWithEmitter
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.EphemeralRangeError.Error
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.EphemeralRangeError.Unwrap
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.PortExhaustedError.Error
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.PortReservationError.Error
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.PortReservationError.Unwrap
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.PortWindowError.Error
+.	exported	func	github.com/jeremyhahn/go-qrdb/internal/netport.Reserve
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/api.AEADLimitExceededError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/api.AccountLockedError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/api.AdminUserCreateError.Error
@@ -1292,6 +1299,7 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/apimodule.BaseModule.RegisterQUIC
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/apimodule.BaseModule.Start
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/apimodule.BaseModule.Stop
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/audit.NewChain
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/audit.NewFileLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/audit.NewNoopLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/audit.NewSlogSinkWith
@@ -1371,20 +1379,16 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterca.CACertPEM
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterca.IssueNodeLeaf
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Advertiser.NoiseEnabled
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Advertiser.NoiseEnabled
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Advertiser.NoisePublicKey
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Advertiser.NoisePublicKey
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Advertiser.P256PublicKey
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.ExplicitFilesError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.JoinServer.Addr
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.JoinServer.PublicKey
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.NoiseAvailable
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.ResetJoinAttemptGuardForTest
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.ResolveCA
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.GenerateClientCert
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.IssueLeafForKey
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.KeyError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.KeyError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.KeyError.Unwrap
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.KeyError.Unwrap
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.LoadCAFromDir
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/clustertls.PersistCA
@@ -1427,6 +1431,8 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.CryptoFieldHashGenerator.FieldName
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.CryptoFieldHashGenerator.IDForValue
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.CryptoFieldHashGenerator.NextID
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.DatabaseStoreUnresolvedError.Error
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.DatabaseKVStore
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.DefaultPartition
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.GetEntityPartition
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.HasPartitionedProvider
@@ -1439,6 +1445,8 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.New
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewCodec
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewDAO
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewDatabaseDAO
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewDatabaseTransactional
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewPageQuery
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewPageResult
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/dao.NewPageResultFromQuery
@@ -1477,6 +1485,7 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.Batch
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.Close
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.Delete
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.DeleteRange
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.Get
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.List
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/database.RemoteBackend.Put
@@ -1711,7 +1720,6 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.WithDeltaMaxDepth
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/mvcc.CompareKeys
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/mvcc.IsInRange
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/mvcc.RevIndexKeyspaceEnd
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/permission.BuiltInScopeOverrideError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/permission.EmptyPermissionError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/permission.IsCrossScope
@@ -1756,6 +1764,10 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVectorNamespaceDelete
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVectorUpdateMetadata
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVectorUpsert
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVerifiableLogAppend
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVerifiableLogCheckpoint
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVerifiableLogCreate
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.EncodeVerifiableLogExpireBodies
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/quota.Reconciler.RunOnce
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/role.WithReconcilePolling
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/routing.New
@@ -1798,6 +1810,7 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.NewCredentialResolver
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.NewResolverRegistry
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.NewSecretValue
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.NewSecretValueFromBuffer
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.NewTenantScopedCredentialRetrieve
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ProcessorInputError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ResolutionFailedError.Error
@@ -1844,9 +1857,9 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.CallerCertificateError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.CallerCertificateError.Unwrap
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.EmbeddedForwardingStoppedError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.PreboundSockets
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.ResolveCryptoOptions
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.ResolveTLSConfig
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.RunStartupRead
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.Server.AuthenticateCertificate
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.Server.EtcdAddr
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.Server.GRPCAddr
@@ -1865,6 +1878,7 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithCertKeyProviderFactory
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithClock
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithCollectionSweep
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithCompactionClock
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithCompactionInterval
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithDEKKeyDir
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server.WithDEKProvider
@@ -1887,6 +1901,7 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.ClusterCAEstablishError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.ClusterCAEstablishError.Unwrap
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.ClusterJoin.Addr
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.ClusterJoin.P256PublicKey
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.ClusterJoin.PublicKey
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.EstablishClusterCA
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle.NewKVStoreAdapter
@@ -1899,10 +1914,12 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.NewEncryptionMigrationService
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.NewHostProposerAdapter
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.NewVectorStoreAdapter
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.SettleLeadership
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.TableIndexGenerationPrefix
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithBarrierLookup
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithClusterIsolationPolicyReader
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithClusterJoinTokenStore
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithDatabaseCreateTimeout
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithDefaultShardConfig
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithEnrollmentClock
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/service.WithHNSWIndexFactory
@@ -1943,13 +1960,6 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/sql/mysql.WithLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/sql/pgsql.WithLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.RowTransactionTooLargeError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.Close
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.GetHash
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.Lookup
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.PrepareSnapshot
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.RecoverFromSnapshot
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.SaveSnapshot
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.Update
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.DecodeUint32
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.DecodeUint64
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.DecodeVectorCommand
@@ -1971,8 +1981,6 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NamespaceState.CheckQuota
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NamespaceState.UpdateStorageBytes
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NewBatchDeleteCommand
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NewConcurrentCreateFunc
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NewConcurrentStateMachine
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NewCreateNamespaceCommand
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NewCreateNamespaceCommandWithMetric
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.NewCreateNamespaceCommandWithTenant
@@ -2028,12 +2036,6 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.VectorStateMachine.SetHNSWFactory
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.VectorStateMachine.Sync
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.VectorStateMachine.Update
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithConcurrentIndexManager
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithConcurrentLeaseManager
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithConcurrentLogger
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithConcurrentMVCCStore
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithConcurrentTimeSeriesStore
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithConcurrentWatchManager
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithKVIndexManager
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithKVLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithKVMVCCStore
@@ -2046,55 +2048,7 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithRegularTimeSeriesStore
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.WithRegularWatchManager
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage.KeyNotFoundError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Batch
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Close
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Delete
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Exists
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Get
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.List
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Namespace
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.NewIterator
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Set
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.Engine.Snapshot
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.New
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.BatchCommitError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Config.Validate
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.ConfigError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.DefaultConfig
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.EntityRouter.MapPrefix
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.EntityRouter.PartitionCount
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.EntityRouter.Route
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.FileFactory.BackendType
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.FileFactory.Create
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.HashRouter.PartitionCount
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.HashRouter.Route
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Batch
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Close
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Delete
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Exists
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Get
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.List
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.NewIterator
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.PartitionCount
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Set
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.Snapshot
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.MemoryFactory.BackendType
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.MemoryFactory.Create
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.MergeIteratorError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.MergeIteratorError.Unwrap
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.NewEntityRouter
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.NewFileFactory
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.NewHashRouter
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.NewManager
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.NewMemoryFactory
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.NewPebbleFactory
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionCloseError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionCloseError.Unwrap
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionCreateError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionCreateError.Unwrap
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PartitionNotFoundError.Error
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PebbleFactory.BackendType
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.PebbleFactory.Create
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage.PrefixEnd
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/pebble.WithRegistryLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/pebble.WithRegistryOpener
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema.EstimateVectorSize
@@ -2104,6 +2058,8 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/store.WithMaxOpenFiles
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/store.WithNoSync
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/store.WithWALDir
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/syncwatch.WithClock
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/syncwatch.WithThreshold
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/tenant.PrefixKey
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/tenant.PrefixKeyBytes
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/tenant.StripPrefix
@@ -2138,7 +2094,6 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.NewCollector
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.NewTimer
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.Register
-.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.Registry
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.RequestTimer.Done
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.RequestTimer.DoneWithError
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.SetRegistry
@@ -2353,8 +2308,14 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.SortedIndex.Type
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.UnsupportedQueryOpError.Error
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.UnsupportedScalarIndexTypeError.Error
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.Consistency
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.Get
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.Inclusion
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.ReadCheckpoint
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.ReadHead
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/volume.WithCatalogLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/volume.WithLeaseTTL
+.	exported	func	github.com/jeremyhahn/go-qrdb/pkg/volume.WithReporterInterval
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/volume.WithReporterLeaseTTL
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/volume.WithReporterLogger
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.Add
@@ -2372,30 +2333,68 @@
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/watch.WithEntityType
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/watch.WithIncludeOldValues
 .	exported	func	github.com/jeremyhahn/go-qrdb/pkg/watch.WithPrefix
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.DaemonBinding.shutdown
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.DaemonBinding.startup
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.bootstrapHostAdapter.SyncRead
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.bootstrapTLS
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.buildDNSDiscovery
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.buildMulticastDiscovery
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.buildStaticDiscovery
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.decorateWithABAC
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.generateCA
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.generateCATLS
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.generateNodeCert
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.hasBootstrapFlags
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdbd.localSANs
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api/rest.Server.dispatch
+#
+# go-qrdb#350 -- every entry below was checked by reading its call sites, and is
+# kept for the reason on the KEEP line above its group. A group that names a
+# design call sits under an exported API no production path wires; wiring or
+# deleting it is the owner's decision, not this baseline's. A refresh keeps each
+# entry under its reason and drops a reason once all its entries have left; a new
+# entry lands above, among the unreasoned ones, until a reason is written for it.
+#
+# KEEP: build-tag-only reach; spaHandler serves the embedded web UI that only a qrdbd_webui build links.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api/rest.spaHandler.ServeHTTP
+#
+# KEEP: generic function; the analyzer reports a generic at its origin even where it is instantiated and called from a reachable path.
+.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.logged
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api/rest.decodeGuardedRequest
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/audit.verifyChainSet
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.resolvePartition
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/backend/raft.holdWhileRefused
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/backend/raft.readThroughLeaderChange
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/backend/raft.throughElection
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/ceremony.isType
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.detectIDField
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.extractGenericDAO
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.isNil
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.newCBORCodec
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.newDAOTransaction
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.newSecretCodec
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.sortEntitiesByField
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/server.whenReadIndexReady
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.memo
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.memoCatalog
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.isType
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go.capability
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded.dekRequestHandler
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded.scopedIfServed
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp.callDatabaseHolder
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic.callHolder
+#
+# KEEP: helper called only from the Error methods of baselined exported pkg/api error types.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api.storageJoinStrings
+#
+# KEEP: helper called only from a baselined exported pkg/ceremony function (local CA construction).
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/ceremony.parseCAPrivateKeyPEM
+#
+# KEEP: helper of a baselined clusterenroll symbol; no production path reaches the guard's release yet.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.joinAttemptGuard.close
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.AdvertiseOptions.validate
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.BootstrapOptions.joinApprovalPollInterval
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.JoinClientOptions.timeout
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.JoinHTTPClientOptions.timeout
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Role.advertises
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Role.valid
+#
+# KEEP: helpers called only from the exported pkg/dao UnitOfWork and ID-generator API.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.resolvePartition
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.UnitOfWork.commitAtomic
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.UnitOfWork.detectDeterministicCollision
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.databaseStore
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.sha256TruncatedHash
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.truncateSHA256ToUint64
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.resolvePartition
+#
+# KEEP: helper called only from a baselined exported pkg/embedding symbol.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.VoyageProvider.doOnce
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.clear
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.decode
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.detach
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.encode
@@ -2407,36 +2406,40 @@
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.put
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.size
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.voyageBackoff
+#
+# KEEP: helpers called only from the exported pkg/index MemoryIndex and key-encoding API.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.MemoryIndex.foldBound
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.MemoryIndex.foldKey
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.bytesEqual
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.encodeFloat64
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.encodeInt64
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.encodeUint64
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.fieldValueToBytes
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.interfaceToBytes
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.valueToBytes
+#
+# KEEP: helpers called only from the exported MemoryKVStore API.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.checkIndexableLocked
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.checkUniqueLocked
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.deindexLocked
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.indexLocked
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.putLocked
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.backfillIndex
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.decodeJSONFields
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.entityIndexValueType
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.memIndex.bound
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.buildPath
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.compareMaps
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.compareSlices
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.compareStructs
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.computeChanges
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.computeNewEntity
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.computeWithDiffable
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractAllFields
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractEntityID
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractEntityIDFromValue
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractEntityType
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractValue
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.getFieldPath
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.isSpecialType
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.isZeroValue
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.valueToString
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.unregisterForTesting
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.defaultIfEmpty
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.router.Route
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.router.SetEntityShard
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.router.SetShards
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.QueryCompoundIndex
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.QueryIndex
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.RegisterEntityIndexes
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.ScanCompoundIndex
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.ScanIndex
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.newArgon2idHasher
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.newPBKDF2SHA256Hasher
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.memIndex.term
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.unquoteJSON
+#
+# KEEP: helpers called only from the exported pkg/permission scope and permission-key API.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.hasBuiltInScope
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.permissionFromScopeKey
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.scopeKey
+#
+# KEEP: helper called only from the exported pkg/pin Service PIN-change methods.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/pin.Service.pushFIDO2Hash
+#
+# KEEP: helpers called only from the exported SecretValue and resolver API.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ConfigProcessor.processInterface
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ConfigProcessor.processMap
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ConfigProcessor.processSecretValue
@@ -2449,33 +2452,50 @@
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ConfigProcessor.recordUnwritableTarget
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.ConfigProcessor.resolvableTarget
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.SecretValue.adopt
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.SecretValue.readString
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.SecretValue.setReference
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.literalValue
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.redactRaw
+#
+# KEEP: helpers called only from the exported pkg/secure API (EnableBorrowGuard, Passphrase).
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.copyPrefix
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/server.newNamespacedKVService
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/service.EncryptionMigrationService.run
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/pgsql.singleTableName
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.kvRowIter.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.kvRowIter.Next
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.hnswIndexAdapter.Reset
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Prev
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.SeekToLast
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.partitionByID
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Prev
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.SeekToLast
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.metadataIterator.Key
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.vectorBatch.Count
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.vectorBatch.Reset
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.vectorIterator.Key
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.panicOnViolation
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.readLineBytewise
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.readLineSeekable
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.readStdinLine
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.seekableStream
+#
+# KEEP: documented promise with no caller yet. docs/sql/engineering.md states a per-statement proposal-size ceiling that checkProposalSize implements; wiring it into the write-set path is a design decision for the owner, not a deletion.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.checkProposalSize
+#
+# KEEP: helpers called only from the exported FastStateMachine Lookup and storage methods.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.clearStorage
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupIndex
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupKey
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupLease
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupMVCC
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupPrefix
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupTimeSeries
+#
+# KEEP: helpers called only from the exported vector index, remote-GPU client and scalar-index APIs.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema.decodeUint64
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema.splitKey
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.defaultDurationBuckets
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/bloom.uint64ToBytes
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu.GPUIndexFactory.createFallbackIndex
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu.GPUIndexFactory.createGPUIndex
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu.GPUIndexFactory.createRemoteIndex
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu.RemoteGPUIndexFactory.createFallbackIndex
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu.remoteConfigToConnConfig
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.RemoteGPUIndex.callContext
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.buildDialOptions
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.newVectorIndexServiceClient
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.BatchInsert
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Count
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Delete
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.GetStats
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Insert
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Search
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.invoke
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.IndexRollback.rollbackEntry
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.IndexRollback.updateEntryPoint
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.IndexRollback.updateMaxLayer
@@ -2499,6 +2519,7 @@
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/quantization.clampedMin
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/quantization.kmeansCluster
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/quantization.kmeansPlusPlusInit
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/quantization.l2Squared
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/quantization.refineAndRepair
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.BitmapIndex.allBitmaps
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.InvertedIndex.collectAllIDs
@@ -2508,14 +2529,17 @@
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.bitmapQueryIsNull
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.bitmapQueryNotEqual
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.bitmapQueryNotIn
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.compareStrings
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.invertedQueryEqual
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.invertedQueryIn
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.invertedQueryIsNotNull
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.invertedQueryIsNull
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.invertedQueryNotEqual
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.invertedQueryNotIn
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.parseFloat
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.postingList.add
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.postingList.remove
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.postingList.toArray
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.sortedQueryEqual
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.sortedQueryGreaterEqual
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.sortedQueryGreaterThan
@@ -2526,7 +2550,28 @@
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.sortedQueryLessThan
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.sortedQueryNotEqual
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.sortedQueryNotIn
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.toString
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.toStringSlice
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.HNSWIndex.getNeighbors
+sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.HNSWIndex.selectNeighborsHeuristic
+#
+# KEEP: helper called only from the exported watch.Manager prefix-watch API.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.buildPath
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.compareMaps
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.compareSlices
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.compareStructs
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.computeChanges
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.computeNewEntity
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.computeWithDiffable
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractAllFields
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractEntityID
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractEntityIDFromValue
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractEntityType
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.extractValue
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.getFieldPath
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.isSpecialType
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.isZeroValue
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/messaging.DeltaComputer.valueToString
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.addInternal
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.computeDeltaEvent
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.convertEvents
@@ -2535,155 +2580,30 @@
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.managerMatchesRange
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.notify
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.Manager.sendEvent
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.copyManagerKeyValue
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.managerFnv1a
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.managerGetPrefix
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.managerNoopStream.Context
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.managerNoopStream.Send
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.mockManagerWatchStream.Context
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.mockManagerWatchStream.Send
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.mockManagerWatchStream.getResponses
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.newMockManagerWatchStream
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.newMockManagerWatchStreamWithContext
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.AdvertiseOptions.validate
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.BootstrapOptions.joinApprovalPollInterval
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.JoinClientOptions.timeout
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.JoinHTTPClientOptions.timeout
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Role.advertises
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.Role.valid
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.Factory.resolvePartition
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.HNSWIndex.getNeighbors
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.HNSWIndex.selectNeighborsHeuristic
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go.applyClientOptions
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go.capability
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded.dekRequestHandler
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded.scopedIfServed
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp.callDatabaseHolder
-sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic.callHolder
-#
-# go-qrdb#350 -- every entry below was checked by reading its call sites. None is
-# dead: each is called only from an exported symbol already baselined above (an
-# SDK surface a downstream repository may call), is a generic function the
-# analyzer attributes to its origin, or is a documented promise with no caller
-# yet. The reason is stated per group. A group that names a design call sits under
-# an exported API no production path wires; wiring or deleting it is the owner's
-# decision, not this baseline's.
-#
-# KEEP: build-tag-only reach; spaHandler serves the embedded web UI that only a qrdbd_webui build links.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api/rest.spaHandler.ServeHTTP
-#
-# KEEP: generic function; the analyzer reports a generic at its origin even where it is instantiated and called from a reachable path.
-.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.logged
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/ceremony.isType
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/server.whenReadIndexReady
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.memo
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.memoCatalog
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.isType
-#
-# KEEP: helper called only from the Error methods of baselined exported pkg/api error types.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api.storageJoinStrings
-#
-# KEEP: the claim half of the per-node barrier init statement record behind the per-node-barrier-keys feature gate: the pkg/barrierinit Book and Claimer, Sign, and the tenant seams the claim and the gate enter the tenant service through (tenant.WithBarrierInitBook, tenant.WithInitStatement, tenant.WithPerNodeBarrierKeysGate). Every raft-mode node composes the Watcher and the first-admin anchor pins; the book and the gate stay unwired, and the feature unadvertised, until a client transport signs and sends the init statement.
-#
-# KEEP: helper called only from a baselined exported pkg/ceremony function (local CA construction).
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/ceremony.parseCAPrivateKeyPEM
-#
-# KEEP: helper of a baselined clusterenroll symbol; no production path reaches the guard's release yet.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/clusterenroll.joinAttemptGuard.close
-#
-# KEEP: helpers called only from the exported pkg/dao UnitOfWork and ID-generator API.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.UnitOfWork.commitAtomic
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.UnitOfWork.detectDeterministicCollision
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.sha256TruncatedHash
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/dao.truncateSHA256ToUint64
-#
-# KEEP: helper called only from a baselined exported pkg/embedding symbol.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/embedding.managerCache.clear
-#
-# KEEP: helpers called only from the exported pkg/index MemoryIndex and key-encoding API.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.MemoryIndex.foldBound
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.MemoryIndex.foldKey
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.bytesEqual
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.encodeInt64
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.fieldValueToBytes
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.interfaceToBytes
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/index.valueToBytes
-#
-# KEEP: helpers called only from the exported MemoryKVStore API.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.checkIndexableLocked
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.checkUniqueLocked
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.deindexLocked
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.indexLocked
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.MemoryKVStore.putLocked
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.decodeJSONFields
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.memIndex.term
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/kvstore.unquoteJSON
-#
-# KEEP: helpers called only from the exported pkg/permission scope and permission-key API.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.hasBuiltInScope
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.permissionFromScopeKey
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/permission.scopeKey
-#
-# KEEP: helper called only from the exported pkg/pin Service PIN-change methods.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/pin.Service.pushFIDO2Hash
-#
-# KEEP: helpers called only from the exported SecretValue and resolver API.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.SecretValue.readString
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.SecretValue.setReference
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.literalValue
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secret.redactRaw
-#
-# KEEP: helpers called only from the exported pkg/secure API (EnableBorrowGuard, Passphrase).
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.panicOnViolation
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.readLineBytewise
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.readLineSeekable
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.readStdinLine
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/secure.seekableStream
-#
-# KEEP: documented promise with no caller yet. docs/sql/engineering.md states a per-statement proposal-size ceiling that checkProposalSize implements; wiring it into the write-set path is a design decision for the owner, not a deletion.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.checkProposalSize
-#
-# KEEP: helpers called only from the exported FastStateMachine Lookup and storage methods.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.clearStorage
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.listKeys
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupIndex
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupKey
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupLease
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupMVCC
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupPrefix
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.FastStateMachine.lookupTimeSeries
-#
-# KEEP: helpers called only from the exported vector index, remote-GPU client and scalar-index APIs.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/bloom.uint64ToBytes
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.RemoteGPUIndex.callContext
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Count
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Delete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.GetStats
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Insert
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.Search
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote.vectorIndexServiceClient.invoke
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/quantization.l2Squared
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.compareStrings
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.parseFloat
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.postingList.toArray
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/scalar.toString
-#
-# KEEP: helper called only from the exported watch.Manager prefix-watch API.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/watch.managerGetPrefix
 #
 # KEEP: build-tag-only reach; ConnectionManagerBinding.migrate runs from the bindings' startup, which only a desktop build (cmd/qrdb/gui_desktop.go) calls.
+.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.DaemonBinding.shutdown
+.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.DaemonBinding.startup
 .	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.newUUID
 #
 # KEEP: helper called only from the exported mcp.SealedWindowTools, whose caller is in the sdk/go module (sdk/go/types_sealedwindow.go), outside this module's roots.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api/mcp.Server.wrapTool
 #
 # KEEP: helpers of the exported database.ResolveBinding (docs/databases/architecture.md) and of NodeStoreMigration.Run, whose only caller, the service-layer EncryptionMigrationService, is constructed in the sdk/go module (sdk/go/node).
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.NodeStoreMigration.dirs
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.NodeStoreMigration.journalStore
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.NodeStoreMigration.rollback
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.NodeStoreMigration.stores
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.beneathRoot
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.bindingRoot
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.raftOptionSet
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.refuseNameVisible
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/database.resolveRaftBinding
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/service.EncryptionMigrationService.run
 #
 # KEEP: helpers called only from the exported vector Encode* wire codec; the server only decodes vector commands and no client in this module encodes them yet.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.embeddingSize
@@ -2702,53 +2622,22 @@ sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic.callHol
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.List
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.Put
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.PutIfAbsent
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.QueryCompoundIndex
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.QueryIndex
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.RegisterEntityIndexes
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.Scan
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.ScanCompoundIndex
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal.tenantBarrierKVStore.ScanIndex
 #
 # KEEP: helpers of the exported pkg/seal/kdf Argon2id and PBKDF2 hashers, a library package with no production importer in this module; test/integration/fips_kdf_test.go exercises it. Deleting the package is a design call.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.buildHashWithParams
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.extractVersion
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.generateSalt
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.newArgon2idHasher
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.newPBKDF2SHA256Hasher
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.parseArgon2idParams
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.parseHashWithParams
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/seal/kdf.parsePBKDF2Params
-#
-# KEEP: methods of the exported ConcurrentStateMachine, built only by the exported statemachine.NewConcurrentCreateFunc, which no production registry wires (FastStateMachine is the wired concurrent machine). Wiring or deleting it is a design call.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.clearStorage
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentCacheDelete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentCacheSet
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentLookupIndex
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentLookupLease
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentLookupMVCC
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentLookupTimeSeries
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.concurrentShardFor
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleBatch
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleCompareAndDelete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleCompareAndSwap
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleDelete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleGuarded
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleIndexCreate
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleIndexDrop
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleLeaseGrant
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleLeaseKeepAlive
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleLeaseRevoke
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleMVCCDelete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleMVCCPut
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleMVCCRange
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handlePut
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handlePutIfAbsent
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleTSDeleteSeries
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleTSSetRetention
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleTSWrite
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleTSWriteBatch
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleTSWritePoint
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.handleTransaction
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.listConcurrentKeys
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.lookupConcurrentKey
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.lookupConcurrentPrefix
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.persistAsync
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.persistClaim
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.persistClaimDelete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.ConcurrentStateMachine.persistSet
 #
 # KEEP: helpers of the exported vector state machines (NewVectorStateMachine, NewVectorRegularCreateFunc, NewVectorConsensusFSM), which no production registry wires. Wiring or deleting them is a design call.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.VectorConsensusFSM.applyBatchUpsert
@@ -2794,63 +2683,38 @@ sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic.callHol
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.hnswIndexAdapter.Search
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.hnswIndexAdapter.Size
 #
-# KEEP: implementation of the exported pkg/storage/partition package, which has no production importer in this module; only pkg/storage's batch-parity test uses it. Deleting the package is a design call.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.Manager.partition
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.maxHeap.Len
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.maxHeap.Less
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.maxHeap.Pop
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.maxHeap.Push
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.maxHeap.Swap
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Error
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Key
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Next
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Seek
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.SeekToFirst
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Valid
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.Value
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.advanceForward
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.advanceReverse
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.nextForward
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.mergeIterator.nextReverse
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.minHeap.Len
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.minHeap.Less
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.minHeap.Pop
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.minHeap.Push
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.minHeap.Swap
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.newClosedMergeIterator
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.newMergeIterator
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.newPartitionBatch
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.newPartitionSnapshot
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.Commit
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.Delete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.Get
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.NewIterator
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.Rollback
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.Set
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionBatch.getBatch
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionSnapshot.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionSnapshot.Get
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/partition.partitionSnapshot.NewIterator
+# KEEP: cmd/qrdb host adapter method satisfying an interface chosen at runtime: the bootstrap adapter replaces SyncRead while the node bootstraps.
+.	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.bootstrapHostAdapter.SyncRead
 #
-# KEEP: implementation of the exported pkg/storage/namespace package, which has no production importer in this module; only pkg/storage's batch-parity test uses it. Deleting the package is a design call.
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.Commit
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.Delete
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.Get
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.NewIterator
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.Rollback
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedBatch.Set
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Error
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Key
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Next
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Seek
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.SeekToFirst
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Valid
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedIterator.Value
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedSnapshot.Close
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedSnapshot.Get
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.namespacedSnapshot.NewIterator
-.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/namespace.scopeIterOptions
+# KEEP: helpers of the exported pkg/routing router returned by routing.NewRouter, which no binary constructs.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.defaultIfEmpty
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.router.Route
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.router.SetEntityShard
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/routing.router.SetShards
+#
+# KEEP: interface methods whose implementation is chosen at runtime: go-mysql-server drives the RowIter, and the vector storage iterators, batches and HNSW adapter are returned behind interfaces.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.kvRowIter.Close
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/sql/provider.kvRowIter.Next
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/statemachine.hnswIndexAdapter.Reset
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.metadataIterator.Key
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.vectorBatch.Count
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.vectorBatch.Reset
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/storage/vector.vectorIterator.Key
+#
+# KEEP: helper of the exported pkg/util/metrics collector constructors, which no binary calls.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/util/metrics.defaultDurationBuckets
+#
+# KEEP: the internal/netport port-window allocator behind netport.Reserve, whose only caller is the sdk/go qrdbdharness test harness, outside this module's roots; qrdbd uses FreePortOn.
+.	internal	func	github.com/jeremyhahn/go-qrdb/internal/netport.readEphemeralLow
+.	internal	func	github.com/jeremyhahn/go-qrdb/internal/netport.windowAllocator.ephemeralLow
+.	internal	func	github.com/jeremyhahn/go-qrdb/internal/netport.windowAllocator.nextPort
+.	internal	func	github.com/jeremyhahn/go-qrdb/internal/netport.windowAllocator.reserve
+#
+# KEEP: the verifiable-log read path and codec helper behind the exported vlog.Get, Inclusion, Consistency, ReadHead and ReadCheckpoint and protocol.EncodeVerifiableLog*; no service issues a vlog read or encodes a vlog command yet, and later steps of design go-qrdb#722 wire them.
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/protocol.encodeVerifiableLog
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.ConsistencyRequest.read
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.GetRequest.read
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.HeadRequest.read
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.InclusionRequest.read
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.rehash
+.	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vlog.uint64Suffix

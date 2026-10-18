@@ -1354,26 +1354,6 @@ func TestColumnType(t *testing.T) {
 	})
 }
 
-func TestSingleTableName(t *testing.T) {
-	t.Run("plain table", func(t *testing.T) {
-		expr := &sqlparser.AliasedTableExpr{Expr: sqlparser.TableName{Name: sqlparser.NewTableIdent("kv")}}
-		name, ok := singleTableName(expr)
-		require.True(t, ok)
-		assert.Equal(t, "kv", name)
-	})
-
-	t.Run("not an AliasedTableExpr", func(t *testing.T) {
-		_, ok := singleTableName(&sqlparser.JoinTableExpr{})
-		assert.False(t, ok)
-	})
-
-	t.Run("subquery, not a plain table", func(t *testing.T) {
-		expr := &sqlparser.AliasedTableExpr{Expr: &sqlparser.Subquery{}}
-		_, ok := singleTableName(expr)
-		assert.False(t, ok)
-	})
-}
-
 func TestLookupTable(t *testing.T) {
 	kvSvc := &mockKVService{}
 	dbProvider := provider.NewProvider("qrdb", kvSvc)

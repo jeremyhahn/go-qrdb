@@ -107,10 +107,9 @@ a node started with the seal on — see
 
 ## Tenant isolation
 
-You do not configure this. Tenant-scoped consumers are handed an engine already
-wrapped by the namespace engine, which prefixes every key with the tenant and
-filters listings to that prefix. It is one implementation over every backend
-rather than three that could drift.
+You do not configure this at the storage layer. Every tenant has its own
+database behind its own barrier, on whichever backend you choose; no key prefix
+is involved. See [../seal/multi-tenant.md](../seal/multi-tenant.md).
 
 ## Volume pools
 

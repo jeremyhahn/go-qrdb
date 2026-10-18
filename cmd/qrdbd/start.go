@@ -63,7 +63,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -3964,31 +3963,6 @@ func isSingleNode(f *startFlags) bool {
 	return cluster.IsSingleNode(f.clusterOptions())
 }
 
-// buildStaticDiscovery is a daemon convenience wrapper that builds the
-// static discovery method from the start flags. The construction logic
-// lives in pkg/cluster; this only fixes the method and delegates.
-func buildStaticDiscovery(f *startFlags) (discovery.Method, error) {
-	opts := f.clusterOptions()
-	opts.Method = "static"
-	return cluster.BuildDiscovery(opts)
-}
-
-// buildMulticastDiscovery is a daemon convenience wrapper for the multicast
-// discovery method. See buildStaticDiscovery.
-func buildMulticastDiscovery(f *startFlags) (discovery.Method, error) {
-	opts := f.clusterOptions()
-	opts.Method = "multicast"
-	return cluster.BuildDiscovery(opts)
-}
-
-// buildDNSDiscovery is a daemon convenience wrapper for the DNS SRV
-// discovery method. See buildStaticDiscovery.
-func buildDNSDiscovery(f *startFlags) (discovery.Method, error) {
-	opts := f.clusterOptions()
-	opts.Method = "dns"
-	return cluster.BuildDiscovery(opts)
-}
-
 // ---------------------------------------------------------------------------
 // Auth bootstrap
 // ---------------------------------------------------------------------------
@@ -4625,18 +4599,6 @@ var adminBindingWait = firstboot.AdminBindingLookupTimeout
 var keyWrapInjection struct {
 	registry keywrap.Registry
 	provider keywrap.Provider
-}
-
-// decorateWithABAC wraps the given authorizer with the ABAC policy
-// decorator when ABAC is enabled in the configuration. When disabled it
-// returns the inner authorizer unchanged. Policies are loaded from the
-// configured policy directory at construction; any load or compilation
-// error is returned so the caller can abort the boot rather than run with
-// a partially applied policy set. Delegates to the shared
-// pkg/auth/wiring.DecorateABAC helper (also used by sdk/go/node.Node) so
-// the two embedders decorate identically.
-func decorateWithABAC(inner auth.Authorizer, cfg qrdbconfig.AuthABACConfig) (auth.Authorizer, error) {
-	return wiring.DecorateABAC(inner, cfg.Enabled, cfg.PolicyDir, nil)
 }
 
 // defaultAuthFactors returns the auth factor implementations to register

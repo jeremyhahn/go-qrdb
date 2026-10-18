@@ -157,11 +157,6 @@ func rangeTargets() map[string]func(t *testing.T) rangeTarget {
 			f := NewFastStateMachine(1, 1, newMemStorage(), WithWatchManager(wm))
 			return rangeTarget{conformanceTarget{updaterWithContext(f.Update), lookupWithContext(f.Lookup), f.handlers}, wm}
 		},
-		"ConcurrentStateMachine": func(t *testing.T) rangeTarget {
-			wm := &mockWatchManager{}
-			c := NewConcurrentStateMachine(1, 1, newMemStorage(), WithConcurrentWatchManager(wm))
-			return rangeTarget{conformanceTarget{updaterWithContext(c.Update), lookupWithContext(c.Lookup), c.handlers}, wm}
-		},
 	}
 	kvBackends := leaseBackends()
 	for _, kind := range []string{"memory", "file", "pebble"} {

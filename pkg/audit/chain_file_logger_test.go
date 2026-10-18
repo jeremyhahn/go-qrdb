@@ -616,7 +616,7 @@ func TestChainFileLogger_VerifyChainSet_ReleasesTheSlotOnCompletion(t *testing.T
 //
 // The winner is held inside the guarded section (via the logger's scan seam)
 // until every goroutine has either entered the scan or been refused as busy,
-// and only then released into the real verifyChainSet. That makes the count a
+// and only then released into the real verifyChainSetAt. That makes the count a
 // property of the guard and not of scheduling: a guard weakened to a racy
 // Load-then-Store lets a second caller in while the first is held, the second
 // is counted as an arrival like any other, and the "exactly one" assertion
@@ -642,7 +642,7 @@ func TestChainFileLogger_VerifyChainSet_ConcurrentCallsShareOneWinner(t *testing
 	l.scan = func(ctx context.Context, path string) (*ChainVerification, error) {
 		arrivals <- struct{}{}
 		<-release
-		return verifyChainSet(ctx, testTrailDir(t, path), path)
+		return verifyChainSetAt(ctx, testTrailDir(t, path), path, nil)
 	}
 
 	var wg sync.WaitGroup

@@ -15,6 +15,7 @@
 package index
 
 import (
+	"encoding/binary"
 	"reflect"
 	"testing"
 
@@ -305,7 +306,7 @@ func TestEncodeDecodeUint64(t *testing.T) {
 			encoded := encodeUint64(val)
 			assert.Len(t, encoded, 8)
 
-			decoded := decodeUint64(encoded)
+			decoded := binary.BigEndian.Uint64(encoded)
 			assert.Equal(t, val, decoded)
 		})
 	}
@@ -490,52 +491,6 @@ func TestFieldValueToBytes(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.NotNil(t, result)
-		})
-	}
-}
-
-func TestDecodeUint64_AllCases(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []byte
-		expected uint64
-	}{
-		{
-			name:     "valid_8_bytes",
-			input:    []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x23},
-			expected: 291,
-		},
-		{
-			name:     "max_uint64",
-			input:    []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-			expected: ^uint64(0),
-		},
-		{
-			name:     "zero",
-			input:    []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-			expected: 0,
-		},
-		{
-			name:     "invalid_length_short",
-			input:    []byte{0x00, 0x00, 0x00},
-			expected: 0,
-		},
-		{
-			name:     "invalid_length_long",
-			input:    []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF},
-			expected: 0,
-		},
-		{
-			name:     "empty",
-			input:    []byte{},
-			expected: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := decodeUint64(tt.input)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

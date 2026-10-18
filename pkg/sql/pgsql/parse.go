@@ -1046,21 +1046,6 @@ func insertValues(rows sqlparser.InsertRows) (sqlparser.Values, bool) {
 	}
 }
 
-// singleTableName returns the unqualified table name referenced by a plain
-// single-table expression, or false if expr is a join, subquery, or
-// anything else that does not name exactly one table.
-func singleTableName(expr sqlparser.TableExpr) (string, bool) {
-	aliased, ok := expr.(*sqlparser.AliasedTableExpr)
-	if !ok {
-		return "", false
-	}
-	name, ok := aliased.Expr.(sqlparser.TableName)
-	if !ok {
-		return "", false
-	}
-	return name.Name.String(), true
-}
-
 // columnType returns the GMS type of the column named col in schema,
 // comparing case-insensitively as SQL identifiers are.
 func columnType(schema sql.Schema, col sqlparser.ColIdent) (sql.Type, bool) {

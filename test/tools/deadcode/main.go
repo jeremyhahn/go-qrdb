@@ -785,32 +785,19 @@ and requires the reason in the commit message.
 }
 
 func writeBaseline(findings []finding, path, label string) error {
-	existing, err := readBaselineLines(path)
+	existing, err := readBaselineFile(path)
 	if err != nil {
 		return err
 	}
-	// Keep other modules' entries; replace this module's.
-	var out []string
-	for _, line := range existing {
-		if !strings.HasPrefix(line, label+"\t") {
-			out = append(out, line)
-		}
-	}
+	current := make(map[string]bool, len(findings))
 	for _, f := range findings {
-		out = append(out, fmt.Sprintf("%s\t%s\t%s\t%s", f.Module, f.Scope, f.Kind, f.Symbol))
+		current[fmt.Sprintf("%s\t%s\t%s\t%s", f.Module, f.Scope, f.Kind, f.Symbol)] = true
 	}
-	sort.Strings(out)
-
-	var b strings.Builder
-	b.WriteString(baselineHeader)
-	for _, line := range out {
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
+	refreshed := existing.refresh(label, current)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return os.WriteFile(path, []byte(refreshed.render()), 0o600)
 }
 
 func readBaseline(path string) (map[string]bool, error) {
@@ -843,6 +830,118 @@ func readBaselineLines(path string) ([]string, error) {
 	}
 	return out, nil
 }
+
+// reasonPrefix opens a kept-entry group: the entry lines after it, up to the
+// next comment that is not a bare "#" separator, are kept for that reason.
+const reasonPrefix = "# KEEP: "
+
+// reasonGroup is the entries kept for one stated reason.
+type reasonGroup struct {
+	reason  string
+	entries []string
+}
+
+// baselineFile is the baseline as written: the entries no reason has been
+// stated for yet, then the reasoned groups in file order.
+type baselineFile struct {
+	plain  []string
+	groups []reasonGroup
+}
+
+func readBaselineFile(path string) (baselineFile, error) {
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- path is a developer-supplied flag in a build tool, not a request input
+	if os.IsNotExist(err) {
+		return baselineFile{}, nil
+	}
+	if err != nil {
+		return baselineFile{}, err
+	}
+	return parseBaseline(string(data)), nil
+}
+
+func parseBaseline(data string) baselineFile {
+	var b baselineFile
+	group := -1
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case line == "" || line == "#":
+		case strings.HasPrefix(line, reasonPrefix):
+			b.groups = append(b.groups, reasonGroup{reason: strings.TrimPrefix(line, reasonPrefix)})
+			group = len(b.groups) - 1
+		case strings.HasPrefix(line, "#"):
+			group = -1
+		case group >= 0:
+			b.groups[group].entries = append(b.groups[group].entries, line)
+		default:
+			b.plain = append(b.plain, line)
+		}
+	}
+	return b
+}
+
+// refresh replaces label's entries with current. An entry that stays keeps
+// the reason it was filed under; a reason whose entries all left is dropped;
+// a new entry lands among the plain ones until a reason is written for it.
+func (b baselineFile) refresh(label string, current map[string]bool) baselineFile {
+	ours := func(line string) bool { return strings.HasPrefix(line, label+"\t") }
+	reasoned := make(map[string]bool)
+	var out baselineFile
+	for _, g := range b.groups {
+		var kept []string
+		for _, line := range g.entries {
+			if !ours(line) || current[line] {
+				kept = append(kept, line)
+				reasoned[line] = true
+			}
+		}
+		if len(kept) > 0 {
+			out.groups = append(out.groups, reasonGroup{reason: g.reason, entries: kept})
+		}
+	}
+	for _, line := range b.plain {
+		if !ours(line) {
+			out.plain = append(out.plain, line)
+		}
+	}
+	for line := range current {
+		if !reasoned[line] {
+			out.plain = append(out.plain, line)
+		}
+	}
+	return out
+}
+
+func (b baselineFile) render() string {
+	var s strings.Builder
+	s.WriteString(baselineHeader)
+	plain := append([]string(nil), b.plain...)
+	sort.Strings(plain)
+	for _, line := range plain {
+		s.WriteString(line + "\n")
+	}
+	if len(b.groups) > 0 {
+		s.WriteString(reasonsPreamble)
+	}
+	for _, g := range b.groups {
+		s.WriteString("#\n" + reasonPrefix + g.reason + "\n")
+		entries := append([]string(nil), g.entries...)
+		sort.Strings(entries)
+		for _, line := range entries {
+			s.WriteString(line + "\n")
+		}
+	}
+	return s.String()
+}
+
+const reasonsPreamble = `#
+# go-qrdb#350 -- every entry below was checked by reading its call sites, and is
+# kept for the reason on the KEEP line above its group. A group that names a
+# design call sits under an exported API no production path wires; wiring or
+# deleting it is the owner's decision, not this baseline's. A refresh keeps each
+# entry under its reason and drops a reason once all its entries have left; a new
+# entry lands above, among the unreasoned ones, until a reason is written for it.
+`
 
 const baselineHeader = `# dead-code baseline (go-qrdb#337) -- symbols unreachable from production roots.
 #

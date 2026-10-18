@@ -835,10 +835,6 @@ github.com/jeremyhahn/go-qrdb/pkg/storage	Storage	List	true	true	true	6	pkg/stor
 github.com/jeremyhahn/go-qrdb/pkg/storage	Storage	Set	true	true	true	6	pkg/storage/storage.go	45
 github.com/jeremyhahn/go-qrdb/pkg/storage	Storage	Snapshot	true	true	true	6	pkg/storage/storage.go	61
 github.com/jeremyhahn/go-qrdb/pkg/storage	Syncer	Sync	true	false	false	6	pkg/storage/storage.go	80
-github.com/jeremyhahn/go-qrdb/pkg/storage/partition	Factory	BackendType	true	false	false	3	pkg/storage/partition/factory.go	33
-github.com/jeremyhahn/go-qrdb/pkg/storage/partition	Factory	Create	true	true	false	3	pkg/storage/partition/factory.go	30
-github.com/jeremyhahn/go-qrdb/pkg/storage/partition	Router	PartitionCount	true	true	false	2	pkg/storage/partition/router.go	31
-github.com/jeremyhahn/go-qrdb/pkg/storage/partition	Router	Route	true	true	false	2	pkg/storage/partition/router.go	28
 github.com/jeremyhahn/go-qrdb/pkg/storage/pebble	PerTenantRegistry	Close	true	false	false	1	pkg/storage/pebble/registry.go	48
 github.com/jeremyhahn/go-qrdb/pkg/storage/pebble	PerTenantRegistry	CloseAll	true	true	true	1	pkg/storage/pebble/registry.go	54
 github.com/jeremyhahn/go-qrdb/pkg/storage/pebble	PerTenantRegistry	Get	true	false	false	1	pkg/storage/pebble/registry.go	43

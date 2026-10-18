@@ -20,7 +20,7 @@ import "context"
 // *ChainBrokenError at the first record that does not follow its predecessor.
 //
 // It says nothing about where the file sits in the set -- that is
-// verifyChainSet's question. Production verifies whole sets; the tests use this
+// verifyChainSetAt's question. Production verifies whole sets; the tests use this
 // to assert on a single file.
 func verifyChainFile(ctx context.Context, dir *trailDir, path string) error {
 	_, err := verifyChainSegment(ctx, dir, path)

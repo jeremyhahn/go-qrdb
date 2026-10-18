@@ -2427,15 +2427,6 @@ func (s *Server) registerRoutes() {
 	s.routeIf(s.replicatedAudit != nil, http.MethodGet, "/v1/audit/replicated/verify", permission.AuditVerifyReplicated, s.handleAuditVerifyReplicated)
 }
 
-// dispatch serves a request through the chi router. It is retained as the
-// historical single entry point: many tests (and the embeddable surface)
-// invoke it directly, and it serves the full route table WITHOUT the
-// authn/authz middleware chain — exactly like the legacy map-based
-// dispatcher it replaced.
-func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
-	s.router.ServeHTTP(w, r)
-}
-
 // handleCABootstrap serves the cluster CA certificate for joining nodes, as
 // PEM with content type "application/pem-certificate-chain". It never serves
 // key material: the cluster CA private key does not leave the node holding

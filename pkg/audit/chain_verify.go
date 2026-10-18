@@ -68,7 +68,7 @@ import (
 // own. That is decomposed rather than lost. verifyChainSegment checks one
 // file's INTERNAL integrity against the seed the file itself declares -- which
 // catches every modification, insertion, reordering and truncation within the
-// file -- and verifyChainSet then checks that each declared seed really is its
+// file -- and verifyChainSetAt then checks that each declared seed really is its
 // predecessor's handoff, which is what makes the seed unforgeable.
 //
 // The one thing a chain walk cannot distinguish is the removal of a CONTIGUOUS
@@ -194,7 +194,7 @@ func decodeDigest(prevHash string) ([sha256.Size]byte, bool) {
 // first record vacuous and every other check exact: record n+1's PrevHash must
 // equal the fold over record n, so any edit inside the file is caught, and a
 // terminal anchor pins the last record too. What the seed is worth is settled
-// by verifyChainSet, which requires it to equal the predecessor's handoff.
+// by verifyChainSetAt, which requires it to equal the predecessor's handoff.
 // Verifying against a caller-supplied seed instead would report the same file
 // twice -- once as a break here and once as a broken link there -- for one
 // fault.
@@ -297,11 +297,11 @@ func verifyChainSegment(ctx context.Context, dir *trailDir, path string) (*chain
 // Whether a MISSING ACTIVE FILE is a fault is not decided here, because from
 // one listing it cannot be: a rotation unlinks the active name and re-creates
 // it a moment later, so its absence is either an unlinked audit log or an
-// ordinary rotation caught mid-stride. verifyChainSet decides, from two
+// ordinary rotation caught mid-stride. verifyChainSetAt decides, from two
 // listings.
 //
 // The ORDER IS NOT TRUSTED. It only decides which file a diagnostic mentions
-// first; the chain order verifyChainSet reports is derived from the digests.
+// first; the chain order verifyChainSetAt reports is derived from the digests.
 func rotationSetFiles(trail *trailDir, path string) (paths []string, active bool, err error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -337,7 +337,7 @@ func rotationSetFiles(trail *trailDir, path string) (paths []string, active bool
 
 // verifyScanAttempts bounds how many times a set walk is repeated when the
 // sink moved underneath it, and verifyScanBackoff is the pause before the
-// first retry, doubling thereafter. See verifyChainSet.
+// first retry, doubling thereafter. See verifyChainSetAt.
 //
 // The pause exists so that "every attempt saw the same thing" means something.
 // A rotation is a rename, a directory fsync and an open, all under the
@@ -349,7 +349,7 @@ const (
 	verifyScanBackoff  = time.Millisecond
 )
 
-// verifyChainSet verifies every file of the rotation set whose active log is
+// verifyChainSetAt verifies every file of the rotation set whose active log is
 // path, then links them by digest.
 //
 // Two independent properties, in this order:
@@ -393,14 +393,9 @@ const (
 // or the empty file a rotation has just opened -- are verified and then left
 // out of the linking. They hand off nothing, so treating them as links would
 // fork the walk on honest data.
-func verifyChainSet(ctx context.Context, dir *trailDir, path string) (*ChainVerification, error) {
-	return verifyChainSetAt(ctx, dir, path, nil)
-}
-
-// verifyChainSetAt is verifyChainSet with the writer's rotation sequence
-// (ChainFileLogger.rotations), when the set's writer is in this process.
 //
-// The two listings cannot see a rotation that is MID-STRIDE across both of
+// generation is the writer's rotation sequence (ChainFileLogger.rotations),
+// when the set's writer is in this process. The two listings cannot see a rotation that is MID-STRIDE across both of
 // them: a writer stalled between its rename and its re-open -- descheduled on
 // a loaded host for longer than every retry together -- leaves the same
 // listing, active name absent, on both sides of every attempt, and that is
@@ -465,7 +460,7 @@ func verifyChainSetAt(ctx context.Context, dir *trailDir, path string, generatio
 }
 
 // linkChainSet verifies each file and links them into one chain. It is
-// verifyChainSet's body, separated so the caller can repeat it against a
+// verifyChainSetAt's body, separated so the caller can repeat it against a
 // fresh listing.
 func linkChainSet(ctx context.Context, dir *trailDir, paths []string) (*ChainVerification, error) {
 	segs := make([]*chainSegment, 0, len(paths))

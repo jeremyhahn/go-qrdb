@@ -100,7 +100,7 @@ func WithSyncPerWrite(v bool) ChainFileOption {
 //     the outgoing file recording the handoff prevHash.
 //   - The first record of the new file carries that same handoff digest as its
 //     PrevHash, so the anchor and its successor's first record state the same
-//     value from either side of the boundary. verifyChainSet follows it.
+//     value from either side of the boundary. verifyChainSetAt follows it.
 //   - The anchor is NOT folded into prevDigest: it terminates the outgoing
 //     file after the handoff was fixed. A verifier folds it like any other
 //     record (a record that follows one -- see #268 -- chains over it) and

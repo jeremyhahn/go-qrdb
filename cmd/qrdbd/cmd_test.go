@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -384,186 +383,6 @@ func TestGenerateReplicaID_48BitMask(t *testing.T) {
 // ---------------------------------------------------------------------------
 // generateCATLS tests
 // ---------------------------------------------------------------------------
-
-func TestGenerateCATLS_ReturnsValidBundle(t *testing.T) {
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS() error: %v", err)
-	}
-	if bundle == nil {
-		t.Fatal("generateCATLS() returned nil bundle")
-	}
-	if len(bundle.CACertPEM) == 0 {
-		t.Fatal("CACertPEM is empty")
-	}
-	if len(bundle.CertPEM) == 0 {
-		t.Fatal("CertPEM is empty")
-	}
-	if len(bundle.KeyPEM) == 0 {
-		t.Fatal("KeyPEM is empty")
-	}
-	if bundle.TLSConfig == nil {
-		t.Fatal("TLSConfig is nil")
-	}
-	if len(bundle.TLSConfig.Certificates) != 1 {
-		t.Fatalf("certificate count = %d, want 1", len(bundle.TLSConfig.Certificates))
-	}
-	if bundle.TLSConfig.MinVersion != tls.VersionTLS13 {
-		t.Fatalf("MinVersion = %d, want %d (TLS 1.3)", bundle.TLSConfig.MinVersion, tls.VersionTLS13)
-	}
-	protos := bundle.TLSConfig.NextProtos
-	if len(protos) != 3 {
-		t.Fatalf("NextProtos length = %d, want 3", len(protos))
-	}
-	if protos[0] != "h3" || protos[1] != "h2" || protos[2] != "http/1.1" {
-		t.Fatalf("NextProtos = %v, want [h3, h2, http/1.1]", protos)
-	}
-	if bundle.CACertPool == nil {
-		t.Fatal("CACertPool is nil")
-	}
-
-	// Verify the pool can verify the leaf certificate.
-	leafBlock, _ := pem.Decode(bundle.CertPEM)
-	if leafBlock == nil {
-		t.Fatal("failed to decode CertPEM")
-	}
-	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
-	if err != nil {
-		t.Fatalf("ParseCertificate(leaf) error: %v", err)
-	}
-	opts := x509.VerifyOptions{
-		Roots:     bundle.CACertPool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	if _, err := leaf.Verify(opts); err != nil {
-		t.Fatalf("leaf.Verify() error: %v", err)
-	}
-}
-
-func TestGenerateCATLS_UniqueCerts(t *testing.T) {
-	b1, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("first call error: %v", err)
-	}
-	b2, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("second call error: %v", err)
-	}
-
-	// Different serial numbers mean different DER-encoded certificates.
-	cert1 := b1.TLSConfig.Certificates[0].Certificate[0]
-	cert2 := b2.TLSConfig.Certificates[0].Certificate[0]
-	if bytes.Equal(cert1, cert2) {
-		t.Fatal("two generateCATLS calls produced identical leaf certificates")
-	}
-}
-
-func TestGenerateCATLS_LeafSignedByCA(t *testing.T) {
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS() error: %v", err)
-	}
-
-	caBlock, _ := pem.Decode(bundle.CACertPEM)
-	if caBlock == nil {
-		t.Fatal("failed to decode CACertPEM")
-	}
-	ca, err := x509.ParseCertificate(caBlock.Bytes)
-	if err != nil {
-		t.Fatalf("ParseCertificate(CA) error: %v", err)
-	}
-
-	leafBlock, _ := pem.Decode(bundle.CertPEM)
-	if leafBlock == nil {
-		t.Fatal("failed to decode CertPEM")
-	}
-	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
-	if err != nil {
-		t.Fatalf("ParseCertificate(leaf) error: %v", err)
-	}
-
-	if err := leaf.CheckSignatureFrom(ca); err != nil {
-		t.Fatalf("leaf.CheckSignatureFrom(ca) error: %v", err)
-	}
-}
-
-func TestGenerateCATLS_CorrectSANs(t *testing.T) {
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS() error: %v", err)
-	}
-
-	leafBlock, _ := pem.Decode(bundle.CertPEM)
-	if leafBlock == nil {
-		t.Fatal("failed to decode CertPEM")
-	}
-	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
-	if err != nil {
-		t.Fatalf("ParseCertificate(leaf) error: %v", err)
-	}
-
-	// Verify localhost in DNSNames.
-	foundLocalhost := false
-	for _, dns := range leaf.DNSNames {
-		if dns == "localhost" {
-			foundLocalhost = true
-			break
-		}
-	}
-	if !foundLocalhost {
-		t.Fatalf("DNSNames = %v, want to contain localhost", leaf.DNSNames)
-	}
-
-	// Verify hostname in DNSNames when discoverable.
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		foundHostname := false
-		for _, dns := range leaf.DNSNames {
-			if dns == hostname {
-				foundHostname = true
-				break
-			}
-		}
-		if !foundHostname {
-			t.Fatalf("DNSNames = %v, want to contain hostname %q", leaf.DNSNames, hostname)
-		}
-	}
-
-	// Verify 127.0.0.1 and ::1 in IPAddresses.
-	found127 := false
-	foundIPv6 := false
-	for _, ip := range leaf.IPAddresses {
-		if ip.Equal(net.IPv4(127, 0, 0, 1)) {
-			found127 = true
-		}
-		if ip.Equal(net.IPv6loopback) {
-			foundIPv6 = true
-		}
-	}
-	if !found127 {
-		t.Fatalf("IPAddresses = %v, want to contain 127.0.0.1", leaf.IPAddresses)
-	}
-	if !foundIPv6 {
-		t.Fatalf("IPAddresses = %v, want to contain ::1", leaf.IPAddresses)
-	}
-
-	// Verify at least one non-loopback interface IP is included.
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, addr := range addrs {
-			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-				found := false
-				for _, certIP := range leaf.IPAddresses {
-					if certIP.Equal(ipNet.IP) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Fatalf("IPAddresses = %v, want to contain interface IP %v", leaf.IPAddresses, ipNet.IP)
-				}
-			}
-		}
-	}
-}
 
 // ---------------------------------------------------------------------------
 // buildServerConfig tests
@@ -1572,96 +1391,13 @@ func TestStartShardWithBootstrap_MulticastMissingSecret(t *testing.T) {
 // buildStaticDiscovery tests
 // ---------------------------------------------------------------------------
 
-func TestBuildStaticDiscovery_Success(t *testing.T) {
-	f := &startFlags{
-		peers: []string{"1=10.0.0.1:63001", "2=10.0.0.2:63001"},
-	}
-
-	disc, err := buildStaticDiscovery(f)
-	if err != nil {
-		t.Fatalf("buildStaticDiscovery() error = %v, want nil", err)
-	}
-	if disc == nil {
-		t.Fatal("buildStaticDiscovery() returned nil discovery")
-	}
-}
-
-func TestBuildStaticDiscovery_EmptyPeers(t *testing.T) {
-	f := &startFlags{peers: nil}
-
-	disc, err := buildStaticDiscovery(f)
-	if err != nil {
-		t.Fatalf("buildStaticDiscovery() error = %v, want nil", err)
-	}
-	if disc == nil {
-		t.Fatal("buildStaticDiscovery() returned nil discovery for empty peers")
-	}
-}
-
-func TestBuildStaticDiscovery_InvalidPeers(t *testing.T) {
-	f := &startFlags{peers: []string{"invalid"}}
-
-	_, err := buildStaticDiscovery(f)
-	if err == nil {
-		t.Fatal("buildStaticDiscovery() error = nil, want PeerParseError")
-	}
-	var ppe *PeerParseError
-	if !errors.As(err, &ppe) {
-		t.Fatalf("error type = %T, want *PeerParseError", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // buildDNSDiscovery tests
 // ---------------------------------------------------------------------------
 
-func TestBuildDNSDiscovery_Success(t *testing.T) {
-	f := &startFlags{dnsDomain: "cluster.example.com"}
-
-	disc, err := buildDNSDiscovery(f)
-	if err != nil {
-		t.Fatalf("buildDNSDiscovery() error = %v, want nil", err)
-	}
-	if disc == nil {
-		t.Fatal("buildDNSDiscovery() returned nil discovery")
-	}
-}
-
-func TestBuildDNSDiscovery_MissingDomain(t *testing.T) {
-	f := &startFlags{dnsDomain: ""}
-
-	_, err := buildDNSDiscovery(f)
-	if err == nil {
-		t.Fatal("buildDNSDiscovery() error = nil, want MissingFlagError")
-	}
-	var mfe *MissingFlagError
-	if !errors.As(err, &mfe) {
-		t.Fatalf("error type = %T, want *MissingFlagError", err)
-	}
-	if mfe.Flag != "dns-domain" {
-		t.Fatalf("MissingFlagError.Flag = %q, want %q", mfe.Flag, "dns-domain")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // buildMulticastDiscovery tests
 // ---------------------------------------------------------------------------
-
-func TestBuildMulticastDiscovery_MissingSecret(t *testing.T) {
-	f := &startFlags{multicastSecret: "", host: testBindHost}
-
-	_, err := buildMulticastDiscovery(f)
-	if err == nil {
-		t.Fatal("buildMulticastDiscovery() error = nil, want MissingFlagError")
-	}
-	var mfe *MissingFlagError
-	if !errors.As(err, &mfe) {
-		t.Fatalf("error type = %T, want *MissingFlagError", err)
-	}
-	if mfe.Flag != "multicast-secret" {
-		t.Fatalf("MissingFlagError.Flag = %q, want %q", mfe.Flag, "multicast-secret")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // newVersionCmd execution test
@@ -2072,32 +1808,6 @@ func TestStartShardStatic_ShardConfigPassedThrough(t *testing.T) {
 	}
 }
 
-func TestBuildStaticDiscovery_SinglePeer(t *testing.T) {
-	f := &startFlags{
-		peers: []string{"1=10.0.0.1:63001"},
-	}
-
-	disc, err := buildStaticDiscovery(f)
-	if err != nil {
-		t.Fatalf("buildStaticDiscovery() error = %v, want nil", err)
-	}
-	if disc == nil {
-		t.Fatal("buildStaticDiscovery() returned nil discovery")
-	}
-}
-
-func TestBuildDNSDiscovery_DomainWithSubdomain(t *testing.T) {
-	f := &startFlags{dnsDomain: "us-east-1.cluster.example.com"}
-
-	disc, err := buildDNSDiscovery(f)
-	if err != nil {
-		t.Fatalf("buildDNSDiscovery() error = %v, want nil", err)
-	}
-	if disc == nil {
-		t.Fatal("buildDNSDiscovery() returned nil discovery")
-	}
-}
-
 func TestShutdownNode_WithMockRaftNode(t *testing.T) {
 	node := &mockRaftNode{closeErr: nil}
 	err := shutdownNode(node)
@@ -2331,23 +2041,6 @@ func TestNewStatusCmd_MultipleShards(t *testing.T) {
 // ---------------------------------------------------------------------------
 // buildMulticastDiscovery success path
 // ---------------------------------------------------------------------------
-
-func TestBuildMulticastDiscovery_Success(t *testing.T) {
-	f := &startFlags{
-		multicastSecret: "test-secret-key-16b",
-		replicaID:       42,
-		raftAddress:     "127.0.0.1:63001",
-		deploymentID:    1,
-	}
-
-	disc, err := buildMulticastDiscovery(f)
-	if err != nil {
-		t.Fatalf("buildMulticastDiscovery() error = %v, want nil", err)
-	}
-	if disc == nil {
-		t.Fatal("buildMulticastDiscovery() returned nil discovery")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // startShardWithBootstrap with static discovery (full happy path)
@@ -2922,107 +2615,9 @@ func TestCertReloadError_ErrorsIs(t *testing.T) {
 // generateCA tests
 // ---------------------------------------------------------------------------
 
-func TestGenerateCA_ValidIsCA(t *testing.T) {
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-	require.NotNil(t, caCert)
-	require.NotNil(t, caKey)
-	require.NotEmpty(t, caCertPEM)
-	require.NotEmpty(t, caKeyPEM)
-
-	assert.True(t, caCert.IsCA, "CA certificate should have IsCA=true")
-	assert.True(t, caCert.BasicConstraintsValid, "CA should have BasicConstraintsValid=true")
-
-	// Verify the CA has approximately 10-year validity range.
-	expectedNotAfter := time.Now().Add(caValidity)
-	assert.WithinDuration(t, expectedNotAfter, caCert.NotAfter, 2*time.Minute,
-		"CA NotAfter should be approximately 10 years from now")
-}
-
-func TestGenerateCA_InvalidValidity(t *testing.T) {
-	// Zero duration should not panic; the certificate is still created
-	// (NotAfter will be very close to NotBefore).
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(0)
-	require.NoError(t, err)
-	require.NotNil(t, caCert)
-	require.NotNil(t, caKey)
-	require.NotEmpty(t, caCertPEM)
-	require.NotEmpty(t, caKeyPEM)
-	assert.True(t, caCert.IsCA)
-}
-
 // ---------------------------------------------------------------------------
 // generateNodeCert tests
 // ---------------------------------------------------------------------------
-
-func TestGenerateNodeCert_CorrectSANs(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateNodeCert(caCert, caKey, nodeValidity)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block, "failed to decode node cert PEM")
-
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	// Verify localhost in DNS names.
-	assert.Contains(t, leaf.DNSNames, "localhost", "node cert should contain localhost SAN")
-
-	// Verify 127.0.0.1 in IP addresses.
-	found127 := false
-	for _, ip := range leaf.IPAddresses {
-		if ip.Equal(net.IPv4(127, 0, 0, 1)) {
-			found127 = true
-			break
-		}
-	}
-	assert.True(t, found127, "node cert should contain 127.0.0.1 IP SAN")
-}
-
-func TestGenerateNodeCert_1YearValidity(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateNodeCert(caCert, caKey, nodeValidity)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	expectedNotAfter := time.Now().Add(nodeValidity)
-	assert.WithinDuration(t, expectedNotAfter, leaf.NotAfter, 2*time.Minute,
-		"node cert NotAfter should be approximately 1 year from now")
-}
-
-func TestGenerateNodeCert_CAVerifiable(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateNodeCert(caCert, caKey, nodeValidity)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	pool := x509.NewCertPool()
-	pool.AddCert(caCert)
-
-	opts := x509.VerifyOptions{
-		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	_, err = leaf.Verify(opts)
-	assert.NoError(t, err, "node cert should be verifiable by the CA")
-}
 
 // ---------------------------------------------------------------------------
 // loadTLSFromDir tests

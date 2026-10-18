@@ -184,17 +184,6 @@ func TestUpdate_UnimplementedOpcodeDoesNotPoisonRaft(t *testing.T) {
 			return b
 		})
 	})
-
-	t.Run("ConcurrentStateMachine", func(t *testing.T) {
-		c := NewConcurrentStateMachine(1, 1, memory.NewStorage())
-		entries, results := batch(t)
-		err := c.Update(context.Background(), entries, results)
-		assertOutcome(t, err, results, func(key string) []byte {
-			v, _ := c.Lookup(context.Background(), []byte(key))
-			b, _ := v.([]byte)
-			return b
-		})
-	})
 }
 
 // The guarded-verb refusal test that stood here is gone, deliberately.
@@ -325,18 +314,6 @@ func TestUpdate_BatchWithUnimplementedOpIsRefusedWhole(t *testing.T) {
 		err := f.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: batchCmd(t)}}, results)
 		assertRefusedWhole(t, err, results[0], wm, func(key string) []byte {
 			v, _ := f.Lookup(context.Background(), []byte(key))
-			b, _ := v.([]byte)
-			return b
-		})
-	})
-
-	t.Run("ConcurrentStateMachine", func(t *testing.T) {
-		wm := &mockWatchManager{}
-		c := NewConcurrentStateMachine(1, 1, memory.NewStorage(), WithConcurrentWatchManager(wm))
-		results := make([]sm.Result, 1)
-		err := c.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: batchCmd(t)}}, results)
-		assertRefusedWhole(t, err, results[0], wm, func(key string) []byte {
-			v, _ := c.Lookup(context.Background(), []byte(key))
 			b, _ := v.([]byte)
 			return b
 		})

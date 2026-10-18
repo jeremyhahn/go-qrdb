@@ -55,72 +55,13 @@ func TestGenerateReplicaID_Basic(t *testing.T) {
 // generateCA – success and error paths
 // ---------------------------------------------------------------------------
 
-func TestGenerateCA_Success(t *testing.T) {
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(time.Hour)
-	if err != nil {
-		t.Fatalf("generateCA: %v", err)
-	}
-	if len(caCertPEM) == 0 {
-		t.Error("expected non-empty CA cert PEM")
-	}
-	if len(caKeyPEM) == 0 {
-		t.Error("expected non-empty CA key PEM")
-	}
-	if caCert == nil {
-		t.Error("expected non-nil CA cert")
-	}
-	if caKey == nil {
-		t.Error("expected non-nil CA key")
-	}
-	if !caCert.IsCA {
-		t.Error("expected CA certificate to have IsCA=true")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // generateNodeCert – success
 // ---------------------------------------------------------------------------
 
-func TestGenerateNodeCert_Success(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(time.Hour)
-	if err != nil {
-		t.Fatalf("generateCA: %v", err)
-	}
-
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, time.Hour)
-	if err != nil {
-		t.Fatalf("generateNodeCert: %v", err)
-	}
-	if len(certPEM) == 0 {
-		t.Error("expected non-empty cert PEM")
-	}
-	if len(keyPEM) == 0 {
-		t.Error("expected non-empty key PEM")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // generateCATLS – success
 // ---------------------------------------------------------------------------
-
-func TestGenerateCATLS_Success(t *testing.T) {
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS: %v", err)
-	}
-	if bundle == nil {
-		t.Fatal("expected non-nil bundle")
-	}
-	if len(bundle.CACertPEM) == 0 {
-		t.Error("expected non-empty CACertPEM")
-	}
-	if bundle.TLSConfig == nil {
-		t.Error("expected non-nil TLSConfig")
-	}
-	if bundle.CACertPool == nil {
-		t.Error("expected non-nil CACertPool")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // canonicalizePath – basic success

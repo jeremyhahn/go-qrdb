@@ -56,12 +56,3 @@ func WithTimeout(d time.Duration) ClientOption {
 		o.transportOpts = append(o.transportOpts, transport.WithTimeout(d))
 	}
 }
-
-// applyClientOptions resolves variadic ClientOption values.
-func applyClientOptions(opts []ClientOption) *clientOptions {
-	o := &clientOptions{}
-	for _, opt := range opts {
-		opt(o)
-	}
-	return o
-}

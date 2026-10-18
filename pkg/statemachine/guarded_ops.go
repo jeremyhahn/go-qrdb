@@ -82,7 +82,7 @@ import (
 //     basis KVStateMachine.handlePutIfAbsent already stands on.
 //   - RegularStateMachine additionally takes r.mu ONCE across the check and
 //     the write, so a concurrent Lookup cannot observe a half-applied swap.
-//   - FastStateMachine and ConcurrentStateMachine take the shard lock ONCE
+//   - FastStateMachine takes the shard lock ONCE
 //     across the check and the cache write, through compareAndSetLocked, and
 //     then persist SYNCHRONOUSLY through the same claim machinery
 //     handlePutIfAbsent uses. Splitting the check from the write would reopen
@@ -94,8 +94,8 @@ import (
 // reported rather than logged, and that no earlier write to the same key can
 // still overwrite it.
 //
-// FastStateMachine and ConcurrentStateMachine provide all three directly —
-// they own their storage, persist synchronously through persistClaimLocked,
+// FastStateMachine provides all three directly —
+// it owns its storage, persist synchronously through persistClaimLocked,
 // and order every write through persistOrder (the go-qrdb#94 ruling of
 // 2026-08-23, and go-qrdb#86 for the ordering). KVStateMachine reaches storage
 // only through the Backend seam, so it gets them by ASKING for them:
@@ -365,84 +365,15 @@ func (f *FastStateMachine) handleCompareAndSwap(payload []byte, revision uint64)
 }
 
 // ---------------------------------------------------------------------------
-// ConcurrentStateMachine
+// Shared guard for the sharded-cache state machine
 // ---------------------------------------------------------------------------
 
-// handleCompareAndDelete tombstones the key only when the shard still holds
-// the expected value, and waits for the removal to reach storage.
-func (c *ConcurrentStateMachine) handleCompareAndDelete(payload []byte, revision uint64) (sm.Result, error) {
-	key, expected, err := protocol.DecodeCompareAndDelete(payload)
-	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_delete: " + err.Error()}
-	}
-	k := string(key)
-
-	s := c.concurrentShardFor(k)
-	claimed, cerr := compareAndSetLocked(&s.mu, s.data, s.claims, &s.order, k, expected, nil, true, c.storage.Get)
-	if cerr != nil {
-		return sm.Result{}, cerr
-	}
-	if !claimed.stored {
-		return sm.Result{Value: protocol.ResultNotDeleted}, nil
-	}
-
-	// Synchronous for the same reason as FastStateMachine's — see the comment
-	// there (owner ruling 2026-08-23, go-qrdb#94).
-	if perr := c.persistClaimDelete(s, claimed, k); perr != nil {
-		return sm.Result{}, perr
-	}
-
-	if c.watchManager != nil {
-		c.watchManager.Notify(k, nil, revision, true)
-	}
-
-	return sm.Result{Value: protocol.ResultDeleted}, nil
-}
-
-// handleCompareAndSwap replaces the key's cached value only when the shard
-// still holds the expected one, and waits for the replacement to reach
-// storage.
-func (c *ConcurrentStateMachine) handleCompareAndSwap(payload []byte, revision uint64) (sm.Result, error) {
-	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
-	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_swap: " + err.Error()}
-	}
-	k := string(key)
-
-	ownedNext := make([]byte, len(next))
-	copy(ownedNext, next)
-
-	s := c.concurrentShardFor(k)
-	claimed, cerr := compareAndSetLocked(&s.mu, s.data, s.claims, &s.order, k, expected, ownedNext, false, c.storage.Get)
-	if cerr != nil {
-		return sm.Result{}, cerr
-	}
-	if !claimed.stored {
-		return sm.Result{Value: protocol.ResultNotSwapped}, nil
-	}
-
-	if perr := c.persistClaim(s, claimed, k, ownedNext, "compare_and_swap_set"); perr != nil {
-		return sm.Result{}, perr
-	}
-
-	if c.watchManager != nil {
-		c.watchManager.Notify(k, ownedNext, revision, false)
-	}
-
-	return sm.Result{Value: protocol.ResultSwapped}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Shared guard for the two sharded-cache state machines
-// ---------------------------------------------------------------------------
-
-// compareAndSetLocked is the guarded compare-and-write for the two
-// sharded-cache state machines.
+// compareAndSetLocked is the guarded compare-and-write for the sharded-cache
+// state machine.
 //
 // It takes the lock and the map rather than a shard for the same reason
-// setIfAbsentLocked does: FastStateMachine and ConcurrentStateMachine have
-// structurally identical but distinct shard types, and passing the fields
-// keeps one implementation of the guard instead of two that could drift.
+// setIfAbsentLocked does: the guard is one implementation independent of the
+// shard type.
 //
 // The check and the write happen under ONE acquisition of the shard lock, so
 // no other apply can land between them.

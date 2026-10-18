@@ -48,7 +48,7 @@ Re-exported as `sdk.ErrStorageClosed`, `sdk.StorageClosedError` and
 `sdk.IsStorageClosed`.
 
 Implementations: `pkg/storage/file`, `pkg/storage/memory`,
-`pkg/storage/pebble`, `pkg/storage/objstore`, `pkg/storage/namespace`.
+`pkg/storage/pebble`, `pkg/storage/objstore`.
 
 `pkg/storage/objstore`'s typed errors, beside `UnsupportedProviderError`:
 
@@ -214,9 +214,8 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
 - **The interface satisfies go-quicraft's `seal.StorageBackend` by duck
   typing** — no embedding, no import. Both sides must stay compatible by
   agreement, and there is no compiler check across the repo boundary.
-- **The namespace engine is the only tenant-isolation mechanism at this layer.**
-  It wraps any engine and prefixes every key; `List("")` filters to the tenant's
-  prefix. A raw engine is **not** tenant-safe.
+- **No engine isolates tenants.** Isolation is a database and barrier per
+  tenant, above this layer; a key prefix is not a boundary.
 - **Volume pools are local-only.** `objpool.LocalOnly` wraps the manager because
   the consumer is PebbleDB, which needs a real filesystem path. This is a
   documented invariant, not debt — do not remove the wrapper.
@@ -387,14 +386,11 @@ an error value, so an unchecked call panics rather than failing cleanly.
   journal stays.
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.
-- **Namespace engine**: no storage of its own; it rewrites keys.
 
 ## Test strategy
 
 - **Unit**, per engine, against the same interface conformance suite — an engine
   that passes it is usable everywhere the interface is accepted.
-- **Namespace wrapper**: prefixing on write, prefix filtering on `List`, and
-  that a second tenant's keys are invisible.
 - **File engine journal**: crash-mid-write replay at open.
 - **File engine at rest** (`pkg/storage/file/encrypted_test.go`): no key or
   value readable anywhere in an encrypted store's files, a batch-committed

@@ -352,10 +352,6 @@ func TestShardedStateMachines_GuardedFaultMidBatchHaltsForReplay(t *testing.T) {
 			f := NewFastStateMachine(1, 1, st)
 			return target{update: f.Update, closer: f}
 		},
-		"ConcurrentStateMachine": func(st storage.Storage) target {
-			c := NewConcurrentStateMachine(1, 1, st)
-			return target{update: c.Update, closer: c}
-		},
 	}
 	for name, build := range targets {
 		t.Run(name, func(t *testing.T) {

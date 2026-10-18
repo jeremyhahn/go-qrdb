@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -273,41 +272,6 @@ func TestInitSealSubsystem_SealStorageMkdirError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // start.go: generateCA — verify returned cert and key fields
 // ---------------------------------------------------------------------------
-
-// TestGenerateCA_CertificateFields verifies that the CA cert has the expected
-// organization, CN, and key usage. Exercises the full happy path through
-// PEM encoding (lines 149-162 of tls.go).
-func TestGenerateCA_CertificateFields(t *testing.T) {
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(48 * time.Hour)
-	require.NoError(t, err)
-	require.NotNil(t, caCert)
-	require.NotNil(t, caKey)
-	require.NotEmpty(t, caCertPEM)
-	require.NotEmpty(t, caKeyPEM)
-
-	assert.True(t, caCert.IsCA)
-	assert.Equal(t, 0, caCert.MaxPathLen)
-	assert.True(t, caCert.MaxPathLenZero)
-	assert.Equal(t, "qrdb-ca", caCert.Subject.CommonName)
-	assert.Contains(t, caCert.Subject.Organization, "go-quicraft")
-}
-
-// TestGenerateNodeCert_CertificateFields verifies that the node certificate
-// has expected fields, covering lines 179-213 of tls.go.
-func TestGenerateNodeCert_CertificateFields(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, time.Hour)
-	require.NoError(t, err)
-	require.NotEmpty(t, certPEM)
-	require.NotEmpty(t, keyPEM)
-
-	// Parse the generated cert and verify its fields.
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-	require.Equal(t, "CERTIFICATE", block.Type)
-}
 
 // TestGenerateClientCert_CertificateFields verifies that the client certificate
 // has the expected CN and OU, exercising lines 231-262 of tls.go.

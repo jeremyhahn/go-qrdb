@@ -29,7 +29,7 @@ import (
 
 // KVStateMachine is a unified key-value state machine that delegates
 // storage operations to a Backend interface. This eliminates dispatch
-// table duplication across RegularStateMachine, ConcurrentStateMachine,
+// table duplication across RegularStateMachine,
 // and FastStateMachine by consolidating all protocol handlers into a
 // single implementation.
 //

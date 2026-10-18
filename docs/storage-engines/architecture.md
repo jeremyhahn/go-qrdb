@@ -54,17 +54,10 @@ projects share a shape without either importing the other's declaration.
 | Memory | `pkg/storage/memory/` | in-memory, for tests and ephemeral data |
 | PebbleDB | `pkg/storage/pebble/` | production-grade, extracted from the Raft state machine |
 | ObjStore | `pkg/storage/objstore/` | object-storage-backed, via go-objstore; arbitrary byte keys under encoded object names |
-| Namespace | `pkg/storage/namespace/` | tenant prefix isolation **wrapping any engine** |
 
-The namespace engine is the important one architecturally: isolation is
-composed, not reimplemented per backend.
-
-```go
-base := pebble.New(dir)
-tenantEngine := namespace.New(base, "tenant-a")
-// Set("key", data)  →  base.Set("tenant-a/key", data)
-// List(nil)         →  filtered to the "tenant-a/" prefix
-```
+An engine carries no tenant knowledge. Every tenant is isolated by its own
+database and barrier, not by a key prefix; see
+[../seal/multi-tenant.md](../seal/multi-tenant.md).
 
 ### The file engine: a hashed, flat, content-addressed layout (BREAKING)
 
@@ -194,8 +187,8 @@ record, not across a batch committing in another process. The lock is advisory
 and only binds processes using this engine; the directory must be on a local
 filesystem, because `flock` is not dependable over network filesystems. Sharing
 covers the `file` engine opened directly; an engine wrapped by another storage
-engine (the namespace wrapper) does not forward `Exclusive`, so its guarded
-verbs get in-process exclusion only.
+engine (`pkg/storage/sealed`, for one) does not forward `Exclusive`, so its
+guarded verbs get in-process exclusion only.
 
 This is a **breaking on-disk format change**, and it is wider than
 `raft.sm_storage: file` (`sm_type: disk`/`fast`) alone: `file.New` also
@@ -204,8 +197,7 @@ backs
 every database's barrier-metadata store regardless of that database's OWN
 configured backend (`pkg/database/manager.go`'s `openBarrierMetaBackend` —
 deliberately backend-independent, since the metadata must survive a
-restart even for an in-memory database), partitions
-(`pkg/storage/partition`'s `FileFactory`), and the repository `qrdbd
+restart even for an in-memory database), and the repository `qrdbd
 restore --backup-dir` reads from. Every one of these opens a data
 directory through the identical `file.New`, so every one is refused
 in-place identically, and every one needs the identical remedy. Per the
@@ -357,9 +349,10 @@ any object the engine did not write makes an unmarked store non-empty.
 - **One engine.** Rejected: memory is required for tests to be fast and
   hermetic; file is required where a real filesystem layout matters; Pebble is
   required for production write throughput.
-- **Per-backend tenant isolation.** Rejected: it would be reimplemented three
-  times and get subtly different each time. The namespace wrapper makes it one
-  implementation over all of them.
+- **Per-backend tenant isolation, or a key-prefix wrapper.** Rejected: it would
+  be reimplemented per backend and get subtly different each time, and a prefix
+  is not a cryptographic boundary. Each tenant gets its own database and
+  barrier, above this layer.
 - **A fatter interface.** Rejected: six methods is what a backend must provide.
   Anything richer (revisions, ranges, transactions) is built above it, which is
   what lets a new backend be small.
@@ -417,7 +410,6 @@ invariant, not debt.** Do not "fix" it by removing the wrapper.
 | Piece | Package | Owner |
 |---|---|---|
 | `Engine` interface and the file/memory/pebble engines | `pkg/storage` | go-qrdb |
-| Namespace (tenant prefix) wrapper | `pkg/storage/namespace` | go-qrdb |
 | Volume pool adapter, state stores | `pkg/storage/pool` | go-qrdb |
 | Object-storage backends (local, memory, S3, GCS, Azure, Glacier) and the pool primitive | — | **go-objstore** |
 | `seal.StorageBackend` shape | — | **go-quicraft** (satisfied by duck typing) |
@@ -433,9 +425,8 @@ go-xkms, not only for this repo.
 
 ## Trust boundaries
 
-- **Tenant isolation is the namespace wrapper's job**, applied by composition.
-  An engine handed to a tenant-scoped consumer is already wrapped; the raw
-  engine is not tenant-safe and is not meant to be.
+- **Tenant isolation is not this layer's job.** An engine does not know about
+  tenants; each tenant's engine is its own database behind its own barrier.
 - **At-rest encryption is the barrier's job** — see
   [../barrier-seal/](../barrier-seal/). An engine that writes files writes
   them through the file system it is given; under the seal that is the

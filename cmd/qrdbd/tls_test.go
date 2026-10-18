@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
 // writeTestCA writes a self-signed CA certificate to the given path
@@ -210,11 +212,11 @@ func TestLoadTLSFromFilesWithExtra_LayersAdditionalCAs(t *testing.T) {
 
 	// Generate a CA + node certificate via the existing helper so we
 	// have a valid leaf signed by the primary CA.
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(time.Hour)
+	caCertPEM, caKeyPEM, caCert, caKey, err := clustertls.GenerateCA(time.Hour)
 	if err != nil {
 		t.Fatalf("generateCA: %v", err)
 	}
-	nodeCertPEM, nodeKeyPEM, err := generateNodeCert(caCert, caKey, time.Hour)
+	nodeCertPEM, nodeKeyPEM, err := clustertls.GenerateNodeCert(caCert, caKey, time.Hour)
 	if err != nil {
 		t.Fatalf("generateNodeCert: %v", err)
 	}

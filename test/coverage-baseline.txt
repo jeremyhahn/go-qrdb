@@ -112,9 +112,7 @@ github.com/jeremyhahn/go-qrdb/pkg/statemachine 94.71
 github.com/jeremyhahn/go-qrdb/pkg/storage 100.00
 github.com/jeremyhahn/go-qrdb/pkg/storage/file 88.00
 github.com/jeremyhahn/go-qrdb/pkg/storage/memory 99.19
-github.com/jeremyhahn/go-qrdb/pkg/storage/namespace 100.00
 github.com/jeremyhahn/go-qrdb/pkg/storage/objstore 94.52
-github.com/jeremyhahn/go-qrdb/pkg/storage/partition 100.00
 github.com/jeremyhahn/go-qrdb/pkg/storage/pebble 92.79
 github.com/jeremyhahn/go-qrdb/pkg/storage/vector 93.34
 github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema 100.00

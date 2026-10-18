@@ -184,37 +184,6 @@ func joinerToken(f *startFlags) (string, error) {
 	return config.ResolveJoinToken(f.bootstrapJoinTokenFile, f.bootstrapJoinTokenEnv)
 }
 
-// hasBootstrapFlags returns true if any bootstrap-related flags are set
-// on the start command, indicating this node intends to join an existing
-// cluster by fetching the CA bundle from a bootstrap server.
-func hasBootstrapFlags(f *startFlags) bool {
-	return clusterenroll.BootstrapOptions{
-		NoiseKey:  f.bootstrapNoiseKey,
-		P256Key:   f.bootstrapP256Key,
-		NoiseAddr: f.bootstrapNoiseAddr,
-		SPKIPin:   f.bootstrapSPKIPin,
-		DANEDNS:   f.bootstrapDANEDNS,
-		DirectURL: f.bootstrapDirectURL,
-	}.HasFlags()
-}
-
-// bootstrapTLS fetches the cluster CA bundle from an existing node using
-// go-truststrap, generates a node leaf certificate from the CA material,
-// and persists everything to the data directory. It is a thin wrapper
-// around clusterenroll.Join that converts the raw clustertls.Material
-// into the qrdbd-specific TLSBundle type.
-func bootstrapTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, error) {
-	opts, err := flagsToEnrollOptions(f)
-	if err != nil {
-		return nil, err
-	}
-	mat, err := clusterenroll.Join(context.Background(), opts, logger)
-	if err != nil {
-		return nil, err
-	}
-	return tlsBundleFromMaterial(mat)
-}
-
 // resolveNoiseHost returns the bind host for this node's Noise enrollment
 // listener: bootstrap.noise_host / --bootstrap-noise-host when set, else the
 // API bind host. Defaulting to --host is what keeps a node contained to one

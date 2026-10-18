@@ -715,16 +715,6 @@ func watchingTargets() map[string]func(*testing.T) (conformanceTarget, *mockWatc
 				handlers: f.handlers,
 			}, wm
 		},
-		"ConcurrentStateMachine": func(t *testing.T) (conformanceTarget, *mockWatchManager) {
-			t.Helper()
-			wm := &mockWatchManager{}
-			c := NewConcurrentStateMachine(1, 1, newMemStorage(), WithConcurrentWatchManager(wm))
-			return conformanceTarget{
-				apply:    updaterWithContext(c.Update),
-				lookup:   lookupWithContext(c.Lookup),
-				handlers: c.handlers,
-			}, wm
-		},
 	}
 }
 
@@ -850,7 +840,7 @@ func TestKVStateMachine_GuardedVerbsUseTheDurableWritePath(t *testing.T) {
 //	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT "v"
 //
 // A lost write and a resurrected key, on the default path for sm_type "fast",
-// with no crash and no error. FastStateMachine and ConcurrentStateMachine were
+// with no crash and no error. FastStateMachine was
 // given persistOrder for exactly this in go-qrdb#86; FastBackend, added later,
 // reproduced the pre-#86 write path and never received it.
 //

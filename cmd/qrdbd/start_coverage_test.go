@@ -25,7 +25,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1549,38 +1548,9 @@ func TestNewKVServiceAdapter_ReturnsNonNil(t *testing.T) {
 // buildMulticastDiscovery: success path with valid secret
 // ---------------------------------------------------------------------------
 
-func TestBuildMulticastDiscovery_Success_Coverage(t *testing.T) {
-	f := &startFlags{
-		multicastSecret: "test-secret-fips16",
-		replicaID:       42,
-		raftAddress:     "127.0.0.1:63001",
-		deploymentID:    1,
-	}
-
-	disc, err := buildMulticastDiscovery(f)
-	require.NoError(t, err)
-	require.NotNil(t, disc)
-}
-
 // ---------------------------------------------------------------------------
 // buildMulticastDiscovery: NewMulticastDiscovery returns error
 // ---------------------------------------------------------------------------
-
-func TestBuildMulticastDiscovery_NewMulticastDiscoveryError(t *testing.T) {
-	// The multicast discovery constructor validates that Address is non-empty.
-	// Pass a valid secret but empty raftAddress to trigger the error from
-	// discovery.NewMulticastDiscovery.
-	f := &startFlags{
-		multicastSecret: "test-secret-fips16",
-		replicaID:       42,
-		raftAddress:     "",
-		deploymentID:    1,
-	}
-
-	disc, err := buildMulticastDiscovery(f)
-	require.Error(t, err)
-	assert.Nil(t, disc)
-}
 
 // ---------------------------------------------------------------------------
 // newStatusCmd: invalid tls-ca-file triggers error in RunE
@@ -2026,7 +1996,7 @@ func TestApplyConfigToFlags_BootstrapP256Keys(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "a", opts.Bootstrap.P256Key)
 		assert.Equal(t, "b", opts.Bootstrap.JoinP256Key)
-		assert.True(t, hasBootstrapFlags(f))
+		assert.True(t, opts.Bootstrap.HasFlags())
 	})
 }
 
@@ -2287,40 +2257,6 @@ func TestRunStart_PebbleSMTypeExercisesSwitch(t *testing.T) {
 // localSANs: the SAN set is exactly the two loopbacks plus every non-loopback
 // interface address — no more, no less, on a host with any number of NICs
 // ---------------------------------------------------------------------------
-
-func TestLocalSANs_ReturnsLocalhostAndBaseIPs(t *testing.T) {
-	dnsNames, ips := localSANs()
-
-	assert.Contains(t, dnsNames, "localhost")
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		assert.Contains(t, dnsNames, hostname, "hostname must be a DNS SAN")
-	}
-
-	// The contract is a set equality, so measure the other half of it rather
-	// than asserting a count: a count is a claim about how many NICs the host
-	// happens to have, which is true on a workstation and false in a
-	// single-interface container.
-	want := map[string]bool{"127.0.0.1": true, "::1": true}
-	addrs, err := net.InterfaceAddrs()
-	require.NoError(t, err)
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-			want[ipNet.IP.String()] = true
-		}
-	}
-
-	got := make(map[string]bool, len(ips))
-	for _, ip := range ips {
-		got[ip.String()] = true
-	}
-
-	// Set equality in both directions. Missing entries catch a dropped
-	// loopback or a dropped interface address; extra entries catch the
-	// unspecified addresses 0.0.0.0 and ::, which LocalSANs deliberately
-	// excludes because nothing dials them (pkg/cluster.AdvertisableHost
-	// refuses to advertise them for the same reason).
-	assert.Equal(t, want, got, "IP SANs must be the loopbacks plus every non-loopback interface address")
-}
 
 // ---------------------------------------------------------------------------
 // applyTLSClientAuth: explicit operator-selected client-auth modes

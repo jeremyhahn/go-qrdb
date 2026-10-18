@@ -125,20 +125,6 @@ func Unregistered(perms []Permission) []Permission {
 	return out
 }
 
-// unregisterForTesting removes the given permissions from the registry. It
-// exists so a test that registers a probe permission can leave the
-// process-global registry as it found it: TestEveryPermissionDeclaresItsScope
-// walks All(), and a probe left behind by an earlier test reads as an
-// undeclared built-in. The function is unexported and not part of the
-// public API; production code never unregisters a permission.
-func unregisterForTesting(perms ...Permission) {
-	mu.Lock()
-	defer mu.Unlock()
-	for _, p := range perms {
-		delete(registry, p)
-	}
-}
-
 // IsWildcard reports whether p uses a whole-segment "*" wildcard in its
 // resource or action component (e.g. "keys:*", "*:read", "*:*"). Wildcard
 // permissions are matched against concrete resource:action checks by the

@@ -38,17 +38,3 @@ func regularApplyCmd(t *testing.T, rsm *RegularStateMachine, cmd []byte) (sm.Res
 	err := rsm.Update(context.Background(), entries, results)
 	return results[0], err
 }
-
-func newConcurrentWithMVCC(ms MVCCStore) (*ConcurrentStateMachine, *memStorage) {
-	store := newMemStorage()
-	csm := NewConcurrentStateMachine(1, 1, store, WithConcurrentMVCCStore(ms))
-	return csm, store
-}
-
-func concurrentApplyCmd(t *testing.T, csm *ConcurrentStateMachine, cmd []byte) (sm.Result, error) {
-	t.Helper()
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := csm.Update(context.Background(), entries, results)
-	return results[0], err
-}

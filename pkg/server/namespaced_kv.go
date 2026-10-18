@@ -47,15 +47,6 @@ type namespacedKVService struct {
 // Compile-time interface check.
 var _ service.KVServicer = (*namespacedKVService)(nil)
 
-// newNamespacedKVService creates a KVServicer that prefixes all keys with
-// "{namespace}/". namespace must be non-empty and must not contain "/".
-func newNamespacedKVService(inner service.KVServicer, namespace string) *namespacedKVService {
-	return &namespacedKVService{
-		inner:  inner,
-		prefix: namespace + "/",
-	}
-}
-
 // Put stores a key-value pair under the namespace prefix.
 func (s *namespacedKVService) Put(ctx context.Context, key string, value []byte) error {
 	ctx = s.scope(ctx)

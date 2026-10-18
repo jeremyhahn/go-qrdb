@@ -299,15 +299,6 @@ func encodeFloat64(v float64) []byte {
 	return encodeUint64(bits)
 }
 
-// decodeUint64 decodes bytes to uint64.
-func decodeUint64(b []byte) uint64 {
-	if len(b) != 8 {
-		return 0
-	}
-	return uint64(b[0])<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 |
-		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
-}
-
 // GetIndexableFields returns a list of field names that should be indexed.
 func GetIndexableFields(structType reflect.Type) ([]string, error) {
 	metadata, err := ParseIndexTags(structType)

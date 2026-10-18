@@ -135,9 +135,3 @@ func (f *FastStateMachine) guardRead(key []byte) ([]byte, error) {
 	}
 	return stored, nil
 }
-
-// handleGuarded applies an OpGuarded entry, reading the guard through the
-// shard cache with storage fallback -- the read handleCompareAndSwap uses.
-func (c *ConcurrentStateMachine) handleGuarded(payload []byte, revision uint64) (sm.Result, error) {
-	return applyGuardedWrite(payload, revision, lookupReader(c.lookupConcurrentKey), c.handlers)
-}

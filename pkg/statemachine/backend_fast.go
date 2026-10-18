@@ -56,8 +56,8 @@ const kvFastShardCount = 256
 //	Put(k,"old"); Put(k,"new")  -> storage saw [set:k=new set:k=old], durable "old"
 //	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT "v"
 //
-// A lost write and a resurrected key. FastStateMachine and
-// ConcurrentStateMachine never had it: they own their storage and draw a
+// A lost write and a resurrected key. FastStateMachine never
+// had it: they own their storage and draw a
 // persistOrder ticket under the shard lock, where apply order is already
 // established (go-qrdb#86). This backend was written later, reproduced the
 // pre-#86 write path, and did not receive the fix until #224.

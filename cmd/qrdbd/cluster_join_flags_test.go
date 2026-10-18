@@ -63,6 +63,11 @@ import (
 // domain the consuming side validates against.
 const clusterJoinFlagsTestTrustDomain = "qrdb.cluster"
 
+// clusterJoinFlagsTestPeers is a two-member static peer list. A joining node
+// belongs to a multi-node cluster; with no peers resolveTLS takes the
+// single-node path and never reaches the bootstrap-join flags.
+const clusterJoinFlagsTestPeers = "1=127.0.0.1:63001,2=127.0.0.1:63002"
+
 // clusterJoinFlagsTestBarrier is a trivial in-memory seal.EncryptionBarrier.
 // This file tests the CLI/YAML operator-wiring surface, not
 // cakey.SoftwareProvider's own encrypted round-trip, which pkg/cakey already
@@ -263,6 +268,7 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 		"--data-dir", dataDir,
 		"--host", testBindHost,
 		"--cluster-trust-domain", clusterJoinFlagsTestTrustDomain,
+		"--peers", clusterJoinFlagsTestPeers,
 		"--bootstrap-spki-pin", pin,
 		"--bootstrap-addr", serverAddr,
 		"--bootstrap-join-url", srv.URL,
@@ -273,9 +279,10 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 	require.Equal(t, srv.URL, f.bootstrapJoinHTTPURL)
 	require.Equal(t, tokenPath, f.bootstrapJoinTokenFile)
 
-	bundle, err := bootstrapTLS(f, testLogger())
+	bundle, servers, err := resolveTLS(f, testLogger())
 	require.NoError(t, err)
 	require.NotNil(t, bundle)
+	require.Nil(t, servers, "a joining node starts no bootstrap servers")
 	require.Empty(t, bundle.CAKeyPEM, "a joined node must never receive the cluster CA private key")
 
 	block, _ := pem.Decode(bundle.CertPEM)
@@ -337,13 +344,14 @@ func TestBootstrapJoinFlags_WrongTokenFileRefused(t *testing.T) {
 		"--data-dir", dataDir,
 		"--host", testBindHost,
 		"--cluster-trust-domain", clusterJoinFlagsTestTrustDomain,
+		"--peers", clusterJoinFlagsTestPeers,
 		"--bootstrap-spki-pin", pin,
 		"--bootstrap-addr", serverAddr,
 		"--bootstrap-join-url", srv.URL,
 		"--bootstrap-join-token-file", tokenPath,
 	)
 
-	_, err := bootstrapTLS(f, testLogger())
+	_, _, err := resolveTLS(f, testLogger())
 	var refused *clusterenroll.JoinRefusedError
 	require.ErrorAs(t, err, &refused, "a wrong-token joiner must be refused, not issued a certificate")
 	if _, statErr := os.Stat(filepath.Join(dataDir, "ca-key.pem")); !os.IsNotExist(statErr) {

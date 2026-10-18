@@ -125,9 +125,9 @@ func TestChainFileLogger_VerifyChain_AcrossRotations_EveryFileVerifies(t *testin
 		}
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet on honest data: %v", err)
+		t.Fatalf("verifyChainSetAt on honest data: %v", err)
 	}
 	if !v.Genesis {
 		t.Error("the set was never pruned, so the walk must reach the chain's origin")
@@ -191,9 +191,9 @@ func TestChainFileLogger_VerifyChain_SurvivesARestartAcrossARotation(t *testing.
 	if err := verifyChainFile(context.Background(), testTrailDir(t, path), path); err != nil {
 		t.Fatalf("the active file must verify after a restart across a rotation: %v", err)
 	}
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet after restart: %v", err)
+		t.Fatalf("verifyChainSetAt after restart: %v", err)
 	}
 	if v.Records != 12 {
 		t.Errorf("Records = %d, want 12 (8 before the restart, 4 after)", v.Records)
@@ -213,9 +213,9 @@ func TestChainFileLogger_VerifyChainSet_ChainOrderComesFromDigestsNotNames(t *te
 		t.Fatalf("Close: %v", err)
 	}
 
-	before, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	before, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 
 	// Reverse the archives' name ordering while keeping them in the set.
@@ -228,9 +228,9 @@ func TestChainFileLogger_VerifyChainSet_ChainOrderComesFromDigestsNotNames(t *te
 		}
 	}
 
-	after, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	after, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet after renaming the archives: %v", err)
+		t.Fatalf("verifyChainSetAt after renaming the archives: %v", err)
 	}
 	if after.Files != before.Files || after.Records != before.Records {
 		t.Fatalf("renaming changed the walk: %d/%d files, %d/%d records",
@@ -258,15 +258,15 @@ func TestChainFileLogger_VerifyChainSet_APrunedHeadIsNotTampering(t *testing.T) 
 		t.Fatalf("Close: %v", err)
 	}
 
-	full, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	full, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	if err := os.Remove(full.Order[0]); err != nil {
 		t.Fatalf("prune the oldest archive: %v", err)
 	}
 
-	pruned, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	pruned, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
 		t.Fatalf("a pruned head must not be reported as a broken chain: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestChainFileLogger_VerifyChainSet_EmptyAndRecordlessFilesAreNotLinks(t *te
 		t.Fatal("expected at least one record-less file; the case under test did not arise")
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
 		t.Fatalf("record-less files must not fork the walk: %v", err)
 	}
@@ -325,9 +325,9 @@ func TestVerifyChainSet_EmptyDirectoryIsNotAFailure(t *testing.T) {
 	l, _, path := rotatingLogger(t, 1<<20)
 	defer func() { _ = l.Close() }()
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet on an empty trail: %v", err)
+		t.Fatalf("verifyChainSetAt on an empty trail: %v", err)
 	}
 	if v.Files != 0 || v.Records != 0 || v.Genesis {
 		t.Errorf("empty trail reported %+v; want a zero verification", v)
@@ -348,9 +348,9 @@ func TestChainFileLogger_VerifyChain_CatchesARecordEditedInAnArchive(t *testing.
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet before tampering: %v", err)
+		t.Fatalf("verifyChainSetAt before tampering: %v", err)
 	}
 	if len(v.Order) < 3 {
 		t.Fatalf("need a middle archive; got %d files", len(v.Order))
@@ -396,9 +396,9 @@ func TestChainFileLogger_VerifyChain_CatchesAnEditToAnArchivesFirstRecord(t *tes
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	victim := v.Order[1]
 	lines := readLines(t, victim)
@@ -431,9 +431,9 @@ func TestChainFileLogger_VerifyChain_CatchesADeletedArchive(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	if len(v.Order) < 4 {
 		t.Fatalf("need a middle archive to delete; got %d files", len(v.Order))
@@ -478,9 +478,9 @@ func TestChainFileLogger_VerifyChain_CatchesATruncatedArchive(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	victim := v.Order[1]
 	lines := readLines(t, victim)
@@ -506,9 +506,9 @@ func TestChainFileLogger_VerifyChain_CatchesADuplicatedArchive(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	data, err := os.ReadFile(v.Order[1]) // #nosec G304 -- a file this test just created under t.TempDir().
 	if err != nil {
@@ -540,9 +540,9 @@ func TestChainFileLogger_VerifyChain_CatchesAReseatedArchive(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	victim := v.Order[2]
 	lines := readLines(t, victim)
@@ -764,8 +764,8 @@ func TestRotationSetFiles_MissingDirectoryIsRefused(t *testing.T) {
 	if _, _, err := rotationSetFiles(trail, path); !errors.As(err, &fErr) {
 		t.Fatalf("a missing directory must be a *FileError, not an empty set; got %v", err)
 	}
-	if _, err := verifyChainSet(context.Background(), trail, path); !errors.As(err, &fErr) {
-		t.Fatalf("verifyChainSet must propagate it; got %v", err)
+	if _, err := verifyChainSetAt(context.Background(), trail, path, nil); !errors.As(err, &fErr) {
+		t.Fatalf("verifyChainSetAt must propagate it; got %v", err)
 	}
 }
 
@@ -855,10 +855,10 @@ func TestChainBrokenError_MessageNamesTheFileWhenItHasOne(t *testing.T) {
 // Small helpers keeping the tamper tests readable
 // ---------------------------------------------------------------------------
 
-// verifyChainSetErr is verifyChainSet when only the verdict is wanted.
+// verifyChainSetErr is verifyChainSetAt when only the verdict is wanted.
 func verifyChainSetErr(t *testing.T, path string) error {
 	t.Helper()
-	_, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	_, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	return err
 }
 
@@ -874,9 +874,9 @@ func TestChainFileLogger_VerifyChainSet_CatchesTwoChainsInOneDirectory(t *testin
 		t.Fatalf("Close: %v", err)
 	}
 
-	v, err := verifyChainSet(context.Background(), testTrailDir(t, path), path)
+	v, err := verifyChainSetAt(context.Background(), testTrailDir(t, path), path, nil)
 	if err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 	if len(v.Order) < 5 {
 		t.Fatalf("need five files to leave two runs; got %d", len(v.Order))
@@ -941,8 +941,8 @@ func TestRotationSetFiles_SkipsDirectoriesAndReportsAnUnreadableParent(t *testin
 	if _, _, err := rotationSetFiles(trail, notADir); !errors.As(err, &fErr) {
 		t.Fatalf("an unreadable parent must be a *FileError; got %v", err)
 	}
-	if _, err := verifyChainSet(context.Background(), trail, notADir); !errors.As(err, &fErr) {
-		t.Fatalf("verifyChainSet must propagate it; got %v", err)
+	if _, err := verifyChainSetAt(context.Background(), trail, notADir, nil); !errors.As(err, &fErr) {
+		t.Fatalf("verifyChainSetAt must propagate it; got %v", err)
 	}
 }
 
@@ -988,7 +988,7 @@ func TestVerifyChainSegment_ReportsALineTooLongToBeARecord(t *testing.T) {
 //
 // It verifies through the LOGGER (VerifyChainSet), the production path, which
 // knows from the writer's rotation sequence whether a rotation was mid-stride
-// while it listed. It used to call the path-only verifyChainSet, which cannot
+// while it listed. It used to verify with a nil generation, which cannot
 // know that: under host load a writer stalled between its rename and its
 // re-open for longer than every retry made each attempt see the active name
 // absent, and the run failed with "file does not exist" on an honest trail.
@@ -1127,7 +1127,7 @@ func TestChainFileLogger_VerifyChain_SurvivesAFailedRename(t *testing.T) {
 			"must verify: %v", err)
 	}
 	if err := verifyChainSetErr(t, path); err != nil {
-		t.Fatalf("verifyChainSet: %v", err)
+		t.Fatalf("verifyChainSetAt: %v", err)
 	}
 }
 

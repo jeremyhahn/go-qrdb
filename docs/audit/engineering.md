@@ -263,8 +263,8 @@ state the same value.
 |---|---|
 | `verifyChainSegment(ctx, path)` | is this one file internally sound, and what does it hand to its successor? |
 | `verifyChainFile(ctx, path)` | the same, discarding the handoff |
-| `verifyChainSet(ctx, path)` | are every file in the rotation set sound **and** do they form one chain? |
-| `ChainFileLogger.VerifyChain(ctx)` | `verifyChainSet` over the sink's own directory, verdict only |
+| `verifyChainSetAt(ctx, dir, path, generation)` | are every file in the rotation set sound **and** do they form one chain? |
+| `ChainFileLogger.VerifyChain(ctx)` | `verifyChainSetAt` over the sink's own directory, verdict only |
 | `ChainFileLogger.VerifyChainSet(ctx)` | the same, returning a `ChainVerification` |
 
 `ctx` bounds the walk end to end (checked per record inside a segment, per
@@ -276,7 +276,7 @@ Three details carry the design:
 
 - **A segment is SELF-SEEDED.** It starts from the digest its own first record
   declares, which makes the check on that record vacuous and every other check
-  exact. What the seed is worth is settled by `verifyChainSet`, which requires
+  exact. What the seed is worth is settled by `verifyChainSetAt`, which requires
   it to be some other file's handoff. Verifying against a caller-supplied seed
   instead would report one fault twice — as a break in the file *and* as a
   broken link.

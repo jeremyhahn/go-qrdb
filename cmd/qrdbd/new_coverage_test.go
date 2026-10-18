@@ -18,16 +18,13 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -268,40 +265,9 @@ func TestKVServiceAdapter_ScanIndex_UnexpectedResultType(t *testing.T) {
 // tls.go: generateCA (lines 118-163) - additional coverage
 // ---------------------------------------------------------------------------
 
-func TestGenerateCA_SerialNumberPositive(t *testing.T) {
-	_, _, caCert, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-	assert.Equal(t, 1, caCert.SerialNumber.Sign(),
-		"generated CA serial number must be positive")
-}
-
-func TestGenerateCA_SubjectCommonName(t *testing.T) {
-	_, _, caCert, _, err := generateCA(24 * time.Hour)
-	require.NoError(t, err)
-	assert.Equal(t, "qrdb-ca", caCert.Subject.CommonName)
-}
-
 // ---------------------------------------------------------------------------
 // tls.go: generateNodeCert (lines 168-214) - additional coverage
 // ---------------------------------------------------------------------------
-
-func TestGenerateNodeCert_BothAuthUsages(t *testing.T) {
-	_, _, caCert, caKey, err := generateCA(24 * time.Hour)
-	require.NoError(t, err)
-
-	certPEM, _, err := generateNodeCert(caCert, caKey, time.Hour)
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	assert.Contains(t, leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth,
-		"node cert must have ServerAuth for inbound Raft connections")
-	assert.Contains(t, leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth,
-		"node cert must have ClientAuth for outbound Raft connections")
-}
 
 // ---------------------------------------------------------------------------
 // tls.go: generateClientCert (lines 220-262) - additional coverage

@@ -359,69 +359,6 @@ func TestStartMemberAnchorAdvertiser_RejectsKeyBearingBundle(t *testing.T) {
 // hasBootstrapFlags tests
 // ---------------------------------------------------------------------------
 
-func TestHasBootstrapFlags_NoFlags(t *testing.T) {
-	f := &startFlags{}
-	if hasBootstrapFlags(f) {
-		t.Error("expected false when no bootstrap flags are set")
-	}
-}
-
-func TestHasBootstrapFlags_NoiseKey(t *testing.T) {
-	f := &startFlags{
-		bootstrapNoiseKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-	}
-	if !hasBootstrapFlags(f) {
-		t.Error("expected true when bootstrapNoiseKey is set")
-	}
-}
-
-func TestHasBootstrapFlags_NoiseAddr(t *testing.T) {
-	f := &startFlags{
-		bootstrapNoiseAddr: "10.0.0.1:63006",
-	}
-	if !hasBootstrapFlags(f) {
-		t.Error("expected true when bootstrapNoiseAddr is set")
-	}
-}
-
-func TestHasBootstrapFlags_SPKIPin(t *testing.T) {
-	f := &startFlags{
-		bootstrapSPKIPin: "abc123def456",
-	}
-	if !hasBootstrapFlags(f) {
-		t.Error("expected true when bootstrapSPKIPin is set")
-	}
-}
-
-func TestHasBootstrapFlags_DirectURL(t *testing.T) {
-	f := &startFlags{
-		bootstrapDirectURL: "https://bootstrap.example.com:8443",
-	}
-	if !hasBootstrapFlags(f) {
-		t.Error("expected true when bootstrapDirectURL is set")
-	}
-}
-
-func TestHasBootstrapFlags_DANEDNS(t *testing.T) {
-	f := &startFlags{
-		bootstrapDANEDNS: "8.8.8.8:53",
-	}
-	if !hasBootstrapFlags(f) {
-		t.Error("expected true when bootstrapDANEDNS is set")
-	}
-}
-
-func TestHasBootstrapFlags_MultipleFlags(t *testing.T) {
-	f := &startFlags{
-		bootstrapNoiseKey:  "key",
-		bootstrapNoiseAddr: "addr",
-		bootstrapSPKIPin:   "pin",
-	}
-	if !hasBootstrapFlags(f) {
-		t.Error("expected true when multiple bootstrap flags are set")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // bootstrapServers.Stop tests
 // ---------------------------------------------------------------------------
@@ -450,13 +387,13 @@ func TestBootstrapServers_Stop_NilServer(t *testing.T) {
 // bootstrapTLS: joining is refused before any dial or write
 // ---------------------------------------------------------------------------
 
-// TestBootstrapTLS_EveryMethodIsRefusedBeforeAnyDialOrWrite: the cluster CA
+// TestResolveTLS_EveryJoinMethodIsRefusedBeforeAnyDialOrWrite: the cluster CA
 // private key is no longer distributed, so no bootstrap method can enroll a
 // node in this release. Each configured method -- and a mix of them -- is
 // refused with *EnrollmentUnavailableError, not a fetch error (the refusal
 // precedes the dial; every endpoint here is dead), and the data directory is
 // left empty.
-func TestBootstrapTLS_EveryMethodIsRefusedBeforeAnyDialOrWrite(t *testing.T) {
+func TestResolveTLS_EveryJoinMethodIsRefusedBeforeAnyDialOrWrite(t *testing.T) {
 	dead := net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t)))
 	for name, set := range map[string]func(f *startFlags){
 		"noise": func(f *startFlags) {
@@ -484,12 +421,9 @@ func TestBootstrapTLS_EveryMethodIsRefusedBeforeAnyDialOrWrite(t *testing.T) {
 			dir := t.TempDir()
 			f := &startFlags{dataDir: dir}
 			set(f)
-			if !hasBootstrapFlags(f) {
-				t.Fatal("the configured method must select the join path")
-			}
-			bundle, err := bootstrapTLS(f, testLogger())
-			if bundle != nil {
-				t.Fatal("a refused join must return no TLS material")
+			bundle, servers, err := resolveTLS(f, testLogger())
+			if bundle != nil || servers != nil {
+				t.Fatal("a refused join must return no TLS material and start no bootstrap servers")
 			}
 			var want *EnrollmentUnavailableError
 			if !errors.As(err, &want) {

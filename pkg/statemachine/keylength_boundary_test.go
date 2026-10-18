@@ -31,17 +31,14 @@ import (
 // still the field's own uint16, wrapped for a key within a few bytes of
 // 65535 -- panicking Apply on every replica for 65,534-65,535-byte keys,
 // and silently corrupting the decoded value for 65,526-65,533-byte keys on
-// MVCC put. kv_statemachine.go, regular.go, concurrent.go, fast.go,
+// MVCC put. kv_statemachine.go, regular.go, fast.go,
 // putifabsent.go, pkg/engine/mvcc_engine.go and pkg/protocol/protocol.go
 // (DecodeMVCCPut/DecodeMVCCDelete) all shared the exact shape; this test
-// exercises it through every state machine this package registers, plus
-// the one legacy type (ConcurrentStateMachine, concurrent.go) the registry
-// no longer reaches under any sm_type name.
+// exercises it through every state machine this package registers.
 
 // lookuper is Lookup(ctx, query) (interface{}, error): the shape shared by
 // every adapter ResolveTyped/ResolveTypedWithStorage returns and by
-// RegularStateMachine, ConcurrentStateMachine and FastStateMachine
-// directly.
+// RegularStateMachine directly.
 type lookuper interface {
 	Lookup(ctx context.Context, query interface{}) (interface{}, error)
 }
@@ -116,12 +113,6 @@ func buildKeyLengthSM(t *testing.T, kind string) interface{} {
 		return fn(1, 1)
 	case "regular":
 		return NewRegularStateMachine()
-	case "concurrent-legacy":
-		// concurrent.go's ConcurrentStateMachine -- unreachable through the
-		// registry under any sm_type string (the "concurrent" name resolves
-		// to KVStateMachine instead), but it carries its OWN copy of the
-		// defective decode and must be exercised directly.
-		return NewConcurrentStateMachine(1, 1, newMemStorage())
 	default:
 		t.Fatalf("unknown kind %q", kind)
 		return nil
@@ -152,7 +143,7 @@ func openAndRegisterClose(t *testing.T, s interface{}) {
 // stored VALUE is exactly what was written (the silent-corruption half of
 // F1, not only the panic half).
 func TestKeyLengthBoundary_EveryStateMachine_Put(t *testing.T) {
-	kinds := []string{"memory", "highperf", "disk-over-pebble", "disk-over-file", "fast-over-file", "regular", "concurrent-legacy"}
+	kinds := []string{"memory", "highperf", "disk-over-pebble", "disk-over-file", "fast-over-file", "regular"}
 	lens := []int{65525, 65526, 65527, 65530, 65533, 65534, 65535}
 	for _, kind := range kinds {
 		for _, n := range lens {
@@ -205,7 +196,7 @@ func TestKeyLengthBoundary_EveryStateMachine_Put(t *testing.T) {
 // the identical arithmetic shape appears in every handleDelete this package
 // defines.
 func TestKeyLengthBoundary_EveryStateMachine_Delete(t *testing.T) {
-	kinds := []string{"memory", "highperf", "disk-over-pebble", "disk-over-file", "fast-over-file", "regular", "concurrent-legacy"}
+	kinds := []string{"memory", "highperf", "disk-over-pebble", "disk-over-file", "fast-over-file", "regular"}
 	lens := []int{65525, 65526, 65533, 65534, 65535}
 	for _, kind := range kinds {
 		for _, n := range lens {

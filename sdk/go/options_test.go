@@ -21,54 +21,46 @@ import (
 )
 
 func TestWithAddress_SetsTransportOption(t *testing.T) {
-	opts := applyClientOptions([]ClientOption{
-		WithAddress("https://localhost:8080"),
-	})
+	opts := &clientOptions{}
+	WithAddress("https://localhost:8080")(opts)
 	if len(opts.transportOpts) != 1 {
 		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
 	}
 }
 
 func TestWithTLS_SetsTransportOption(t *testing.T) {
-	opts := applyClientOptions([]ClientOption{
-		WithTLS("/cert.pem", "/key.pem", "/ca.pem"),
-	})
+	opts := &clientOptions{}
+	WithTLS("/cert.pem", "/key.pem", "/ca.pem")(opts)
 	if len(opts.transportOpts) != 1 {
 		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
 	}
 }
 
 func TestWithTLSConfig_SetsTransportOption(t *testing.T) {
-	opts := applyClientOptions([]ClientOption{
-		WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13}),
-	})
+	opts := &clientOptions{}
+	WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})(opts)
 	if len(opts.transportOpts) != 1 {
 		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
 	}
 }
 
 func TestWithTimeout_SetsTransportOption(t *testing.T) {
-	opts := applyClientOptions([]ClientOption{
-		WithTimeout(5 * time.Second),
-	})
+	opts := &clientOptions{}
+	WithTimeout(5 * time.Second)(opts)
 	if len(opts.transportOpts) != 1 {
 		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
 	}
 }
 
-func TestApplyClientOptions_Empty(t *testing.T) {
-	opts := applyClientOptions(nil)
-	if len(opts.transportOpts) != 0 {
-		t.Errorf("expected 0 transport options, got %d", len(opts.transportOpts))
-	}
-}
-
-func TestApplyClientOptions_Multiple(t *testing.T) {
-	opts := applyClientOptions([]ClientOption{
+func TestClientOptions_Accumulate(t *testing.T) {
+	opts := &clientOptions{}
+	for _, opt := range []ClientOption{
 		WithAddress("https://localhost:8080"),
 		WithTimeout(10 * time.Second),
 		WithTLS("/c.pem", "/k.pem", "/ca.pem"),
-	})
+	} {
+		opt(opts)
+	}
 	if len(opts.transportOpts) != 3 {
 		t.Errorf("expected 3 transport options, got %d", len(opts.transportOpts))
 	}

@@ -52,10 +52,6 @@ func refusesOpcode(t *testing.T, op byte, cmd []byte) {
 		"regular": func(t *testing.T) (sm.Result, error) {
 			return regularApplyCmd(t, newRegularWithMVCC(&mockMVCCStore{}), cmd)
 		},
-		"concurrent": func(t *testing.T) (sm.Result, error) {
-			csm, _ := newConcurrentWithMVCC(&mockMVCCStore{})
-			return concurrentApplyCmd(t, csm, cmd)
-		},
 		"fast": func(t *testing.T) (sm.Result, error) {
 			fsm, _ := newTestFSMWithMVCC(&mockMVCCStore{})
 			results := make([]sm.Result, 1)

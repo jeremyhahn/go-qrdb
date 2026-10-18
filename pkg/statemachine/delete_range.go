@@ -167,16 +167,3 @@ func (f *FastStateMachine) handleDeleteRange(payload []byte, revision uint64) (s
 	}
 	return sm.Result{Value: uint64(len(ops))}, nil
 }
-
-// handleDeleteRange applies an OpDeleteRange entry to the shard cache, as
-// handleBatch does.
-func (c *ConcurrentStateMachine) handleDeleteRange(payload []byte, revision uint64) (sm.Result, error) {
-	ops, refusal, refused, err := deleteRangeOps(payload, c.listConcurrentKeys)
-	if refused || err != nil {
-		return refusal, err
-	}
-	if err := c.applyBatchOps(ops, revision); err != nil {
-		return sm.Result{}, err
-	}
-	return sm.Result{Value: uint64(len(ops))}, nil
-}

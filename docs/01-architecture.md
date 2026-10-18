@@ -491,14 +491,13 @@ and `node.EnableEncryption()`.
   Source: `pkg/statemachine/putifabsent.go`,
   `pkg/statemachine/guarded_ops.go`, `pkg/store/pebble.go`, `pkg/engine/`
 
-- **The sharded state machines acknowledge a write before it is durable.**
-  `FastStateMachine` and `ConcurrentStateMachine` write to their in-memory
-  shard cache, persist to storage on a background goroutine, and return a
-  successful result immediately. `KVStateMachine` and `RegularStateMachine`
+- **The sharded state machine acknowledges a write before it is durable.**
+  `FastStateMachine` writes to its in-memory shard cache, persists to storage
+  on a background goroutine, and returns a successful result immediately. `KVStateMachine` and `RegularStateMachine`
   do NOT: they write through their backend synchronously and return its
   error.
 
-  Two consequences follow for the sharded pair, and neither is a durability
+  Two consequences follow for the sharded state machine, and neither is a durability
   guarantee:
 
   1. **A failed storage write is only logged — for the UNGUARDED verbs.** An
@@ -513,8 +512,8 @@ and `node.EnableEncryption()`.
      restoring exactly the prior state — an absence, a delete tombstone, or the
      previous value.
 
-     That exemption reached `FastStateMachine` and `ConcurrentStateMachine`
-     directly, because they own their storage. `KVStateMachine` reaches storage
+     That exemption reached `FastStateMachine` directly, because it owns its
+     storage. `KVStateMachine` reaches storage
      only through the `Backend` seam, so it had no way to ask for a synchronous
      write at all — and over `FastBackend` (`sm_type: fast`) it acknowledged a
      claim before it was durable and logged the storage failure rather than
@@ -549,12 +548,12 @@ and `node.EnableEncryption()`.
      go-qrdb#86 and reproduced the pre-#86 write path, so `sm_type: fast` lost
      writes and resurrected deleted keys on the ordinary `Put`/`Delete` path,
      with no crash and no error. Every asynchronous storage writer in
-     `pkg/statemachine` now draws a ticket: there are six, and all six are
+     `pkg/statemachine` now draws a ticket: there are four, and all four are
      ordered. A fix applied writer-by-writer is a fix sized by whoever was in
      the room, so the count is stated here rather than left to be rediscovered.
 
   Source: `pkg/statemachine/persist_order.go`, `pkg/statemachine/fast.go`,
-  `pkg/statemachine/concurrent.go`, `pkg/statemachine/backend_fast.go`
+  `pkg/statemachine/backend_fast.go`
 
 - **Interface segregation across service boundaries.** Each feature domain
   has its own service interface (`KVService`, `MVCCKVService`,

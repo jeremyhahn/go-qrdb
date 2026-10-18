@@ -198,7 +198,7 @@ sweep becoming an enumeration of the internal keyspace.
   `Result.Data`, never as a Go error. See
   [Refusal and fault at the apply seam](#refusal-and-fault-at-the-apply-seam).
 - **`GetHash` never hashes a state between two halves of the same batch or
-  recovery.** `KVStateMachine`, `ConcurrentStateMachine` and `DiskAdapter`
+  recovery.** `KVStateMachine` and `DiskAdapter`
   each hold one `sync.RWMutex` ("batch") shared by every `Update` and
   `RecoverSnapshot`/`RecoverFromSnapshot` call and exclusive to `GetHash`.
   `Update` and recovery hold it for their WHOLE span — one call for a
@@ -481,8 +481,7 @@ middle decided nowhere.
   before the call returns. `FastBackend` implements it as a synchronous ordered
   write on the calling goroutine that returns its storage error and
   **withdraws** the cache entry when the write does not land — the same
-  discipline `FastStateMachine` and `ConcurrentStateMachine` apply through
-  `persistClaimLocked`. Its ordinary `Put` and `Delete` are untouched and stay
+  discipline `FastStateMachine` applies through `persistClaimLocked`. Its ordinary `Put` and `Delete` are untouched and stay
   asynchronous: that contract is what the backend exists to provide, and making
   them synchronous was rejected for that reason.
 
@@ -506,13 +505,12 @@ middle decided nowhere.
   `Delete(k)` left the key **present**, holding `"v"` — a lost write and a
   resurrected key on the default path. That is fixed independently:
   `FastBackend` now draws a `persistOrder` ticket under the same lock
-  acquisition as its cache write, the discipline the two sharded state machines
-  have always had.
+  acquisition as its cache write, the discipline the sharded state machine
+  has always had.
 
   The verification is that the durability battery in
-  `pkg/statemachine/guarded_persist_test.go` — written for `FastStateMachine`
-  and `ConcurrentStateMachine` — now runs over `KVStateMachine` + `FastBackend`
-  as a third target, unchanged. The promises are the same promises, not a
+  `pkg/statemachine/guarded_persist_test.go` — written for `FastStateMachine` — now runs
+  over `KVStateMachine` + `FastBackend` as a second target, unchanged. The promises are the same promises, not a
   weaker set written for a weaker backend.
 
 - **They cannot appear inside a batch.** The batch encoding carries no expected

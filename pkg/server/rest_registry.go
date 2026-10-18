@@ -904,9 +904,8 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	out := *svcs
 	g := dbGuard{guard: f.guard}
 	if svcs.KV != nil {
-		// A struct literal, not newNamespacedKVService: prefix is already
-		// the full "<tenant>/<db>/" namespace (or empty), and that
-		// constructor appends the separator itself.
+		// prefix is already the full "<tenant>/<db>/" namespace (or
+		// empty), so it is used as given.
 		out.KV = &namespacedKVService{dbGuard: g, inner: svcs.KV, prefix: prefix}
 	}
 	// The lease view is built first, over the RAW (unwrapped) lease and MVCC

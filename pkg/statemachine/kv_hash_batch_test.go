@@ -191,60 +191,6 @@ func TestKVStateMachine_RecoverSnapshotFencesGetHash(t *testing.T) {
 	}
 }
 
-// TestConcurrentStateMachine_RecoverFromSnapshotFencesGetHash is
-// TestKVStateMachine_RecoverSnapshotFencesGetHash for
-// ConcurrentStateMachine, which fences its own GetHash the same way
-// (go-qrdb#584).
-func TestConcurrentStateMachine_RecoverFromSnapshotFencesGetHash(t *testing.T) {
-	src, _ := newTestConcurrentSM()
-	concurrentApplyPut(t, src, "k1", "v1")
-	concurrentApplyPut(t, src, "k2", "v2")
-	snapCtx, err := src.PrepareSnapshot()
-	if err != nil {
-		t.Fatalf("PrepareSnapshot: %v", err)
-	}
-	var buf bytes.Buffer
-	if err := src.SaveSnapshot(context.Background(), snapCtx, &buf, nil); err != nil {
-		t.Fatalf("SaveSnapshot: %v", err)
-	}
-
-	csm, _ := newTestConcurrentSM()
-	pr := &pausingReader{Reader: bytes.NewReader(buf.Bytes()), pauseAfter: snapshotPauseAfter, paused: make(chan struct{}), release: make(chan struct{})}
-
-	recovered := make(chan error, 1)
-	go func() { recovered <- csm.RecoverFromSnapshot(context.Background(), pr, nil) }()
-	<-pr.paused
-
-	hashed := make(chan uint64, 1)
-	go func() {
-		h, err := csm.GetHash()
-		if err != nil {
-			t.Errorf("GetHash: %v", err)
-		}
-		hashed <- h
-	}()
-	select {
-	case h := <-hashed:
-		close(pr.release)
-		<-recovered
-		t.Fatalf("GetHash returned %d mid-recovery; it must wait for the whole recovery", h)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(pr.release)
-	if err := <-recovered; err != nil {
-		t.Fatalf("RecoverFromSnapshot: %v", err)
-	}
-	got := <-hashed
-
-	want, err := src.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash: %v", err)
-	}
-	if got != want {
-		t.Fatalf("GetHash after recovery = %d, want the source's %d", got, want)
-	}
-}
-
 // twoPointPausingBackend is a ConcurrentBackend that pauses Put twice: once
 // on firstKey, to let a test synchronize on "the batch has started and this
 // entry's lock, if any, is held", and once on lastKey, to let it synchronize
@@ -364,52 +310,6 @@ func (w *pausingWatch) Notify(key string, _ []byte, _ uint64, _ bool) {
 	if key == w.pauseKey {
 		close(w.paused)
 		<-w.release
-	}
-}
-
-// TestConcurrentStateMachine_GetHashSeesWholeBatches is
-// TestKVStateMachine_GetHashSeesWholeBatches for the concurrent state
-// machine, which go-quicraft hashes the same way while it applies.
-func TestConcurrentStateMachine_GetHashSeesWholeBatches(t *testing.T) {
-	watch := &pausingWatch{pauseKey: "k1", paused: make(chan struct{}), release: make(chan struct{})}
-	csm, _ := newTestConcurrentSM(WithConcurrentWatchManager(watch))
-	batch := []sm.Entry{putEntry(1, "k1", "v1"), putEntry(2, "k2", "v2")}
-
-	applied := make(chan error, 1)
-	go func() { applied <- csm.Update(context.Background(), batch, make([]sm.Result, len(batch))) }()
-	<-watch.paused
-
-	hashed := make(chan uint64, 1)
-	go func() {
-		h, err := csm.GetHash()
-		if err != nil {
-			t.Errorf("GetHash: %v", err)
-		}
-		hashed <- h
-	}()
-	select {
-	case h := <-hashed:
-		close(watch.release)
-		<-applied
-		t.Fatalf("GetHash returned %d halfway through a batch; it must wait for the whole batch", h)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(watch.release)
-	if err := <-applied; err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	got := <-hashed
-
-	whole, _ := newTestConcurrentSM()
-	if err := whole.Update(context.Background(), batch, make([]sm.Result, len(batch))); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	want, err := whole.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash: %v", err)
-	}
-	if got != want {
-		t.Fatalf("GetHash taken across a batch = %d, want the whole batch's %d", got, want)
 	}
 }
 
