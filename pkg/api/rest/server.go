@@ -2347,8 +2347,11 @@ func (s *Server) registerRoutes() {
 	// the ROUTE itself made this transport alone 404 for that condition
 	// instead of returning it -- gRPC/Unix/QUIC/MCP always expose the
 	// method/tool and let the same nil-check decide, never depending on
-	// barrierOn.
-	s.routeIf(true, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
+	// barrierOn. Identity-gated: the permission depends on the barrier the
+	// body names (seal:enable_encryption for the node's own,
+	// tenant_barrier:enable_encryption for a named tenant's), so the handler
+	// authorizes it per request (go-qrdb#791).
+	s.routeIf(true, http.MethodPost, "/v1/barrier/enable-encryption", permission.IdentityGated, s.handleBarrierEnableEncryption)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/generate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
 	s.routeIf(barrierOn, http.MethodDelete, "/v1/barrier/recovery", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)
 	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/recovery/status", permission.SealStatus, s.handleBarrierRecoveryStatus)

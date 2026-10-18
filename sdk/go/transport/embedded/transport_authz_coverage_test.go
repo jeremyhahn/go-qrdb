@@ -40,6 +40,7 @@ var targetResolvedOperations = map[string]struct{}{
 	"UpdateTenantQuotas":           {},
 	"UpdateTenantEntitlements":     {},
 	"TenantBarrierInit":            {},
+	"BarrierEnableEncryption":      {},
 	"TenantBarrierUnseal":          {},
 	"TenantBarrierSeal":            {},
 	"TenantBarrierStatus":          {},

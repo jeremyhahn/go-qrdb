@@ -1104,7 +1104,8 @@ key.
 | `seal:status` | status, including recovery status | self |
 | `seal:rekey` | rotating the unseal key and share set | cross |
 | `seal:rotate_root_key` | root key rotation | cross |
-| `seal:enable_encryption` | migrating off `none` (node or a named tenant) | cross |
+| `seal:enable_encryption` | migrating the node barrier off `none` | cross |
+| `tenant_barrier:enable_encryption` | migrating a named tenant's barrier off `none` | self |
 | `seal:initialize_shamir` | Shamir M-of-N initialization | cross |
 | `seal:generate_recovery` | recovery key generation and deletion | cross |
 | `seal:officer_register` / `seal:officer_list` | share holder enrolment (unseal and recovery domains) and listing | cross |

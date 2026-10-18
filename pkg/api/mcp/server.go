@@ -833,7 +833,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(databaseTools(s.dbSvc)...)
 	}
 	if s.barrierSvc != nil {
-		s.addTools(barrierTools(s.barrierSvc, s.pinBackend, s.encMigrator)...)
+		s.addTools(barrierTools(s.barrierSvc, s.pinBackend, s.encMigrator, s.authorizeTenantBarrierOp)...)
 	} else {
 		// No barrier (seal disabled, or a composer that never wired one): the
 		// rest of the barrier tool group has nothing to operate on, but
@@ -849,8 +849,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		// found" instead of that typed error.
 		s.addTools(serverTool{
 			Tool:    toolBarrierEnableEncryption(),
-			Perm:    permission.SealEnableEncryption,
-			Handler: handleBarrierEnableEncryption(s.encMigrator),
+			Perm:    permission.IdentityGated,
+			Handler: handleBarrierEnableEncryption(s.encMigrator, s.authorizeTenantBarrierOp),
 		})
 	}
 	if s.ceremonySvc != nil {

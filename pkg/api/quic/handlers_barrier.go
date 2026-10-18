@@ -23,10 +23,12 @@ import (
 
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // handleBarrierInitialize initializes the storage barrier with a secret
@@ -191,18 +193,30 @@ const quicMigrationAcceptWindow = 750 * time.Millisecond
 // including tenant, strategy, mechanism, availability, passphrase, and
 // Shamir threshold/total.
 func (s *Server) handleBarrierEnableEncryption(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.encMigrator == nil {
-		return nil, &ServiceNotConfiguredError{Service: "encryption-migration"}
-	}
-
 	var req pb.BarrierEnableEncryptionRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	// The method is identity-gated: which permission authorizes the call
+	// depends on the barrier the request names, so it is decided here,
+	// before anything else. No tenant named is the node's own barrier, a
+	// platform-operator act under seal:enable_encryption; a named tenant is
+	// that tenant's barrier, authorized under tenant_barrier:enable_encryption
+	// for THAT tenant, exactly like every other tenant-barrier operation.
 	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	target, perm := tenantid.System, permission.SealEnableEncryption
 	if req.GetTenantId() != "" {
 		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.GetTenantId()}
+		target, perm = req.GetTenantId(), permission.TenantBarrierEnableEncryption
+	}
+	if err := s.authorizeTenantBarrierOp(ctx, target, perm); err != nil {
+		secure.Wipe(req.GetPassphrase())
+		return nil, err
+	}
+	if s.encMigrator == nil {
+		secure.Wipe(req.GetPassphrase())
+		return nil, &ServiceNotConfiguredError{Service: "encryption-migration"}
 	}
 
 	mechanism := seal.MechanismSwap

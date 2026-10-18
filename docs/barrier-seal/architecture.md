@@ -1644,6 +1644,14 @@ memory. They convert after the interface ships, not before:
 - **No strategy change without a migration.** The strategy is fixed at
   initialization; moving off `none` is `barrier enable-encryption`, which is a
   real re-encryption, not a config flip.
+- **Enable-encryption authorizes per scope.** Every transport gates the
+  operation only on an authenticated identity, and its handler checks the
+  permission the request's scope names before anything else: the node barrier
+  under `seal:enable_encryption` in the `system` tenant, a named tenant's
+  dedicated barrier under `tenant_barrier:enable_encryption` for that tenant,
+  as every other tenant-barrier operation is. A refusal comes before the
+  check for a wired migrator, so it does not reveal whether the node can
+  migrate.
 - **No per-tenant barrier on a shared store, and no per-database barrier off
   the database's data path.** A per-database barrier is accepted only where it
   wraps the store the database is served from, and a sealed database is refused

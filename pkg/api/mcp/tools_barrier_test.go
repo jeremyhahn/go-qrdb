@@ -169,7 +169,7 @@ func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, 
 
 func TestBarrierTools_Registration(t *testing.T) {
 	svc := newMockBarrierService()
-	tools := barrierTools(svc, nil, nil)
+	tools := barrierTools(svc, nil, nil, allowAllTenantScope)
 
 	expectedNames := []string{
 		"qrdb_barrier_initialize",

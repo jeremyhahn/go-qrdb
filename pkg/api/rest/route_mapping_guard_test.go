@@ -446,7 +446,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"POST", "/v1/barrier/seal", permission.SealSeal},
 		{"GET", "/v1/barrier/status", permission.SealStatus},
 		{"POST", "/v1/barrier/shamir/initialize", permission.SealInitializeShamir},
-		{"POST", "/v1/barrier/enable-encryption", permission.SealEnableEncryption},
+		{"POST", "/v1/barrier/enable-encryption", permission.IdentityGated},
 		{"POST", "/v1/barrier/recovery/generate", permission.SealGenerateRecovery},
 		{"DELETE", "/v1/barrier/recovery", permission.SealGenerateRecovery},
 		{"GET", "/v1/barrier/recovery/status", permission.SealStatus},

@@ -43,7 +43,7 @@ func TestHandleBarrierEnableEncryption_MCP_MigratorRefusalIsUnimplemented(t *tes
 		"strategy": "passphrase", "passphrase": "pw",
 	})
 
-	_, err := handleBarrierEnableEncryption(mig)(context.Background(), req)
+	_, err := handleBarrierEnableEncryption(mig, allowAllTenantScope)(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected the migrator's refusal")
 	}
@@ -60,7 +60,7 @@ func TestHandleBarrierEnableEncryption_MCP_DataPlaneRecyclingIsUnavailable(t *te
 		"tenant_id": "acme", "strategy": "passphrase", "passphrase": "pw",
 	})
 
-	_, err := handleBarrierEnableEncryption(mig)(context.Background(), req)
+	_, err := handleBarrierEnableEncryption(mig, allowAllTenantScope)(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected the migrator's error")
 	}
@@ -77,7 +77,7 @@ func TestHandleBarrierEnableEncryption_MCP_NodeClosedIsUnavailable(t *testing.T)
 		"strategy": "passphrase", "passphrase": "pw",
 	})
 
-	_, err := handleBarrierEnableEncryption(mig)(context.Background(), req)
+	_, err := handleBarrierEnableEncryption(mig, allowAllTenantScope)(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected the migrator's error")
 	}

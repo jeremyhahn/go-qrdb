@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -257,10 +259,6 @@ const migrationAcceptWindow = 750 * time.Millisecond
 // strategy).
 // Required permission: seal:enable_encryption.
 func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Request) {
-	if s.encMigrator == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "encryption-migration"})
-		return
-	}
 	// The body is read into a []byte, rather than decoded straight off
 	// r.Body, so a node that does not lead the shard the cluster migration
 	// intent is written on can replay the identical request at the leader
@@ -277,9 +275,28 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// The route is identity-gated: which permission authorizes the call
+	// depends on the barrier the body names, so it is decided here, before
+	// anything else, and a refused caller learns nothing about whether a
+	// migrator is wired. No tenant named is the node's own barrier, a
+	// platform-operator act under seal:enable_encryption; a named tenant is
+	// that tenant's barrier, authorized under tenant_barrier:enable_encryption
+	// for THAT tenant, exactly like every other tenant-barrier operation.
 	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	target, perm := tenantid.System, permission.SealEnableEncryption
 	if req.TenantID != "" {
 		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.TenantID}
+		target, perm = req.TenantID, permission.TenantBarrierEnableEncryption
+	}
+	if err := s.authorizeTenantBarrierOp(r.Context(), target, perm); err != nil {
+		secure.Wipe(req.Passphrase)
+		writeAuthzErrorJSON(w, err)
+		return
+	}
+	if s.encMigrator == nil {
+		secure.Wipe(req.Passphrase)
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "encryption-migration"})
+		return
 	}
 
 	// The request's passphrase is copied into protected memory and the

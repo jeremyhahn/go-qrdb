@@ -288,8 +288,9 @@ func selfScopedPermissions() []Permission {
 		// declares and nothing more: its doc comment in constants.go says
 		// "Tenant-scoped (ScopeTenantOnly)" like its eight tenant_barrier
 		// siblings in tenant_scope.go, but it was never registered there, so
-		// it defaulted to ScopeSelf and the system tenant could hold it. No
-		// handler enforces it yet. Whether it joins its siblings is an owner
+		// it defaulted to ScopeSelf and the system tenant could hold it. Every
+		// transport's enable-encryption handler checks it for the tenant the
+		// request names (go-qrdb#791). Whether it joins its siblings is an owner
 		// decision to make as its own change, not a side effect of this file.
 		TenantBarrierEnableEncryption,
 

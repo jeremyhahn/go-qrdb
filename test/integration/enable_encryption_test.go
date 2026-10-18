@@ -507,7 +507,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 			"permissions": []string{
 				"databases:create", "databases:create_volume", "databases:read", "databases:list",
 				"kv:put", "kv:get",
-				"tenant_barrier:status", "tenant_barrier:init",
+				"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:enable_encryption",
 			},
 		},
 	)
@@ -552,9 +552,18 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 		}
 	}
 
-	// Trigger the per-tenant online migration to a passphrase barrier.
+	// Trigger the per-tenant online migration to a passphrase barrier. A
+	// tenant's barrier is migrated under tenant_barrier:enable_encryption
+	// for THAT tenant (go-qrdb#791): the system root, outside the tenant, is
+	// refused, and the tenant's own identity holding the permission migrates.
 	const tenantPass = "tenant-acme-passphrase"
-	migBody, migStatus := iraftAPIPost(t, sysClient,
+	if b, s := iraftAPIPost(t, sysClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", adminPort),
+		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
+	); s != http.StatusForbidden {
+		t.Fatalf("system-root tenant enable-encryption: status %d, want 403; body: %s", s, b)
+	}
+	migBody, migStatus := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", adminPort),
 		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
 	)

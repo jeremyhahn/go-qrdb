@@ -31,7 +31,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
-	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -137,14 +136,6 @@ type covMockTenantSvc struct {
 var _ tenant.TenantServicer = (*covMockTenantSvc)(nil)
 
 func newCovMockTenantSvc() *covMockTenantSvc { return &covMockTenantSvc{} }
-
-// allowAllTenantScope is a tenantScopeAuthorizer stub that permits every
-// target tenant, isolating handler-behavior tests from authorization. It
-// lives here (minimal build-tag set) so every test compilation context that
-// includes the tenant-barrier handlers can reference it.
-func allowAllTenantScope(_ context.Context, _ string, _ permission.Permission) error {
-	return nil
-}
 
 // allowAllTenantInit is the init-gate sibling of allowAllTenantScope: it
 // permits every tenant barrier initialization, proof or none, isolating
@@ -463,7 +454,7 @@ func (m *covMockAuditLogger) Close() error { return nil }
 
 func TestCovBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	tools := barrierTools(svc, nil, nil)
+	tools := barrierTools(svc, nil, nil, allowAllTenantScope)
 	names := []string{
 		"qrdb_barrier_initialize",
 		"qrdb_barrier_unseal",

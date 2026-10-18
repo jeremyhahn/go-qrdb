@@ -33931,7 +33931,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"INDEX_HNSW\x10\x00\x12\x0e\n" +
 	"\n" +
 	"INDEX_FLAT\x10\x01\x12\x12\n" +
-	"\x0eINDEX_IVF_FLAT\x10\x022\x8e\xbc\x01\n" +
+	"\x0eINDEX_IVF_FLAT\x10\x022\x86\xbc\x01\n" +
 	"\vQRDBService\x12<\n" +
 	"\x03Put\x12\x13.qrdb.v1.PutRequest\x1a\x14.qrdb.v1.PutResponse\"\n" +
 	"\xc2\xf3\x18\x06kv:put\x12<\n" +
@@ -34122,8 +34122,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\vBarrierSeal\x12\x1b.qrdb.v1.BarrierSealRequest\x1a\x16.google.protobuf.Empty\"\r\xc2\xf3\x18\tseal:seal\x12X\n" +
 	"\rBarrierStatus\x12\x16.google.protobuf.Empty\x1a\x1e.qrdb.v1.BarrierStatusResponse\"\x0f\xc2\xf3\x18\vseal:status\x12h\n" +
 	"\x14BarrierClusterUnseal\x12$.qrdb.v1.BarrierClusterUnsealRequest\x1a\x19.qrdb.v1.ClusterSealState\"\x0f\xc2\xf3\x18\vseal:unseal\x12\x87\x01\n" +
-	"\x17BarrierShamirInitialize\x12'.qrdb.v1.BarrierShamirInitializeRequest\x1a'.qrdb.v1.BarrierShamirOperationResponse\"\x1a\xc2\xf3\x18\x16seal:initialize_shamir\x12\x88\x01\n" +
-	"\x17BarrierEnableEncryption\x12'.qrdb.v1.BarrierEnableEncryptionRequest\x1a(.qrdb.v1.BarrierEnableEncryptionResponse\"\x1a\xc2\xf3\x18\x16seal:enable_encryption\x12\x84\x01\n" +
+	"\x17BarrierShamirInitialize\x12'.qrdb.v1.BarrierShamirInitializeRequest\x1a'.qrdb.v1.BarrierShamirOperationResponse\"\x1a\xc2\xf3\x18\x16seal:initialize_shamir\x12\x80\x01\n" +
+	"\x17BarrierEnableEncryption\x12'.qrdb.v1.BarrierEnableEncryptionRequest\x1a(.qrdb.v1.BarrierEnableEncryptionResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x84\x01\n" +
 	"\x16BarrierOfficerRegister\x12&.qrdb.v1.BarrierOfficerRegisterRequest\x1a'.qrdb.v1.BarrierOfficerRegisterResponse\"\x19\xc2\xf3\x18\x15seal:officer_register\x12h\n" +
 	"\x12BarrierOfficerList\x12\x16.google.protobuf.Empty\x1a#.qrdb.v1.BarrierOfficerListResponse\"\x15\xc2\xf3\x18\x11seal:officer_list\x12}\n" +
 	"\x16BarrierShareClaimBegin\x12&.qrdb.v1.BarrierShareClaimBeginRequest\x1a'.qrdb.v1.BarrierShareClaimBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x86\x01\n" +

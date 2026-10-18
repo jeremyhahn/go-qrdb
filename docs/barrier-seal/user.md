@@ -327,7 +327,11 @@ strategies means a new instance and a data migration.
 
 **`enable-encryption` was rejected for a tenant.** A tenant sitting on the
 shared system barrier has no encryption of its own to change. It needs a
-dedicated barrier first.
+dedicated barrier first. A permission refusal means the caller lacks the
+permission for the barrier it named. The node barrier needs
+`seal:enable_encryption` in the `system` tenant. A tenant's barrier needs
+`tenant_barrier:enable_encryption` for that tenant, which that tenant's own
+admin holds.
 
 **`enable-encryption` returned immediately and nothing looks different.** It is
 asynchronous. Poll `barrier status` until the strategy stops saying `none`.

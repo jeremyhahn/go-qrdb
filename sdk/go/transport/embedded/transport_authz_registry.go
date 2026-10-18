@@ -283,7 +283,6 @@ var operationPermissions = map[string]permission.Permission{
 	"BarrierSeal":                 permission.SealSeal,
 	"BarrierClusterUnseal":        permission.SealUnseal,
 	"BarrierStatus":               permission.SealStatus,
-	"BarrierEnableEncryption":     permission.SealEnableEncryption,
 	"BarrierGenerateRecoveryKeys": permission.SealGenerateRecovery,
 	"BarrierDeleteRecoveryKeys":   permission.SealGenerateRecovery,
 	"BarrierHasRecoveryKeys":      permission.SealStatus,

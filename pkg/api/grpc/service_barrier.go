@@ -26,10 +26,12 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -170,13 +172,23 @@ const grpcMigrationAcceptWindow = 750 * time.Millisecond
 // status error, while a migration still running once the window elapses is
 // acknowledged with "migration_started"; clients poll BarrierStatus.
 func (s *qrdbServiceServer) BarrierEnableEncryption(ctx context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
-	if s.encMigrator == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "encryption-migration"})
-	}
-
+	// The method is identity-gated: which permission authorizes the call
+	// depends on the barrier the request names, so it is decided here,
+	// before anything else. No tenant named is the node's own barrier, a
+	// platform-operator act under seal:enable_encryption; a named tenant is
+	// that tenant's barrier, authorized under tenant_barrier:enable_encryption
+	// for THAT tenant, exactly like every other tenant-barrier operation.
 	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	target, perm := tenantid.System, permission.SealEnableEncryption
 	if req.GetTenantId() != "" {
 		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.GetTenantId()}
+		target, perm = req.GetTenantId(), permission.TenantBarrierEnableEncryption
+	}
+	if err := authorizeTenantBarrierOp(ctx, s.authMW, target, perm); err != nil {
+		return nil, authzError(err)
+	}
+	if s.encMigrator == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "encryption-migration"})
 	}
 
 	mechanism := seal.MechanismSwap

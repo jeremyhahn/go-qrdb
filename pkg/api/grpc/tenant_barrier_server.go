@@ -79,13 +79,21 @@ func authzError(err error) error {
 }
 
 // authorizeTenantBarrierOp enforces the tenant-scoped authorization gate for a
-// per-tenant barrier operation against the target tenant. When authMW is nil
-// the gate is a no-op (unauthenticated deployment).
+// per-tenant barrier operation against the target tenant.
 func (s *tenantBarrierServer) authorizeTenantBarrierOp(ctx context.Context, tenantID string, perm permission.Permission) error {
-	if s.authMW == nil {
+	return authorizeTenantBarrierOp(ctx, s.authMW, tenantID, perm)
+}
+
+// authorizeTenantBarrierOp authorizes perm against the tenant a barrier
+// operation names (not the caller's ambient tenant), the one gate every
+// tenant-barrier handler shares, including BarrierEnableEncryption on a named
+// tenant (go-qrdb#791). When mw is nil the gate is a no-op (unauthenticated
+// deployment).
+func authorizeTenantBarrierOp(ctx context.Context, mw *authmw.AuthMiddleware, tenantID string, perm permission.Permission) error {
+	if mw == nil {
 		return nil
 	}
-	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
+	return mw.AuthorizeTenant(ctx, tenantID, perm)
 }
 
 // beginTenantBarrierInit issues the init nonce through the shared

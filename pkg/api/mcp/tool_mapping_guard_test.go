@@ -228,7 +228,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_barrier_status":                        permission.SealStatus,
 	"qrdb_barrier_cluster_unseal":                permission.SealUnseal,
 	"qrdb_barrier_shamir_initialize":             permission.SealInitializeShamir,
-	"qrdb_barrier_enable_encryption":             permission.SealEnableEncryption,
+	"qrdb_barrier_enable_encryption":             permission.IdentityGated,
 	"qrdb_barrier_recovery_generate":             permission.SealGenerateRecovery,
 	"qrdb_barrier_recovery_delete":               permission.SealGenerateRecovery,
 	"qrdb_barrier_recovery_status":               permission.SealStatus,

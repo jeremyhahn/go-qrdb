@@ -73,6 +73,45 @@ func TestAdminIdentity_CrossScopeRefusedOutsideTheSystemTenant(t *testing.T) {
 	}
 }
 
+// TestEnableEncryptionScopeCases_VerdictsAreRBACs pins the table every
+// transport is tested against to the authorizer itself: each verdict is what
+// RBAC decides for the permission and target the per-scope rule names, so a
+// transport test that agrees with the table agrees with RBAC.
+func TestEnableEncryptionScopeCases_VerdictsAreRBACs(t *testing.T) {
+	authz := rbac.New(authtest.BuiltInRoles(t))
+	for _, c := range authtest.EnableEncryptionScopeCases() {
+		t.Run(c.Name, func(t *testing.T) {
+			target, perm := tenantid.System, permission.SealEnableEncryption
+			if c.TenantID != "" {
+				target, perm = c.TenantID, permission.TenantBarrierEnableEncryption
+			}
+			err := authorize(t, authz, c.Caller, target, perm)
+			if c.Admit && err != nil {
+				t.Fatalf("%s on %q = %v, want admitted", perm, target, err)
+			}
+			var denied *rbac.PermissionDeniedError
+			if !c.Admit && !errors.As(err, &denied) {
+				t.Fatalf("%s on %q = %v, want *rbac.PermissionDeniedError", perm, target, err)
+			}
+		})
+	}
+}
+
+// TestEnableEncryptionScopeCases_CoverBothScopesBothWays guards the table's
+// shape: both scopes carry an admitted and a refused caller, so no transport
+// test can pass by admitting or refusing everything.
+func TestEnableEncryptionScopeCases_CoverBothScopesBothWays(t *testing.T) {
+	seen := map[[2]bool]bool{}
+	for _, c := range authtest.EnableEncryptionScopeCases() {
+		seen[[2]bool{c.TenantID != "", c.Admit}] = true
+	}
+	for _, k := range [][2]bool{{false, false}, {false, true}, {true, false}, {true, true}} {
+		if !seen[k] {
+			t.Fatalf("no case with tenant-scope=%v admit=%v", k[0], k[1])
+		}
+	}
+}
+
 func TestBuiltInRoles_UnseededTenantHasNoRoles(t *testing.T) {
 	authz := rbac.New(authtest.BuiltInRoles(t, "acme"))
 	if err := authorize(t, authz, authtest.AdminIdentity("globex", "g"), "globex", permission.TenantsRead); err == nil {

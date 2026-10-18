@@ -192,6 +192,11 @@ the state machine's storage, including `sm_storage: file`. A `file` store is
 copied record by record under either `--mechanism`. See
 [engineering.md](engineering.md#what-a-system-scope-migration-re-encrypts).
 
+Without `--tenant` the caller needs `seal:enable_encryption` in the `system`
+tenant. With `--tenant` the caller needs `tenant_barrier:enable_encryption`
+for that tenant, so a tenant admin can migrate their own tenant's barrier and
+no other.
+
 A tenant on the shared system barrier cannot change its encryption; the server
 rejects it. A migration to `shamir` splits the new unseal key to the holders
 already enrolled on the barrier, `--shamir-total` of them. The node comes back

@@ -124,7 +124,6 @@ var quicToEmbeddedMethod = map[string]string{
 	"backup.Restore":                "RestoreBackup",
 	"backup.Verify":                 "VerifyBackup",
 	"barrier.ClusterUnseal":         "BarrierClusterUnseal",
-	"barrier.EnableEncryption":      "BarrierEnableEncryption",
 	"barrier.OfficerList":           "OfficerList",
 	"barrier.OfficerRevoke":         "BarrierOfficerRevoke",
 	"barrier.RecoveryDelete":        "BarrierDeleteRecoveryKeys",
@@ -284,6 +283,7 @@ var quicToEmbeddedMethod = map[string]string{
 // that method's embedded-side authorization instead.
 var quicMethodExclusions = map[string]string{
 	"admin.Health":                       "public",
+	"barrier.EnableEncryption":           "target-resolved",
 	"barrier.Initialize":                 "public",
 	"barrier.OfficerRegister":            "public",
 	"barrier.QuorumBegin":                "identity-gated",

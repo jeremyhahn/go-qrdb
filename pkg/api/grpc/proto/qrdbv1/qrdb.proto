@@ -971,7 +971,9 @@ service QRDBService {
     // server in process; the call returns immediately and clients poll
     // BarrierStatus for the strategy change.
     rpc BarrierEnableEncryption(BarrierEnableEncryptionRequest) returns (BarrierEnableEncryptionResponse) {
-        option (qrdb.v1.permission) = "seal:enable_encryption";
+        // Authorized per request: seal:enable_encryption for the node's
+        // barrier, tenant_barrier:enable_encryption for a named tenant's.
+        option (qrdb.v1.permission) = "identity:gated";
     }
 
     // -----------------------------------------------------------------------

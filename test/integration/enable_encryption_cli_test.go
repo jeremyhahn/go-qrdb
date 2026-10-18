@@ -815,7 +815,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 			"permissions": []string{
 				"databases:create", "databases:create_volume", "databases:read", "databases:list",
 				"kv:put", "kv:get",
-				"tenant_barrier:status", "tenant_barrier:init",
+				"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:enable_encryption",
 			},
 		},
 	)
@@ -862,14 +862,25 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	}
 
 	// The operation under test: `qrdb barrier enable-encryption --tenant`,
-	// driven as a CLI subprocess authenticated as the SYSTEM admin identity
-	// (matching the REST test: a tenant migration is admin-gated at the
-	// permission layer, not self-service by the tenant's own cert).
+	// driven as a CLI subprocess. A tenant's barrier is migrated under
+	// tenant_barrier:enable_encryption for THAT tenant (go-qrdb#791): the
+	// SYSTEM admin identity, outside the tenant, is refused 403, and the
+	// tenant's own identity holding the permission migrates.
 	adminCertPath, adminKeyPath := ca.boundAdminCert(t, dataDir)
 	connArgs := restConnArgs(ca, adminCertPath, adminKeyPath, adminPort)
-
 	const tenantPass = "cli-tenant-acme-passphrase"
-	out, err := runQRDB(t, cli, connArgs,
+	sysOut, sysErr := runQRDB(t, cli, connArgs,
+		"barrier", "enable-encryption",
+		"--tenant", tenantID,
+		"--strategy", "passphrase",
+		"--passphrase", tenantPass,
+		"-y",
+	)
+	if sysErr == nil || !strings.Contains(sysOut, "status 403") {
+		t.Fatalf("system-admin barrier enable-encryption --tenant: err = %v, want a 403 refusal\noutput: %s", sysErr, sysOut)
+	}
+
+	out, err := runQRDB(t, cli, restConnArgs(ca, tenantCert, tenantKey, adminPort),
 		"barrier", "enable-encryption",
 		"--tenant", tenantID,
 		"--strategy", "passphrase",

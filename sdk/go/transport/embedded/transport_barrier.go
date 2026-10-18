@@ -21,9 +21,11 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
@@ -218,19 +220,27 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	if err := t.gate("BarrierEnableEncryption"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "BarrierEnableEncryption"); err != nil {
-		return nil, err
-	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	if t.encMigrator == nil {
-		return nil, service.ErrMigrationProviderUnavailable
-	}
 
+	// The operation is identity-gated: which permission authorizes the call
+	// depends on the barrier the request names, so it is decided here,
+	// before anything else. No tenant named is the node's own barrier, a
+	// platform-operator act under seal:enable_encryption; a named tenant is
+	// that tenant's barrier, authorized under tenant_barrier:enable_encryption
+	// for THAT tenant, exactly like every other tenant-barrier operation.
 	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	target, perm := tenantid.System, permission.SealEnableEncryption
 	if req.TenantID != "" {
 		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.TenantID}
+		target, perm = req.TenantID, permission.TenantBarrierEnableEncryption
+	}
+	if err := t.authorizeTenantTarget(ctx, target, perm); err != nil {
+		return nil, err
+	}
+	if t.encMigrator == nil {
+		return nil, service.ErrMigrationProviderUnavailable
 	}
 
 	mechanism := seal.MechanismSwap

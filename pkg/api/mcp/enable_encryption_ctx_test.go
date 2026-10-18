@@ -28,7 +28,7 @@ type migrationMarkerKey struct{}
 // context.Background() would carry neither.
 func TestHandleBarrierEnableEncryption_MCP_MigrationKeepsTheRequestValues(t *testing.T) {
 	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)}
-	handler := handleBarrierEnableEncryption(mig)
+	handler := handleBarrierEnableEncryption(mig, allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{
 		"strategy": "passphrase", "mechanism": "swap", "passphrase": "pw",
 	})

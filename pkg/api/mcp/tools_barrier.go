@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // barrierTools returns the MCP tool registrations for barrier lifecycle
@@ -49,7 +50,7 @@ import (
 // REST/gRPC/QUIC BarrierEnableEncryption handlers rather than omitting the
 // tool the way this function omits the rest of the group when svc is nil
 // (go-qrdb#558).
-func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMigrator service.EncryptionMigrator) []serverTool {
+func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMigrator service.EncryptionMigrator, authorize tenantScopeAuthorizer) []serverTool {
 	tools := []serverTool{
 		{Tool: toolBarrierInitialize(), Perm: permission.SealBootstrap, Handler: handleBarrierInitialize(svc, pinBackend)},
 		{Tool: toolBarrierUnseal(), Perm: permission.SealUnseal, Handler: handleBarrierUnseal(svc)},
@@ -65,8 +66,9 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMig
 		// encMigrator != nil here would omit it entirely in standalone mode
 		// (encMigrator nil, svc non-nil) instead of letting the handler
 		// answer with the typed refusal every other transport gives for
-		// that state.
-		{Tool: toolBarrierEnableEncryption(), Perm: permission.SealEnableEncryption, Handler: handleBarrierEnableEncryption(encMigrator)},
+		// that state. Identity-gated: the handler authorizes per scope
+		// (go-qrdb#791).
+		{Tool: toolBarrierEnableEncryption(), Perm: permission.IdentityGated, Handler: handleBarrierEnableEncryption(encMigrator, authorize)},
 	}
 	return append(tools, barrierHolderTools(svc)...)
 }
@@ -119,8 +121,23 @@ func toolBarrierEnableEncryption() mcp.Tool {
 // denied, provider unavailable) is returned to the caller as a real tool
 // error, while a migration still running once the window elapses is
 // acknowledged with "migration_started"; clients poll qrdb_barrier_status.
-func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserver.ToolHandlerFunc {
+func handleBarrierEnableEncryption(migrator service.EncryptionMigrator, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// The tool is identity-gated: which permission authorizes the call
+		// depends on the barrier the request names, so it is decided here,
+		// before anything else. No tenant named is the node's own barrier, a
+		// platform-operator act under seal:enable_encryption; a named tenant is
+		// that tenant's barrier, authorized under tenant_barrier:enable_encryption
+		// for THAT tenant, exactly like every other tenant-barrier operation.
+		scope := service.BarrierScope{Kind: service.ScopeSystem}
+		target, perm := tenantid.System, permission.SealEnableEncryption
+		if tenantID := mcp.ParseString(req, "tenant_id", ""); tenantID != "" {
+			scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: tenantID}
+			target, perm = tenantID, permission.TenantBarrierEnableEncryption
+		}
+		if err := authorize(ctx, target, perm); err != nil {
+			return authzToolError(err), nil
+		}
 		if migrator == nil {
 			// Tool is registered unconditionally (go-qrdb#558); this is the
 			// same typed refusal REST/gRPC/Unix/QUIC give when no
@@ -131,11 +148,6 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		strategy := mcp.ParseString(req, "strategy", "")
 		if strategy == "" {
 			return mcp.NewToolResultError("strategy is required"), nil
-		}
-
-		scope := service.BarrierScope{Kind: service.ScopeSystem}
-		if tenantID := mcp.ParseString(req, "tenant_id", ""); tenantID != "" {
-			scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: tenantID}
 		}
 
 		mechanism := seal.MechanismSwap

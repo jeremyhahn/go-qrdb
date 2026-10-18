@@ -467,7 +467,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 				"databases:create", "databases:create_raft", "databases:read", "databases:list",
 				"kv:put", "kv:get",
 				"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:unseal",
-				"tenant_barrier:seal",
+				"tenant_barrier:seal", "tenant_barrier:enable_encryption",
 			},
 		},
 	)
@@ -554,8 +554,17 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		}
 	}
 
-	// Trigger the cluster-wide TENANT enable-encryption on the leader.
+	// Trigger the cluster-wide TENANT enable-encryption on the leader. A
+	// tenant's barrier is migrated under tenant_barrier:enable_encryption for
+	// THAT tenant (go-qrdb#791): the system root, outside the tenant, is
+	// refused, and the tenant's own identity holding the permission migrates.
 	if b, s := iraftAPIPost(t, sysClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
+		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
+	); s != http.StatusForbidden {
+		t.Fatalf("system-root tenant enable-encryption: status %d, want 403; body: %s", s, b)
+	}
+	if b, s := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
 		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
 	); s != http.StatusOK && s != http.StatusAccepted {

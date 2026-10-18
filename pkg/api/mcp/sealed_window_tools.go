@@ -108,7 +108,7 @@ func builtinToolCatalogue() []serverTool {
 		invitationTools(nil, nil, nil),
 		collectionTools(nil),
 		databaseTools(nil),
-		barrierTools(nil, nil, nil),
+		barrierTools(nil, nil, nil, nil),
 		ceremonyTools(nil, nil),
 		dekTools(nil),
 		credentialTools(nil),

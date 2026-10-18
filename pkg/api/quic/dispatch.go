@@ -357,7 +357,9 @@ func (s *Server) buildHandlers() {
 	s.handle("barrier.QuorumSubmit", permission.IdentityGated, s.handleBarrierQuorumSubmit)
 	s.handle("barrier.RekeyStart", permission.SealRekey, s.handleBarrierRekeyStart)
 	s.handle("barrier.OfficerRevoke", permission.SealOfficerRevoke, s.handleBarrierOfficerRevoke)
-	s.handle("barrier.EnableEncryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
+	// Authorized per request: seal:enable_encryption for the node's barrier,
+	// tenant_barrier:enable_encryption for a named tenant's (go-qrdb#791).
+	s.handle("barrier.EnableEncryption", permission.IdentityGated, s.handleBarrierEnableEncryption)
 
 	// Ceremony. Share holders claim their envelopes through the barrier
 	// holder methods above (barrier.ShareClaimBegin/Complete), not here.

@@ -19,7 +19,7 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 | Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `BarrierInitializeShamir` | `seal:initialize_shamir` |
 | Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `Unseal` | `seal:unseal` |
 | Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `Seal` | `seal:seal` + SO PIN |
-| Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` |
+| Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
 | Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `ClusterUnseal` | `seal:unseal` |
 
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
@@ -53,11 +53,15 @@ nothing a tenant could own here; a tenant's own barrier has its own endpoints
 and `tenant_barrier:*` permissions (below). `seal:status` reads state and
 names no share holder.
 
-**Enable-encryption is a platform-operator act for both of its targets.**
-Migrating the node barrier, or a tenant's dedicated barrier named by
-`tenant_id`, is done by the `system` tenant. There is no tenant-side route: a
-tenant cannot migrate even its own barrier, and the declared
-`tenant_barrier:enable_encryption` permission is checked by no handler.
+**Enable-encryption authorizes per scope, on every transport.** The route is
+open to any authenticated caller; the handler decides, from the request, which
+permission it checks before it does anything else. With no `tenant_id` it
+migrates the node barrier, and the caller needs `seal:enable_encryption` in
+the `system` tenant. With a `tenant_id` it migrates that tenant's dedicated
+barrier, and the caller needs `tenant_barrier:enable_encryption` for that
+tenant, like every other tenant-barrier operation. A tenant admin may
+therefore migrate their own tenant's barrier, and no other. A refused caller
+is refused before the node reports whether it can migrate at all.
 
 A node holder's shares reach the node barrier only through the identity-gated
 quorum submission, authenticated against the roster; there is no permission a

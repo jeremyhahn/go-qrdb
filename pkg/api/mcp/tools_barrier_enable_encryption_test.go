@@ -49,7 +49,7 @@ func (m *captureMCPMigrator) EnableEncryption(ctx context.Context, scope service
 
 func TestHandleBarrierEnableEncryption_MCP_MissingStrategy(t *testing.T) {
 	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)}
-	handler := handleBarrierEnableEncryption(mig)
+	handler := handleBarrierEnableEncryption(mig, allowAllTenantScope)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{})
 	result, err := handler(context.Background(), req)
@@ -63,7 +63,7 @@ func TestHandleBarrierEnableEncryption_MCP_MissingStrategy(t *testing.T) {
 
 func TestHandleBarrierEnableEncryption_MCP_InvalidOptionsRejectedSynchronously(t *testing.T) {
 	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)}
-	handler := handleBarrierEnableEncryption(mig)
+	handler := handleBarrierEnableEncryption(mig, allowAllTenantScope)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{"strategy": "none"})
 	_, err := handler(context.Background(), req)
@@ -79,7 +79,7 @@ func TestHandleBarrierEnableEncryption_MCP_InvalidOptionsRejectedSynchronously(t
 
 func TestHandleBarrierEnableEncryption_MCP_SystemStarts(t *testing.T) {
 	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)}
-	handler := handleBarrierEnableEncryption(mig)
+	handler := handleBarrierEnableEncryption(mig, allowAllTenantScope)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{
 		"strategy":   "passphrase",
@@ -122,7 +122,7 @@ func TestHandleBarrierEnableEncryption_MCP_SystemStarts(t *testing.T) {
 // actually happened (Codex #6).
 func TestHandleBarrierEnableEncryption_MCP_AcceptanceFailureSurfacesSynchronously(t *testing.T) {
 	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1), err: service.ErrSharedBarrierImmutable}
-	handler := handleBarrierEnableEncryption(mig)
+	handler := handleBarrierEnableEncryption(mig, allowAllTenantScope)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{
 		"tenant_id": "acme", "strategy": "passphrase", "passphrase": "pw",
@@ -144,7 +144,7 @@ func TestHandleBarrierEnableEncryption_MCP_AcceptanceFailureSurfacesSynchronousl
 
 func TestHandleBarrierEnableEncryption_MCP_TenantScope(t *testing.T) {
 	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)}
-	handler := handleBarrierEnableEncryption(mig)
+	handler := handleBarrierEnableEncryption(mig, allowAllTenantScope)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{
 		"tenant_id":        "tenant-a",
@@ -200,10 +200,10 @@ func TestBarrierTools_EnableEncryption_AlwaysRegistered(t *testing.T) {
 		return false
 	}
 
-	if !hasEnableEncryption(barrierTools(svc, nil, nil)) {
+	if !hasEnableEncryption(barrierTools(svc, nil, nil, allowAllTenantScope)) {
 		t.Error("qrdb_barrier_enable_encryption must be registered even when encMigrator is nil")
 	}
-	if !hasEnableEncryption(barrierTools(svc, nil, &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)})) {
+	if !hasEnableEncryption(barrierTools(svc, nil, &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1)}, allowAllTenantScope)) {
 		t.Error("qrdb_barrier_enable_encryption must be registered when encMigrator is set")
 	}
 }
@@ -215,7 +215,7 @@ func TestBarrierTools_EnableEncryption_AlwaysRegistered(t *testing.T) {
 // REST/gRPC/Unix/QUIC use for "no EncryptionMigrator configured" -- instead
 // of the tool being silently absent.
 func TestHandleBarrierEnableEncryption_MCP_NilMigratorRefusesTyped(t *testing.T) {
-	handler := handleBarrierEnableEncryption(nil)
+	handler := handleBarrierEnableEncryption(nil, allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{"strategy": "passphrase", "passphrase": "cGFzcw=="})
 	_, err := handler(context.Background(), req)
 	if !errors.Is(err, service.ErrMigrationProviderUnavailable) {
