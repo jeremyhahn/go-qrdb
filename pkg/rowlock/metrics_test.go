@@ -49,6 +49,37 @@ func requestCount(t *testing.T, mode Mode, outcome string) float64 {
 	return 0
 }
 
+// waiterCount reads the row_lock_waiters gauge.
+func waiterCount(t *testing.T) float64 {
+	t.Helper()
+	families, err := metrics.Registry().Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == "qrdb_sql_row_lock_waiters" {
+			for _, m := range f.GetMetric() {
+				return m.GetGauge().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// waitWaiting blocks until the row_lock_waiters gauge reads n, the signal
+// that an owner has passed enqueue's lease check and is in wait. A queued
+// record alone does not say so: an owner that holds nothing and finds its
+// lease gone at enqueue starts over on a new one rather than losing.
+func waitWaiting(t *testing.T, n float64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if waiterCount(t) == n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("row_lock_waiters never reached %v: %v", n, waiterCount(t))
+}
+
 // A victim chosen because the lock table was too large to search is not a
 // detected deadlock, and an operator must be able to tell the two apart: the
 // first means the table outgrew MaxDetectionRecords.

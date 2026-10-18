@@ -252,7 +252,7 @@ type fakeShards struct {
 	err     error
 }
 
-func (f *fakeShards) ListStarted() []StartedShard { return f.started }
+func (f *fakeShards) ListOnHost() []StartedShard { return f.started }
 
 func (f *fakeShards) Close(tenantID, db string) error {
 	f.closed = append(f.closed, StartedShard{TenantID: tenantID, Database: db})

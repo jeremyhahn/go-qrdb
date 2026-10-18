@@ -546,8 +546,10 @@ func TestAcquire_WaiterWhoseLeaseIsRevoked_GetsLockLost(t *testing.T) {
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
+	waiting := waiterCount(t)
 	bDone := acquireAsync(b, tbl, []string{keyA}, ModeExclusive, 5*time.Second)
-	waitQueued(t, tbl, keyA, 2)
+	// Revoke the lease b waits on, not one it may still replace at enqueue.
+	waitWaiting(t, waiting+1)
 
 	b.mu.Lock()
 	leaseID := b.lease.id

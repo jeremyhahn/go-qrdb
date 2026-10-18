@@ -278,14 +278,16 @@ func (c *efCluster) eventually(t *testing.T, what string, f func(n *node.Node) e
 	t.Helper()
 	deadline := time.Now().Add(efBudget)
 	for {
-		var last error
-		for _, n := range c.nodes {
-			if last = f(n); last == nil {
+		errs := make([]error, 0, len(c.nodes))
+		for i, n := range c.nodes {
+			err := f(n)
+			if err == nil {
 				return
 			}
+			errs = append(errs, fmt.Errorf("node %d: %w", i, err))
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: %v", what, last)
+			t.Fatalf("%s: %v", what, errors.Join(errs...))
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

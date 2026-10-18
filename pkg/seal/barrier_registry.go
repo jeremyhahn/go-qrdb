@@ -1587,9 +1587,18 @@ func (r *BarrierRegistry) TenantStatus(tenantID string) (*BarrierStatus, error) 
 //     blob; the portable sealed root key is stored verbatim and the barrier
 //     remains sealed. The tenant unseals it later with their own credential.
 //
-// Returns the registered TenantBarrier on success. If registration or
-// initialization fails, the tenant may be left registered but uninitialized;
-// callers should call RemoveTenant to clean up on error.
+// Returns the registered TenantBarrier on success. An initialization that
+// fails unregisters the barrier it registered, so the tenant is left
+// unregistered rather than registered and sealed: the cluster key plane acks a
+// redelivery that finds the tenant registered (ErrTenantAlreadyExists) as a key
+// already installed, and a sealed barrier left behind would keep the tenant
+// sealed on this node with nothing left to unseal it. The rollback leaves the
+// per-tenant store open in the per-tenant registry -- a tenant barrier reaches
+// it through a NamespacedBackend, whose Close does not close it -- so the
+// redelivery's registration opens that same live store. A redelivery that
+// finds the root key already persisted -- an earlier import stored it and then
+// failed -- keeps its registration and completes that import instead
+// (resumePersistedImport).
 func (r *BarrierRegistry) ImportTenant(
 	ctx context.Context,
 	tenantID string,
@@ -1602,15 +1611,32 @@ func (r *BarrierRegistry) ImportTenant(
 		return nil, err
 	}
 	if autoUnseal {
-		if err := tb.Barrier().ImportRootKey(ctx, imported, Credentials{}); err != nil {
-			return nil, err
-		}
+		err = tb.Barrier().ImportRootKey(ctx, imported, Credentials{})
 	} else {
-		if err := tb.Barrier().ImportSealedBlob(ctx, sealedBlob); err != nil {
-			return nil, err
-		}
+		err = tb.Barrier().ImportSealedBlob(ctx, sealedBlob)
+	}
+	if errors.Is(err, ErrAlreadyInitialized) {
+		err = resumePersistedImport(ctx, tb, autoUnseal)
+	}
+	if err != nil {
+		_ = r.RemoveTenant(tenantID)
+		return nil, err
 	}
 	return tb, nil
+}
+
+// resumePersistedImport completes an import over a store that already holds
+// the tenant's root key: an earlier delivery persisted it and then failed, on
+// its metadata or its unseal. The registration stands, and the barrier comes
+// up as a fresh import would leave it -- a system-managed barrier unsealed by
+// this node's system strategy, a self-managed one sealed for the tenant. An
+// unseal that fails is returned as itself, never as ErrAlreadyInitialized,
+// which the cluster key plane acks as a key already installed.
+func resumePersistedImport(ctx context.Context, tb *TenantBarrier, autoUnseal bool) error {
+	if !autoUnseal || !tb.IsSealed() {
+		return nil
+	}
+	return tb.Barrier().Unseal(ctx, Credentials{})
 }
 
 // ListTenants returns the IDs of all registered tenant barriers. The order

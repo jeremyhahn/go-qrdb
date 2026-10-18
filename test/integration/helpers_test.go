@@ -3025,11 +3025,34 @@ func waitForVolumePoolReady(t *testing.T, client *http.Client, adminPort int, na
 // the CLI binary rather than raw REST calls.
 func createVolumePoolCLI(t *testing.T, cli string, connArgs []string, name string) {
 	t.Helper()
-	if out, err := runQRDB(t, cli, connArgs, "volume-pool", "create", name,
-		"--capacity", fmt.Sprint(fixtureVolumePoolCapacityBytes)); err != nil {
+	// A propose that times out is answered 503 and may still commit
+	// (pkg/api/errclass/table.go: quicraft.ErrTimeout is Unavailable, and a
+	// client retries only a write it has made idempotent). Create is a
+	// put-if-absent (pkg/volume/catalog.go CreatePool), so after such a
+	// timeout the retry's 409 already-exists is this create having committed.
+	// Any other error fails at once.
+	deadline := time.Now().Add(volumePoolCreateRetryWindow)
+	timedOut := false
+	for {
+		out, err := runQRDB(t, cli, connArgs, "volume-pool", "create", name,
+			"--capacity", fmt.Sprint(fixtureVolumePoolCapacityBytes))
+		switch {
+		case err == nil:
+			return
+		case timedOut && strings.Contains(out, "(status 409)"):
+			return
+		case strings.Contains(out, "(status 503)") && strings.Contains(out, "quicraft: timeout") &&
+			time.Now().Before(deadline):
+			timedOut = true
+			continue
+		}
 		t.Fatalf("volume-pool create %q: %v\noutput: %s", name, err, out)
 	}
 }
+
+// volumePoolCreateRetryWindow bounds how long createVolumePoolCLI keeps
+// retrying a create whose propose timed out.
+const volumePoolCreateRetryWindow = 60 * time.Second
 
 // ---------------------------------------------------------------------------
 // Dedicated-raft database scoped KV helpers

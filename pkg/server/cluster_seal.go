@@ -339,9 +339,11 @@ func NewClusterSealMonitor(p ClusterSealParts) (*clusterseal.Monitor, error) {
 }
 
 // tenantShards is the slice of RaftBackendFactory the enforcer stops a
-// tenant's dedicated shards through.
+// tenant's dedicated shards through. It lists the shards on the host, starts
+// in flight included, since a seal must stop every shard before it wipes the
+// key they run on.
 type tenantShards interface {
-	ListStarted() []StartedShard
+	ListOnHost() []StartedShard
 	Close(tenantID, db string) error
 }
 
@@ -407,7 +409,7 @@ func (e *SealEnforcer) SealNode(ctx context.Context) error {
 func (e *SealEnforcer) SealTenant(_ context.Context, tenantID string) error {
 	var errs []error
 	if e.Shards != nil {
-		for _, s := range e.Shards.ListStarted() {
+		for _, s := range e.Shards.ListOnHost() {
 			if s.TenantID != tenantID {
 				continue
 			}

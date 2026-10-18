@@ -253,7 +253,7 @@ func (p *ShardPauser) closeSealedTenants() {
 		return
 	}
 	if t.shards != nil {
-		for _, s := range t.shards.ListStarted() {
+		for _, s := range t.shards.ListOnHost() {
 			if !p.tenantSealed(s.TenantID) {
 				continue
 			}

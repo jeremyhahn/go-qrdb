@@ -258,10 +258,11 @@ type RaftBackendFactory struct {
 	starting map[raftShardKey]*startingShard
 
 	// generation counts the shards removed from shards (forgetLocked,
-	// CloseAll). A start planned with mu released re-checks it before
-	// starting: a change means another pass stopped a shard while the plan
-	// read, so the plan may rest on a placement that no longer holds and is
-	// made again.
+	// CloseAll) and the purges of a database, cached or not (CloseAndPurge).
+	// A start planned with mu released re-checks it before starting: a
+	// change means another pass stopped a shard or purged a database while
+	// the plan read, so the plan may rest on a placement that no longer
+	// holds and is made again.
 	generation uint64
 
 	// identitiesOverride, when non-nil, replaces service.MemberIdentities
@@ -544,8 +545,8 @@ func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, hon
 	return rs.services, false, nil
 }
 
-// forgetLocked drops key's shard from the cache and advances generation, so
-// a start planned before the removal is planned again. The caller MUST hold
+// forgetLocked drops key's shard, if cached, from the cache and advances
+// generation, so a start planned before the removal is planned again. The caller MUST hold
 // f.mu.
 func (f *RaftBackendFactory) forgetLocked(key raftShardKey) {
 	delete(f.shards, key)
@@ -1051,14 +1052,37 @@ type StartedShard struct {
 }
 
 // ListStarted returns a snapshot of every (TenantID, Database) pair whose
-// dedicated raft shard is currently started on this node. It is used by the
-// TenantShardReconciler to detect orphans (locally running shards with no
-// matching placement entry).
+// dedicated raft shard is currently started on this node and serving. It is
+// used by the TenantShardReconciler to detect orphans (locally running shards
+// with no matching placement entry). A start still waiting to serve is not
+// listed: a caller that only acts on serving shards must not wait out an
+// election. A caller that stops shards or reclaims their storage lists them
+// with ListOnHost instead.
 func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards))
 	for k := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	}
+	return out
+}
+
+// ListOnHost returns a snapshot of every (TenantID, Database) pair whose
+// dedicated raft shard is started on the host: serving, as ListStarted
+// reports, or still waiting to serve. A start in flight runs on the host
+// before it is cached, so a caller that seals a tenant or reclaims its
+// storage enumerates through this, and Close then waits for each start in
+// flight before it stops the shard. Listing one in ListStarted alone would
+// leave it running over a wiped key or a removed directory.
+func (f *RaftBackendFactory) ListOnHost() []StartedShard {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]StartedShard, 0, len(f.shards)+len(f.starting))
+	for k := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	}
+	for k := range f.starting {
 		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
 	}
 	return out
@@ -1298,9 +1322,13 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	key := raftShardKey{tenantID: tenantID, database: db}
 	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
 	rs, ok := f.shards[key]
-	if ok {
-		f.forgetLocked(key)
-	}
+	// Forget the key even when no shard is cached: a start planned with mu
+	// released may have read the placement this purge follows, and holds
+	// neither a cached shard nor a start in flight for the purge to find.
+	// The generation it moves sends that plan back to read the placement
+	// again, which no longer names the database; the delete event that
+	// called this is consumed, so nothing would stop a shard it started.
+	f.forgetLocked(key)
 	f.mu.Unlock()
 	if !ok {
 		return nil

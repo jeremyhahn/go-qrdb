@@ -49,7 +49,7 @@ func (c *tenantRuntimeCloser) CloseTenantRuntime(_ context.Context, tenantID str
 		}
 	}
 	if c.raft != nil {
-		for _, s := range c.raft.ListStarted() {
+		for _, s := range c.raft.ListOnHost() {
 			if s.TenantID != tenantID {
 				continue
 			}

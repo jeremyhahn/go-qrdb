@@ -35,11 +35,13 @@ import (
 // a leader and then has one.
 type settlingUserServicer struct {
 	mockUserServicer
-	errs []error
+	errs     []error
+	attempts attemptLog
 }
 
-func (s *settlingUserServicer) GetUserByUsername(_ context.Context, _, username string) (*user.User, error) {
+func (s *settlingUserServicer) GetUserByUsername(ctx context.Context, _, username string) (*user.User, error) {
 	n := int(s.calls.Add(1))
+	s.attempts.record(ctx)
 	s.lastUser = username
 	if n <= len(s.errs) {
 		return nil, s.errs[n-1]
@@ -61,17 +63,50 @@ func electionTimeout() error {
 // are answered; a zero elected is a shard that never elects.
 type lostReadUserServicer struct {
 	mockUserServicer
-	elected time.Time
+	elected  time.Time
+	attempts attemptLog
 }
 
 func (s *lostReadUserServicer) GetUserByUsername(ctx context.Context, _, username string) (*user.User, error) {
 	s.calls.Add(1)
+	s.attempts.record(ctx)
 	s.lastUser = username
 	if s.elected.IsZero() || time.Now().Before(s.elected) {
 		<-ctx.Done()
 		return nil, &user.StoreError{Op: "get_by_username", Detail: "index lookup", Err: &service.ReadError{Err: quicraft.ErrTimeout}}
 	}
 	return s.user, nil
+}
+
+// attemptBound is one call into a user store double: when it was entered and
+// the deadline its context carried.
+type attemptBound struct {
+	entered, deadline time.Time
+}
+
+// attemptLog records each call's attemptBound, so a test judges the bounds
+// lookupUser set rather than how fast the host honoured them. lookupUser
+// calls the store from the caller's goroutine, one attempt at a time, so the
+// log needs no lock.
+type attemptLog struct {
+	bounds []attemptBound
+}
+
+func (l *attemptLog) record(ctx context.Context) {
+	deadline, _ := ctx.Deadline()
+	l.bounds = append(l.bounds, attemptBound{entered: time.Now(), deadline: deadline})
+}
+
+// withDeadlines returns the recorded bounds, failing t if any call's context
+// carried no deadline: a missing deadline would pass every upper bound.
+func (l *attemptLog) withDeadlines(t *testing.T) []attemptBound {
+	t.Helper()
+	for i, b := range l.bounds {
+		if b.deadline.IsZero() {
+			t.Fatalf("attempt %d carried no deadline, want every attempt bounded", i+1)
+		}
+	}
+	return l.bounds
 }
 
 // TestLookupUser_LostReadRetriedAfterElection: each lookup attempt is bounded,
@@ -112,11 +147,25 @@ func TestLookupUser_LostReadNeverAnsweredEndsWithBudget(t *testing.T) {
 	if !errors.Is(err, quicraft.ErrTimeout) {
 		t.Fatalf("lookupUser err = %v, want the lost read's %v", err, quicraft.ErrTimeout)
 	}
-	if elapsed < policy.Budget || elapsed >= policy.Budget+policy.Attempt/2 {
-		t.Fatalf("lookupUser took %v, want it to end with its %v budget", elapsed, policy.Budget)
+	// A slow host can only lengthen the run, so the lower bound is judged on
+	// the clock; the upper bound is judged on the deadlines lookupUser set.
+	if elapsed < policy.Budget {
+		t.Fatalf("lookupUser took %v, want it to wait out its %v budget", elapsed, policy.Budget)
 	}
 	if calls := primary.calls.Load(); calls != 2 {
 		t.Fatalf("primary.calls = %d, want the first attempt's bound and the budget's remainder", calls)
+	}
+	bounds := primary.attempts.withDeadlines(t)
+	first, second := bounds[0], bounds[1]
+	if first.deadline.After(first.entered.Add(policy.Attempt)) {
+		t.Fatalf("first attempt's deadline is %v after its call, want it bounded by the %v attempt",
+			first.deadline.Sub(first.entered), policy.Attempt)
+	}
+	// The budget's deadline is taken between start and the first call, so the
+	// second attempt, held to the budget's remainder, ends in that window.
+	if second.deadline.Before(start.Add(policy.Budget)) || second.deadline.After(first.entered.Add(policy.Budget)) {
+		t.Fatalf("second attempt's deadline is %v after start, want the %v budget's, not one %v attempt past it",
+			second.deadline.Sub(start), policy.Budget, policy.Attempt)
 	}
 }
 
@@ -175,18 +224,29 @@ func TestLookupUser_ElectionOutlastsBudget(t *testing.T) {
 		electionTimeout(), electionTimeout(), electionTimeout(), electionTimeout(),
 		electionTimeout(), electionTimeout(), electionTimeout(), electionTimeout(),
 	}}
-	m := &AuthMiddleware{users: primary, lookupSettle: service.SettlePolicy{Budget: 150 * time.Millisecond}}
+	budget := 150 * time.Millisecond
+	m := &AuthMiddleware{users: primary, lookupSettle: service.SettlePolicy{Budget: budget}}
 
 	start := time.Now()
 	_, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
 	if !errors.Is(err, quicraft.ErrTimeout) {
 		t.Fatalf("lookupUser err = %v, want the election's %v", err, quicraft.ErrTimeout)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("lookupUser took %v, want it bounded by its 150ms budget", elapsed)
-	}
 	if calls := primary.calls.Load(); calls < 2 || calls >= int64(len(primary.errs)) {
 		t.Fatalf("primary.calls = %d, want a retry and the budget to stop it before %d", calls, len(primary.errs))
+	}
+	// The budget, shorter than the default attempt, bounds every attempt: each
+	// carries the one deadline taken between start and the first call.
+	bounds := primary.attempts.withDeadlines(t)
+	end := bounds[0].deadline
+	if end.Before(start.Add(budget)) || end.After(bounds[0].entered.Add(budget)) {
+		t.Fatalf("first attempt's deadline is %v after start, want the %v budget's", end.Sub(start), budget)
+	}
+	for i, b := range bounds[1:] {
+		if !b.deadline.Equal(end) {
+			t.Fatalf("attempt %d's deadline is %v after start, want the %v budget's %v",
+				i+2, b.deadline.Sub(start), budget, end.Sub(start))
+		}
 	}
 }
 

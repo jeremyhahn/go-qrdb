@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -337,5 +338,127 @@ func TestRaftBackendFactory_StartInFlightIsAwaitedNotRepeated(t *testing.T) {
 	}
 	if got := f.ListStarted(); len(got) != 0 {
 		t.Fatalf("ListStarted = %v, want none", got)
+	}
+}
+
+// TestRaftBackendFactory_ListOnHostIncludesStartsInFlight pins the two
+// listings apart: a founding start waiting for a quorum runs on the host
+// before it is cached, so ListOnHost, which teardown enumerates through,
+// names it while ListStarted, which the schedulers walk, does not.
+func TestRaftBackendFactory_ListOnHostIncludesStartsInFlight(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", 1001, dataRoot)
+	src.add("rt", "b", 1002, dataRoot)
+	src.placements = map[raftShardKey]*placement.Placement{{tenantID: "rt", database: "a"}: noQuorumPlacement("rt", "a", 1001)}
+	f.identitiesOverride = func(context.Context, uint64, uint64, bool, map[uint64]string) (map[uint64]string, error) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := f.Services(ctx, "rt", "b"); err != nil {
+		t.Fatalf("Services(b) = %v, want nil", err)
+	}
+
+	a := resolveAsync(ctx, f, "rt", "a")
+	awaitStarting(t, f, "rt", "a")
+	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+		t.Fatalf("ListStarted = %v, want only the serving b", got)
+	}
+	got := f.ListOnHost()
+	slices.SortFunc(got, func(x, y StartedShard) int { return strings.Compare(x.Database, y.Database) })
+	if want := []StartedShard{{TenantID: "rt", Database: "a"}, {TenantID: "rt", Database: "b"}}; !slices.Equal(got, want) {
+		t.Fatalf("ListOnHost = %v, want %v: the start in flight runs on the host", got, want)
+	}
+
+	cancel()
+	requireAwaitLeader(t, "Services(a)", (<-a).err)
+	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+		t.Fatalf("ListOnHost after the failed start = %v, want only b", got)
+	}
+}
+
+// endStartOnClose is the factory as the seal enforcer sees it, except that
+// Close first ends the start in flight it is about to wait for, the way the
+// start's own caller giving up would. It overrides Close alone, so the
+// listing the enforcer walks is whichever one the enforcer asks for.
+type endStartOnClose struct {
+	*RaftBackendFactory
+	endStart context.CancelFunc
+}
+
+func (e endStartOnClose) Close(tenantID, db string) error {
+	e.endStart()
+	return e.RaftBackendFactory.Close(tenantID, db)
+}
+
+// TestSealEnforcer_SealTenantStopsAStartInFlight is the Codex finding on
+// #772: a founding shard running on the host but not yet serving sat only in
+// the factory's starts in flight, which the seal never enumerated, so the
+// tenant's key was wiped under a running shard. SealTenant must reach that
+// start and see it stopped before it seals the barrier.
+func TestSealEnforcer_SealTenantStopsAStartInFlight(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", 1001, dataRoot)
+	src.placements = map[raftShardKey]*placement.Placement{{tenantID: "rt", database: "a"}: noQuorumPlacement("rt", "a", 1001)}
+	f.identitiesOverride = func(context.Context, uint64, uint64, bool, map[uint64]string) (map[uint64]string, error) {
+		return nil, nil
+	}
+	startCtx, endStart := context.WithCancel(context.Background())
+	defer endStart()
+
+	started := resolveAsync(startCtx, f, "rt", "a")
+	awaitStarting(t, f, "rt", "a")
+	e := &SealEnforcer{Barriers: reg, Shards: endStartOnClose{RaftBackendFactory: f, endStart: endStart}}
+	within(t, "SealTenant", func() {
+		if err := e.SealTenant(context.Background(), "rt"); err != nil {
+			t.Errorf("SealTenant = %v, want nil", err)
+		}
+	})
+
+	f.mu.Lock()
+	_, inFlight := f.starting[raftShardKey{tenantID: "rt", database: "a"}]
+	f.mu.Unlock()
+	if inFlight {
+		t.Fatal("SealTenant returned with the tenant's start still running on the host: the key was wiped under it")
+	}
+	requireAwaitLeader(t, "Services(a)", (<-started).err)
+	if got := f.ListOnHost(); len(got) != 0 {
+		t.Fatalf("ListOnHost after SealTenant = %v, want none", got)
+	}
+	if e.TenantUnsealed("rt") {
+		t.Fatal("SealTenant left the tenant's barrier unsealed")
+	}
+}
+
+// TestRaftBackendFactory_PurgeDuringReadDropsThePlan is the second Codex
+// finding on #772: a start that has read the placement and is reading its
+// members' identities when the placement delete purges the database holds
+// neither a cached shard nor a start in flight, so the purge left the
+// generation alone and the plan went on to start the deleted shard, which
+// nothing would ever stop. The purge must send the plan back to read the
+// placement, which no longer names the database.
+func TestRaftBackendFactory_PurgeDuringReadDropsThePlan(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", 1001, dataRoot)
+	held := holdRead(t, f, 1001)
+
+	a := resolveAsync(context.Background(), f, "rt", "a")
+	held.awaitHeld(t)
+	delete(src.entries, raftShardKey{tenantID: "rt", database: "a"})
+	within(t, "CloseAndPurge of the database being planned", func() {
+		if err := f.CloseAndPurge("rt", "a"); err != nil {
+			t.Errorf("CloseAndPurge(a) = %v, want nil", err)
+		}
+	})
+
+	held.unhold()
+	if r := <-a; !errors.Is(r.err, ErrRaftDatabaseUnknown) {
+		t.Fatalf("Services(a) = %v, want ErrRaftDatabaseUnknown: the purge must void the plan made before it", r.err)
+	}
+	if got := f.ListOnHost(); len(got) != 0 {
+		t.Fatalf("ListOnHost = %v, want none: the purged database was started", got)
 	}
 }
