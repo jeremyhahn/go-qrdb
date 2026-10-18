@@ -138,7 +138,7 @@ func TestLookupUser_LostReadRetriedAfterElection(t *testing.T) {
 // error, not one attempt bound past it.
 func TestLookupUser_LostReadNeverAnsweredEndsWithBudget(t *testing.T) {
 	primary := &lostReadUserServicer{}
-	policy := service.SettlePolicy{Budget: 400 * time.Millisecond, Attempt: 300 * time.Millisecond}
+	policy := service.SettlePolicy{Budget: 400 * time.Millisecond, Attempt: 300 * time.Millisecond, Poll: 20 * time.Millisecond}
 	m := &AuthMiddleware{users: primary, lookupSettle: policy}
 
 	start := time.Now()
@@ -152,20 +152,35 @@ func TestLookupUser_LostReadNeverAnsweredEndsWithBudget(t *testing.T) {
 	if elapsed < policy.Budget {
 		t.Fatalf("lookupUser took %v, want it to wait out its %v budget", elapsed, policy.Budget)
 	}
-	if calls := primary.calls.Load(); calls != 2 {
-		t.Fatalf("primary.calls = %d, want the first attempt's bound and the budget's remainder", calls)
-	}
+
+	// How many attempts fit in the budget is the host's to decide: a retry
+	// follows only when the first attempt's bound fires with budget left,
+	// and a loaded host can deliver that timer past the budget (run 56220).
+	// What the policy promises is that each attempt is bounded by Attempt
+	// and that none is bounded past the budget.
 	bounds := primary.attempts.withDeadlines(t)
-	first, second := bounds[0], bounds[1]
+	if len(bounds) < 1 {
+		t.Fatalf("primary.calls = %d, want at least one attempt", primary.calls.Load())
+	}
+	first := bounds[0]
 	if first.deadline.After(first.entered.Add(policy.Attempt)) {
 		t.Fatalf("first attempt's deadline is %v after its call, want it bounded by the %v attempt",
 			first.deadline.Sub(first.entered), policy.Attempt)
 	}
-	// The budget's deadline is taken between start and the first call, so the
-	// second attempt, held to the budget's remainder, ends in that window.
-	if second.deadline.Before(start.Add(policy.Budget)) || second.deadline.After(first.entered.Add(policy.Budget)) {
-		t.Fatalf("second attempt's deadline is %v after start, want the %v budget's, not one %v attempt past it",
-			second.deadline.Sub(start), policy.Budget, policy.Attempt)
+	// The budget's deadline is taken between start and the first call, so a
+	// later attempt, held to the budget's remainder, ends in that window. The
+	// first attempt's deadline is its own start plus Attempt, and
+	// SettleLeadership began no later than that start, so the budget's
+	// deadline is at most the first deadline less Attempt plus Budget.
+	budgetBound := first.deadline.Add(policy.Budget - policy.Attempt)
+	for i, b := range bounds[1:] {
+		if b.deadline.Before(start.Add(policy.Budget)) || b.deadline.After(first.entered.Add(policy.Budget)) {
+			t.Fatalf("attempt %d's deadline is %v after start, want the %v budget's, not one %v attempt past it",
+				i+2, b.deadline.Sub(start), policy.Budget, policy.Attempt)
+		}
+		if b.deadline.After(budgetBound) {
+			t.Fatalf("attempt %d bounded %v past the budget, want no attempt to outlive it", i+2, b.deadline.Sub(budgetBound))
+		}
 	}
 }
 

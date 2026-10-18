@@ -109,13 +109,28 @@ func TestAwaitClusterCACertificate_RetriesReadIndexNotReady(t *testing.T) {
 // passes, returning the not-ready error itself.
 func TestAwaitClusterCACertificate_ReadIndexNotReadyPastDeadline(t *testing.T) {
 	stub := &flakyClusterCAProvider{notLeaderCalls: 1 << 30, transientErr: &service.ReadError{Err: quicraft.ErrReadIndexNotReady}}
+	const deadline = 20 * time.Millisecond
 
-	_, err := AwaitClusterCACertificate(context.Background(), stub, 20*time.Millisecond, time.Millisecond, 5*time.Millisecond)
+	start := time.Now()
+	_, err := AwaitClusterCACertificate(context.Background(), stub, deadline, time.Millisecond, 5*time.Millisecond)
+	elapsed := time.Since(start)
 	if !errors.Is(err, quicraft.ErrReadIndexNotReady) {
 		t.Fatalf("AwaitClusterCACertificate = %v, want quicraft.ErrReadIndexNotReady", err)
 	}
-	if stub.calls < 2 {
-		t.Errorf("Certificate called %d times, want at least 2 (retried before the deadline)", stub.calls)
+	var sre *server.StartupReadError
+	if !errors.As(err, &sre) {
+		t.Fatalf("AwaitClusterCACertificate = %v (%T), want *server.StartupReadError", err, err)
+	}
+	if sre.Attempts != stub.calls || stub.calls < 1 {
+		t.Fatalf("StartupReadError.Attempts = %d, Certificate called %d times, want every attempt counted", sre.Attempts, stub.calls)
+	}
+	// How many attempts fit in the deadline is the host's to decide: a runner
+	// that holds the first one past it leaves room for no other (run 56220,
+	// one attempt in 54 ms of a 20 ms deadline). What the read promises is
+	// that it waits a transient out until the deadline, so it never gives
+	// up before it; a read that stopped retrying would return at once.
+	if elapsed < deadline {
+		t.Fatalf("AwaitClusterCACertificate gave up after %v and %d attempts, want it to retry until its %v deadline", elapsed, stub.calls, deadline)
 	}
 }
 

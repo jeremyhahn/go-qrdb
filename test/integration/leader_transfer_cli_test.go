@@ -88,23 +88,46 @@ func TestLeaderTransfer_PerProtocol(t *testing.T) {
 
 	// Each call reads the leader it starts from rather than carrying one
 	// over from an earlier call: an election between calls is the cluster
-	// working, not the transfer under test. Only the call itself must leave
-	// leadership where it found it. It is sent to the live follower.
+	// working, not the transfer under test. It is sent to the live follower.
+	//
+	// A leader whose transfer times out aborts it and keeps leading (Raft
+	// thesis §3.10); the transfer itself never moves leadership. An election
+	// can still run during the call: on a loaded host a heartbeat late past
+	// the election timeout is the cluster working, and leadership then moves
+	// in a newer term (run 56220: node1 won term 12 while the call was in
+	// flight). So leadership that moved must have moved by election, in a
+	// newer term, and at least one call must find its leader still leading
+	// in the term it started from: a leader that stepped down when its
+	// transfer timed out would leave no call that does.
+	kept := 0
 	for _, proto := range multiProtocols {
 		for _, surface := range leaderTransferSurfaces {
 			t.Run("stopped/"+proto.name+"/"+surface, func(t *testing.T) {
 				leader := agreedShard1Leader(t, status, nodes, replicaIDs, live, 30*time.Second)
+				term := shard1Term(t, status, nodes[leader].restPort)
 				via := live[0]
 				if via == leader {
 					via = live[1]
 				}
 				err := transferShard1Leadership(t, nodes[via], proto, surface, replicaIDs[stopped])
 				assertLeaderTransferTimeout(t, proto.name, surface, err, replicaIDs[leader], replicaIDs[stopped])
-				if got := agreedShard1Leader(t, status, nodes, replicaIDs, live, 30*time.Second); got != leader {
-					t.Fatalf("[%s/%s] leader moved to node%d after a timed-out transfer, want node%d", proto.name, surface, got+1, leader+1)
+				got := agreedShard1Leader(t, status, nodes, replicaIDs, live, 30*time.Second)
+				gotTerm := shard1Term(t, status, nodes[got].restPort)
+				switch {
+				case gotTerm == term && got != leader:
+					t.Fatalf("[%s/%s] leader moved to node%d in term %d after a timed-out transfer, want node%d: leadership moved without an election", proto.name, surface, got+1, term, leader+1)
+				case gotTerm == term:
+					kept++
+				case gotTerm < term:
+					t.Fatalf("[%s/%s] shard 1's term went from %d to %d during a timed-out transfer, want it never to go back", proto.name, surface, term, gotTerm)
+				default:
+					t.Logf("[%s/%s] an election ran during the call (term %d to %d, node%d to node%d)", proto.name, surface, term, gotTerm, leader+1, got+1)
 				}
 			})
 		}
+	}
+	if kept == 0 {
+		t.Fatalf("every timed-out transfer was followed by a new term, want a leader whose transfer times out to keep leading")
 	}
 }
 
@@ -192,6 +215,30 @@ func shard1View(t *testing.T, client *http.Client, port int) (replicaID, leaderI
 		return uint64(rid), uint64(lid), leads
 	}
 	return 0, 0, false
+}
+
+// shard1Term reads the node's /status for the term of the last leadership
+// change of shard 1 it published: on the leader, the term it was elected in.
+func shard1Term(t *testing.T, client *http.Client, port int) uint64 {
+	t.Helper()
+	status, _ := httpStatusRaw(t, client, port)
+	shards, _ := status["shards"].([]interface{})
+	for _, s := range shards {
+		shard, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, _ := shard["shard_id"].(float64); id != 1 {
+			continue
+		}
+		term, _ := shard["term"].(float64)
+		if term == 0 {
+			t.Fatalf("port %d reports no term for shard 1", port)
+		}
+		return uint64(term)
+	}
+	t.Fatalf("port %d reports no replica of shard 1", port)
+	return 0
 }
 
 // agreedShard1Leader waits up to timeout for every live node to name the same
