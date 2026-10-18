@@ -16,11 +16,10 @@ package embedded
 
 import (
 	"context"
-	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -160,30 +159,60 @@ func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Id
 	if c.transport.roleSvc == nil {
 		return nil, &MissingRoleServiceForRBACError{}
 	}
-	perms, err := c.transport.roleSvc.ResolvePermissions(ctx, identity.Roles)
+	names, err := role.EffectivePermissions(ctx, c.transport.roleSvc, identity.Roles)
 	if err != nil {
 		return nil, err
 	}
-	concrete := make(map[permission.Permission]struct{}, len(perms))
-	for _, p := range perms {
-		for _, member := range permission.Expand(p) {
-			concrete[member] = struct{}{}
-		}
-	}
-	names := make([]permission.Permission, 0, len(concrete))
-	for p := range concrete {
-		names = append(names, p)
-	}
-	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
 	out := make([]transport.PermissionInfo, len(names))
 	for i, p := range names {
-		info, err := permissionToTransport(p)
+		info, err := transport.PermissionInfoFromDomain(p)
 		if err != nil {
 			return nil, err
 		}
 		out[i] = info
 	}
 	return out, nil
+}
+
+// ListOwnPermissions returns the authenticated caller's own effective
+// permissions through role.ListOwnPermissions, the one implementation every
+// transport's handler shares: the identity is the one on ctx, never an
+// argument, and its roles resolve in its own tenant. It is IdentityGated --
+// an authenticated caller, no permission -- the floor requireIdentity
+// enforces here and permission.IdentityGated on every network transport.
+func (c *rbacClient) ListOwnPermissions(ctx context.Context) ([]transport.PermissionInfo, error) {
+	if err := c.transport.gate("RBACClient.ListOwnPermissions"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
+	if c.transport.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if c.transport.roleSvc == nil {
+		return nil, &MissingRoleServiceForRBACError{}
+	}
+	perms, err := role.ListOwnPermissions(ctx, c.transport.roleSvc)
+	if err != nil {
+		return nil, err
+	}
+	return ownPermissionsToTransport(perms), nil
+}
+
+// ownPermissionsToTransport projects role.PermissionInfo onto the SDK type;
+// the two share their field set and scope vocabulary.
+func ownPermissionsToTransport(perms []role.PermissionInfo) []transport.PermissionInfo {
+	out := make([]transport.PermissionInfo, len(perms))
+	for i, p := range perms {
+		out[i] = transport.PermissionInfo{
+			Name:     p.Name,
+			Resource: p.Resource,
+			Action:   p.Action,
+			Scope:    transport.PermissionScope(p.Scope),
+		}
+	}
+	return out
 }
 
 // RBACClient returns the embedded RBAC client projection. Implements

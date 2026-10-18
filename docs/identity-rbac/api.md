@@ -77,6 +77,8 @@ see [Status and error mapping](#status-and-error-mapping).
 | Unassign role | `POST /roles/unassign` | `UnassignRole` | `role.Unassign` | `qrdb_role_unassign` | `UnassignRole` | `roles:unassign` |
 | List permissions | `GET /permissions` | `ListPermissions` | `role.ListPermissions` | `qrdb_permissions_list` | `Client.Permissions()` | `permissions:list` |
 | Resolve role permissions | `POST /roles/resolve-permissions` | `ResolveRolePermissions` | `role.ResolvePermissions` | `qrdb_permissions_resolve` | `ResolvePermissions` | `permissions:resolve` |
+| List own effective permissions | `GET /permissions/own` | `ListOwnPermissions` | `role.ListOwnPermissions` | `qrdb_permissions_own` | `Client.RBAC().ListOwnPermissions` | identity-gated |
+| Authorize an identity | `POST /permissions/authorize` | `Authorize` | `role.Authorize` | `qrdb_permissions_authorize` | `Client.RBAC().Authorize` | identity-gated; `permissions:resolve` for another identity |
 | Reconcile built-in roles | `POST /roles/reconcile` | `ReconcileBuiltInRoles` | `role.ReconcileBuiltIn` | `qrdb_role_reconcile_builtin` | `ReconcileBuiltInRoles` | `roles:create` |
 
 The four route, method and tool names above the reconcile row were corrected
@@ -90,6 +92,30 @@ the grant needed to repair that exact absence.
 `Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
 does not implement the corresponding provider. Nil-check them; the nil is not
 an error value.
+
+**Own permissions and Authorize are identity-gated.** Any authenticated
+caller may list its own effective permissions and ask whether it may perform
+an action: neither needs a grant of its own, because the answer is about the
+caller. The own-permissions answer is the caller's roles resolved and every
+wildcard expanded, deduplicated and sorted, with each entry's scope:
+
+```json
+{"permissions": [{"name": "kv:get", "resource": "kv", "action": "get", "scope": "self"}]}
+```
+
+Authorize takes `{"identity": {"subject", "tenant_id", "roles"}, "resource",
+"action"}` and answers `{"allowed": bool, "reason": string}`. An omitted
+identity, or the caller's own, is evaluated directly; any other identity needs
+`permissions:resolve` in that identity's tenant.
+
+`Client.RBAC()` is non-nil on every transport. The REST, gRPC, Unix, QUIC and
+MCP transports implement it over these endpoints, and the embedded transport
+in process. `RBACClient.Authorize` returns nil when the action is allowed and
+an `*transport.AuthorizationDeniedError` carrying the server's reason when it
+is not; that error matches `auth.ErrUnauthorized` under `errors.Is`.
+`RBACClient.ListPermissions(identity)` resolves the identity's roles through
+the resolve-permissions endpoint, so it needs `permissions:resolve`, and
+expands them the same way the own-permissions answer is expanded.
 
 ## Authentication
 

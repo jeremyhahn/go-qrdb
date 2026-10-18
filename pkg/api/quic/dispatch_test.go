@@ -161,6 +161,8 @@ var expectedMethods = []string{
 	"role.Unassign",
 	"role.ListPermissions",
 	"role.ResolvePermissions",
+	"role.ListOwnPermissions",
+	"role.Authorize",
 	"role.ReconcileBuiltIn",
 
 	// Certificate management (4)
@@ -275,6 +277,10 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 198 = 197 + role.Authorize, the server-side Authorize decision,
+	// identity-gated with permissions:resolve for another identity.
+	// 197 = 196 + role.ListOwnPermissions, the authenticated caller's own
+	// effective permissions, identity-gated (docs/identity-rbac).
 	// 196 = 195 + admin.TransferLeadership, handing a shard's leadership to a
 	// named voter and waiting until it leads (docs/clustering).
 	// 195 = 194 + cert.Delegate, a tenant-issued delegation certificate for a
@@ -342,7 +348,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 196
+	const wantCount = 198
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -443,7 +449,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"ts":       10,
 		"vector":   20,
 		"user":     12,
-		"role":     11,
+		"role":     13,
 		"cert":     5,
 		"barrier":  21,
 		"ceremony": 3,

@@ -705,6 +705,24 @@ service QRDBService {
         option (qrdb.v1.permission) = "permissions:resolve";
     }
 
+    // ListOwnPermissions returns the authenticated caller's own effective
+    // permissions, resolved from its role bindings in its own tenant. The
+    // identity is the authenticated one, never a request field, so the RPC
+    // needs authentication only: identity:gated, no permission of its own.
+    rpc ListOwnPermissions(google.protobuf.Empty) returns (ListOwnPermissionsResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // Authorize answers whether an identity may perform an action on a
+    // resource in the targeted tenant, decided by the server's auth chain.
+    // Asking about the caller (no identity, or the caller's own subject and
+    // tenant) needs authentication only: identity:gated. Asking about
+    // another identity needs permissions:resolve in that identity's tenant,
+    // which the handler enforces.
+    rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
     // ReconcileBuiltInRoles converges a tenant's stored built-in roles onto
     // this build's definitions. It carries roles:create rather than a
     // permission of its own: reconciliation IS the seeding operation applied
@@ -3169,6 +3187,49 @@ message PermissionCategory {
 // ListPermissionsResponse holds all permission categories.
 message ListPermissionsResponse {
     repeated PermissionCategory categories = 1;
+}
+
+// OwnPermission is one of the caller's effective permissions.
+message OwnPermission {
+    // name is the permission in "resource:action" form.
+    string name = 1;
+    // resource is the portion before the colon.
+    string resource = 2;
+    // action is the portion after the colon.
+    string action = 3;
+    // scope is the permission's declared tenancy reach: "self", "cross",
+    // "tenant-only" or "self-strict".
+    string scope = 4;
+}
+
+// ListOwnPermissionsResponse holds the caller's effective permissions,
+// sorted and deduplicated.
+message ListOwnPermissionsResponse {
+    repeated OwnPermission permissions = 1;
+}
+
+// AuthorizeIdentity names the identity an Authorize request evaluates. Only
+// its subject, tenant and roles cross the wire: metadata is set by
+// authentication alone and is never taken from a request.
+message AuthorizeIdentity {
+    string subject = 1;
+    string tenant_id = 2;
+    repeated string roles = 3;
+}
+
+// AuthorizeRequest asks whether identity may perform action on resource.
+// An absent identity is the caller.
+message AuthorizeRequest {
+    AuthorizeIdentity identity = 1;
+    string resource = 2;
+    string action = 3;
+}
+
+// AuthorizeResponse is the decision, with the denial's reason when it is not
+// allowed.
+message AuthorizeResponse {
+    bool allowed = 1;
+    string reason = 2;
 }
 
 // ===========================================================================

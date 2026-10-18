@@ -279,6 +279,18 @@ qrdb roles resolve-permissions "$ROLE_A" "$ROLE_B"
 Use this to answer "what would this user actually be able to do" before
 assigning.
 
+### `qrdb roles own-permissions`
+
+List the caller's own effective permissions: its roles resolved, wildcards
+expanded, one row per concrete permission with its scope (`NAME`,
+`RESOURCE`, `ACTION`, `SCOPE`). No flags and no arguments; it answers only
+for the authenticated caller, so it needs no grant. Works over every
+transport.
+
+```bash
+qrdb roles own-permissions --output json
+```
+
 ### `qrdb roles reconcile`
 
 Converge a tenant's **built-in** roles onto this build's definitions: add the

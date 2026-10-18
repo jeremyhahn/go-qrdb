@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -481,6 +482,84 @@ func (s *Server) handleResolvePermissions(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, resolvePermissionsResponse{Permissions: out})
+}
+
+// listOwnPermissionsResponse is the JSON body of GET /permissions/own.
+type listOwnPermissionsResponse struct {
+	Permissions []role.PermissionInfo `json:"permissions"`
+}
+
+// handleListOwnPermissions handles GET /permissions/own -- the authenticated
+// caller's own effective permissions. The identity comes from the request
+// context only; the route is identity-gated, so any authenticated caller may
+// read its own grants and no one else's.
+func (s *Server) handleListOwnPermissions(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, listOwnPermissionsResponse{Permissions: perms})
+}
+
+// authorizeRequest is the JSON body of POST /permissions/authorize. Identity
+// names the identity to evaluate; absent, it is the caller. Only its
+// subject, tenant and roles cross the wire: metadata is set by
+// authentication alone and is never taken from a request.
+type authorizeRequest struct {
+	Identity *authorizeIdentity `json:"identity,omitempty"`
+	Resource string             `json:"resource"`
+	Action   string             `json:"action"`
+}
+
+// authorizeIdentity is the wire form of the identity an Authorize request
+// evaluates.
+type authorizeIdentity struct {
+	Subject  string   `json:"subject"`
+	TenantID string   `json:"tenant_id"`
+	Roles    []string `json:"roles,omitempty"`
+}
+
+// authorizeResponse is the JSON body of POST /permissions/authorize: the
+// decision, with the denial's reason when it is not allowed.
+type authorizeResponse struct {
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// handleAuthorize handles POST /permissions/authorize -- whether an identity
+// may perform an action on a resource, decided by the server's auth chain
+// through AuthMiddleware.EvaluateAuthorization. Asking about the caller
+// needs authentication only; asking about another identity needs
+// permissions:resolve in that identity's tenant, which the evaluator
+// enforces.
+func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	var req authorizeRequest
+	if !decodeIAMRequest(w, r, &req) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	var target *auth.Identity
+	if req.Identity != nil {
+		target = &auth.Identity{Subject: req.Identity.Subject, TenantID: req.Identity.TenantID, Roles: req.Identity.Roles}
+	}
+	decision, err := s.authMW.EvaluateAuthorization(ctx, target, req.Resource, req.Action)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	resp := authorizeResponse{Allowed: decision == nil}
+	if decision != nil {
+		resp.Reason = decision.Error()
+	}
+	writeJSON(w, resp)
 }
 
 // handleReconcileRoles handles POST /roles/reconcile -- converges the

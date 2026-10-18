@@ -46,8 +46,8 @@ type PermissionProvider interface {
 }
 
 // RBACProvider yields an RBACClient. The embedded transport implements
-// this; non-embedded transports return a notImpl wrapper until Phase 4
-// lands.
+// it in process; every network transport (rest, grpc, unix, quic, mcp)
+// implements it through NewRemoteRBACClient over the server's endpoints.
 type RBACProvider interface {
 	RBACClient() RBACClient
 }

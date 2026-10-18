@@ -47,7 +47,9 @@ var subClientTargetResolvedOperations = map[string]struct{}{
 
 // subClientIdentityGatedOperations are sub-client methods requiring an
 // authenticated caller but no specific permission.
-var subClientIdentityGatedOperations = map[string]struct{}{}
+var subClientIdentityGatedOperations = map[string]struct{}{
+	"RBACClient.ListOwnPermissions": {},
+}
 
 // subClientPublicOperations are sub-client methods reachable with no
 // identity at all:

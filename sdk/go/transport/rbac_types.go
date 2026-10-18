@@ -80,4 +80,11 @@ type RBACClient interface {
 	// UI wants to show "what you can do here" versus "what you can do at
 	// all".
 	ListPermissions(ctx context.Context, identity *Identity) ([]PermissionInfo, error)
+
+	// ListOwnPermissions returns the authenticated caller's own effective
+	// permissions, each with its scope, sorted by name. The identity is the
+	// one the request authenticated as, never a parameter, and its roles
+	// are resolved in its own tenant. It needs authentication only, no
+	// permission; an unauthenticated caller is refused.
+	ListOwnPermissions(ctx context.Context) ([]PermissionInfo, error)
 }

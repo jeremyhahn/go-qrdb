@@ -148,6 +148,8 @@ const (
 	QRDBService_UnassignRole_FullMethodName                      = "/qrdb.v1.QRDBService/UnassignRole"
 	QRDBService_ListPermissions_FullMethodName                   = "/qrdb.v1.QRDBService/ListPermissions"
 	QRDBService_ResolveRolePermissions_FullMethodName            = "/qrdb.v1.QRDBService/ResolveRolePermissions"
+	QRDBService_ListOwnPermissions_FullMethodName                = "/qrdb.v1.QRDBService/ListOwnPermissions"
+	QRDBService_Authorize_FullMethodName                         = "/qrdb.v1.QRDBService/Authorize"
 	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
 	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
 	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
@@ -562,6 +564,18 @@ type QRDBServiceClient interface {
 	// ResolveRolePermissions returns the union of effective permissions
 	// for the given role IDs (sorted, deduplicated).
 	ResolveRolePermissions(ctx context.Context, in *ResolveRolePermissionsRequest, opts ...grpc.CallOption) (*ResolveRolePermissionsResponse, error)
+	// ListOwnPermissions returns the authenticated caller's own effective
+	// permissions, resolved from its role bindings in its own tenant. The
+	// identity is the authenticated one, never a request field, so the RPC
+	// needs authentication only: identity:gated, no permission of its own.
+	ListOwnPermissions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListOwnPermissionsResponse, error)
+	// Authorize answers whether an identity may perform an action on a
+	// resource in the targeted tenant, decided by the server's auth chain.
+	// Asking about the caller (no identity, or the caller's own subject and
+	// tenant) needs authentication only: identity:gated. Asking about
+	// another identity needs permissions:resolve in that identity's tenant,
+	// which the handler enforces.
+	Authorize(ctx context.Context, in *AuthorizeRequest, opts ...grpc.CallOption) (*AuthorizeResponse, error)
 	// ReconcileBuiltInRoles converges a tenant's stored built-in roles onto
 	// this build's definitions. It carries roles:create rather than a
 	// permission of its own: reconciliation IS the seeding operation applied
@@ -2043,6 +2057,26 @@ func (c *qRDBServiceClient) ResolveRolePermissions(ctx context.Context, in *Reso
 	return out, nil
 }
 
+func (c *qRDBServiceClient) ListOwnPermissions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListOwnPermissionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOwnPermissionsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListOwnPermissions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Authorize(ctx context.Context, in *AuthorizeRequest, opts ...grpc.CallOption) (*AuthorizeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuthorizeResponse)
+	err := c.cc.Invoke(ctx, QRDBService_Authorize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) ReconcileBuiltInRoles(ctx context.Context, in *ReconcileBuiltInRolesRequest, opts ...grpc.CallOption) (*ReconcileBuiltInRolesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReconcileBuiltInRolesResponse)
@@ -3517,6 +3551,18 @@ type QRDBServiceServer interface {
 	// ResolveRolePermissions returns the union of effective permissions
 	// for the given role IDs (sorted, deduplicated).
 	ResolveRolePermissions(context.Context, *ResolveRolePermissionsRequest) (*ResolveRolePermissionsResponse, error)
+	// ListOwnPermissions returns the authenticated caller's own effective
+	// permissions, resolved from its role bindings in its own tenant. The
+	// identity is the authenticated one, never a request field, so the RPC
+	// needs authentication only: identity:gated, no permission of its own.
+	ListOwnPermissions(context.Context, *emptypb.Empty) (*ListOwnPermissionsResponse, error)
+	// Authorize answers whether an identity may perform an action on a
+	// resource in the targeted tenant, decided by the server's auth chain.
+	// Asking about the caller (no identity, or the caller's own subject and
+	// tenant) needs authentication only: identity:gated. Asking about
+	// another identity needs permissions:resolve in that identity's tenant,
+	// which the handler enforces.
+	Authorize(context.Context, *AuthorizeRequest) (*AuthorizeResponse, error)
 	// ReconcileBuiltInRoles converges a tenant's stored built-in roles onto
 	// this build's definitions. It carries roles:create rather than a
 	// permission of its own: reconciliation IS the seeding operation applied
@@ -4190,6 +4236,12 @@ func (UnimplementedQRDBServiceServer) ListPermissions(context.Context, *emptypb.
 }
 func (UnimplementedQRDBServiceServer) ResolveRolePermissions(context.Context, *ResolveRolePermissionsRequest) (*ResolveRolePermissionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveRolePermissions not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListOwnPermissions(context.Context, *emptypb.Empty) (*ListOwnPermissionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListOwnPermissions not implemented")
+}
+func (UnimplementedQRDBServiceServer) Authorize(context.Context, *AuthorizeRequest) (*AuthorizeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Authorize not implemented")
 }
 func (UnimplementedQRDBServiceServer) ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRoles not implemented")
@@ -6607,6 +6659,42 @@ func _QRDBService_ResolveRolePermissions_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).ResolveRolePermissions(ctx, req.(*ResolveRolePermissionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListOwnPermissions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListOwnPermissions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListOwnPermissions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListOwnPermissions(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Authorize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AuthorizeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Authorize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Authorize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Authorize(ctx, req.(*AuthorizeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -9193,6 +9281,14 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveRolePermissions",
 			Handler:    _QRDBService_ResolveRolePermissions_Handler,
+		},
+		{
+			MethodName: "ListOwnPermissions",
+			Handler:    _QRDBService_ListOwnPermissions_Handler,
+		},
+		{
+			MethodName: "Authorize",
+			Handler:    _QRDBService_Authorize_Handler,
 		},
 		{
 			MethodName: "ReconcileBuiltInRoles",

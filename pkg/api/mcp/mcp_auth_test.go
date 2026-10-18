@@ -1650,6 +1650,8 @@ func TestRoleTools_Registration(t *testing.T) {
 		"qrdb_role_unassign",
 		"qrdb_permissions_list",
 		"qrdb_permissions_resolve",
+		"qrdb_permissions_own",
+		"qrdb_permissions_authorize",
 		"qrdb_role_reconcile_builtin",
 	}
 

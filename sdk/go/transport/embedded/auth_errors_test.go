@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -63,48 +62,6 @@ func TestPermissionClient_LookupScope_ClosedTransport(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Errorf("expected *transport.ClosedError, got %T", err)
-	}
-}
-
-// scopeFromDomain maps every defined scope to its own SDK value. The
-// tenant-only case is the one that matters: it used to fall into a default
-// branch and cross the boundary as "self".
-func TestScopeFromDomain_EveryDefinedScope(t *testing.T) {
-	cases := []struct {
-		in   permission.Scope
-		want transport.PermissionScope
-	}{
-		{permission.ScopeSelf, transport.PermissionScopeSelf},
-		{permission.ScopeCross, transport.PermissionScopeCross},
-		{permission.ScopeTenantOnly, transport.PermissionScopeTenantOnly},
-		{permission.ScopeSelfStrict, transport.PermissionScopeSelfStrict},
-	}
-	for _, tc := range cases {
-		got, err := scopeFromDomain(tc.in)
-		if err != nil {
-			t.Fatalf("scopeFromDomain(%s): unexpected error: %v", tc.in, err)
-		}
-		if got != tc.want {
-			t.Errorf("scopeFromDomain(%s) = %q, want %q", tc.in, got, tc.want)
-		}
-		if string(got) != tc.in.String() {
-			t.Errorf("SDK label %q must equal the domain label %q", got, tc.in)
-		}
-	}
-}
-
-// An out-of-range Scope is an error, not PermissionScopeSelf.
-func TestScopeFromDomain_UnknownIsAnError(t *testing.T) {
-	got, err := scopeFromDomain(99)
-	if err == nil {
-		t.Fatalf("expected an error for an undefined scope, got %q", got)
-	}
-	var invalid *permission.InvalidScopeError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("expected *permission.InvalidScopeError, got %T: %v", err, err)
-	}
-	if got != "" {
-		t.Errorf("scope must be zero on error, got %q", got)
 	}
 }
 

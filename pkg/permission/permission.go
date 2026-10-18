@@ -178,6 +178,23 @@ func Expand(p Permission) []Permission {
 	return out
 }
 
+// ExpandAll returns the concrete permissions perms cover: each one passed
+// through Expand, deduplicated and sorted by name.
+func ExpandAll(perms []Permission) []Permission {
+	concrete := make(map[Permission]struct{}, len(perms))
+	for _, p := range perms {
+		for _, member := range Expand(p) {
+			concrete[member] = struct{}{}
+		}
+	}
+	out := make([]Permission, 0, len(concrete))
+	for p := range concrete {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 // Parse validates a raw string and returns the corresponding Permission.
 // It returns an InvalidPermissionError if the string does not contain
 // exactly one colon separating a non-empty resource and a non-empty action.

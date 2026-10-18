@@ -65,7 +65,11 @@ import (
 //     review's item 6) -- QUIC itself declares permission.IdentityGated for
 //     these, and the embedded transport enforces the identical floor via
 //     requireIdentity, verified by claim_quorum_identity_gated_test.go, not
-//     by this table.
+//     by this table. role.ListOwnPermissions is identity-gated the same way:
+//     the embedded RBACClient.ListOwnPermissions refuses a caller without an
+//     identity inside role.ListOwnPermissions itself. role.Authorize too:
+//     the server evaluator requires permissions:resolve for another
+//     identity, and the embedded RBACClient.Authorize is in-process.
 //   - "target-resolved": the verb's embedded equivalent authorizes against
 //     a target named IN the request (a user, role, tenant or certificate
 //     serial) via authorizeUserTarget / authorizeRoleTarget /
@@ -310,6 +314,8 @@ var quicMethodExclusions = map[string]string{
 	"role.Get":                           "target-resolved",
 	"role.GetByName":                     "target-resolved",
 	"role.List":                          "target-resolved",
+	"role.ListOwnPermissions":            "identity-gated",
+	"role.Authorize":                     "identity-gated",
 	"role.ReconcileBuiltIn":              "target-resolved",
 	"role.Unassign":                      "target-resolved",
 	"role.Update":                        "target-resolved",

@@ -261,6 +261,12 @@ func (s *Server) buildHandlers() {
 	s.handle("role.Unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.handle("role.ListPermissions", permission.PermissionsList, s.handleListPermissions)
 	s.handle("role.ResolvePermissions", permission.PermissionsResolve, s.handleResolvePermissions)
+	// The caller's own grants need authentication only: the identity is the
+	// authenticated one, never a payload field.
+	s.handle("role.ListOwnPermissions", permission.IdentityGated, s.handleListOwnPermissions)
+	// Asking about the caller needs authentication only; asking about
+	// another identity is gated in the evaluator by permissions:resolve.
+	s.handle("role.Authorize", permission.IdentityGated, s.handleAuthorize)
 	// roles:create, not a verb of its own — see the REST route comment: a
 	// dedicated permission would be missing from every role seeded before it
 	// existed, so nobody could hold the grant needed to repair that absence.

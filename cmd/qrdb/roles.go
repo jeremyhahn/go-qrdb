@@ -44,6 +44,7 @@ func newRolesCmd() *cobra.Command {
 		newRolesUnassignCmd(),
 		newRolesPermissionsCmd(),
 		newRolesResolvePermissionsCmd(),
+		newRolesOwnPermissionsCmd(),
 		newRolesReconcileCmd(),
 	)
 
@@ -366,6 +367,57 @@ func newRolesResolvePermissionsCmd() *cobra.Command {
 			}
 		},
 	}
+}
+
+// ownPermissionsOutput is the json/yaml shape of roles own-permissions,
+// the same document the server's own-permissions endpoint returns.
+type ownPermissionsOutput struct {
+	Permissions []transport.PermissionInfo `json:"permissions" yaml:"permissions"`
+}
+
+func newRolesOwnPermissionsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "own-permissions",
+		Short: "List the authenticated caller's own effective permissions",
+		Long: "List the concrete permissions the authenticated caller holds, with wildcard grants " +
+			"expanded and each permission's tenancy scope. The server answers for the caller " +
+			"only, so no permission beyond authentication is needed.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			rc := client.RBAC()
+			if rc == nil {
+				return &RBACClientUnavailableError{}
+			}
+			perms, err := rc.ListOwnPermissions(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(ownPermissionsOutput{Permissions: perms})
+			case "yaml":
+				return printYAML(ownPermissionsOutput{Permissions: perms})
+			default:
+				rows := make([][]string, len(perms))
+				for i, p := range perms {
+					rows[i] = []string{p.Name, p.Resource, p.Action, string(p.Scope)}
+				}
+				printTable([]string{"NAME", "RESOURCE", "ACTION", "SCOPE"}, rows)
+				return nil
+			}
+		},
+	}
+}
+
+// RBACClientUnavailableError is returned when the active connection does
+// not expose an RBAC client (its transport does not implement
+// transport.RBACProvider).
+type RBACClientUnavailableError struct{}
+
+// Error returns a human-readable description.
+func (e *RBACClientUnavailableError) Error() string {
+	return "qrdb: roles: no RBAC client available on the active connection"
 }
 
 // newRolesReconcileCmd creates the "roles reconcile" subcommand, which

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -246,6 +247,87 @@ func (s *Server) handleResolvePermissions(ctx context.Context, payload []byte) (
 	}
 
 	data, err := json.Marshal(resolvePermissionsWireResponse{Permissions: out})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return data, nil
+}
+
+// listOwnPermissionsWireResponse is the payload of role.ListOwnPermissions.
+type listOwnPermissionsWireResponse struct {
+	Permissions []role.PermissionInfo `json:"permissions"`
+}
+
+// handleListOwnPermissions returns the authenticated caller's own effective
+// permissions. The identity comes from ctx only and the request payload is
+// ignored; the op is identity-gated, so any authenticated caller may read its
+// own grants and no one else's.
+func (s *Server) handleListOwnPermissions(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.roleSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "role"}
+	}
+
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(listOwnPermissionsWireResponse{Permissions: perms})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return data, nil
+}
+
+// authorizeWireRequest is the payload of role.Authorize. Identity names the
+// identity to evaluate; absent, it is the caller. Only its subject, tenant
+// and roles cross the wire: metadata is set by authentication alone and is
+// never taken from a request.
+type authorizeWireRequest struct {
+	Identity *authorizeWireIdentity `json:"identity,omitempty"`
+	Resource string                 `json:"resource"`
+	Action   string                 `json:"action"`
+}
+
+// authorizeWireIdentity is the wire form of the identity role.Authorize
+// evaluates.
+type authorizeWireIdentity struct {
+	Subject  string   `json:"subject"`
+	TenantID string   `json:"tenant_id"`
+	Roles    []string `json:"roles,omitempty"`
+}
+
+// authorizeWireResponse is the payload role.Authorize returns: the decision,
+// with the denial's reason when it is not allowed.
+type authorizeWireResponse struct {
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// handleAuthorize answers whether an identity may perform an action on a
+// resource, decided by the server's auth chain through
+// AuthMiddleware.EvaluateAuthorization. Asking about the caller needs
+// authentication only; asking about another identity needs
+// permissions:resolve in that identity's tenant, which the evaluator
+// enforces.
+func (s *Server) handleAuthorize(ctx context.Context, payload []byte) ([]byte, error) {
+	var req authorizeWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	var target *auth.Identity
+	if req.Identity != nil {
+		target = &auth.Identity{Subject: req.Identity.Subject, TenantID: req.Identity.TenantID, Roles: req.Identity.Roles}
+	}
+	decision, err := s.authMW.EvaluateAuthorization(ctx, target, req.Resource, req.Action)
+	if err != nil {
+		return nil, err
+	}
+	resp := authorizeWireResponse{Allowed: decision == nil}
+	if decision != nil {
+		resp.Reason = decision.Error()
+	}
+	data, err := json.Marshal(resp)
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

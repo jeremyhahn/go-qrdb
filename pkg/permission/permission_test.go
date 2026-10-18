@@ -757,3 +757,22 @@ func TestExpand_NeverReturnsARegisteredWildcard(t *testing.T) {
 		}
 	}
 }
+
+func TestExpandAll_UnionIsDeduplicatedAndSorted(t *testing.T) {
+	family := ByResource("objstore")
+	if len(family) == 0 {
+		t.Fatal("objstore family is empty; nothing to expand")
+	}
+	got := ExpandAll([]Permission{PermissionsResolve, ObjStoreAll, family[0], PermissionsResolve})
+	want := append(Expand(ObjStoreAll), PermissionsResolve)
+	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+	if !slices.Equal(got, want) {
+		t.Fatalf("ExpandAll = %v, want %v", got, want)
+	}
+}
+
+func TestExpandAll_EmptyIsEmpty(t *testing.T) {
+	if got := ExpandAll(nil); len(got) != 0 {
+		t.Fatalf("ExpandAll(nil) = %v, want empty", got)
+	}
+}

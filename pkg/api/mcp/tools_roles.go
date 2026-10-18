@@ -21,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -81,6 +82,22 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			Tool:    toolPermissionsResolve(),
 			Perm:    permission.PermissionsResolve,
 			Handler: handlePermissionsResolve(roleSvc),
+		},
+		{
+			Tool: toolPermissionsOwn(),
+			// Authentication only: every authenticated caller may read its
+			// own effective permissions, which role.ListOwnPermissions
+			// resolves in the caller's own tenant.
+			Perm:    permission.IdentityGated,
+			Handler: handlePermissionsOwn(roleSvc),
+		},
+		{
+			Tool: toolPermissionsAuthorize(),
+			// Authentication only for the caller's own question; another
+			// identity needs permissions:resolve in its tenant, which
+			// AuthMiddleware.EvaluateAuthorization enforces.
+			Perm:    permission.IdentityGated,
+			Handler: handlePermissionsAuthorize(authMW),
 		},
 		{
 			Tool: toolRoleReconcile(),
@@ -552,6 +569,89 @@ func handlePermissionsResolve(roleSvc role.RoleServicer) mcpserver.ToolHandlerFu
 
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+// toolPermissionsOwn defines the qrdb_permissions_own tool schema.
+func toolPermissionsOwn() mcp.Tool {
+	return mcp.NewTool("qrdb_permissions_own",
+		mcp.WithDescription("List the authenticated caller's own effective permissions, resolved in the caller's own tenant."),
+	)
+}
+
+// handlePermissionsOwn returns a tool handler that delegates to
+// role.ListOwnPermissions.
+func handlePermissionsOwn(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		perms, err := role.ListOwnPermissions(ctx, roleSvc)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_own", Err: err}
+		}
+		data, err := json.Marshal(map[string][]role.PermissionInfo{"permissions": perms})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_own", Err: err}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolPermissionsAuthorize defines the qrdb_permissions_authorize tool
+// schema.
+func toolPermissionsAuthorize() mcp.Tool {
+	return mcp.NewTool("qrdb_permissions_authorize",
+		mcp.WithDescription("Decide whether an identity may perform an action on a resource, through the server's auth chain. Without subject and tenant_id the identity is the caller; another identity needs permissions:resolve in its tenant."),
+		mcp.WithString("resource",
+			mcp.Required(),
+			mcp.Description(`The resource, e.g. "kv".`),
+		),
+		mcp.WithString("action",
+			mcp.Required(),
+			mcp.Description(`The action, e.g. "get".`),
+		),
+		mcp.WithString("subject",
+			mcp.Description("The subject of the identity to evaluate. Defaults to the caller when subject and tenant_id are empty."),
+		),
+		mcp.WithString("tenant_id",
+			mcp.Description("The tenant of the identity to evaluate."),
+		),
+		mcp.WithString("roles",
+			mcp.Description("Comma-separated role IDs of the identity to evaluate."),
+		),
+	)
+}
+
+// handlePermissionsAuthorize returns a tool handler that answers through
+// AuthMiddleware.EvaluateAuthorization: allowed, or denied with the reason.
+// Asking about another identity needs permissions:resolve in that
+// identity's tenant, which the evaluator enforces.
+func handlePermissionsAuthorize(authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var target *auth.Identity
+		subject := mcp.ParseString(req, "subject", "")
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if subject != "" || tenantID != "" {
+			target = &auth.Identity{Subject: subject, TenantID: tenantID, Roles: parseCSV(mcp.ParseString(req, "roles", ""))}
+		}
+		decision, err := authMW.EvaluateAuthorization(ctx, target, mcp.ParseString(req, "resource", ""), mcp.ParseString(req, "action", ""))
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_authorize", Err: err}
+		}
+		resp := authorizeResult{Allowed: decision == nil}
+		if decision != nil {
+			resp.Reason = decision.Error()
+		}
+		data, err := json.Marshal(resp)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_authorize", Err: err}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// authorizeResult is the JSON text qrdb_permissions_authorize returns: the
+// decision, with the denial's reason when it is not allowed.
+type authorizeResult struct {
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // parsePermissions splits a comma-separated string of permissions and

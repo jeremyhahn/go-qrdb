@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -518,6 +519,54 @@ func (s *qrdbServiceServer) ResolveRolePermissions(ctx context.Context, req *pb.
 	}
 
 	return &pb.ResolveRolePermissionsResponse{Permissions: out}, nil
+}
+
+// ListOwnPermissions returns the authenticated caller's own effective
+// permissions. The identity comes from ctx only; the RPC is identity-gated, so
+// any authenticated caller may read its own grants and no one else's.
+func (s *qrdbServiceServer) ListOwnPermissions(ctx context.Context, _ *emptypb.Empty) (*pb.ListOwnPermissionsResponse, error) {
+	if s.roleSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
+	}
+
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	out := make([]*pb.OwnPermission, len(perms))
+	for i, p := range perms {
+		out[i] = &pb.OwnPermission{
+			Name:     p.Name,
+			Resource: p.Resource,
+			Action:   p.Action,
+			Scope:    p.Scope,
+		}
+	}
+
+	return &pb.ListOwnPermissionsResponse{Permissions: out}, nil
+}
+
+// Authorize answers whether an identity may perform an action on a resource,
+// decided by the server's auth chain through
+// AuthMiddleware.EvaluateAuthorization. Asking about the caller needs
+// authentication only; asking about another identity needs
+// permissions:resolve in that identity's tenant, which the evaluator
+// enforces.
+func (s *qrdbServiceServer) Authorize(ctx context.Context, req *pb.AuthorizeRequest) (*pb.AuthorizeResponse, error) {
+	var target *auth.Identity
+	if id := req.GetIdentity(); id != nil {
+		target = &auth.Identity{Subject: id.GetSubject(), TenantID: id.GetTenantId(), Roles: id.GetRoles()}
+	}
+	decision, err := s.authMW.EvaluateAuthorization(ctx, target, req.GetResource(), req.GetAction())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	resp := &pb.AuthorizeResponse{Allowed: decision == nil}
+	if decision != nil {
+		resp.Reason = decision.Error()
+	}
+	return resp, nil
 }
 
 // ReconcileBuiltInRoles converges a tenant's stored built-in roles onto this

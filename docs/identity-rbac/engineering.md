@@ -1113,7 +1113,21 @@ check a login flow performs). `VolumePoolClient`/`PermissionClient` and
 of `operationPermissions` does. `RBACClient.Authorize` stays unauthorized
 on purpose: it decides about an explicit identity ARGUMENT, never the
 ambient caller, so it is a policy-evaluation primitive, not an
-authorization checkpoint of its own.
+authorization checkpoint of its own. On the network transports the server
+makes that decision instead: `role.Authorize` and its siblings are
+identity-gated, and evaluating an identity other than the caller needs
+`permissions:resolve` in its tenant.
+
+**The network `RBACClient` has one implementation.**
+`transport.NewRemoteRBACClient` (`sdk/go/transport/rbac_remote.go`) is built
+over the small `transport.RBACEndpoints` seam (`ResolvePermissions`,
+`ListOwnPermissions`, `EvaluateAuthorization`). Each of REST, gRPC, Unix,
+QUIC and MCP supplies only that seam's wire calls, in its
+`transport_rbac.go`. A denial becomes `*transport.AuthorizationDeniedError`,
+which unwraps to `auth.ErrUnauthorized`. `ListPermissions(identity)` reuses
+the resolve-permissions endpoint behind its unchanged `permissions:resolve`
+guard. Wildcard expansion lives in `permission.ExpandAll`, the one rule the
+server's own-permissions answer and the client's `ListPermissions` share.
 `transport_authz_subclients_test.go`'s
 `TestSubClientAuthorizationSurface_CoversEveryMethod` reflects over each
 sub-client's own concrete type the same way the `*Transport` gate does, so
