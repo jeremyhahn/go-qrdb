@@ -52,7 +52,7 @@ require (
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/viterin/vek v0.4.3
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	github.com/wailsapp/wails/v2 v2.16.0
+	github.com/wailsapp/wails/v2 v2.17.0
 	github.com/x448/float16 v0.8.4
 	go.etcd.io/etcd/api/v3 v3.7.2
 	go.etcd.io/etcd/client/v3 v3.7.2
@@ -136,7 +136,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
 	github.com/getsentry/sentry-go v0.43.0 // indirect
 	github.com/gin-contrib/sse v1.1.1 // indirect
 	github.com/gin-gonic/gin v1.12.0 // indirect
@@ -216,7 +216,6 @@ require (
 	github.com/viterin/partial v1.1.0 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wailsapp/go-webview2 v1.0.23 // indirect
-	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.7.2 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.8.0 // indirect
