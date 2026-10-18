@@ -1211,11 +1211,14 @@ func TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget(t *testing.T) {
 }
 
 // failThenStallUsers fails its first CreateUser with err and stalls every
-// later one until its context ends.
+// later one until its context ends. onStall, when set, runs as a call starts
+// to stall, so a test can end the context at that point rather than at a
+// wall-clock instant.
 type failThenStallUsers struct {
 	*fakeUsers
-	err   error
-	calls int
+	err     error
+	calls   int
+	onStall func()
 }
 
 func (s *failThenStallUsers) CreateUser(ctx context.Context, _ *user.CreateUserRequest) (*user.User, error) {
@@ -1223,23 +1226,58 @@ func (s *failThenStallUsers) CreateUser(ctx context.Context, _ *user.CreateUserR
 	if s.calls == 1 {
 		return nil, s.err
 	}
+	if s.onStall != nil {
+		s.onStall()
+	}
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
+// expiringContext is a context whose deadline passes when expire is called
+// rather than at a wall-clock instant: from then on it is done and reports
+// context.DeadlineExceeded, as a context past its deadline does. It carries
+// no values and no Deadline, so a timeout derived from it keeps its own.
+type expiringContext struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpiringContext() *expiringContext {
+	return &expiringContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *expiringContext) expire() { c.once.Do(func() { close(c.done) }) }
+
+func (c *expiringContext) Done() <-chan struct{} { return c.done }
+
+func (c *expiringContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 // TestCompletePendingTenantAdminWithin_BudgetCutOffKeepsTheCause proves that
 // when the budget runs out part-way through an attempt, the error returned is
-// the one that kept the admin pending, not the cut-off: the attempt bound
-// outlasts the budget, so the second attempt is ended by the budget alone.
+// the one that kept the admin pending, not the cut-off. The deadline the
+// budget runs under passes once the second attempt has started, by ordering
+// rather than by a race against a short wall clock: the budget's context is
+// derived from the caller's, which expires as that attempt starts to stall,
+// and the budget and the attempt bound both outlast the test, so the second
+// attempt is ended by that deadline alone.
 func TestCompletePendingTenantAdminWithin_BudgetCutOffKeepsTheCause(t *testing.T) {
 	boom := errors.New("boom")
-	users := &failThenStallUsers{fakeUsers: &fakeUsers{}, err: boom}
+	ctx := newExpiringContext()
+	users := &failThenStallUsers{fakeUsers: &fakeUsers{}, err: boom, onStall: ctx.expire}
 	_, deps, _ := provisionAutoUnsealTenant(t, users)
 	bounds := testAdminCompletionBounds
-	bounds.Budget = 50 * time.Millisecond
+	bounds.Budget = time.Minute
 	bounds.AttemptTimeout = time.Minute
 
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
+	done, err := CompletePendingTenantAdminWithin(ctx, "acme", deps, bounds)
 	if done || !errors.Is(err, boom) {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false and the failure before the cut-off", done, err)
 	}
@@ -1250,16 +1288,18 @@ func TestCompletePendingTenantAdminWithin_BudgetCutOffKeepsTheCause(t *testing.T
 
 // TestCompletePendingTenantAdminWithin_FirstAttemptCutOffReportsTheBudget
 // proves the other side: with no earlier failure to report, an attempt the
-// budget cuts off reports the deadline.
+// budget cuts off reports the deadline. As above, the deadline passes once
+// the first attempt has started, not at a wall-clock instant.
 func TestCompletePendingTenantAdminWithin_FirstAttemptCutOffReportsTheBudget(t *testing.T) {
-	users := &failThenStallUsers{fakeUsers: &fakeUsers{}}
+	ctx := newExpiringContext()
+	users := &failThenStallUsers{fakeUsers: &fakeUsers{}, onStall: ctx.expire}
 	users.calls = 1 // every call stalls
 	_, deps, _ := provisionAutoUnsealTenant(t, users)
 	bounds := testAdminCompletionBounds
-	bounds.Budget = 50 * time.Millisecond
+	bounds.Budget = time.Minute
 	bounds.AttemptTimeout = time.Minute
 
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
+	done, err := CompletePendingTenantAdminWithin(ctx, "acme", deps, bounds)
 	if done || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false and the budget's deadline", done, err)
 	}
