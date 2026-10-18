@@ -36,13 +36,8 @@
 #
 # Usage: trivy-certified-db.sh [max-age-hours] [trivy-binary]
 #
-# TRIVY_DB_UPSTREAMS overrides the upstream list (space separated, tried in
-# order); the default is trivy's documented pair. An entry written
-# `http://<registry>/<repository>:<tag>` names a registry served over plain
-# HTTP: the scheme is stripped and trivy's `--insecure` is passed for that
-# entry ALONE, so it never reaches a TLS upstream. CI puts the forge's own
-# Trivy DB bridge first this way, with the list scripts/trivy-db-upstreams.sh
-# prints (docs/release/architecture.md, "CI tiers").
+# TRIVY_DB_UPSTREAMS overrides the upstream list (space separated); the default
+# is trivy's documented pair.
 
 set -u
 
@@ -59,22 +54,12 @@ fi
 
 echo "trivy-db: the configured cache did not yield a database within ${MAX_AGE_HOURS}h; discarding it and trying upstream." >&2
 
-for entry in $UPSTREAMS; do
+for repo in $UPSTREAMS; do
 	"$BIN" clean --vuln-db || {
 		echo "trivy-db: could not discard the cached database; refusing to certify." >&2
 		exit 1
 	}
-	case "$entry" in
-	http://*)
-		repo="${entry#http://}"
-		set -- --insecure
-		;;
-	*)
-		repo="$entry"
-		set --
-		;;
-	esac
-	if "$BIN" fs --scanners vuln --download-db-only "$@" --db-repository "$repo" . &&
+	if "$BIN" fs --scanners vuln --download-db-only --db-repository "$repo" . &&
 		"$CHECK" "$MAX_AGE_HOURS" "$BIN"; then
 		echo "trivy-db source: upstream ${repo}"
 		exit 0

@@ -42,9 +42,7 @@
 # are GOPROXY reopened, a writable copy of the module cache used, and the forge
 # credentials passed through, by NAME from
 # this environment (the four variables dependency-resolution.md §6 has the
-# runner inject), so no token ever appears on a command line. TRIVY_DB_UPSTREAMS,
-# the vulnerability database sources CI derives with
-# scripts/trivy-db-upstreams.sh, is passed the same way, for trivy's download.
+# runner inject), so no token ever appears on a command line.
 #
 # The container is named qrdb-ci-tc-<pid>-<random>, under the prefix
 # scripts/reap-stale-ci-stacks.sh reaps, and is removed on every exit.
@@ -88,7 +86,7 @@ if [ "$network" = bridge ]; then
   # on the container's own layer, so nothing baked is downloaded twice.
   args+=(--network bridge --env "GOPROXY=https://proxy.golang.org,direct" --env GOMODCACHE=/home/dev/gomodcache)
   cmd="cp -a /gomodcache/. /home/dev/gomodcache/ && $cmd"
-  for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 TRIVY_DB_UPSTREAMS; do
+  for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
     if [ -n "${!v:-}" ]; then args+=(--env "$v"); fi
   done
 else

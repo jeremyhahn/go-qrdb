@@ -204,20 +204,10 @@ kept.
 `trivy`, and `image`'s two scans (`make security`'s trivy leg and
 `make trivy-image`), scan only with a vulnerability database younger than
 `TRIVY_DB_MAX_AGE_HOURS` (24). `scripts/trivy-certified-db.sh` tries the
-runner's configured cache first, then each repository in `TRIVY_DB_UPSTREAMS`
-in order, certifying each with the same age check, and fails closed when none
-is fresh. By default that list is trivy's documented pair,
-`mirror.gcr.io/aquasec/trivy-db:2` then `ghcr.io/aquasecurity/trivy-db:2`. On
-the project's own forge, the `ci.yml` Trivy and `image` jobs and the
-`nightly.yml` Trivy job put the forge's own Trivy DB bridge (a `trivy-db:2`
-package the forge's infrastructure team publishes in its container registry)
-ahead of that pair. All three take the list from its one definition,
-`scripts/trivy-db-upstreams.sh`, which builds the bridge's address from the
-runner's server URL at run time, so no tracked file names the forge;
-`scripts/in-toolchain-image.sh` forwards it into the toolchain container. The
-bridge is served over plain HTTP, so its entry is written `http://...`, and the
-script passes trivy's `--insecure` for that entry alone; it never reaches the
-TLS upstreams. A fallback widens where the database may come from, never how
+runner's configured cache first, then trivy's documented pair in order,
+`mirror.gcr.io/aquasec/trivy-db:2` then `ghcr.io/aquasecurity/trivy-db:2`,
+certifying each with the same age check, and fails closed when none is fresh.
+A fallback widens where the database may come from, never how
 old it may be.
 
 `integration-features` is one job with a matrix leg per feature: each leg runs

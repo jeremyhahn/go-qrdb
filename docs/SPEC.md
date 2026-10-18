@@ -90,6 +90,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | ci-actionlint | shipped | `make lint` runs actionlint. | #636, [release/](release/) |
 | port-reservation-package | shipped | Decide the shared port-reservation package, now that production code is a caller. | #306 |
 | api-server | shipped | The unified multi-protocol server and the `ServiceModule` seam. | [api-server/](api-server/), [embedding.md](embedding.md) |
+| optional-auth-route | planned | `ModuleHTTPRegistrar` (`sdk/go`, `apimodule.HTTPRegistrar`) gains a third route mode, `HandleOptional`, beside `Handle` and `HandlePublic`. On a `HandleOptional` route a presented credential runs the configured auth chain, and the chain itself resolves the mTLS identity to an `sdk.User`; a request with no credential is admitted as an anonymous caller; a presented credential that is invalid is rejected. The provider side of the seam with go-quicbaas's OAuth authorization endpoint. Consumer: go-quicbaas #1457. | [api-server/](api-server/) |
 | request-context-dpop | shipped | The request context carries the DPoP proof, HTTP method and URI to authenticators. | #646, [api-server/](api-server/) |
 | replica-forwarding | shipped | A node holding no replica of a database forwards the request to its replica leader on the caller's behalf, on REST, gRPC, Unix socket, QUIC, MCP and embedded. | [replica-forwarding/](replica-forwarding/) |
 

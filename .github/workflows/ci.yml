@@ -626,9 +626,8 @@ jobs:
   # is reached through a socket, so a bind mount would resolve on its host.
   # make security and make deps-check get a network, for the vulnerability
   # databases and the module proxy; build and test run without one. Both
-  # trivy scans certify their database's age as the Trivy job does, from the
-  # same TRIVY_DB_UPSTREAMS (scripts/trivy-db-upstreams.sh). The scan is a
-  # gate only: nothing is uploaded to code scanning.
+  # trivy scans certify their database's age as the Trivy job does. The scan
+  # is a gate only: nothing is uploaded to code scanning.
   #
   # go-qrdb: the names are under qrdb-ci-, the prefix every CI stack here is
   # reaped by. Module credentials reach the build through the job environment
@@ -669,15 +668,6 @@ jobs:
 
       - name: make test (toolchain image)
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make test
-
-      # The same upstream list as the Trivy job, from its one definition, for
-      # the two scans below that certify a database: `make security`'s trivy
-      # leg and `make trivy-image`. scripts/in-toolchain-image.sh forwards it
-      # into the container on a networked stage.
-      - name: Prefer the forge's Trivy DB bridge
-        run: |
-          upstreams=$(scripts/trivy-db-upstreams.sh)
-          echo "TRIVY_DB_UPSTREAMS=${upstreams}" >> "$GITHUB_ENV"
 
       - name: make security (toolchain image)
         env:
@@ -1207,27 +1197,10 @@ jobs:
           echo "trivy ${v} install failed after 5 attempts" >&2
           exit 1
 
-      # The forge publishes a current vulnerability database in its own
-      # container registry, as agent-infrastructure/trivy-db, over plain HTTP
-      # (CA m450). It goes FIRST in the upstream list, ahead of trivy's
-      # documented pair, which stays as the fallback. The list has ONE
-      # definition, scripts/trivy-db-upstreams.sh, shared with the image job
-      # and nightly.yml: it derives the registry address from the runner's
-      # server URL at run time, never written here (the tracked tree is
-      # publicly releasable), and prints the documented pair alone on
-      # github.com. The bridge's `http://` prefix tells
-      # scripts/trivy-certified-db.sh to pass trivy's --insecure for this
-      # entry alone. The age limit does not change with the source.
-      - name: Prefer the forge's Trivy DB bridge
-        run: |
-          upstreams=$(scripts/trivy-db-upstreams.sh)
-          echo "TRIVY_DB_UPSTREAMS=${upstreams}" >> "$GITHUB_ENV"
-
       # `make trivy` refreshes the database and refuses to certify one older
       # than TRIVY_DB_MAX_AGE_HOURS before scanning (#451) -- falling back from
-      # the runner's cache to the forge's bridge, then upstream, when the cache
-      # is stale -- so a green result means a current database found nothing --
-      # not merely that a scan ran.
+      # the runner's cache to upstream when the cache is stale -- so a green result
+      # means a current database found nothing -- not merely that a scan ran.
       - name: Trivy gate (fail on CRITICAL/HIGH)
         run: make trivy
 

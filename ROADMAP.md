@@ -82,6 +82,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — open
 - **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — open
 - **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — open
+- **optional-auth-route** — a `HandleOptional` route mode on `ModuleHTTPRegistrar`: a presented credential runs the auth chain, none admits an anonymous caller, an invalid one is rejected; consumer go-quicbaas #1457 — [docs/api-server/](docs/api-server/) — in progress
 
 ## Next
 
