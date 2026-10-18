@@ -289,15 +289,11 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	t.Log("assertion (a): verifying database has RF=3, raft backend, and non-zero shardID")
 	var dbInfoData []byte
 	var dbInfoStatus int
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, iraftDBName))
-		if dbInfoStatus == http.StatusOK && len(dbInfoData) > 0 {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return dbInfoStatus == http.StatusOK && len(dbInfoData) > 0
+	})
 	if dbInfoStatus != http.StatusOK {
 		t.Fatalf("assertion (a): GET /v1/databases/%s: status %d, body: %s",
 			iraftDBName, dbInfoStatus, dbInfoData)
@@ -355,14 +351,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 
 	for _, port := range adminPorts {
 		var keys []string
-		kDeadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(kDeadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			keys = httpListTolerant(t, ca, port, "iraft-verify/")
-			if len(keys) == numKeys {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return len(keys) == numKeys
+		})
 		if len(keys) != numKeys {
 			t.Fatalf("assertion (c): port %d: expected %d keys, got %d", port, numKeys, len(keys))
 		}
@@ -395,16 +387,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	for i := range numDB1Keys {
 		key := fmt.Sprintf("db1-data/%04d", i)
 		val := []byte(db1Values[i])
-		var written bool
-		for time.Now().Before(eWriteDeadline) {
+		if !pollUntil(time.Until(eWriteDeadline), 200*time.Millisecond, func() bool {
 			status, err := dbScopedPutTolerant(t, tenantClient, leaderPort, iraftDBName, key, val)
-			if err == nil && status == http.StatusNoContent {
-				written = true
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		if !written {
+			return err == nil && status == http.StatusNoContent
+		}) {
 			t.Fatalf("assertion (e): timed out writing db1 key %q to dedicated raft group", key)
 		}
 		if i == 0 {
@@ -420,14 +406,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 		key := fmt.Sprintf("db1-data/%04d", i)
 		var got []byte
 		var status int
-		rDeadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(rDeadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			got, status = dbScopedGetTolerant(t, tenantClient, leaderPort, iraftDBName, key)
-			if status == http.StatusOK {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return status == http.StatusOK
+		})
 		if status != http.StatusOK {
 			t.Fatalf("assertion (e): db1 key %q read timed out (last status: %d, body: %s)", key, status, got)
 		}
@@ -534,14 +516,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	// Verify pre-restart keys survived.
 	for _, port := range adminPorts {
 		var keys []string
-		kDeadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(kDeadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			keys = httpListTolerant(t, ca, port, "iraft-verify/")
-			if len(keys) == numKeys {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return len(keys) == numKeys
+		})
 		if len(keys) != numKeys {
 			t.Fatalf("assertion (d): port %d after restart: expected %d keys, got %d",
 				port, numKeys, len(keys))
@@ -562,14 +540,10 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 		key := fmt.Sprintf("db1-data/%04d", i)
 		var got []byte
 		var status int
-		fDeadline := time.Now().Add(60 * time.Second)
-		for time.Now().Before(fDeadline) {
+		pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
 			got, status = dbScopedGetTolerant(t, restartTenantClient, leaderPort2, iraftDBName, key)
-			if status == http.StatusOK {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return status == http.StatusOK
+		})
 		if status != http.StatusOK {
 			t.Fatalf("assertion (f): NO-DATA-LOSS FAIL: db1 key %q after restart: timed out reading (last status: %d, body: %s)", key, status, got)
 		}

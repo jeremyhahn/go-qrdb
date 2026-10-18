@@ -235,8 +235,8 @@ one machine still need distinct `INT_PROJECT` values.
 
 ### Per-feature integration jobs
 
-CI runs the self-spawned integration suites (`test/integration` and
-`test/integration/auth`, no Docker) as `integration-features` in
+CI runs the self-spawned integration suites (`test/integration`, no
+Docker) as `integration-features` in
 `.github/workflows/ci.yml`: one matrix leg per feature, each running
 `make integration-test IT_FEATURE=<feature>`. That target builds the
 integration image (`build/docker/devcontainer/Dockerfile`, stage

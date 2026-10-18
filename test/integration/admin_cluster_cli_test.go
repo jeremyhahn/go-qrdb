@@ -506,8 +506,7 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 	}
 
 	var readings [3]adminReplicaStatesDisplay
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		for i, node := range nodes {
 			out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "replica-states", "--shard-id", "1")
 			if err != nil {
@@ -523,13 +522,9 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 			readings[i] = r
 		}
 		index := readings[0].Replicas[0].AppliedIndex
-		if readings[1].Replicas[0].AppliedIndex == index && readings[2].Replicas[0].AppliedIndex == index {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("[%s] the 3 replicas of shard 1 never reported one applied index: %+v", proto.name, readings)
-		}
-		time.Sleep(200 * time.Millisecond)
+		return readings[1].Replicas[0].AppliedIndex == index && readings[2].Replicas[0].AppliedIndex == index
+	}) {
+		t.Fatalf("[%s] the 3 replicas of shard 1 never reported one applied index: %+v", proto.name, readings)
 	}
 
 	// A shard holding the key just written has applied entries and a
@@ -775,16 +770,9 @@ func adminPeersContainsReplica(t *testing.T, node *multiProtoNode, proto multiPr
 // change itself.
 func waitForAdminPeersReplica(t *testing.T, node *multiProtoNode, proto multiProtocol, replicaID uint64, present bool, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if adminPeersContainsReplica(t, node, proto, replicaID) == present {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	return pollUntil(timeout, 250*time.Millisecond, func() bool {
+		return adminPeersContainsReplica(t, node, proto, replicaID) == present
+	})
 }
 
 // adminClusterFollower returns a control node that, by its own /status,
@@ -793,19 +781,20 @@ func waitForAdminPeersReplica(t *testing.T, node *multiProtoNode, proto multiPro
 func adminClusterFollower(t *testing.T, nodes [3]*multiProtoNode, timeout time.Duration) *multiProtoNode {
 	t.Helper()
 	client := mtlsHTTPClient(t, nodes[0].ca, 5*time.Second)
-	deadline := time.Now().Add(timeout)
-	for {
+	var follower *multiProtoNode
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
 		for _, node := range nodes {
 			status, _ := httpStatusRaw(t, client, node.restPort)
 			if followsShard1Leader(status) {
-				return node
+				follower = node
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no control node followed a known leader of shard 1 within %s", timeout)
-		}
-		time.Sleep(250 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("no control node followed a known leader of shard 1 within %s", timeout)
 	}
+	return follower
 }
 
 // followsShard1Leader reports whether a decoded /status body shows its node

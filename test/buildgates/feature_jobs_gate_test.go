@@ -14,8 +14,8 @@
 
 package buildgates
 
-// CI runs the self-spawned integration suites (test/integration and
-// test/integration/auth) as one job per feature: ci.yml's integration-features
+// CI runs the self-spawned integration suites (test/integration) as one
+// job per feature: ci.yml's integration-features
 // job is a matrix whose legs each run `make integration-test IT_FEATURE=<feature>`
 // -- the selection `make integration-test-<feature>` runs on a host, in the
 // integration image -- under their own limit, in parallel (owner ruling 10,

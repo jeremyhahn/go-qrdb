@@ -32,14 +32,13 @@ func TestCluster_DynamicMembershipOnPebble(t *testing.T) {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for i, l := range logs {
-		for !l.Contains("registered cluster member") {
+		if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
 			if l.Contains("failed to register self") {
 				t.Fatalf("node %d failed to register its membership on the pebble state machine", i+1)
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("node %d never registered its membership", i+1)
-			}
-			time.Sleep(200 * time.Millisecond)
+			return l.Contains("registered cluster member")
+		}) {
+			t.Fatalf("node %d never registered its membership", i+1)
 		}
 	}
 	for i, l := range logs {

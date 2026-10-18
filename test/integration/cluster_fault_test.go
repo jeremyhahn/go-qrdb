@@ -355,22 +355,23 @@ func (c *faultCluster) unsealPassphrase(t *testing.T, i int) {
 		t.Fatalf("node %d: unseal request: %v", node.replicaID, err)
 	}
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", node.adminPort)
-	deadline := time.Now().Add(faultRecoveryTimeout)
-	for {
+	var lastErr error
+	if !pollUntil(faultRecoveryTimeout, faultPollInterval, func() bool {
 		resp, err := c.read.Post(url, "application/json", bytes.NewReader(body))
-		if err == nil {
-			reply, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			switch resp.StatusCode {
-			case http.StatusOK, http.StatusNoContent, http.StatusConflict:
-				return
-			}
-			err = &faultStatusError{Port: node.adminPort, Code: resp.StatusCode, Body: string(reply)}
+		if err != nil {
+			lastErr = err
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("node %d: unseal with its own passphrase: %v", node.replicaID, err)
+		reply, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusNoContent, http.StatusConflict:
+			return true
 		}
-		time.Sleep(faultPollInterval)
+		lastErr = &faultStatusError{Port: node.adminPort, Code: resp.StatusCode, Body: string(reply)}
+		return false
+	}) {
+		t.Fatalf("node %d: unseal with its own passphrase: %v", node.replicaID, lastErr)
 	}
 }
 
@@ -426,9 +427,9 @@ func (c *faultCluster) dataShard(i int) (faultShard, error) {
 // a term after afterTerm, and returns that node's index and term.
 func (c *faultCluster) leader(t *testing.T, among []int, afterTerm uint64, timeout time.Duration) (int, uint64) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last string
-	for {
+	leader, term := -1, uint64(0)
+	if !pollUntil(timeout, faultPollInterval, func() bool {
 		for _, i := range among {
 			s, err := c.dataShard(i)
 			if err != nil {
@@ -436,15 +437,16 @@ func (c *faultCluster) leader(t *testing.T, among []int, afterTerm uint64, timeo
 				continue
 			}
 			if s.IsLeader && s.Term > afterTerm {
-				return i, s.Term
+				leader, term = i, s.Term
+				return true
 			}
 			last = fmt.Sprintf("node %d: leader %d term %d", c.nodes[i].replicaID, s.LeaderID, s.Term)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no leader in a term after %d within %v (last: %s)", afterTerm, timeout, last)
-		}
-		time.Sleep(faultPollInterval)
+		return false
+	}) {
+		t.Fatalf("no leader in a term after %d within %v (last: %s)", afterTerm, timeout, last)
 	}
+	return leader, term
 }
 
 // waitSettled waits until every node reports every shard it hosts healthy
@@ -453,19 +455,20 @@ func (c *faultCluster) leader(t *testing.T, among []int, afterTerm uint64, timeo
 // once: nothing brings it back.
 func (c *faultCluster) waitSettled(t *testing.T, timeout time.Duration) int {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last string
-	for {
+	leader := -1
+	if !pollUntil(timeout, faultPollInterval, func() bool {
 		leaders, why := c.agreedLeaders(t)
-		if why == "" {
-			return int(leaders[faultShardID]) - 1
+		if why != "" {
+			last = why
+			return false
 		}
-		last = why
-		if time.Now().After(deadline) {
-			t.Fatalf("cluster did not settle within %v: %s", timeout, last)
-		}
-		time.Sleep(faultPollInterval)
+		leader = int(leaders[faultShardID]) - 1
+		return true
+	}) {
+		t.Fatalf("cluster did not settle within %v: %s", timeout, last)
 	}
+	return leader
 }
 
 // agreedLeaders reads every node's shards once. It returns each shard's
@@ -525,12 +528,10 @@ func (c *faultCluster) put(client *http.Client, i int, key, value string) bool {
 // putAcked writes key through node i until the cluster acknowledges it.
 func (c *faultCluster) putAcked(t *testing.T, client *http.Client, i int, key, value string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !c.put(client, i, key, value) {
-		if time.Now().After(deadline) {
-			t.Fatalf("write %s through node %d not acknowledged within %v", key, c.nodes[i].replicaID, timeout)
-		}
-		time.Sleep(faultPollInterval)
+	if !pollUntil(timeout, faultPollInterval, func() bool {
+		return c.put(client, i, key, value)
+	}) {
+		t.Fatalf("write %s through node %d not acknowledged within %v", key, c.nodes[i].replicaID, timeout)
 	}
 }
 
@@ -568,18 +569,12 @@ func (c *faultCluster) scan(i int, prefix string) (map[string]string, error) {
 // as lost fails the test at once: no amount of catching up undoes those.
 func (c *faultCluster) waitConverged(t *testing.T, l *writeLedger, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last string
-	for {
-		why := c.convergence(t, l)
-		if why == "" {
-			return
-		}
-		last = why
-		if time.Now().After(deadline) {
-			t.Fatalf("replicas did not converge within %v: %s", timeout, last)
-		}
-		time.Sleep(faultPollInterval)
+	if !pollUntil(timeout, faultPollInterval, func() bool {
+		last = c.convergence(t, l)
+		return last == ""
+	}) {
+		t.Fatalf("replicas did not converge within %v: %s", timeout, last)
 	}
 }
 
@@ -729,12 +724,10 @@ func (g *faultLoad) halt() { g.stopped.Do(func() { close(g.stop) }) }
 // waitAcked waits until the writers have had want writes acknowledged in all.
 func (g *faultLoad) waitAcked(t *testing.T, want int64, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for g.acked.Load() < want {
-		if time.Now().After(deadline) {
-			t.Fatalf("load reached %d acknowledged writes within %v, want %d", g.acked.Load(), timeout, want)
-		}
-		time.Sleep(faultPollInterval)
+	if !pollUntil(timeout, faultPollInterval, func() bool {
+		return g.acked.Load() >= want
+	}) {
+		t.Fatalf("load reached %d acknowledged writes within %v, want %d", g.acked.Load(), timeout, want)
 	}
 }
 

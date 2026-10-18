@@ -359,16 +359,13 @@ func adminCSRArgsForTenant(t *testing.T, node *multiProtoNode, proto multiProtoc
 // machine.
 func waitForCLIProtoReady(t *testing.T, node *multiProtoNode, proto multiProtocol, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var lastOut string
 	var lastErr error
-	for time.Now().Before(deadline) {
-		out, err := runCLIProto(t, node, proto, "kv", "exists", "__multi_proto_ready_probe__")
-		if err == nil {
-			return
-		}
-		lastOut, lastErr = out, err
-		time.Sleep(200 * time.Millisecond)
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
+		lastOut, lastErr = runCLIProto(t, node, proto, "kv", "exists", "__multi_proto_ready_probe__")
+		return lastErr == nil
+	}) {
+		return
 	}
 	t.Fatalf("[%s] timed out after %v waiting for transport to serve requests: %v\noutput: %s",
 		proto.name, timeout, lastErr, lastOut)

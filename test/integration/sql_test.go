@@ -394,12 +394,11 @@ func waitForMySQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, 
 
 	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%d)/qrdb?tls=%s", user, port, tlsName)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	var ready *sql.DB
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 		db.SetConnMaxLifetime(30 * time.Second)
 		db.SetMaxOpenConns(5)
@@ -408,16 +407,17 @@ func waitForMySQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err = db.PingContext(ctx)
 		cancel()
-		if err == nil {
-			t.Cleanup(func() { db.Close() })
-			return db
+		if err != nil {
+			db.Close()
+			return false
 		}
-		db.Close()
-		time.Sleep(200 * time.Millisecond)
+		ready = db
+		return true
+	}) {
+		t.Fatalf("waitForMySQL: timed out after 30s waiting for MySQL on port %d", port)
 	}
-
-	t.Fatalf("waitForMySQL: timed out after 30s waiting for MySQL on port %d", port)
-	return nil
+	t.Cleanup(func() { ready.Close() })
+	return ready
 }
 
 // waitForPgSQL opens a PostgreSQL connection with mTLS and retries until the
@@ -436,8 +436,8 @@ func waitForPgSQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, 
 
 	connStr := fmt.Sprintf("host=127.0.0.1 port=%d dbname=qrdb user=%s sslmode=require", port, user)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	var conn *pgx.Conn
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		config, err := pgx.ParseConfig(connStr)
 		if err != nil {
 			t.Fatalf("waitForPgSQL: ParseConfig: %v", err)
@@ -445,19 +445,16 @@ func waitForPgSQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, 
 		config.TLSConfig = tlsCfg
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		conn, err := pgx.ConnectConfig(ctx, config)
+		conn, err = pgx.ConnectConfig(ctx, config)
 		cancel()
-		if err == nil {
-			t.Cleanup(func() {
-				conn.Close(context.Background())
-			})
-			return conn
-		}
-		time.Sleep(200 * time.Millisecond)
+		return err == nil
+	}) {
+		t.Fatalf("waitForPgSQL: timed out after 30s waiting for PgSQL on port %d", port)
 	}
-
-	t.Fatalf("waitForPgSQL: timed out after 30s waiting for PgSQL on port %d", port)
-	return nil
+	t.Cleanup(func() {
+		conn.Close(context.Background())
+	})
+	return conn
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,12 +1000,10 @@ func TestSQL_MySQL_NoClientCert_Rejected(t *testing.T) {
 	dsn := fmt.Sprintf("anonymous@tcp(127.0.0.1:%d)/qrdb?tls=%s", mysqlPort, tlsName)
 
 	// Retry to account for server startup delay.
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1020,7 +1015,7 @@ func TestSQL_MySQL_NoClientCert_Rejected(t *testing.T) {
 			// Connection was rejected as expected. The server requires
 			// a client certificate for mTLS authentication.
 			t.Logf("connection without client cert rejected as expected: %v", err)
-			return
+			return true
 		}
 
 		// If Ping succeeded, the server is not enforcing mTLS properly.
@@ -1033,11 +1028,12 @@ func TestSQL_MySQL_NoClientCert_Rejected(t *testing.T) {
 
 		if qErr != nil {
 			t.Logf("query without client cert rejected as expected: %v", qErr)
-			return
+			return true
 		}
 
 		t.Fatal("connection without client certificate should have been rejected")
+		return false
+	}) {
+		t.Fatal("timed out waiting for MySQL server to be available for auth test")
 	}
-
-	t.Fatal("timed out waiting for MySQL server to be available for auth test")
 }

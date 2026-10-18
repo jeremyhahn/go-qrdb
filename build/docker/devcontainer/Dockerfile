@@ -176,7 +176,7 @@ COPY --chown=root:root . ./
 # packages in the cache for the run.
 RUN set -eu; \
     test -n "${IT_TAGS}" || { echo "IT_TAGS is required (make docker-build-it passes it)" >&2; exit 1; }; \
-    go vet -tags "${IT_TAGS}" ./test/integration ./test/integration/auth; \
+    go vet -tags "${IT_TAGS}" ./test/integration; \
     chmod -R a+rwX /gocache
 # HOME on /tmp, the compose service's /tmp volume: its root filesystem is read-only, and
 # the qrdb CLI the suites drive resolves its config directory from HOME.

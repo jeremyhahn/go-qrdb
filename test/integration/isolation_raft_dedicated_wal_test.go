@@ -226,15 +226,11 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 		ShardID      uint64 `json:"shardId"`
 		DedicatedWAL bool   `json:"dedicatedWal"`
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		data, st := iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/wal1", leaderPort))
-		if st == http.StatusOK && json.Unmarshal(data, &wal1Info) == nil && wal1Info.ShardID != 0 {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return st == http.StatusOK && json.Unmarshal(data, &wal1Info) == nil && wal1Info.ShardID != 0
+	})
 	if !wal1Info.DedicatedWAL {
 		t.Fatalf("wal1 must report dedicatedWal=true (shardID=%d)", wal1Info.ShardID)
 	}
@@ -263,16 +259,10 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 		wDeadline := time.Now().Add(120 * time.Second)
 		for i := range numKeys {
 			key := fmt.Sprintf("%s/%04d", dbName, i)
-			var ok bool
-			for time.Now().Before(wDeadline) {
+			if !pollUntil(time.Until(wDeadline), 200*time.Millisecond, func() bool {
 				st, err := dbScopedPutTolerant(t, tenantClient, leaderPort, dbName, key, []byte(vals[i]))
-				if err == nil && st == http.StatusNoContent {
-					ok = true
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
-			if !ok {
+				return err == nil && st == http.StatusNoContent
+			}) {
 				t.Fatalf("timed out writing %s key %q", dbName, key)
 			}
 			if i == 0 {
@@ -288,14 +278,10 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 			key := fmt.Sprintf("%s/%04d", dbName, i)
 			var got []byte
 			var st int
-			rDeadline := time.Now().Add(60 * time.Second)
-			for time.Now().Before(rDeadline) {
+			pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
 				got, st = dbScopedGetTolerant(t, client, port, dbName, key)
-				if st == http.StatusOK {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
+				return st == http.StatusOK
+			})
 			if st != http.StatusOK {
 				t.Fatalf("%s key %q read timed out (status %d)", dbName, key, st)
 			}

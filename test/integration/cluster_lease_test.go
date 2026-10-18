@@ -139,19 +139,16 @@ func TestClusterFault_LeaseReadAfterLeaderChange(t *testing.T) {
 			}
 
 			c.waitSettled(t, faultRecoveryTimeout)
-			deadline := time.Now().Add(faultRecoveryTimeout)
-			for {
-				got, err := c.readLinearizable(writer, old, key)
-				if err == nil && got == after {
-					break
-				}
-				if err == nil && got != after {
+			var readErr error
+			if !pollUntil(faultRecoveryTimeout, faultPollInterval, func() bool {
+				var got string
+				got, readErr = c.readLinearizable(writer, old, key)
+				if readErr == nil && got != after {
 					t.Fatalf("node %d serves %q for %s after the heal; want %q", c.nodes[old].replicaID, got, key, after)
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("node %d did not serve %s within %v of the heal: %v", c.nodes[old].replicaID, key, faultRecoveryTimeout, err)
-				}
-				time.Sleep(faultPollInterval)
+				return readErr == nil
+			}) {
+				t.Fatalf("node %d did not serve %s within %v of the heal: %v", c.nodes[old].replicaID, key, faultRecoveryTimeout, readErr)
 			}
 		})
 	}
@@ -227,7 +224,11 @@ func (c *faultCluster) startLeaseProbe(t *testing.T, i int, key string) *leasePr
 				p.reads = append(p.reads, r)
 				p.mu.Unlock()
 				if r.err != nil {
-					time.Sleep(faultPollInterval)
+					select {
+					case <-p.done:
+						return
+					case <-time.After(faultPollInterval):
+					}
 				}
 			}
 		})

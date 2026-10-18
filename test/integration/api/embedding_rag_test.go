@@ -75,6 +75,27 @@ func postJSON(t *testing.T, cfg *TestConfig, path string, body, out any) int {
 	return resp.StatusCode
 }
 
+// pollUntil evaluates cond at once and then on every tick of interval until
+// it holds or wait elapses, and reports whether it held. It mirrors the
+// helper of the same name in package integration, which this package cannot
+// import.
+func pollUntil(wait, interval time.Duration, cond func() bool) bool {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	expired := time.NewTimer(wait)
+	defer expired.Stop()
+	for {
+		if cond() {
+			return true
+		}
+		select {
+		case <-ticker.C:
+		case <-expired.C:
+			return false
+		}
+	}
+}
+
 // getJSON issues an authenticated GET and decodes the JSON response.
 func getJSON(t *testing.T, cfg *TestConfig, path string, out any) int {
 	t.Helper()
@@ -295,15 +316,19 @@ func TestRAGIngestQueryE2E(t *testing.T) {
 	assertEqual(t, docID, ing.DocumentID, "ingest should echo document id")
 	assertTrue(t, ing.ChunkCount >= 2, "fixed chunking at size 60 should yield multiple chunks")
 
-	// Give the async HNSW index a brief moment to absorb the upserts.
-	time.Sleep(2 * time.Second)
-
+	// The HNSW index absorbs the upserts asynchronously: query until it
+	// returns every chunk top_k can hold.
+	const topK = 3
 	var q ragQueryResp
-	status = postJSON(t, cfg, "/v1/rag/query", map[string]any{
-		"query":     "Where is the Eiffel Tower located?",
-		"namespace": namespace,
-		"top_k":     3,
-	}, &q)
+	pollUntil(2*time.Second, 200*time.Millisecond, func() bool {
+		q = ragQueryResp{}
+		status = postJSON(t, cfg, "/v1/rag/query", map[string]any{
+			"query":     "Where is the Eiffel Tower located?",
+			"namespace": namespace,
+			"top_k":     topK,
+		}, &q)
+		return status == http.StatusOK && len(q.Results) >= min(topK, ing.ChunkCount)
+	})
 	assertEqual(t, http.StatusOK, status, "rag query should return 200")
 	assertTrue(t, len(q.Results) > 0, "query should return at least one result")
 

@@ -403,13 +403,15 @@ func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T)
 // once the command stops answering 503 or retryableCreateWindow has passed.
 func runQRDBRetryingUnavailable(t *testing.T, cli string, connArgs []string, subArgs ...string) (string, error) {
 	t.Helper()
-	deadline := time.Now().Add(retryableCreateWindow)
-	for {
-		out, err := runQRDB(t, cli, connArgs, subArgs...)
-		if err == nil || !strings.Contains(out, "(status 503)") || !time.Now().Before(deadline) {
-			return out, err
+	var out string
+	var err error
+	pollUntil(retryableCreateWindow, 250*time.Millisecond, func() bool {
+		out, err = runQRDB(t, cli, connArgs, subArgs...)
+		if err == nil || !strings.Contains(out, "(status 503)") {
+			return true
 		}
 		t.Logf("qrdb %s refused for now, retrying: %s", strings.Join(subArgs, " "), strings.TrimSpace(out))
-		time.Sleep(250 * time.Millisecond)
-	}
+		return false
+	})
+	return out, err
 }

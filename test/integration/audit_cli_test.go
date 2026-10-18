@@ -244,27 +244,27 @@ func testAuditRealFlowOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 func findAuditEvent(t *testing.T, node *multiProtoNode, proto multiProtocol, filterArgs ...string) auditEventCLIJSON {
 	t.Helper()
 	args := append([]string{"--output", "json", "audit", "query"}, filterArgs...)
-	deadline := time.Now().Add(30 * time.Second)
 	var lastOut string
-	for time.Now().Before(deadline) {
+	var found auditEventCLIJSON
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		out, err := runCLIProto(t, node, proto, args...)
+		lastOut = out
 		if err != nil {
-			lastOut = out
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 		var page auditPageCLIJSON
 		if jerr := json.Unmarshal([]byte(out), &page); jerr != nil {
 			t.Fatalf("[%s] decode audit query JSON: %v\noutput: %s", proto.name, jerr, out)
 		}
-		if len(page.Events) > 0 {
-			return page.Events[0]
+		if len(page.Events) == 0 {
+			return false
 		}
-		lastOut = out
-		time.Sleep(200 * time.Millisecond)
+		found = page.Events[0]
+		return true
+	}) {
+		t.Fatalf("[%s] audit query %v found no events within timeout\nlast output: %s", proto.name, filterArgs, lastOut)
 	}
-	t.Fatalf("[%s] audit query %v found no events within timeout\nlast output: %s", proto.name, filterArgs, lastOut)
-	return auditEventCLIJSON{}
+	return found
 }
 
 // auditTotalValid reports whether an AuditPage's Total is consistent with

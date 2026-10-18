@@ -248,16 +248,15 @@ func shard1Term(t *testing.T, client *http.Client, port int) uint64 {
 // forwarded to the old one.
 func agreedShard1Leader(t *testing.T, client *http.Client, nodes [3]*multiProtoNode, replicaIDs [3]uint64, live []int, timeout time.Duration) int {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if leader, ok := shard1LeaderAgreement(t, client, nodes, replicaIDs, live); ok {
-			return leader
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("live nodes %v did not agree on a leader of shard 1 within %s", live, timeout)
-		}
-		time.Sleep(250 * time.Millisecond)
+	var leader int
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+		var ok bool
+		leader, ok = shard1LeaderAgreement(t, client, nodes, replicaIDs, live)
+		return ok
+	}) {
+		t.Fatalf("live nodes %v did not agree on a leader of shard 1 within %s", live, timeout)
 	}
+	return leader
 }
 
 // shard1LeaderAgreement is one reading of agreedShard1Leader's condition.

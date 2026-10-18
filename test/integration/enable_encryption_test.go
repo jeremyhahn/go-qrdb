@@ -194,17 +194,14 @@ func readBarrierStatus(t *testing.T, ca *testCA, port int) barrierStatusReading 
 // transient answer, HTTP status and body included.
 func waitForDefinitiveBarrierStatus(t *testing.T, ca *testCA, port int, timeout time.Duration) barrierStatusReading {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		r := readBarrierStatus(t, ca, port)
-		if r.Definitive {
-			return r
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("barrier status on port %d gave no definitive answer within %v; last: %s", port, timeout, r)
-		}
-		time.Sleep(250 * time.Millisecond)
+	var r barrierStatusReading
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+		r = readBarrierStatus(t, ca, port)
+		return r.Definitive
+	}) {
+		t.Fatalf("barrier status on port %d gave no definitive answer within %v; last: %s", port, timeout, r)
 	}
+	return r
 }
 
 // waitForBarrierSealedAgain polls the barrier status until it reports
@@ -217,12 +214,11 @@ func waitForDefinitiveBarrierStatus(t *testing.T, ca *testCA, port int, timeout 
 // on the strategy here — it is asserted after unseal.
 func waitForBarrierSealedAgain(t *testing.T, ca *testCA, port int, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, sealed, ok := barrierStatusJSON(t, ca, port); ok && sealed {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	if pollUntil(timeout, 250*time.Millisecond, func() bool {
+		_, sealed, ok := barrierStatusJSON(t, ca, port)
+		return ok && sealed
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for the migrated barrier to come back sealed on port %d", timeout, port)
 }
@@ -537,16 +533,12 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	// to the dedicated database on the tenant Host).
 	seed := map[string]string{"k1": "v1", "k2": "v2", "k3": "v3"}
 	for k, v := range seed {
-		deadline := time.Now().Add(30 * time.Second)
 		var putStatus int
 		var putErr error
-		for time.Now().Before(deadline) {
+		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 			putStatus, putErr = dbScopedPutTolerant(t, tenantClient, adminPort, dbName, k, []byte(v))
-			if putErr == nil && (putStatus == http.StatusOK || putStatus == http.StatusNoContent || putStatus == http.StatusCreated) {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return putErr == nil && (putStatus == http.StatusOK || putStatus == http.StatusNoContent || putStatus == http.StatusCreated)
+		})
 		if putErr != nil || (putStatus != http.StatusOK && putStatus != http.StatusNoContent && putStatus != http.StatusCreated) {
 			t.Fatalf("tenant put %q: status %d err %v", k, putStatus, putErr)
 		}
@@ -574,16 +566,10 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	// The tenant barrier transitions to passphrase and is reopened UNSEALED (the
 	// recycle unseals it with the supplied credential). The system barrier and
 	// daemon keep serving — no server restart.
-	deadline := time.Now().Add(120 * time.Second)
-	migrated := false
-	for time.Now().Before(deadline) {
-		if strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPort, tenantID); ok && strategy == "passphrase" && !sealed {
-			migrated = true
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	if !migrated {
+	if !pollUntil(120*time.Second, 300*time.Millisecond, func() bool {
+		strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPort, tenantID)
+		return ok && strategy == "passphrase" && !sealed
+	}) {
 		t.Fatalf("tenant barrier did not migrate to an unsealed passphrase barrier within timeout")
 	}
 
@@ -599,14 +585,10 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	for k, v := range seed {
 		var data []byte
 		var st int
-		rd := time.Now().Add(60 * time.Second)
-		for time.Now().Before(rd) {
+		pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			data, st = dbScopedGetTolerant(t, tenantClient, adminPort, dbName, k)
-			if st == http.StatusOK {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return st == http.StatusOK
+		})
 		if st != http.StatusOK || string(data) != v {
 			t.Fatalf("post-migration tenant %q = %q (status %d), want %q (DATA LOSS)", k, string(data), st, v)
 		}

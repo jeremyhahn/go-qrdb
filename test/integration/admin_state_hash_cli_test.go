@@ -269,8 +269,7 @@ func TestAdminStateHash_CLI_ReplicasAgree(t *testing.T) {
 			// once each round and compare at the highest index every replica
 			// has been seen at.
 			seen := make(stateHashObservations)
-			deadline := time.Now().Add(60 * time.Second)
-			for {
+			if !pollUntil(60*time.Second, 100*time.Millisecond, func() bool {
 				resps := make([]*transport.StateHashesResponse, len(nodes))
 				errs := make([]error, len(nodes))
 				var wg sync.WaitGroup
@@ -298,12 +297,11 @@ func TestAdminStateHash_CLI_ReplicasAgree(t *testing.T) {
 					if err := replicasAgree(set); err != nil {
 						t.Fatalf("[%s] shard 1: %v", proto.name, err)
 					}
-					return
+					return true
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("[%s] shard 1 replicas were never observed at one applied index >= %d: %+v", proto.name, floor.AppliedIndex, seen)
-				}
-				time.Sleep(100 * time.Millisecond)
+				return false
+			}) {
+				t.Fatalf("[%s] shard 1 replicas were never observed at one applied index >= %d: %+v", proto.name, floor.AppliedIndex, seen)
 			}
 		})
 	}

@@ -168,4 +168,4 @@ used.
 
 ## Integration testing
 
-`make integration-test-full-text-search` runs this feature's self-spawned integration tests: `fts_test.go`, built under the `qrdb_fts` tag, which the target sets. The per-transport accounting, including every gap, is the `full-text-search` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).
+The feature has no CLI surface, so it has no integration test: `make integration-test-full-text-search` selects none. The per-backend `FTSIndex` assertions (memory, file, Pebble) are unit tests in `pkg/fts/fts_test.go`, which `make test-fts` runs under the `qrdb_fts` tag. The per-transport accounting, including every gap, is the `full-text-search` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

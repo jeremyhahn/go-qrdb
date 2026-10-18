@@ -41,6 +41,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -123,8 +124,10 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	// Phase 1: start the 3-node cluster.
 	// ---------------------------------------------------------------------
 	cmds := make([]*exec.Cmd, nodeCount)
+	logs := make([]*nodeLog, nodeCount)
 	for i := range nodeCount {
-		cmds[i] = startNode(t, bin, buildArgs(i), fmt.Sprintf("[node%d-R1] ", i+1))
+		logs[i] = &nodeLog{}
+		cmds[i] = startNode(t, bin, buildArgs(i), fmt.Sprintf("[node%d-R1] ", i+1), logs[i])
 	}
 
 	var sealWg sync.WaitGroup
@@ -150,10 +153,26 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	// ReplicatedLogger.Emit refuses to propose it until every replica of the
 	// shard has advertised support and the cluster feature gate has
 	// activated, which polls on featuregate.DefaultRefreshInterval (5s).
-	// Waiting a few cycles here avoids a flaky race between "the gate exists"
-	// and "the gate has activated" for the very first write after a fresh
-	// cluster forms.
-	time.Sleep(4 * featuregate.DefaultRefreshInterval)
+	// Waiting until every node's gate logs the feature active avoids a flaky
+	// race between "the gate exists" and "the gate has activated" for the
+	// very first write after a fresh cluster forms. A node logs "activated
+	// cluster-wide" when it stored the activation, "activation observed"
+	// when a peer did.
+	gateActive := func(l *nodeLog) bool {
+		for line := range strings.Lines(l.String()) {
+			if strings.Contains(line, "feature gate: feature activat") &&
+				strings.Contains(line, string(featuregate.AuditAppend)) {
+				return true
+			}
+		}
+		return false
+	}
+	gateDeadline := time.Now().Add(12 * featuregate.DefaultRefreshInterval)
+	for i, l := range logs {
+		if !pollUntil(time.Until(gateDeadline), 200*time.Millisecond, func() bool { return gateActive(l) }) {
+			t.Fatalf("node %d: feature gate never activated %s", i+1, featuregate.AuditAppend)
+		}
+	}
 
 	// ---------------------------------------------------------------------
 	// Phase 2: provision a tenant entitled to the replicated chain, and an
@@ -179,15 +198,16 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 		adminKeyPEM []byte
 		tenantBody  []byte
 	)
-	tenantDeadline := time.Now().Add(60 * time.Second)
-	for attempt := 1; ; attempt++ {
+	attempt := 0
+	var tenantStatus int
+	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
+		attempt++
 		tenantID = fmt.Sprintf("aud-acme-%d", attempt)
 		keyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
 		if err != nil {
 			t.Fatalf("certtest.NewCSR: %v", err)
 		}
 		adminKeyPEM = keyPEM
-		var tenantStatus int
 		tenantBody, tenantStatus = iraftAPIPost(t, sysClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
 			map[string]interface{}{
 				"id":             tenantID,
@@ -197,13 +217,15 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 				"admin_csr_pem":  string(adminCSRPEM),
 			})
 		if tenantStatus == http.StatusCreated || tenantStatus == http.StatusOK {
-			break
+			return true
 		}
-		if tenantStatus != http.StatusServiceUnavailable || time.Now().After(tenantDeadline) {
+		if tenantStatus != http.StatusServiceUnavailable {
 			t.Fatalf("create tenant %s: status %d, body: %s", tenantID, tenantStatus, tenantBody)
 		}
 		t.Logf("create tenant %s: status 503, retrying: %s", tenantID, tenantBody)
-		time.Sleep(500 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("create tenant %s: status %d, body: %s", tenantID, tenantStatus, tenantBody)
 	}
 
 	// The system tenant cannot provision records inside another tenant's IAM
@@ -285,26 +307,20 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 
 			var page transport.AuditPage
 			var lastOut string
-			found := false
-			deadline := time.Now().Add(30 * time.Second)
-			for time.Now().Before(deadline) && !found {
+			found := pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 				out, qerr := runQRDB(t, cliBin, connArgs, "--output", "json", "audit", "query",
 					"--replicated", "--action", "tenant.onboard")
 				lastOut = out
-				if qerr == nil {
-					if jsonErr := json.Unmarshal([]byte(out), &page); jsonErr == nil {
-						for _, ev := range page.Events {
-							if ev.Outcome == "success" && ev.TenantID == tenantID {
-								found = true
-								break
-							}
-						}
+				if qerr != nil || json.Unmarshal([]byte(out), &page) != nil {
+					return false
+				}
+				for _, ev := range page.Events {
+					if ev.Outcome == "success" && ev.TenantID == tenantID {
+						return true
 					}
 				}
-				if !found {
-					time.Sleep(200 * time.Millisecond)
-				}
-			}
+				return false
+			})
 			if !found {
 				t.Fatalf("[%s] port %d: replicated chain for tenant %s missing the tenant.onboard success entry; last output: %s",
 					label, port, tenantID, lastOut)

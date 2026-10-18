@@ -171,8 +171,7 @@ func waitForEtcdReady(t *testing.T, ca *testCA, port int, timeout time.Duration)
 
 	tlsCfg := etcdClientTLS(t, ca)
 
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		cli, err := clientv3.New(clientv3.Config{
 			Endpoints:   []string{fmt.Sprintf("https://127.0.0.1:%d", port)},
@@ -184,17 +183,15 @@ func waitForEtcdReady(t *testing.T, ca *testCA, port int, timeout time.Duration)
 		})
 		if err != nil {
 			cancel()
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 
 		_, err = cli.Status(ctx, fmt.Sprintf("https://127.0.0.1:%d", port))
 		cancel()
 		cli.Close()
-		if err == nil {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
+		return err == nil
+	}) {
+		return
 	}
 
 	t.Fatalf("waitForEtcdReady: timed out after %v waiting for etcd on port %d", timeout, port)

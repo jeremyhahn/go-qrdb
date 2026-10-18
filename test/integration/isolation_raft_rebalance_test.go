@@ -262,9 +262,8 @@ func TestStormWatcher_IgnoresLinesBeforeArm(t *testing.T) {
 func waitForNShardOwners(t *testing.T, client *http.Client, ports []int, wantCount, wantOwners int, timeout time.Duration) []int {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
 	var lastOwners []int
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		var owners []int
 		for i, port := range ports {
 			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
@@ -283,10 +282,9 @@ func waitForNShardOwners(t *testing.T, client *http.Client, ports []int, wantCou
 			}
 		}
 		lastOwners = owners
-		if len(owners) == wantOwners {
-			return owners
-		}
-		time.Sleep(300 * time.Millisecond)
+		return len(owners) == wantOwners
+	}) {
+		return lastOwners
 	}
 	t.Fatalf("timed out after %v waiting for exactly %d of %v to reach shard count >= %d (last owners: %v)",
 		timeout, wantOwners, ports, wantCount, lastOwners)
@@ -481,15 +479,11 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 
 	var dbInfoData []byte
 	var dbInfoStatus int
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, rebalMoveDBName))
-		if dbInfoStatus == http.StatusOK && len(dbInfoData) > 0 {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return dbInfoStatus == http.StatusOK && len(dbInfoData) > 0
+	})
 	if dbInfoStatus != http.StatusOK {
 		t.Fatalf("GET /v1/databases/%s: status %d, body: %s", rebalMoveDBName, dbInfoStatus, dbInfoData)
 	}
@@ -551,16 +545,10 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	for i := range numKeys {
 		key := fmt.Sprintf("rebal-data/%04d", i)
 		val := []byte(values[i])
-		var written bool
-		for time.Now().Before(writeDeadline) {
+		if !pollUntil(time.Until(writeDeadline), 200*time.Millisecond, func() bool {
 			status, err := dbScopedPutTolerant(t, tenantClient, adminPorts[srcIdx], rebalMoveDBName, key, val)
-			if err == nil && status == http.StatusNoContent {
-				written = true
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		if !written {
+			return err == nil && status == http.StatusNoContent
+		}) {
 			t.Fatalf("timed out writing baseline key %q", key)
 		}
 		if i == 0 {
@@ -572,14 +560,10 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 		key := fmt.Sprintf("rebal-data/%04d", i)
 		var got []byte
 		var status int
-		readDeadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(readDeadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			got, status = dbScopedGetTolerant(t, tenantClient, adminPorts[srcIdx], rebalMoveDBName, key)
-			if status == http.StatusOK {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return status == http.StatusOK
+		})
 		if status != http.StatusOK {
 			t.Fatalf("baseline key %q read timed out (last status: %d)", key, status)
 		}
@@ -652,14 +636,10 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 		key := fmt.Sprintf("rebal-data/%04d", i)
 		var got []byte
 		var status int
-		readDeadline := time.Now().Add(60 * time.Second)
-		for time.Now().Before(readDeadline) {
+		pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
 			got, status = dbScopedGetTolerant(t, tenantClient, adminPorts[dstIdx], rebalMoveDBName, key)
-			if status == http.StatusOK {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return status == http.StatusOK
+		})
 		if status != http.StatusOK {
 			t.Fatalf("destination node (port %d) key %q read timed out (last status: %d)",
 				adminPorts[dstIdx], key, status)
@@ -679,14 +659,10 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	// shard is serving from its in-memory state; the on-disk directory can
 	// lag slightly behind (e.g. first SST flush) even once reads succeed.
 	var dstShardDir string
-	dstDirDeadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(dstDirDeadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		dstShardDir = findDirEndingIn(t, volumePoolDirs[dstIdx], filepath.Join("databases", rebalMoveDBName))
-		if dstShardDir != "" {
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return dstShardDir != ""
+	})
 	if dstShardDir == "" {
 		t.Fatalf("destination node %d (port %d): dedicated shard dir for %s not found under %s",
 			dstIdx+1, adminPorts[dstIdx], rebalMoveDBName, volumePoolDirs[dstIdx])
@@ -705,15 +681,11 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	t.Logf("source node PASS: no longer hosts the dedicated shard")
 
 	t.Log("verifying source node's on-disk shard directory was purged")
-	purgeDeadline := time.Now().Add(30 * time.Second)
 	var srcShardDir string
-	for time.Now().Before(purgeDeadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		srcShardDir = findDirEndingIn(t, volumePoolDirs[srcIdx], filepath.Join("databases", rebalMoveDBName))
-		if srcShardDir == "" {
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return srcShardDir == ""
+	})
 	if srcShardDir != "" {
 		t.Fatalf("source node %d (port %d): shard dir %q still present after MOVE (expected purge)",
 			srcIdx+1, adminPorts[srcIdx], srcShardDir)
@@ -731,14 +703,10 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 		key := fmt.Sprintf("rebal-data/%04d", i)
 		var got []byte
 		var status int
-		peerDeadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(peerDeadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			got, status = dbScopedGetTolerant(t, tenantClient, adminPorts[peerIdx], rebalMoveDBName, key)
-			if status != http.StatusServiceUnavailable {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return status != http.StatusServiceUnavailable
+		})
 		if status != http.StatusOK {
 			t.Fatalf("peer node (port %d) key %q: status %d, body: %s", adminPorts[peerIdx], key, status, got)
 		}

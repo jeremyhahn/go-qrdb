@@ -206,17 +206,17 @@ func (h *sealClusterHarness) status(i int) (sealed bool, cs clusterSealView, ok 
 // waitFor polls cond on node i until it holds, failing with what after timeout.
 func (h *sealClusterHarness) waitFor(i int, timeout time.Duration, what string, cond func(sealed bool, cs clusterSealView) bool) {
 	h.t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last clusterSealView
 	var lastSealed, seen bool
-	for time.Now().Before(deadline) {
-		if sealed, cs, ok := h.status(i); ok {
-			last, lastSealed, seen = cs, sealed, true
-			if cond(sealed, cs) {
-				return
-			}
+	if pollUntil(timeout, 250*time.Millisecond, func() bool {
+		sealed, cs, ok := h.status(i)
+		if !ok {
+			return false
 		}
-		time.Sleep(250 * time.Millisecond)
+		last, lastSealed, seen = cs, sealed, true
+		return cond(sealed, cs)
+	}) {
+		return
 	}
 	h.t.Fatalf("node %d: timed out after %v waiting for %s (last: reachable=%v sealed=%v cluster_seal=%+v)",
 		i+1, timeout, what, seen, lastSealed, last)
@@ -243,13 +243,12 @@ func (h *sealClusterHarness) refusalCode(i int) string {
 // waitForRefusal waits until node i refuses barrier status with code.
 func (h *sealClusterHarness) waitForRefusal(i int, timeout time.Duration, what, code string) {
 	h.t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last string
-	for time.Now().Before(deadline) {
-		if last = h.refusalCode(i); last == code {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	if pollUntil(timeout, 250*time.Millisecond, func() bool {
+		last = h.refusalCode(i)
+		return last == code
+	}) {
+		return
 	}
 	h.t.Fatalf("node %d: timed out after %v waiting for %s (want refusal %s, last %q)", i+1, timeout, what, code, last)
 }
@@ -288,16 +287,13 @@ func (h *sealClusterHarness) post(i int, path string, body any) (int, []byte) {
 // the boot listener comes up.
 func (h *sealClusterHarness) unsealOwn(i int) {
 	h.t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		st, body := h.post(i, "/v1/barrier/unseal", map[string]any{"secret": []byte(h.nodes[i].passphrase)})
-		if st == http.StatusNoContent || st == http.StatusOK || st == http.StatusConflict {
-			return
-		}
-		if time.Now().After(deadline) {
-			h.t.Fatalf("node %d unseal with its own passphrase: status %d, body %s", i+1, st, body)
-		}
-		time.Sleep(250 * time.Millisecond)
+	var st int
+	var body []byte
+	if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
+		st, body = h.post(i, "/v1/barrier/unseal", map[string]any{"secret": []byte(h.nodes[i].passphrase)})
+		return st == http.StatusNoContent || st == http.StatusOK || st == http.StatusConflict
+	}) {
+		h.t.Fatalf("node %d unseal with its own passphrase: status %d, body %s", i+1, st, body)
 	}
 }
 
@@ -421,12 +417,10 @@ func TestClusterSeal_CutOffNodeStopsServing_RF3(t *testing.T) {
 	h.waitFor(0, 90*time.Second, "serving again", func(sealed bool, cs clusterSealView) bool {
 		return !sealed && cs.Local == "serving"
 	})
-	deadline := time.Now().Add(60 * time.Second)
-	for h.kvStatus(0, "cutoff-key") != http.StatusOK {
-		if time.Now().After(deadline) {
-			t.Fatal("node 1 did not serve again after reconnecting")
-		}
-		time.Sleep(250 * time.Millisecond)
+	if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
+		return h.kvStatus(0, "cutoff-key") == http.StatusOK
+	}) {
+		t.Fatal("node 1 did not serve again after reconnecting")
 	}
 }
 
@@ -463,11 +457,9 @@ func TestClusterSeal_NodeUnsealedAheadOfItsPeersWaits_RF3(t *testing.T) {
 	for _, n := range h.nodes {
 		waitForAdmin(t, h.ca.Pool, n.adminPort, 90*time.Second)
 	}
-	deadline := time.Now().Add(60 * time.Second)
-	for h.kvStatus(0, "ahead-key") != http.StatusOK {
-		if time.Now().After(deadline) {
-			t.Fatal("node 1 did not serve the pre-restart write once its peers were unsealed")
-		}
-		time.Sleep(250 * time.Millisecond)
+	if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
+		return h.kvStatus(0, "ahead-key") == http.StatusOK
+	}) {
+		t.Fatal("node 1 did not serve the pre-restart write once its peers were unsealed")
 	}
 }

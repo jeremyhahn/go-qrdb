@@ -512,14 +512,10 @@ func TestKV_ThreeNode_ReplicatedList(t *testing.T) {
 	for _, port := range adminPorts {
 		// Poll until replication catches up.
 		var keys []string
-		deadline := time.Now().Add(15 * time.Second)
-		for time.Now().Before(deadline) {
+		pollUntil(15*time.Second, 100*time.Millisecond, func() bool {
 			keys = httpList(t, ca, port, "rep/")
-			if len(keys) == count {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+			return len(keys) == count
+		})
 		if len(keys) != count {
 			t.Fatalf("port %d: expected %d keys, got %d", port, count, len(keys))
 		}
@@ -542,15 +538,11 @@ func TestKV_ThreeNode_DeleteReplicates(t *testing.T) {
 
 	// Confirm deletion replicates to all nodes.
 	for _, port := range adminPorts {
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			s := httpGetStatus(t, ca, port, "del-test")
-			if s == http.StatusNotFound {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		s := httpGetStatus(t, ca, port, "del-test")
+		var s int
+		pollUntil(10*time.Second, 100*time.Millisecond, func() bool {
+			s = httpGetStatus(t, ca, port, "del-test")
+			return s == http.StatusNotFound
+		})
 		if s != http.StatusNotFound {
 			t.Errorf("port %d: GET after replicated DELETE: got %d, want 404", port, s)
 		}
@@ -1055,15 +1047,11 @@ func TestMVCC_ThreeNode_RevisionConsistency(t *testing.T) {
 
 	// All nodes should report the same revision (linearizable reads).
 	for i, port := range adminPorts {
-		deadline := time.Now().Add(15 * time.Second)
 		var rev int64
-		for time.Now().Before(deadline) {
+		pollUntil(15*time.Second, 100*time.Millisecond, func() bool {
 			rev = httpCurrentRevision(t, ca, port)
-			if rev >= leaderRev {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+			return rev >= leaderRev
+		})
 		if rev < leaderRev {
 			t.Errorf("node %d revision %d < leader revision %d", i+1, rev, leaderRev)
 		}
@@ -1145,15 +1133,18 @@ func TestLease_SingleNode_Expiry(t *testing.T) {
 	// Grant a lease with a short TTL.
 	lease := httpLeaseGrant(t, ca, adminPort, 2)
 
-	// Wait for expiry.
-	time.Sleep(4 * time.Second)
-
-	// Verify the lease is gone from the list.
-	leases := httpLeaseList(t, ca, adminPort)
-	for _, l := range leases {
-		if l.ID == lease.ID {
-			t.Fatalf("expired lease %d still present in list", lease.ID)
+	// Poll until the expired lease is gone from the list. The deadline is
+	// well past the TTL, so a slow runner's expiry sweep still lands in it.
+	listed := func() bool {
+		for _, l := range httpLeaseList(t, ca, adminPort) {
+			if l.ID == lease.ID {
+				return true
+			}
 		}
+		return false
+	}
+	if !pollUntil(10*time.Second, 200*time.Millisecond, func() bool { return !listed() }) {
+		t.Fatalf("expired lease %d still present in list", lease.ID)
 	}
 }
 
@@ -1411,9 +1402,8 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 	// retry loop because the linearizable read may take a brief moment to
 	// reflect the freshly committed write on a newly started node.
 	listURL := fmt.Sprintf("https://127.0.0.1:%d/users/list?tenantID=system", adminPort)
-	deadline := time.Now().Add(10 * time.Second)
 	var lastTotal int
-	for time.Now().Before(deadline) {
+	if !pollUntil(10*time.Second, 200*time.Millisecond, func() bool {
 		listResp, err := client.Get(listURL)
 		if err != nil {
 			t.Fatalf("list users: %v", err)
@@ -1441,13 +1431,13 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 		lastTotal = listResult.Total
 		for _, u := range listResult.Users {
 			if u.Username == "testuser1" {
-				return // success
+				return true
 			}
 		}
-
-		time.Sleep(200 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("user 'testuser1' not found in list after 10s (last total: %d)", lastTotal)
 	}
-	t.Fatalf("user 'testuser1' not found in list after 10s (last total: %d)", lastTotal)
 }
 
 func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {

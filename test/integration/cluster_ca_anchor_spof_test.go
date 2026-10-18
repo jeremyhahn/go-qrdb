@@ -280,16 +280,17 @@ func insecureAdminClient(t *testing.T, caPath string, timeout time.Duration) *ht
 func waitForReachable(t *testing.T, client *http.Client, adminPort int, timeout time.Duration) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/health", adminPort)
-	deadline := time.Now().Add(timeout)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		resp, err := client.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			return
+		if err != nil {
+			lastErr = err
+			return false
 		}
-		lastErr = err
-		time.Sleep(300 * time.Millisecond)
+		resp.Body.Close()
+		return true
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for 127.0.0.1:%d to accept connections: %v", timeout, adminPort, lastErr)
 }
@@ -381,22 +382,22 @@ func ceremonyBringUpBarrierHTTP(t *testing.T, client *http.Client, adminPort int
 	if err != nil {
 		t.Fatalf("marshal ceremony/initialize request: %v", err)
 	}
-	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	if pollUntil(15*time.Second, 200*time.Millisecond, func() bool {
 		resp, postErr := client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if postErr != nil {
 			lastErr = postErr
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode < 300 || bytes.Contains(respBody, []byte("already")) {
-			return
+			return true
 		}
 		lastErr = fmt.Errorf("status %d, body %s", resp.StatusCode, respBody)
-		time.Sleep(200 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("POST /v1/ceremony/initialize never succeeded within 15s: %v", lastErr)
 }
@@ -426,22 +427,22 @@ func ceremonyBringUpBarrierWithCertHTTP(t *testing.T, client *http.Client, admin
 	if err != nil {
 		t.Fatalf("marshal ceremony/initialize request: %v", err)
 	}
-	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	if pollUntil(15*time.Second, 200*time.Millisecond, func() bool {
 		resp, postErr := client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if postErr != nil {
 			lastErr = postErr
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode < 300 || bytes.Contains(respBody, []byte("already")) {
-			return
+			return true
 		}
 		lastErr = fmt.Errorf("status %d, body %s", resp.StatusCode, respBody)
-		time.Sleep(200 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("POST /v1/ceremony/initialize never succeeded within 15s: %v", lastErr)
 }
@@ -457,14 +458,13 @@ func mintJoinTokenHTTP(t *testing.T, client *http.Client, adminPort int, nodeID 
 	if err != nil {
 		t.Fatalf("marshal join-tokens request: %v", err)
 	}
-	deadline := time.Now().Add(90 * time.Second)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	var token string
+	if pollUntil(90*time.Second, 300*time.Millisecond, func() bool {
 		resp, postErr := client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if postErr != nil {
 			lastErr = postErr
-			time.Sleep(300 * time.Millisecond)
-			continue
+			return false
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -475,13 +475,16 @@ func mintJoinTokenHTTP(t *testing.T, client *http.Client, adminPort int, nodeID 
 			if err := json.Unmarshal(respBody, &out); err != nil {
 				t.Fatalf("decode join-tokens response for %s: %v, body %s", nodeID, err, respBody)
 			}
-			return out.Token
+			token = out.Token
+			return true
 		}
 		if resp.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("POST /v1/cluster/join-tokens (%s): status %d, body %s", nodeID, resp.StatusCode, respBody)
 		}
 		lastErr = fmt.Errorf("status %d, body %s", resp.StatusCode, respBody)
-		time.Sleep(300 * time.Millisecond)
+		return false
+	}) {
+		return token
 	}
 	t.Fatalf("POST /v1/cluster/join-tokens (%s) never succeeded within 90s: %v", nodeID, lastErr)
 	return ""
@@ -500,19 +503,17 @@ func addMemberHTTP(t *testing.T, client *http.Client, adminPort int, shardID, re
 	if err != nil {
 		t.Fatalf("marshal membership/add request: %v", err)
 	}
-	deadline := time.Now().Add(90 * time.Second)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	if pollUntil(90*time.Second, 300*time.Millisecond, func() bool {
 		resp, postErr := client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if postErr != nil {
 			lastErr = postErr
-			time.Sleep(300 * time.Millisecond)
-			continue
+			return false
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
-			return
+			return true
 		}
 		// 503 is the same leadership-transition race every other helper in
 		// this file retries on. 409 naming "feature advertisement" is a
@@ -535,7 +536,9 @@ func addMemberHTTP(t *testing.T, client *http.Client, adminPort int, shardID, re
 			t.Fatalf("POST /membership/add %s (replica %d): status %d, body %s", addr, replicaID, resp.StatusCode, respBody)
 		}
 		lastErr = fmt.Errorf("status %d, body %s", resp.StatusCode, respBody)
-		time.Sleep(300 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("POST /membership/add %s (replica %d) never succeeded within 90s: %v", addr, replicaID, lastErr)
 }
@@ -564,9 +567,8 @@ func removeMemberHTTP(t *testing.T, client *http.Client, adminPort int, shardID,
 func kvPutHTTP(t *testing.T, client *http.Client, adminPort int, key string, value []byte) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", adminPort, key)
-	deadline := time.Now().Add(90 * time.Second)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	if pollUntil(90*time.Second, 300*time.Millisecond, func() bool {
 		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(value))
 		if err != nil {
 			t.Fatalf("kvPutHTTP: new request: %v", err)
@@ -574,19 +576,20 @@ func kvPutHTTP(t *testing.T, client *http.Client, adminPort int, key string, val
 		resp, doErr := client.Do(req)
 		if doErr != nil {
 			lastErr = doErr
-			time.Sleep(300 * time.Millisecond)
-			continue
+			return false
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusNoContent {
-			return
+			return true
 		}
 		if resp.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("kvPutHTTP %s: status %d, body %s", key, resp.StatusCode, body)
 		}
 		lastErr = fmt.Errorf("status %d, body %s", resp.StatusCode, body)
-		time.Sleep(300 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("kvPutHTTP %s never succeeded within 90s: %v", key, lastErr)
 }
@@ -596,22 +599,22 @@ func kvPutHTTP(t *testing.T, client *http.Client, adminPort int, key string, val
 func waitForKVValueHTTP(t *testing.T, client *http.Client, adminPort int, key, want string, timeout time.Duration) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", adminPort, key)
-	deadline := time.Now().Add(timeout)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
-			time.Sleep(300 * time.Millisecond)
-			continue
+			return false
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK && string(body) == want {
-			return
+			return true
 		}
 		lastErr = fmt.Errorf("status %d, body %s", resp.StatusCode, body)
-		time.Sleep(300 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for kv %s = %q: %v", timeout, key, want, lastErr)
 }
@@ -1044,16 +1047,12 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	}
 	killNode(t, node1.cmd)
 
-	removeDeadline := time.Now().Add(90 * time.Second)
 	var removeCode int
 	var removeBody string
-	for time.Now().Before(removeDeadline) {
+	pollUntil(90*time.Second, 500*time.Millisecond, func() bool {
 		removeCode, removeBody = removeMemberHTTP(t, node3.client, node3.adminPort, 1, 1)
-		if removeCode == http.StatusOK {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return removeCode == http.StatusOK
+	})
 	if removeCode != http.StatusOK {
 		t.Fatalf("POST /membership/remove 1 via surviving node 3: status %d, body %s", removeCode, removeBody)
 	}

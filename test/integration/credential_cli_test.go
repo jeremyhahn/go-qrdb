@@ -246,14 +246,18 @@ func testCredentialLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pro
 	// runCLIProto call spawns a brand-new OS process and (re)dials the
 	// transport from scratch -- QUIC's handshake in particular can push the
 	// rotate -> versions -> retrieve-version(v1) sequence close to a couple
-	// of seconds of real wall-clock time before gc even runs. -------------
-	time.Sleep(16 * time.Second)
-	out, err = runCLIProto(t, node, proto, "credential", "gc", storedName)
-	if err != nil {
-		t.Fatalf("[%s] credential gc: %v\noutput: %s", proto.name, err, out)
-	}
-	reaped := parseReapedCount(t, proto, out)
-	if reaped < 1 {
+	// of seconds of real wall-clock time before gc even runs. gc reaps
+	// nothing while v1 is still in grace, so it is retried until it reaps v1,
+	// bounded by a deadline past the grace period. ------------------------
+	var reaped int
+	if !pollUntil(30*time.Second, time.Second, func() bool {
+		out, err = runCLIProto(t, node, proto, "credential", "gc", storedName)
+		if err != nil {
+			t.Fatalf("[%s] credential gc: %v\noutput: %s", proto.name, err, out)
+		}
+		reaped = parseReapedCount(t, proto, out)
+		return reaped >= 1
+	}) {
 		t.Fatalf("[%s] credential gc reaped = %d, want >= 1 after the grace period elapsed", proto.name, reaped)
 	}
 

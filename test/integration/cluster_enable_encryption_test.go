@@ -499,11 +499,12 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// node's status: skip when already unsealed, unseal when sealed, retry until
 	// the barrier exists and is unsealed.
 	for i := range 3 {
-		deadline := time.Now().Add(60 * time.Second)
-		for {
-			strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
+		var strategy string
+		var sealed, ok bool
+		if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
+			strategy, sealed, ok = tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
 			if ok && !sealed {
-				break // already unsealed (leader, or a prior pass succeeded)
+				return true // already unsealed (leader, or a prior pass succeeded)
 			}
 			if ok && sealed {
 				// The unseal endpoint requires non-empty key material (no derived
@@ -513,14 +514,11 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 					fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/unseal", adminPorts[i], tenantID),
 					map[string]interface{}{"key": []byte("none")},
 				)
-				if s == http.StatusNoContent || s == http.StatusOK {
-					break
-				}
+				return s == http.StatusNoContent || s == http.StatusOK
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("node %d tenant barrier never reached unsealed (last strategy=%q sealed=%v ok=%v)", i+1, strategy, sealed, ok)
-			}
-			time.Sleep(500 * time.Millisecond)
+			return false
+		}) {
+			t.Fatalf("node %d tenant barrier never reached unsealed (last strategy=%q sealed=%v ok=%v)", i+1, strategy, sealed, ok)
 		}
 	}
 
@@ -532,16 +530,12 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// Write tenant data through the RF=3 dedicated shard.
 	seed := map[string]string{"k1": "v1", "k2": "v2", "k3": "v3"}
 	for k, v := range seed {
-		deadline := time.Now().Add(30 * time.Second)
 		var st int
 		var perr error
-		for time.Now().Before(deadline) {
+		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 			st, perr = dbScopedPutTolerant(t, tenantClient, leaderPort, dbName, k, []byte(v))
-			if perr == nil && (st == http.StatusOK || st == http.StatusNoContent || st == http.StatusCreated) {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return perr == nil && (st == http.StatusOK || st == http.StatusNoContent || st == http.StatusCreated)
+		})
 		if perr != nil || (st != http.StatusOK && st != http.StatusNoContent && st != http.StatusCreated) {
 			t.Fatalf("tenant put %q: status %d err %v", k, st, perr)
 		}
@@ -589,16 +583,10 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// Every node's reconciler recycles its tenant shard ONLINE; the tenant barrier
 	// transitions to passphrase and stays UNSEALED (no re-unseal needed).
 	for i := range 3 {
-		deadline := time.Now().Add(180 * time.Second)
-		migrated := false
-		for time.Now().Before(deadline) {
-			if strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); ok && strategy == "passphrase" && !sealed {
-				migrated = true
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if !migrated {
+		if !pollUntil(180*time.Second, 500*time.Millisecond, func() bool {
+			strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
+			return ok && strategy == "passphrase" && !sealed
+		}) {
 			t.Fatalf("node %d tenant barrier did not migrate to unsealed passphrase within timeout", i+1)
 		}
 		t.Logf("node %d tenant barrier migrated to passphrase (online)", i+1)
@@ -616,14 +604,10 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	for k, v := range seed {
 		var data []byte
 		var st int
-		rd := time.Now().Add(60 * time.Second)
-		for time.Now().Before(rd) {
+		pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			data, st = dbScopedGetTolerant(t, tenantClient, newLeaderPort, dbName, k)
-			if st == http.StatusOK {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return st == http.StatusOK
+		})
 		if st != http.StatusOK || string(data) != v {
 			t.Fatalf("post-migration tenant %q = %q (status %d), want %q (DATA LOSS)", k, string(data), st, v)
 		}
@@ -642,15 +626,11 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		t.Fatalf("tenant barrier seal via node %d: status %d, body: %s", sealIdx+1, s, b)
 	}
 	for i := range 3 {
-		deadline := time.Now().Add(30 * time.Second)
-		for {
-			if _, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); ok && sealed {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("node %d: the tenant's seal through node %d did not reach it", i+1, sealIdx+1)
-			}
-			time.Sleep(250 * time.Millisecond)
+		if !pollUntil(30*time.Second, 250*time.Millisecond, func() bool {
+			_, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
+			return ok && sealed
+		}) {
+			t.Fatalf("node %d: the tenant's seal through node %d did not reach it", i+1, sealIdx+1)
 		}
 		if _, st := dbScopedGetTolerant(t, tenantClient, adminPorts[i], dbName, "k1"); st == http.StatusOK {
 			t.Fatalf("node %d served the sealed tenant's data", i+1)
@@ -669,14 +649,10 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	for k, v := range seed {
 		var data []byte
 		var st int
-		rd := time.Now().Add(60 * time.Second)
-		for time.Now().Before(rd) {
+		pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			data, st = dbScopedGetTolerant(t, tenantClient, finalLeader, dbName, k)
-			if st == http.StatusOK {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return st == http.StatusOK
+		})
 		if st != http.StatusOK || string(data) != v {
 			t.Fatalf("after the tenant unseal %q = %q (status %d), want %q", k, string(data), st, v)
 		}
@@ -718,9 +694,8 @@ func migrationCredentialsDir(t *testing.T) string {
 // second node migrating without its own file fails the test.
 func waitForCredentialHolder(t *testing.T, nodes int, migrated func(i int) bool, timeout time.Duration) int {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		holder := -1
+	holder := -1
+	if pollUntil(timeout, 250*time.Millisecond, func() bool {
 		for i := range nodes {
 			if !migrated(i) {
 				continue
@@ -730,10 +705,9 @@ func waitForCredentialHolder(t *testing.T, nodes int, migrated func(i int) bool,
 			}
 			holder = i
 		}
-		if holder >= 0 {
-			return holder
-		}
-		time.Sleep(250 * time.Millisecond)
+		return holder >= 0
+	}) {
+		return holder
 	}
 	t.Fatalf("no node migrated with the request's held credential within %v", timeout)
 	return -1

@@ -303,12 +303,11 @@ func loadDaemonCA(t *testing.T, dataDir string) *testCA {
 // waitForNonEmptyFile polls until path exists and is non-empty.
 func waitForNonEmptyFile(t *testing.T, path string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	if pollUntil(timeout, 50*time.Millisecond, func() bool {
+		info, err := os.Stat(path)
+		return err == nil && info.Size() > 0
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for non-empty file %s", timeout, path)
 }
@@ -342,16 +341,17 @@ func runCLISplit(t *testing.T, binary string, args ...string) (stdout, stderr st
 func waitForBarrierReachable(t *testing.T, cli string, flags []string, timeout time.Duration) {
 	t.Helper()
 	args := append(append([]string{}, flags...), "barrier", "status")
-	deadline := time.Now().Add(timeout)
 	var lastErr error
 	var lastStderr string
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		stdout, stderr, err := runCLISplit(t, cli, args...)
 		if err == nil || cliSealedRefusal(stdout+stderr) {
-			return
+			return true
 		}
 		lastErr, lastStderr = err, stderr
-		time.Sleep(200 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for barrier status to become reachable: %v\nstderr: %s", timeout, lastErr, lastStderr)
 }
@@ -372,27 +372,30 @@ func cliSealedRefusal(output string) bool {
 func barrierStatus(t *testing.T, cli string, flags []string) *transport.BarrierStatusResponse {
 	t.Helper()
 	args := append(append([]string{}, flags...), "--output", "json", "barrier", "status")
-	deadline := time.Now().Add(20 * time.Second)
 	var lastErr error
 	var lastOut, lastErrOut string
-	for time.Now().Before(deadline) {
+	var resp *transport.BarrierStatusResponse
+	if pollUntil(20*time.Second, 200*time.Millisecond, func() bool {
 		stdout, stderr, err := runCLISplit(t, cli, args...)
 		if err == nil {
-			var resp transport.BarrierStatusResponse
-			if decErr := json.Unmarshal([]byte(stdout), &resp); decErr != nil {
+			resp = &transport.BarrierStatusResponse{}
+			if decErr := json.Unmarshal([]byte(stdout), resp); decErr != nil {
 				t.Fatalf("barrier status: decode JSON: %v\noutput: %s", decErr, stdout)
 			}
-			return &resp
+			return true
 		}
 		// A node the cluster seal holds or cuts off refuses status; its
 		// own barrier is initialized, and its typed refusal is the answer
 		// "sealed". It carries no InitializedAt: callers read that
 		// unsealed.
 		if cliSealedRefusal(stdout + stderr) {
-			return &transport.BarrierStatusResponse{Sealed: true, Initialized: true}
+			resp = &transport.BarrierStatusResponse{Sealed: true, Initialized: true}
+			return true
 		}
 		lastErr, lastOut, lastErrOut = err, stdout, stderr
-		time.Sleep(200 * time.Millisecond)
+		return false
+	}) {
+		return resp
 	}
 	t.Fatalf("barrier status: %v\nstdout:%s\nstderr:%s", lastErr, lastOut, lastErrOut)
 	return nil

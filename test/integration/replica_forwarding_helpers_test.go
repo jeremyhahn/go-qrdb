@@ -359,16 +359,16 @@ func (c *fwdCluster) createRole(t *testing.T, base, name string, perms ...string
 func (c *fwdCluster) waitForTenantOn(t *testing.T, i int) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/databases/list", c.nodes[i].admin)
-	deadline := time.Now().Add(120 * time.Second)
-	for {
-		body, st := iraftAPIGet(t, c.tenant, url)
-		if st == http.StatusOK {
-			return
-		}
-		if st != http.StatusServiceUnavailable || time.Now().After(deadline) {
+	var body []byte
+	var st int
+	if !pollUntil(120*time.Second, 500*time.Millisecond, func() bool {
+		body, st = iraftAPIGet(t, c.tenant, url)
+		if st != http.StatusOK && st != http.StatusServiceUnavailable {
 			t.Fatalf("tenant not served by node %d: status %d, body %s", i+1, st, body)
 		}
-		time.Sleep(500 * time.Millisecond)
+		return st == http.StatusOK
+	}) {
+		t.Fatalf("tenant not served by node %d: status %d, body %s", i+1, st, body)
 	}
 }
 
@@ -377,9 +377,11 @@ func (c *fwdCluster) waitForTenantOn(t *testing.T, i int) {
 func (c *fwdCluster) createDatabase(t *testing.T, name string, replicas int) uint64 {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/databases", c.nodes[c.creator].admin)
-	deadline := time.Now().Add(90 * time.Second)
-	for {
-		body, st := iraftAPIPost(t, c.tenant, url, map[string]interface{}{
+	var body []byte
+	var st int
+	var shardID uint64
+	if !pollUntil(90*time.Second, 500*time.Millisecond, func() bool {
+		body, st = iraftAPIPost(t, c.tenant, url, map[string]interface{}{
 			"name": name, "backend": "pebble", "replicas": replicas,
 		})
 		if st == http.StatusCreated || st == http.StatusOK {
@@ -389,13 +391,17 @@ func (c *fwdCluster) createDatabase(t *testing.T, name string, replicas int) uin
 			if err := json.Unmarshal(body, &info); err != nil || info.ShardID == 0 {
 				t.Fatalf("create %s: no shard ID in %s", name, body)
 			}
-			return info.ShardID
+			shardID = info.ShardID
+			return true
 		}
-		if st != http.StatusServiceUnavailable || time.Now().After(deadline) {
+		if st != http.StatusServiceUnavailable {
 			t.Fatalf("create %s: status %d, body %s", name, st, body)
 		}
-		time.Sleep(500 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("create %s: status %d, body %s", name, st, body)
 	}
+	return shardID
 }
 
 // live returns the indexes of the nodes still running.
@@ -422,9 +428,9 @@ type shardPlacement struct {
 // among them.
 func (c *fwdCluster) placementOf(t *testing.T, shardID uint64, want int) shardPlacement {
 	t.Helper()
-	deadline := time.Now().Add(120 * time.Second)
-	for {
-		p := shardPlacement{replicas: map[int]uint64{}, leader: -1}
+	var p shardPlacement
+	if !pollUntil(120*time.Second, 500*time.Millisecond, func() bool {
+		p = shardPlacement{replicas: map[int]uint64{}, leader: -1}
 		for _, i := range c.live() {
 			body, st := iraftAPIGet(t, c.sys, fmt.Sprintf("https://127.0.0.1:%d/admin/topology", c.nodes[i].admin))
 			if st != http.StatusOK {
@@ -450,14 +456,11 @@ func (c *fwdCluster) placementOf(t *testing.T, shardID uint64, want int) shardPl
 				}
 			}
 		}
-		if len(p.replicas) == want && p.leader >= 0 {
-			return p
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("shard %d: placement %+v; want %d replicas with a leader", shardID, p, want)
-		}
-		time.Sleep(500 * time.Millisecond)
+		return len(p.replicas) == want && p.leader >= 0
+	}) {
+		t.Fatalf("shard %d: placement %+v; want %d replicas with a leader", shardID, p, want)
 	}
+	return p
 }
 
 // nonReplicas returns the live nodes holding no replica in p.
@@ -564,4 +567,20 @@ func embeddedPeerIdentities(t *testing.T, self int, certPaths []string) string {
 	t.Helper()
 	all := strings.Split(memberIdentitiesFlag(t, certPaths), ",")
 	return strings.Join(append(all[:self:self], all[self+1:]...), ",")
+}
+
+// fwdRetryBudget bounds retry: a tenant's databases are still starting when
+// the first forwarded call reaches them, and a bounded read answers a slow
+// ReadIndex with a retryable error.
+const fwdRetryBudget = 2 * time.Minute
+
+// retry calls f until it succeeds or the budget runs out, and returns its
+// last error.
+func retry(f func() error) error {
+	var err error
+	pollUntil(fwdRetryBudget, 250*time.Millisecond, func() bool {
+		err = f()
+		return err == nil
+	})
+	return err
 }

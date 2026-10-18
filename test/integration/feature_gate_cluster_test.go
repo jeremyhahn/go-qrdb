@@ -96,18 +96,14 @@ func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 				return false
 			}
 			for i, l := range logs {
-				for !l.Contains("registered cluster member") {
-					if time.Now().After(deadline) {
-						t.Fatalf("node %d never advertised its features", i+1)
-					}
-					time.Sleep(200 * time.Millisecond)
+				if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
+					return l.Contains("registered cluster member")
+				}) {
+					t.Fatalf("node %d never advertised its features", i+1)
 				}
 			}
-			for !activated() {
-				if time.Now().After(deadline) {
-					t.Fatal("the cluster never activated guarded writes")
-				}
-				time.Sleep(200 * time.Millisecond)
+			if !pollUntil(time.Until(deadline), 200*time.Millisecond, activated) {
+				t.Fatal("the cluster never activated guarded writes")
 			}
 			for i, l := range logs {
 				if reason, failed := advertisementFailed(l.String()); failed {
@@ -248,11 +244,11 @@ func TestFeatureGateLog_RetriedRegistrationIsNotAFailure(t *testing.T) {
 func waitStatus(t *testing.T, deadline time.Time, do func() int, want int, format string, args ...any) {
 	t.Helper()
 	last := 0
-	for time.Now().Before(deadline) {
-		if last = do(); last == want {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	if pollUntil(time.Until(deadline), 250*time.Millisecond, func() bool {
+		last = do()
+		return last == want
+	}) {
+		return
 	}
 	t.Fatalf(format+": last status %d, want %d", append(args, last, want)...)
 }
@@ -264,11 +260,10 @@ func TestCluster_GracefulShutdownWithdrawsTheAdvertisement(t *testing.T) {
 	_, _, _, logs := startThreeNodeClusterLogged(t, "pebble")
 	deadline := time.Now().Add(60 * time.Second)
 	for i, l := range logs {
-		for !l.Contains("registered cluster member") {
-			if time.Now().After(deadline) {
-				t.Fatalf("node %d never advertised its features", i+1)
-			}
-			time.Sleep(200 * time.Millisecond)
+		if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
+			return l.Contains("registered cluster member")
+		}) {
+			t.Fatalf("node %d never advertised its features", i+1)
 		}
 	}
 
@@ -277,12 +272,11 @@ func TestCluster_GracefulShutdownWithdrawsTheAdvertisement(t *testing.T) {
 		t.Fatalf("SIGTERM node 3: %v", err)
 	}
 	const withdrawn = `feature gate: node withdrew its advertisement" node_id=3`
-	for !logs[0].Contains(withdrawn) && !logs[1].Contains(withdrawn) {
-		if time.Since(stopped) > 5*time.Second {
-			t.Fatal("node 3's advertisement was not withdrawn within 5s of a graceful stop; " +
-				"it was left to expire with its lease")
-		}
-		time.Sleep(100 * time.Millisecond)
+	if !pollUntil(time.Until(stopped.Add(5*time.Second)), 100*time.Millisecond, func() bool {
+		return logs[0].Contains(withdrawn) || logs[1].Contains(withdrawn)
+	}) {
+		t.Fatal("node 3's advertisement was not withdrawn within 5s of a graceful stop; " +
+			"it was left to expire with its lease")
 	}
 	if err := awaitNodeExit(t, logs[2].cmd, nodeStopTimeout); err != nil {
 		t.Fatalf("node 3 did not stop cleanly: %v", err)
@@ -445,18 +439,14 @@ func TestCluster_FeatureGateActivatesGuardedWrites_CLI_PerProtocol(t *testing.T)
 		return false
 	}
 	for i, l := range logs {
-		for !l.Contains("registered cluster member") {
-			if time.Now().After(deadline) {
-				t.Fatalf("node %d never advertised its features", i+1)
-			}
-			time.Sleep(200 * time.Millisecond)
+		if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
+			return l.Contains("registered cluster member")
+		}) {
+			t.Fatalf("node %d never advertised its features", i+1)
 		}
 	}
-	for !activated() {
-		if time.Now().After(deadline) {
-			t.Fatal("the cluster never activated guarded writes")
-		}
-		time.Sleep(200 * time.Millisecond)
+	if !pollUntil(time.Until(deadline), 200*time.Millisecond, activated) {
+		t.Fatal("the cluster never activated guarded writes")
 	}
 
 	// A write to the named database lands on every replica before the drop.
@@ -494,14 +484,10 @@ func TestCluster_FeatureGateActivatesGuardedWrites_CLI_PerProtocol(t *testing.T)
 
 			var out string
 			var err error
-			protoDeadline := time.Now().Add(20 * time.Second)
-			for {
+			pollUntil(20*time.Second, 250*time.Millisecond, func() bool {
 				out, err = runCLI(t, cli, args...)
-				if err != nil || time.Now().After(protoDeadline) {
-					break
-				}
-				time.Sleep(250 * time.Millisecond)
-			}
+				return err != nil
+			})
 			if err == nil {
 				t.Fatalf("[%s] kv put %s/%s succeeded, want the guarded write refused (output: %s)", proto.name, gatedDatabase, key, out)
 			}

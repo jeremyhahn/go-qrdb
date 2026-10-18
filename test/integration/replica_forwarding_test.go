@@ -161,22 +161,22 @@ func TestReplicaForwarding(t *testing.T) {
 			// A forward already bound for the replica as it died fails with the
 			// transport's unavailability -- what it did there is unknown -- and
 			// the next finds it unreachable and refuses. No answer is a local one.
-			deadline := time.Now().Add(15 * time.Second)
-			for {
+			var detail string
+			if !pollUntil(15*time.Second, 200*time.Millisecond, func() bool {
 				a := tr.put(t, c, others[0], fwdAsWriter, db, tr.name()+"-after-stop", "v")
 				if a.ok {
 					t.Fatalf("put with the replica down succeeded (%s); a non-replica must never answer locally", a.detail)
 				}
-				if a.refusal != nil {
-					if a.refusal["replica_0_raft_addr"] != c.nodes[replica].raftAddr {
-						t.Fatalf("refusal %v does not name the stopped replica", a.refusal)
-					}
-					return
+				detail = a.detail
+				if a.refusal == nil {
+					return false
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("put with the replica down = %s; want the refusal naming it", a.detail)
+				if a.refusal["replica_0_raft_addr"] != c.nodes[replica].raftAddr {
+					t.Fatalf("refusal %v does not name the stopped replica", a.refusal)
 				}
-				time.Sleep(200 * time.Millisecond)
+				return true
+			}) {
+				t.Fatalf("put with the replica down = %s; want the refusal naming it", detail)
 			}
 		})
 	}

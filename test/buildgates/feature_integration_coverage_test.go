@@ -17,8 +17,8 @@ package buildgates
 // Every docs/<feature>/architecture.md folder must have a corresponding
 // `make integration-test-<feature>` selection in test/integration/features.mk,
 // and every Test function in the NON-DOCKER integration packages
-// (./test/integration, ./test/integration/auth -- test/integration/api is
-// the compose-based suite and out of scope here) must be named by some
+// (./test/integration -- test/integration/api is the compose-based suite
+// and out of scope here) must be named by some
 // feature's file list. Either direction drifting silently is exactly the
 // shape #500 and #367 both named: a property of the whole tree that no
 // single diff shows a reviewer, so it is a scanner rather than a review
@@ -142,7 +142,6 @@ func nonDockerTestFunctions(t *testing.T, root string) map[string]string {
 		}
 	}
 	scan("test/integration", "")
-	scan("test/integration/auth", "auth/")
 	return out
 }
 

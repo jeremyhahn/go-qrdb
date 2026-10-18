@@ -116,11 +116,13 @@ const watchCancelGrace = 5 * time.Second
 // transport_watch.go), the slowest of the five mechanisms.
 const watchEventGrace = 20 * time.Second
 
-// watchSubscribeGrace is a fixed pause after starting a background watch,
-// before the triggering mutation is issued, so the watch is subscribed
-// server-side before the event that should be delivered to it is
-// generated. This mirrors the equivalent pause in the pre-existing
-// polling-based watch harness (test/integration/api/cli_watch_test.go).
+// watchSubscribeGrace is a fixed pause after starting the idle background
+// watch, before it is signaled, so the SIGTERM lands while the process is
+// blocked on its channel read rather than still dialing. It stays a fixed
+// pause: `qrdb watch` prints nothing until the first event, so there is no
+// subscribed line to wait for, and the idle watch must never see an event.
+// Every other watch in this file proves its subscription instead, by waiting
+// for an event it provoked (putUntilObserved).
 const watchSubscribeGrace = 800 * time.Millisecond
 
 // watchOutputBuf is a concurrency-safe io.Writer that accumulates a
@@ -214,14 +216,9 @@ func startBackgroundWatch(t *testing.T, node *multiProtoNode, proto multiProtoco
 // waitForWatchOutput polls b's captured output until it contains want or
 // timeout elapses, returning whether it was found.
 func waitForWatchOutput(b *bgWatch, timeout time.Duration, want string) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(b.output(), want) {
-			return true
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	return false
+	return pollUntil(timeout, 150*time.Millisecond, func() bool {
+		return strings.Contains(b.output(), want)
+	})
 }
 
 // putUntilObserved issues `kv put key value` against proto and waits for it
@@ -296,7 +293,6 @@ func testWatchOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtoc
 	// subscribed to.
 	key := ns + "key"
 	w := startBackgroundWatch(t, node, proto, key, "--prev-kv")
-	time.Sleep(watchSubscribeGrace)
 
 	putUntilObserved(t, node, proto, w, key, "initial", watchEventGrace)
 	putUntilObserved(t, node, proto, w, key, "updated", watchEventGrace)
@@ -325,7 +321,6 @@ func testWatchOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtoc
 			t.Fatalf("[%s] kv put %s (prev-initial): %v\noutput: %s", proto.name, prevKey, err, out)
 		}
 		wpk := startBackgroundWatch(t, node, proto, prevKey, "--prev-kv")
-		time.Sleep(watchSubscribeGrace)
 		putUntilObserved(t, node, proto, wpk, prevKey, "prev-updated", watchEventGrace)
 		if out := wpk.output(); !strings.Contains(out, "prev-initial") {
 			t.Logf("[%s] watch %s --prev-kv output = %q -- prev-kv content not observed; MCP's poll-gap "+
@@ -345,7 +340,6 @@ func testWatchOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtoc
 	prefixRoot := ns + "prefix/"
 	childKey := prefixRoot + "child"
 	wp := startBackgroundWatch(t, node, proto, prefixRoot, "--prefix")
-	time.Sleep(watchSubscribeGrace)
 
 	putUntilObserved(t, node, proto, wp, childKey, "child-value", watchEventGrace)
 	if !strings.Contains(wp.output(), childKey) {
@@ -370,7 +364,6 @@ func testWatchOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtoc
 	rev := kvCLIRevision(t, node, proto)
 
 	wr := startBackgroundWatch(t, node, proto, revKey, "--start-revision", strconv.FormatInt(rev, 10))
-	time.Sleep(watchSubscribeGrace)
 
 	putUntilObserved(t, node, proto, wr, revKey, "after", watchEventGrace)
 	wr.stop()
@@ -383,6 +376,7 @@ func testWatchOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtoc
 	// ever been delivered.
 	idleKey := ns + "idle/never-written"
 	wi := startBackgroundWatch(t, node, proto, idleKey)
+	// Kept: an idle watch prints nothing, so no condition marks it subscribed (see watchSubscribeGrace).
 	time.Sleep(watchSubscribeGrace)
 	if d := wi.stop(); d > watchCancelGrace {
 		t.Fatalf("[%s] watch %s (idle): SIGTERM to exit took %v, want <= %v", proto.name, idleKey, d, watchCancelGrace)
@@ -799,7 +793,9 @@ func TestWatchReplay_CLI_MCP_NoLoss(t *testing.T) {
 
 	key := "watchmcpnoloss/key"
 	w := startBackgroundWatch(t, node, proto, key)
-	time.Sleep(watchSubscribeGrace)
+	// A retried put proves the watch is subscribed before the single-shot
+	// puts below start; an event issued before subscription is not a loss.
+	putUntilObserved(t, node, proto, w, key, "noloss-subscribed", watchEventGrace)
 
 	const attempts = 8
 	for i := 0; i < attempts; i++ {

@@ -432,30 +432,28 @@ func startThreeNodeClusterWithSpareSPIFFE(t *testing.T, smType string) (adminPor
 func waitForSettledFollowerView(t *testing.T, ca *testCA, port int, timeout time.Duration) {
 	t.Helper()
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
-	deadline := time.Now().Add(timeout)
 	var lastDiag string
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 100*time.Millisecond, func() bool {
 		status, diag := httpStatusRaw(t, client, port)
 		if diag != "" {
 			lastDiag = diag
 		}
-		if status != nil {
-			if shards, ok := status["shards"].([]interface{}); ok {
-				for _, s := range shards {
-					shard, ok := s.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					isLeader, _ := shard["is_leader"].(bool)
-					replicaID, _ := shard["replica_id"].(float64)
-					leaderID, _ := shard["leader_id"].(float64)
-					if !isLeader && leaderID != 0 && leaderID != replicaID {
-						return
-					}
-				}
+		shards, _ := status["shards"].([]interface{})
+		for _, s := range shards {
+			shard, ok := s.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			isLeader, _ := shard["is_leader"].(bool)
+			replicaID, _ := shard["replica_id"].(float64)
+			leaderID, _ := shard["leader_id"].(float64)
+			if !isLeader && leaderID != 0 && leaderID != replicaID {
+				return true
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for port %d to settle on a non-self leader view (last: %s)",
 		timeout, port, lastDiag)
@@ -769,15 +767,10 @@ func TestCluster_SnapshotDataIntegrity(t *testing.T) {
 	// Verify all 200 keys are present across all nodes.
 	for _, port := range adminPorts {
 		var totalKeys int
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			allKeys := httpListTolerant(t, ca, port, "batch")
-			totalKeys = len(allKeys)
-			if totalKeys >= 200 {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+			totalKeys = len(httpListTolerant(t, ca, port, "batch"))
+			return totalKeys >= 200
+		})
 		if totalKeys < 200 {
 			t.Fatalf("port %d: expected 200 keys, got %d", port, totalKeys)
 		}
@@ -844,14 +837,10 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 	// Verify all keys are readable on all nodes.
 	for _, port := range adminPorts {
 		var keys []string
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			keys = httpListTolerant(t, ca, port, "persist/")
-			if len(keys) == 100 {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return len(keys) == 100
+		})
 		if len(keys) != 100 {
 			t.Fatalf("port %d: expected 100 keys, got %d", port, len(keys))
 		}
@@ -911,22 +900,19 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 	for _, port := range adminPorts {
 		var keys []string
 		var lastDiag string
-		deadline := time.Now().Add(30 * time.Second)
 		client := mtlsHTTPClient(t, ca, 5*time.Second)
-		for time.Now().Before(deadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			url := fmt.Sprintf("https://127.0.0.1:%d/kv?prefix=persist/&consistency=eventual", port)
 			resp, err := client.Get(url)
 			if err != nil {
 				lastDiag = fmt.Sprintf("conn error: %v", err)
-				time.Sleep(200 * time.Millisecond)
-				continue
+				return false
 			}
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				lastDiag = fmt.Sprintf("status %d, body: %s", resp.StatusCode, body)
-				time.Sleep(200 * time.Millisecond)
-				continue
+				return false
 			}
 			var result struct {
 				Keys []string `json:"keys"`
@@ -935,11 +921,11 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 				keys = result.Keys
 			}
 			if len(keys) >= 100 {
-				break
+				return true
 			}
 			lastDiag = fmt.Sprintf("got %d keys", len(keys))
-			time.Sleep(200 * time.Millisecond)
-		}
+			return false
+		})
 		if len(keys) < 100 {
 			t.Fatalf("port %d after restart: expected 100 keys, got %d; last diagnostic: %s", port, len(keys), lastDiag)
 		}
@@ -1312,19 +1298,15 @@ func TestCluster_MembershipAdd_RefusedWithoutAdvertisement(t *testing.T) {
 
 	// Wait for the cluster to activate guarded writes: every node's gate
 	// then refuses a replica on a node with no advertisement.
-	deadline := time.Now().Add(60 * time.Second)
 	var leaderCode int
 	var leaderBody string
-	for {
+	pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
 		leaderCode, leaderBody = httpMembershipAdd(t, ca, leaderPort, shardID, newReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
-		if leaderCode == http.StatusConflict || time.Now().After(deadline) {
-			break
-		}
 		if leaderCode == http.StatusOK {
 			t.Fatalf("the leader added a replica on a node with no feature advertisement: %s", leaderBody)
 		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return leaderCode == http.StatusConflict
+	})
 	if leaderCode != http.StatusConflict {
 		t.Fatalf("leader: status %d, body %s, want 409", leaderCode, leaderBody)
 	}

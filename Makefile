@@ -1297,7 +1297,7 @@ integration-image:
 # network, no capabilities -- and tears the project down, pass or fail.
 #
 # The default IT_CMD is every self-spawned qrdbdharness suite
-# (./test/integration and ./test/integration/auth). IT_FEATURE=<feature>
+# (./test/integration). IT_FEATURE=<feature>
 # narrows it to that feature's features.mk selection, exactly what
 # `make integration-test-<feature>` runs on the host; CI's integration-features
 # legs are `make integration-test IT_FEATURE=<feature>`. A feature that selects
@@ -1311,7 +1311,7 @@ integration-image:
 # it starts, so each sizes its scheduler to 8 Ps rather than the host's
 # threads. The compose service sets it.
 IT_FEATURE ?=
-IT_CMD     ?= $(if $(IT_FEATURE),$(call int_cmd,$(IT_FEATURE)),$(GO) test -race -count=1 -v -timeout=$(INTEGRATION_GO_TIMEOUT) -p 1 -parallel $(CLUSTER_PARALLEL) -tags "$(INT_FEATURE_TAGS)" $(INT_TEST_DIR) $(INT_TEST_DIR)/auth)
+IT_CMD     ?= $(if $(IT_FEATURE),$(call int_cmd,$(IT_FEATURE)),$(GO) test -race -count=1 -v -timeout=$(INTEGRATION_GO_TIMEOUT) -p 1 -parallel $(CLUSTER_PARALLEL) -tags "$(INT_FEATURE_TAGS)" $(INT_TEST_DIR))
 
 .PHONY: integration-test
 integration-test:
@@ -1339,25 +1339,8 @@ integration-test:
 # builds, runs, and tears down its own stack. Fail-fast: a failing standalone
 # stage stops before cluster.
 .PHONY: integration-test-docker
-integration-test-docker: integration-test-auth integration-test-standalone integration-test-cluster
-	@echo "==> All integration stages passed (auth + standalone + cluster)."
-
-# test/integration/auth was named by no target and run by no workflow (#228),
-# so its two tests -- the M14 auth-factor lifecycle and revoked-factor lookup --
-# ran only when someone typed the package path by hand.
-#
-# Unlike the two stages below it needs no compose stack: it is in-memory and
-# self-contained, so it runs as a plain `go test` in about two seconds. That is
-# why it runs FIRST in the aggregate and first in the CI integration job: it is
-# the cheapest integration failure to report.
-#
-# $(MIN_TAGS),integration is a DECLARED rung in SUPPORTED_TAG_SETS, so the
-# combination this compiles under is one vet-tags already sweeps -- not a new,
-# unverified tag set introduced by a test target.
-.PHONY: integration-test-auth
-integration-test-auth:
-	@echo "==> Running AUTH integration tests (in-memory, no compose stack)..."
-	$(GO) test -tags "$(MIN_TAGS),integration" -count=1 ./test/integration/auth/...
+integration-test-docker: integration-test-standalone integration-test-cluster
+	@echo "==> All integration stages passed (standalone + cluster)."
 
 # Standalone stage: the multi-protocol CLI suites in ./test/integration/api
 # exercised against the single-node software + Shamir docker servers.
@@ -1539,8 +1522,7 @@ integration-test-local:
 # Per-feature integration targets: one `make integration-test-<feature>` per
 # docs/<feature>/ folder, selected from test/integration/features.mk -- see
 # that file's header for the mapping and what an empty entry means. Each
-# target runs ONLY the self-spawned qrdbdharness suites (./test/integration,
-# ./test/integration/auth): no Docker, no compose stack, so it runs inside a
+# target runs ONLY the self-spawned qrdbdharness suites (./test/integration): no Docker, no compose stack, so it runs inside a
 # lane container. Where a feature's ONLY coverage is in the Docker-based
 # test/integration/api suite, its entry below is empty and says so.
 #
@@ -1560,9 +1542,9 @@ integration-test-local:
 # space-separated; LINT_TAGS is the comma-joined form this needs instead.
 #
 # A feature whose only integration test needs a WITH_QRDB_* tag that
-# defaults OFF (full-text-search / qrdb_fts is the one case today) cannot
-# rely on BUILD_TAGS alone: `make integration-test-full-text-search` with no
-# override would otherwise silently select zero compiled tests rather than
+# defaults OFF (none today: full-text-search's qrdb_fts suite moved into
+# pkg/fts's unit tests, #813) cannot rely on BUILD_TAGS alone: its
+# `make integration-test-<feature>` with no override would otherwise silently select zero compiled tests rather than
 # failing (go-qrdb#500's lesson). features.mk may declare an OPTIONAL
 # `INTTAGS_<feature> := <tag>` beside `INTTEST_<feature>`; the pattern
 # rule below appends it to this feature's own tag set only, leaving every

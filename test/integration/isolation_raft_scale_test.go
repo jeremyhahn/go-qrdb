@@ -225,15 +225,11 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 
 	var dbInfoData []byte
 	var dbInfoStatus int
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, scaleFoundationDBName))
-		if dbInfoStatus == http.StatusOK && len(dbInfoData) > 0 {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return dbInfoStatus == http.StatusOK && len(dbInfoData) > 0
+	})
 	if dbInfoStatus != http.StatusOK {
 		t.Fatalf("GET /v1/databases/%s: status %d, body: %s", scaleFoundationDBName, dbInfoStatus, dbInfoData)
 	}
@@ -286,16 +282,10 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	for i := range numKeys {
 		key := fmt.Sprintf("scale-data/%04d", i)
 		val := []byte(values[i])
-		var written bool
-		for time.Now().Before(writeDeadline) {
+		if !pollUntil(time.Until(writeDeadline), 200*time.Millisecond, func() bool {
 			status, err := dbScopedPutTolerant(t, tenantClient, dbHostPort, scaleFoundationDBName, key, val)
-			if err == nil && status == http.StatusNoContent {
-				written = true
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		if !written {
+			return err == nil && status == http.StatusNoContent
+		}) {
 			t.Fatalf("timed out writing baseline key %q", key)
 		}
 		if i == 0 {
@@ -308,14 +298,10 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 		key := fmt.Sprintf("scale-data/%04d", i)
 		var got []byte
 		var status int
-		readDeadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(readDeadline) {
+		pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 			got, status = dbScopedGetTolerant(t, tenantClient, dbHostPort, scaleFoundationDBName, key)
-			if status == http.StatusOK {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			return status == http.StatusOK
+		})
 		if status != http.StatusOK {
 			t.Fatalf("baseline key %q read timed out (last status: %d)", key, status)
 		}
@@ -344,31 +330,21 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	// dbScopedPutTolerant/dbScopedGetTolerant already use above.
 	// ---------------------------------------------------------------------
 	t.Log("scaling database up: target_replicas=3")
-	scaleUpDeadline := time.Now().Add(30 * time.Second)
 	var scaleStatus int
 	var scaleBody []byte
-	for time.Now().Before(scaleUpDeadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		scaleStatus, scaleBody = scaleDatabaseTolerant(t, tenantClient, leaderPort, scaleFoundationDBName, 3)
-		if scaleStatus == http.StatusOK {
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return scaleStatus == http.StatusOK
+	})
 	if scaleStatus != http.StatusOK {
 		t.Fatalf("scale to 3 replicas: status %d, body: %s", scaleStatus, scaleBody)
 	}
 
-	deadline = time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, scaleFoundationDBName))
-		if dbInfoStatus == http.StatusOK {
-			if err := json.Unmarshal(dbInfoData, &dbInfo); err == nil && dbInfo.Replicas == 3 {
-				break
-			}
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return dbInfoStatus == http.StatusOK && json.Unmarshal(dbInfoData, &dbInfo) == nil && dbInfo.Replicas == 3
+	})
 	if dbInfo.Replicas != 3 {
 		t.Fatalf("expected replicas=3 after scale-up, got %d\ndb info: %s", dbInfo.Replicas, dbInfoData)
 	}
@@ -400,14 +376,10 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 			key := fmt.Sprintf("scale-data/%04d", i)
 			var got []byte
 			var status int
-			readDeadline := time.Now().Add(60 * time.Second)
-			for time.Now().Before(readDeadline) {
+			pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
 				got, status = dbScopedGetTolerant(t, tenantClient, port, scaleFoundationDBName, key)
-				if status == http.StatusOK {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
+				return status == http.StatusOK
+			})
 			if status != http.StatusOK {
 				t.Fatalf("new replica (port %d) key %q read timed out (last status: %d)", port, key, status)
 			}
@@ -445,29 +417,19 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	// expected to remain the host after scaling back to 1.
 	// ---------------------------------------------------------------------
 	t.Log("scaling database down: target_replicas=1")
-	scaleDownDeadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(scaleDownDeadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		scaleStatus, scaleBody = scaleDatabaseTolerant(t, tenantClient, leaderPort, scaleFoundationDBName, 1)
-		if scaleStatus == http.StatusOK {
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return scaleStatus == http.StatusOK
+	})
 	if scaleStatus != http.StatusOK {
 		t.Fatalf("scale to 1 replica: status %d, body: %s", scaleStatus, scaleBody)
 	}
 
-	deadline = time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		dbInfoData, dbInfoStatus = iraftAPIGetTolerant(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", leaderPort, scaleFoundationDBName))
-		if dbInfoStatus == http.StatusOK {
-			if err := json.Unmarshal(dbInfoData, &dbInfo); err == nil && dbInfo.Replicas == 1 {
-				break
-			}
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return dbInfoStatus == http.StatusOK && json.Unmarshal(dbInfoData, &dbInfo) == nil && dbInfo.Replicas == 1
+	})
 	if dbInfo.Replicas != 1 {
 		t.Fatalf("expected replicas=1 after scale-down, got %d\ndb info: %s", dbInfo.Replicas, dbInfoData)
 	}
@@ -491,15 +453,11 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 		if adminPorts[idx] == dbHostPort {
 			continue
 		}
-		purgeDeadline := time.Now().Add(30 * time.Second)
 		var shardDir string
-		for time.Now().Before(purgeDeadline) {
+		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 			shardDir = findDirEndingIn(t, volumePoolDirs[idx], filepath.Join("databases", scaleFoundationDBName))
-			if shardDir == "" {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return shardDir == ""
+		})
 		if shardDir != "" {
 			t.Fatalf("node %d (port %d): demoted shard dir %q still present after scale-down (expected purge)",
 				idx+1, adminPorts[idx], shardDir)
@@ -561,9 +519,8 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 func waitForAllShardOwners(t *testing.T, client *http.Client, ports []int, wantCount int, timeout time.Duration) []int {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
 	var lastOwners []int
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		var owners []int
 		for i, port := range ports {
 			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
@@ -582,10 +539,9 @@ func waitForAllShardOwners(t *testing.T, client *http.Client, ports []int, wantC
 			}
 		}
 		lastOwners = owners
-		if len(owners) >= len(ports) {
-			return owners
-		}
-		time.Sleep(300 * time.Millisecond)
+		return len(owners) >= len(ports)
+	}) {
+		return lastOwners
 	}
 	t.Fatalf("timed out after %v waiting for all of %v to reach shard count >= %d (last owners: %v)",
 		timeout, ports, wantCount, lastOwners)
@@ -600,22 +556,22 @@ func waitForShardCountBelow(t *testing.T, client *http.Client, port int, thresho
 	t.Helper()
 
 	rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-	deadline := time.Now().Add(timeout)
 	var lastCount int
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		body, status := iraftAPIGetTolerant(t, client, rawURL)
-		if status == http.StatusOK {
-			var topo struct {
-				ShardCount int `json:"shard_count"`
-			}
-			if err := json.Unmarshal(body, &topo); err == nil {
-				lastCount = topo.ShardCount
-				if topo.ShardCount < threshold {
-					return
-				}
-			}
+		if status != http.StatusOK {
+			return false
 		}
-		time.Sleep(300 * time.Millisecond)
+		var topo struct {
+			ShardCount int `json:"shard_count"`
+		}
+		if err := json.Unmarshal(body, &topo); err != nil {
+			return false
+		}
+		lastCount = topo.ShardCount
+		return topo.ShardCount < threshold
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for shard count on port %d to drop below %d (last count: %d)",
 		timeout, port, threshold, lastCount)
@@ -630,9 +586,9 @@ func waitForShardCountBelow(t *testing.T, client *http.Client, port int, thresho
 func waitForShardOwnerPort(t *testing.T, client *http.Client, ports []int, wantCount int, timeout time.Duration) int {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
 	lastCounts := make([]int, len(ports))
-	for time.Now().Before(deadline) {
+	owner := 0
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		for i, port := range ports {
 			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
 			body, status := iraftAPIGetTolerant(t, client, rawURL)
@@ -647,10 +603,13 @@ func waitForShardOwnerPort(t *testing.T, client *http.Client, ports []int, wantC
 			}
 			lastCounts[i] = topo.ShardCount
 			if topo.ShardCount >= wantCount {
-				return port
+				owner = port
+				return true
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		return false
+	}) {
+		return owner
 	}
 	t.Fatalf("timed out after %v waiting for any of %v to reach shard count >= %d (last counts: %v)",
 		timeout, ports, wantCount, lastCounts)
@@ -887,16 +846,10 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	writeDeadline := time.Now().Add(60 * time.Second)
 	for i := range numKeys {
 		key := fmt.Sprintf("scale-restart-data/%04d", i)
-		var written bool
-		for time.Now().Before(writeDeadline) {
+		if !pollUntil(time.Until(writeDeadline), 200*time.Millisecond, func() bool {
 			status, err := dbScopedPutTolerant(t, tenantClient, dbHostPort, restartSurvivalDBName, key, []byte(values[i]))
-			if err == nil && status == http.StatusNoContent {
-				written = true
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		if !written {
+			return err == nil && status == http.StatusNoContent
+		}) {
 			t.Fatalf("timed out writing baseline key %q", key)
 		}
 		if i == 0 {
@@ -905,16 +858,12 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	}
 
 	t.Log("scaling database up: target_replicas=3")
-	scaleUpDeadline := time.Now().Add(30 * time.Second)
 	var scaleStatus int
 	var scaleBody []byte
-	for time.Now().Before(scaleUpDeadline) {
+	pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		scaleStatus, scaleBody = scaleDatabaseTolerant(t, tenantClient, leaderPort, restartSurvivalDBName, 3)
-		if scaleStatus == http.StatusOK {
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return scaleStatus == http.StatusOK
+	})
 	if scaleStatus != http.StatusOK {
 		t.Fatalf("scale to 3 replicas: status %d, body: %s", scaleStatus, scaleBody)
 	}
@@ -930,14 +879,10 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 			key := fmt.Sprintf("scale-restart-data/%04d", i)
 			var got []byte
 			var status int
-			readDeadline := time.Now().Add(60 * time.Second)
-			for time.Now().Before(readDeadline) {
+			pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
 				got, status = dbScopedGetTolerant(t, tenantClient, port, restartSurvivalDBName, key)
-				if status == http.StatusOK {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
+				return status == http.StatusOK
+			})
 			if status != http.StatusOK {
 				t.Fatalf("pre-restart: port %d key %q read timed out (last status: %d)", port, key, status)
 			}
@@ -991,14 +936,10 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 			key := fmt.Sprintf("scale-restart-data/%04d", i)
 			var got []byte
 			var status int
-			readDeadline := time.Now().Add(60 * time.Second)
-			for time.Now().Before(readDeadline) {
+			pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
 				got, status = dbScopedGetTolerant(t, restartTenantClient, port, restartSurvivalDBName, key)
-				if status == http.StatusOK {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
+				return status == http.StatusOK
+			})
 			if status != http.StatusOK {
 				t.Fatalf("post-restart: port %d key %q read timed out (last status: %d)", port, key, status)
 			}

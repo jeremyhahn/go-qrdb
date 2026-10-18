@@ -202,19 +202,15 @@ func TestSQLCluster_RowLocks(t *testing.T) {
 		t.Logf("leader replica %d killed; replica %d now leads", leader+1, newLeader+1)
 
 		// After the election the row is still locked: NOWAIT is refused.
-		deadline := time.Now().Add(60 * time.Second)
-		for {
-			_, err := connBalance(waiter, fmt.Sprintf("SELECT balance FROM %s WHERE id = 1 FOR UPDATE NOWAIT", table))
-			if mysqlErrNumber(err) == erLockNowait {
-				break
-			}
-			if err == nil {
+		var lastErr error
+		if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
+			_, lastErr = connBalance(waiter, fmt.Sprintf("SELECT balance FROM %s WHERE id = 1 FOR UPDATE NOWAIT", table))
+			if lastErr == nil {
 				t.Fatal("the row was lockable after the failover: the leader change dropped the lock")
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("waiting for the cluster to serve again after failover: %v", err)
-			}
-			time.Sleep(250 * time.Millisecond)
+			return mysqlErrNumber(lastErr) == erLockNowait
+		}) {
+			t.Fatalf("waiting for the cluster to serve again after failover: %v", lastErr)
 		}
 
 		connExec(t, holder, fmt.Sprintf("UPDATE %s SET balance = 7 WHERE id = 1", table))

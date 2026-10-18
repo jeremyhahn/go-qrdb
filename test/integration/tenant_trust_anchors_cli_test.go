@@ -294,18 +294,13 @@ func TestTrustAnchors_CLI_CrossTenantDenied_PerProtocol(t *testing.T) {
 // paper over an actually-delayed invalidation.
 func assertBYOCCertRefused(t *testing.T, cli string, conn []string, proto multiProtocol, args ...string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	var out string
-	var err error
-	for {
+	if !pollUntil(10*time.Second, 200*time.Millisecond, func() bool {
+		var err error
 		out, err = runQRDB(t, cli, conn, args...)
-		if err != nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("[%s] a certificate whose trust anchor was withdrawn must be REFUSED, got: %s", proto.name, out)
-		}
-		time.Sleep(200 * time.Millisecond)
+		return err != nil
+	}) {
+		t.Fatalf("[%s] a certificate whose trust anchor was withdrawn must be REFUSED, got: %s", proto.name, out)
 	}
 }
 

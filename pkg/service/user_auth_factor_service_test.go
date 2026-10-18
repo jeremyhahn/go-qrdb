@@ -412,7 +412,8 @@ func TestLookupByCredentialKey_emptyKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemove_lastFactorBlocks(t *testing.T) {
-	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
+	users := newStubUserStateUpdater()
+	svc, _ := newTestUserAuthFactorService(t, users)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("only", 1, []byte("k"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -420,6 +421,16 @@ func TestRemove_lastFactorBlocks(t *testing.T) {
 	err := svc.Remove(ctx, "only", false)
 	if !errors.Is(err, auth.ErrLastFactor) {
 		t.Fatalf("want ErrLastFactor, got %v", err)
+	}
+	if active, called := users.calls[1]; called {
+		t.Fatalf("refused removal changed the user's state (active=%v); the user must stay active", active)
+	}
+	f, err := svc.Get(ctx, "only")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !f.IsActive() {
+		t.Fatal("refused removal revoked the last factor")
 	}
 }
 

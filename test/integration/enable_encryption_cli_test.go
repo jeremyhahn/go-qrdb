@@ -116,6 +116,11 @@ func cliBarrierStatus(t *testing.T, cli string, connArgs []string) cliBarrierSta
 // tests. restart() lets a test SIGTERM and relaunch the same node (same
 // data dir, ports, and node certificate) to prove a keyed barrier survives a
 // real process restart, not just the in-process recycle.
+// migrationFailedLog is what handleBarrierEnableEncryption
+// (pkg/api/rest/handlers_barrier.go) logs when a migration acknowledged as
+// "migration_started" later fails.
+const migrationFailedLog = "enable-encryption migration failed"
+
 type cliBarrierEncNode struct {
 	ca            *testCA
 	dataDir       string
@@ -126,6 +131,9 @@ type cliBarrierEncNode struct {
 	adminKeyPath  string
 	connArgs      []string
 	proc          *exec.Cmd
+	// log captures qrdbd's output across restarts, so a test can wait for
+	// what the server logs rather than for a fixed time.
+	log *nodeLog
 }
 
 // startCLIEncNode boots a fresh single-node daemon with an unencrypted
@@ -167,8 +175,9 @@ func startCLIEncNode(t *testing.T, bin string, prefix string) *cliBarrierEncNode
 		adminPort: adminPort,
 		grpcPort:  grpcPort,
 		startArgs: args,
+		log:       &nodeLog{},
 	}
-	n.proc = startNode(t, bin, args, prefix)
+	n.proc = startNode(t, bin, args, prefix, n.log)
 
 	waitForBarrierStatusReachable(t, ca, adminPort, 90*time.Second)
 	initAndUnsealBarrier(t, ca, adminPort, "")
@@ -188,7 +197,7 @@ func (n *cliBarrierEncNode) restart(t *testing.T, bin, prefix string) {
 	t.Helper()
 
 	stopNode(t, n.proc, nodeStopTimeout)
-	n.proc = startNode(t, bin, n.startArgs, prefix)
+	n.proc = startNode(t, bin, n.startArgs, prefix, n.log)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,8 +344,13 @@ func TestCLI_BarrierEnableEncryption_SystemScope_Lifecycle(t *testing.T) {
 		t.Fatalf("redundant barrier enable-encryption: unexpected output: %s", redundantOut)
 	}
 	// Give the async goroutine time to reach and reject the source-strategy
-	// guard before asserting nothing changed.
-	time.Sleep(3 * time.Second)
+	// guard before asserting nothing changed: wait for the handler's log of
+	// the rejection, for no longer than the fixed 3 s this used to sleep.
+	// The line is not required, so the assertions below are unchanged.
+	failedBefore := strings.Count(node.log.String(), migrationFailedLog)
+	pollUntil(3*time.Second, 100*time.Millisecond, func() bool {
+		return strings.Count(node.log.String(), migrationFailedLog) > failedBefore
+	})
 	if status := cliBarrierStatus(t, cli, node.connArgs); status.Strategy != "passphrase" || status.Sealed {
 		t.Fatalf("barrier state changed by a rejected redundant migration: %+v", status)
 	}
@@ -500,19 +514,15 @@ func registerShamirOfficerWithIdentity(t *testing.T, cli string, connArgs []stri
 // daemon-generated CA this package does not wrap in a *testCA).
 func waitForCLIBarrierSealed(t *testing.T, cli string, connArgs []string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 250*time.Millisecond, func() bool {
 		out, err := runQRDB(t, cli, connArgs, "--output", "json", "barrier", "status")
-		if err != nil && cliSealedRefusal(out) {
-			return
+		if err != nil {
+			return cliSealedRefusal(out)
 		}
-		if err == nil {
-			var status cliBarrierStatusJSON
-			if jerr := json.Unmarshal([]byte(out), &status); jerr == nil && status.Sealed {
-				return
-			}
-		}
-		time.Sleep(250 * time.Millisecond)
+		var status cliBarrierStatusJSON
+		return json.Unmarshal([]byte(out), &status) == nil && status.Sealed
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for the migrated barrier to come back sealed", timeout)
 }
@@ -846,16 +856,12 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 
 	seed := map[string]string{"tk1": "tv1", "tk2": "tv2"}
 	for k, v := range seed {
-		deadline := time.Now().Add(30 * time.Second)
 		var putStatus int
 		var putErr error
-		for time.Now().Before(deadline) {
+		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 			putStatus, putErr = dbScopedPutTolerant(t, tenantClient, adminPort, dbName, k, []byte(v))
-			if putErr == nil && (putStatus == http.StatusOK || putStatus == http.StatusNoContent || putStatus == http.StatusCreated) {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return putErr == nil && (putStatus == http.StatusOK || putStatus == http.StatusNoContent || putStatus == http.StatusCreated)
+		})
 		if putErr != nil || (putStatus != http.StatusOK && putStatus != http.StatusNoContent && putStatus != http.StatusCreated) {
 			t.Fatalf("tenant put %q: status %d err %v", k, putStatus, putErr)
 		}
@@ -897,16 +903,10 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	// The tenant barrier transitions to passphrase and reopens UNSEALED (the
 	// recycle unseals it with the supplied credential); the system barrier
 	// and daemon keep serving -- no server restart.
-	deadline := time.Now().Add(120 * time.Second)
-	migrated := false
-	for time.Now().Before(deadline) {
-		if strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPort, tenantID); ok && strategy == "passphrase" && !sealed {
-			migrated = true
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	if !migrated {
+	if !pollUntil(120*time.Second, 300*time.Millisecond, func() bool {
+		strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPort, tenantID)
+		return ok && strategy == "passphrase" && !sealed
+	}) {
 		t.Fatalf("tenant barrier did not migrate to an unsealed passphrase barrier within timeout")
 	}
 
@@ -919,14 +919,10 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	for k, v := range seed {
 		var data []byte
 		var st int
-		rd := time.Now().Add(60 * time.Second)
-		for time.Now().Before(rd) {
+		pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			data, st = dbScopedGetTolerant(t, tenantClient, adminPort, dbName, k)
-			if st == http.StatusOK {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return st == http.StatusOK
+		})
 		if st != http.StatusOK || string(data) != v {
 			t.Fatalf("post-migration tenant %q = %q (status %d), want %q (DATA LOSS)", k, string(data), st, v)
 		}

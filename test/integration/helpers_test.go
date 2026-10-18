@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -265,15 +266,10 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 	// to a few seconds.
 	var out string
 	var err error
-	deadline := time.Now().Add(15 * time.Second)
-	for {
+	if !pollUntil(15*time.Second, 250*time.Millisecond, func() bool {
 		out, err = runQRDB(t, cli, connArgs, args...)
-		if err == nil || !time.Now().Before(deadline) {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if err != nil {
+		return err == nil
+	}) {
 		t.Fatalf("bootAdminIdentity: qrdb init: %v\noutput: %s", err, out)
 	}
 	var resp struct {
@@ -776,10 +772,7 @@ func httpPut(t *testing.T, ca *testCA, port int, key string, value []byte) {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(value))
 		if err != nil {
 			t.Fatalf("httpPut: new request: %v", err)
@@ -807,10 +800,7 @@ func httpGet(t *testing.T, ca *testCA, port int, key string) []byte {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -840,10 +830,7 @@ func httpGetStale(t *testing.T, ca *testCA, port int, key string) []byte {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -872,10 +859,7 @@ func httpGetStatus(t *testing.T, ca *testCA, port int, key string) int {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -898,10 +882,7 @@ func httpDelete(t *testing.T, ca *testCA, port int, key string) {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		req, err := http.NewRequest(http.MethodDelete, url, nil)
 		if err != nil {
 			t.Fatalf("httpDelete: new request: %v", err)
@@ -929,10 +910,7 @@ func httpList(t *testing.T, ca *testCA, port int, prefix string) []string {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1094,29 +1072,26 @@ func httpHealth(t *testing.T, pool *x509.CertPool, port int) int {
 func waitForLeaderViaAdmin(t *testing.T, ca *testCA, ports []int, timeout time.Duration) int {
 	t.Helper()
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
-	deadline := time.Now().Add(timeout)
 	var lastDiag string
-	for time.Now().Before(deadline) {
+	leader := 0
+	if pollUntil(timeout, 100*time.Millisecond, func() bool {
 		for _, port := range ports {
 			status, diag := httpStatusRaw(t, client, port)
 			if diag != "" {
 				lastDiag = fmt.Sprintf("port %d: %s", port, diag)
 			}
-			if status != nil {
-				if shards, ok := status["shards"].([]interface{}); ok {
-					for _, s := range shards {
-						shard, ok := s.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						if isLeader, ok := shard["is_leader"].(bool); ok && isLeader {
-							return port
-						}
-					}
+			shards, _ := status["shards"].([]interface{})
+			for _, s := range shards {
+				shard, _ := s.(map[string]interface{})
+				if isLeader, _ := shard["is_leader"].(bool); isLeader {
+					leader = port
+					return true
 				}
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		return false
+	}) {
+		return leader
 	}
 	t.Fatalf("timed out after %v waiting for leader via admin (last: %s)", timeout, lastDiag)
 	return 0
@@ -1177,35 +1152,32 @@ func httpListTolerant(t *testing.T, ca *testCA, port int, prefix string) []strin
 func warmupWrite(t *testing.T, ca *testCA, port int, timeout time.Duration) {
 	t.Helper()
 	const warmupKey = "__warmup__"
-	deadline := time.Now().Add(timeout)
+	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, warmupKey)
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
 	var lastStatus int
 	var lastErr error
 	var lastBody string
-	for time.Now().Before(deadline) {
-		url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, warmupKey)
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader([]byte("1")))
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		lastStatus = resp.StatusCode
 		lastBody = string(body)
 		lastErr = nil
-		if resp.StatusCode == http.StatusNoContent {
-			// Clean up the warmup key.
-			delReq, _ := http.NewRequest(http.MethodDelete, url, nil)
-			delResp, delErr := client.Do(delReq)
-			if delErr == nil {
-				delResp.Body.Close()
-			}
-			return
+		return resp.StatusCode == http.StatusNoContent
+	}) {
+		// Clean up the warmup key.
+		delReq, _ := http.NewRequest(http.MethodDelete, url, nil)
+		delResp, delErr := client.Do(delReq)
+		if delErr == nil {
+			delResp.Body.Close()
 		}
-		time.Sleep(200 * time.Millisecond)
+		return
 	}
 	if lastErr != nil {
 		t.Fatalf("timed out after %v waiting for warmup write on port %d: last error: %v", timeout, port, lastErr)
@@ -1217,22 +1189,23 @@ func warmupWrite(t *testing.T, ca *testCA, port int, timeout time.Duration) {
 func waitForKV(t *testing.T, ca *testCA, port int, key string, expected []byte, timeout time.Duration) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key)
-	deadline := time.Now().Add(timeout)
 	client := mtlsHTTPClient(t, ca, 2*time.Second)
 	last := "no answer"
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 100*time.Millisecond, func() bool {
 		resp, err := client.Get(url)
 		if err != nil {
 			last = err.Error()
-		} else {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK && bytes.Equal(body, expected) {
-				return
-			}
-			last = fmt.Sprintf("status %d, body %q", resp.StatusCode, body)
+			return false
 		}
-		time.Sleep(100 * time.Millisecond)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && bytes.Equal(body, expected) {
+			return true
+		}
+		last = fmt.Sprintf("status %d, body %q", resp.StatusCode, body)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for key %q to equal %q; last answer: %s", timeout, key, expected, last)
 }
@@ -1241,18 +1214,57 @@ func waitForKV(t *testing.T, ca *testCA, port int, key string, expected []byte, 
 // its last error once wait has passed.
 func awaitClusterCondition(t *testing.T, wait time.Duration, what string, check func() error) {
 	t.Helper()
-	poll := time.NewTicker(300 * time.Millisecond)
-	defer poll.Stop()
-	expired := time.After(wait)
+	var err error
+	if !pollUntil(wait, 300*time.Millisecond, func() bool {
+		err = check()
+		return err == nil
+	}) {
+		t.Fatalf("no %s after %v: %v", what, wait, err)
+	}
+}
+
+// transportRetryInterval spaces the attempts of the http* request helpers,
+// which retry only a transport error: the node not answering yet.
+const transportRetryInterval = 500 * time.Millisecond
+
+// pollUntil evaluates cond at once and then on every tick of interval until
+// it holds or wait elapses, and reports whether it held. cond records the
+// state it observed, so a caller that times out fails with the last state
+// rather than only saying the condition never held.
+func pollUntil(wait, interval time.Duration, cond func() bool) bool {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	expired := time.NewTimer(wait)
+	defer expired.Stop()
 	for {
-		err := check()
-		if err == nil {
-			return
+		if cond() {
+			return true
 		}
 		select {
-		case <-poll.C:
-		case <-expired:
-			t.Fatalf("no %s after %v: %v", what, wait, err)
+		case <-ticker.C:
+		case <-expired.C:
+			return false
+		}
+	}
+}
+
+// pollAttempts yields at most n attempts of a poll whose bound is a count
+// rather than a deadline: the first at once and each later one a full
+// interval after the previous attempt ended. The caller's loop body is the
+// condition check; it returns once the condition holds and continues
+// otherwise.
+func pollAttempts(n int, interval time.Duration) iter.Seq[int] {
+	return func(yield func(int) bool) {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for attempt := range n {
+			if attempt > 0 {
+				<-ticker.C
+			}
+			if !yield(attempt) {
+				return
+			}
+			ticker.Reset(interval)
 		}
 	}
 }
@@ -1312,10 +1324,7 @@ func httpBatch(t *testing.T, ca *testCA, port int, ops []batchOp) batchResult {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1377,10 +1386,7 @@ func httpTx(t *testing.T, ca *testCA, port int, req txRequest) txResult {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1428,10 +1434,7 @@ func httpRange(t *testing.T, ca *testCA, port int, start, end string) rangeResul
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1467,10 +1470,7 @@ func httpCompact(t *testing.T, ca *testCA, port int, revision int64) {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1495,10 +1495,7 @@ func httpCurrentRevision(t *testing.T, ca *testCA, port int) int64 {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1528,10 +1525,7 @@ func httpGetWithRevision(t *testing.T, ca *testCA, port int, key string) kvResul
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1585,10 +1579,7 @@ func httpLeaseGrant(t *testing.T, ca *testCA, port int, ttl int64) leaseResult {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1624,10 +1615,7 @@ func httpLeaseRevoke(t *testing.T, ca *testCA, port int, leaseID int64) {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1660,10 +1648,7 @@ func httpLeaseKeepAlive(t *testing.T, ca *testCA, port int, leaseID int64) lease
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1692,10 +1677,7 @@ func httpLeaseTTL(t *testing.T, ca *testCA, port int, leaseID int64) leaseResult
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1724,10 +1706,7 @@ func httpLeaseList(t *testing.T, ca *testCA, port int) []leaseResult {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1806,10 +1785,7 @@ func httpTSWritePoint(t *testing.T, ca *testCA, port int, metric string, value f
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -1836,10 +1812,7 @@ func httpTSQuery(t *testing.T, ca *testCA, port int, metric string, startNs, end
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1868,10 +1841,7 @@ func httpTSListMetrics(t *testing.T, ca *testCA, port int) []string {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1900,10 +1870,7 @@ func httpTSDeleteSeries(t *testing.T, ca *testCA, port int, metric string) {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		req, reqErr := http.NewRequest(http.MethodDelete, url, nil)
 		if reqErr != nil {
 			t.Fatalf("httpTSDeleteSeries: new request: %v", reqErr)
@@ -1934,10 +1901,7 @@ func httpTSAggregate(t *testing.T, ca *testCA, port int, metric string, startNs,
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -1983,10 +1947,7 @@ func httpIndexCreate(t *testing.T, ca *testCA, port int, name, fieldName string)
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2018,10 +1979,7 @@ func httpIndexDrop(t *testing.T, ca *testCA, port int, name string) {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2048,10 +2006,7 @@ func httpIndexQuery(t *testing.T, ca *testCA, port int, indexName, value string)
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -2143,10 +2098,7 @@ func httpVectorCreateNS(t *testing.T, ca *testCA, port int, namespace string, di
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2179,10 +2131,7 @@ func httpVectorDeleteNS(t *testing.T, ca *testCA, port int, namespace string) {
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2223,10 +2172,7 @@ func httpVectorUpsert(t *testing.T, ca *testCA, port int, namespace string, id u
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2265,10 +2211,7 @@ func httpVectorSearch(t *testing.T, ca *testCA, port int, namespace string, vect
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2297,10 +2240,7 @@ func httpVectorGet(t *testing.T, ca *testCA, port int, namespace string, id uint
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -2341,10 +2281,7 @@ func httpVectorDeleteVec(t *testing.T, ca *testCA, port int, namespace string, i
 	}
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, doErr := client.Post(url, "application/json", bytes.NewReader(body))
 		if doErr != nil {
 			lastErr = doErr
@@ -2369,10 +2306,7 @@ func httpVectorListNS(t *testing.T, ca *testCA, port int) []string {
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
+	for range pollAttempts(maxRetries, transportRetryInterval) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
@@ -2517,19 +2451,21 @@ func waitForBarrierStatusReachable(t *testing.T, ca *testCA, port int, timeout t
 
 	rawURL := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", port)
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	last := "no answer"
+	if pollUntil(timeout, 100*time.Millisecond, func() bool {
 		resp, err := client.Get(rawURL)
-		if err == nil {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK || qrdbdharness.IsSealedRefusal(resp.StatusCode, body) {
-				return
-			}
+		if err != nil {
+			last = err.Error()
+			return false
 		}
-		time.Sleep(100 * time.Millisecond)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		last = fmt.Sprintf("status %d, body %q", resp.StatusCode, body)
+		return resp.StatusCode == http.StatusOK || qrdbdharness.IsSealedRefusal(resp.StatusCode, body)
+	}) {
+		return
 	}
-	t.Fatalf("timed out after %v waiting for barrier status at port %d", timeout, port)
+	t.Fatalf("timed out after %v waiting for barrier status at port %d; last answer: %s", timeout, port, last)
 }
 
 // harnessSOPIN and harnessUserPIN are the PIN pair initAndUnsealBarrier
@@ -2715,33 +2651,37 @@ func unsealNodes(t *testing.T, ca *testCA, adminPorts ...int) {
 func createBoundUser(t *testing.T, client *http.Client, port int, fields map[string]any, certPath string) uint64 {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/users", port)
-	deadline := time.Now().Add(retryableCreateWindow)
 	refused := false
-	for {
-		body, status := iraftAPIPost(t, client, url, fields)
-		switch {
-		case status == http.StatusCreated || status == http.StatusOK:
-			var created transport.User
-			if err := json.Unmarshal(body, &created); err != nil || created.ID == 0 {
-				t.Fatalf("createBoundUser: decode user: %v body=%s", err, body)
-			}
-			bindUserCert(t, client, port, created.ID, certPath)
-			return created.ID
-		case status == http.StatusConflict && refused:
-			// A refused attempt may still have committed: a 503 says the
-			// node could not confirm the write in time, not that the write
-			// did not happen. The user that answers 409 is then this
-			// helper's own, so read it back rather than fail.
-			id := lookupUserByUsername(t, client, port, fields)
-			bindUserCert(t, client, port, id, certPath)
-			return id
-		case (status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout) && time.Now().Before(deadline):
-			refused = true
-			t.Logf("createBoundUser: POST %s refused for now (%d), retrying: %s", url, status, body)
-			time.Sleep(250 * time.Millisecond)
-		default:
-			t.Fatalf("createBoundUser: create user: status %d, body: %s", status, body)
+	var body []byte
+	var status int
+	pollUntil(retryableCreateWindow, 250*time.Millisecond, func() bool {
+		body, status = iraftAPIPost(t, client, url, fields)
+		if !retryableStatus(status) {
+			return true
 		}
+		refused = true
+		t.Logf("createBoundUser: POST %s refused for now (%d), retrying: %s", url, status, body)
+		return false
+	})
+	switch {
+	case status == http.StatusCreated || status == http.StatusOK:
+		var created transport.User
+		if err := json.Unmarshal(body, &created); err != nil || created.ID == 0 {
+			t.Fatalf("createBoundUser: decode user: %v body=%s", err, body)
+		}
+		bindUserCert(t, client, port, created.ID, certPath)
+		return created.ID
+	case status == http.StatusConflict && refused:
+		// A refused attempt may still have committed: a 503 says the
+		// node could not confirm the write in time, not that the write
+		// did not happen. The user that answers 409 is then this
+		// helper's own, so read it back rather than fail.
+		id := lookupUserByUsername(t, client, port, fields)
+		bindUserCert(t, client, port, id, certPath)
+		return id
+	default:
+		t.Fatalf("createBoundUser: create user: status %d, body: %s", status, body)
+		return 0
 	}
 }
 
@@ -2753,21 +2693,20 @@ func lookupUserByUsername(t *testing.T, client *http.Client, port int, fields ma
 	tenantID, _ := fields["tenant_id"].(string)
 	lookup := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s",
 		port, neturl.PathEscape(username), neturl.QueryEscape(tenantID))
-	deadline := time.Now().Add(retryableCreateWindow)
-	for {
-		body, status := iraftAPIGet(t, client, lookup)
-		if status == http.StatusOK {
-			var existing transport.User
-			if err := json.Unmarshal(body, &existing); err != nil || existing.ID == 0 {
-				t.Fatalf("createBoundUser: decode user %q read back: %v body=%s", username, err, body)
-			}
-			return existing.ID
-		}
-		if !retryableStatus(status) || !time.Now().Before(deadline) {
-			t.Fatalf("createBoundUser: read back user %q after 409: status %d, body: %s", username, status, body)
-		}
-		time.Sleep(250 * time.Millisecond)
+	var body []byte
+	var status int
+	pollUntil(retryableCreateWindow, 250*time.Millisecond, func() bool {
+		body, status = iraftAPIGet(t, client, lookup)
+		return !retryableStatus(status)
+	})
+	if status != http.StatusOK {
+		t.Fatalf("createBoundUser: read back user %q after 409: status %d, body: %s", username, status, body)
 	}
+	var existing transport.User
+	if err := json.Unmarshal(body, &existing); err != nil || existing.ID == 0 {
+		t.Fatalf("createBoundUser: decode user %q read back: %v body=%s", username, err, body)
+	}
+	return existing.ID
 }
 
 // bindUserCert enrols the certificate at certPath as an mTLS binding of user
@@ -2875,15 +2814,17 @@ const retryableCreateWindow = 60 * time.Second
 // retired its id, answers the retry with 409.
 func postRetryingRetryable(t *testing.T, client *http.Client, rawURL string, body interface{}) ([]byte, int) {
 	t.Helper()
-	deadline := time.Now().Add(retryableCreateWindow)
-	for {
-		respBody, status := iraftAPIPost(t, client, rawURL, body)
-		if !retryableStatus(status) || !time.Now().Before(deadline) {
-			return respBody, status
+	var respBody []byte
+	var status int
+	pollUntil(retryableCreateWindow, 250*time.Millisecond, func() bool {
+		respBody, status = iraftAPIPost(t, client, rawURL, body)
+		if !retryableStatus(status) {
+			return true
 		}
 		t.Logf("POST %s refused for now (%d), retrying: %s", rawURL, status, respBody)
-		time.Sleep(250 * time.Millisecond)
-	}
+		return false
+	})
+	return respBody, status
 }
 
 // retryableStatus reports whether status is the server's typed "retry" that
@@ -2988,35 +2929,34 @@ func createVolumePoolREST(t *testing.T, client *http.Client, adminPort int, name
 func waitForVolumePoolReady(t *testing.T, client *http.Client, adminPort int, name string, nodes int, timeout time.Duration) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/volume-pools/%s", adminPort, name)
-	deadline := time.Now().Add(timeout)
-	for {
-		body, status := iraftAPIGet(t, client, url)
-		if status == http.StatusOK {
-			var detail struct {
-				NodeReports []struct {
-					NodeID string `json:"nodeId"`
-					State  string `json:"state"`
-				} `json:"nodeReports"`
-			}
-			if err := json.Unmarshal(body, &detail); err != nil {
-				t.Fatalf("decode volume pool %q: %v, body: %s", name, err, body)
-			}
-			ready := 0
-			for _, row := range detail.NodeReports {
-				if row.State == "ready" {
-					ready++
-				}
-			}
-			if ready >= nodes {
-				return
+	var body []byte
+	var status int
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
+		body, status = iraftAPIGet(t, client, url)
+		if status != http.StatusOK {
+			return false
+		}
+		var detail struct {
+			NodeReports []struct {
+				NodeID string `json:"nodeId"`
+				State  string `json:"state"`
+			} `json:"nodeReports"`
+		}
+		if err := json.Unmarshal(body, &detail); err != nil {
+			t.Fatalf("decode volume pool %q: %v, body: %s", name, err, body)
+		}
+		ready := 0
+		for _, row := range detail.NodeReports {
+			if row.State == "ready" {
+				ready++
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("volume pool %q: %d node(s) not all ready after %v, last status %d, body: %s",
-				name, nodes, timeout, status, body)
-		}
-		time.Sleep(200 * time.Millisecond)
+		return ready >= nodes
+	}) {
+		return
 	}
+	t.Fatalf("volume pool %q: %d node(s) not all ready after %v, last status %d, body: %s",
+		name, nodes, timeout, status, body)
 }
 
 // createVolumePoolCLI registers a named pool in the replicated catalog via
@@ -3126,24 +3066,24 @@ func waitForShardCount(t *testing.T, client *http.Client, port int, wantCount in
 	t.Helper()
 
 	rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-	deadline := time.Now().Add(timeout)
 	var lastCount int
 	var lastBody string
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		body, status := iraftAPIGetTolerant(t, client, rawURL)
-		if status == http.StatusOK {
-			var topo struct {
-				ShardCount int `json:"shard_count"`
-			}
-			if err := json.Unmarshal(body, &topo); err == nil {
-				lastCount = topo.ShardCount
-				if topo.ShardCount >= wantCount {
-					return
-				}
-			}
-		}
 		lastBody = string(body)
-		time.Sleep(200 * time.Millisecond)
+		if status != http.StatusOK {
+			return false
+		}
+		var topo struct {
+			ShardCount int `json:"shard_count"`
+		}
+		if err := json.Unmarshal(body, &topo); err != nil {
+			return false
+		}
+		lastCount = topo.ShardCount
+		return topo.ShardCount >= wantCount
+	}) {
+		return
 	}
 	t.Fatalf("timed out after %v waiting for shard count >= %d on port %d (last count: %d, last body: %s)",
 		timeout, wantCount, port, lastCount, lastBody)

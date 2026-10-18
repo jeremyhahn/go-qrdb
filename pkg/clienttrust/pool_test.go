@@ -1747,6 +1747,45 @@ func TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf(t *testing.T) {
 	}
 }
 
+// TestPool_UntrustedIssuerRefusedAtHandshake pins that a client certificate
+// from a CA the node does not trust is refused by the handshake's own
+// verification, so it never reaches any route (anonymous, optional or not),
+// while a leaf from a trusted CA with the same EKU is accepted.
+func TestPool_UntrustedIssuerRefusedAtHandshake(t *testing.T) {
+	_, keyACert, _ := genCAWithKey(t, "key-a")
+	operatorPEM, operatorCert, operatorKey := genCAWithKey(t, "operator-ca")
+	_, strangerCert, strangerKey := genCAWithKey(t, "stranger-ca")
+
+	staticPool := x509.NewCertPool()
+	staticPool.AppendCertsFromPEM(operatorPEM)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	pool.SetKeyBProvider(&fakeCertProvider{})
+	rebuild(t, pool)
+
+	widened := pool.widenedFor(cfg.ClientCAs)
+	if widened == nil {
+		t.Fatal("expected a widened pool after a successful rebuild")
+	}
+	clientAuth := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+
+	trusted := genLeafWithEKU(t, operatorCert, operatorKey, clientAuth)
+	if err := pool.verifyPeerConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{trusted}}, widened); err != nil {
+		t.Fatalf("a clientAuth leaf from the trusted operator CA was refused: %v", err)
+	}
+
+	stranger := genLeafWithEKU(t, strangerCert, strangerKey, clientAuth)
+	if err := pool.verifyPeerConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{stranger}}, widened); err == nil {
+		t.Error("expected verifyPeerConnection to refuse a leaf from an untrusted CA")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), stranger, nil); err == nil {
+		t.Error("expected VerifyPeerChain to refuse a leaf from an untrusted CA")
+	}
+}
+
 // TestRV794_LongLivedConnStaticAnchorAfterReseal is the red/green proof for
 // go-qrdb#591's final delta review (re-review blocker 2 regression): a
 // long-lived connection's own TLS handshake is never re-run after a

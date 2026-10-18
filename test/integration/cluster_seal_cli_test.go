@@ -242,23 +242,21 @@ func cliBarrierStatusFor(t *testing.T, node *multiProtocolSealNode, proto multiP
 // the first one.
 func waitForCLIClusterSeal(t *testing.T, node *multiProtocolSealNode, proto multiProtocol, timeout time.Duration, what string, cond func(cliBarrierStatusFull) bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var (
 		last        cliBarrierStatusFull
 		read        bool
 		lastFailure string
 	)
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		st, failure, ok := cliBarrierStatusFor(t, node, proto)
-		if ok {
-			last, read = st, true
-			if cond(last) {
-				return
-			}
-		} else {
+		if !ok {
 			lastFailure = failure
+			return false
 		}
-		time.Sleep(200 * time.Millisecond)
+		last, read = st, true
+		return cond(last)
+	}) {
+		return
 	}
 	if !read {
 		t.Fatalf("node %s: timed out after %v waiting for %s: barrier status over %s never answered (last failure: %s)",
@@ -366,16 +364,12 @@ func TestBarrierClusterUnseal_CLI_PerProtocol(t *testing.T) {
 			// is the documented retryable refusal, so it is retried.
 			current := h.nodes[0]
 			var unsealOut string
-			for deadline := time.Now().Add(60 * time.Second); ; {
-				var err error
-				unsealOut, err = runCLIProto(t, current.multiProtoNode, proto, "--output", "json", "barrier", "cluster-unseal")
-				if err == nil {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("[%s] barrier cluster-unseal: %v\noutput: %s", proto.name, err, unsealOut)
-				}
-				time.Sleep(time.Second)
+			var unsealErr error
+			if !pollUntil(60*time.Second, time.Second, func() bool {
+				unsealOut, unsealErr = runCLIProto(t, current.multiProtoNode, proto, "--output", "json", "barrier", "cluster-unseal")
+				return unsealErr == nil
+			}) {
+				t.Fatalf("[%s] barrier cluster-unseal: %v\noutput: %s", proto.name, unsealErr, unsealOut)
 			}
 			var cleared clusterSealView
 			if jerr := json.Unmarshal([]byte(unsealOut), &cleared); jerr != nil || cleared.Sealed {

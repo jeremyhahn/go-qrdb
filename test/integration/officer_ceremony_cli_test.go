@@ -128,14 +128,12 @@ func writeSealYAML(t *testing.T, yamlBody string) string {
 // waitForFile polls until path exists or timeout elapses.
 func waitForFile(t *testing.T, path string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !pollUntil(timeout, 50*time.Millisecond, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}) {
+		t.Fatalf("timed out after %v waiting for %s", timeout, path)
 	}
-	t.Fatalf("timed out after %v waiting for %s", timeout, path)
 }
 
 // bootSelfGenCANode starts a fresh single-node qrdbd with the given seal
@@ -263,18 +261,14 @@ func (n *selfGenCANode) unixArgsAdmin(unixSocket string) []string {
 // cluster seal holds.
 func pollUntilSealedListenerUp(t *testing.T, cli string, connArgs []string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var lastOut string
 	var lastErr error
-	for time.Now().Before(deadline) {
-		out, err := runQRDB(t, cli, connArgs, "barrier", "status", "--output", "json")
-		if err == nil || cliSealedRefusal(out) {
-			return
-		}
-		lastOut, lastErr = out, err
-		time.Sleep(250 * time.Millisecond)
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+		lastOut, lastErr = runQRDB(t, cli, connArgs, "barrier", "status", "--output", "json")
+		return lastErr == nil || cliSealedRefusal(lastOut)
+	}) {
+		t.Fatalf("timed out after %v waiting for the sealed-window listener: %v\noutput: %s", timeout, lastErr, lastOut)
 	}
-	t.Fatalf("timed out after %v waiting for the sealed-window listener: %v\noutput: %s", timeout, lastErr, lastOut)
 }
 
 // pollUntilCLISucceeds repeatedly runs `qrdb <connArgs> barrier status
@@ -286,19 +280,15 @@ func pollUntilSealedListenerUp(t *testing.T, cli string, connArgs []string, time
 // the sealed-window listener answers status too, with sealed set.
 func pollUntilCLISucceeds(t *testing.T, cli string, connArgs []string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var lastOut string
 	var lastErr error
-	for time.Now().Before(deadline) {
-		out, err := runQRDB(t, cli, connArgs, "barrier", "status", "--output", "json")
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+		lastOut, lastErr = runQRDB(t, cli, connArgs, "barrier", "status", "--output", "json")
 		var status cliBarrierStatusJSON
-		if err == nil && json.Unmarshal([]byte(out), &status) == nil && !status.Sealed {
-			return
-		}
-		lastOut, lastErr = out, err
-		time.Sleep(250 * time.Millisecond)
+		return lastErr == nil && json.Unmarshal([]byte(lastOut), &status) == nil && !status.Sealed
+	}) {
+		t.Fatalf("timed out after %v waiting for CLI to reach the server: %v\noutput: %s", timeout, lastErr, lastOut)
 	}
-	t.Fatalf("timed out after %v waiting for CLI to reach the server: %v\noutput: %s", timeout, lastErr, lastOut)
 }
 
 // ---------------------------------------------------------------------------

@@ -74,8 +74,8 @@
 //
 // That a fix landed and this note never noticed is itself the finding, and it
 // is tracked: go-qrdb#203 measured that no CI leg compiles test/integration/*
-// at all (test/integration/auth has not compiled since the guarded verbs
-// landed, in silence). A suite nothing builds cannot tell you when its
+// at all (the former test/integration/auth package did not compile after
+// the guarded verbs landed, in silence). A suite nothing builds cannot tell you when its
 // known-failing cases start passing.
 //
 // One thing HAS changed for this path as of go-qrdb#185: a known path with an

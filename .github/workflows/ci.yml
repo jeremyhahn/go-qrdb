@@ -498,8 +498,8 @@ jobs:
   # tier and ready to merge.
   #
   # integration-features runs the self-spawned qrdbdharness suites
-  # (./test/integration and ./test/integration/auth: single-node and real
-  # 3-node Raft clusters), one leg per feature (owner ruling 10). Each leg is
+  # (./test/integration: single-node and real 3-node Raft clusters), one leg
+  # per feature (owner ruling 10). Each leg is
   # `make integration-test IT_FEATURE=<feature>` in the integration image; the
   # selection `make integration-test-<feature>` runs on a host
   # (test/integration/features.mk). Every test in these packages is mapped to
@@ -534,7 +534,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature: [api-server, audit, auth-factors, backup-restore, barrier-seal, capabilities, ceremony, certificate-authority, cluster-verification, clustering, collections, coordination, credentials, databases, distributed-locks, embeddings, etcd-compatibility, firstboot, full-text-search, guarded-swap, identity-rbac, key-value, key-wrapping, leases, multi-tenancy, rag, replica-forwarding, row-locking, run-modes, secondary-indexes, shamir-custody, sql, storage-engines, tenant-dek, time-series, transactions, trust-anchors, trust-bootstrap, vectors, volume-pools, watch]
+        feature: [api-server, audit, auth-factors, backup-restore, barrier-seal, capabilities, ceremony, certificate-authority, cluster-verification, clustering, collections, coordination, credentials, databases, distributed-locks, embeddings, etcd-compatibility, firstboot, guarded-swap, identity-rbac, key-value, key-wrapping, leases, multi-tenancy, rag, replica-forwarding, row-locking, run-modes, secondary-indexes, shamir-custody, sql, storage-engines, tenant-dek, time-series, transactions, trust-anchors, trust-bootstrap, vectors, volume-pools, watch]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 

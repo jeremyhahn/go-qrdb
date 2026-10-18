@@ -26,7 +26,6 @@ import (
 	"crypto/tls"
 	"strconv"
 	"testing"
-	"time"
 
 	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
@@ -118,7 +117,6 @@ func (c *fwdCluster) singleReplicaDatabaseAvoiding(t *testing.T, avoid int) (str
 				return name, i
 			}
 		}
-		time.Sleep(time.Second)
 	}
 	t.Fatalf("twelve single-replica databases were all placed on node %d", avoid+1)
 	return "", 0

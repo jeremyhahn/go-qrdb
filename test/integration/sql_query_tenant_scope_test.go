@@ -281,12 +281,11 @@ func waitForMySQLDefaultDB(t *testing.T, ca *testCA, certPath, keyPath string, p
 
 	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%d)/system?tls=%s", user, port, tlsName)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	var ready *sql.DB
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return false
 		}
 		db.SetConnMaxLifetime(30 * time.Second)
 		db.SetMaxOpenConns(5)
@@ -295,16 +294,17 @@ func waitForMySQLDefaultDB(t *testing.T, ca *testCA, certPath, keyPath string, p
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err = db.PingContext(ctx)
 		cancel()
-		if err == nil {
-			t.Cleanup(func() { db.Close() })
-			return db
+		if err != nil {
+			db.Close()
+			return false
 		}
-		db.Close()
-		time.Sleep(200 * time.Millisecond)
+		ready = db
+		return true
+	}) {
+		t.Fatalf("waitForMySQLDefaultDB: timed out after 30s waiting for MySQL on port %d", port)
 	}
-
-	t.Fatalf("waitForMySQLDefaultDB: timed out after 30s waiting for MySQL on port %d", port)
-	return nil
+	t.Cleanup(func() { ready.Close() })
+	return ready
 }
 
 // TestSQL_REST_TenantScoping_MatchesWireProtocolNamespace proves property

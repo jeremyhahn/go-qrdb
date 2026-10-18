@@ -238,19 +238,19 @@ const delegationAdminDeadline = 30 * time.Second
 func awaitDelegationAdmin(t *testing.T, n *node.Node, tenantID string) {
 	t.Helper()
 	ctx := tenant.WithTenantID(context.Background(), tenantID)
-	deadline := time.Now().Add(delegationAdminDeadline)
-	for {
-		_, err := n.Services().User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
-		var absent *user.UserNotFoundError
-		switch {
-		case err == nil:
-			return
-		case !errors.As(err, &absent):
-			t.Fatalf("GetUserByUsername(%s): %v", tenantID, err)
-		case time.Now().After(deadline):
-			t.Fatalf("the admin account of %s was not completed within %s: %v", tenantID, delegationAdminDeadline, err)
+	var err error
+	if !pollUntil(delegationAdminDeadline, 50*time.Millisecond, func() bool {
+		_, err = n.Services().User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
+		if err == nil {
+			return true
 		}
-		time.Sleep(50 * time.Millisecond)
+		var absent *user.UserNotFoundError
+		if !errors.As(err, &absent) {
+			t.Fatalf("GetUserByUsername(%s): %v", tenantID, err)
+		}
+		return false
+	}) {
+		t.Fatalf("the admin account of %s was not completed within %s: %v", tenantID, delegationAdminDeadline, err)
 	}
 }
 

@@ -98,15 +98,11 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 	// confirmed the key durably persisted into the replicated store --
 	// poll rather than assert immediately, since that runs after Raft
 	// leader election settles, not at the moment waitForHealthy returns.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("ca-key.pem was never removed after confirmed persistence")
-		}
-		time.Sleep(200 * time.Millisecond)
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+		_, err := os.Stat(keyPath)
+		return os.IsNotExist(err)
+	}) {
+		t.Fatal("ca-key.pem was never removed after confirmed persistence")
 	}
 
 	// Kill hard, same as the sm-storage-file durability test: the fix must
@@ -132,17 +128,14 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
 
-	deadline = time.Now().Add(30 * time.Second)
 	var out string
 	var err error
-	for time.Now().Before(deadline) {
+	if !pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 		out, err = runQRDB(t, cli, connArgs, "kv", "get", "clusterca-survivor")
-		if err == nil && strings.Contains(out, "v1") {
-			return
-		}
-		time.Sleep(300 * time.Millisecond)
+		return err == nil && strings.Contains(out, "v1")
+	}) {
+		t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
 	}
-	t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
 }
 
 // TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol
@@ -249,15 +242,11 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 	// confirmed the key durably persisted into the replicated store --
 	// poll rather than assert immediately, since that runs after Raft
 	// leader election settles, not at the moment waitForHealthy returns.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("ca-key.pem was never removed after confirmed persistence")
-		}
-		time.Sleep(200 * time.Millisecond)
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+		_, err := os.Stat(keyPath)
+		return os.IsNotExist(err)
+	}) {
+		t.Fatal("ca-key.pem was never removed after confirmed persistence")
 	}
 
 	// Kill hard, same as the sm-storage-file durability test: the fix must
@@ -280,16 +269,12 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 	// A after the restart.
 	for _, proto := range multiProtocols {
 		key := "clusterca-survivor-" + proto.name
-		deadline := time.Now().Add(30 * time.Second)
 		var out string
 		var err error
-		for time.Now().Before(deadline) {
+		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
 			out, err = runQRDB(t, cli, protoConnArgs(proto), "kv", "get", key)
-			if err == nil && strings.Contains(out, "v1") {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+			return err == nil && strings.Contains(out, "v1")
+		})
 		if err != nil || !strings.Contains(out, "v1") {
 			t.Fatalf("[%s] value did not survive the restart: err=%v out=%s", proto.name, err, out)
 		}

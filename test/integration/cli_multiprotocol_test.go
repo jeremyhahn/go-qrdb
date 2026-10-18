@@ -28,9 +28,9 @@
 // reachable only through sdk/go/node's in-process *sdk.Client, so this file
 // drives it directly through a dedicated single-purpose node and asserts the
 // same decisions (health public, status/peers permission-gated) the network
-// transports reach through the CLI -- exactly the pattern
-// replica_forwarding_embedded_test.go already established for its own
-// feature's embedded coverage.
+// transports reach through the CLI -- the pattern
+// replica_forwarding_mixed_test.go follows for its own feature's embedded
+// coverage.
 //
 // The kv command tree itself is already covered exhaustively per transport
 // by kv_cli_test.go (key-value); this file's concern is the api-server-owned

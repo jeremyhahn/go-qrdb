@@ -109,14 +109,12 @@ func contains(names []string, want string) bool {
 // failure.
 func waitForTableVisible(t *testing.T, db *sql.DB, label, table string, want bool, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var got []string
-	for time.Now().Before(deadline) {
+	if pollUntil(timeout, 100*time.Millisecond, func() bool {
 		got = sqlShowTables(t, db, label)
-		if contains(got, table) == want {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
+		return contains(got, table) == want
+	}) {
+		return
 	}
 	t.Fatalf("%s: timed out after %v waiting for table %q present=%v; SHOW TABLES = %v",
 		label, timeout, table, want, got)

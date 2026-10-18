@@ -340,12 +340,11 @@ gRPC and QUIC: a node certificate the cluster CA issued forwards, and a leaf a
 tenant CA issued with a forged node SAN is refused before the request is
 read.
 
-- four embedded nodes (`replica_forwarding_embedded_test.go`), a raft tenant
-  whose key the cluster key plane delivered to every node: an embedded node
-  holding no replica forwards as its configured writer and the write lands on
-  the replica; a node configured with a reader forwards its read and the
-  replica refuses its write; a node with no caller is refused with
-  `NotAReplicaError` and nothing is written;
+- the embedded forwarding scope's decisions, as unit tests in
+  `sdk/go/transport/embedded` (`replica_forward_test.go`): a node holding no
+  replica forwards as its configured caller and returns the replica's answer,
+  the replica's permission denial reaches the caller, and a node with no
+  caller is refused and forwards nothing;
 - a mixed cluster of two `qrdbd` nodes and one embedded node
   (`replica_forwarding_mixed_test.go`): placed as a replica, the embedded node
   receives the tenant's key from a `qrdbd` node and its client reads a

@@ -121,8 +121,8 @@ func authFactorTestProtocols() []ProtocolType {
 
 // TestCLIAuthFactorMTLSLifecycle drives the full mtls factor lifecycle
 // (add, list, relabel, rotate, force-remove) against every protocol,
-// mirroring the VALID-flow coverage in test/integration/auth/factors_test.go
-// but as a real `qrdb auth factor` subprocess against a live daemon.
+// mirroring the VALID-flow coverage in pkg/service's
+// user_auth_factor_service_test.go but as a real `qrdb auth factor` subprocess against a live daemon.
 func TestCLIAuthFactorMTLSLifecycle(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -249,8 +249,8 @@ func TestCLIAuthFactorMTLSLifecycle(t *testing.T) {
 // only active factor without --force is rejected with the typed
 // auth.ErrLastFactor error (surfaced to the CLI as an HTTP 409 on REST /
 // the equivalent status on the other protocols), and that --force allows
-// it, mirroring the acceptance criterion in
-// test/integration/auth/factors_test.go's TestM14_FullLifecycle.
+// it, mirroring the acceptance criterion in pkg/service's
+// TestRemove_lastFactorBlocks and TestRemove_lastFactorForce.
 func TestCLIAuthFactorLastFactorProtection(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)

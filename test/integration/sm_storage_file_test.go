@@ -90,16 +90,12 @@ func TestRaftSMOverFileStorage_ServesAndSurvivesRestart(t *testing.T) {
 	cmd := startSMFileNode(t, bin, dataDir, raftPort, restPort, grpcPort, ca)
 
 	putArgs := append(cliArgs(restPort), "kv", "put", "sm-file-survivor", "v-durable")
-	deadline := time.Now().Add(60 * time.Second)
 	var out string
 	var err error
-	for time.Now().Before(deadline) {
+	pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 		out, err = runCLI(t, cli, putArgs...)
-		if err == nil {
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return err == nil
+	})
 	if err != nil {
 		t.Fatalf("kv put never succeeded: %v\n%s", err, out)
 	}
@@ -112,13 +108,11 @@ func TestRaftSMOverFileStorage_ServesAndSurvivesRestart(t *testing.T) {
 	startSMFileNode(t, bin, dataDir, raftPort, restPort, grpcPort, ca)
 
 	getArgs := append(cliArgs(restPort), "kv", "get", "sm-file-survivor")
-	deadline = time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
+	if pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 		out, err = runCLI(t, cli, getArgs...)
-		if err == nil && strings.Contains(out, "v-durable") {
-			return
-		}
-		time.Sleep(300 * time.Millisecond)
+		return err == nil && strings.Contains(out, "v-durable")
+	}) {
+		return
 	}
 	t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
 }
@@ -177,18 +171,21 @@ func awaitLocalValue(t *testing.T, client *http.Client, port int, key, want stri
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s?consistency=eventual", port, key)
 	var last string
-	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		resp, err := client.Get(url)
 		if err != nil {
 			last = err.Error()
-			continue
+			return false
 		}
 		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err == nil && resp.StatusCode == http.StatusOK && string(body) == want {
-			return
+			return true
 		}
 		last = fmt.Sprintf("status %d, body %q, err %v", resp.StatusCode, body, err)
+		return false
+	}) {
+		return
 	}
 	t.Fatalf("port %d: %s never read %q: %s", port, key, want, last)
 }
@@ -228,30 +225,26 @@ func TestRaftSMOverFileStorage_PrefixKeyPairSurvivesEitherOrder(t *testing.T) {
 
 	put := func(key, value string) {
 		t.Helper()
-		deadline := time.Now().Add(60 * time.Second)
 		var out string
 		var err error
-		for time.Now().Before(deadline) {
+		if pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			out, err = runCLI(t, cli, cliArgs("kv", "put", key, value)...)
-			if err == nil {
-				return
-			}
-			time.Sleep(300 * time.Millisecond)
+			return err == nil
+		}) {
+			return
 		}
 		t.Fatalf("kv put %s=%s never succeeded (this is the circuit-breaker trip "+
 			"go-qrdb#592 describes if it stalls rather than erroring quickly): %v\n%s", key, value, err, out)
 	}
 	get := func(key, want string) {
 		t.Helper()
-		deadline := time.Now().Add(60 * time.Second)
 		var out string
 		var err error
-		for time.Now().Before(deadline) {
+		if pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			out, err = runCLI(t, cli, cliArgs("kv", "get", key)...)
-			if err == nil && strings.Contains(out, want) {
-				return
-			}
-			time.Sleep(300 * time.Millisecond)
+			return err == nil && strings.Contains(out, want)
+		}) {
+			return
 		}
 		t.Fatalf("kv get %s never returned %q (shard may be stalled): err=%v out=%s", key, want, err, out)
 	}
@@ -309,30 +302,26 @@ func TestRaftSMOverFileStorage_DeepKeyNeverHaltsTheShard(t *testing.T) {
 
 	put := func(key, value string) {
 		t.Helper()
-		deadline := time.Now().Add(60 * time.Second)
 		var out string
 		var err error
-		for time.Now().Before(deadline) {
+		if pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			out, err = runCLI(t, cli, cliArgs("kv", "put", key, value)...)
-			if err == nil {
-				return
-			}
-			time.Sleep(300 * time.Millisecond)
+			return err == nil
+		}) {
+			return
 		}
 		t.Fatalf("kv put (key len %d) never succeeded (this is the circuit-breaker trip "+
 			"a storage-layer fault would cause if the shard halted): %v\n%s", len(key), err, out)
 	}
 	get := func(key, want string) {
 		t.Helper()
-		deadline := time.Now().Add(60 * time.Second)
 		var out string
 		var err error
-		for time.Now().Before(deadline) {
+		if pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
 			out, err = runCLI(t, cli, cliArgs("kv", "get", key)...)
-			if err == nil && strings.Contains(out, want) {
-				return
-			}
-			time.Sleep(300 * time.Millisecond)
+			return err == nil && strings.Contains(out, want)
+		}) {
+			return
 		}
 		t.Fatalf("kv get (key len %d) never returned %q (shard may be stalled): err=%v out=%s", len(key), want, err, out)
 	}
@@ -398,32 +387,23 @@ func TestRaftSMOverFileStorage_ThreeNodeCluster(t *testing.T) {
 	}
 
 	// Write through node 1 (leader forwarding routes to the leader).
-	deadline := time.Now().Add(90 * time.Second)
 	var out string
 	var err error
-	for time.Now().Before(deadline) {
+	pollUntil(90*time.Second, 500*time.Millisecond, func() bool {
 		out, err = runCLI(t, cli, cliArgs(adminPorts[0], "kv", "put", "sm-file-cluster", "replicated")...)
-		if err == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return err == nil
+	})
 	if err != nil {
 		t.Fatalf("kv put through node1 never succeeded: %v\n%s", err, out)
 	}
 
 	// Read through every node.
 	for i := range 3 {
-		nodeDeadline := time.Now().Add(60 * time.Second)
-		for {
+		if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
 			out, err = runCLI(t, cli, cliArgs(adminPorts[i], "kv", "get", "sm-file-cluster")...)
-			if err == nil && strings.Contains(out, "replicated") {
-				break
-			}
-			if time.Now().After(nodeDeadline) {
-				t.Fatalf("node %d never served the replicated value: err=%v out=%s", i+1, err, out)
-			}
-			time.Sleep(500 * time.Millisecond)
+			return err == nil && strings.Contains(out, "replicated")
+		}) {
+			t.Fatalf("node %d never served the replicated value: err=%v out=%s", i+1, err, out)
 		}
 	}
 }
@@ -494,16 +474,12 @@ func TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard(t *testing.T) {
 
 	// Write the max-length key through node 1 (leader forwarding routes to
 	// the leader).
-	deadline := time.Now().Add(90 * time.Second)
 	var out string
 	var err error
-	for time.Now().Before(deadline) {
+	pollUntil(90*time.Second, 500*time.Millisecond, func() bool {
 		out, err = runCLI(t, cli, cliArgs(adminPorts[0], "kv", "put", maxKey, "max-length-value")...)
-		if err == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return err == nil
+	})
 	if err != nil {
 		t.Fatalf("kv put of a 65535-byte key never succeeded: %v\n%s", err, out)
 	}
@@ -511,16 +487,11 @@ func TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard(t *testing.T) {
 	// Read the max-length key, and confirm the shard is healthy, through
 	// EVERY node.
 	for i := range 3 {
-		nodeDeadline := time.Now().Add(60 * time.Second)
-		for {
+		if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
 			out, err = runCLI(t, cli, cliArgs(adminPorts[i], "kv", "get", maxKey)...)
-			if err == nil && strings.Contains(out, "max-length-value") {
-				break
-			}
-			if time.Now().After(nodeDeadline) {
-				t.Fatalf("node %d never served the 65535-byte key's value: err=%v out=%s", i+1, err, out)
-			}
-			time.Sleep(500 * time.Millisecond)
+			return err == nil && strings.Contains(out, "max-length-value")
+		}) {
+			t.Fatalf("node %d never served the 65535-byte key's value: err=%v out=%s", i+1, err, out)
 		}
 
 		out, err = runCLI(t, cli, cliArgs(adminPorts[i], "kv", "put",

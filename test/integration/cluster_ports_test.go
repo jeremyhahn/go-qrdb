@@ -216,18 +216,14 @@ func TestClusterPorts_PinnedSetIsExactlyWhatQrdbdBinds(t *testing.T) {
 func waitForPinnedSet(t *testing.T, node *portsNode) {
 	t.Helper()
 	want := node.want()
-	deadline := time.Now().Add(portsPinTimeout)
-	for {
+	var extra, missing []string
+	if !pollUntil(portsPinTimeout, 500*time.Millisecond, func() bool {
 		got := listeningSockets(t, node.pid)
-		extra, missing := setMinus(got, want), setMinus(want, got)
-		if len(extra) == 0 && len(missing) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("node %d: listens on sockets the pinned set does not name: %v; pinned but not bound: %v",
-				node.replicaID, extra, missing)
-		}
-		time.Sleep(500 * time.Millisecond)
+		extra, missing = setMinus(got, want), setMinus(want, got)
+		return len(extra) == 0 && len(missing) == 0
+	}) {
+		t.Fatalf("node %d: listens on sockets the pinned set does not name: %v; pinned but not bound: %v",
+			node.replicaID, extra, missing)
 	}
 }
 

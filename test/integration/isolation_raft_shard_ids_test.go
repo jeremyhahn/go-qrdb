@@ -177,16 +177,16 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 func (c *shardIDsCluster) waitForTenantOn(t *testing.T, node int) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/databases/list", c.adminPorts[node])
-	deadline := time.Now().Add(120 * time.Second)
-	for {
-		body, st := iraftAPIGet(t, c.tenant, url)
-		if st == http.StatusOK {
-			return
-		}
-		if st != http.StatusServiceUnavailable || time.Now().After(deadline) {
+	var body []byte
+	var st int
+	if !pollUntil(120*time.Second, 500*time.Millisecond, func() bool {
+		body, st = iraftAPIGet(t, c.tenant, url)
+		if st != http.StatusOK && st != http.StatusServiceUnavailable {
 			t.Fatalf("tenant not served by node %d: status %d, body %s", node+1, st, body)
 		}
-		time.Sleep(500 * time.Millisecond)
+		return st == http.StatusOK
+	}) {
+		t.Fatalf("tenant not served by node %d: status %d, body %s", node+1, st, body)
 	}
 }
 
@@ -208,25 +208,26 @@ func (c *shardIDsCluster) createThrough(t *testing.T, node int, name string) uin
 // status and body the node returned.
 func (c *shardIDsCluster) createDatabase(t *testing.T, url, what, name string, replicas int) uint64 {
 	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		body, st := iraftAPIPost(t, c.tenant, url, map[string]interface{}{
+	var body []byte
+	var st int
+	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
+		body, st = iraftAPIPost(t, c.tenant, url, map[string]interface{}{
 			"name": name, "backend": "pebble", "replicas": replicas,
 		})
-		if st == http.StatusCreated || st == http.StatusOK {
-			var info struct {
-				ShardID uint64 `json:"shardId"`
-			}
-			if err := json.Unmarshal(body, &info); err != nil || info.ShardID == 0 {
-				t.Fatalf("%s: no shard ID in %s", what, body)
-			}
-			return info.ShardID
-		}
-		if st != http.StatusServiceUnavailable || time.Now().After(deadline) {
+		if st != http.StatusCreated && st != http.StatusOK && st != http.StatusServiceUnavailable {
 			t.Fatalf("%s: status %d, body %s", what, st, body)
 		}
-		time.Sleep(500 * time.Millisecond)
+		return st != http.StatusServiceUnavailable
+	}) {
+		t.Fatalf("%s: status %d, body %s", what, st, body)
 	}
+	var info struct {
+		ShardID uint64 `json:"shardId"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil || info.ShardID == 0 {
+		t.Fatalf("%s: no shard ID in %s", what, body)
+	}
+	return info.ShardID
 }
 
 // placedShardID reads the database's shard ID back through the node at index
@@ -237,31 +238,30 @@ func (c *shardIDsCluster) createDatabase(t *testing.T, url, what, name string, r
 func (c *shardIDsCluster) placedShardID(t *testing.T, node int, name string) uint64 {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", c.adminPorts[node], name)
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		body, st := iraftAPIGet(t, c.tenant, url)
-		if st == http.StatusOK {
-			var info struct {
-				ShardID uint64 `json:"shardId"`
-			}
-			if err := json.Unmarshal(body, &info); err != nil {
-				t.Fatalf("decode %s: %v (%s)", name, err, body)
-			}
-			return info.ShardID
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("read %s through node %d: status %d, body %s", name, node+1, st, body)
-		}
-		time.Sleep(500 * time.Millisecond)
+	var body []byte
+	var st int
+	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
+		body, st = iraftAPIGet(t, c.tenant, url)
+		return st == http.StatusOK
+	}) {
+		t.Fatalf("read %s through node %d: status %d, body %s", name, node+1, st, body)
 	}
+	var info struct {
+		ShardID uint64 `json:"shardId"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		t.Fatalf("decode %s: %v (%s)", name, err, body)
+	}
+	return info.ShardID
 }
 
 // dropThrough drops the database through the node at index node.
 func (c *shardIDsCluster) dropThrough(t *testing.T, node int, name string) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", c.adminPorts[node], name)
-	deadline := time.Now().Add(60 * time.Second)
-	for {
+	var body []byte
+	var st int
+	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
 		req, err := http.NewRequest(http.MethodDelete, url, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -270,15 +270,15 @@ func (c *shardIDsCluster) dropThrough(t *testing.T, node int, name string) {
 		if err != nil {
 			t.Fatalf("drop %s through node %d: %v", name, node+1, err)
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
-			return
+		st = resp.StatusCode
+		if st != http.StatusNoContent && st != http.StatusOK && st != http.StatusServiceUnavailable {
+			t.Fatalf("drop %s through node %d: status %d, body %s", name, node+1, st, body)
 		}
-		if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("drop %s through node %d: status %d, body %s", name, node+1, resp.StatusCode, body)
-		}
-		time.Sleep(500 * time.Millisecond)
+		return st != http.StatusServiceUnavailable
+	}) {
+		t.Fatalf("drop %s through node %d: status %d, body %s", name, node+1, st, body)
 	}
 }
 

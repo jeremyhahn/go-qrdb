@@ -706,7 +706,7 @@ storage.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol, the conditional-add suite (`auth_factor_condition_cli_test.go`: the one-time claim, the expected version and N racing claims through the CLI per protocol, and the same over embedded through `sdk/go/node`'s in-process client), and the factor-lookup wire-encoding suite (REST, gRPC, QUIC, MCP; in-process, no Unix). Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol, the conditional-add suite (`auth_factor_condition_cli_test.go`: the one-time claim, the expected version and N racing claims through the CLI per protocol, and the same over embedded through `sdk/go/node`'s in-process client). The factor service's lifecycle (last-factor protection, forced removal, revoked-factor lookup) and its gRPC handlers are unit tests in `pkg/service` and `pkg/api/grpc`. Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: each `PINBackend` method against `SoftwareBackend`, the 6-character
   floor enforced in `Service`, constant-time comparison, algorithm resolution

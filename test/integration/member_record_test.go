@@ -36,14 +36,13 @@ func TestCluster_StaticClusterPublishesMemberRecords(t *testing.T) {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for i, l := range logs {
-		for !l.Contains("member record published") {
+		if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
 			if l.Contains("failed to register self") {
 				t.Fatalf("node %d failed to publish its member record", i+1)
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("node %d never published its member record without --dynamic-membership", i+1)
-			}
-			time.Sleep(200 * time.Millisecond)
+			return l.Contains("member record published")
+		}) {
+			t.Fatalf("node %d never published its member record without --dynamic-membership", i+1)
 		}
 		if l.Contains("dynamic membership manager started") {
 			t.Fatalf("node %d started the dynamic-membership manager it was not asked for", i+1)

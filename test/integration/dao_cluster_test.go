@@ -16,12 +16,12 @@
 //go:build integration
 
 // dao_cluster_test.go proves pkg/dao's GenericDAO over a real 3-node Raft
-// cluster: a write issued against a FOLLOWER (REST leader-forwarding
-// carries it to the leader), reads that are visible from every node, a
-// leader kill with a forced failover, and a restart that must rejoin and
+// cluster: a write that becomes visible from every node, by Get and by
+// index, a leader kill with a forced failover, and a restart that must rejoin and
 // catch up. This is the clustering half of "clustering and dao/entity
-// storage... working for the upstream projects" -- dao_sdk_test.go proves
-// the DAO facade itself; this file proves it survives the failures a
+// storage... working for the upstream projects" -- the DAO facade itself is
+// unit-tested in pkg/dao and, over a standalone node's indexed engine, in
+// sdk/go/node's dao_entity_storage_test.go; this file proves it survives the failures a
 // production Raft deployment actually has.
 package integration_test
 
@@ -36,7 +36,52 @@ import (
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest"
 )
+
+// daoSDKUser declares the index kinds the cluster test reads back: Email is
+// unique, Status is a plain equality index, Username is
+// unique+case-insensitive, Nickname is sparse (omitempty, so a record that
+// never sets it really omits the field), and Age is numeric.
+type daoSDKUser struct {
+	ID       uint64 `json:"id"`
+	Email    string `json:"email"              index:"unique"`
+	Status   string `json:"status"             index:"true"`
+	Username string `json:"username"           index:"unique,case_insensitive"`
+	Nickname string `json:"nickname,omitempty" index:"true,sparse"`
+	Age      int    `json:"age"                index:"true"`
+	SortKey  string `json:"sort_key"`
+	Payload  []byte `json:"payload,omitempty"`
+}
+
+func (u *daoSDKUser) EntityID() uint64      { return u.ID }
+func (u *daoSDKUser) SetEntityID(id uint64) { u.ID = id }
+
+// daoSDKClient dials the real qrdbd admin REST endpoint over mTLS with the
+// harness's shared admin identity (the same certificate every node in this
+// package binds during its ceremony) and returns a ready sdk.Client -- the
+// exact construction an embedding application performs.
+func daoSDKClient(t *testing.T, ca *testCA, port int) *sdk.Client {
+	t.Helper()
+	_, certPath, keyPath := ca.adminIdentity(t, t.TempDir())
+	tr, err := rest.New(
+		transport.WithAddress(fmt.Sprintf("https://127.0.0.1:%d", port)),
+		transport.WithMTLS(certPath, keyPath, ca.CertPath),
+		transport.WithTimeout(20*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("rest.New: %v", err)
+	}
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("transport Connect to 127.0.0.1:%d: %v", port, err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	client, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient: %v", err)
+	}
+	return client
+}
 
 type daoClusterNode struct {
 	cmd       *exec.Cmd
@@ -163,19 +208,23 @@ func startDAOCluster(t *testing.T, smType string) *daoCluster {
 // index.CheckCreateOwner).
 func newDAORetryingRetryable(t *testing.T, client *sdk.Client, entityType string, newEntity func() *daoSDKUser, what string) sdk.GenericDAO[*daoSDKUser] {
 	t.Helper()
-	deadline := time.Now().Add(retryableCreateWindow)
-	for {
-		d, err := sdk.NewDAO[*daoSDKUser](client.KVStore(), entityType, newEntity)
+	var d sdk.GenericDAO[*daoSDKUser]
+	var err error
+	if !pollUntil(retryableCreateWindow, 250*time.Millisecond, func() bool {
+		d, err = sdk.NewDAO[*daoSDKUser](client.KVStore(), entityType, newEntity)
 		if err == nil {
-			return d
+			return true
 		}
 		var reqErr *transport.RequestError
-		if !errors.As(err, &reqErr) || !retryableStatus(reqErr.StatusCode) || !time.Now().Before(deadline) {
+		if !errors.As(err, &reqErr) || !retryableStatus(reqErr.StatusCode) {
 			t.Fatalf("sdk.NewDAO %s: %v", what, err)
 		}
 		t.Logf("sdk.NewDAO %s refused for now, retrying: %v", what, err)
-		time.Sleep(250 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("sdk.NewDAO %s: %v", what, err)
 	}
+	return d
 }
 
 func assertDAOVisibleEverywhere(t *testing.T, cluster *daoCluster, entityType string, id uint64, wantEmail string, timeout time.Duration) {
@@ -187,25 +236,23 @@ func assertDAOVisibleEverywhere(t *testing.T, cluster *daoCluster, entityType st
 		client := daoSDKClient(t, cluster.ca, port)
 		d := newDAORetryingRetryable(t, client, entityType, newEntity, fmt.Sprintf("on admin port %d", port))
 
-		deadline := time.Now().Add(timeout)
 		var lastErr error
-		for {
+		if !pollUntil(timeout, 200*time.Millisecond, func() bool {
 			got, getErr := d.Get(ctx, id)
 			if getErr == nil && got.Email == wantEmail {
 				matches, idxErr := d.QueryByIndex(ctx, "Email", wantEmail)
 				if idxErr == nil && len(matches) == 1 && matches[0].ID == id {
 					lastErr = nil
-					break
+					return true
 				}
 				lastErr = idxErr
 			} else {
 				lastErr = getErr
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("admin port %d: entity %d (%s) never visible by Get AND QueryByIndex within %v: %v",
-					port, id, wantEmail, timeout, lastErr)
-			}
-			time.Sleep(200 * time.Millisecond)
+			return false
+		}) {
+			t.Fatalf("admin port %d: entity %d (%s) never visible by Get AND QueryByIndex within %v: %v",
+				port, id, wantEmail, timeout, lastErr)
 		}
 	}
 }
@@ -223,23 +270,14 @@ func TestDAO_RealBinary_ThreeNodeCluster_LeaderKillAndRestart(t *testing.T) {
 	newEntity := func() *daoSDKUser { return &daoSDKUser{} }
 
 	leaderPort := waitForLeaderViaAdmin(t, cluster.ca, cluster.adminPorts(), 30*time.Second)
-	var followerPort int
-	for _, p := range cluster.adminPorts() {
-		if p != leaderPort {
-			followerPort = p
-			break
-		}
-	}
-	if followerPort == 0 {
-		t.Fatal("no follower admin port found in a 3-node cluster")
-	}
-
-	// Write through a FOLLOWER: REST leader-forwarding must carry it.
-	followerClient := daoSDKClient(t, cluster.ca, followerPort)
-	followerDAO := newDAORetryingRetryable(t, followerClient, entityType, newEntity, fmt.Sprintf("over follower (port %d)", followerPort))
+	// REST leader forwarding of a follower's write is unit-tested in
+	// pkg/api/rest (TestHandler_KVPut_ForwardToLeader_*), so the first
+	// entity is written through the leader.
+	leaderClient := daoSDKClient(t, cluster.ca, leaderPort)
+	leaderDAO := newDAORetryingRetryable(t, leaderClient, entityType, newEntity, fmt.Sprintf("over leader (port %d)", leaderPort))
 	u1 := &daoSDKUser{Email: "cluster1@example.com", Status: "active", Username: "Cluster1", Age: 10}
-	if err := followerDAO.Save(ctx, u1); err != nil {
-		t.Fatalf("Save(u1) via follower port %d (leader-forwarded write): %v", followerPort, err)
+	if err := leaderDAO.Save(ctx, u1); err != nil {
+		t.Fatalf("Save(u1) via leader port %d: %v", leaderPort, err)
 	}
 
 	// Read from EVERY node, by Get and by index.

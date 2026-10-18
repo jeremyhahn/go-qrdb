@@ -94,8 +94,8 @@ func TestIntegrationFeatureCoverage_NoTargetShadowsAFeature(t *testing.T) {
 	db := makeDatabase(t, root)
 	// Discovery floor: a database this gate cannot read would find no
 	// explicit target at all and pass.
-	if !strings.Contains(db, "\nintegration-test-auth:") {
-		t.Fatal("make -p printed no integration-test-auth rule: the gate is not reading the Makefile's database")
+	if !strings.Contains(db, "\nintegration-test-standalone:") {
+		t.Fatal("make -p printed no integration-test-standalone rule: the gate is not reading the Makefile's database")
 	}
 	for _, f := range shadowingTargets(db, features) {
 		t.Errorf("Makefile has an explicit integration-test-%s target, which shadows the pattern rule that "+

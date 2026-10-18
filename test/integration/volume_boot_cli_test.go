@@ -67,14 +67,9 @@ func writeVolumeBootConfig(t *testing.T, poolPath string, allowDegraded bool) st
 // the buffer through the pipe copier, so it can arrive after that event is
 // observable; reading the buffer once would race the copier.
 func waitForOutput(out *nodeLog, want string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for !strings.Contains(out.String(), want) {
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return true
+	return pollUntil(timeout, 50*time.Millisecond, func() bool {
+		return strings.Contains(out.String(), want)
+	})
 }
 
 // singleNodeVolumeBootArgs returns the minimal `qrdbd start` argument list

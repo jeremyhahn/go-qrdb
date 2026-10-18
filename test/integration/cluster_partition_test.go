@@ -129,15 +129,12 @@ func (c *faultCluster) minorityWrites(client *http.Client, i int, prefix string,
 // shard.
 func (c *faultCluster) waitNotLeader(t *testing.T, i int, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		s, err := c.dataShard(i)
-		if err == nil && !s.IsLeader {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("node %d still leads %v after it was cut off (last: %+v, %v)", c.nodes[i].replicaID, timeout, s, err)
-		}
-		time.Sleep(faultPollInterval)
+	var s faultShard
+	var err error
+	if !pollUntil(timeout, faultPollInterval, func() bool {
+		s, err = c.dataShard(i)
+		return err == nil && !s.IsLeader
+	}) {
+		t.Fatalf("node %d still leads %v after it was cut off (last: %+v, %v)", c.nodes[i].replicaID, timeout, s, err)
 	}
 }

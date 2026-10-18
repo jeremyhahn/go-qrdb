@@ -165,15 +165,12 @@ func TestCeremonyInitialize_FollowerForwardBoundedAcrossLeaderDeath(t *testing.T
 	}
 	// The follower may still name the dead leader for a moment; that answer
 	// is bounded too, and the next submission reaches the new one.
-	deadline := time.Now().Add(60 * time.Second)
-	code, body = httpCeremonyInitializeOnce(t, ca, follower, certPEM)
-	for !strings.Contains(body, "already holds a certificate binding") {
-		if time.Now().After(deadline) {
-			t.Fatalf("POST /v1/ceremony/initialize to follower (port %d) after the new leader (port %d) was elected: status %d, body %s -- want the new leader's AdminAlreadyBoundError",
-				follower, newLeader, code, body)
-		}
-		time.Sleep(500 * time.Millisecond)
+	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
 		code, body = httpCeremonyInitializeOnce(t, ca, follower, certPEM)
+		return strings.Contains(body, "already holds a certificate binding")
+	}) {
+		t.Fatalf("POST /v1/ceremony/initialize to follower (port %d) after the new leader (port %d) was elected: status %d, body %s -- want the new leader's AdminAlreadyBoundError",
+			follower, newLeader, code, body)
 	}
 
 	if leaderCode, leaderBody := httpCeremonyInitializeOnce(t, ca, newLeader, certPEM); leaderCode != code {
