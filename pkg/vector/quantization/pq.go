@@ -48,6 +48,19 @@ type PQQuantizer struct {
 
 // NewPQQuantizer creates a new Product Quantizer. The dimensions must be evenly
 // divisible by m. Nbits determines the number of centroids per sub-space (2^nbits).
+// newTrainRNG returns the source Train draws its k-means++ seeding from.
+//
+// It is seeded from the clock: nothing in production needs a codebook to be
+// reproducible. It is a package-level variable only so that a same-package
+// test which measures codebook QUALITY can train on fixed seeds; a recall
+// bound judged against a clock-seeded codebook judges the clock (main red,
+// run 56527). Nothing outside tests reassigns it.
+var newTrainRNG = func() *rand.Rand {
+	now := uint64(time.Now().UnixNano())
+	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
+	return rand.New(rand.NewPCG(now, now^0x9E3779B97F4A7C15))
+}
+
 func NewPQQuantizer(dimensions, m, nbits int) (*PQQuantizer, error) {
 	if m <= 0 {
 		return nil, &InvalidConfigError{Message: "m must be positive"}
@@ -107,12 +120,8 @@ func (pq *PQQuantizer) Train(vectors [][]float32) error {
 
 	// One rng, shared across every sub-quantizer's k-means++ run, mirroring
 	// how the single package-level source this replaced was shared across
-	// all of them. Seeded from the clock: nothing here needs to be
-	// reproducible in production, only injectable in tests (see
-	// kmeansCluster's doc comment).
-	now := uint64(time.Now().UnixNano())
-	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
-	rng := rand.New(rand.NewPCG(now, now^0x9E3779B97F4A7C15))
+	// all of them.
+	rng := newTrainRNG()
 
 	for sub := 0; sub < pq.m; sub++ {
 		// Extract sub-vectors for this sub-space.

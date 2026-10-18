@@ -64,14 +64,32 @@ func TestPQ_TrainAndEncodeDecode(t *testing.T) {
 
 // pqRecallAt10 trains a fresh quantizer and returns how many of the true
 // top-10 neighbours its asymmetric distance table recovers.
-func pqRecallAt10(t *testing.T, dim, m, nbits int) int {
+//
+// Training draws from a PCG seeded with seed (through the newTrainRNG seam),
+// so the same seed always yields the same codebook and the same recall. When
+// discard is set the trained codebooks are zeroed before encoding: every
+// vector then quantizes to the same point, which is the control for a
+// quantizer that throws the vector away.
+func pqRecallAt10(t *testing.T, dim, m, nbits int, seed uint64, discard bool) int {
 	t.Helper()
+
+	orig := newTrainRNG
+	t.Cleanup(func() { newTrainRNG = orig })
+	newTrainRNG = func() *rand.Rand {
+		// #nosec G404 -- deterministic test fixture: k-means++ seeding, no secret derives from it.
+		return rand.New(rand.NewPCG(seed, seed^0x9E3779B97F4A7C15))
+	}
 
 	pq, err := NewPQQuantizer(dim, m, nbits)
 	require.NoError(t, err)
 
 	trainingVecs := generateRandomVectors(800, dim)
 	require.NoError(t, pq.Train(trainingVecs))
+	if discard {
+		for _, cb := range pq.codebooks {
+			clear(cb)
+		}
+	}
 
 	queryVec := trainingVecs[0]
 	dbVectors := trainingVecs[1:201] // 200 database vectors
@@ -126,39 +144,47 @@ func pqRecallAt10(t *testing.T, dim, m, nbits int) int {
 // TestPQ_RecallAccuracy checks that product quantization retains most of the
 // true nearest neighbours.
 //
-// It averages over several independent trials rather than asserting on one.
-// PQ's k-means++ initialization draws from the GLOBAL rand source
-// (pq.go), so each training run produces a different codebook and a
-// single-trial recall varies widely: measured over 30 runs the distribution
-// was {2:1, 3:4, 4:8, 5:8, 6:8, 7:1}. A one-shot `recall >= 3` therefore
-// failed roughly 3% of the time -- which is exactly what happened in a full
-// suite run on 2026-08-15, passing five times in isolation straight after.
+// Train seeds k-means++ from the clock in production, so every run trains a
+// different codebook and a single-trial recall varies widely: measured over 30
+// runs the distribution was {2:1, 3:4, 4:8, 5:8, 6:8, 7:1}. Even a 3-trial
+// mean then fell under the bound a few percent of the time (main red, run
+// 56527, mean 2.67), which judged the clock, not the quantizer. The test now
+// trains each trial on a fixed seed through the unexported newTrainRNG seam,
+// and generateRandomVectors draws its data from a fixed seed, so the measured
+// recall is the same on every run: seeds 1, 2 and 3 (the first three tried,
+// not a pick) measure 5, 4 and 6, a mean of 5.0 against the 3.0 bound. A failure therefore means
+// the quantizer changed.
 //
-// Averaging keeps the assertion meaningful: a genuinely broken quantizer
-// returns essentially random neighbours (expected recall 0.5/10), which is far
-// below the bound, while ordinary codebook variance no longer trips it.
+// The discard control keeps the test's power: with the codebooks zeroed every
+// vector quantizes to one point and recall collapses to chance (0 on each of the
+// same seeds), far below the bound.
 func TestPQ_RecallAccuracy(t *testing.T) {
 	// Sized for CI: k-means training dominates the runtime and runs under
 	// -race on a shared runner, where 5 trials over 2000 training vectors
-	// ran ~8 minutes and blew the test binary's 10-minute budget. 3 trials
-	// over 800 vectors keeps the statistical margin intact — a broken
-	// quantizer still measures ~0.5/10 mean recall against the 3.0 bound,
-	// while a trained codebook comfortably clears it — at a fraction of
-	// the cost.
+	// ran ~8 minutes and blew the test binary's 10-minute budget.
 	const (
 		dim, m, nbits = 64, 8, 8
-		trials        = 3
 		minMeanRecall = 3.0
 	)
+	seeds := []uint64{1, 2, 3}
 
-	total := 0
-	for i := 0; i < trials; i++ {
-		total += pqRecallAt10(t, dim, m, nbits)
+	meanRecall := func(discard bool) float64 {
+		total := 0
+		for _, seed := range seeds {
+			r := pqRecallAt10(t, dim, m, nbits, seed, discard)
+			t.Logf("seed %d discard=%v: recall@10 = %d", seed, discard, r)
+			total += r
+		}
+		return float64(total) / float64(len(seeds))
 	}
-	mean := float64(total) / float64(trials)
 
+	mean := meanRecall(false)
 	assert.GreaterOrEqual(t, mean, minMeanRecall,
-		"PQ mean recall@10 over %d trials should be >= %.1f, got %.1f", trials, minMeanRecall, mean)
+		"PQ mean recall@10 over %d seeds should be >= %.1f, got %.2f", len(seeds), minMeanRecall, mean)
+
+	control := meanRecall(true)
+	assert.Less(t, control, minMeanRecall/2,
+		"a quantizer that discards the vector must measure far below the bound, got %.2f", control)
 }
 
 func TestPQ_DistanceTable(t *testing.T) {
