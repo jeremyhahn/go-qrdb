@@ -32,6 +32,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -377,7 +378,7 @@ func TestQUICHolders_TenantFrames(t *testing.T) {
 			t.Errorf("%s = %v, want ServiceNotConfiguredError", name, err)
 		}
 	}
-	denied := NewServer(nil, nil, "localhost:0", WithTenantService(&quicHolderTenant{}), WithAuthMiddleware(authmw.New(quicDenyAuthorizer{})))
+	denied := NewServer(nil, nil, "localhost:0", WithTenantService(&quicHolderTenant{}), WithAuthMiddleware(authmw.New(quicDenyAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	deniedCtx := auth.WithIdentity(ctx, &auth.Identity{Subject: "mallory", TenantID: "acme"})
 	for _, name := range []string{"register", "list", "rekey-start", "officer-revoke"} {
 		if _, err := tenantHolderFrames(t, denied, "acme")[name](deniedCtx); err == nil {

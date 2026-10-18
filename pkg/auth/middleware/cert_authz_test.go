@@ -48,7 +48,7 @@ func (r *certAuthzRoles) ResolvePermissions(context.Context, []string) ([]permis
 }
 
 func newCertAuthzMiddleware() *AuthMiddleware {
-	return New(rbac.New(&certAuthzRoles{perms: []permission.Permission{
+	return newTestMiddleware(rbac.New(&certAuthzRoles{perms: []permission.Permission{
 		permission.CertsIssue,
 		permission.CertsRevoke,
 		permission.CertsRevokeCross,

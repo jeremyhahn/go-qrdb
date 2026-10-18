@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -54,6 +55,17 @@ type AuthMiddleware struct {
 	users         user.UserServicer
 	usersFallback user.UserServicer
 	audit         audit.Logger
+
+	// roles is the role store every authenticated identity's TenantOwner is
+	// decided against, per request (role.IsTenantOwner). Without one the
+	// middleware cannot decide it and refuses every request
+	// (TenantOwnerUnresolvedError) rather than admit one as "not owner".
+	roles role.NameResolver
+
+	// rolesFallback is the optional StaleRead-backed role store a failed
+	// TenantOwner read of the SYSTEM tenant is retried against (see
+	// tenantOwner). Nil disables the retry.
+	rolesFallback role.NameResolver
 
 	// certTargets is the certificate target guard users:add_cert_binding is
 	// held to (AuthorizeCertBindingTarget). Optional: without it such a write
@@ -242,6 +254,26 @@ func WithAuthenticator(a auth.Authenticator) Option {
 func WithUserService(u user.UserServicer) Option {
 	return func(m *AuthMiddleware) {
 		m.users = u
+	}
+}
+
+// WithRoleResolver configures the role store TenantOwner is decided against.
+// Every authenticated request reads it, uncached, so a withdrawn or granted
+// Admin role takes effect on the caller's next request. It is required:
+// a middleware without one refuses every authenticated request.
+func WithRoleResolver(r role.NameResolver) Option {
+	return func(m *AuthMiddleware) {
+		m.roles = r
+	}
+}
+
+// WithRoleResolverFallback configures the StaleRead-backed role store a
+// failed TenantOwner read is retried against. Like WithUserServiceFallback it
+// serves the system tenant only; any other tenant's failed read refuses the
+// request.
+func WithRoleResolverFallback(r role.NameResolver) Option {
+	return func(m *AuthMiddleware) {
+		m.rolesFallback = r
 	}
 }
 
@@ -500,6 +532,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// behind it cannot reach the authorizer.
 	identity.RoleBindings = nil
 	identity.Attributes = nil
+	// TenantOwner likewise has one source, decideTenantOwner below; no
+	// authenticator and no forwarded on-behalf assertion supplies it.
+	identity.TenantOwner = false
 	// A holder certificate -- an officer's or custodian's, signed by the
 	// ceremony CA (auth.IsHolderIdentity) -- proves who holds a share; it is
 	// never a user login. It has no user record and no cert binding to check,
@@ -525,6 +560,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// decide() is ever reached, which is the bug this fixes.
 	if auth.IsHolderIdentity(identity) {
 		identity.Roles = nil
+		if err := m.decideTenantOwner(ctx, identity); err != nil {
+			return ctx, nil, err
+		}
 		ctx = auth.WithIdentity(ctx, identity)
 		return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 	}
@@ -545,6 +583,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 					identity.Metadata = make(map[string]string)
 				}
 				identity.Metadata[tenantIAMSealedMetadataKey] = "true"
+				if err := m.decideTenantOwner(ctx, identity); err != nil {
+					return ctx, nil, err
+				}
 				ctx = auth.WithIdentity(ctx, identity)
 				return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 			}
@@ -663,6 +704,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 		return ctx, nil, rerr
 	}
 
+	if err := m.decideTenantOwner(ctx, identity); err != nil {
+		return ctx, nil, err
+	}
 	ctx = auth.WithIdentity(ctx, identity)
 
 	// Bind the canonical tenant context from the authenticated identity so
@@ -673,6 +717,45 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	ctx = tenant.WithTenantID(ctx, identity.TenantID)
 
 	return ctx, identity, nil
+}
+
+// decideTenantOwner sets identity.TenantOwner from role.IsTenantOwner over
+// the identity's final roles, bindings and tenant: the one decision point,
+// read from the role store on every request, uncached, so a demotion is
+// seen by the caller's next request. A role store that cannot answer, or no
+// role store at all, refuses the request rather than reading "not owner".
+func (m *AuthMiddleware) decideTenantOwner(ctx context.Context, identity *auth.Identity) error {
+	owner, err := m.tenantOwner(ctx, identity)
+	if err != nil {
+		return &TenantOwnerUnresolvedError{TenantID: identity.TenantID, Err: err}
+	}
+	identity.TenantOwner = owner
+	return nil
+}
+
+// tenantOwner reads role.IsTenantOwner from the linearizable role store and,
+// for the system tenant only, retries a failed read against the StaleRead
+// fallback, the same rule lookupUser and the RBAC authorizer apply: without
+// it a draining node, which rejects linearizable reads, could not admit the
+// operator who drains it. A sealed tenant is authoritative and never retried.
+// For every other tenant the primary's error stands.
+func (m *AuthMiddleware) tenantOwner(ctx context.Context, identity *auth.Identity) (bool, error) {
+	if m.roles == nil || m.rolesFallback == nil || !tenantid.IsSystem(identity.TenantID) {
+		return role.IsTenantOwner(ctx, m.roles, identity)
+	}
+	primaryCtx, cancel := context.WithTimeout(ctx, authLookupSyncTimeout)
+	owner, err := role.IsTenantOwner(primaryCtx, m.roles, identity)
+	cancel()
+	if err == nil || errors.Is(err, tenant.ErrTenantSealed) || ctx.Err() != nil {
+		return owner, err
+	}
+	fallbackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if owner, ferr := role.IsTenantOwner(fallbackCtx, m.rolesFallback, identity); ferr == nil {
+		slog.Debug("auth/middleware: used fallback role store for tenant ownership", "tenant", identity.TenantID)
+		return owner, nil
+	}
+	return false, err
 }
 
 // checkUnresolvedUserSubject refuses an identity that resolved to no account

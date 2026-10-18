@@ -171,7 +171,7 @@ func TestRESTMiddleware_UnmatchedPathUnderModulePrefixRefused(t *testing.T) {
 	u := createUser(t, svc, "acme", "bob", []string{"operator"})
 	ck := mintCert(t, "bob", "acme", nil, "")
 	enroll(t, svc, u.ID, ck)
-	m := New(&mockAuthorizer{}, WithAuthenticator(auth.NewMTLSAuthenticator()), WithUserService(svc))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(auth.NewMTLSAuthenticator()), WithUserService(svc))
 	reached := 0
 	h := m.RESTMiddleware(routes, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached++

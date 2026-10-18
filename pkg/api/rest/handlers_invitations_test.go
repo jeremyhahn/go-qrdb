@@ -63,7 +63,7 @@ func newInvitationServer(inv service.InvitationServicer, authn auth.Authenticato
 			return []permission.Permission{permission.UsersInvite}, nil
 		},
 	}
-	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(authn))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authn))
 	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithInvitations(inv), WithRoleService(roles), WithAuthMiddleware(mw))
 }

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -44,7 +45,7 @@ func (b *bearerStubAuthenticator) Name() string { return "bearer-stub" }
 // bearer token, with the given challenge configured.
 func newBearerTestServer(t *testing.T, challenge string) *Server {
 	t.Helper()
-	mw := authmw.New(&auth.NoopAuthorizer{},
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
 	s := &Server{}
 	WithAuthMiddleware(mw)(s)

@@ -330,6 +330,11 @@ var authFailureRules = []struct {
 		var e *StoreUnavailableError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
+	// The role store could not decide the identity's TenantOwner; retryable.
+	{"TenantOwnerUnresolvedError", func(err error) (AuthFailureClass, bool) {
+		var e *TenantOwnerUnresolvedError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
 	// The user lookup met a sealed node barrier; retryable once unsealed.
 	{"BarrierSealedError", func(err error) (AuthFailureClass, bool) {
 		var e *BarrierSealedError

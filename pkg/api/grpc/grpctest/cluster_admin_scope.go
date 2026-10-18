@@ -85,7 +85,7 @@ func ClusterAdminScope(t *testing.T, start ClusterStartFunc) {
 			t.Run(op.name+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				admin := &authtest.Admin{}
-				conn := start(t, authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)), admin)
+				conn := start(t, authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)), admin)
 				err := op.call(pb.NewQRDBServiceClient(conn), t)
 				if c.Admitted {
 					if err != nil || admin.ClusterChanges() != 1 {

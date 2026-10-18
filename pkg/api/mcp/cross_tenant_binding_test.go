@@ -38,7 +38,7 @@ import (
 func runBindingTool(t *testing.T, caller *auth.Identity, users *authtest.BindingUsers, tool string, args map[string]any, inner func(*authmw.AuthMiddleware, role.RoleServicer) mcpserver.ToolHandlerFunc) (bool, string) {
 	t.Helper()
 	roles := authtest.BindingRoles(t)
-	mw := authmw.New(rbac.New(roles),
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
 		authmw.WithUserService(users))
 	srv := NewServer(newMockKVService(), newMockAdminService(), ":0",

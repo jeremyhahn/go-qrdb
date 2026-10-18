@@ -83,7 +83,7 @@ func roleAssignmentCtx(tenantID string) context.Context {
 // so these tests exercise the actual scope rule permission.RolesAssign
 // carries, not a mock that always agrees.
 func mwWithPerms(perms ...permission.Permission) *AuthMiddleware {
-	return New(rbac.New(&grantingRoleServicer{perms: perms}))
+	return newTestMiddleware(rbac.New(&grantingRoleServicer{perms: perms}))
 }
 
 // ---------------------------------------------------------------------------

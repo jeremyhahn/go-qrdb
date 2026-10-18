@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -74,7 +75,7 @@ func (denyAllAuthorizer) Authorize(context.Context, *auth.Identity, string, stri
 // first-contact tools public.
 func startPublicToolsMCP(t *testing.T, authz auth.Authorizer) (string, *http.Client) {
 	t.Helper()
-	mw := authmw.New(authz, authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
 	tlsCfg := testTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
 		WithTLS(tlsCfg), WithAuthMiddleware(mw),
@@ -297,7 +298,7 @@ func TestRegisterPublicTools_RecordsDeclared(t *testing.T) {
 // and the first-contact tools declared public, for admitAnonymous.
 func newPublicAdmissionServer(t *testing.T) *Server {
 	t.Helper()
-	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
 	srv := NewServer(newMockKVService(), newMockAdminService(), ":0",
 		WithAuthMiddleware(mw), WithServiceModules([]apimodule.ServiceModule{&publicToolsModule{}}))
 	if srv.publicToolsErr != nil {

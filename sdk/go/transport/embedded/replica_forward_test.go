@@ -159,7 +159,8 @@ func TestForwardingScope_ForwardsTheRefusedWriteAsTheConfiguredCaller(t *testing
 // stand-in for the in-process caller. A call whose context carries an
 // identity the node admits is forwarded as the configured caller.
 func TestForwardingScope_AuthorizesTheContextsIdentityBeforeForwarding(t *testing.T) {
-	mw := authmw.New(rbac.New(authtest.BuiltInRoles(t, "acme")))
+	roles := authtest.BuiltInRoles(t, "acme")
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	fwd := &recordingForwarder{status: wire.StatusOK}
 	tr, err := New(newMockKVService(), &mockAdminService{}, WithServiceRegistry(&nonReplicaRegistry{}),
 		WithReplicaForwarding(fwd, fixedCaller{id: alice}), WithAuthMiddleware(mw))

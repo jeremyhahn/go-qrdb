@@ -1385,7 +1385,7 @@ func TestHandleTenantBarrierInitBegin_ServiceNil(t *testing.T) {
 // nothing to bind it to and is refused 401 rather than answered unbound.
 func TestHandleTenantBarrierInitBegin_WithoutTLSUnauthenticated(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
-	WithAuthMiddleware(authmw.New(grantingAuthorizer{}))(srv)
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t))))(srv)
 
 	rec := barrierRequest(t, srv, http.MethodPost, "/v1/tenants/acme/barrier/init/begin")
 	assertStatus(t, rec, http.StatusUnauthorized)
@@ -1427,7 +1427,7 @@ func TestHandleTenantBarrierInit_ProofOverTheConnection(t *testing.T) {
 		},
 	}
 	srv := newTenantServer(svc)
-	WithAuthMiddleware(authmw.New(grantingAuthorizer{}))(srv)
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t))))(srv)
 
 	cert := initprooftest.Certificate(t, "acme-admin")
 	conn := initprooftest.Dial(t, cert)
@@ -1473,7 +1473,7 @@ func TestHandleTenantBarrierInit_ProofOnAnotherConnectionRefused(t *testing.T) {
 		},
 	}
 	srv := newTenantServer(svc)
-	WithAuthMiddleware(authmw.New(grantingAuthorizer{}))(srv)
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t))))(srv)
 
 	cert := initprooftest.Certificate(t, "acme-admin")
 	first := initprooftest.Dial(t, cert)

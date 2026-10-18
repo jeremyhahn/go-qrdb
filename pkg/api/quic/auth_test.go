@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -54,7 +55,7 @@ func TestAuthorize_UnknownMethodDenied(t *testing.T) {
 			return nil
 		},
 	}
-	mw := authmw.New(authorizer)
+	mw := authmw.New(authorizer, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
 		WithAuthMiddleware(mw),
 	)
@@ -81,7 +82,7 @@ func TestAuthorize_KnownMethodDenied(t *testing.T) {
 			return denyErr
 		},
 	}
-	mw := authmw.New(authorizer)
+	mw := authmw.New(authorizer, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
 		WithAuthMiddleware(mw),
 	)
@@ -115,7 +116,7 @@ func TestAuthorize_KnownMethodAllowed(t *testing.T) {
 			return nil
 		},
 	}
-	mw := authmw.New(authorizer)
+	mw := authmw.New(authorizer, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
 		WithAuthMiddleware(mw),
 	)
@@ -136,7 +137,7 @@ func TestAuthorize_KnownMethodAllowed(t *testing.T) {
 // (because AuthorizeQUIC returns an error when identity is nil).
 func TestAuthorize_NoIdentityInContext(t *testing.T) {
 	authorizer := &mockAuthorizer{}
-	mw := authmw.New(authorizer)
+	mw := authmw.New(authorizer, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
 		WithAuthMiddleware(mw),
 	)

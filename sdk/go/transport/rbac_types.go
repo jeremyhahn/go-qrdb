@@ -40,6 +40,15 @@ type Identity struct {
 	// Roles holds the role names assigned to this identity.
 	Roles []string `json:"roles,omitempty"`
 
+	// TenantOwner is true exactly when the role store resolved the
+	// identity's roles to the Admin system role of TenantID at the moment
+	// the identity was established (login). It is the typed field
+	// consumers authorize tenant ownership on; Metadata never carries it.
+	// It refers to TenantID only: a system-tenant identity's TenantOwner
+	// grants no power over any other tenant. Projected from
+	// pkg/auth.Identity.TenantOwner, which role.IsTenantOwner decides.
+	TenantOwner bool `json:"tenantOwner"`
+
 	// Metadata is free-form attribute storage carried alongside the
 	// identity for audit / logging purposes. It does not influence
 	// authorization decisions.

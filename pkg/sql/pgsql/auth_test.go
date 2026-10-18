@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -51,7 +52,7 @@ func TestAuthenticator_Authenticate_NilAuthMW(t *testing.T) {
 
 func TestAuthenticator_Authenticate_NoTLSState(t *testing.T) {
 	// Create a non-nil AuthMiddleware to trigger the auth path.
-	mw := stubAuthMiddleware()
+	mw := stubAuthMiddleware(t)
 	a := NewAuthenticator(mw)
 	ctx := context.Background()
 	addr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5432}
@@ -113,7 +114,7 @@ func TestIdentityFromContext_WrongType(t *testing.T) {
 
 func TestAuthenticator_Authenticate_NilTLSStateValue(t *testing.T) {
 	// Store a nil tls.ConnectionState to test the nil check.
-	mw := stubAuthMiddleware()
+	mw := stubAuthMiddleware(t)
 	a := NewAuthenticator(mw)
 	addr := &net.TCPAddr{IP: net.ParseIP("192.168.1.1"), Port: 9999}
 
@@ -135,6 +136,7 @@ func TestAuthenticator_Authenticate_ValidTLSState(t *testing.T) {
 	// tls.ConnectionState but fails at the authenticator level.
 	mw := authmw.New(
 		&auth.NoopAuthorizer{},
+		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
 	)
 	a := NewAuthenticator(mw)
@@ -155,7 +157,7 @@ func TestAuthenticator_Authenticate_ValidTLSState(t *testing.T) {
 func TestAuthenticator_Authenticate_InvalidTypeInMap(t *testing.T) {
 	// Store a non-*tls.ConnectionState value in the map to exercise the
 	// type assertion failure path.
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	a := NewAuthenticator(mw)
 	addr := &net.TCPAddr{IP: net.ParseIP("10.0.0.2"), Port: 5433}
 
@@ -200,6 +202,7 @@ func TestAuthenticator_Authenticate_SuccessfulAuth(t *testing.T) {
 
 	mw := authmw.New(
 		&auth.NoopAuthorizer{},
+		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(&testAuthenticator{identity: expected}),
 	)
 	a := NewAuthenticator(mw)
@@ -243,6 +246,6 @@ func (a *testAuthenticator) Name() string {
 // stubAuthMiddleware creates a minimal AuthMiddleware for testing. It uses
 // a noop authorizer and no authenticators, which means Authenticate will
 // fail with ErrUnauthenticated unless TLS state is properly set up.
-func stubAuthMiddleware() *authmw.AuthMiddleware {
-	return authmw.New(&auth.NoopAuthorizer{})
+func stubAuthMiddleware(t testing.TB) *authmw.AuthMiddleware {
+	return authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 }

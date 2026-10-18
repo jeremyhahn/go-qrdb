@@ -25,6 +25,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -79,7 +80,7 @@ func TestSealedWindowDispatch_Unix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			authn := &dispatchAuthenticator{}
 			srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-dispatch.sock",
-				WithAuthMiddleware(authmw.New(dispatchDenyAuthorizer{}, authmw.WithAuthenticator(authn))),
+				WithAuthMiddleware(authmw.New(dispatchDenyAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))),
 				WithSealedWindowProbe(&fakeSealedProbe{sealed: tt.nodeSealed}),
 				WithSealedWindowDispatch(&fakeSealedProbe{sealed: tt.barrier}))
 			unary, stream := srv.admissionChains()

@@ -109,7 +109,7 @@ func newParityFixture(t *testing.T) *parityFixture {
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
 	userSvc := newParityUserService()
-	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller), authmw.WithUserService(userSvc))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller), authmw.WithUserService(userSvc))
 
 	restSrv := rest.NewServer(newMockKVService(), &mockAdminService{}, "127.0.0.1:0",
 		rest.WithTenantService(tenants),

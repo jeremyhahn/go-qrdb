@@ -75,7 +75,7 @@ func TestAuthMiddleware_ZeroValueIsFailClosed(t *testing.T) {
 // middleware built the ordinary way, with an audit logger and WITHOUT any
 // policy option, refuses a decision it could not record.
 func TestAuthorize_DefaultPolicyFailsClosed(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
 
 	if m.auditFailure != audit.FailClosed {
 		t.Fatalf("unset policy resolved to %v, want audit.FailClosed", m.auditFailure)
@@ -102,7 +102,7 @@ func TestWithAuditFailurePolicy_FailOpenWarnsAtStartup(t *testing.T) {
 	restore := swapDefaultLogger(t, &buf)
 	defer restore()
 
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuditLogger(&mockAuditLogger{}),
 		WithAuditFailurePolicy(audit.FailOpen))
 
@@ -128,7 +128,7 @@ func TestWithAuditFailurePolicy_FailClosedIsSilent(t *testing.T) {
 	restore := swapDefaultLogger(t, &buf)
 	defer restore()
 
-	New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}), WithAuditFailurePolicy(audit.FailClosed))
+	newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}), WithAuditFailurePolicy(audit.FailClosed))
 
 	if strings.Contains(buf.String(), "WARN") {
 		t.Fatalf("fail-closed must not warn; log was %q", buf.String())
@@ -169,7 +169,7 @@ func faultedChainSink(t *testing.T) (audit.Logger, string) {
 // *audit.GateError that unwraps to an *audit.WriteError naming the file.
 func TestAuthorize_RealChainFileFailure_DeniesWithAuditErrorWrappingWriteError(t *testing.T) {
 	sink, path := faultedChainSink(t)
-	m := New(&mockAuthorizer{}, WithAuditLogger(sink))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(sink))
 
 	err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "alice", TenantID: "t1"}, permission.KVPut)
@@ -208,7 +208,7 @@ func TestAuthorize_RealChainFileFailure_DeniesWithAuditErrorWrappingWriteError(t
 func TestRESTMiddleware_RESTRequestDeniedByAuditFailure(t *testing.T) {
 	sink, _ := faultedChainSink(t)
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 		WithAuditLogger(sink))
 
@@ -249,7 +249,7 @@ func TestRESTMiddleware_HealthyChainFileServesAndRecords(t *testing.T) {
 	defer func() { _ = chain.Close() }()
 
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 		WithAuditLogger(audit.NewDecisionLogger(chain)))
 
@@ -317,7 +317,7 @@ func TestAuditDecision_FailClosedIsCountedAndLogged(t *testing.T) {
 
 	before := auditFailureCount(t, auditOutcomeDenied)
 
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
 	_ = m.authorize(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"}, permission.KVPut)
 
 	if after := auditFailureCount(t, auditOutcomeDenied); after != before+1 {
@@ -337,7 +337,7 @@ func TestAuditDecision_FailClosedIsCountedAndLogged(t *testing.T) {
 func TestAuditDecision_FailOpenIsCounted(t *testing.T) {
 	before := auditFailureCount(t, auditOutcomePermitted)
 
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}),
 		WithAuditFailurePolicy(audit.FailOpen))
 	if err := m.authorize(context.Background(),
@@ -355,7 +355,7 @@ func TestAuditDecision_FailOpenIsCounted(t *testing.T) {
 func TestAuditDecision_SuccessIsNotCounted(t *testing.T) {
 	before := auditFailureCount(t, auditOutcomeDenied)
 
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}))
 	if err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "alice", TenantID: "t1"}, permission.KVPut); err != nil {
 		t.Fatalf("a recordable decision must stand: %v", err)
@@ -383,7 +383,7 @@ func TestAuditFailureOutcomes_CoverEveryPolicy(t *testing.T) {
 // real binding check -- but the DECISION to let the caller reach that handler
 // is still an authorization decision, and it is still audited.
 func TestAuthorize_IdentityGated_FailsClosedOnAuditFailure(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
 
 	err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "so", TenantID: "t1"}, permission.IdentityGated)
@@ -394,7 +394,7 @@ func TestAuthorize_IdentityGated_FailsClosedOnAuditFailure(t *testing.T) {
 }
 
 func TestAuthorize_IdentityGated_SucceedsWhenRecordable(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}))
 	if err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "so", TenantID: "t1"}, permission.IdentityGated); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -406,7 +406,7 @@ func TestAuthorize_IdentityGated_SucceedsWhenRecordable(t *testing.T) {
 // embedder that wires no audit sink would deny every request.
 func TestAuthorize_NoAuditLogger_NeverRefuses(t *testing.T) {
 	for _, p := range []audit.FailurePolicy{audit.FailClosed, audit.FailOpen} {
-		m := New(&mockAuthorizer{})
+		m := newTestMiddleware(&mockAuthorizer{})
 		m.auditFailure = p
 		if err := m.authorize(context.Background(),
 			&auth.Identity{Subject: "alice", TenantID: "t1"}, permission.KVPut); err != nil {
@@ -466,7 +466,7 @@ func auditFailureCount(t *testing.T, outcome string) float64 {
 // wrong, and this change makes a wired audit logger the universal case.
 func TestAuditDecision_NilIdentityIsRecordedNotDereferenced(t *testing.T) {
 	al := &mockAuditLogger{}
-	m := New(&mockAuthorizer{}, WithAuditLogger(al))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(al))
 
 	if err := m.auditDecision(context.Background(), nil, permission.KVPut, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -487,7 +487,7 @@ func TestAuditDecision_NilIdentityIsRecordedNotDereferenced(t *testing.T) {
 // TestAuditDecision_NilIdentityStillFailsClosed: the posture does not depend
 // on there being an identity to name.
 func TestAuditDecision_NilIdentityStillFailsClosed(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
 
 	err := m.auditDecision(context.Background(), nil, permission.KVPut, nil)
 	var auditErr *audit.GateError
@@ -499,7 +499,7 @@ func TestAuditDecision_NilIdentityStillFailsClosed(t *testing.T) {
 // TestAuthorize_NilIdentityDoesNotPanic drives the whole of authorize() with a
 // nil identity, which is the shape that would actually crash a node.
 func TestAuthorize_NilIdentityDoesNotPanic(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}))
 	// Returns whatever the authorizer says; the assertion is that it RETURNS.
 	_ = m.authorize(context.Background(), nil, permission.KVPut)
 }
@@ -539,7 +539,7 @@ func (c *countingBarrierStatus) TenantBarrierStatus(_ context.Context, _ string)
 // the gap in the trail. Double-counting makes it a multiple.
 func TestAuthorizeTenantBarrierInit_AuditFailureDoesNotEnterTheWindow(t *testing.T) {
 	al := &mockAuditLogger{err: errors.New("disk full")}
-	m := New(&mockAuthorizer{}, WithAuditLogger(al))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(al))
 	status := &countingBarrierStatus{}
 
 	before := auditFailureCount(t, auditOutcomeDenied)
@@ -564,7 +564,7 @@ func TestAuthorizeTenantBarrierInit_AuditFailureDoesNotEnterTheWindow(t *testing
 
 func TestAuthorizeTenantBarrierSealedOp_AuditFailureDoesNotEnterTheWindow(t *testing.T) {
 	al := &mockAuditLogger{err: errors.New("disk full")}
-	m := New(&mockAuthorizer{}, WithAuditLogger(al))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuditLogger(al))
 
 	before := auditFailureCount(t, auditOutcomeDenied)
 

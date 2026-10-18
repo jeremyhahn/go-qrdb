@@ -73,7 +73,7 @@ func (m *mockOnboarding) OnboardTenant(ctx context.Context, req *service.Onboard
 func newProvisioningMiddleware(t *testing.T) *authmw.AuthMiddleware {
 	t.Helper()
 	roles := authtest.BuiltInRoles(t, "acme", tenantid.System)
-	return authmw.New(rbac.New(roles))
+	return authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 }
 
 func acmeAdminCtx() context.Context {

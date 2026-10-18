@@ -35,7 +35,7 @@ func bindingClient(t *testing.T, caller *auth.Identity) (pb.QRDBServiceClient, *
 	t.Helper()
 	users := authtest.NewBindingUsers()
 	roles := authtest.BindingRoles(t)
-	mw := authmw.New(rbac.New(roles),
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
 		authmw.WithUserService(users))
 	tlsCfg := selfSignedTLSConfig(t)

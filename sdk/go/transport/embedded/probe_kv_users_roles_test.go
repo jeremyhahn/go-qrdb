@@ -49,7 +49,7 @@ import (
 // planes separate) -- is admitted.
 func TestEmbeddedProbe_KVRequiresAPermissionGrant(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme")
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	tr := newExtTransport(t, WithAuthMiddleware(mw))
 
 	noRole := identityCtx("acme")
@@ -165,7 +165,7 @@ func probeUserRoleRecords() (*mockUserServicer, *mockRoleServicer) {
 func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsUser(t *testing.T) {
 	userSvc, roleSvc := probeUserRoleRecords()
 	roles := authtest.BuiltInRoles(t, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), authmw.WithUserService(userSvc))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithUserService(userSvc))
 	tr := newExtTransport(t, WithUserService(userSvc), WithRoleService(roleSvc), WithAuthMiddleware(mw))
 
 	acmeAdmin := ctxFor(authtest.AdminIdentity("acme", "alice"))
@@ -198,7 +198,7 @@ func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsUser(t *testing.T) {
 func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsRole(t *testing.T) {
 	_, roleSvc := probeUserRoleRecords()
 	roles := authtest.BuiltInRoles(t, "acme", "globex")
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	tr := newExtTransport(t, WithRoleService(roleSvc), WithAuthMiddleware(mw))
 
 	acmeAdmin := ctxFor(authtest.AdminIdentity("acme", "alice"))

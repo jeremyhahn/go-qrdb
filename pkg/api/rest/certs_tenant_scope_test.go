@@ -246,7 +246,7 @@ func newCertScopeFixture(t *testing.T) *certScopeFixture {
 	users := newCertScopeUsers()
 	anchors := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 
-	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithCertProvider(prov),
 		WithCertEnrollment(service.NewCertEnrollmentService(prov, users, anchors)),

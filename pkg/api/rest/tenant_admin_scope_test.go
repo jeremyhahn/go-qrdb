@@ -37,7 +37,7 @@ func bindingServer(t *testing.T, caller *auth.Identity) (*Server, *authtest.Bind
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithUserService(users),
 		WithRoleService(roles),
-		WithAuthMiddleware(authmw.New(rbac.New(roles),
+		WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 			authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
 			authmw.WithUserService(users))),
 	)

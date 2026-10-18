@@ -139,7 +139,7 @@ func newGateFixture(t *testing.T) *gateFixture {
 	gate.now = func() time.Time { return now }
 
 	f := &gateFixture{cert: cert, verifier: v, audit: &mockAuditLogger{}, authz: &mockAuthorizer{}, now: now, subject: auth.UserSubject(u.ID)}
-	f.m = New(f.authz,
+	f.m = newTestMiddleware(f.authz,
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
 		WithAuditLogger(f.audit),
@@ -475,7 +475,7 @@ func transportGate(t *testing.T, perm permission.Permission) (*AuthMiddleware, c
 	if err != nil {
 		t.Fatalf("NewPeerAttestationGate: %v", err)
 	}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
 		WithPeerAttestationGate(gate),

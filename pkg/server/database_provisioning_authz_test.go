@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -111,7 +112,7 @@ func TestServer_DatabaseCreateChecksProvisioningPermissions(t *testing.T) {
 			srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
 				WithDatabaseService(rec),
 				WithTenantService(tenants),
-				WithAuthMiddleware(authmw.New(withoutPermissions{c.missing: true})))
+				WithAuthMiddleware(authmw.New(withoutPermissions{c.missing: true}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 			cfg := database.DatabaseConfig{Name: "db", Backend: c.backend}
 
 			_, err := service.CreateDatabaseForTenantWithCredentials(provisioningCtx(c.tenantID), srv.opts.databaseSvc, cfg, seal.Credentials{})
@@ -129,7 +130,7 @@ func TestServer_DatabaseCreateChecksProvisioningPermissions(t *testing.T) {
 			granted := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
 				WithDatabaseService(rec),
 				WithTenantService(tenants),
-				WithAuthMiddleware(authmw.New(withoutPermissions{})))
+				WithAuthMiddleware(authmw.New(withoutPermissions{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 			if _, err := service.CreateDatabaseForTenantWithCredentials(provisioningCtx(c.tenantID), granted.opts.databaseSvc, cfg, seal.Credentials{}); err != nil {
 				t.Fatalf("create with %s: %v", c.missing, err)
 			}
@@ -145,7 +146,7 @@ func TestServer_DatabaseCreateOrdinaryNeedsNoProvisioningPermission(t *testing.T
 		WithTenantService(&isolatedTenants{isolation: map[string]tenant.IsolationType{"acme": tenant.IsolationPrefix}}),
 		WithAuthMiddleware(authmw.New(withoutPermissions{
 			permission.DatabasesCreateRaft: true, permission.DatabasesCreateVolume: true,
-		})))
+		}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	cfg := database.DatabaseConfig{Name: "db", Backend: database.BackendPebble}
 	if _, err := srv.opts.databaseSvc.CreateForTenant(provisioningCtx("acme"), cfg); err != nil {
 		t.Fatalf("ordinary create: %v", err)

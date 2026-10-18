@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -77,6 +78,13 @@ type SessionIssuer interface {
 // whatever the hydrator set. A default implementation (the principal's
 // Roles and factor metadata) is supplied when none is configured — see
 // defaultIdentityHydrator.
+//
+// Every implementation sets auth.Identity.TenantOwner, and sets it only
+// from role.IsTenantOwner over the identity it returns, after its role set
+// and TenantID are final; it returns IsTenantOwner's error rather than
+// guess. FinishLogin issues TenantOwner as the hydrator left it, and it
+// reaches the caller as transport.Identity.TenantOwner. It must never be
+// derived from Metadata, a role name, or anything the caller supplied.
 type IdentityHydrator interface {
 	// Hydrate produces an *auth.Identity ready to be wrapped in a
 	// bearer. Implementations may return a typed error to abort login
@@ -87,10 +95,17 @@ type IdentityHydrator interface {
 // defaultIdentityHydrator is the trivial fallback that builds an
 // Identity directly from the principal's fields. It is used when the
 // embedded transport is constructed without WithIdentityHydrator.
-type defaultIdentityHydrator struct{}
+//
+// roles is the role store TenantOwner is resolved against (the transport's
+// WithRoleService). Without one the hydrator refuses rather than issue an
+// identity whose TenantOwner it could not decide.
+type defaultIdentityHydrator struct {
+	roles role.NameResolver
+}
 
-// Hydrate implements IdentityHydrator using the principal's own fields.
-func (d *defaultIdentityHydrator) Hydrate(_ context.Context, principal *auth.Principal, factor *auth.AuthFactor) (*auth.Identity, error) {
+// Hydrate implements IdentityHydrator using the principal's own fields,
+// deciding TenantOwner through role.IsTenantOwner.
+func (d *defaultIdentityHydrator) Hydrate(ctx context.Context, principal *auth.Principal, factor *auth.AuthFactor) (*auth.Identity, error) {
 	if principal == nil {
 		return nil, &auth.InvalidFactorError{Reason: "principal is nil"}
 	}
@@ -100,11 +115,17 @@ func (d *defaultIdentityHydrator) Hydrate(_ context.Context, principal *auth.Pri
 		meta["factor_id"] = factor.ID
 		meta["factor_type"] = string(factor.Type)
 	}
-	return &auth.Identity{
+	identity := &auth.Identity{
 		TenantID: principal.TenantID,
 		Roles:    roles,
 		Metadata: meta,
-	}, nil
+	}
+	owner, err := role.IsTenantOwner(ctx, d.roles, identity)
+	if err != nil {
+		return nil, err
+	}
+	identity.TenantOwner = owner
+	return identity, nil
 }
 
 // loginSessionStore tracks open BeginLogin attempts so FinishLogin can
@@ -181,10 +202,11 @@ func identityToTransport(id *auth.Identity) *transport.Identity {
 		}
 	}
 	return &transport.Identity{
-		Subject:  id.Subject,
-		TenantID: id.TenantID,
-		Roles:    roles,
-		Metadata: meta,
+		Subject:     id.Subject,
+		TenantID:    id.TenantID,
+		Roles:       roles,
+		TenantOwner: id.TenantOwner,
+		Metadata:    meta,
 	}
 }
 
@@ -423,7 +445,7 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 
 	hydrator := c.transport.identityHydrator
 	if hydrator == nil {
-		hydrator = &defaultIdentityHydrator{}
+		hydrator = &defaultIdentityHydrator{roles: c.transport.roleSvc}
 	}
 	identity, err := hydrator.Hydrate(ctx, principal, factor)
 	if err != nil {

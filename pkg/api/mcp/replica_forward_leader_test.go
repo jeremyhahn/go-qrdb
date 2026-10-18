@@ -51,7 +51,7 @@ func startMCPLeader(t *testing.T, ca *replicaforwardtest.CA) *mcpLeader {
 		}
 		return nil
 	}}
-	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithUserService(authtest.NewBindingUsers()))
+	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithUserService(authtest.NewBindingUsers()))
 	l.srv = NewServer(newMockKVService(), admin, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-3")), WithAuthMiddleware(mw))
 	if err := l.srv.Start(); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func startMCPFollower(t *testing.T, ca *replicaforwardtest.CA, leader *mcpLeader
 		return &service.NotLeaderError{ShardID: 1, LeaderID: 3, LeaderAddress: leaderAddr}
 	}}
 	caller := authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: authtest.BindingTenant})
-	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
+	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
 	follower := NewServer(newMockKVService(), admin, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw),
 		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool, Timeout: 5 * time.Second}))
 	if err := follower.Start(); err != nil {

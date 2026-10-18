@@ -36,6 +36,7 @@ import (
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -468,7 +469,7 @@ var _ apimodule.ModuleTenantTargetAware = (*tenantTargetAwareModule)(nil)
 // *authmw.AuthMiddleware, and a module that does not implement the
 // extension (stubModule) is skipped without panicking (go-qrdb#587).
 func TestWireModuleTenantTargetAuthorizers_PassesTheLiveAuthMiddleware(t *testing.T) {
-	mw := authmw.New(nil)
+	mw := authmw.New(nil, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	aware := &tenantTargetAwareModule{name: "aware"}
 	s := &Server{opts: serverOptions{
 		authMW: mw,

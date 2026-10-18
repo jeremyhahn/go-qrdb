@@ -111,7 +111,7 @@ func (v clusterOnly) VerifyIssuer(ctx context.Context, _ string, chain []*x509.C
 
 func issuerOBMiddleware(v auth.IssuerVerifier) *AuthMiddleware {
 	stored := &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
-	return New(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
+	return newTestMiddleware(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: stored}), WithIssuerVerifier(v))
 }
 

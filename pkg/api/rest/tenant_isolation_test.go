@@ -53,7 +53,7 @@ func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture 
 	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
+	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)}, opts...)...)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithTenantService(tenants),
 		WithTenantOnboarding(&fakeTenantOnboarding{tenants: tenants}),

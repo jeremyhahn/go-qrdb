@@ -32,6 +32,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -65,7 +66,7 @@ func (alwaysFailAuthenticator) Name() string { return "always-fail" }
 func TestStartRegistersModulePublicGRPCMethodsOnTheSharedAuthMiddleware(t *testing.T) {
 	const publicMethod = "/quicbaas.v1.HealthService/Check"
 	module := &publicMethodModule{methods: []string{publicMethod}}
-	mw := authmw.New(allowAllAuthorizer{}, authmw.WithAuthenticator(alwaysFailAuthenticator{}))
+	mw := authmw.New(allowAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(alwaysFailAuthenticator{}))
 
 	srv := NewServer(newMockKVService(), &mockAdminService{}, tempSocketPath(t),
 		WithServiceModules([]apimodule.ServiceModule{module}),
@@ -116,7 +117,7 @@ func TestStartRegistersModulePublicGRPCMethodsOnTheSharedAuthMiddleware(t *testi
 // auth-gated (or, worse, being ignored).
 func TestStartFailsWhenModuleDeclaresAMalformedPublicGRPCMethod(t *testing.T) {
 	module := &publicMethodModule{methods: []string{"not-a-full-method-name"}}
-	mw := authmw.New(allowAllAuthorizer{})
+	mw := authmw.New(allowAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	srv := NewServer(newMockKVService(), &mockAdminService{}, tempSocketPath(t),
 		WithServiceModules([]apimodule.ServiceModule{module}),
@@ -157,7 +158,7 @@ func TestStartWithNoAuthMiddlewareIgnoresModulePublicGRPCMethods(t *testing.T) {
 // of the no-op case: a module that does not implement GRPCPublicMethodLister
 // at all must not affect startup or the public-method set.
 func TestStartWithModuleWithoutTheListerInterfaceIsANoop(t *testing.T) {
-	mw := authmw.New(allowAllAuthorizer{}, authmw.WithAuthenticator(alwaysFailAuthenticator{}))
+	mw := authmw.New(allowAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(alwaysFailAuthenticator{}))
 
 	srv := NewServer(newMockKVService(), &mockAdminService{}, tempSocketPath(t),
 		WithServiceModules([]apimodule.ServiceModule{&stubModule{}}),

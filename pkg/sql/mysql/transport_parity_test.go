@@ -41,6 +41,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
@@ -738,7 +739,7 @@ func newPrivilegeWireConn(t *testing.T, h *sqltest.Harness, subject string) *sql
 
 	serverTLS, clientTLS := wireTLSPair(t)
 
-	mw := authmw.New(nil, authmw.WithAuthenticator(&fixedIdentityAuthenticator{
+	mw := authmw.New(nil, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&fixedIdentityAuthenticator{
 		identity: &auth.Identity{Subject: subject, TenantID: privilegeWireTenant},
 	}))
 

@@ -55,7 +55,7 @@ func newSOFixture(t *testing.T, start SOStartFunc, gated bool) *soFixture {
 	t.Helper()
 	caller := authtest.NewFixedAuthenticator(authtest.SOIdentity(soTenant, "officer"))
 	roles := authtest.BuiltInRoles(t, soTenant, soOtherTenant)
-	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))
 	var gate *authmw.SOGate
 	if gated {
 		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)

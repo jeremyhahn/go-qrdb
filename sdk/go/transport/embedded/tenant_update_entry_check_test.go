@@ -54,7 +54,7 @@ func TestUpdateTenant_EntryCheckChargesRateLimitAndAudit(t *testing.T) {
 	limiter := ratelimit.NewTokenBucketLimiter()
 	t.Cleanup(func() { _ = limiter.Close() })
 
-	mw := authmw.New(rbac.New(roles),
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithAuditLogger(audit.NewDecisionLogger(ring)),
 		authmw.WithRateLimiter(limiter),
 		authmw.WithRateLimitPolicies(limits),

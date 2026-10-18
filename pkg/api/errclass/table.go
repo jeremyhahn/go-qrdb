@@ -1566,6 +1566,7 @@ var authSamples = []error{
 	&auth.AuthError{Code: "unauthorized"},
 	&auth.AuthError{Code: "unauthenticated"},
 	&authmw.StoreUnavailableError{},
+	&authmw.TenantOwnerUnresolvedError{},
 	&authmw.BarrierSealedError{Err: seal.ErrBarrierSealed},
 	&auth.RevocationCheckError{},
 	&authmw.UserDisabledError{},

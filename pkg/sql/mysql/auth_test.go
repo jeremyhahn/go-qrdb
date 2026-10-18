@@ -35,6 +35,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
@@ -174,7 +175,7 @@ func TestSessionBuilder_AuthSuccess(t *testing.T) {
 	// The mock authenticator ignores TLS state and returns the identity directly.
 	authn := &mockAuthenticator{identity: identity}
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))
 
 	sb := newSessionBuilder(mw, nil)
 
@@ -197,7 +198,7 @@ func TestSessionBuilder_AuthSuccess(t *testing.T) {
 func TestSessionBuilder_AuthFailure_ReturnsError(t *testing.T) {
 	authn := &mockAuthenticator{err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))
 
 	sb := newSessionBuilder(mw, nil)
 
@@ -216,7 +217,7 @@ func TestSessionBuilder_AuthFailure_ReturnsError(t *testing.T) {
 func TestSessionBuilder_NoTLS_WithAuth_ReturnsAuthenticationError(t *testing.T) {
 	authn := &mockAuthenticator{identity: &auth.Identity{Subject: "bob"}}
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))
 
 	sb := newSessionBuilder(mw, nil)
 
@@ -238,7 +239,7 @@ func TestSessionBuilder_MTLSAuth_WithVerifiedChains(t *testing.T) {
 	// Use a real mTLS authenticator with verified chains.
 	authn := auth.NewMTLSAuthenticator()
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))
 
 	sb := newSessionBuilder(mw, nil)
 
@@ -287,7 +288,7 @@ func TestNewSessionBuilder(t *testing.T) {
 
 func TestNewSessionBuilder_WithMiddleware(t *testing.T) {
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz)
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	sb := newSessionBuilder(mw, nil)
 	require.NotNil(t, sb)

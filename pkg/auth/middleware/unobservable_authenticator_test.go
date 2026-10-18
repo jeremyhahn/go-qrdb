@@ -57,7 +57,7 @@ func restrictedUser() *mockUserServicer {
 // when it minted the token — and every other step still runs: the identity is
 // enriched from the account record.
 func TestAuthenticate_UnobservableAuthenticatorSkipsTheMethodPolicy(t *testing.T) {
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&hostBearerAuthenticator{identity: &auth.Identity{Subject: "frank", TenantID: "t1"}, unobservable: true}),
 		WithUserService(restrictedUser()))
 
@@ -79,7 +79,7 @@ func TestAuthenticate_ObservedBearerIsCheckedAgainstThePolicy(t *testing.T) {
 		"does not implement": &mockAuthenticator{name: "host-bearer", identity: &auth.Identity{Subject: "frank", TenantID: "t1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(restrictedUser()))
+			m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(restrictedUser()))
 			_, _, err := m.authenticate(context.Background())
 			var refused *AuthMethodNotPermittedError
 			if !errors.As(err, &refused) {
@@ -97,7 +97,7 @@ func TestAuthenticate_ObservedBearerIsCheckedAgainstThePolicy(t *testing.T) {
 func TestAuthenticate_UnobservableAuthenticatorStillRefusesADisabledAccount(t *testing.T) {
 	users := restrictedUser()
 	users.user.Lifecycle = user.LifecycleDisabled
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&hostBearerAuthenticator{identity: &auth.Identity{Subject: "frank", TenantID: "t1"}, unobservable: true}),
 		WithUserService(users))
 

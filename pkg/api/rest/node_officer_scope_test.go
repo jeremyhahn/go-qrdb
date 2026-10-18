@@ -58,7 +58,7 @@ func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
 				barrier := &authtest.Barrier{}
 				ceremony := &authtest.Ceremony{}
 				srv := NewServer(nil, nil, "127.0.0.1:0",
-					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))),
+					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))),
 					WithBarrierService(barrier), WithCeremonyService(ceremony))
 				req := httptest.NewRequest(http.MethodPost, rt.path, strings.NewReader(`{}`))
 				req.TLS = &tls.ConnectionState{}
@@ -108,7 +108,7 @@ func TestNodeOfficerScope(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, "so-pin-1234")}
 				srv := NewServer(nil, nil, "127.0.0.1:0",
-					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
+					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))),
 					WithBarrierService(barrier))
 				req := httptest.NewRequest(op.method, op.path, strings.NewReader(op.body))
 				req.TLS = &tls.ConnectionState{}

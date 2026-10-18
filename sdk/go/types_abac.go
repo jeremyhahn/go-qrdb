@@ -34,8 +34,9 @@ type ABACPolicy = abac.Policy
 // ABACPolicyMetadata contains policy identification and tenant scoping.
 type ABACPolicyMetadata = abac.PolicyMetadata
 
-// ABACPolicySpec contains the policy specification (subjects, variables,
-// rules).
+// ABACPolicySpec contains the policy specification (enabled, subjects,
+// variables, rules). Enabled is presence-tracked: nil means enabled, false
+// makes the evaluator skip the policy; see EnabledSet and IsEnabled.
 type ABACPolicySpec = abac.PolicySpec
 
 // ABACSubjectSelector defines criteria for matching subjects.

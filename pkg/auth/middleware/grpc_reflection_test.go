@@ -37,7 +37,7 @@ var reflectionMethods = []string{
 // qrdb registers no reflection service; one that is registered must be
 // authenticated like any other method, or declared public explicitly.
 func TestReflectionIsNotAnonymous(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 	unary := m.UnaryInterceptor()
 	stream := m.StreamInterceptor()
 
@@ -66,7 +66,7 @@ func TestReflectionIsNotAnonymous(t *testing.T) {
 // anonymous says so explicitly through RegisterPublicGRPCMethods, the same
 // declaration every other public method needs.
 func TestReflectionCanBeDeclaredPublic(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 	if err := m.RegisterPublicGRPCMethods(reflectionMethods[:1]); err != nil {
 		t.Fatalf("RegisterPublicGRPCMethods: %v", err)
 	}

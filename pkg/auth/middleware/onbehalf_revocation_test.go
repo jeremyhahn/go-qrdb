@@ -55,7 +55,7 @@ func (e *obUnavailableError) RevocationStateUnavailable() bool { return true }
 // middleware.
 func runOnBehalfWithRevocation(t *testing.T, r *http.Request, storeUser *user.User, rc auth.RevocationChecker) (int, bool) {
 	t.Helper()
-	m := New(&capturingAuthorizer{},
+	m := newTestMiddleware(&capturingAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: storeUser}),
 		WithRevocationChecker(rc),
@@ -200,7 +200,7 @@ func TestEnforceRevocation_Outcomes(t *testing.T) {
 // still give that plane its own revocation window.
 func TestRevocationChecker_ReturnsTheWiredChecker(t *testing.T) {
 	rc := &obRevocationChecker{}
-	m := New(nil, WithRevocationChecker(rc))
+	m := newTestMiddleware(nil, WithRevocationChecker(rc))
 
 	if got := m.RevocationChecker(); got != auth.RevocationChecker(rc) {
 		t.Fatalf("RevocationChecker() = %#v, want the installed checker %#v", got, rc)
@@ -212,7 +212,7 @@ func TestRevocationChecker_ReturnsTheWiredChecker(t *testing.T) {
 // middleware exists at all (--auth-enabled=false). Both must be a nil
 // INTERFACE, since the reusing plane's own guard is a `!= nil` test.
 func TestRevocationChecker_UnwiredAndNilMiddlewareAnswerNil(t *testing.T) {
-	if rc := New(nil).RevocationChecker(); rc != nil {
+	if rc := newTestMiddleware(nil).RevocationChecker(); rc != nil {
 		t.Errorf("unwired middleware: RevocationChecker() = %#v, want nil", rc)
 	}
 

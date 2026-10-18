@@ -34,7 +34,7 @@ func httpOBMiddleware(direct *mockAuthenticator) *AuthMiddleware {
 	// for her, including the ordinary (non-forwarded) chain these tests
 	// also exercise. MTLSBindingEnrolled is the documented explicit
 	// opt-out for an account policy was never meant to gate here.
-	return New(&capturingAuthorizer{}, WithAuthenticator(direct), WithUserService(&mockUserServicer{user: stored}),
+	return newTestMiddleware(&capturingAuthorizer{}, WithAuthenticator(direct), WithUserService(&mockUserServicer{user: stored}),
 		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 }
 

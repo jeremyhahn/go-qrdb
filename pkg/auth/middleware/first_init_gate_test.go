@@ -63,7 +63,7 @@ func TestCheckFirstInitCertificate_PendingMatch_Allowed(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	// The caller is compared by account name whether or not it resolved: an
 	// unresolved one carries the CN as its Subject, a resolved one its user
 	// id, with the name in Username.
@@ -93,7 +93,7 @@ func TestCheckFirstInitCertificate_PendingMismatchSPKI_Refused(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
 
 	err := m.checkFirstInitCertificate(mtlsContext(presented), caller, "acme")
@@ -119,7 +119,7 @@ func TestCheckFirstInitCertificate_MatchingSPKIWrongUsername_Refused(t *testing.
 		t.Fatalf("Put: %v", err)
 	}
 
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	// Same certificate (matching SPKI), but the caller identity names a
 	// different subject than the onboarded admin.
 	caller := &auth.Identity{Subject: "mallory", TenantID: "acme"}
@@ -139,7 +139,7 @@ func TestCheckFirstInitCertificate_MatchingSPKIWrongUsername_Refused(t *testing.
 // admits no certificate at all.
 func TestCheckFirstInitCertificate_NoRecord_Required_Refused(t *testing.T) {
 	store := newPendingStore(t) // empty: no pending record for "acme"
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	ck := mintCert(t, "anyone", "acme", nil, "")
 	caller := &auth.Identity{Subject: "anyone", TenantID: "acme"}
 
@@ -159,7 +159,7 @@ func TestCheckFirstInitCertificate_NoRecord_Required_Refused(t *testing.T) {
 // authenticated identity of the tenant passes.
 func TestCheckFirstInitCertificate_NoRecord_Enrolled_Unchanged(t *testing.T) {
 	store := newPendingStore(t) // empty
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	ck := mintCert(t, "anyone", "acme", nil, "")
 	caller := &auth.Identity{Subject: "anyone", TenantID: "acme"}
 
@@ -173,7 +173,7 @@ func TestCheckFirstInitCertificate_NoRecord_Enrolled_Unchanged(t *testing.T) {
 // record".
 func TestCheckFirstInitCertificate_StoreError_FailsClosed(t *testing.T) {
 	want := errors.New("replicated store unreachable")
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(&erroringPendingStore{err: want}), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(&erroringPendingStore{err: want}), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	ck := mintCert(t, "anyone", "acme", nil, "")
 	caller := &auth.Identity{Subject: "anyone", TenantID: "acme"}
 
@@ -198,14 +198,14 @@ func TestCheckFirstInitCertificate_NilStore_TreatedAsNoRecord(t *testing.T) {
 	ck := mintCert(t, "anyone", "acme", nil, "")
 	caller := &auth.Identity{Subject: "anyone", TenantID: "acme"}
 
-	required := New(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingRequired))
+	required := newTestMiddleware(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	err := required.checkFirstInitCertificate(mtlsContext(ck), caller, "acme")
 	var notOnboarded *FirstInitNotOnboardedError
 	if !errors.As(err, &notOnboarded) {
 		t.Fatalf("expected *FirstInitNotOnboardedError with a nil store under \"required\", got %T: %v", err, err)
 	}
 
-	enrolled := New(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	enrolled := newTestMiddleware(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	if err := enrolled.checkFirstInitCertificate(mtlsContext(ck), caller, "acme"); err != nil {
 		t.Errorf("expected a nil store under \"enrolled\" to admit the identity, got: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestAuthorizeTenantBarrierInit_PendingAdminMatch_GrantsFallback(t *testing.
 		t.Fatalf("Put: %v", err)
 	}
 
-	m := New(&mockAuthorizer{err: errors.New("no role can satisfy tenant_barrier:init yet")},
+	m := newTestMiddleware(&mockAuthorizer{err: errors.New("no role can satisfy tenant_barrier:init yet")},
 		WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	identity := &auth.Identity{Subject: "alice", TenantID: "acme"}
 	ctx := auth.WithIdentity(mtlsContext(ck), identity)
@@ -275,7 +275,7 @@ func TestAuthorizeTenantBarrierInit_WrongCertificate_Refused(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	m := New(&mockAuthorizer{err: errors.New("no role can satisfy tenant_barrier:init yet")},
+	m := newTestMiddleware(&mockAuthorizer{err: errors.New("no role can satisfy tenant_barrier:init yet")},
 		WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired))
 	identity := &auth.Identity{Subject: "alice", TenantID: "acme"}
 	ctx := auth.WithIdentity(mtlsContext(presented), identity)

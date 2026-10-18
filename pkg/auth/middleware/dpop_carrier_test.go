@@ -45,7 +45,7 @@ func (d *dpopCapture) Name() string { return "dpop-capture-stub" }
 // target URI reach an authenticator on REST.
 func TestRESTMiddleware_DPoPReachesAuthenticators(t *testing.T) {
 	cap := &dpopCapture{}
-	m := New(&mockAuthorizer{}, WithAuthenticator(cap))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(cap))
 	handler := m.RESTMiddleware(bearerCarrierRoutes(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -64,7 +64,7 @@ func TestRESTMiddleware_DPoPReachesAuthenticators(t *testing.T) {
 // TestRESTMiddleware_NoDPoPHeaderCarriesNone verifies absence is reported.
 func TestRESTMiddleware_NoDPoPHeaderCarriesNone(t *testing.T) {
 	cap := &dpopCapture{}
-	m := New(&mockAuthorizer{}, WithAuthenticator(cap))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(cap))
 	handler := m.RESTMiddleware(bearerCarrierRoutes(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/status", nil))

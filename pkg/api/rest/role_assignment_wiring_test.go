@@ -67,7 +67,7 @@ func newRoleAssignmentWiringServer(t *testing.T, perms []permission.Permission) 
 	caller := &certScopeAuthenticator{}
 	caller.as("acme", "acme-admin")
 
-	mw := authmw.New(rbac.New(roleSvc), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc), authmw.WithAuthenticator(caller))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),
@@ -146,7 +146,7 @@ func TestUpdateUser_RoleIDNotInTargetTenantIsRejected(t *testing.T) {
 	}
 	caller := &certScopeAuthenticator{}
 	caller.as("acme", "acme-admin")
-	mw := authmw.New(rbac.New(roleSvc), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc), authmw.WithAuthenticator(caller))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),

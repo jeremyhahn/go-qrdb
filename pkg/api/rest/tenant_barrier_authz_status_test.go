@@ -32,6 +32,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -89,7 +90,7 @@ func barrierRequest(t *testing.T, srv *Server, method, path string) *httptest.Re
 // rarely.
 func TestTenantBarrier_AuditFailure_Is503NotForbidden(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
-	WithAuthMiddleware(authmw.New(grantingAuthorizer{},
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuditLogger(brokenAuditSink(t))))(srv)
 
 	for _, tc := range []struct {
@@ -128,7 +129,7 @@ func TestTenantBarrier_AuditFailure_Is503NotForbidden(t *testing.T) {
 // everything would pass the test above.
 func TestTenantBarrier_HealthyAuditIsNotRefused(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
-	WithAuthMiddleware(authmw.New(grantingAuthorizer{},
+	WithAuthMiddleware(authmw.New(grantingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuditLogger(audit.NewDecisionLogger(audit.NewRingBuffer(8)))))(srv)
 
 	rec := barrierRequest(t, srv, http.MethodGet, "/v1/tenants/acme/barrier/status")
@@ -142,7 +143,7 @@ func TestTenantBarrier_HealthyAuditIsNotRefused(t *testing.T) {
 // client will retry forever.
 func TestTenantBarrier_OrdinaryDenialIsStill403(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
-	WithAuthMiddleware(authmw.New(denyingAuthorizer{}))(srv)
+	WithAuthMiddleware(authmw.New(denyingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t))))(srv)
 
 	rec := barrierRequest(t, srv, http.MethodPost, "/v1/tenants/acme/barrier/seal")
 	if rec.Code != http.StatusForbidden {
@@ -192,7 +193,7 @@ func TestTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *testing
 		},
 	}
 	srv := newTenantServer(svc)
-	WithAuthMiddleware(authmw.New(denyingAuthorizer{}))(srv)
+	WithAuthMiddleware(authmw.New(denyingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t))))(srv)
 
 	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
 		t.Run(profile, func(t *testing.T) {

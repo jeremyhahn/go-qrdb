@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -124,7 +125,7 @@ func (f *lifecycleFixture) grant(subject string, perms ...string) {
 func (f *lifecycleFixture) conn(t *testing.T, subject, tenantID string) *sql.DB {
 	t.Helper()
 	serverTLS, clientTLS := wireTLSPair(t)
-	mw := authmw.New(f.authzr, authmw.WithAuthenticator(&fixedIdentityAuthenticator{
+	mw := authmw.New(f.authzr, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&fixedIdentityAuthenticator{
 		identity: &auth.Identity{Subject: subject, TenantID: tenantID},
 	}))
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",

@@ -41,7 +41,7 @@ import (
 // with *NilServiceError instead.
 func TestEmbeddedSealStore_RequiresSystemTenantSealManagement(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme", tenantid.System)
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	tr := newExtTransport(t, WithAuthMiddleware(mw))
 
 	acmeAdmin := ctxFor(authtest.AdminIdentity("acme", "alice"))

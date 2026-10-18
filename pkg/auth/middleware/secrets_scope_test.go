@@ -51,7 +51,7 @@ func (secretsScopeRoles) ResolvePermissions(context.Context, []string) ([]permis
 }
 
 func newSecretsScopeMiddleware() *AuthMiddleware {
-	return New(rbac.New(secretsScopeRoles{}))
+	return newTestMiddleware(rbac.New(secretsScopeRoles{}))
 }
 
 // secretsIdentityCtx attaches an identity for the given tenant WITHOUT

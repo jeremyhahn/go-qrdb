@@ -167,7 +167,9 @@ func (m *mockRoleService) GetRoleByName(ctx context.Context, tenantID, name stri
 	if m.getRoleByNameFn != nil {
 		return m.getRoleByNameFn(ctx, tenantID, name)
 	}
-	return nil, nil
+	// The real store never answers (nil, nil): an absent name is
+	// RoleNotFoundError, which the TenantOwner decision reads as "not an owner".
+	return nil, &role.RoleNotFoundError{ID: name}
 }
 
 func (m *mockRoleService) UpdateRole(ctx context.Context, req *role.UpdateRoleRequest) (*role.Role, error) {

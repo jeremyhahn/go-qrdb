@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -195,20 +196,7 @@ func awaitAgreedLeader(t *testing.T, nodes []*Node) uint64 {
 	t.Helper()
 	deadline := time.Now().Add(clusterFormationBudget)
 	for {
-		leader, agreed := uint64(0), true
-		for _, n := range nodes {
-			host, ok := n.host.(*quicraft.Host)
-			if !ok {
-				t.Fatalf("node host is %T, want *quicraft.Host", n.host)
-			}
-			id, known, err := host.GetLeaderID(shard.ShardKV)
-			if err != nil || !known || (leader != 0 && id != leader) {
-				agreed = false
-				break
-			}
-			leader = id
-		}
-		if agreed {
+		if leader, agreed := agreedLeader(t, nodes); agreed {
 			return leader
 		}
 		if time.Now().After(deadline) {
@@ -216,6 +204,25 @@ func awaitAgreedLeader(t *testing.T, nodes []*Node) uint64 {
 		}
 		time.Sleep(clusterPollInterval)
 	}
+}
+
+// agreedLeader reports the KV shard leader when every one of nodes knows it and
+// names the same replica.
+func agreedLeader(t testing.TB, nodes []*Node) (uint64, bool) {
+	t.Helper()
+	leader := uint64(0)
+	for _, n := range nodes {
+		host, ok := n.host.(*quicraft.Host)
+		if !ok {
+			t.Fatalf("node host is %T, want *quicraft.Host", n.host)
+		}
+		id, known, err := host.GetLeaderID(shard.ShardKV)
+		if err != nil || !known || (leader != 0 && id != leader) {
+			return 0, false
+		}
+		leader = id
+	}
+	return leader, true
 }
 
 // TestNewClusteredNode_ThreeReplicasFormAndReplicate is go-qrdb#556's
@@ -245,13 +252,10 @@ func TestNewClusteredNode_ThreeReplicasFormAndReplicate(t *testing.T) {
 		}
 	}
 
-	leader := awaitAgreedLeader(t, nodes)
-	leaderNode := nodes[leader-1]
-
 	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
 	defer cancel()
-	if err := putUntilCommitted(ctx, leaderNode.Client().KV(), "formation/probe", []byte("formed")); err != nil {
-		t.Fatalf("write through leader %d: %v", leader, err)
+	if err := putThroughAgreedLeader(ctx, agreedLeaderKV(t, nodes), "formation/probe", []byte("formed")); err != nil {
+		t.Fatalf("write through the agreed leader: %v", err)
 	}
 	for i, n := range nodes {
 		got, err := n.Client().KV().Get(ctx, "formation/probe")
@@ -339,6 +343,189 @@ func putUntilCommitted(ctx context.Context, kv transport.KVClient, key string, v
 			return errors.Join(ctx.Err(), err)
 		case <-time.After(clusterPollInterval):
 		}
+	}
+}
+
+// leaderKVFunc resolves the KV client of the replica that currently leads the
+// KV shard, waiting until one is known or ctx ends.
+type leaderKVFunc func(ctx context.Context) (transport.KVClient, error)
+
+// agreedLeaderKV resolves, on every call, the replica all of nodes agree leads
+// the KV shard.
+func agreedLeaderKV(t testing.TB, nodes []*Node) leaderKVFunc {
+	return func(ctx context.Context) (transport.KVClient, error) {
+		for {
+			if leader, ok := agreedLeader(t, nodes); ok {
+				return nodes[leader-1].Client().KV(), nil
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(clusterPollInterval):
+			}
+		}
+	}
+}
+
+// readBackMismatchError reports a write that returned success but whose key
+// then read back a different value.
+type readBackMismatchError struct {
+	key       string
+	got, want []byte
+}
+
+func (e *readBackMismatchError) Error() string {
+	return "read back " + e.key + " = " + strconv.Quote(string(e.got)) + ", want " + strconv.Quote(string(e.want))
+}
+
+// leadershipMoved reports whether err means the replica a request went to no
+// longer leads the shard: the transport's redirect, raft's own not-leader
+// answer (which the service wraps as an ambiguous outcome, the proposal may
+// still commit), or a read index the new leader cannot serve yet.
+func leadershipMoved(err error) bool {
+	var transportNotLeader *transport.NotLeaderError
+	var raftNotLeader *quicraft.NotLeaderError
+	return errors.As(err, &transportNotLeader) || errors.As(err, &raftNotLeader) ||
+		errors.Is(err, quicraft.ErrReadIndexNotReady)
+}
+
+// putThroughAgreedLeader writes value under key through the agreed leader and
+// confirms it by reading it back through the same replica. When leadership
+// moves between resolving the leader and the write, the answer is not-leader
+// and the outcome is ambiguous; the value is idempotent, so the helper resolves
+// the leader again and repeats the write through it, until ctx ends.
+func putThroughAgreedLeader(ctx context.Context, leaderKV leaderKVFunc, key string, value []byte) error {
+	for {
+		kv, err := leaderKV(ctx)
+		if err != nil {
+			return err
+		}
+		err = kv.Put(ctx, key, value)
+		if err == nil {
+			var got []byte
+			if got, err = kv.Get(ctx, key); err == nil {
+				if string(got) != string(value) {
+					return &readBackMismatchError{key: key, got: got, want: value}
+				}
+				return nil
+			}
+		}
+		if !leadershipMoved(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), err)
+		case <-time.After(clusterPollInterval):
+		}
+	}
+}
+
+// scriptedKV is a KVClient double whose Put answers come from a script, one per
+// call, with a nil answer storing the value unless dropWrites is set; Get
+// serves what was stored.
+type scriptedKV struct {
+	transport.KVClient
+	putAnswers []error
+	dropWrites bool
+	puts       int
+	stored     map[string][]byte
+}
+
+func (s *scriptedKV) Put(_ context.Context, key string, value []byte, _ ...transport.WriteOption) error {
+	s.puts++
+	if len(s.putAnswers) > 0 {
+		answer := s.putAnswers[0]
+		s.putAnswers = s.putAnswers[1:]
+		if answer != nil {
+			return answer
+		}
+	}
+	if s.dropWrites {
+		return nil
+	}
+	if s.stored == nil {
+		s.stored = map[string][]byte{}
+	}
+	s.stored[key] = value
+	return nil
+}
+
+func (s *scriptedKV) Get(_ context.Context, key string, _ ...transport.ReadOption) ([]byte, error) {
+	value, ok := s.stored[key]
+	if !ok {
+		return nil, &transport.KeyNotFoundError{Key: key}
+	}
+	return value, nil
+}
+
+// raftNotLeaderOutcome is the error the embedded transport returns when raft
+// refuses a proposal because leadership moved after it was submitted
+// (run 56171).
+func raftNotLeaderOutcome() error {
+	return &transport.RequestError{Method: "embedded", Err: &service.ProposeError{
+		Err: &quicraft.MaybeAppliedError{Err: &quicraft.NotLeaderError{ShardID: 1}},
+	}}
+}
+
+func TestPutThroughAgreedLeader_RetriesThroughTheNewLeaderAfterNotLeader(t *testing.T) {
+	kv := &scriptedKV{putAnswers: []error{raftNotLeaderOutcome()}}
+	resolves := 0
+	leaderKV := func(context.Context) (transport.KVClient, error) {
+		resolves++
+		return kv, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer cancel()
+
+	if err := putThroughAgreedLeader(ctx, leaderKV, "formation/probe", []byte("formed")); err != nil {
+		t.Fatalf("putThroughAgreedLeader: %v", err)
+	}
+	if kv.puts != 2 {
+		t.Fatalf("Put called %d times, want 2 (refused once, then written)", kv.puts)
+	}
+	if resolves != 2 {
+		t.Fatalf("leader resolved %d times, want 2 (once per write)", resolves)
+	}
+}
+
+func TestPutThroughAgreedLeader_ReturnsOtherErrorsWithoutRetry(t *testing.T) {
+	refused := &transport.RequestError{Method: "embedded", Err: errors.New("permission denied")}
+	kv := &scriptedKV{putAnswers: []error{refused}}
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer cancel()
+
+	err := putThroughAgreedLeader(ctx, func(context.Context) (transport.KVClient, error) { return kv, nil },
+		"formation/probe", []byte("formed"))
+	if !errors.Is(err, refused) {
+		t.Fatalf("putThroughAgreedLeader = %v, want %v", err, refused)
+	}
+	if kv.puts != 1 {
+		t.Fatalf("Put called %d times, want 1", kv.puts)
+	}
+}
+
+func TestPutThroughAgreedLeader_ReportsAReadBackMismatch(t *testing.T) {
+	kv := &scriptedKV{dropWrites: true, stored: map[string][]byte{"formation/probe": []byte("stale")}}
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer cancel()
+
+	err := putThroughAgreedLeader(ctx, func(context.Context) (transport.KVClient, error) { return kv, nil },
+		"formation/probe", []byte("formed"))
+	var mismatch *readBackMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("putThroughAgreedLeader = %v, want a read-back mismatch", err)
+	}
+}
+
+func TestPutThroughAgreedLeader_StopsWhenTheLeaderNeverResolves(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := putThroughAgreedLeader(ctx, func(ctx context.Context) (transport.KVClient, error) { return nil, ctx.Err() },
+		"formation/probe", []byte("formed"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("putThroughAgreedLeader = %v, want context.Canceled", err)
 	}
 }
 

@@ -165,7 +165,7 @@ func mtlsMiddleware(svc user.UserServicer, opts ...Option) *AuthMiddleware {
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
 	}
-	return New(&mockAuthorizer{}, append(base, opts...)...)
+	return newTestMiddleware(&mockAuthorizer{}, append(base, opts...)...)
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +342,7 @@ func TestAuthenticate_SPIFFETenantSANIsNotExempt(t *testing.T) {
 
 	forged := mintCert(t, "dave", "", nil, "spiffe://example.com/tenant/acme/user/dave")
 
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(auth.NewMTLSAuthenticatorWithTrustDomain("example.com")),
 		WithUserService(svc),
 	)

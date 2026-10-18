@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
@@ -35,7 +36,7 @@ import (
 func guardedConn(t *testing.T, probe *fakeSealedProbe, streams *clusterseal.Streams) *pgx.Conn {
 	t.Helper()
 	serverTLS, clientTLS := pgMTLS(t)
-	mw := authmw.New(pgAllowAll{}, authmw.WithAuthenticator(&pgFixedIdentity{
+	mw := authmw.New(pgAllowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&pgFixedIdentity{
 		identity: &auth.Identity{Subject: "alice", TenantID: "acme"},
 	}))
 	srv := NewServer(&mockKVService{}, nil, "127.0.0.1:0",

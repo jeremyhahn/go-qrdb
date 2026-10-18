@@ -50,8 +50,12 @@ func (f *fakeRoleService) CreateRole(context.Context, *role.CreateRoleRequest) (
 func (f *fakeRoleService) GetRole(context.Context, string) (*role.Role, error) {
 	return nil, errors.ErrUnsupported
 }
-func (f *fakeRoleService) GetRoleByName(context.Context, string, string) (*role.Role, error) {
-	return nil, errors.ErrUnsupported
+
+// GetRoleByName answers as the real store does for a name it does not hold:
+// the fake's roles are keyed by id only, so it holds no name, and the auth
+// chain's tenant-ownership read finds no Admin role.
+func (f *fakeRoleService) GetRoleByName(_ context.Context, _, name string) (*role.Role, error) {
+	return nil, &role.RoleNotFoundError{ID: name}
 }
 func (f *fakeRoleService) UpdateRole(context.Context, *role.UpdateRoleRequest) (*role.Role, error) {
 	return nil, errors.ErrUnsupported
@@ -271,6 +275,69 @@ func TestDecorateABAC_ProgrammaticPolicies(t *testing.T) {
 	require.True(t, errors.As(err, &denied))
 }
 
+// TestBuildAuthorizer_ABACDisabledPolicySkipped drives the daemon's policy
+// input, auth.abac.policy_dir: a guardrail written with enabled: false must
+// not deny what RBAC allows.
+func TestBuildAuthorizer_ABACDisabledPolicySkipped(t *testing.T) {
+	dir := t.TempDir()
+	policy := `apiVersion: abac.qrdb.io/v1
+kind: Policy
+metadata:
+  name: wiring-guardrail
+  tenant: system
+spec:
+  enabled: false
+  subjects:
+    any: true
+  rules:
+    - name: deny-status
+      effect: deny
+      actions: ["status"]
+      resources: ["admin"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "guardrail.yaml"), []byte(policy), 0o600))
+
+	authorizer, err := BuildAuthorizer(AuthorizerConfig{
+		RoleService:   adminRoleService(),
+		ABACEnabled:   true,
+		ABACPolicyDir: dir,
+	})
+	require.NoError(t, err)
+
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+	require.NoError(t, authorizer.Authorize(ctx, adminIdentity(), "admin", "status"))
+}
+
+// TestDecorateABAC_ProgrammaticDisabledPolicy drives the SDK's policy input
+// (node.WithABACPolicies): a policy whose Spec.Enabled is false is skipped,
+// so a set holding only that policy leaves the inner authorizer unwrapped.
+func TestDecorateABAC_ProgrammaticDisabledPolicy(t *testing.T) {
+	disabled := false
+	inner := &auth.NoopAuthorizer{}
+	policies := []*abac.Policy{{
+		APIVersion: "abac.qrdb.io/v1",
+		Kind:       abac.PolicyKind,
+		Metadata:   abac.PolicyMetadata{Name: "prog", Tenant: tenantid.System},
+		Spec: abac.PolicySpec{
+			Enabled:  &disabled,
+			Subjects: abac.SubjectSelector{Any: true},
+			Rules: []abac.Rule{{
+				Name:      "deny-destroy",
+				Effect:    abac.EffectDeny,
+				Actions:   []string{"destroy"},
+				Resources: []string{"keys"},
+			}},
+		},
+	}}
+
+	authorizer, err := DecorateABAC(inner, false, "", policies)
+	require.NoError(t, err)
+	require.Same(t, auth.Authorizer(inner), authorizer)
+
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+	require.NoError(t, authorizer.Authorize(ctx, adminIdentity(), "keys", "destroy"))
+}
+
 // ---------------------------------------------------------------------------
 // BuildAuthMiddleware
 // ---------------------------------------------------------------------------
@@ -294,6 +361,20 @@ func TestBuildAuthMiddleware_MissingRoleService(t *testing.T) {
 	require.Error(t, err)
 	var missing *MissingServiceError
 	require.True(t, errors.As(err, &missing))
+	assert.Equal(t, "role", missing.Service)
+}
+
+// TestBuildAuthMiddleware_AuthorizerDoesNotReplaceRoleService verifies a
+// caller-supplied Authorizer does not excuse the missing role store: the
+// chain decides TenantOwner from it on every request, whoever authorizes.
+func TestBuildAuthMiddleware_AuthorizerDoesNotReplaceRoleService(t *testing.T) {
+	_, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:     true,
+		Authorizer:  &auth.NoopAuthorizer{},
+		UserService: &fakeUserService{},
+	})
+	var missing *MissingServiceError
+	require.ErrorAs(t, err, &missing)
 	assert.Equal(t, "role", missing.Service)
 }
 

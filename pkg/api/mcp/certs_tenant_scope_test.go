@@ -36,6 +36,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -60,9 +61,9 @@ func (a *mcpCertGateAuthorizer) Authorize(_ context.Context, _ *auth.Identity, r
 	return errMCPCertGateRefused
 }
 
-func newMCPCertGate() (*authmw.AuthMiddleware, *mcpCertGateAuthorizer) {
+func newMCPCertGate(t testing.TB) (*authmw.AuthMiddleware, *mcpCertGateAuthorizer) {
 	authz := &mcpCertGateAuthorizer{}
-	return authmw.New(authz), authz
+	return authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t))), authz
 }
 
 // mcpCertGateCtx builds the context the authentication path builds.
@@ -144,7 +145,7 @@ func certToolCall(name string, args map[string]any) mcp.CallToolRequest {
 // exist in the CALLER's tenant), so the gate is always asked about the
 // caller's own tenant, "acme".
 func TestMCPCertIssue_ConsultsTheTenancyGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleCertIssue(&refusingMCPCertEnroll{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_issue", map[string]any{
@@ -159,7 +160,7 @@ func TestMCPCertIssue_ConsultsTheTenancyGate(t *testing.T) {
 
 // TestMCPCertEnroll_ConsultsTheTenancyGate is qrdb_cert_issue's twin.
 func TestMCPCertEnroll_ConsultsTheTenancyGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleCertEnroll(&refusingMCPCertEnroll{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_enroll", map[string]any{
@@ -175,7 +176,7 @@ func TestMCPCertEnroll_ConsultsTheTenancyGate(t *testing.T) {
 // TestMCPCertDelegate_ConsultsTheTenancyGate is qrdb_cert_issue's twin for a
 // delegation, which likewise names no tenant of its own.
 func TestMCPCertDelegate_ConsultsTheTenancyGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleCertDelegate(&refusingMCPCertEnroll{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_delegate", map[string]any{
@@ -194,7 +195,7 @@ func TestMCPCertDelegate_ConsultsTheTenancyGate(t *testing.T) {
 // tenant_id argument of its own, so this is where this transport could still
 // mint against another tenant's trust store if the gate were bypassed.
 func TestMCPTrustAnchorAdd_ConsultsTheTenancyGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleTrustAnchorAdd(&refusingMCPCertEnroll{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_trust_anchor_add", map[string]any{
@@ -209,7 +210,7 @@ func TestMCPTrustAnchorAdd_ConsultsTheTenancyGate(t *testing.T) {
 
 // TestMCPCertRevoke_ConsultsTheTenancyGate proves the headline verb is gated.
 func TestMCPCertRevoke_ConsultsTheTenancyGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleCertRevoke(&refusingMCPCertProvider{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_revoke", map[string]any{
@@ -223,7 +224,7 @@ func TestMCPCertRevoke_ConsultsTheTenancyGate(t *testing.T) {
 
 // TestMCPCertList_ConsultsTheTenancyGate closes the enumeration path.
 func TestMCPCertList_ConsultsTheTenancyGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleCertList(&refusingMCPCertProvider{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_list", map[string]any{
@@ -240,7 +241,7 @@ func TestMCPCertList_ConsultsTheTenancyGate(t *testing.T) {
 // least deliberate call an agent can make is also the most privileged one --
 // and it must be gated exactly like an explicit cross-tenant request.
 func TestMCPCertList_OmittedTenantStillReachesTheGate(t *testing.T) {
-	mw, authz := newMCPCertGate()
+	mw, authz := newMCPCertGate(t)
 	handler := handleCertList(&refusingMCPCertProvider{t: t}, mw)
 
 	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_list", map[string]any{}))

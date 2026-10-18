@@ -34,6 +34,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -913,7 +914,7 @@ func TestIntegration_Auth_NoClientCert_Unauthenticated(t *testing.T) {
 	// Server with auth middleware enabled but client has no cert (NoClientCert).
 	// The authenticate function checks PeerCertificates and returns
 	// StatusUnauthenticated before calling any authenticator.
-	mw := authmw.New(&noopAuthorizer{})
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
 		WithAuthMiddleware(mw),
 	)
@@ -936,7 +937,7 @@ func TestIntegration_Auth_NoClientCert_Unauthenticated(t *testing.T) {
 
 func TestIntegration_Auth_NoClientCert_ServerStillAlive(t *testing.T) {
 	// Verify the server continues serving after an auth failure.
-	mw := authmw.New(&noopAuthorizer{})
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
 		WithAuthMiddleware(mw),
 	)
@@ -1106,6 +1107,7 @@ func TestIntegration_Auth_MutualTLS_Success(t *testing.T) {
 	// "enrolled" is the correct, explicit choice (go-qrdb#548).
 	mw := authmw.New(
 		&noopAuthorizer{},
+		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
 		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
@@ -1136,6 +1138,7 @@ func TestIntegration_Auth_MutualTLS_AuthenticateFails(t *testing.T) {
 	// rejectingAuthenticator always returns an error even when a cert is present.
 	mw := authmw.New(
 		&noopAuthorizer{},
+		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(&rejectingAuthenticator{}),
 	)
 

@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -294,7 +295,7 @@ func TestStartInstallsTheAuthMiddlewareAndAuditService(t *testing.T) {
 	socketPath := tempSocketPath(t)
 
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
-		WithAuthMiddleware(authmw.New(allowAllAuthorizer{})),
+		WithAuthMiddleware(authmw.New(allowAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 		WithAuditLogger(recordingAuditLogger{}),
 		WithTLS(selfSignedTLSConfig(t)),
 	)

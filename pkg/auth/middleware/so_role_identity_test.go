@@ -104,7 +104,7 @@ func (f *soRealFixture) roleID(t *testing.T, name string) string {
 // inside, then the handler, which records whether it ran.
 func (f *soRealFixture) handler(ran *bool) http.Handler {
 	routes := testRESTRoutes()
-	m := New(rbac.New(f.roles),
+	m := newTestMiddleware(rbac.New(f.roles),
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(f.users),
 	)

@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -108,6 +109,7 @@ func newLoginTestTransport(t *testing.T, factorSvc *memUserAuthFactorService, lo
 		WithUserAuthFactorService(factorSvc),
 		WithLoginResolver(resolver),
 		WithSessionIssuer(issuer),
+		WithRoleService(newLoginRoleStore(t)),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -451,7 +453,7 @@ func TestLoginClient_Logout_EmptyBearer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDefaultIdentityHydrator_Hydrate_PassesThrough(t *testing.T) {
-	h := &defaultIdentityHydrator{}
+	h := &defaultIdentityHydrator{roles: newLoginRoleStore(t)}
 	id, err := h.Hydrate(context.Background(),
 		&auth.Principal{ID: 1, Username: "alice", TenantID: "acme", Roles: []string{"User"}, Active: true},
 		&auth.AuthFactor{ID: "f-1", Type: auth.AuthFactorFIDO2},
@@ -544,6 +546,7 @@ func finishLoginAs(t *testing.T, userID uint64, principal *auth.Principal, opts 
 		WithUserAuthFactorService(svc),
 		WithLoginResolver(auth.NewLoginResolver(svc, lookup)),
 		WithSessionIssuer(newMemSessionIssuer()),
+		WithRoleService(newLoginRoleStore(t)),
 	}, opts...)
 	tr, err := New(newMockKVService(), &mockAdminService{}, opts...)
 	if err != nil {
@@ -611,6 +614,7 @@ func loginTransportWithVerifier(t *testing.T, factorSvc *memUserAuthFactorServic
 		WithUserAuthFactorService(factorSvc),
 		WithLoginResolver(resolver),
 		WithSessionIssuer(issuer),
+		WithRoleService(newLoginRoleStore(t)),
 		WithFactorVerifier(v),
 	)
 	if err != nil {
@@ -787,6 +791,7 @@ func TestLoginClient_FinishLogin_ScopesResolutionToSessionTenant(t *testing.T) {
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithLoginResolver(resolver),
 		WithSessionIssuer(newMemSessionIssuer()),
+		WithRoleService(newLoginRoleStore(t)),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -834,6 +839,7 @@ func TestLoginClient_FinishLogin_DeniesCrossTenantResolution(t *testing.T) {
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithLoginResolver(resolver),
 		WithSessionIssuer(newMemSessionIssuer()),
+		WithRoleService(newLoginRoleStore(t)),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -882,12 +888,13 @@ func TestLoginClient_FinishLogin_RateLimitsRepeatedAttemptsOnTheResolvedPrincipa
 	t.Cleanup(func() { _ = limiter.Close() })
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1.0 / 3600, Burst: 1})
-	mw := authmw.New(rbac.New(&mockRoleServicer{}), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
+	mw := authmw.New(rbac.New(&mockRoleServicer{}), authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
 
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserAuthFactorService(svc),
 		WithLoginResolver(resolver),
 		WithSessionIssuer(newMemSessionIssuer()),
+		WithRoleService(newLoginRoleStore(t)),
 		WithAuthMiddleware(mw),
 	)
 	if err != nil {
@@ -940,12 +947,13 @@ func TestLoginClient_BeginLogin_RateLimitsTenantWideChallengeIssuance(t *testing
 	t.Cleanup(func() { _ = limiter.Close() })
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.LoginBeginAttempt, ratelimit.Policy{RatePerSecond: 1.0 / 3600, Burst: 1})
-	mw := authmw.New(rbac.New(&mockRoleServicer{}), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
+	mw := authmw.New(rbac.New(&mockRoleServicer{}), authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
 
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserAuthFactorService(svc),
 		WithLoginResolver(resolver),
 		WithSessionIssuer(newMemSessionIssuer()),
+		WithRoleService(newLoginRoleStore(t)),
 		WithAuthMiddleware(mw),
 	)
 	if err != nil {

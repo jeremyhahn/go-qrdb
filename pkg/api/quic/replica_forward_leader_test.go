@@ -41,7 +41,7 @@ func newQUICFollower(t *testing.T, ca *replicaforwardtest.CA, leader *quicTarget
 		{NodeID: 3, Address: leader.raftAddr, APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolQUIC: leader.addr}},
 	}
 	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
-	mw := authmw.New(&noopAuthorizer{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
 	admin := &mockAdminService{removeMemberFn: func(context.Context, uint64, uint64) error {
 		return &service.NotLeaderError{ShardID: 1, LeaderID: 3, LeaderAddress: leaderAddr}
 	}}

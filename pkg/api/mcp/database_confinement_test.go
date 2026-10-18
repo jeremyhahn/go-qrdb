@@ -60,7 +60,7 @@ func TestDatabaseConfinement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fx := servicetest.NewShamirDatabaseOwnedBy(t, "acme", "vault", 2, 2)
 			roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
-			mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
+			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
 			tlsCfg := testTLSConfig(t)
 			srv := NewServer(nil, nil, "127.0.0.1:0",
 				WithTLS(tlsCfg), WithTenantService(authtest.NewTenants(t, tenantid.System, "acme")),

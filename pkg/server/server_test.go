@@ -38,6 +38,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -1353,7 +1354,7 @@ func TestStart_AllProtocols_WithAllOptions(t *testing.T) {
 	userSvc := &stubUserService{}
 	roleSvc := &stubRoleService{}
 	certProv := &stubCertProvider{}
-	authMW := authmw.New(&auth.NoopAuthorizer{})
+	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithTLS(tlsCfg),
@@ -1551,7 +1552,7 @@ func TestStart_QUICOnly_WithAllOptions(t *testing.T) {
 	userSvc := &stubUserService{}
 	roleSvc := &stubRoleService{}
 	certProv := &stubCertProvider{}
-	authMW := authmw.New(&auth.NoopAuthorizer{})
+	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithTLS(tlsCfg),
@@ -1837,7 +1838,7 @@ func TestStart_AllFiveProtocols_WithAllOptions(t *testing.T) {
 	userSvc := &stubUserService{}
 	roleSvc := &stubRoleService{}
 	certProv := &stubCertProvider{}
-	authMW := authmw.New(&auth.NoopAuthorizer{})
+	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
@@ -2108,7 +2109,7 @@ func TestStart_AllProtocols_WithAllServiceOptions(t *testing.T) {
 	userSvc := &stubUserService{}
 	roleSvc := &stubRoleService{}
 	certProv := &stubCertProvider{}
-	authMW := authmw.New(&auth.NoopAuthorizer{})
+	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	batchSvc := &stubBatchService{}
 	tsSvc := &stubTimeSeriesService{}

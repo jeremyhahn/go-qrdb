@@ -57,7 +57,7 @@ func TestRESTMiddleware_Fallback_AuthenticatesTokenCaller(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 	fb := &mockFallback{identity: &auth.Identity{Subject: "alice", TenantID: "t1"}}
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +89,7 @@ func TestRESTMiddleware_Fallback_AuthenticatesTokenCaller(t *testing.T) {
 func TestRESTMiddleware_Fallback_FailureIsDenied(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	fb := &mockFallback{err: errors.New("token expired")}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run when the fallback rejects the caller")
@@ -111,7 +111,7 @@ func TestRESTMiddleware_Fallback_FailureIsDenied(t *testing.T) {
 func TestRESTMiddleware_Fallback_NotConsultedForOtherRoutes(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	fb := &mockFallback{identity: &auth.Identity{Subject: "alice"}}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run for an unauthenticated caller")
@@ -136,7 +136,7 @@ func TestRESTMiddleware_Fallback_NotConsultedForOtherRoutes(t *testing.T) {
 func TestRESTMiddleware_Fallback_SkippedWhenUpstreamAuthenticates(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: "cert-user", TenantID: "t1"}}
 	fb := &mockFallback{identity: &auth.Identity{Subject: "token-user"}}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id := auth.IdentityFromContext(r.Context()); id == nil || id.Subject != "cert-user" {
@@ -196,7 +196,7 @@ func TestRESTRouteRegistry_SetFallbackUnregisteredPanics(t *testing.T) {
 // certificate just because client_auth is enabled.
 func TestRESTMiddleware_ModulePublicRoute_SkipsAuthentication(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	rr := NewRESTRouteRegistry()
 	rr.RegisterPublic(http.MethodPost, "/api/v1/webauthn/login/begin")
@@ -242,7 +242,7 @@ func fallbackRoutesMultiVerb(fb RESTAuthFallback) *RESTRouteRegistry {
 func TestRESTMiddleware_Fallback_WrongVerbAuthenticable_Is405(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	fb := &mockFallback{identity: &auth.Identity{Subject: "alice", TenantID: "t1"}}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("handler must not be reached: the middleware still fails closed")
@@ -274,7 +274,7 @@ func TestRESTMiddleware_Fallback_WrongVerbAuthenticable_Is405(t *testing.T) {
 func TestRESTMiddleware_Fallback_WrongVerbUnauthenticated_Is401(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	fb := &mockFallback{err: errors.New("token expired")}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("handler must not be reached")

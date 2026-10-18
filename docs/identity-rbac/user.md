@@ -301,6 +301,46 @@ Your Admin role grants no data permissions (`kv:get` and the like) of its own,
 so the application's own grants are what bound the delegation, not yours.
 Full reference: [../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate).
 
+## Telling whether a caller owns its tenant
+
+An application built on the embedded SDK often needs one answer: is this
+caller its tenant's administrator? The identity a login returns answers it
+directly. `transport.Identity.TenantOwner` (`tenantOwner` in JSON) is `true`
+exactly when the caller holds its own tenant's **Admin** role, either as a
+role id or as a role binding in that tenant. Authorize on that field. Do not
+compare role names, and do not look in `Metadata`, which never carries it.
+
+```go
+fin, err := client.Login().FinishLogin(ctx, req)
+if err != nil {
+	return err
+}
+if fin.Identity.TenantOwner {
+	// fin.Identity.TenantID's administrator
+}
+```
+
+The field always refers to `Identity.TenantID` and nothing else. The `system`
+tenant's administrator has `TenantOwner` set for the `system` tenant, and that
+says nothing about any other tenant. A role id from another tenant never makes
+a caller the owner of its own tenant.
+
+The answer is fixed at login. The login ceremony reads it from the role store,
+and the session bearer carries it from then on, the same way it carries the
+caller's roles. If you withdraw or grant Admin, the change shows at the
+caller's next login. A node with no role store refuses the login rather than
+return an identity that might wrongly say "not owner". The embedded login
+(`FinishLogin`) and session resolution (`ResolveIdentity`) return the field.
+No `qrdb` command prints a caller's identity.
+
+Over REST, gRPC, QUIC, MCP and the unix socket nothing returns the identity,
+but the node still decides ownership on every authenticated request, from the
+role store and uncached, for the caller the request names. Code on the node
+that reads the request's identity sees a withdrawn or granted Admin role on
+the caller's very next request. If the node cannot read the role store, the
+request is refused as temporarily unavailable, which a client may retry. It is
+never answered as "not owner".
+
 ## Seeing whether someone has a second factor
 
 `qrdb users get "$USER"` prints `MFAEnabled`, and `MFAMethods` when it is

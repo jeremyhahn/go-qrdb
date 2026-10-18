@@ -67,7 +67,7 @@ func TestFinalizeIdentity_FoldsAbsentTenantOnTheIdentity(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := New(&mockAuthorizer{})
+			m := newTestMiddleware(&mockAuthorizer{})
 			id := &auth.Identity{Subject: "admin", TenantID: tc.in}
 
 			ctx, out, err := m.finalizeIdentity(context.Background(), id, unknownMethod())
@@ -102,7 +102,7 @@ func TestFinalizeIdentity_SealedWindowFoldsToo(t *testing.T) {
 	users := &tenantRecordingUserServicer{
 		mockUserServicer: &mockUserServicer{err: tenant.ErrTenantSealed},
 	}
-	m := New(&mockAuthorizer{}, WithUserService(users))
+	m := newTestMiddleware(&mockAuthorizer{}, WithUserService(users))
 
 	ctx, out, err := m.finalizeIdentity(context.Background(),
 		&auth.Identity{Subject: "admin", TenantID: ""}, unknownMethod())
@@ -134,7 +134,7 @@ func TestFinalizeIdentity_UserLookupUsesTheFoldedTenant(t *testing.T) {
 	users := &tenantRecordingUserServicer{
 		mockUserServicer: &mockUserServicer{err: &user.UserNotFoundError{Lookup: "system/admin"}},
 	}
-	m := New(&mockAuthorizer{}, WithUserService(users))
+	m := newTestMiddleware(&mockAuthorizer{}, WithUserService(users))
 
 	if _, _, err := m.finalizeIdentity(context.Background(),
 		&auth.Identity{Subject: "admin", TenantID: ""}, unknownMethod()); err != nil {
@@ -164,7 +164,7 @@ func TestFinalizeIdentity_FoldDoesNotChangeTheAuthorizationOutcome(t *testing.T)
 	raw := &auth.Identity{Subject: "admin", TenantID: ""}
 	before := rbac.IsSystemTenant(raw)
 
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	_, out, err := m.finalizeIdentity(context.Background(), raw, unknownMethod())
 	if err != nil {
 		t.Fatalf("finalizeIdentity returned %v", err)

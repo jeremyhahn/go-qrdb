@@ -43,7 +43,7 @@ func bindingMW(g CertTargetGuard) *AuthMiddleware {
 	if g != nil {
 		opts = append(opts, WithCertTargetGuard(g))
 	}
-	return New(rbac.New(&grantingRoleServicer{}), opts...)
+	return newTestMiddleware(rbac.New(&grantingRoleServicer{}), opts...)
 }
 
 func TestAuthorizeCertBindingTarget_AsksTheGuardAboutTheRecordedAccount(t *testing.T) {

@@ -85,7 +85,7 @@ func runGRPCOnBehalf(t *testing.T, ctx context.Context, req any, authn *mockAuth
 	// (non-forwarded) chain some of these tests also exercise.
 	// MTLSBindingEnrolled is the documented explicit opt-out for an
 	// account policy was never meant to gate here.
-	m := New(authz, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}),
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}),
 		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	var ran bool
 	var seen *auth.Identity

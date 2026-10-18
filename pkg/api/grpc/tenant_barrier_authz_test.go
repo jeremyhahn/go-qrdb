@@ -29,6 +29,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
@@ -66,14 +67,14 @@ func (s *barrierGateRoleSvc) ListRoles(context.Context, *role.ListRolesRequest) 
 // auth middleware whose admin role carries the three tenant_barrier:*
 // permissions. The barrier servicer itself is a no-op mock so the test
 // isolates the authorization gate.
-func newBarrierGateServer(opts ...authmw.Option) *tenantBarrierServer {
+func newBarrierGateServer(t testing.TB, opts ...authmw.Option) *tenantBarrierServer {
 	roleSvc := &barrierGateRoleSvc{perms: []permission.Permission{
 		permission.TenantBarrierInit,
 		permission.TenantBarrierUnseal,
 		permission.TenantBarrierSeal,
 	}}
 	authz := rbac.New(roleSvc)
-	mw := authmw.New(authz, opts...)
+	mw := authmw.New(authz, append([]authmw.Option{authmw.WithRoleResolver(authtest.BuiltInRoles(t))}, opts...)...)
 	return &tenantBarrierServer{svc: newMockTenantService(), authMW: mw}
 }
 
@@ -114,7 +115,7 @@ func ctxOnConn(tenantID string, conn *initprooftest.Conn) context.Context {
 // issues a nonce on the connection and InitComplete accepts it signed, with
 // that connection's exporter, by the key of the certificate it presented.
 func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	cert := initprooftest.Certificate(t, "acme-admin")
 	conn := initprooftest.Dial(t, cert)
 	ctx := ctxOnConn("acme", conn)
@@ -144,7 +145,7 @@ func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 // RBAC grant admits the caller to the gate but never past the proof: a
 // complete carrying none is refused as unauthenticated.
 func TestTenantBarrierGate_InitCompleteWithoutProof_Unauthenticated(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	conn := initprooftest.Dial(t, initprooftest.Certificate(t, "acme-admin"))
 	_, err := srv.InitComplete(ctxOnConn("acme", conn), &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: []byte("pw")})
 	requireCode(t, err, codes.Unauthenticated)
@@ -154,7 +155,7 @@ func TestTenantBarrierGate_InitCompleteWithoutProof_Unauthenticated(t *testing.T
 // proves a proof made on one connection is refused on another: the exporter
 // it signed is not the one the node derives there.
 func TestTenantBarrierGate_InitCompleteOnAnotherConnection_Unauthenticated(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	cert := initprooftest.Certificate(t, "acme-admin")
 	first := initprooftest.Dial(t, cert)
 	begin, err := srv.InitBegin(ctxOnConn("acme", first), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
@@ -174,7 +175,7 @@ func TestTenantBarrierGate_InitCompleteOnAnotherConnection_Unauthenticated(t *te
 // refuses a connection with no TLS 1.3 exporter: no complete could succeed
 // on it.
 func TestTenantBarrierGate_InitBeginWithoutTLS_Unauthenticated(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	_, err := srv.InitBegin(ctxWithIdentity("acme"), &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
 	requireCode(t, err, codes.Unauthenticated)
 }
@@ -182,7 +183,7 @@ func TestTenantBarrierGate_InitBeginWithoutTLS_Unauthenticated(t *testing.T) {
 // TestTenantBarrierGate_InitBeginCrossTenant_Denied proves begin admits only
 // whom complete would: a tenant admin of acme gets no nonce for bob-corp.
 func TestTenantBarrierGate_InitBeginCrossTenant_Denied(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	conn := initprooftest.Dial(t, initprooftest.Certificate(t, "acme-admin"))
 	_, err := srv.InitBegin(ctxOnConn("acme", conn), &pb.TenantBarrierInitBeginRequest{TenantId: "bob-corp"})
 	requireCode(t, err, codes.PermissionDenied)
@@ -191,7 +192,7 @@ func TestTenantBarrierGate_InitBeginCrossTenant_Denied(t *testing.T) {
 // TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied proves the gate denies
 // a tenant admin of acme initializing bob-corp's barrier.
 func TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	ctx := ctxWithIdentity("acme")
 	req := &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: []byte("pw")}
 	_, err := srv.InitComplete(ctx, req)
@@ -207,7 +208,7 @@ func TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied(t *testing.T) {
 // system-tenant admin on any tenant barrier, even though the role grants the
 // permission.
 func TestTenantBarrierGate_SystemAdmin_Denied(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	ctx := ctxWithIdentity(tenantid.System)
 	for _, target := range []string{"acme", tenantid.System} {
 		req := &pb.TenantBarrierInitRequest{TenantId: target, Passphrase: []byte("pw")}
@@ -245,7 +246,7 @@ func (s *barrierGateRoleSvc) ReconcileBuiltInRoles(_ context.Context, tenantID s
 // fallbacks call auditDecision again, which fails for the same reason, which
 // is exactly why *AuditError escapes this surface reliably rather than rarely.
 func TestTenantBarrierGate_AuditFailure_IsUnavailableNotPermissionDenied(t *testing.T) {
-	srv := newBarrierGateServer(authmw.WithAuditLogger(brokenAuditSink(t)))
+	srv := newBarrierGateServer(t, authmw.WithAuditLogger(brokenAuditSink(t)))
 	ctx := ctxWithIdentity("acme")
 
 	t.Run("Init", func(t *testing.T) {
@@ -290,7 +291,7 @@ func requireUnavailable(t *testing.T, err error) {
 // Routing the gate through the classifier must not turn a real denial into
 // something a client will retry forever.
 func TestTenantBarrierGate_OrdinaryDenialIsStillPermissionDenied(t *testing.T) {
-	srv := newBarrierGateServer()
+	srv := newBarrierGateServer(t)
 	ctx := ctxWithIdentity("acme")
 	_, err := srv.InitComplete(ctx, &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: []byte("pw")})
 	if err == nil {

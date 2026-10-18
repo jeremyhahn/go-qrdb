@@ -189,7 +189,7 @@ func newQUICFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Dur
 			APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolQUIC: qt.addr}})
 	}
 	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
-	mw := authmw.New(&noopAuthorizer{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
 	kv := &mockKVService{putFn: func(context.Context, string, []byte) error { return refusal }}
 	c.srv = NewServer(kv, &mockAdminService{}, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw),
 		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, c.cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: timeout}))
@@ -291,7 +291,7 @@ func TestQUIC_CeremonyInitialize_ForwardsOnAdminCredentialNotLeaderError(t *test
 		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolQUIC: leader.addr}},
 	}
 	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
-	mw := authmw.New(&noopAuthorizer{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
 	ceremonySvc := fixedErrCeremonyService{err: &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}}
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw), WithCeremonyService(ceremonySvc),
 		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: 5 * time.Second}))

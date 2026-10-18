@@ -29,6 +29,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -56,7 +57,7 @@ func (f *fakeInvitations) RedeemInvitation(ctx context.Context, req *service.Red
 // and presents nothing.
 func startEnrollMCP(t *testing.T, inv service.InvitationServicer) (string, *http.Client) {
 	t.Helper()
-	mw := authmw.New(&auth.NoopAuthorizer{},
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
 	tlsCfg := testTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",

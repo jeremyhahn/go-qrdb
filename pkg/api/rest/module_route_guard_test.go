@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
@@ -272,7 +273,7 @@ func TestModuleRouteGuard_UnmatchedPathUnderModulePrefixRefused(t *testing.T) {
 	webUI := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	caller := &certScopeAuthenticator{}
 	caller.as("acme", "bob")
-	mw := authmw.New(&allowAllAuthorizer{}, authmw.WithAuthenticator(caller))
+	mw := authmw.New(&allowAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(caller))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithServiceModules([]apimodule.ServiceModule{mod}),
 		WithAuthMiddleware(mw),

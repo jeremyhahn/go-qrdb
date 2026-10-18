@@ -121,7 +121,7 @@ func NewFixture(t *testing.T) *Fixture {
 	return &Fixture{
 		Roles:     roles,
 		Verifier:  verifier,
-		MW:        authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)),
+		MW:        authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)),
 		Gate:      authmw.NewSOGate(roles, verifier, audit.NewRingBuffer(64), audit.FailClosed, nil),
 		Barrier:   &authtest.Barrier{},
 		Ceremony:  &authtest.Ceremony{},

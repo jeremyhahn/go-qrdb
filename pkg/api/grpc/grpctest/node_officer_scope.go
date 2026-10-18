@@ -69,7 +69,7 @@ func NodeOfficerScope(t *testing.T, start SOStartFunc) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				pins := authtest.BarrierPINBackend(t, nodeOfficerSOPIN)
 				barrier := &authtest.Barrier{PINs: pins}
-				conn := start(t, authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)), nil, pins, barrier)
+				conn := start(t, authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)), nil, pins, barrier)
 				err := op.call(pb.NewQRDBServiceClient(conn), t)
 				if c.Admitted {
 					if err != nil || op.hits(barrier) != 1 {

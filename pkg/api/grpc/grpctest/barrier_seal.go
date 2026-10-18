@@ -61,7 +61,7 @@ func BarrierSeal(t *testing.T, start SealStartFunc) {
 		t.Helper()
 		caller := authtest.NewFixedAuthenticator(id)
 		roles := authtest.BuiltInRoles(t, tenantid.System, soOtherTenant)
-		mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
+		mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))
 		barrier := &authtest.Barrier{}
 		conn := start(t, mw, authtest.BarrierPINBackend(t, soPIN0), barrier)
 		err := conn.Invoke(callCtx(t), barrierSealMethod, sealRequest(soPIN), &emptypb.Empty{})

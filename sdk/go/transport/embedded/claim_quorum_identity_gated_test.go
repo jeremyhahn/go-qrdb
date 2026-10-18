@@ -40,7 +40,7 @@ import (
 func TestShareClaimAndQuorum_RequireAnAuthenticatedCaller(t *testing.T) {
 	barrier := &recordingClaimBarrier{}
 	roles := authtest.BuiltInRoles(t, tenantid.System)
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	tr := newBarrierTransport(t, barrier)
 	tr.authMW = mw
 

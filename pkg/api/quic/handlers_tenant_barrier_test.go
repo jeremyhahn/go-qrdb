@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
@@ -239,7 +240,7 @@ func TestHandleTenantBarrierInit_ProofOverTheConnection(t *testing.T) {
 	inits := 0
 	srv := newTestServer(&mockKVService{}, &mockAdminService{},
 		WithTenantService(uninitializedQUICTenant(&inits)),
-		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})))
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	cert := initprooftest.Certificate(t, "acme-admin")
 	conn := initprooftest.Dial(t, cert)
 	ctx := quicCtxOnConn(conn)
@@ -285,7 +286,7 @@ func TestHandleTenantBarrierInit_WithoutProofRefused(t *testing.T) {
 	inits := 0
 	srv := newTestServer(&mockKVService{}, &mockAdminService{},
 		WithTenantService(uninitializedQUICTenant(&inits)),
-		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})))
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	conn := initprooftest.Dial(t, initprooftest.Certificate(t, "acme-admin"))
 
 	payload, _ := json.Marshal(quicTenantBarrierInitRequest{TenantID: "acme", Passphrase: []byte("pw")})

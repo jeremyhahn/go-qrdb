@@ -44,7 +44,7 @@ func TestQUICTrustAnchors_AnotherTenantIsRefusedWithOrWithoutTheHandlerGate(t *t
 			roles := &mockRoleService{resolvePermissionsFn: func(context.Context, []string) ([]permission.Permission, error) {
 				return []permission.Permission{permission.TrustAnchorsAdd, permission.TrustAnchorsList, permission.TrustAnchorsRemove}, nil
 			}}
-			opts = append(opts, WithAuthMiddleware(authmw.New(rbac.New(roles))))
+			opts = append(opts, WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))))
 		}
 		srv := NewServer(nil, nil, "localhost:0", opts...)
 

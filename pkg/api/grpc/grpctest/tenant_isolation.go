@@ -89,7 +89,7 @@ func newFixture(t *testing.T, start StartFunc, opts ...authmw.Option) *fixture {
 	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
+	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)}, opts...)...)
 	conn := start(t, mw, tenants, &fakeOnboarding{tenants: tenants})
 	return &fixture{
 		tenants: tenants,

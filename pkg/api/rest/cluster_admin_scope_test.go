@@ -54,7 +54,7 @@ func TestClusterAdminScope(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
 				srv := NewServer(nil, admin, "127.0.0.1:0",
-					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))))
+					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
 				req := httptest.NewRequest(op.method, op.path, strings.NewReader(op.body))
 				req.TLS = &tls.ConnectionState{}
 				rec := httptest.NewRecorder()

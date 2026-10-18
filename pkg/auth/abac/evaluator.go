@@ -48,13 +48,20 @@ func NewPolicyEvaluator() *PolicyEvaluator {
 // store, grouped by their metadata.tenant. Policies within a tenant are
 // kept sorted by policy priority (higher first). Returns the first
 // compilation error encountered; no policies from the failing call are
-// retained.
+// retained. A policy whose Spec.IsEnabled is false is validated and
+// compiled but not stored, so the evaluator skips it.
 func (e *PolicyEvaluator) AddPolicies(policies ...*Policy) error {
 	compiled := make([]*CompiledPolicy, 0, len(policies))
 	for _, policy := range policies {
 		cp, err := e.compiler.Compile(policy)
 		if err != nil {
 			return err
+		}
+		// A disabled policy is validated and compiled like any other, so a
+		// malformed document is rejected whether or not it is enabled, but
+		// it is never installed: no evaluation pass can match its rules.
+		if !policy.Spec.IsEnabled() {
+			continue
 		}
 		compiled = append(compiled, cp)
 	}
@@ -74,7 +81,8 @@ func (e *PolicyEvaluator) AddPolicies(policies ...*Policy) error {
 	return nil
 }
 
-// Len returns the total number of policies in the store.
+// Len returns the total number of policies in the store. Disabled policies
+// are never stored, so they are not counted.
 func (e *PolicyEvaluator) Len() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()

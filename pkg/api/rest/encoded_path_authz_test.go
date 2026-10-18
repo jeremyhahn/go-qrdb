@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
@@ -70,7 +71,7 @@ func authedServer(t *testing.T, authz auth.Authorizer, opts ...ServerOption) *Se
 	t.Helper()
 	caller := &certScopeAuthenticator{}
 	caller.as("acme", "mallory")
-	mw := authmw.New(authz, authmw.WithAuthenticator(caller))
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(caller))
 	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		append([]ServerOption{WithAuthMiddleware(mw)}, opts...)...)
 }
@@ -154,7 +155,7 @@ func TestEncodedSlash_PublicRouteCannotOpenAProtectedHandler(t *testing.T) {
 		})
 	}}
 	// No authenticator can succeed: the caller is anonymous.
-	mw := authmw.New(&permAuthorizer{})
+	mw := authmw.New(&permAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithAuthMiddleware(mw), WithServiceModules([]apimodule.ServiceModule{mod}))
 
@@ -181,7 +182,7 @@ func TestEncodedCharacters_StillReachTheirHandler(t *testing.T) {
 		all.granted[permission.Resource(p)+":"+permission.Action(p)] = true
 	}
 	srv := NewServer(kv, newDefaultAdminSvc(), "127.0.0.1:0",
-		WithAuthMiddleware(authmw.New(all, authmw.WithAuthenticator(caller))))
+		WithAuthMiddleware(authmw.New(all, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(caller))))
 
 	for target, want := range map[string]string{
 		"/kv/a%2Fb":      "a/b",

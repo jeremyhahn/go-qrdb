@@ -79,7 +79,7 @@ func TestReplicaForwardUnix_TheSocketForwardsOverGRPC(t *testing.T) {
 	members := replicaforwardtest.Members{{NodeID: 1, Address: "raft-b", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: target.Addr()}}}
 	cache := replicaforward.NewLeaderCache()
 	ingressKV := &countingKV{mockKVService: newMockKVService(), refusal: refusal}
-	mw := authmw.New(forwardAllowAuthorizer{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: "acme"})))
+	mw := authmw.New(forwardAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: "acme"})))
 	socket := tempSocketPath(t)
 	srv := NewServer(ingressKV, &mockAdminService{}, socket, WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw),
 		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: 5 * time.Second}))
@@ -147,7 +147,7 @@ func TestReplicaForwardUnix_CeremonyInitializeForwardsOnAdminCredentialNotLeader
 
 	members := replicaforwardtest.Members{{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: leader.Addr()}}}
 	cache := replicaforward.NewLeaderCache()
-	mw := authmw.New(forwardAllowAuthorizer{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: "acme"})))
+	mw := authmw.New(forwardAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: "acme"})))
 	socket := tempSocketPath(t)
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socket, WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw),
 		WithCeremonyService(fixedCeremonyService{err: &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}}),

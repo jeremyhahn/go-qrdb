@@ -32,7 +32,7 @@ func TestAuthenticateSQL_Success(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	ctx, identity, err := m.Authenticate(context.Background())
 	if err != nil {
@@ -62,7 +62,7 @@ func TestAuthenticateSQL_Unauthenticated(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	_, _, err := m.Authenticate(context.Background())
 	if err == nil {
@@ -75,7 +75,7 @@ func TestAuthenticateSQL_Unauthenticated(t *testing.T) {
 
 func TestAuthenticateSQL_NoAuthenticators(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	_, _, err := m.Authenticate(context.Background())
 	if err == nil {
@@ -99,7 +99,7 @@ func TestAuthenticateSQL_UserEnrichment(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, identity, err := m.Authenticate(context.Background())
 	if err != nil {
@@ -126,7 +126,7 @@ func TestAuthenticateSQL_UserDisabled(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, _, err := m.Authenticate(context.Background())
 	if err == nil {
@@ -145,7 +145,7 @@ func TestAuthenticateSQL_StoreUnavailable(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, _, err := m.Authenticate(context.Background())
 	if err == nil {

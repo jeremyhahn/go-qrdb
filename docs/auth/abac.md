@@ -1,6 +1,6 @@
 # ABAC Authorization Decorator
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-17
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 `pkg/auth/abac` layers attribute-based access control over the RBAC
@@ -145,6 +145,7 @@ metadata:
   tenant: system        # system = platform-wide; otherwise tenant-scoped
   priority: 100         # higher evaluates first
 spec:
+  enabled: true         # optional; absent means enabled, false skips the policy
   subjects:             # who the policy applies to (any one selector matches)
     users: ["alice"]
     groups: ["editors"]
@@ -166,6 +167,27 @@ spec:
       unless:                            # all must be false
         - expression: request.tenant == "system"
 ```
+
+### Enabled
+
+`spec.enabled` switches a policy off without deleting it. The field is
+optional and presence-tracked: in Go it is `PolicySpec.Enabled *bool`, `nil`
+when the document did not set it, and an absent field means enabled, so a
+document written before the field existed keeps its meaning. With
+`enabled: false` the evaluator skips the policy: its deny rules do not deny
+and its allow rules do not allow, and a policy set holding only disabled
+policies behaves as an empty one. A disabled policy is still validated and
+compiled, so a malformed document fails the boot or the `Reload` whether or
+not it is enabled.
+
+The document is never normalised. A policy written without `enabled` is
+held and re-serialised without it, and one written with `false` keeps
+`false`, so a reader sees whether the field was set and not only its
+effective value. `PolicySpec.EnabledSet()` reports presence and
+`PolicySpec.IsEnabled()` the effective value (true when absent). The field
+reaches qrdb through the two policy inputs, the `policy_dir` files and the
+SDK's `ABACPolicySpec`. No network transport accepts or returns a policy
+document today, so there is no wire form yet.
 
 Condition expressions support comparison (`==`, `!=`, `>`, `>=`, `<`,
 `<=`, `between`), string (`startswith`, `endswith`, `contains`, `matches`,

@@ -31,7 +31,7 @@ import (
 
 // policyMiddleware wires the real authenticator over svc under policy.
 func policyMiddleware(svc user.UserServicer, policy auth.MTLSBindingPolicy) *AuthMiddleware {
-	return New(&mockAuthorizer{},
+	return newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
 		WithMTLSBindingPolicy(policy),
@@ -127,7 +127,7 @@ func TestMTLSBindingPolicy_UnknownSubject(t *testing.T) {
 func TestMTLSBindingPolicy_NoUserStore(t *testing.T) {
 	cert := mintCert(t, "bob", "acme", nil, "")
 	build := func(p auth.MTLSBindingPolicy) *AuthMiddleware {
-		return New(&mockAuthorizer{}, WithAuthenticator(auth.NewMTLSAuthenticator()), WithMTLSBindingPolicy(p))
+		return newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(auth.NewMTLSAuthenticator()), WithMTLSBindingPolicy(p))
 	}
 	if _, _, err := build(auth.MTLSBindingEnrolled).authenticate(mtlsContext(cert)); err != nil {
 		t.Fatalf("enrolled posture with no user store refused: %v", err)
@@ -185,10 +185,10 @@ func TestMTLSBindingPolicy_Accessor(t *testing.T) {
 	if got := nilMW.MTLSBindingPolicy(); got != auth.MTLSBindingRequired {
 		t.Fatalf("nil middleware policy = %v, want required", got)
 	}
-	if got := New(&mockAuthorizer{}).MTLSBindingPolicy(); got != auth.MTLSBindingRequired {
+	if got := newTestMiddleware(&mockAuthorizer{}).MTLSBindingPolicy(); got != auth.MTLSBindingRequired {
 		t.Fatalf("default policy = %v, want required", got)
 	}
-	if got := New(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled)).MTLSBindingPolicy(); got != auth.MTLSBindingEnrolled {
+	if got := newTestMiddleware(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled)).MTLSBindingPolicy(); got != auth.MTLSBindingEnrolled {
 		t.Fatalf("configured policy = %v, want enrolled", got)
 	}
 }

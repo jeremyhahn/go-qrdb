@@ -59,7 +59,7 @@ func bootstrapGate(t *testing.T, rbacErr error) *gateFixture {
 	// windows, not the separate first-admin-onboarding gate (see
 	// first_init_gate_test.go), so it runs under the "enrolled" posture,
 	// which skips that gate when the tenant has no pending-admin record.
-	f.m = New(f.authz,
+	f.m = newTestMiddleware(f.authz,
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
 		WithAuditLogger(f.audit),
@@ -239,7 +239,7 @@ func TestBootstrapWindows_RateLimitHolds(t *testing.T) {
 		// windows, not the separate first-admin-onboarding gate (see
 		// first_init_gate_test.go), so it runs under the "enrolled" posture,
 		// which skips that gate when the tenant has no pending-admin record.
-		return New(&mockAuthorizer{err: errors.New("rbac: permission denied")},
+		return newTestMiddleware(&mockAuthorizer{err: errors.New("rbac: permission denied")},
 			WithRateLimiter(limiter), WithRateLimitPolicies(policies),
 			WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	}

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -42,7 +43,7 @@ func (a *countingAuthorizer) Authorize(context.Context, *auth.Identity, string, 
 func TestNilRequest_RefusedTypedBeforeAuthorizing(t *testing.T) {
 	authz := &countingAuthorizer{}
 	tr := newExtTransport(t, WithUserService(&mockUserServicer{}), WithRoleService(&mockRoleServicer{}),
-		WithAuthMiddleware(middleware.New(authz)))
+		WithAuthMiddleware(middleware.New(authz, middleware.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "s", TenantID: tenantid.System})
 
 	calls := map[string]func() error{

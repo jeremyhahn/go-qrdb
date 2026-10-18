@@ -32,6 +32,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/etcd"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -187,7 +188,7 @@ func TestEtcdAddr_NotRunning(t *testing.T) {
 // serves exactly one tenant's database.
 func TestEtcdListener_RefusesOtherTenant(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	f.srv.opts.authMW = authmw.New(allowAll{}, authmw.WithAuthenticator(
+	f.srv.opts.authMW = authmw.New(allowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(
 		&etcdPeerIdentity{identity: &auth.Identity{Subject: "mallory", TenantID: "globex"}}))
 	var logs lockedBuffer
 	f.srv.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -246,7 +247,7 @@ func TestEtcdListener_OwnerAdmittedEveryoneElseRefused(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.db+" as "+c.caller, func(t *testing.T) {
-			f.srv.opts.authMW = authmw.New(allowAll{}, authmw.WithAuthenticator(&etcdPeerIdentity{identity: callers[c.caller]}))
+			f.srv.opts.authMW = authmw.New(allowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&etcdPeerIdentity{identity: callers[c.caller]}))
 			etcdSrv, err := startEtcd(f.srv, c.db, etcdListenCfg)
 			if err != nil {
 				t.Fatalf("startEtcd: %v", err)
@@ -272,7 +273,7 @@ func TestEtcdListener_OwnerAdmittedEveryoneElseRefused(t *testing.T) {
 // The authorizer's refusal reaches the client, and nothing is written.
 func TestEtcdListener_RefusesWithoutPermission(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	f.srv.opts.authMW = authmw.New(denyAll{}, authmw.WithAuthenticator(
+	f.srv.opts.authMW = authmw.New(denyAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(
 		&etcdPeerIdentity{identity: &auth.Identity{Subject: "alice", TenantID: "acme"}}))
 	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
 	if err != nil {

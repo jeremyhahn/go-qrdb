@@ -37,7 +37,7 @@ import (
 // registered and points the caller at their credentials instead of their verb.
 func TestRESTMiddleware_WrongVerbOnKnownPath_Is405WithAllow(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be reached: the middleware still fails closed")
@@ -93,7 +93,7 @@ func TestRESTMiddleware_WrongVerbUnauthenticated_Is401AndDisclosesNothing(t *tes
 		name: "mtls",
 		err:  &auth.AuthError{Code: "unauthenticated", Message: "no client certificate"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be reached")
@@ -119,7 +119,7 @@ func TestRESTMiddleware_WrongVerbUnauthenticated_Is401AndDisclosesNothing(t *tes
 func TestRESTMiddleware_AuthenticatedButDenied_Is403(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	authz := &mockAuthorizer{err: &auth.AuthError{Code: "unauthorized", Message: "permission denied"}}
-	m := New(authz, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}))
+	m := newTestMiddleware(authz, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be reached")
@@ -145,7 +145,7 @@ func TestRESTMiddleware_AuthenticatedButDenied_Is403(t *testing.T) {
 // must not have widened to swallow it.
 func TestRESTMiddleware_UnregisteredPath_StillFallsThrough(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}))
 
 	reached := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

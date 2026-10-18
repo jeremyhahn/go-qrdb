@@ -71,6 +71,16 @@ type Identity struct {
 	// identity's own tenant (user.NormalizeRoleBindings refuses any other).
 	RoleBindings []RoleBinding
 
+	// TenantOwner reports that, when this identity was established, the role
+	// store resolved its roles to the Admin system role of TenantID. It is
+	// decided in exactly one place, role.IsTenantOwner, by the step that
+	// establishes the identity, never by comparing role names and never from
+	// a caller-supplied field. It refers to TenantID alone: a system-tenant
+	// identity's TenantOwner names the system tenant's Admin and grants no
+	// power over any other tenant. It is a projection for consumers to
+	// authorize on, not an input to this module's own authorizer.
+	TenantOwner bool
+
 	// ScopePermissions carries permissions that were pre-resolved by a
 	// TRUSTED in-process issuance path — the "resource:action" set stamped
 	// into a platform token's scp claim at token issuance, projected here

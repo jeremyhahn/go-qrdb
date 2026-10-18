@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -59,7 +60,7 @@ func (f *fakeInvitationHandler) RedeemInvitation(ctx context.Context, req *servi
 // RedeemInvitation over a real Unix socket connection, while InviteUser --
 // the control -- is refused as Unauthenticated on the SAME connection.
 func TestUnixServer_RedeemInvitationIsServedWithoutAuthentication(t *testing.T) {
-	mw := authmw.New(allowAllAuthorizer{}, authmw.WithAuthenticator(alwaysFailAuthenticator{}))
+	mw := authmw.New(allowAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(alwaysFailAuthenticator{}))
 	var redeemed bool
 	fake := &fakeInvitationHandler{
 		redeemFn: func(context.Context, *service.RedeemInvitationRequest) (*service.EnrolledCertificate, error) {

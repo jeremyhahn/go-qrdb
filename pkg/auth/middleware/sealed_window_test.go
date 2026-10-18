@@ -47,7 +47,7 @@ func sealedCtx(tenantID string) context.Context {
 // definitive RBAC denial computed from the empty role set.
 func TestAuthorize_SealedMarkerConvertsToUnavailable(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	err := m.AuthorizeTenant(sealedCtx("t1"), "t1", permission.KVPut)
 	var unavailable *StoreUnavailableError
@@ -69,7 +69,7 @@ func TestAuthorize_SealedMarkerConvertsToUnavailable(t *testing.T) {
 // status/unseal endpoints that end the window.
 func TestAuthorize_SealedMarkerAdmitsAdminHealth(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	if err := m.AuthorizeTenant(sealedCtx("t1"), "t1", permission.AdminHealth); err != nil {
 		t.Fatalf("admin:health during the sealed window = %v, want nil", err)
@@ -82,7 +82,7 @@ func TestAuthorize_SealedMarkerAdmitsAdminHealth(t *testing.T) {
 // TestAuthorize_SealedMarkerPassesIdentityGated verifies the IdentityGated
 // bootstrap surface stays reachable for a sealed-marked identity.
 func TestAuthorize_SealedMarkerPassesIdentityGated(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if err := m.AuthorizeTenant(sealedCtx("t1"), "t1", permission.IdentityGated); err != nil {
 		t.Fatalf("IdentityGated during the sealed window = %v, want nil", err)
 	}
@@ -107,7 +107,7 @@ func TestIdentityIAMSealed(t *testing.T) {
 // the caller's identity names the target tenant, so status/unseal are
 // admitted.
 func TestAuthorizeTenantBarrierSealedOp_FallbackAllowsOwnTenant(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if err := m.AuthorizeTenantBarrierSealedOp(sealedCtx("t1"), "t1", permission.TenantBarrierUnseal); err != nil {
 		t.Fatalf("sealed-window unseal by the tenant's own identity = %v, want nil", err)
 	}
@@ -117,7 +117,7 @@ func TestAuthorizeTenantBarrierSealedOp_FallbackAllowsOwnTenant(t *testing.T) {
 // fallback never crosses tenants: a sealed-marked identity for another
 // tenant is refused.
 func TestAuthorizeTenantBarrierSealedOp_FallbackDeniesCrossTenant(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if err := m.AuthorizeTenantBarrierSealedOp(sealedCtx("t-OTHER"), "t1", permission.TenantBarrierUnseal); err == nil {
 		t.Fatal("cross-tenant sealed-window fallback must be refused")
 	}
@@ -128,7 +128,7 @@ func TestAuthorizeTenantBarrierSealedOp_FallbackDeniesCrossTenant(t *testing.T) 
 // RBAC decision stands.
 func TestAuthorizeTenantBarrierSealedOp_NoMarkerRequiresRBAC(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := newTestMiddleware(deny)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t1"})
 	if err := m.AuthorizeTenantBarrierSealedOp(ctx, "t1", permission.TenantBarrierStatus); err == nil {
 		t.Fatal("without the sealed marker the RBAC denial must stand")
@@ -156,7 +156,7 @@ func (f *fakeBarrierStatusReader) TenantBarrierStatus(_ context.Context, tenantI
 // which skips that gate when the tenant has no pending-admin record.
 func TestAuthorizeTenantBarrierInit_TrustOnFirstInit(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	m := newTestMiddleware(deny, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t1"})
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: false}); err != nil {
 		t.Fatalf("trust-on-first-init = %v, want nil", err)
@@ -189,7 +189,7 @@ func holderIdentity(tenantID, profile string) *auth.Identity {
 // identity store.
 func TestAuthorizeTenantBarrierInit_HolderIdentityNeverOpensTheWindow(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := newTestMiddleware(deny)
 	ctx := auth.WithIdentity(context.Background(), holderIdentity("t1", holderprofile.Custodian))
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: false}); err == nil {
 		t.Fatal("a share-holder identity must never initialize a tenant barrier via trust-on-first-init")
@@ -204,7 +204,7 @@ func TestAuthorizeTenantBarrierInit_HolderIdentityNeverOpensTheWindow(t *testing
 // quorum -- the barrier operations this window exists to unblock are not
 // that path.
 func TestAuthorizeTenantBarrierSealedOp_HolderIdentityNeverOpensTheWindow(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	id := holderIdentity("t1", holderprofile.SecurityOfficer)
 	id.Metadata[tenantIAMSealedMetadataKey] = "true"
 	ctx := auth.WithIdentity(context.Background(), id)
@@ -218,7 +218,7 @@ func TestAuthorizeTenantBarrierSealedOp_HolderIdentityNeverOpensTheWindow(t *tes
 // stands.
 func TestAuthorizeTenantBarrierInit_ClosedAfterInitialization(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := newTestMiddleware(deny)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t1"})
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: true}); err == nil {
 		t.Fatal("an initialized barrier must demand the RBAC grant")
@@ -229,7 +229,7 @@ func TestAuthorizeTenantBarrierInit_ClosedAfterInitialization(t *testing.T) {
 // never admits a foreign tenant's identity.
 func TestAuthorizeTenantBarrierInit_CrossTenantRefused(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := newTestMiddleware(deny)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t-OTHER"})
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: false}); err == nil {
 		t.Fatal("cross-tenant trust-on-first-init must be refused")
@@ -241,7 +241,7 @@ func TestAuthorizeTenantBarrierInit_CrossTenantRefused(t *testing.T) {
 // barrier, and the tenant-scoped RBAC rule denies it deliberately.
 func TestAuthorizeTenantBarrierInit_SystemTenantRefused(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := newTestMiddleware(deny)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: tenantid.System})
 	if err := m.AuthorizeTenantBarrierInit(ctx, tenantid.System, &fakeBarrierStatusReader{initialized: false}); err == nil {
 		t.Fatal("system-tenant trust-on-first-init must be refused")
@@ -251,7 +251,7 @@ func TestAuthorizeTenantBarrierInit_SystemTenantRefused(t *testing.T) {
 // TestAuthorizeTenantBarrierSealedOp_SystemTenantRefused verifies the
 // sealed-window fallback never opens for the system tenant either.
 func TestAuthorizeTenantBarrierSealedOp_SystemTenantRefused(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if err := m.AuthorizeTenantBarrierSealedOp(sealedCtx(tenantid.System), tenantid.System, permission.TenantBarrierUnseal); err == nil {
 		t.Fatal("system-tenant sealed-window fallback must be refused")
 	}
@@ -261,7 +261,7 @@ func TestAuthorizeTenantBarrierSealedOp_SystemTenantRefused(t *testing.T) {
 // unreadable initialization state keeps the RBAC denial (fail closed).
 func TestAuthorizeTenantBarrierInit_StatusErrorFailsClosed(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := newTestMiddleware(deny)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t1"})
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{err: errors.New("status unavailable")}); err == nil {
 		t.Fatal("an unreadable barrier status must fail closed to the RBAC denial")

@@ -167,7 +167,7 @@ func (m *mockAuditLogger) Close() error {
 
 func TestNew_Defaults(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	if m == nil {
 		t.Fatal("expected non-nil AuthMiddleware")
@@ -192,7 +192,7 @@ func TestNew_Defaults(t *testing.T) {
 // authorizes against rather than a copy or a second one.
 func TestAuthMiddleware_Authorizer(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	if got := m.Authorizer(); got != authz {
 		t.Errorf("Authorizer() = %v, want %v", got, authz)
@@ -215,7 +215,7 @@ func TestNew_WithOptions(t *testing.T) {
 	users := &mockUserServicer{}
 	al := &mockAuditLogger{}
 
-	m := New(authz,
+	m := newTestMiddleware(authz,
 		WithAuthenticator(authn),
 		WithUserService(users),
 		WithAuditLogger(al),
@@ -240,7 +240,7 @@ func TestNew_MultipleAuthenticators(t *testing.T) {
 	a1 := &mockAuthenticator{name: "first"}
 	a2 := &mockAuthenticator{name: "second"}
 
-	m := New(authz,
+	m := newTestMiddleware(authz,
 		WithAuthenticator(a1),
 		WithAuthenticator(a2),
 	)
@@ -259,7 +259,7 @@ func TestAuthenticate_SingleAuthenticator_Success(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	ctx, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -293,7 +293,7 @@ func TestAuthenticate_ChainFallthrough(t *testing.T) {
 	}
 	authz := &mockAuthorizer{}
 
-	m := New(authz,
+	m := newTestMiddleware(authz,
 		WithAuthenticator(failing),
 		WithAuthenticator(succeeding),
 	)
@@ -312,7 +312,7 @@ func TestAuthenticate_AllFail_ReturnsUnauthenticated(t *testing.T) {
 	f2 := &mockAuthenticator{name: "a2", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(f1), WithAuthenticator(f2))
+	m := newTestMiddleware(authz, WithAuthenticator(f1), WithAuthenticator(f2))
 
 	_, _, err := m.authenticate(context.Background())
 	if err == nil {
@@ -331,7 +331,7 @@ func TestAuthenticate_AllFail_NonAuthError(t *testing.T) {
 	f1 := &mockAuthenticator{name: "a1", err: genericErr}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(f1))
+	m := newTestMiddleware(authz, WithAuthenticator(f1))
 
 	_, _, err := m.authenticate(context.Background())
 	if err == nil {
@@ -349,7 +349,7 @@ func TestAuthenticate_AllFail_NonAuthError(t *testing.T) {
 
 func TestAuthenticate_NoAuthenticators(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	_, _, err := m.authenticate(context.Background())
 	if !errors.Is(err, auth.ErrUnauthenticated) {
@@ -371,7 +371,7 @@ func TestAuthenticate_UserEnrichment(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -413,7 +413,7 @@ func TestAuthenticate_UserEnrichment_RoleBindingsAndAttributes(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -442,7 +442,7 @@ func TestAuthenticate_UserEnrichment_NoRoleBindingsOrAttributesLeavesThemAbsent(
 		user: &user.User{ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -491,7 +491,7 @@ func TestAuthenticate_UserEnrichment_StoreIsTheOnlySourceOfBindings(t *testing.T
 				Attributes:   map[string]string{"department": "stale"},
 			}
 			authn := &mockAuthenticator{name: "test-authn", identity: id}
-			m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(tt.users))
+			m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(tt.users))
 
 			_, identity, err := m.authenticate(context.Background())
 			if err != nil {
@@ -516,7 +516,7 @@ func TestAuthenticate_UserEnrichment_AttributesDoNotAliasTheRecord(t *testing.T)
 		Attributes: map[string]string{"department": "eng"},
 	}
 	authn := &mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: "charlie", TenantID: "t1"}}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: rec}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: rec}))
 
 	_, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -540,7 +540,7 @@ func TestAuthenticate_UserDisabled(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, _, err := m.authenticate(context.Background())
 	if err == nil {
@@ -567,7 +567,7 @@ func TestAuthenticate_UserNotFound(t *testing.T) {
 		err: &user.UserNotFoundError{Lookup: "unknown"},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -585,7 +585,7 @@ func TestAuthenticate_NoUserService(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	_, identity, err := m.authenticate(context.Background())
 	if err != nil {
@@ -604,7 +604,7 @@ func TestAuthenticate_SubjectIsTheImmutableUserID(t *testing.T) {
 	for _, name := range []string{"charlie", "charlie-renamed"} {
 		stored.Username = name
 		authn := &mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: name, TenantID: "t1"}}
-		m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}))
+		m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}))
 
 		_, identity, err := m.authenticate(context.Background())
 		if err != nil {
@@ -623,7 +623,7 @@ func TestAuthenticate_UserIDResolvesByID(t *testing.T) {
 	t.Run("same tenant", func(t *testing.T) {
 		users := &mockUserServicer{user: &user.User{ID: 9, Username: "dave", TenantID: "t1", Lifecycle: user.LifecycleActive}}
 		claim := &auth.Identity{Subject: auth.UserSubject(9), UserID: 9, TenantID: "t1"}
-		m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claim}), WithUserService(users))
+		m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claim}), WithUserService(users))
 
 		_, identity, err := m.authenticate(context.Background())
 		if err != nil {
@@ -639,7 +639,7 @@ func TestAuthenticate_UserIDResolvesByID(t *testing.T) {
 	t.Run("other tenant", func(t *testing.T) {
 		users := &mockUserServicer{user: &user.User{ID: 9, Username: "dave", TenantID: "t2", Lifecycle: user.LifecycleActive}}
 		claim := &auth.Identity{Subject: auth.UserSubject(9), UserID: 9, TenantID: "t1"}
-		m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claim}), WithUserService(users))
+		m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claim}), WithUserService(users))
 
 		_, _, err := m.authenticate(context.Background())
 		var unresolved *UnresolvedUserSubjectError
@@ -669,7 +669,7 @@ func TestAuthenticate_UnresolvedUserIDSubjectRefused(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := append([]Option{WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: tc.claim})}, tc.opts...)
-			_, _, err := New(&mockAuthorizer{}, opts...).authenticate(context.Background())
+			_, _, err := newTestMiddleware(&mockAuthorizer{}, opts...).authenticate(context.Background())
 			var unresolved *UnresolvedUserSubjectError
 			if got := errors.As(err, &unresolved); got != tc.refused {
 				t.Fatalf("err = %v, refused = %v, want %v", err, got, tc.refused)
@@ -706,7 +706,7 @@ func TestAuthenticate_BindsTenantIDFromIdentity(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	ctx, _, err := m.authenticate(context.Background())
 	if err != nil {
@@ -727,7 +727,7 @@ func TestAuthenticate_EmptyTenantIDFallsBackToSystem(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	ctx, _, err := m.authenticate(context.Background())
 	if err != nil {
@@ -748,7 +748,7 @@ func TestAuthenticate_UserStoreError(t *testing.T) {
 		err: errors.New("store unavailable"),
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	// Transient store errors return StoreUnavailableError (503/UNAVAILABLE)
 	// instead of proceeding without enrichment (which would cause false 403).
@@ -773,7 +773,7 @@ func TestAuthenticate_UserStoreBarrierSealed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-			m := New(&mockAuthorizer{},
+			m := newTestMiddleware(&mockAuthorizer{},
 				WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 				WithUserService(&mockUserServicer{err: storeErr}))
 
@@ -801,7 +801,7 @@ func TestAuthenticate_UserStoreBarrierSealed(t *testing.T) {
 // seal.ErrSealed, and it is the same sealed answer.
 func TestAuthenticate_UserStoreQrdbSealed(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 		WithUserService(&mockUserServicer{err: seal.ErrSealed}))
 
@@ -824,7 +824,7 @@ func TestAuthorize_AuditSuccess(t *testing.T) {
 		identity: &auth.Identity{Subject: "alice", TenantID: "t1"},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithAuditLogger(al))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithAuditLogger(al))
 
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	err := m.authorize(context.Background(), identity, "kv:put")
@@ -854,7 +854,7 @@ func TestAuthorize_AuditDenied(t *testing.T) {
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 	al := &mockAuditLogger{}
 
-	m := New(authz, WithAuditLogger(al))
+	m := newTestMiddleware(authz, WithAuditLogger(al))
 
 	identity := &auth.Identity{Subject: "bob", TenantID: "t2"}
 	err := m.authorize(context.Background(), identity, "admin:drain")
@@ -872,7 +872,7 @@ func TestAuthorize_AuditDenied(t *testing.T) {
 
 func TestAuthorize_NoAudit(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	identity := &auth.Identity{Subject: "alice"}
 	err := m.authorize(context.Background(), identity, "kv:get")
@@ -898,7 +898,7 @@ func TestAuthorize_IdentityGated_SkipsRBAC(t *testing.T) {
 	// sentinel never reaches the RBAC policy decision point.
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 	al := &mockAuditLogger{}
-	m := New(authz, WithAuditLogger(al))
+	m := newTestMiddleware(authz, WithAuditLogger(al))
 
 	identity := &auth.Identity{Subject: "so-1", TenantID: "t1"}
 	if err := m.authorize(context.Background(), identity, permission.IdentityGated); err != nil {
@@ -926,7 +926,7 @@ func TestAuthorize_IdentityGated_SkipsRBAC(t *testing.T) {
 func TestAuthorize_IdentityGated_NilIdentity(t *testing.T) {
 	authz := &mockAuthorizer{}
 	al := &mockAuditLogger{}
-	m := New(authz, WithAuditLogger(al))
+	m := newTestMiddleware(authz, WithAuditLogger(al))
 
 	err := m.authorize(context.Background(), nil, permission.IdentityGated)
 	if !errors.Is(err, auth.ErrUnauthenticated) {
@@ -939,7 +939,7 @@ func TestAuthorize_IdentityGated_NilIdentity(t *testing.T) {
 
 func TestAuthorizeTenant_IdentityGated_Authenticated(t *testing.T) {
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "so-1", TenantID: "t1"})
 	if err := m.AuthorizeTenant(ctx, "t2", permission.IdentityGated); err != nil {
@@ -952,7 +952,7 @@ func TestAuthorizeTenant_IdentityGated_Authenticated(t *testing.T) {
 
 func TestAuthorizeTenant_IdentityGated_Unauthenticated(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	err := m.AuthorizeTenant(context.Background(), "t1", permission.IdentityGated)
 	if !errors.Is(err, auth.ErrUnauthenticated) {
@@ -969,7 +969,7 @@ func TestUnaryInterceptor_Authorized(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Put"}
@@ -998,7 +998,7 @@ func TestUnaryInterceptor_Unauthenticated(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Put"}
@@ -1026,7 +1026,7 @@ func TestUnaryInterceptor_Unauthorized(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Put"}
@@ -1054,7 +1054,7 @@ func TestUnaryInterceptor_NoMapping(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/UnknownMethod"}
@@ -1096,7 +1096,7 @@ func TestUnaryInterceptor_UserDisabled(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Get"}
@@ -1129,7 +1129,7 @@ func TestUnaryInterceptor_IdentityGated_AuthenticatedPasses(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized} // would deny anything asked
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}
@@ -1158,7 +1158,7 @@ func TestUnaryInterceptor_IdentityGated_UnauthenticatedDenied(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}
@@ -1191,7 +1191,7 @@ func TestStreamInterceptor_Authorized(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.StreamInterceptor()
 
 	info := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}
@@ -1220,7 +1220,7 @@ func TestStreamInterceptor_Unauthenticated(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrNoPeerCertificate}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.StreamInterceptor()
 
 	info := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}
@@ -1248,7 +1248,7 @@ func TestStreamInterceptor_NoMapping(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.StreamInterceptor()
 
 	info := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/UnknownStream"}
@@ -1284,7 +1284,7 @@ func TestRESTMiddleware_Authorized(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1318,7 +1318,7 @@ func TestRESTMiddleware_Unauthenticated(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
@@ -1353,7 +1353,7 @@ func TestRESTMiddleware_IdentityGated_AuthenticatedPasses(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized} // would deny anything asked
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1392,7 +1392,7 @@ func TestRESTMiddleware_IdentityGated_UnauthenticatedDenied(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
@@ -1413,7 +1413,7 @@ func TestRESTMiddleware_Unauthorized(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
@@ -1444,7 +1444,7 @@ func TestRESTMiddleware_NoMapping(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1483,7 +1483,7 @@ func TestRESTMiddleware_UserDisabled(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
@@ -1506,7 +1506,7 @@ func TestRESTMiddleware_HealthPublic(t *testing.T) {
 	// balancers, Kubernetes probes, and monitoring can reach it.
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1536,7 +1536,7 @@ func TestRESTMiddleware_CABootstrapPublic(t *testing.T) {
 	// joining nodes without TLS credentials can bootstrap their trust store.
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1582,7 +1582,7 @@ func TestRESTMiddleware_ClusterPathsPublic(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
 			authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
-			m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+			m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 			handlerCalled := false
 			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				handlerCalled = true
@@ -1619,7 +1619,7 @@ func TestRESTMiddleware_ClusterPathsPublic(t *testing.T) {
 func TestRESTMiddleware_NonClusterV1PathStillRequiresAuth(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be called for unauthenticated /v1/ path")
@@ -1641,7 +1641,7 @@ func TestRESTMiddleware_NonClusterV1PathStillRequiresAuth(t *testing.T) {
 func TestRESTMiddleware_JSONContentType(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	handler := m.RESTMiddleware(testRESTRoutes(), http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -1912,7 +1912,7 @@ func TestAuthenticate_LifecycleGatesLogin(t *testing.T) {
 					Lifecycle: l,
 				},
 			}
-			m := New(&mockAuthorizer{},
+			m := newTestMiddleware(&mockAuthorizer{},
 				WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 				WithUserService(users))
 
@@ -1939,7 +1939,7 @@ func TestAuthenticate_LifecycleGatesLogin(t *testing.T) {
 		// identity carrying no real certificate to enrol -- "enrolled" is the
 		// correct, explicit choice for that reason (go-qrdb#548), not a
 		// workaround for the unrelated concern under test.
-		m := New(&mockAuthorizer{},
+		m := newTestMiddleware(&mockAuthorizer{},
 			WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 			WithUserService(users),
 			WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
@@ -1987,7 +1987,7 @@ func TestAuthenticate_AuthMethodPolicyIsEnforced(t *testing.T) {
 			// (no thumbprint to enrol against). "enrolled" is the correct,
 			// explicit choice for exactly that reason, not a workaround --
 			// see go-qrdb#548.
-			m := New(&mockAuthorizer{},
+			m := newTestMiddleware(&mockAuthorizer{},
 				WithAuthenticator(&mockAuthenticator{name: tc.authName, identity: id}),
 				WithUserService(users),
 				WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
@@ -2056,7 +2056,7 @@ func TestAuthenticate_BlankAuthenticatorNameCannotBypassThePolicy(t *testing.T) 
 			AuthMethods: []string{"mtls"},
 		},
 	}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "", identity: id}),
 		WithUserService(users))
 
@@ -2193,7 +2193,7 @@ func TestAuthenticate_NoUserStoreCarriesNoBindings(t *testing.T) {
 	// at all, which is also the condition under which the "required" binding
 	// check cannot resolve any account; "enrolled" is the correct, explicit
 	// choice here, not a workaround (go-qrdb#548).
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 

@@ -67,6 +67,15 @@ type PolicyMetadata struct {
 
 // PolicySpec contains the policy specification.
 type PolicySpec struct {
+	// Enabled switches the policy on or off. It is presence-tracked: nil
+	// means the document did not set it, which means enabled, so a document
+	// written before the field existed keeps its meaning. A policy whose
+	// Enabled is false is still validated and compiled, but the evaluator
+	// skips it: its deny rules do not deny and its allow rules do not allow.
+	// The field is never normalised, so the stored document round-trips
+	// exactly as written.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
 	// Subjects defines who this policy applies to.
 	Subjects SubjectSelector `json:"subjects" yaml:"subjects"`
 
@@ -76,6 +85,18 @@ type PolicySpec struct {
 
 	// Rules defines the authorization rules.
 	Rules []Rule `json:"rules" yaml:"rules"`
+}
+
+// EnabledSet reports whether the document set Enabled explicitly, as
+// opposed to leaving it absent.
+func (s *PolicySpec) EnabledSet() bool {
+	return s.Enabled != nil
+}
+
+// IsEnabled reports the effective value of Enabled: true when the field is
+// absent, otherwise the value the document set.
+func (s *PolicySpec) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 // SubjectSelector defines criteria for matching subjects.

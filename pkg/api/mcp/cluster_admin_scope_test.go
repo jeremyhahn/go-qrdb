@@ -60,7 +60,7 @@ func TestClusterAdminScope(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
 				client := startMCP(t, admin, &atomic.Pointer[string]{},
-					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))))
+					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
 
 				req := mcpgo.CallToolRequest{}
 				req.Params.Name = op.tool

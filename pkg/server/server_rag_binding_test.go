@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -88,7 +89,7 @@ func TestStart_RAGTenantForUnauthenticatedCalls(t *testing.T) {
 	authed := &bindingRAGService{}
 	srv = New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
 		WithCeremonyCA(testServerCA), WithRAG(authed), WithDatabaseServiceRegistry(newFilledRegistry()),
-		WithAuthMiddleware(authmw.New(withoutPermissions{})))
+		WithAuthMiddleware(authmw.New(withoutPermissions{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

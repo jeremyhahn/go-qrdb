@@ -47,7 +47,7 @@ func (failingAuthenticator) Name() string { return "failing" }
 // configured authenticator always fails, proving the bypass happens before
 // authenticate runs, not merely before the permission lookup.
 func TestRegisterPublicGRPCMethods_ValidMethodsBypassAuthentication(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	if err := m.RegisterPublicGRPCMethods([]string{"/quicbaas.v1.HealthService/Check"}); err != nil {
 		t.Fatalf("RegisterPublicGRPCMethods: %v", err)
@@ -73,7 +73,7 @@ func TestRegisterPublicGRPCMethods_ValidMethodsBypassAuthentication(t *testing.T
 // other half: a method that was never declared stays gated, even though a
 // DIFFERENT method was registered as public.
 func TestRegisterPublicGRPCMethods_NonRegisteredMethodStillDenied(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	if err := m.RegisterPublicGRPCMethods([]string{"/quicbaas.v1.HealthService/Check"}); err != nil {
 		t.Fatalf("RegisterPublicGRPCMethods: %v", err)
@@ -96,7 +96,7 @@ func TestRegisterPublicGRPCMethods_NonRegisteredMethodStillDenied(t *testing.T) 
 // TestRegisterPublicGRPCMethods_StreamBypassesAuthentication covers the
 // streaming interceptor's mirror of the unary bypass.
 func TestRegisterPublicGRPCMethods_StreamBypassesAuthentication(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	if err := m.RegisterPublicGRPCMethods([]string{"/quicbaas.v1.HealthService/Watch"}); err != nil {
 		t.Fatalf("RegisterPublicGRPCMethods: %v", err)
@@ -121,7 +121,7 @@ func TestRegisterPublicGRPCMethods_StreamBypassesAuthentication(t *testing.T) {
 // TestRegisterPublicGRPCMethods_StreamNonRegisteredMethodStillDenied is the
 // streaming counterpart of the unary default-deny check.
 func TestRegisterPublicGRPCMethods_StreamNonRegisteredMethodStillDenied(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	if err := m.RegisterPublicGRPCMethods([]string{"/quicbaas.v1.HealthService/Watch"}); err != nil {
 		t.Fatalf("RegisterPublicGRPCMethods: %v", err)
@@ -158,7 +158,7 @@ func TestRegisterPublicGRPCMethods_MalformedNameRejected(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := New(&mockAuthorizer{})
+			m := newTestMiddleware(&mockAuthorizer{})
 
 			err := m.RegisterPublicGRPCMethods([]string{tc.method})
 			if err == nil {
@@ -180,7 +180,7 @@ func TestRegisterPublicGRPCMethods_MalformedNameRejected(t *testing.T) {
 // so a single typo can never leave part of a module's intended set
 // registered while silently dropping the rest.
 func TestRegisterPublicGRPCMethods_MalformedEntryRejectsTheWholeBatch(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	err := m.RegisterPublicGRPCMethods([]string{
 		"/quicbaas.v1.HealthService/Check",
@@ -206,7 +206,7 @@ func TestRegisterPublicGRPCMethods_MalformedEntryRejectsTheWholeBatch(t *testing
 // no-declarations case: registering an empty (or nil) slice succeeds and
 // registers nothing.
 func TestRegisterPublicGRPCMethods_EmptyIsANoop(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	if err := m.RegisterPublicGRPCMethods(nil); err != nil {
 		t.Fatalf("RegisterPublicGRPCMethods(nil) = %v, want nil", err)
@@ -231,7 +231,7 @@ func TestRegisterPublicGRPCMethods_EmptyIsANoop(t *testing.T) {
 // e.g. the gRPC and unix transports sharing one AuthMiddleware instance,
 // or two modules registering independently. The set only grows.
 func TestRegisterPublicGRPCMethods_MultipleCallsAccumulate(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(failingAuthenticator{}))
 
 	if err := m.RegisterPublicGRPCMethods([]string{"/quicbaas.v1.HealthService/Check"}); err != nil {
 		t.Fatalf("first RegisterPublicGRPCMethods: %v", err)

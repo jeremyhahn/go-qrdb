@@ -120,7 +120,7 @@ func TestWithUserServiceFallback_SetsField(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithUserServiceFallback(fallback))
+	m := newTestMiddleware(authz, WithUserServiceFallback(fallback))
 
 	if m.usersFallback != fallback {
 		t.Error("expected usersFallback to be set by WithUserServiceFallback")
@@ -144,7 +144,7 @@ func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 		},
 	}
 
-	m := New(authz,
+	m := newTestMiddleware(authz,
 		WithAuthenticator(authn),
 		WithUserService(primary),
 		WithUserServiceFallback(fallback),
@@ -338,7 +338,7 @@ func TestAuthenticateQUIC_Success(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	ctx, err := m.AuthenticateQUIC(context.Background())
 	if err != nil {
@@ -362,7 +362,7 @@ func TestAuthenticateQUIC_Unauthenticated(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 
 	_, err := m.AuthenticateQUIC(context.Background())
 	if err == nil {
@@ -375,7 +375,7 @@ func TestAuthenticateQUIC_Unauthenticated(t *testing.T) {
 
 func TestAuthenticateQUIC_NoAuthenticators(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	_, err := m.AuthenticateQUIC(context.Background())
 	if err == nil {
@@ -399,7 +399,7 @@ func TestAuthenticateQUIC_UserEnrichment(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	ctx, err := m.AuthenticateQUIC(context.Background())
 	if err != nil {
@@ -430,7 +430,7 @@ func testQUICMethodRegistry() *QUICMethodRegistry {
 
 func TestAuthorizeQUIC_NoMapping(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	// DEFAULT-DENY: a method without a registered permission is rejected, not
 	// allowed through. The authorizer is never consulted for an unregistered
@@ -447,7 +447,7 @@ func TestAuthorizeQUIC_NoMapping(t *testing.T) {
 
 func TestAuthorizeQUIC_NilRegistryDenied(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	// A nil registry covers nothing: every method is denied (fail-closed).
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"})
@@ -462,7 +462,7 @@ func TestAuthorizeQUIC_NilRegistryDenied(t *testing.T) {
 
 func TestAuthorizeQUIC_NoIdentity(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	// A registered method with no identity in context should return unauthenticated.
 	err := m.AuthorizeQUIC(context.Background(), testQUICMethodRegistry(), "kv.Put")
@@ -480,7 +480,7 @@ func TestAuthorizeQUIC_NoIdentity(t *testing.T) {
 
 func TestAuthorizeQUIC_Authorized(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	// Set identity in context.
 	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"admin"}}
@@ -497,7 +497,7 @@ func TestAuthorizeQUIC_Authorized(t *testing.T) {
 
 func TestAuthorizeQUIC_Unauthorized(t *testing.T) {
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
-	m := New(authz)
+	m := newTestMiddleware(authz)
 
 	id := &auth.Identity{Subject: "bob", TenantID: "t1"}
 	ctx := auth.WithIdentity(context.Background(), id)
@@ -586,7 +586,7 @@ func TestStreamInterceptor_Unauthorized(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	interceptor := m.StreamInterceptor()
 
 	info := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}
@@ -621,7 +621,7 @@ func TestStreamInterceptor_UserDisabled(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 	interceptor := m.StreamInterceptor()
 
 	info := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}
@@ -660,7 +660,7 @@ func TestAuthorize_AuditLogFailure(t *testing.T) {
 	sinkErr := errors.New("disk full")
 	al := &mockAuditLogger{err: sinkErr}
 
-	m := New(authz, WithAuditLogger(al))
+	m := newTestMiddleware(authz, WithAuditLogger(al))
 
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	err := m.authorize(context.Background(), identity, "kv:put")
@@ -688,7 +688,7 @@ func TestAuthorize_AuditLogFailure_OnDenied(t *testing.T) {
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 	al := &mockAuditLogger{err: errors.New("disk full")}
 
-	m := New(authz, WithAuditLogger(al))
+	m := newTestMiddleware(authz, WithAuditLogger(al))
 
 	identity := &auth.Identity{Subject: "bob", TenantID: "t2"}
 	err := m.authorize(context.Background(), identity, "admin:drain")
@@ -712,7 +712,7 @@ func TestAuthorize_AuditLogFailure_FailOpen(t *testing.T) {
 	authz := &mockAuthorizer{}
 	al := &mockAuditLogger{err: errors.New("disk full")}
 
-	m := New(authz, WithAuditLogger(al), WithAuditFailurePolicy(audit.FailOpen))
+	m := newTestMiddleware(authz, WithAuditLogger(al), WithAuditFailurePolicy(audit.FailOpen))
 
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	if err := m.authorize(context.Background(), identity, "kv:put"); err != nil {
@@ -733,7 +733,7 @@ func TestRESTMiddleware_StoreUnavailable(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
@@ -782,7 +782,7 @@ func TestRESTMiddleware_TLSInjection(t *testing.T) {
 	authn := auth.NewMTLSAuthenticator()
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -823,7 +823,7 @@ func TestUnaryInterceptor_StoreUnavailable(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 	interceptor := m.UnaryInterceptor()
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Get"}
@@ -856,7 +856,7 @@ func TestStreamInterceptor_StoreUnavailable(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 	interceptor := m.StreamInterceptor()
 
 	info := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}
@@ -898,7 +898,7 @@ func TestAuthenticateQUIC_FallbackUsed(t *testing.T) {
 		},
 	}
 
-	m := New(authz,
+	m := newTestMiddleware(authz,
 		WithAuthenticator(authn),
 		WithUserService(primary),
 		WithUserServiceFallback(fallback),
@@ -931,7 +931,7 @@ func TestAuthenticateQUIC_UserDisabled(t *testing.T) {
 		},
 	}
 
-	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithUserService(users))
 
 	_, err := m.AuthenticateQUIC(context.Background())
 	if err == nil {

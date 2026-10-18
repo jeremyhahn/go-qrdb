@@ -38,7 +38,7 @@ import (
 // globex and the system tenant.
 func builtInMiddleware(t *testing.T, opts ...Option) *AuthMiddleware {
 	t.Helper()
-	return New(rbac.New(authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)), opts...)
+	return newTestMiddleware(rbac.New(authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)), opts...)
 }
 
 // as binds id as the authenticated caller, in its own tenant, the way

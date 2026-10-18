@@ -37,7 +37,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestCheckRateLimit_NoOpWhenNotConfigured(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 
 	if err := m.checkRateLimit(identity, permission.KVPut); err != nil {
@@ -48,7 +48,7 @@ func TestCheckRateLimit_NoOpWhenNotConfigured(t *testing.T) {
 func TestCheckRateLimit_NoOpWhenLimiterNilButRegistrySet(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.KVPut, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
-	m := New(&mockAuthorizer{}, WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimitPolicies(policies))
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 
 	if err := m.checkRateLimit(identity, permission.KVPut); err != nil {
@@ -62,7 +62,7 @@ func TestCheckRateLimit_NoOpWhenPermissionHasNoPolicy(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.KVPut, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 
 	// permission.KVGet carries no declared policy, so it must never be
@@ -80,7 +80,7 @@ func TestCheckRateLimit_DeniesOverBurst(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.KVPut, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 
 	if err := m.checkRateLimit(identity, permission.KVPut); err != nil {
@@ -119,7 +119,7 @@ func TestCheckLoginRateLimit_NilReceiverIsANoOp(t *testing.T) {
 }
 
 func TestCheckLoginRateLimit_NoOpWhenNotConfigured(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("want no error when rate limiting is not wired, got %v", err)
 	}
@@ -130,7 +130,7 @@ func TestCheckLoginRateLimit_DeniesOverBurst(t *testing.T) {
 	t.Cleanup(func() { _ = limiter.Close() })
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
 	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("want the first attempt within burst allowed, got %v", err)
@@ -150,7 +150,7 @@ func TestCheckLoginRateLimit_DistinctPrincipalsAreIndependent(t *testing.T) {
 	t.Cleanup(func() { _ = limiter.Close() })
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
 	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("alice's first attempt: %v", err)
@@ -169,7 +169,7 @@ func TestCheckRateLimit_CallersAreIndependent(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.KVPut, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 	alice := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	bob := &auth.Identity{Subject: "bob", TenantID: "t1"}
 
@@ -201,7 +201,7 @@ func TestCheckRateLimit_EmptyTenantIsTheSystemTenantsBucket(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.KVPut, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
 	if err := m.checkRateLimit(&auth.Identity{Subject: "op", TenantID: ""}, permission.KVPut); err != nil {
 		t.Fatalf("want the first request within burst allowed, got %v", err)
@@ -235,7 +235,7 @@ func TestAuthorize_RateLimitRunsBeforeAuthorizer(t *testing.T) {
 	policies.Register(permission.AdminStatus, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
 	authz := &mockAuthorizer{}
-	m := New(authz, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(authz, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 
 	if err := m.authorize(context.Background(), identity, permission.AdminStatus); err != nil {
@@ -259,7 +259,7 @@ func TestAuthorize_RateLimitDoesNotApplyWithNilIdentity(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.IdentityGated, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 	if err := m.authorize(context.Background(), nil, permission.IdentityGated); err != auth.ErrUnauthenticated {
 		t.Fatalf("want auth.ErrUnauthenticated, got %v", err)
 	}
@@ -279,7 +279,7 @@ func TestRESTMiddleware_RateLimited(t *testing.T) {
 	policies := ratelimit.NewRegistry()
 	policies.Register(permission.AdminStatus, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(authz, WithAuthenticator(authn), WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -316,7 +316,7 @@ func TestRESTMiddleware_NotRateLimitedWhenNotConfigured(t *testing.T) {
 	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := newTestMiddleware(authz, WithAuthenticator(authn))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -390,7 +390,7 @@ func TestUnaryInterceptor_RateLimited(t *testing.T) {
 	// real interceptor.
 	policies.Register(permission.KVGet, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 
-	m := New(authz, WithAuthenticator(authn), WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+	m := newTestMiddleware(authz, WithAuthenticator(authn), WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Get"}
 	handler := func(ctx context.Context, _ interface{}) (interface{}, error) {

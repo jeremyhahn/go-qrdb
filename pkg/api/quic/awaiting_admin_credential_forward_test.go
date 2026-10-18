@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -66,7 +67,7 @@ func roundTripOnBehalf(t *testing.T, conn *quicgo.Conn, method string, requestID
 // envelope must never be a way around this gate.
 func TestAwaitingAdminCredential_ForwardedRequest_NonAllowlistedMethodIsRefused(t *testing.T) {
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
-		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})),
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 		WithAwaitingAdminCredentialProbe(&fakeAwaitingAdminCredentialProbe{awaiting: true}),
 	)
 	conn := env.dialServer(t)
@@ -96,7 +97,7 @@ func TestAwaitingAdminCredential_ForwardedRequest_NonAllowlistedMethodIsRefused(
 // if it ran; StatusOK proves it never did.
 func TestAwaitingAdminCredential_ForwardedRequest_AllowlistedMethodSkipsAuthToo(t *testing.T) {
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
-		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})),
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 		WithAwaitingAdminCredentialProbe(&fakeAwaitingAdminCredentialProbe{awaiting: true}),
 		WithCeremonyService(&mockCeremonyService{}),
 	)
@@ -120,7 +121,7 @@ func TestAwaitingAdminCredential_ForwardedRequest_AllowlistedMethodSkipsAuthToo(
 // left it reachable and enforced once the gate no longer applies.
 func TestAwaitingAdminCredential_ForwardedRequest_NotAwaitingStillAuthenticates(t *testing.T) {
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
-		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{})),
+		WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 		WithAwaitingAdminCredentialProbe(&fakeAwaitingAdminCredentialProbe{awaiting: false}),
 	)
 	conn := env.dialServer(t)

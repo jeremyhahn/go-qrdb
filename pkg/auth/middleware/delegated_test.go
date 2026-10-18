@@ -135,8 +135,9 @@ func dlgPresented(t *testing.T) (context.Context, *auth.MTLSAuthenticator) {
 func dlgMiddleware(t *testing.T, a auth.Authenticator, opts ...Option) *AuthMiddleware {
 	t.Helper()
 	stored := &user.User{Username: auth.ServicePrincipalSubjectPrefix + dlgPrincipal, TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"admin"}}
-	base := []Option{WithAuthenticator(a), WithUserService(&mockUserServicer{user: stored})}
-	return New(rbac.New(authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)), append(base, opts...)...)
+	roles := authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)
+	base := []Option{WithAuthenticator(a), WithUserService(&mockUserServicer{user: stored}), WithRoleResolver(roles)}
+	return New(rbac.New(roles), append(base, opts...)...)
 }
 
 func TestDelegated_AdmittedAsTheServicePrincipalInTheTenant(t *testing.T) {

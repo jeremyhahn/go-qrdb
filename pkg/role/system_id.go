@@ -19,6 +19,7 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -75,4 +76,29 @@ func HoldsSystemRole(ctx context.Context, svc NameResolver, tenantID string, rol
 		return false, &InvalidResolverResultError{Name: roleName, TenantID: tenantID}
 	}
 	return slices.Contains(roleIDs, r.ID), nil
+}
+
+// IsTenantOwner decides auth.Identity.TenantOwner: whether the role store
+// resolves id's roles to the Admin system role of id.TenantID. It is the one
+// place that decision is made; every step that establishes an identity calls
+// it rather than comparing role names.
+//
+// The roles considered are id.Roles and those of id.RoleBindings granted
+// within id.TenantID itself, since a binding grants its role only in its own
+// tenant. The answer concerns id.TenantID alone, so a system-tenant Admin is
+// the owner of the system tenant and of nothing else. A nil id is not an
+// owner. Errors are HoldsSystemRole's, and the caller must not treat one as
+// a "no" it can carry on with.
+func IsTenantOwner(ctx context.Context, svc NameResolver, id *auth.Identity) (bool, error) {
+	if id == nil {
+		return false, nil
+	}
+	tenantID := tenantid.Normalize(id.TenantID)
+	roleIDs := id.Roles
+	for _, b := range id.RoleBindings {
+		if tenantid.Normalize(b.TenantID) == tenantID {
+			roleIDs = append(slices.Clip(roleIDs), b.RoleID)
+		}
+	}
+	return HoldsSystemRole(ctx, svc, tenantID, roleIDs, RoleNameAdmin)
 }

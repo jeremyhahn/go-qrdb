@@ -650,7 +650,9 @@ func WithSessionIssuer(s embedded.SessionIssuer) NodeOption {
 // embedded.WithIdentityHydrator; without one the principal's own roles are
 // used. The hydrator cannot name the account: the login Subject is the
 // principal's immutable user id, so a rename or an email change never
-// changes it. A nil hydrator is ignored.
+// changes it. The hydrator owns TenantOwner: it sets it only from
+// role.IsTenantOwner over the identity it returns, as the
+// embedded.IdentityHydrator contract requires. A nil hydrator is ignored.
 func WithIdentityHydrator(h embedded.IdentityHydrator) NodeOption {
 	return func(o *nodeOptions) {
 		if h == nil {

@@ -120,7 +120,7 @@ func TestEmbeddedCreateUser_DeniedWithoutRolesAssign(t *testing.T) {
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),
-		WithAuthMiddleware(authmw.New(rbac.New(roleSvc))),
+		WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -160,7 +160,7 @@ func TestEmbeddedCreateUser_AllowedWithRolesAssignAndValidRole(t *testing.T) {
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),
-		WithAuthMiddleware(authmw.New(rbac.New(roleSvc))),
+		WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -197,7 +197,7 @@ func TestEmbeddedCreateUser_RejectsRoleFromAnotherTenant(t *testing.T) {
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),
-		WithAuthMiddleware(authmw.New(rbac.New(roleSvc))),
+		WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -235,7 +235,7 @@ func TestEmbeddedUpdateUser_DeniedWithoutRolesAssign(t *testing.T) {
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),
-		WithAuthMiddleware(authmw.New(rbac.New(roleSvc))),
+		WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -275,7 +275,7 @@ func TestEmbeddedUpdateUser_WithoutRoleFieldsIsUngatedByRolesAssign(t *testing.T
 	tr, err := New(newMockKVService(), &mockAdminService{},
 		WithUserService(userSvc),
 		WithRoleService(roleSvc),
-		WithAuthMiddleware(authmw.New(rbac.New(roleSvc))),
+		WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)

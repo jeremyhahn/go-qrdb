@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
@@ -63,7 +64,7 @@ func TestNewServer_WithOptions(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	logger := slog.Default()
 
 	s := NewServer(kvSvc, adminSvc, ":5432",
@@ -97,7 +98,7 @@ func TestWithTLS_Nil(t *testing.T) {
 
 func TestWithAuthMiddleware(t *testing.T) {
 	s := &Server{}
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	WithAuthMiddleware(mw)(s)
 	assert.NotNil(t, s.authMW)
 }
@@ -242,7 +243,7 @@ func TestServer_StartStop_WithoutDatabaseManager(t *testing.T) {
 func TestServer_StartWithAuth(t *testing.T) {
 	kvSvc := &mockKVService{scanData: map[string][]byte{}}
 	adminSvc := &mockAdminService{}
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	// Create a minimal TLS config (no real certs needed for startup test).
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
@@ -284,7 +285,7 @@ func TestServer_StartWithTLSNoAuth(t *testing.T) {
 func TestServer_StartWithAuthNoTLS(t *testing.T) {
 	kvSvc := &mockKVService{scanData: map[string][]byte{}}
 	adminSvc := &mockAdminService{}
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
 		WithAuthMiddleware(mw),
@@ -317,7 +318,7 @@ func TestServer_StartWithCustomDB(t *testing.T) {
 func TestServer_StartWithTLSAndVerifyConnection(t *testing.T) {
 	kvSvc := &mockKVService{scanData: map[string][]byte{}}
 	adminSvc := &mockAdminService{}
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	// TLS config with existing VerifyConnection callback.
 	tlsCfg := &tls.Config{
@@ -398,7 +399,7 @@ func TestBuildPgTLSConfig_AuthenticatorStoresTLSStateOnDynamicPath(t *testing.T)
 		},
 	}
 
-	mw := authmw.New(&auth.NoopAuthorizer{})
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	authenticator := NewAuthenticator(mw)
 	got := buildPgTLSConfig(base, authenticator)
 

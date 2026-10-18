@@ -55,7 +55,7 @@ const claimantUserID = 4242
 
 func claimantMiddleware(claim *auth.Identity) *AuthMiddleware {
 	stored := &user.User{ID: claimantUserID, Username: claim.Subject, TenantID: claim.TenantID, Lifecycle: user.LifecycleActive, RoleIDs: []string{"admin-role"}}
-	return New(&mockAuthorizer{},
+	return newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "host-bearer", identity: claim}),
 		WithUserService(&mockUserServicer{user: stored}))
 }
@@ -164,7 +164,7 @@ func TestOnBehalf_ServicePrincipalAssertionIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{nodeCert}, VerifiedChains: [][]*x509.Certificate{{nodeCert}}}
-	m := New(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
+	m := newTestMiddleware(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: stored}))
 	_, err = m.AuthenticateQUICOnBehalf(auth.WithTLSState(context.Background(), state), "kv.Get", payload, ab, sb)
 	assertServicePrincipalRefusal(t, err)

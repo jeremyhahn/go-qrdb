@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
@@ -151,7 +152,7 @@ func TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *t
 		return nil
 	}
 
-	mw := authmw.New(denyEverything{})
+	mw := authmw.New(denyEverything{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	authorize := func(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error {
 		return mw.AuthorizeTenantBarrierInitProof(ctx, tenantID, svc, proof)
 	}
@@ -289,7 +290,7 @@ func TestHandleTenantBarrierInit_ProofOverTheConnection(t *testing.T) {
 		inits++
 		return nil
 	}
-	mw := authmw.New(allowEverything{})
+	mw := authmw.New(allowEverything{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	begin := handleTenantBarrierInitBegin(func(ctx context.Context, tenantID string) (*initproof.Challenge, error) {
 		return mw.BeginTenantBarrierInit(ctx, tenantID, svc)
 	})

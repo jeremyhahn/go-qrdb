@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -161,7 +162,7 @@ func TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated(t *testing.T) {
 	cfg := testConfigFull(t, protocolFlags{unix: true}, socketPath)
 
 	tlsCfg := selfSignedTLSConfig(t)
-	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(auth.NewMTLSAuthenticator()))
+	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(auth.NewMTLSAuthenticator()))
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg), WithAuthMiddleware(authMW))
 

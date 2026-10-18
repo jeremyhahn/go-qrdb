@@ -88,7 +88,7 @@ func TestMCPToolRegistry_LookupNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthorizeMCP_NoIdentity_Denied(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	ctx := context.Background()
 	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_kv_put")
 	if err == nil {
@@ -104,7 +104,7 @@ func TestAuthorizeMCP_NoIdentity_Denied(t *testing.T) {
 }
 
 func TestAuthorizeMCP_UnmappedTool_Denied(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	identity := &auth.Identity{
 		Subject:  "u1",
 		TenantID: "t1",
@@ -125,7 +125,7 @@ func TestAuthorizeMCP_UnmappedTool_Denied(t *testing.T) {
 }
 
 func TestAuthorizeMCP_AuthorizedCaller_Allowed(t *testing.T) {
-	m := New(&mockAuthorizer{}) // nil err = allow
+	m := newTestMiddleware(&mockAuthorizer{}) // nil err = allow
 	identity := &auth.Identity{
 		Subject:  "u1",
 		TenantID: "t1",
@@ -139,7 +139,7 @@ func TestAuthorizeMCP_AuthorizedCaller_Allowed(t *testing.T) {
 
 func TestAuthorizeMCP_AuthorizerDenied(t *testing.T) {
 	denyErr := &auth.AuthError{Code: "unauthorized", Message: "permission denied"}
-	m := New(&mockAuthorizer{err: denyErr})
+	m := newTestMiddleware(&mockAuthorizer{err: denyErr})
 	identity := &auth.Identity{
 		Subject:  "u1",
 		TenantID: "t1",
@@ -157,7 +157,7 @@ func TestAuthorizeMCP_AuthorizerDenied(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthorizeTenant_NoIdentity_Unauthenticated(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	ctx := context.Background()
 	err := m.AuthorizeTenant(ctx, "tenant-1", permission.KVPut)
 	if !errors.Is(err, auth.ErrUnauthenticated) {
@@ -167,7 +167,7 @@ func TestAuthorizeTenant_NoIdentity_Unauthenticated(t *testing.T) {
 
 func TestAuthorizeTenant_AuthorizerDenied(t *testing.T) {
 	denyErr := &auth.AuthError{Code: "unauthorized", Message: "not in tenant"}
-	m := New(&mockAuthorizer{err: denyErr})
+	m := newTestMiddleware(&mockAuthorizer{err: denyErr})
 	identity := &auth.Identity{
 		Subject:  "u1",
 		TenantID: "other-tenant",
@@ -181,7 +181,7 @@ func TestAuthorizeTenant_AuthorizerDenied(t *testing.T) {
 }
 
 func TestAuthorizeTenant_AuthorizerAllowed(t *testing.T) {
-	m := New(&mockAuthorizer{}) // nil err = allow
+	m := newTestMiddleware(&mockAuthorizer{}) // nil err = allow
 	identity := &auth.Identity{
 		Subject:  "u1",
 		TenantID: "tenant-1",
@@ -196,7 +196,7 @@ func TestAuthorizeTenant_AuthorizerAllowed(t *testing.T) {
 // The tenant injected into context must equal the targetTenantID argument.
 func TestAuthorizeTenant_InjectsTenantInContext(t *testing.T) {
 	var capturedTenantID string
-	m := New(&captureAuthorizer{
+	m := newTestMiddleware(&captureAuthorizer{
 		captureFn: func(ctx context.Context) {
 			capturedTenantID = tenant.FromContext(ctx)
 		},
@@ -301,7 +301,7 @@ func TestRESTMiddleware_NonAPIPath_PassThrough(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +324,7 @@ func TestRESTMiddleware_PublicPath_SkipsAuthn(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,7 +350,7 @@ func TestRESTMiddleware_APIPath_NoPermissionMapping_DefaultDeny(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	reached := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -394,7 +394,7 @@ func TestRESTMiddleware_AuthzPublicPath_Allowed(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -428,7 +428,7 @@ func TestRESTMiddleware_AuthzPublicPath_RefusesHolderIdentity(t *testing.T) {
 			Metadata: map[string]string{auth.HolderProfileMetadataKey: "so"},
 		},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -458,7 +458,7 @@ func TestUnaryInterceptor_PublicMethod_PassThrough(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	called := false
@@ -485,7 +485,7 @@ func TestUnaryInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 	interceptor := m.UnaryInterceptor()
 
 	handler := func(ctx context.Context, req any) (any, error) {
@@ -512,7 +512,7 @@ func TestStreamInterceptor_PublicMethod_PassThrough(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 	interceptor := m.StreamInterceptor()
 
 	called := false
@@ -536,7 +536,7 @@ func TestStreamInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
 		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
-	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
 	interceptor := m.StreamInterceptor()
 
 	handler := func(srv any, stream grpc.ServerStream) error {

@@ -39,6 +39,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -204,7 +205,7 @@ func newEtcdScopeFixture(t *testing.T, withAuth bool, extra ...ServerOption) *et
 		WithDatabaseManager(mgr),
 	}
 	if withAuth {
-		opts = append(opts, WithAuthMiddleware(authmw.New(allowAll{},
+		opts = append(opts, WithAuthMiddleware(authmw.New(allowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 			authmw.WithAuthenticator(&etcdPeerIdentity{identity: &auth.Identity{Subject: "alice", TenantID: "acme"}}))))
 	}
 	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, append(opts, extra...)...)

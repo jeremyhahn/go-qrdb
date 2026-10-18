@@ -44,7 +44,7 @@ func TestEtcdRequestAuthorizer_SystemTenantIsRefused(t *testing.T) {
 		"globex admin":   authtest.AdminIdentity("globex", "g"),
 	}
 	for name, id := range callers {
-		mw := authmw.New(allowAll{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
+		mw := authmw.New(allowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
 		a := &etcdRequestAuthorizer{mw: mw, mgr: f.mgr, owner: "acme", db: "app"}
 		if _, err := a.AuthorizeRequest(context.Background(), permission.KVGet); status.Code(err) != codes.PermissionDenied {
 			t.Errorf("%s on acme's etcd listener = %v, want PermissionDenied", name, err)

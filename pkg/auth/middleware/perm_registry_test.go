@@ -151,7 +151,7 @@ func TestMCPToolRegistry_EmptyPermissionPanics(t *testing.T) {
 // TestAuthorizeMCP_NilRegistryDenied verifies the fail-closed contract for an
 // unwired tool registry: every tool call is denied.
 func TestAuthorizeMCP_NilRegistryDenied(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
 		Subject:  "u1",
 		TenantID: "t1",

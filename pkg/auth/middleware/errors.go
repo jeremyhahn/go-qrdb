@@ -90,6 +90,30 @@ func (e *StoreUnavailableError) Unwrap() error {
 	return e.Err
 }
 
+// TenantOwnerUnresolvedError is returned when the auth chain cannot decide an
+// authenticated identity's TenantOwner: the role store read failed, or no
+// role store is wired (role.ResolverRequiredError). The request is refused,
+// never admitted as "not owner". Like StoreUnavailableError it maps to
+// HTTP 503 / gRPC UNAVAILABLE.
+type TenantOwnerUnresolvedError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *TenantOwnerUnresolvedError) Error() string {
+	msg := "auth/middleware: cannot decide tenant ownership in tenant " + strconv.Quote(e.TenantID)
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying role store error.
+func (e *TenantOwnerUnresolvedError) Unwrap() error {
+	return e.Err
+}
+
 // BarrierSealedError is returned when the user lookup met a sealed node
 // barrier: go-quicraft's seal.ErrBarrierSealed on a node re-sealed at
 // runtime, or qrdb's seal.ErrSealed. That is the node's sealed state, not a

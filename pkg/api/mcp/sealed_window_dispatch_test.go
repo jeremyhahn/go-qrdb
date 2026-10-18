@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -119,7 +120,7 @@ func TestSealedWindowDispatch_MCP(t *testing.T) {
 			authn := &mcpDispatchAuthenticator{}
 			barrier := &mcpDispatchBarrier{}
 			srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-				WithAuthMiddleware(authmw.New(denyAllAuthorizer{}, authmw.WithAuthenticator(authn))),
+				WithAuthMiddleware(authmw.New(denyAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))),
 				WithBarrierService(barrier),
 				WithSealedWindowProbe(&fakeMCPSealedProbe{sealed: tt.nodeSealed}),
 				WithSealedWindowDispatch(&fakeMCPSealedProbe{sealed: tt.barrier}))

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -538,7 +539,7 @@ func TestTenantBarrierHolders_Refusals(t *testing.T) {
 // caller learns nothing from the decoder about what the route accepts.
 func TestTenantBarrierHolders_AuthorizeBeforeDecode(t *testing.T) {
 	srv := newTenantServer(&mockTenantService{})
-	WithAuthMiddleware(authmw.New(denyingAuthorizer{}))(srv)
+	WithAuthMiddleware(authmw.New(denyingAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t))))(srv)
 
 	for _, path := range []string{
 		"/v1/tenants/acme/barrier/officers",

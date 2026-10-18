@@ -72,7 +72,7 @@ func TestRoleMembershipWrites_AuthorizeAgainstTheUsersTenant(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			users := authtest.NewBindingUsers()
 			roles := authtest.BindingRoles(t)
-			mw := authmw.New(rbac.New(roles), authmw.WithUserService(users),
+			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithUserService(users),
 				authmw.WithAuthenticator(authtest.NewFixedAuthenticator(authtest.BindingTenantAdmin())))
 			ctx, _, err := mw.Authenticate(context.Background())
 			if err != nil {

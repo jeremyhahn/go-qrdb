@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
@@ -189,7 +190,7 @@ func TestNewServer_WithAuthMiddleware(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz)
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 
 	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithAuthMiddleware(mw))
 
@@ -211,7 +212,7 @@ func TestNewServer_MultipleOptions(t *testing.T) {
 	adminSvc := &mockAdminService{}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
 	authz := &mockAuthorizer{}
-	mw := authmw.New(authz)
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	logger := slog.Default()
 
 	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306",

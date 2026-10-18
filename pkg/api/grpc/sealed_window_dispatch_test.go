@@ -26,6 +26,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -45,9 +46,9 @@ func (a *countingAuthenticator) Name() string { return "counting" }
 // the regular sealed-window gate over node (the node barrier with the
 // cluster seal folded in) and the dispatch over barrier (the bare node
 // barrier), as pkg/server composes them.
-func dispatchServer(authn auth.Authenticator, node, barrier *fakeSealProbe) (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+func dispatchServer(t testing.TB, authn auth.Authenticator, node, barrier *fakeSealProbe) (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
 	s := &Server{}
-	WithAuthMiddleware(authmw.New(denyAllAuthorizer{}, authmw.WithAuthenticator(authn)))(s)
+	WithAuthMiddleware(authmw.New(denyAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn)))(s)
 	WithSealedWindowProbe(node)(s)
 	WithSealedWindowDispatch(barrier)(s)
 	return s.admissionChains()
@@ -75,7 +76,7 @@ func TestSealedWindowDispatch_ResealedListenerServesAsBootListener(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			authn := &countingAuthenticator{}
-			unary, _ := dispatchServer(authn, newProbe(true), newProbe(true))
+			unary, _ := dispatchServer(t, authn, newProbe(true), newProbe(true))
 			var reached, anonymous bool
 			handler := func(ctx context.Context, _ any) (any, error) {
 				reached, anonymous = true, sealedwindow.Anonymous(ctx)
@@ -101,7 +102,7 @@ func TestSealedWindowDispatch_ResealedListenerServesAsBootListener(t *testing.T)
 // authentication.
 func TestSealedWindowDispatch_StreamWhileSealed(t *testing.T) {
 	authn := &countingAuthenticator{}
-	_, stream := dispatchServer(authn, newProbe(true), newProbe(true))
+	_, stream := dispatchServer(t, authn, newProbe(true), newProbe(true))
 	err := stream(nil, &ctxServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}, dummyStreamHandler)
 	if status.Code(err) != codes.Unavailable || authn.calls.Load() != 0 {
 		t.Fatalf("err = %v, authentications %d; want Unavailable and none", err, authn.calls.Load())
@@ -116,7 +117,7 @@ func TestSealedWindowDispatch_StreamWhileSealed(t *testing.T) {
 // seal record from a serving node.
 func TestSealedWindowDispatch_HeldNodeRefusesBarrierStatus(t *testing.T) {
 	authn := &countingAuthenticator{}
-	unary, _ := dispatchServer(authn, newProbe(true), newProbe(false))
+	unary, _ := dispatchServer(t, authn, newProbe(true), newProbe(false))
 	reached := false
 	handler := func(context.Context, any) (any, error) { reached = true; return nil, nil }
 	_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: pb.QRDBService_BarrierStatus_FullMethodName}, handler)
@@ -141,7 +142,7 @@ func TestSealedWindowDispatch_UnsealedBarrierAuthenticates(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			authn := &countingAuthenticator{}
-			unary, stream := dispatchServer(authn, newProbe(tt.nodeSealed), newProbe(false))
+			unary, stream := dispatchServer(t, authn, newProbe(tt.nodeSealed), newProbe(false))
 			_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: pb.QRDBService_BarrierClusterUnseal_FullMethodName}, dummyHandler)
 			if status.Code(err) != codes.Unauthenticated {
 				t.Fatalf("unary err = %v, want Unauthenticated", err)
@@ -163,7 +164,7 @@ func TestSealedWindowDispatch_UnsealedBarrierAuthenticates(t *testing.T) {
 func TestSealedWindowDispatch_FollowsTheBarrier(t *testing.T) {
 	authn := &countingAuthenticator{}
 	node, barrier := newProbe(false), newProbe(false)
-	unary, _ := dispatchServer(authn, node, barrier)
+	unary, _ := dispatchServer(t, authn, node, barrier)
 	info := &grpc.UnaryServerInfo{FullMethod: pb.QRDBService_BarrierUnseal_FullMethodName}
 	if _, err := unary(context.Background(), nil, info, dummyHandler); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("unsealed: %v, want Unauthenticated", err)

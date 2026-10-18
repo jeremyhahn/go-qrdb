@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -36,7 +37,7 @@ import (
 // and an HTTPS client that trusts it.
 func startAuthenticatedMCP(t *testing.T) (string, *http.Client) {
 	t.Helper()
-	mw := authmw.New(&auth.NoopAuthorizer{},
+	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}))
 	tlsCfg := testTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
@@ -207,7 +208,7 @@ func (slowUserStore) GetUserByUsername(context.Context, string, string) (*user.U
 // bad. The bearer challenge stays off a response that never judged it.
 func TestAuthenticateHandler_StoreUnavailable503(t *testing.T) {
 	s := &Server{}
-	WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{},
+	WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
 		authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}),
 		authmw.WithUserService(slowUserStore{})))(s)
 	WithBearerChallenge(`Bearer realm="mcp"`)(s)

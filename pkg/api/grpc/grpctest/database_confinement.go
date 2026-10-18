@@ -110,7 +110,7 @@ func DatabaseConfinement(t *testing.T, start DatabaseStartFunc) {
 			fx := servicetest.NewShamirDatabaseOwnedBy(t, "acme", "vault", 2, 2)
 			tenants := authtest.NewTenants(t, tenantid.System, "acme")
 			roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
-			mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
+			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
 			client := pb.NewQRDBServiceClient(start(t, mw, tenants, fx.Service))
 			for verb, call := range calls {
 				if err := call(callCtx(t), client); status.Code(err) != codes.NotFound {

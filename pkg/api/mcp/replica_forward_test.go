@@ -98,7 +98,7 @@ func startMCPTargetTLS(t *testing.T, tlsCfg *tls.Config, raftAddr string, opts .
 		}
 		return nil
 	}
-	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithUserService(authtest.NewBindingUsers()))
+	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithUserService(authtest.NewBindingUsers()))
 	mt.srv = NewServer(kv, nil, "127.0.0.1:0", WithTLS(tlsCfg), WithAuthMiddleware(mw))
 	if err := mt.srv.Start(); err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func newMCPFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Dura
 	kv := newMockKVService()
 	kv.putFn = func(context.Context, string, []byte) error { return refusal }
 	caller := authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: authtest.BindingTenant})
-	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
+	mw := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
 	c.srv = NewServer(kv, nil, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw),
 		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, c.cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: timeout}))
 	if err := c.srv.Start(); err != nil {
@@ -270,7 +270,7 @@ func (f fixedCeremonyService) CeremonyStatus(context.Context) (*service.Ceremony
 func TestReplicaForwardMCP_CeremonyInitializeForwardsOnAdminCredentialNotLeaderError(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 
-	leaderMW := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithUserService(authtest.NewBindingUsers()))
+	leaderMW := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithUserService(authtest.NewBindingUsers()))
 	leader := NewServer(newMockKVService(), nil, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-1")), WithAuthMiddleware(leaderMW),
 		WithCeremonyService(fixedCeremonyService{result: &service.CeremonyInitResult{SPKIPin: "leader-answered"}}))
 	if err := leader.Start(); err != nil {
@@ -283,7 +283,7 @@ func TestReplicaForwardMCP_CeremonyInitializeForwardsOnAdminCredentialNotLeaderE
 		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolMCP: leader.Addr()}},
 	}
 	caller := authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: authtest.BindingTenant})
-	ingressMW := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
+	ingressMW := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
 	ingress := NewServer(newMockKVService(), nil, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(ingressMW),
 		WithCeremonyService(fixedCeremonyService{err: &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}}),
 		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: 5 * time.Second}))

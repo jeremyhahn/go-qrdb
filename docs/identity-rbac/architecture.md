@@ -124,6 +124,53 @@ The certificate CN still **selects** the account by its username. After a
 rename, a certificate naming the old username selects nothing; re-certify the
 same key under the new name and its SPKI binding carries over unchanged.
 
+### Tenant ownership is a typed field
+
+`auth.Identity.TenantOwner`, and its projection
+`transport.Identity.TenantOwner` (JSON `tenantOwner`), say whether the
+identity holds the **Admin** system role of its own `TenantID`. Consumers
+authorize on this field. Exactly one function decides it:
+`role.IsTenantOwner`. That function collects the identity's role ids, plus its
+role bindings in `TenantID` (bindings in any other tenant are dropped), and
+asks `role.HoldsSystemRole` whether one of them is the id the role store
+persisted for that tenant's Admin role. It compares by id and never by name. A
+built-in role can be neither renamed nor deleted, and no custom role can be
+renamed to `admin`, so no rename can turn a role into the owner role. An
+unseeded tenant has no owner. A missing role store or a store error is
+returned to the caller and is never read as "not owner".
+
+The step that establishes the identity sets the field:
+
+| Path | Where it is set |
+|---|---|
+| Embedded login, `FinishLogin` | the identity hydrator. The default hydrator calls `role.IsTenantOwner` over the transport's role service and refuses the login without one. Every `WithIdentityHydrator` implementation must set the field from the same function, after its role set and `TenantID` are final. |
+| Embedded `LoginClient.ResolveIdentity`, `SessionClient.ResolveIdentity` | carried by the session the issuer minted at login, projected by `identityToTransport` |
+| Network transports (REST, gRPC, QUIC, MCP, unix socket) | the auth middleware, on every authenticated request, for mTLS, bearer and service principals alike. It clears whatever the authenticator claimed, then calls `role.IsTenantOwner` over the role store given to `WithRoleResolver`. An on-behalf request is decided for the asserted caller on the serving node, never carried in from the forwarder. No wire type returns the identity to the caller; server-side consumers read it from the request context. |
+
+`identityToTransport` is the only function that produces a `transport.Identity`,
+so every embedded projection agrees. The reverse mapping, `identityToDomain`,
+used when a caller hands an identity back for `Authorize` or `ListPermissions`,
+never takes `TenantOwner` from that input. The module's own authorizer does not
+read the field either: it decides from roles and grants, as before.
+
+Because the value is computed when the identity is established, its lifetime
+follows the path. On the network transports the identity is established per
+request, and the role store is read uncached each time, so a demotion or
+promotion takes effect on the caller's next request. On the embedded login it
+lives as long as the session bearer, as the role set does, and a demotion or
+promotion shows at the next login.
+
+The network decision fails closed. A middleware built without a role store
+refuses every authenticated request, and `wiring.BuildAuthMiddleware` refuses to
+build one without a `RoleService`, even when an `Authorizer` is supplied. A
+role-store error refuses the request with `TenantOwnerUnresolvedError`, classed
+`AuthFailureUnavailable`: retryable, 503 on REST, `UNAVAILABLE` on gRPC, and
+each transport's unavailable status elsewhere. It is never read as "not owner". For the system tenant alone, a failed read is
+retried once against the stale-read store given to `WithRoleResolverFallback`.
+A sealed tenant is not retried. `Metadata` never carries ownership. A system-tenant
+identity's `TenantOwner` refers to the system tenant alone and grants no power
+in any other tenant.
+
 ### What a certificate actually claims
 
 The three fields above are not equally trusted, and the difference is the whole

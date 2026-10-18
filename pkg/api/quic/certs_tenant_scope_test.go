@@ -36,6 +36,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -63,11 +64,11 @@ func (a *certScopeGateAuthorizer) Authorize(_ context.Context, _ *auth.Identity,
 
 // newCertScopeGateServer returns a QUIC server whose certs gate refuses, plus
 // the recorder.
-func newCertScopeGateServer(cp cert.CertProvider) (*Server, *certScopeGateAuthorizer) {
+func newCertScopeGateServer(t testing.TB, cp cert.CertProvider) (*Server, *certScopeGateAuthorizer) {
 	authz := &certScopeGateAuthorizer{}
 	srv := NewServer(nil, nil, "localhost:0",
 		WithCertProvider(cp),
-		WithAuthMiddleware(authmw.New(authz)),
+		WithAuthMiddleware(authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 	)
 	return srv, authz
 }
@@ -113,7 +114,7 @@ func newCertEnrollScopeGateServer(t *testing.T) (*Server, *certScopeGateAuthoriz
 	authz := &certScopeGateAuthorizer{}
 	srv := NewServer(nil, nil, "localhost:0",
 		WithCertEnrollment(&refusingCertEnroll{t: t}),
-		WithAuthMiddleware(authmw.New(authz)),
+		WithAuthMiddleware(authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 	)
 	return srv, authz
 }
@@ -201,7 +202,7 @@ func TestQUICTrustAnchorAdd_ConsultsTheTenancyGate(t *testing.T) {
 // here too. The provider resolves the serial to a foreign tenant, so the gate
 // is asked for certs:revoke against THAT tenant.
 func TestQUICRevokeCert_ConsultsTheTenancyGate(t *testing.T) {
-	srv, authz := newCertScopeGateServer(&refusingCertProvider{t: t})
+	srv, authz := newCertScopeGateServer(t, &refusingCertProvider{t: t})
 	payload, _ := json.Marshal(revokeCertWireRequest{Serial: "s-globex"})
 
 	_, err := srv.handleRevokeCert(certScopeGateCtx(), payload)
@@ -214,7 +215,7 @@ func TestQUICRevokeCert_ConsultsTheTenancyGate(t *testing.T) {
 // TestQUICListCerts_ConsultsTheTenancyGate closes the path by which a serial
 // is obtained in the first place.
 func TestQUICListCerts_ConsultsTheTenancyGate(t *testing.T) {
-	srv, authz := newCertScopeGateServer(&refusingCertProvider{t: t})
+	srv, authz := newCertScopeGateServer(t, &refusingCertProvider{t: t})
 	payload, _ := json.Marshal(listCertsWireRequest{TenantID: "globex"})
 
 	_, err := srv.handleListCerts(certScopeGateCtx(), payload)

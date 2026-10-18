@@ -50,6 +50,7 @@ import (
 
 	_ "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1" // registers qrdb.v1 services
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
@@ -457,7 +458,7 @@ func TestMethodMappingGuard_AllKeysUseDotNotation(t *testing.T) {
 func TestMethodMappingGuard_DefaultDenyRegression(t *testing.T) {
 	authz := &guardAllowAuthorizer{}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{},
-		WithAuthMiddleware(authmw.New(authz)),
+		WithAuthMiddleware(authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))),
 	)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
 		Subject:  "guard-user",

@@ -187,35 +187,35 @@ func publicTestRegistry(t *testing.T) *MCPToolRegistry {
 
 func TestAuthorizeMCP_PublicTool_NoIdentity(t *testing.T) {
 	denyErr := &auth.AuthError{Code: "unauthorized", Message: "permission denied"}
-	m := New(&mockAuthorizer{err: denyErr})
+	m := newTestMiddleware(&mockAuthorizer{err: denyErr})
 	if err := m.AuthorizeMCP(context.Background(), publicTestRegistry(t), "example_login_begin"); err != nil {
 		t.Fatalf("a public tool must be admitted without an identity: %v", err)
 	}
 }
 
 func TestAuthorizeMCP_PublicRegistry_DataToolStillDenied(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if err := m.AuthorizeMCP(context.Background(), publicTestRegistry(t), "qrdb_put"); err == nil {
 		t.Fatal("a non-public tool must still require an identity")
 	}
 }
 
 func TestMCPToolVisible_PublicTool(t *testing.T) {
-	m := New(&mockAuthorizer{err: &auth.AuthError{Code: "unauthorized"}})
+	m := newTestMiddleware(&mockAuthorizer{err: &auth.AuthError{Code: "unauthorized"}})
 	if !m.MCPToolVisible(context.Background(), publicTestRegistry(t), "example_login_begin") {
 		t.Fatal("a public tool must be visible to an anonymous caller")
 	}
 }
 
 func TestMCPToolVisible_AnonymousNonPublic(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	if m.MCPToolVisible(context.Background(), publicTestRegistry(t), "qrdb_get") {
 		t.Fatal("a non-public tool must be hidden from an anonymous caller")
 	}
 }
 
 func TestMCPToolVisible_IdentityAllowed(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "u1", TenantID: "t1"})
 	if !m.MCPToolVisible(ctx, publicTestRegistry(t), "qrdb_get") {
 		t.Fatal("a granted tool must be visible")
@@ -223,7 +223,7 @@ func TestMCPToolVisible_IdentityAllowed(t *testing.T) {
 }
 
 func TestMCPToolVisible_IdentityDenied(t *testing.T) {
-	m := New(&mockAuthorizer{err: &auth.AuthError{Code: "unauthorized"}})
+	m := newTestMiddleware(&mockAuthorizer{err: &auth.AuthError{Code: "unauthorized"}})
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "u1", TenantID: "t1"})
 	if m.MCPToolVisible(ctx, publicTestRegistry(t), "qrdb_get") {
 		t.Fatal("a denied tool must be hidden")
@@ -231,7 +231,7 @@ func TestMCPToolVisible_IdentityDenied(t *testing.T) {
 }
 
 func TestMCPToolVisible_UnmappedHidden(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "u1", TenantID: "t1"})
 	if m.MCPToolVisible(ctx, publicTestRegistry(t), "unknown_tool") {
 		t.Fatal("an unmapped tool must be hidden (default-deny)")

@@ -107,7 +107,7 @@ func newInitFixture(t *testing.T, authz *mockAuthorizer) *initFixture {
 	}
 	clk := clocktest.New()
 	return &initFixture{
-		m: New(authz, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired),
+		m: newTestMiddleware(authz, WithPendingTenantAdmins(store), WithMTLSBindingPolicy(auth.MTLSBindingRequired),
 			WithInitChallengeBook(initproof.NewBook(clk, 0))),
 		clk:    clk,
 		alice:  alice,
@@ -283,7 +283,7 @@ func TestBeginTenantBarrierInit_LimitIsRateLimited(t *testing.T) {
 // connection.
 func TestTenantBarrierInitProof_NoPendingAdminBindsToTheConnectionCertificate(t *testing.T) {
 	bob := mintCert(t, "bob", "acme", nil, "")
-	m := New(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	m := newTestMiddleware(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	caller := &auth.Identity{Subject: "bob", TenantID: "acme"}
 	status := &fakeBarrierStatusReader{initialized: true}
 	conn := dialLive(t, bob)
@@ -313,7 +313,7 @@ func TestTenantBarrierInitProof_NoPendingAdminBindsToTheConnectionCertificate(t 
 // No pending admin and no certificate on the connection: there is no key the
 // proof could be by.
 func TestTenantBarrierInitProof_NoKeyToProveIsRefused(t *testing.T) {
-	m := New(&mockAuthorizer{})
+	m := newTestMiddleware(&mockAuthorizer{})
 	conn := dialLive(t, mintCert(t, "bob", "acme", nil, ""))
 	server := conn.server
 	server.PeerCertificates, server.VerifiedChains = nil, nil
@@ -337,7 +337,7 @@ func TestTenantBarrierInitProof_NoKeyToProveIsRefused(t *testing.T) {
 func TestTenantBarrierInitProof_StoreErrorFailsClosed(t *testing.T) {
 	want := errors.New("replicated store unreachable")
 	alice := mintCert(t, "alice", "acme", nil, "")
-	m := New(&mockAuthorizer{}, WithPendingTenantAdmins(&erroringPendingStore{err: want}))
+	m := newTestMiddleware(&mockAuthorizer{}, WithPendingTenantAdmins(&erroringPendingStore{err: want}))
 	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
 	conn := dialLive(t, alice)
 	c, err := m.BeginTenantBarrierInit(conn.ctx(caller), "acme", &fakeBarrierStatusReader{})

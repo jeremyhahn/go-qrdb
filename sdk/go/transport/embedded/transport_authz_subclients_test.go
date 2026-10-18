@@ -206,7 +206,7 @@ func TestSubClientAuthorizationSurface_CoversEveryMethod(t *testing.T) {
 // cert_confinement_test.go.
 func TestAmbientOperations_DenyANoPermissionIdentity(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme", tenantid.System)
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	tr := newExtTransport(t, WithAuthMiddleware(mw))
 
 	// An authenticated identity holding no role at all: ResolvePermissions
@@ -314,7 +314,7 @@ func callZeroArgs(t *testing.T, recv reflect.Value, name string, ctx context.Con
 // with an unregistered key, not what happens if one ever did.
 func TestOperationPermissions_UnknownKeyFailsClosed(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, tenantid.System)
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	tr := newExtTransport(t, WithAuthMiddleware(mw))
 
 	systemAdmin := ctxFor(authtest.AdminIdentity(tenantid.System, "root"))

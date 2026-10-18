@@ -128,7 +128,7 @@ func buildOnBehalfRequest(t *testing.T, peerCert *x509.Certificate, signKey *ecd
 func runOnBehalf(t *testing.T, r *http.Request, storeUser *user.User, authz *capturingAuthorizer) (*httptest.ResponseRecorder, bool, *auth.Identity) {
 	t.Helper()
 	users := &mockUserServicer{user: storeUser}
-	m := New(authz,
+	m := newTestMiddleware(authz,
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", err: auth.ErrNoPeerCertificate}),
 		WithUserService(users),
 	)
@@ -353,7 +353,7 @@ func TestOnBehalf_NoPeerCertRejected(t *testing.T) {
 // on-behalf headers falls through to the normal authenticator chain unchanged.
 func TestOnBehalf_AbsentHeadersUseNormalAuth(t *testing.T) {
 	users := &mockUserServicer{user: &user.User{Username: "node", TenantID: "system", Lifecycle: user.LifecycleActive}}
-	m := New(&capturingAuthorizer{},
+	m := newTestMiddleware(&capturingAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: "node", TenantID: "system"}}),
 		WithUserService(users),
 	)

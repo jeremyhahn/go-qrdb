@@ -58,7 +58,7 @@ func TestNodeOfficerScope(t *testing.T) {
 			t.Run(op.tool+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soTestPIN)}
-				client := startBarrierMCP(t, authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)), nil, barrier, &atomic.Pointer[string]{})
+				client := startBarrierMCP(t, authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)), nil, barrier, &atomic.Pointer[string]{})
 
 				req := mcpgo.CallToolRequest{}
 				req.Params.Name = op.tool

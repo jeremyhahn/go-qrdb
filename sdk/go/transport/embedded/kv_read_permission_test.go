@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -56,7 +57,7 @@ func seededKVTransport(t *testing.T, authz auth.Authorizer) *Transport {
 	kv := newMockKVService()
 	kv.store["app/k1"] = []byte("v1")
 	kv.store["app/k2"] = []byte("v2")
-	tr, err := New(kv, &mockAdminService{}, WithAuthMiddleware(authmw.New(authz)))
+	tr, err := New(kv, &mockAdminService{}, WithAuthMiddleware(authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

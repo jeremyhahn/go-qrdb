@@ -29,7 +29,7 @@ import (
 // them: without one the gate is still on, and refuses every SO-gated request.
 func TestSOGate_OnUnderExactlyTheRESTConditions(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "t1")
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	verifier := authtest.SOVerifier(t, "pin", "t1")
 	cases := []struct {
 		name     string
@@ -66,7 +66,7 @@ func TestSOGate_UnrecognisedAuditPolicyFailsTheStart(t *testing.T) {
 	cfg.Auth.SODualFactor = true
 	cfg.Auth.AuditFailurePolicy = "sometimes"
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
-		WithSOAuthenticator(authtest.SOVerifier(t, "pin", "t1")), WithAuthMiddleware(authmw.New(rbac.New(roles))))
+		WithSOAuthenticator(authtest.SOVerifier(t, "pin", "t1")), WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))))
 	if gate, err := srv.soGate(); err == nil || gate != nil {
 		t.Fatalf("soGate = (%v, %v), want an error and no gate", gate, err)
 	}

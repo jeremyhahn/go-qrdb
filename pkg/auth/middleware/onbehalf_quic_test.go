@@ -43,7 +43,7 @@ func quicOnBehalf(t *testing.T, peerCert *x509.Certificate, signKey *ecdsa.Priva
 
 func quicOBMiddleware() *AuthMiddleware {
 	stored := &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
-	return New(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
+	return newTestMiddleware(&capturingAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: stored}))
 }
 

@@ -178,7 +178,7 @@ func newCertScopeGRPCFixture(t *testing.T) *certScopeGRPCFixture {
 		svc: &qrdbServiceServer{
 			certProv:   prov,
 			certEnroll: service.NewCertEnrollmentService(prov, users, anchors),
-			authMW:     authmw.New(rbac.New(roles)),
+			authMW:     authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles)),
 		},
 		prov:    prov,
 		anchors: anchors,

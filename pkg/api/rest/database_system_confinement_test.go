@@ -56,7 +56,7 @@ func TestDatabaseRoutes_SystemTenantGetsNotFoundForAnotherTenantsDatabase(t *tes
 		t.Run(name, func(t *testing.T) {
 			fx := servicetest.NewShamirDatabaseOwnedBy(t, "acme", "vault", 2, 2)
 			roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
-			mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
+			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))
 			srv := NewServer(nil, nil, "127.0.0.1:0",
 				WithTenantService(authtest.NewTenants(t, tenantid.System, "acme")),
 				WithDatabaseService(fx.Service),

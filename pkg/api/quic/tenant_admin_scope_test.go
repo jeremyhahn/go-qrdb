@@ -33,7 +33,7 @@ func bindingServer(t *testing.T, caller *auth.Identity) (*Server, *authtest.Bind
 	t.Helper()
 	users := authtest.NewBindingUsers()
 	roles := authtest.BindingRoles(t)
-	mw := authmw.New(rbac.New(roles),
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
 		authmw.WithUserService(users))
 	srv := NewServer(nil, nil, "localhost:0", WithUserService(users), WithRoleService(roles), WithAuthMiddleware(mw))

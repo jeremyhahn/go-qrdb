@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -145,7 +146,7 @@ func TestHolderActLimiter_IdentifiedClaimsAreNotChargedHere(t *testing.T) {
 	lim := &oneShotLimiter{}
 	tr := newBarrierTransport(t, &recordingClaimBarrier{})
 	tr.holderActLimiter = lim.allow
-	tr.authMW = authmw.New(&auth.NoopAuthorizer{})
+	tr.authMW = authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "carol", TenantID: tenantid.System})
 	for i := 0; i < 4; i++ {
 		if _, err := tr.ShareClaimBegin(ctx, &transport.ShareClaimBeginRequest{Username: "carol"}); err != nil {

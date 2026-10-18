@@ -59,6 +59,11 @@ var _ transport.RBACClient = (*rbacClient)(nil)
 // identityToDomain converts the SDK identity projection to the domain
 // auth.Identity. The Roles slice is copied so the caller's slice is
 // independent of the authorizer's internal state.
+//
+// TenantOwner is deliberately not carried back: the identity here is
+// whatever the caller handed in, and auth.Identity.TenantOwner is decided
+// only by role.IsTenantOwner when an identity is established, never taken
+// from a caller.
 func identityToDomain(id *transport.Identity) *auth.Identity {
 	if id == nil {
 		return nil

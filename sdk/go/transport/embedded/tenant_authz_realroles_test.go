@@ -42,7 +42,7 @@ func ctxFor(id *auth.Identity) context.Context {
 // "globex" or "system".
 func TestEmbeddedTenant_RealAdminRole_CannotDeleteAnotherTenant(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	svc := &fullTenantMock{}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))
 
@@ -76,7 +76,7 @@ func TestEmbeddedTenant_RealAdminRole_CannotDeleteAnotherTenant(t *testing.T) {
 // tenants:*:cross permissions.
 func TestEmbeddedTenant_RealAdminRole_SystemCanActOnAnyTenant(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme", tenantid.System)
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	svc := &fullTenantMock{}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))
 
@@ -97,7 +97,7 @@ func TestEmbeddedTenantBarrierInit_TrustOnFirstInit(t *testing.T) {
 	// first-admin-onboarding gate (pkg/auth/middleware/first_init_gate_test.go),
 	// so it runs under the "enrolled" posture, which skips that gate when the
 	// tenant has no pending-admin record.
-	mw := authmw.New(rbac.New(roles), authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	svc := &mockTenantService{
 		barrierStatusFn: func(context.Context, string) (*tenant.TenantBarrierStatus, error) {
 			return &tenant.TenantBarrierStatus{TenantID: "acme", Initialized: false}, nil
@@ -117,7 +117,7 @@ func TestEmbeddedTenantBarrierInit_TrustOnFirstInit(t *testing.T) {
 // identity is refused, and the full RBAC check applies.
 func TestEmbeddedTenantBarrierInit_DeniedOnceInitialized(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme")
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	svc := &mockTenantService{
 		barrierStatusFn: func(context.Context, string) (*tenant.TenantBarrierStatus, error) {
 			return &tenant.TenantBarrierStatus{TenantID: "acme", Initialized: true}, nil
@@ -140,7 +140,7 @@ func TestEmbeddedTenantBarrierInit_DeniedOnceInitialized(t *testing.T) {
 // unsealed.
 func TestEmbeddedTenantBarrierUnseal_SealedWindowFallback(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme")
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	svc := &mockTenantService{}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))
 
@@ -156,7 +156,7 @@ func TestEmbeddedTenantBarrierUnseal_SealedWindowFallback(t *testing.T) {
 // for the sealed window only, never a general bypass.
 func TestEmbeddedTenantBarrierUnseal_OrdinaryIdentityNeedsRBAC(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme")
-	mw := authmw.New(rbac.New(roles))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 	svc := &mockTenantService{}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))
 

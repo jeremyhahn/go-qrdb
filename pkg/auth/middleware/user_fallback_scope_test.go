@@ -68,7 +68,7 @@ func TestFallbackUserStore_NeverAnswersForAnotherTenant(t *testing.T) {
 	// The tenant's own admin shares the subject name, as tenant provisioning
 	// creates it; only the tenant differs.
 	id := &auth.Identity{Subject: "admin", TenantID: "acme"}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
 		WithUserService(&mockUserServicer{err: context.DeadlineExceeded}),
 		WithUserServiceFallback(fallback),
@@ -97,7 +97,7 @@ func TestFallbackUserStore_StillServesTheSystemTenant(t *testing.T) {
 	createUser(t, fallback, tenantid.System, "admin", []string{"system-admin-role"})
 
 	id := &auth.Identity{Subject: "admin", TenantID: tenantid.System}
-	m := New(&mockAuthorizer{},
+	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
 		WithUserService(&mockUserServicer{err: context.DeadlineExceeded}),
 		WithUserServiceFallback(fallback),

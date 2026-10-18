@@ -42,7 +42,7 @@ func TestMCPTrustAnchors_AnotherTenantIsRefusedWithOrWithoutTheHandlerGate(t *te
 			roles := &mockRoleService{resolvePermissionsFn: func(context.Context, []string) ([]permission.Permission, error) {
 				return []permission.Permission{permission.TrustAnchorsAdd, permission.TrustAnchorsList, permission.TrustAnchorsRemove}, nil
 			}}
-			mw = authmw.New(rbac.New(roles))
+			mw = authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles))
 		}
 		globexPEM, err := certtest.NewCAPEM("globex-root")
 		if err != nil {

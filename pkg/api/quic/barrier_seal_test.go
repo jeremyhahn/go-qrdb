@@ -45,7 +45,7 @@ func sealOverQUIC(t *testing.T, id *auth.Identity, soPIN string) (uint16, *autht
 	t.Helper()
 	caller := authtest.NewFixedAuthenticator(id)
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
-	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))
 	barrier := &authtest.Barrier{}
 	serverCfg, clientCfg := generateCredentialE2ETLS(t)
 	serverCfg.ClientAuth = tls.RequireAnyClientCert

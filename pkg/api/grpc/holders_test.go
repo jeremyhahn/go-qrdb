@@ -35,6 +35,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -506,7 +507,7 @@ func TestGRPCTenantHolders_Refusals(t *testing.T) {
 	for name, call := range tenantHolderCalls(failing, ctx, "acme") {
 		t.Run("not-found/"+name, func(t *testing.T) { requireCode(t, call(), codes.NotFound) })
 	}
-	denied := &tenantBarrierServer{svc: &holderTenantSvc{}, authMW: authmw.New(denyAllAuthorizer{})}
+	denied := &tenantBarrierServer{svc: &holderTenantSvc{}, authMW: authmw.New(denyAllAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))}
 	deniedCtx := auth.WithIdentity(ctx, &auth.Identity{Subject: "mallory", TenantID: "acme"})
 	for _, name := range []string{"register", "list", "rekey-start", "officer-revoke"} {
 		t.Run("denied/"+name, func(t *testing.T) {

@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -170,7 +171,7 @@ func (f *pgLifecycleFixture) grant(subject string, perms ...string) {
 func (f *pgLifecycleFixture) conn(t *testing.T, subject, tenantID string) *pgx.Conn {
 	t.Helper()
 	serverTLS, clientTLS := pgMTLS(t)
-	mw := authmw.New(f.authzr, authmw.WithAuthenticator(&pgFixedIdentity{
+	mw := authmw.New(f.authzr, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&pgFixedIdentity{
 		identity: &auth.Identity{Subject: subject, TenantID: tenantID},
 	}))
 	srv := NewServer(&mockKVService{}, nil, "127.0.0.1:0",

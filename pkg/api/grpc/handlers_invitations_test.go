@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -207,7 +208,7 @@ func TestGRPC_RedeemInvitation_NilService(t *testing.T) {
 // TestRedeemInvitation_IsServedWithoutAuthentication and QUIC's
 // handlePublicIf-backed registration.
 func TestGRPC_RedeemInvitation_IsServedWithoutAuthentication(t *testing.T) {
-	mw := authmw.New(rbac.New(&mockRoleService{}))
+	mw := authmw.New(rbac.New(&mockRoleService{}), authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	var redeemed bool
 	fake := &fakeInvitationHandler{
 		redeemFn: func(context.Context, *service.RedeemInvitationRequest) (*service.EnrolledCertificate, error) {

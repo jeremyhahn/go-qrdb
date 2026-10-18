@@ -49,6 +49,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -523,7 +524,7 @@ func TestToolMappingGuard_PermissionsRegistered(t *testing.T) {
 // declared permission and succeed.
 func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 	authz := &guardMCPAllowAuthorizer{}
-	mw := authmw.New(authz)
+	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
 	srv := newFullyWiredGuardServer(t, WithAuthMiddleware(mw))
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
 		Subject:  "guard-user",

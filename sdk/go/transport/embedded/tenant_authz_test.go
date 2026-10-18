@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -123,7 +124,7 @@ func newGrantingAuthMW(perms ...permission.Permission) *authmw.AuthMiddleware {
 			return perms, nil
 		},
 	}
-	return authmw.New(rbac.New(roleSvc))
+	return authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))
 }
 
 // identityCtx builds a ctx carrying an authenticated identity bound to
@@ -524,7 +525,7 @@ func TestEmbeddedTenant_RateLimitApplies(t *testing.T) {
 			return []permission.Permission{permission.TenantsDelete}, nil
 		},
 	}
-	mw := authmw.New(rbac.New(roleSvc), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
+	mw := authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
 
 	svc := &fullTenantMock{}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))
@@ -561,7 +562,7 @@ func TestEmbeddedTenant_AuditStampedWithCallerTenant(t *testing.T) {
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
 			return nil, nil // deny, so the decision is recorded
 		},
-	}), authmw.WithAuditLogger(logger))
+	}), authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuditLogger(logger))
 
 	svc := &fullTenantMock{}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))

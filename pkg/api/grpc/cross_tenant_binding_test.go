@@ -35,7 +35,7 @@ import (
 func bindingInterceptor(t *testing.T, caller *auth.Identity, users *authtest.BindingUsers, fullMethod string, req any, call func(*qrdbServiceServer, context.Context, any) (any, error)) error {
 	t.Helper()
 	roles := authtest.BindingRoles(t)
-	mw := authmw.New(rbac.New(roles),
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
 		authmw.WithUserService(users))
 	srv := &qrdbServiceServer{userSvc: users, roleSvc: roles, authMW: mw}

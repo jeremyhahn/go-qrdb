@@ -46,8 +46,8 @@ func newVocabularyTestStore(t *testing.T, known func(string) bool) user.UserServ
 // second middleware in the same process, without the authenticator, does not
 // gain it. That is what keeps two nodes in one process apart.
 func TestAuthMiddleware_VocabularyIsItsOwnChain(t *testing.T) {
-	withOAuth := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "OAuth"}))
-	without := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: auth.MethodMTLS}))
+	withOAuth := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "OAuth"}))
+	without := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: auth.MethodMTLS}))
 
 	if !withOAuth.IsAuthMethod("oauth") || !withOAuth.IsAuthMethod(" OAUTH ") {
 		t.Fatal("a middleware does not know its own chain's method")
@@ -76,7 +76,7 @@ func TestAuthMiddleware_VocabularyIsItsOwnChain(t *testing.T) {
 // A blank authenticator name contributes nothing: "" is not a method a
 // policy could name.
 func TestAuthMiddleware_VocabularyIgnoresBlankNames(t *testing.T) {
-	m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "  "}), WithAuthenticator(nil))
+	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "  "}), WithAuthenticator(nil))
 	if m.IsAuthMethod("") || len(m.AuthMethods()) != len(auth.BuiltinAuthMethods()) {
 		t.Fatalf("a blank or nil authenticator entered the vocabulary: %v", m.AuthMethods())
 	}
@@ -88,8 +88,8 @@ func TestAuthMiddleware_VocabularyIgnoresBlankNames(t *testing.T) {
 func TestAuthMiddleware_VocabularyDrivesTheUserStore(t *testing.T) {
 	ctx := context.Background()
 	policy := []string{auth.MethodMTLS, "oauth"}
-	withOAuth := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "oauth"}))
-	without := New(&mockAuthorizer{})
+	withOAuth := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "oauth"}))
+	without := newTestMiddleware(&mockAuthorizer{})
 
 	u, err := newVocabularyTestStore(t, withOAuth.IsAuthMethod).CreateUser(ctx, &user.CreateUserRequest{
 		Username: "olga", Email: "olga@example.com", TenantID: "t1", AuthMethods: policy,
@@ -118,7 +118,7 @@ func TestAuthMethodVocabulary_LateBinding(t *testing.T) {
 	if !v.IsAuthMethod(auth.MethodWebAuthn) || v.IsAuthMethod("oauth") {
 		t.Fatal("an unbound vocabulary must be the built-ins only")
 	}
-	v.Bind(New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "oauth"})))
+	v.Bind(newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "oauth"})))
 	if !v.IsAuthMethod("oauth") {
 		t.Fatal("the bound middleware's chain method is not in the vocabulary")
 	}

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -93,7 +94,7 @@ func TestSealedWindowDispatch_REST(t *testing.T) {
 			}
 			srv := NewServer(nil, nil, "127.0.0.1:0",
 				WithBarrierService(barrier),
-				WithAuthMiddleware(authmw.New(dispatchDenyAuthorizer{}, authmw.WithAuthenticator(authn))),
+				WithAuthMiddleware(authmw.New(dispatchDenyAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))),
 				WithSealedWindowProbe(newFakeSealed(tt.nodeSealed)),
 				WithSealedWindowDispatch(newFakeSealed(tt.barrier)))
 
@@ -128,7 +129,7 @@ func TestSealedWindowDispatch_FollowsTheBarrier(t *testing.T) {
 	node, barrier := newFakeSealed(false), newFakeSealed(false)
 	srv := NewServer(nil, nil, "127.0.0.1:0",
 		WithBarrierService(&mockBarrierService{}),
-		WithAuthMiddleware(authmw.New(dispatchDenyAuthorizer{}, authmw.WithAuthenticator(authn))),
+		WithAuthMiddleware(authmw.New(dispatchDenyAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(authn))),
 		WithSealedWindowProbe(node),
 		WithSealedWindowDispatch(barrier))
 	send := func() int {

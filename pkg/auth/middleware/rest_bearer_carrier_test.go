@@ -52,7 +52,7 @@ func bearerCarrierRoutes() *RESTRouteRegistry {
 // it and authenticates the caller.
 func TestRESTMiddleware_AuthorizationHeaderReachesAuthenticators(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz, WithAuthenticator(&bearerCarrierAuthenticator{token: "Bearer tok-1"}))
+	m := newTestMiddleware(authz, WithAuthenticator(&bearerCarrierAuthenticator{token: "Bearer tok-1"}))
 
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +79,7 @@ func TestRESTMiddleware_AuthorizationHeaderReachesAuthenticators(t *testing.T) {
 // refused before the handler.
 func TestRESTMiddleware_WrongBearerDenied(t *testing.T) {
 	authz := &mockAuthorizer{}
-	m := New(authz, WithAuthenticator(&bearerCarrierAuthenticator{token: "Bearer tok-1"}))
+	m := newTestMiddleware(authz, WithAuthenticator(&bearerCarrierAuthenticator{token: "Bearer tok-1"}))
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("handler must not be reached")

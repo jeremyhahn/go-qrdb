@@ -94,7 +94,7 @@ func newSORESTFixture(t *testing.T) *soRESTFixture {
 	// This fixture is about SO dual-factor gating, exercised with certificates
 	// that are never enrolled -- "enrolled" is the correct, explicit choice
 	// for that reason, not a workaround (go-qrdb#548).
-	mw := authmw.New(rbac.New(roles),
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
 		authmw.WithUserService(users),
 		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
@@ -197,7 +197,7 @@ func TestSODualFactor_AuthorizedNonSOCallerRefusedByTheGate(t *testing.T) {
 		caller := authtest.NewFixedAuthenticator(authtest.GrantedNonSOIdentity(soRESTTenant, "token", permission.SealRekey))
 		roles := authtest.BuiltInRoles(t, soRESTTenant)
 		opts := []ServerOption{
-			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
+			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))),
 			WithRoleService(roles),
 			WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 			WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)),
@@ -229,7 +229,7 @@ func TestSODualFactor_TenantSORefusedOnTheNodeBarrier(t *testing.T) {
 		caller := authtest.NewFixedAuthenticator(authtest.SOIdentity("acme", "acme-officer"))
 		roles := authtest.BuiltInRoles(t, "acme")
 		opts := []ServerOption{
-			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
+			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))),
 			WithRoleService(roles),
 			WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 			WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)),
@@ -263,7 +263,7 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 		caller := authtest.NewFixedAuthenticator(tc.id)
 		roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 		srv := NewServer(nil, nil, "127.0.0.1:0",
-			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
+			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))),
 			WithRoleService(roles), WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 			WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)))
 		req := httptest.NewRequest(http.MethodPost, "/v1/barrier/seal", strings.NewReader(`{"so_pin":"`+soRESTPIN+`"}`))

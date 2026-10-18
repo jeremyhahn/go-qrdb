@@ -151,9 +151,9 @@ type AuthMiddlewareConfig struct {
 
 	// RoleService and UserService back the RBAC authorizer and the
 	// identity-enrichment/enabled-check respectively. UserService is
-	// always required when Enabled is true; RoleService is required
-	// unless Authorizer is set. Either missing requirement returns
-	// *MissingServiceError.
+	// always required when Enabled is true, RoleService even when Authorizer
+	// is set: every authenticated request's TenantOwner is decided against
+	// it. Either missing requirement returns *MissingServiceError.
 	RoleService role.RoleServicer
 	UserService user.UserServicer
 
@@ -367,7 +367,11 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	if cfg.Authorizer == nil && cfg.RoleService == nil {
+	// The role store is required even when an embedder supplies its own
+	// Authorizer: every authenticated request's TenantOwner is decided
+	// against it (role.IsTenantOwner), and an identity whose ownership cannot
+	// be decided is never admitted as "not owner".
+	if cfg.RoleService == nil {
 		return nil, &MissingServiceError{Service: "role"}
 	}
 	if cfg.UserService == nil {
@@ -432,6 +436,7 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	opts = append(opts,
 		middleware.WithUserService(cfg.UserService),
+		middleware.WithRoleResolver(cfg.RoleService),
 		// The SAME checker on both, sharing one cache: the on-behalf
 		// forwarding path never runs the authenticator chain, so it needs the
 		// gate wired separately or a revoked cluster node keeps forwarding.
@@ -459,6 +464,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))
+	}
+	if cfg.RoleServiceFallback != nil {
+		opts = append(opts, middleware.WithRoleResolverFallback(cfg.RoleServiceFallback))
 	}
 	if cfg.AuditLogger != nil {
 		opts = append(opts,

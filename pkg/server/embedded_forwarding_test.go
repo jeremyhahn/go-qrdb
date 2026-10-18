@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
@@ -80,9 +81,9 @@ func TestAuthenticateCertificate(t *testing.T) {
 	// every certificate login as naming no account. MTLSBindingEnrolled is
 	// the documented explicit opt-out for a policy these subtests were
 	// never meant to exercise.
-	mtls := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
+	mtls := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
 		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
-	attested := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(attestedHost{thumbprint: hex.EncodeToString(sum[:])}))
+	attested := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(attestedHost{thumbprint: hex.EncodeToString(sum[:])}))
 
 	for name, tc := range map[string]struct {
 		srv     *Server

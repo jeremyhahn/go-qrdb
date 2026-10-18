@@ -272,9 +272,16 @@ func TestRunSurvivesDeadNode(t *testing.T) {
 func TestRunRecordsNodeLossAsIndeterminate(t *testing.T) {
 	cfg := testConfig("n1", "n2", "n3")
 	f := newFakeCluster(cfg.Endpoints...)
+	// n1 dies after it has answered 100 ops itself, not after the cluster has.
+	// Clients 0 and 3 start on n1 and dial it lazily, so counting every node's
+	// answers let n2 and n3 reach 100 before either had connected: both dials
+	// then failed, the clients moved on, and n1's loss surfaced as nothing but
+	// dial failures (run 55885). Counting n1's own answers means the client
+	// that drew the 100th answer is connected to n1, has ops left, and sends
+	// its next one into the dead node.
 	var answered atomic.Int64
-	f.setFault(func(_ context.Context, _ string, _ history.Kind) error {
-		if answered.Add(1) == 100 {
+	f.setFault(func(_ context.Context, endpoint string, _ history.Kind) error {
+		if endpoint == "n1" && answered.Add(1) == 100 {
 			f.down["n1"].Store(true) // n1 dies mid-run
 		}
 		return nil
