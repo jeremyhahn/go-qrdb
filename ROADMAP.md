@@ -106,6 +106,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **default-roles** — shipped default roles every tenant starts with; they carry the OTA activate and confirm permissions — [#737](../../issues/737) — open
 - **device-onboarding-permission** — device onboarding is a tenant-scoped permission, not a role; each tenant onboards its own devices — [#737](../../issues/737) — open
 - **ota-activate-confirm-permissions** — OTA activate and confirm are tenant-scoped permissions, not roles — [#737](../../issues/737) — open
+- **tenant-metadata-description** — `UpdateTenantRequest` and `TenantInfo` carry `Metadata` and `Description`, persisted in the tenant record, on every transport and the Go SDK; consumer go-quicbaas #1518 — [docs/multi-tenancy/](docs/multi-tenancy/) — open
 
 ## Future
 
