@@ -63,9 +63,8 @@ limitations under the License.
   ci.yml step — see architecture.md for why the rest is skipped.
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
-  the pinned `ACTIONLINT_VERSION` (`scripts/tool-pins.sh`, mirrored in ci.yml's
-  env). The
-  tool is baked into the runner and lane images and never installed over the
+  the pinned `ACTIONLINT_VERSION` (`scripts/tool-pins.sh`, the only copy of
+  the pin; ci.yml carries none). The tool is baked into the runner and lane images and never installed over the
   network; a missing or mismatched actionlint fails the gate (#636).
 - **`publish` needs both `validate` and `gate`**, and addresses the forge's
   own releases API through `${{ github.api_url }}` rather than a hardcoded
@@ -88,7 +87,8 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
 | `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a `gate` job missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate`, a hardcoded `github.com` instead of `github.api_url`, a reintroduced `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
-| `test/buildgates/ci_tiers_test.go` | ci.yml's two tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr` or `full`; a `full` job carries exactly the full-tier `if:` and FULL_TIER is the same expression; a PR-tier job carries no `if:` and needs no full-tier job; the integration jobs and trivy are `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run, #853). Both tiers' jobs are pinned by name (`prTierJobs`, `fullTierJobs`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, and `cancelled`, `failure`, an unreadable result or an unreadable FULL_TIER fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: one on pull_request has the ref-keyed `cancel-in-progress: true` group, and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_tiers_test.go` | ci.yml's two tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr` or `full`; a `full` job carries exactly the full-tier `if:` and FULL_TIER is the same expression; a PR-tier job carries no `if:` and needs no full-tier job; every `integration*` job (and a `trivy` job, should one return) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run, #853). Both tiers' jobs are pinned by name (`prTierJobs`: `image`, `test-typescript`, `arch-gates`; `fullTierJobs`: `integration-standalone`, `integration-features`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, and `cancelled`, `failure`, an unreadable result or an unreadable FULL_TIER fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: one on pull_request has the ref-keyed group with ci-template v1.22.1's `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` reddens it), and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: in every job that holds one (`image`, `integration-standalone`, `integration-features`) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
 
 ## Test tooling this feature folder also owns
 
@@ -103,7 +103,7 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly three steps, the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` and `IT_IMAGE` that start `qrdb-ci-` and carry the run, the attempt and the feature; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` and `IT_IMAGE` that start `qrdb-ci-` and carry the run, the attempt and the feature; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
@@ -125,16 +125,34 @@ the Docker `test/integration/api` stack, and runs none of these stages.
 | Stage | Holds | Runs |
 |---|---|---|
 | `base` | the Go toolchain by digest, gcc for `-race`, a non-root user, every module's verified cache; `GOPROXY=off` | nothing itself |
-| `toolchain` | base plus every tool the Makefile calls, at the versions in `scripts/tool-pins.sh` | `make build-server build-cli-headless`, `make release-cross PLATFORM=linux/arm64`, `make test`, `make security`, `make deps-check` |
+| `toolchain` | base plus every tool the Makefile calls, at the versions in `scripts/tool-pins.sh`, and `ssh-keygen` (Alpine's `openssh-keygen`, not the ssh client or server), which `make test-release-alpha` signs its test tags with | `make build-server build-cli-headless`, `make release-cross PLATFORM=linux/arm64`, `make test`, `make security`, `make deps-check` |
 | `integration` | base plus the source, its suites compiled at build time | `make integration-test IT_FEATURE=<feature>`, hardened by `compose.yaml` |
 
 `scripts/tool-pins.sh` is the one pin file: `make docker-build` passes its
 values to the Dockerfile as build arguments, the Makefile includes it, and
-`make check-tool-versions` holds ci.yml's env and `.devcontainer/`'s ARG
-defaults to it. Module credentials reach the build only as the `gomodauth`
-BuildKit secret (`$(stage-gomodauth)`), from the `GIT_CONFIG_*` variables the
-runner already puts in the job environment; no layer and no command line holds
-them.
+`make check-tool-versions` holds `.devcontainer/`'s ARG defaults to it and
+fails on a tool pin in ci.yml or an assignment in the Makefile, either of
+which would be a second pin. Module credentials reach the build only as the
+`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `image` job
+writes the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, passes
+it as `MODULE_ENV_FILE` (handbook `devcontainer.md` §7) and removes it after
+the build; outside CI the recipe reads them from the environment. No layer, no
+command line and no log line holds them: the recipe is silent, printing only
+which source it used.
+
+**Every job that holds a forge credential masks it first.** The `image`,
+`integration-features` and `integration-standalone` jobs open with "Mask the
+forge credentials", which registers each credential value with the runner's
+log masker before any other step can print it (ci-template v1.21.1). No step
+prints the environment. `test/buildgates/ci_logs_test.go` fails when the mask
+is not the first step, when a step prints the environment, or when ci.yml's
+`GO_BUILD_TAGS` differs from `make -s print-build-tags`.
+
+**Findings are reported by path, line and rule only.** The tree scanners
+(`make check-publication-bound`, `make check-public-releasable`), `make lint`'s
+golangci-lint (`--output.text.print-issued-lines=false`) and actionlint
+(`-oneline`) name a finding without quoting the line it is in, so a log never
+repeats the value a scanner exists to keep out of the tree.
 
 The `image` job, in the PR tier, builds both stages (`make docker-build`;
 `make -s toolchain-image` prints the toolchain tag), then runs each stage in a
@@ -150,19 +168,43 @@ marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
 discovery tests join their group as they do on a host and nothing leaves the
 namespace. `make security` and `make deps-check` run on the bridge network, because
 govulncheck reads the vulnerability database and deps-check asks the module
-proxy. Last, `trivy image` scans the integration image, saved to
-`it-image.tar`, and fails on a HIGH or CRITICAL finding; the job removes the
-tarball and the image under `always()`. Its secret scanner skips the image's
-Go module cache, `/gomodcache`, whose third-party releases carry their own doc
-examples and test-fixture keys (`build/trivy/image-secret.yaml`); the
-vulnerability scanner still covers every module in it.
+proxy.
+
+**The stage caches live in named volumes on the runner's Docker host,** never
+in a stage container's layer or its `/tmp` (ci-template v1.22, handbook
+`ci-standard.md` §6). Every stage mounts `<prefix>cache-<class>-gobuild` as
+`GOCACHE` and `<prefix>cache-<class>-golangci` as `GOLANGCI_LINT_CACHE`, and
+a bridge stage mounts `<prefix>cache-<class>-gomod` as `GOMODCACHE`; a stage
+with no network keeps the image's own read-only module cache, so it still
+proves the image builds offline. The volumes are kept across jobs, one set per
+repository, trust class and Docker host. The class is `CI_CACHE_CLASS`:
+`main` for a push to `main`, `pr` for every other event, so a pull request
+never writes a cache that `main`'s build reads. After the image build,
+`scripts/trim-ci-caches.sh` bounds the repository's cache volumes on the host
+to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job.
+`scripts/reap-stale-ci-stacks.sh` removes only compose-labelled and anonymous
+volumes, never these. `CI_CACHE=off` mounts none; a bridge stage then takes a
+writable copy of the image's module cache instead.
+
+Last, `make trivy-image TRIVY_IMAGE_INPUT=it-image.tar` scans the
+integration image, saved to `it-image.tar`, and fails on a fixable HIGH or
+CRITICAL finding; the job removes the tarball and the image under `always()`.
+It takes the two image-only flags of handbook `devops.md` §8:
+`--ignore-unfixed`, because a base image carries advisories with no fixed
+package, and `--skip-dirs` over the image's Go module cache, `/gomodcache`
+(the handbook names the template image's `/opt/go/mod`), whose third-party
+releases, fixed by `go.sum`, carry their own doc examples and test-fixture
+keys; a secret in the image's own layers still blocks. It keeps
+`--skip-db-update` behind the database-age certification, so a stale database
+fails. `make trivy` (trivy fs) and `make security` never take
+`--ignore-unfixed`.
 
 `make deps-check` (`scripts/deps-check.sh`) is the latest-version check
 (`ci-standard.md` §1, `devops.md` §9): every direct requirement of every
 tracked module is at its latest release, or its `go.mod` require line carries a
 `//` comment saying why it is held. A module whose lookup fails, offline or
 without credentials, fails the check: the question was not answered.
-`scripts/deps-check_test.sh` (`make test-deps-check`, in the Lint job) proves
+`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `image` job) proves
 each branch with a fake `go`.
 
 ### Per-run integration images
@@ -210,15 +252,18 @@ no network, and `GOMAXPROCS=8`. The legs run in parallel, each under its own
 
 Each leg names its own compose project and image, `IT_PROJECT` and `IT_IMAGE`,
 from the run, the attempt and the feature, under the `qrdb-ci-` prefix, so legs
-running at once on one runner never share a stack or a tag. It starts by
-running `scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
+running at once on one runner never share a stack or a tag. Each leg runs four
+steps. The first after the checkout is "Mask the forge credentials", which
+registers every `GIT_CONFIG_*` value, and the token inside any URL among them,
+with `::add-mask::` before any step can print one. It then runs
+`scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
 projects and images older than the longest job can live (about three hours),
 and so never touches a live leg's; it ends with a teardown step under
 `if: always()`, `make docker-down-it`, which removes that leg's project and
 image on a pass, a failure or a cancellation. Removing names nobody created is
 not an error. No workflow runs `docker compose` itself
 (`integration_image_tag_test.go`); `feature_jobs_gate_test.go` requires the
-three steps, the names and the `always()`.
+four steps, the mask first, the names and the `always()`.
 
 A feature that selects nothing says so and passes, before any image is built,
 as `integration-test-<feature>` does. On a host, `make integration-test-<feature>`
@@ -250,9 +295,10 @@ cancelled and a skipped leg. The job is in the full tier (architecture.md, "CI
 tiers"): every leg shares its full-tier `if:`, so a plain pull request skips
 them together and `ci-gate` excuses that skip; a push to `main`, a dispatch or
 a `ci:full` pull request runs all of them from its next push, update-branch or dispatch (a label change alone starts no run).
-No leg starts before `lint`, `test` and `test-sdk` have passed: the job needs
-all three, as do `integration-standalone` and `trivy`, so a tree the PR tier
-fails holds no runner for the legs. The label goes on once, when the pull
+No leg starts before the whole PR tier (`image`, `test-typescript` and
+`arch-gates`) has passed: the job needs all three, as does
+`integration-standalone`, so a tree the PR tier fails holds no runner for the
+legs. The label goes on once, when the pull
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 

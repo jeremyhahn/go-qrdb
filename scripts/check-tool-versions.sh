@@ -20,13 +20,9 @@
 # THE AUTHORITY IS scripts/tool-pins.sh, the one pin file of handbook
 # devcontainer.md §2. The CI image's toolchain stage
 # (build/docker/devcontainer/Dockerfile) sources it and the Makefile includes
-# it, so those two cannot disagree with it and are not compared. Three copies
+# it, so those two cannot disagree with it and are not compared. Two copies
 # remain, each for a reason, and this script holds each to the pin file:
 #
-#   .github/workflows/ci.yml       the env pins the runner-side jobs (lint,
-#                                  security) assert their baked binaries
-#                                  against with require-tool.sh. A workflow env
-#                                  block cannot read a shell file.
 #   .devcontainer/Dockerfile       the developer devcontainer's ARG defaults.
 #   .devcontainer/Dockerfile.gpu   #322 gave those ARGs no defaults, so make's
 #                                  value was the only one; that broke VS Code
@@ -37,11 +33,14 @@
 #                                  second copy, and this script is what makes
 #                                  that safe.
 #
-# And one copy must NOT exist: a `NAME :=` (or `?=`, `=`) assignment in the
-# Makefile. The Makefile includes the pin file; an assignment after the include
+# And two copies must NOT exist. A `NAME :=` (or `?=`, `=`) assignment in the
+# Makefile: the Makefile includes the pin file; an assignment after the include
 # silently overrides it, which is the #154 defect one level down -- a build
 # through `make` and a build of the CI image baking different analysers while
-# both claim the same pin.
+# both claim the same pin. And a `NAME:` pin in .github/workflows/ci.yml: since
+# ci-template v1.21 (#798) every stage runs in the CI image, which carries the
+# tools at the pin file's versions, so a workflow pin would be a second
+# authority that nothing reads.
 #
 # WHAT DRIFT COSTS, measured. #154: the image installed gosec at `@latest`,
 # which self-reports its version as `dev` because gosec takes that string from
@@ -78,10 +77,8 @@ MAKEFILE="$REPO/Makefile"
 DOCKERFILE="$REPO/.devcontainer/Dockerfile"
 DOCKERFILE_GPU="$REPO/.devcontainer/Dockerfile.gpu"
 
-# What each copy carries. ci.yml installs no trivy (the security suite and the
-# image job run it from an image) and the GPU image installs neither trivy nor
-# actionlint.
-CI_TOOLS="GOLANGCI_LINT_VERSION GOSEC_VERSION GOVULNCHECK_VERSION ACTIONLINT_VERSION"
+# What each copy carries. The GPU image installs neither trivy nor actionlint,
+# and the developer devcontainer no actionlint.
 DOCKERFILE_TOOLS="GOLANGCI_LINT_VERSION GOSEC_VERSION GOVULNCHECK_VERSION TRIVY_VERSION"
 GPU_TOOLS="GOLANGCI_LINT_VERSION GOSEC_VERSION GOVULNCHECK_VERSION"
 ALL_TOOLS="GOLANGCI_LINT_VERSION GOSEC_VERSION GOVULNCHECK_VERSION ACTIONLINT_VERSION TRIVY_VERSION"
@@ -104,12 +101,6 @@ done
 # `NAME=value` at the left margin of the pin file.
 pin() {
 	sed -n "s/^$1=\\([^[:space:]]*\\)[[:space:]]*$/\\1/p" "$PINS" | head -n 1
-}
-
-# `NAME: "vX.Y.Z"` in the workflow env block.
-ci_pin() {
-	sed -n "s/^[[:space:]]*$1:[[:space:]]*\"\{0,1\}\([^\"[:space:]]*\)\"\{0,1\}[[:space:]]*$/\1/p" \
-		"$CI_YML" | head -n 1
 }
 
 # `ARG NAME=vX.Y.Z`.
@@ -151,12 +142,12 @@ for name in $ALL_TOOLS; do
 		echo "      The Makefile includes the pin file; a second assignment is a second pin." >&2
 	fi
 
-	case " $CI_TOOLS " in
-	*" $name "*)
-		ci=$(ci_pin "$name")
-		require "$ci" ".github/workflows/ci.yml" "$name" && held "$ci" ".github/workflows/ci.yml" "$name" "$want"
-		;;
-	esac
+	if grep -q "^[[:space:]]*$name[[:space:]]*:" "$CI_YML"; then
+		fail ".github/workflows/ci.yml pins $name."
+		echo "      Every CI stage runs in the CI image, built from scripts/tool-pins.sh;" >&2
+		echo "      a workflow pin is a second pin that nothing reads. Delete it." >&2
+	fi
+
 	case " $DOCKERFILE_TOOLS " in
 	*" $name "*)
 		df=$(arg_pin "$DOCKERFILE" "$name")
@@ -184,4 +175,4 @@ if [ "$failed" -ne 0 ]; then
 	exit 1
 fi
 
-echo "tool pins agree: scripts/tool-pins.sh, ci.yml and both .devcontainer Dockerfiles"
+echo "tool pins agree: scripts/tool-pins.sh and both .devcontainer Dockerfiles; ci.yml and the Makefile carry none"

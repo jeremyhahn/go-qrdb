@@ -436,7 +436,14 @@ scan() { # scan <class> <remedy>
 	echo ""
 	echo "VIOLATION: ${class}"
 	echo "  ${remedy}"
-	LC_ALL=C tr '\000-\010\013\014\016-\037\177' '?' < "$hits" | sed 's/^/    /'
+	# Path, line and rule only, never the matched text (handbook
+	# ci-standard.md §5): a CI log is read by every agent with repository
+	# access, and the text is the fleet value this gate exists to keep out of
+	# public view. A hit whose path holds a colon cannot be split from its
+	# text, so it is reported without either.
+	LC_ALL=C tr '\000-\010\013\014\016-\037\177' '?' < "$hits" |
+		sed -n -e 's/^\([^:]*:[0-9][0-9]*\):.*$/\1/p' -e t -e "s/.*/(a path containing ':')/p" |
+		while IFS= read -r at; do printf '    %s: %s\n' "$at" "$class"; done
 	wc -l < "$hits" >> "$found"
 }
 

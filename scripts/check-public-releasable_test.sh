@@ -169,7 +169,12 @@ expect_pass "a waiver with a reason accepts its line" "$d"
 
 d=$(fixture addr)
 plant "$d" pkg/x.go "// dial ${lab_addr}:9090"
-expect_reject "a lab-address rule rejects its value" "$d" "pkg/x.go:1:"
+expect_reject "a lab-address rule rejects its value" "$d" "pkg/x.go:1: lab-address"
+if grep -qF -- "$lab_addr" "$work/out"; then
+	bad "a finding never prints the matched text" "the value appears in the output: $(tr '\n' ' ' < "$work/out")"
+else
+	ok "a finding never prints the matched text"
+fi
 
 i=0
 for sample in "$host_numbered" "$host_shout" "$host_exact"; do

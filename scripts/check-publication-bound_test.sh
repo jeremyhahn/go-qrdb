@@ -299,6 +299,13 @@ else
 	sed 's/^/          /' "$work/multi.out"
 	fail=$((fail + 1))
 fi
+if grep -qF -e '192.168.7.91' -e '/home/dev/x' -e 'go-qrdb#999' "$work/multi.out"; then
+	printf '  FAIL  %-62s\n' "a finding never prints the matched text"
+	fail=$((fail + 1))
+else
+	printf '  PASS  %-62s (%s)\n' "a finding never prints the matched text" "path and line"
+	pass=$((pass + 1))
+fi
 
 echo "== a SYMLINK publishes with the folder, so it is scanned =="
 # `find -type f` skips symlinks, so docs/alpha/link.md -> ../../secret.md was

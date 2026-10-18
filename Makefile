@@ -241,7 +241,7 @@ GOSEC_EXCLUDE := G115,G304,G704
 GOSEC_EXCLUDE_DIRS := -exclude-dir=test/performance -exclude-dir=pkg/secure/analyzer/testdata
 
 # Coverage
-COVER_MIN     := 91
+COVER_MIN     := $(or $(COVERAGE_THRESHOLD),91)
 
 # Docker
 DOCKER_IMAGE  := go-qrdb-dev
@@ -324,12 +324,28 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 # assembled from a URL and a token; neither may contain a single quote, which
 # is true of a Gitea hex token and is the same constraint the previous
 # one-value-per-line form carried.
+#
+# MODULE_ENV_FILE (handbook devcontainer.md §7, ci-template v1.21) names a file
+# outside the build context holding the four variables as VAR=value lines; CI
+# writes it under $RUNNER_TEMP and removes it after the build. When it is set
+# the prelude reads the variables from it, ahead of the job environment, and
+# it is an error for it to name no file. Nothing here prints the file, a
+# variable or GOMODAUTH -- only which source it used (handbook ci-standard.md
+# §5): every caller opens with `@$(stage-gomodauth)`.
+MODULE_ENV_FILE ?=
+
 define stage-gomodauth
 set -eu; \
+gomodauth_src="the job environment"; \
+if [ -n '$(MODULE_ENV_FILE)' ]; then \
+  [ -f '$(MODULE_ENV_FILE)' ] || { echo "ERROR: MODULE_ENV_FILE names no file" >&2; exit 1; }; \
+  set -a; . '$(MODULE_ENV_FILE)'; set +a; \
+  gomodauth_src="MODULE_ENV_FILE"; \
+fi; \
 if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
   GOMODAUTH="export GOPRIVATE='$${GOPRIVATE:-}'; export GIT_CONFIG_COUNT='$${GIT_CONFIG_COUNT:-}'; export GIT_CONFIG_KEY_0='$${GIT_CONFIG_KEY_0}'; export GIT_CONFIG_VALUE_0='$${GIT_CONFIG_VALUE_0:-}'"; \
   export GOMODAUTH; \
-  echo "==> module credentials: from the job environment"; \
+  echo "==> module credentials: from $$gomodauth_src"; \
 elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
   gitea_host_env="$${GITEA_HOST:-}"; \
   . $(CURDIR)/.devcontainer/.env; \
@@ -487,6 +503,11 @@ ifeq ($(WITH_GLACIER),1)
 endif
 ifeq ($(WITH_AZURE_ARCHIVE),1)
   BUILD_TAGS += azurearchive
+endif
+# GO_BUILD_TAGS is CI's one copy of the tag set (ci-template v1.21,
+# devcontainer.md §6); when it is set it replaces the composed set.
+ifneq ($(strip $(GO_BUILD_TAGS)),)
+  BUILD_TAGS := $(strip $(GO_BUILD_TAGS))
 endif
 DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
 
@@ -2211,8 +2232,8 @@ NOSQLFAMILY_TAGS  := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql q
 NOETCD_TAGS       := $(subst $(space),$(comma),$(strip $(filter-out qrdb_etcd,$(BUILD_TAGS))))
 
 # ACTIONLINT_VERSION (scripts/tool-pins.sh) is the actionlint the toolchain,
-# runner and lane images bake; ci.yml pins the same value and asserts it with
-# scripts/require-tool.sh before the Lint job reaches this target (#636).
+# runner and lane images bake; lint-workflows asserts it with
+# scripts/require-tool.sh (#636), and ci.yml carries no copy of the pin (#798).
 # Never installed over the network.
 export ACTIONLINT_VERSION
 
@@ -2224,14 +2245,18 @@ WORKFLOW_FILES := $(wildcard .github/workflows/*.yml .github/workflows/*.yaml .g
 # lint-workflows validates workflow syntax, expressions and runner labels before
 # CI does. It fails closed: a missing or wrong-version actionlint is an error,
 # not a skipped check.
+#
+# Both linters report path, line and rule only (ci-template v1.21, #798), as
+# the scanners do: -oneline and --output.text.print-issued-lines=false keep
+# every finding and drop the quoted source from the log.
 .PHONY: lint-workflows
 lint-workflows:
 	@./scripts/require-tool.sh actionlint "$(ACTIONLINT_VERSION)" github.com/rhysd/actionlint/cmd/actionlint
-	actionlint $(WORKFLOW_FILES)
+	actionlint -oneline $(WORKFLOW_FILES)
 
 .PHONY: lint
 lint: lint-workflows
-	$(GOLINT) run --build-tags "$(LINT_TAGS)" ./...
+	$(GOLINT) run --output.text.print-issued-lines=false --build-tags "$(LINT_TAGS)" ./...
 
 # `./...` DOES NOT CROSS A MODULE BOUNDARY, so the target above reaches none of
 # sdk/go and neither does `vet` (#333). That left the one module downstream
@@ -2256,6 +2281,26 @@ lint-sdk:
 .PHONY: vet-sdk
 vet-sdk:
 	cd $(SDK_DIR) && $(GOVET) $(TAG_FLAG) ./...
+
+# lint-gates is every repository gate CI's image job runs beside `make lint`
+# (ci-template v1.21, one image job): the gates over the scripts, the
+# workflows, the generated code and the module files, the vet sweeps, the
+# secure analyzer and the sdk/go linters. Run with `make -k lint-gates` it
+# reports every failing gate in one pass. check-public-releasable is not here:
+# it reads an untracked pattern file, which CI writes on the runner.
+LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
+	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
+	test-cluster-cpus check-action-pins check-integration-feature-coverage \
+	check-no-deprecated-credential-retrieve check-lean-standalone \
+	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
+	check-publication-bound test-publication-bound test-public-releasable \
+	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
+	test-artifact-paths check-generated check-mod-tidy test-vet-modules \
+	test-release-alpha fmt vet vet-tags secure-analyzer test-secure-analyzer \
+	vet-sdk lint-sdk
+
+.PHONY: lint-gates
+lint-gates: $(LINT_GATES)
 
 # scripts/require-tool.sh is what stands between this repository and a lint or
 # scan performed by an unknown analyser version (#179, #195). The pins in
@@ -3768,18 +3813,24 @@ docker-run: docker-build-toolchain
 # `docker save` tar instead of a daemon image, which is how CI runs it in the
 # toolchain container, where there is no daemon.
 #
-# TRIVY_IMAGE_SECRET_CONFIG keeps the SECRET scanner off the image's Go module
-# cache, /gomodcache, and nothing else: third-party releases ship doc examples
-# and test-fixture keys (run 55673) that are not this project's secrets. The
-# vulnerability scanner does not read the file, so every module in the image is
-# still scanned; the reason is in the file, beside its one rule.
+# The two image-only flags are handbook devops.md §8, the `trivy image` row.
+# --ignore-unfixed: the gate blocks on CRITICAL/HIGH findings that have a fix;
+# a base image carries hundreds of advisories nobody can act on. --skip-dirs
+# TRIVY_IMAGE_MODCACHE keeps the image's Go module cache, every byte of it a
+# third-party release fixed by go.sum, out of the scan: releases ship doc
+# examples and test-fixture keys (run 55673) that are not this project's
+# secrets, while a secret in the image's own layers (/src) still blocks. The
+# handbook names /opt/go/mod, the template image's cache; this image's is
+# GOMODCACHE in build/docker/devcontainer/Dockerfile. `make trivy` (trivy fs)
+# and `make security` never take --ignore-unfixed. --skip-db-update and the
+# certified database stay, so a stale database still fails.
 TRIVY_IMAGE_INPUT ?=
-TRIVY_IMAGE_SECRET_CONFIG := build/trivy/image-secret.yaml
+TRIVY_IMAGE_MODCACHE := /gomodcache
 .PHONY: trivy-image
 trivy-image:
 	$(call require-scanner,trivy,$(TRIVY_INSTALL))
 	$(trivy-certified-db)
-	trivy image --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update --secret-config $(TRIVY_IMAGE_SECRET_CONFIG) $(if $(TRIVY_IMAGE_INPUT),--input $(TRIVY_IMAGE_INPUT),$(IT_IMAGE))
+	trivy image --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update --ignore-unfixed --skip-dirs $(TRIVY_IMAGE_MODCACHE) $(if $(TRIVY_IMAGE_INPUT),--input $(TRIVY_IMAGE_INPUT),$(IT_IMAGE))
 
 # ============================================================================
 # Dev Cluster (local 3-node cluster for testing)

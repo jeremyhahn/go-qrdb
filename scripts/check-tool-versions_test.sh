@@ -61,10 +61,7 @@ fixture() {
 	cat > "${DIR}/.github/workflows/ci.yml" <<-'EOF'
 		name: CI
 		env:
-		  GOLANGCI_LINT_VERSION: "v2.14.0"
-		  GOSEC_VERSION: "v2.29.0"
-		  GOVULNCHECK_VERSION: "v1.8.0"
-		  ACTIONLINT_VERSION: "v1.7.12"
+		  GO_BUILD_TAGS: "codec_json raft"
 	EOF
 
 	cat > "${DIR}/Makefile" <<-'EOF'
@@ -137,15 +134,15 @@ assert "pins that agree pass" 0 "tool pins agree" "${DIR}"
 # others, and the gap would be invisible.
 # ---------------------------------------------------------------------------
 
-DIR=$(fixture ci-drift)
-sed -i 's/GOSEC_VERSION: "v2.29.0"/GOSEC_VERSION: "v2.28.0"/' "${DIR}/.github/workflows/ci.yml"
-assert "a ci.yml pin off the pin file is rejected" 1 \
-	"GOSEC_VERSION is v2.28.0 in .github/workflows/ci.yml but v2.29.0" "${DIR}"
+DIR=$(fixture ci-pin)
+printf '  GOSEC_VERSION: "v2.29.0"\n' >> "${DIR}/.github/workflows/ci.yml"
+assert "a ci.yml pin, even one that agrees, is rejected" 1 \
+	".github/workflows/ci.yml pins GOSEC_VERSION" "${DIR}"
 
-DIR=$(fixture actionlint-drift)
-sed -i 's/ACTIONLINT_VERSION: "v1.7.12"/ACTIONLINT_VERSION: "v1.7.11"/' "${DIR}/.github/workflows/ci.yml"
-assert "a ci.yml actionlint pin off the pin file is rejected" 1 \
-	"ACTIONLINT_VERSION is v1.7.11 in .github/workflows/ci.yml" "${DIR}"
+DIR=$(fixture ci-actionlint-pin)
+printf '  ACTIONLINT_VERSION: "v1.7.11"\n' >> "${DIR}/.github/workflows/ci.yml"
+assert "a ci.yml actionlint pin is rejected" 1 \
+	".github/workflows/ci.yml pins ACTIONLINT_VERSION" "${DIR}"
 
 DIR=$(fixture dockerfile-drift)
 sed -i 's/ARG GOLANGCI_LINT_VERSION=v2.14.0/ARG GOLANGCI_LINT_VERSION=v2.7.2/' "${DIR}/.devcontainer/Dockerfile"
@@ -195,10 +192,10 @@ assert "a Makefile that stops including the pin file is rejected" 1 \
 	"the Makefile does not include scripts/tool-pins.sh" "${DIR}"
 
 # Copies that are correctly absent must not be reported. Without these cases a
-# future edit that held trivy to ci.yml, or actionlint to the Dockerfiles,
+# future edit that held a tool to ci.yml, or actionlint to the Dockerfiles,
 # would reject the tree this repository actually has.
 DIR=$(fixture absent-where-not-installed)
-assert "trivy absent from ci.yml and actionlint from the Dockerfiles is not a finding" 0 \
+assert "no pin in ci.yml and actionlint absent from the Dockerfiles is not a finding" 0 \
 	"tool pins agree" "${DIR}"
 
 DIR=$(fixture gpu-trivy)
@@ -222,7 +219,7 @@ assert "an assignment the pattern no longer matches is a failure" 1 \
 	"no GOVULNCHECK_VERSION pin found in scripts/tool-pins.sh" "${DIR}"
 
 DIR=$(fixture floor-explains)
-sed -i '/GOSEC_VERSION/d' "${DIR}/.github/workflows/ci.yml"
+sed -i '/GOSEC_VERSION/d' "${DIR}/.devcontainer/Dockerfile"
 assert "the floor explains why an empty lookup cannot be a pass" 1 \
 	"empty value compares equal to another empty value" "${DIR}"
 

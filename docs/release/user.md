@@ -43,7 +43,7 @@ The file is line-oriented. Blank lines and `#` lines are ignored; every other
 line is `<class>[/i] <ERE>`, where the class is `lab-address`, `lab-host` or
 `owner-path`, `/i` matches case-insensitively, and the ERE is POSIX extended.
 Every class needs at least one rule. For CI, store the file's content as the
-Actions secret `PUBLIC_RELEASE_PATTERNS`; the Lint job writes it to a temp file
+Actions secret `PUBLIC_RELEASE_PATTERNS`; the `arch-gates` job writes it to a temp file
 for the one step that reads it.
 
 | Name | Kind | Value |
@@ -75,9 +75,9 @@ is available; nothing is installed on the host.
 | `make docker-down-it` | removes an integration run's stack and image (`IT_PROJECT`, `IT_IMAGE`) |
 | `make deps-check` | fails when a direct requirement is behind its latest release with no reason in its `go.mod` |
 
-To raise a tool, change its line in `scripts/tool-pins.sh` and the matching
-line in ci.yml's `env:`; `make check-tool-versions` fails while the two
-differ. To hold a module below its latest release, put the reason in a `//`
+To raise a tool, change its line in `scripts/tool-pins.sh`, the only copy of
+the pin; `make check-tool-versions` fails when ci.yml or the Makefile carries
+a second one. To hold a module below its latest release, put the reason in a `//`
 comment on its `require` line, or on the comment line directly above it.
 
 ## Cutting a release

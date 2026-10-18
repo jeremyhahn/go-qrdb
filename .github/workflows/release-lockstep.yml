@@ -57,13 +57,15 @@ on:
     branches: [main]
   workflow_dispatch:                    # manual rerun — Gitea has no rerun API
 
-# Supersession control (devops.md §9b, #674), the same ref-keyed group as
-# ci.yml, whose header records how Gitea evaluates it. This workflow audits
-# tags and publishes nothing, so cancelling a superseded run loses nothing; a
-# tag push is its own ref, so it supersedes only a re-push of that tag.
+# Supersession control (devops.md §9, #674), ci.yml's canonical block
+# (ci-template v1.22.1): one group per ref, a PR ref's newer run cancels the
+# older, and a push to main never cancels an in-flight main run. This workflow
+# audits tags and publishes nothing, so cancelling a superseded run loses
+# nothing; a tag push is its own ref, so it supersedes only a re-push of that
+# tag.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

@@ -105,6 +105,7 @@ type featureWorkflow struct {
 			Matrix   yaml.Node `yaml:"matrix"`
 		} `yaml:"strategy"`
 		Steps []struct {
+			Name string `yaml:"name"`
 			If   string `yaml:"if"`
 			Uses string `yaml:"uses"`
 			Run  string `yaml:"run"`
@@ -152,6 +153,13 @@ func featureJobProblems(body []byte, want []string) []string {
 
 	var runs, conds []string
 	for _, s := range job.Steps {
+		// The credential mask (ci-template v1.21.1) leads the leg; its shape is
+		// ci_logs_test.go's to check. Only a first run step that runs no make
+		// target is taken for it, so the name cannot carry a narrowed run past
+		// this gate.
+		if len(runs) == 0 && s.Name == maskStepName && !strings.Contains(s.Run, "make ") {
+			continue
+		}
 		if s.Run != "" {
 			runs = append(runs, strings.TrimSpace(s.Run))
 			conds = append(conds, strings.TrimSpace(s.If))
@@ -282,6 +290,8 @@ jobs:
         feature: [audit, key-value, sql]
     steps:
       - uses: actions/checkout@0000000000000000000000000000000000000000 # v6
+      - name: Mask the forge credentials
+        run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
       - name: Integration tests (${{ matrix.feature }})
@@ -327,6 +337,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "the whole suite", old: " IT_FEATURE=${{ matrix.feature }}", new: ""},
 		{name: "on the host", old: "run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"", new: "run: make integration-test-${{ matrix.feature }}"},
 		{name: "a second run step", old: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n", new: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n      - run: make integration-test-auth\n"},
+		{name: "a make run named as the mask", old: "run: echo \"::add-mask::$GIT_CONFIG_VALUE_0\"", new: "run: make integration-test-auth"},
 		{name: "no reap", old: "      - name: Reap stale CI stacks\n        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-\n", new: ""},
 		{name: "reap of another prefix", old: "reap-stale-ci-stacks.sh qrdb-ci-", new: "reap-stale-ci-stacks.sh qrdb-"},
 		{name: "no teardown", old: "      - name: Tear down (${{ matrix.feature }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n", new: ""},

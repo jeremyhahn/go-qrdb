@@ -31,8 +31,8 @@ package buildgates
 //   - a PR-tier job that needs a full-tier one, and so skips with it;
 //   - a pull_request trigger with `labeled`, so every label change starts a
 //     run that cancels the PR's run in progress (#853);
-//   - a pull_request workflow without the ref-keyed cancel-in-progress group
-//     (devops.md §9b), or any workflow regaining a `schedule:` (owner ruling
+//   - a pull_request workflow without the ref-keyed concurrency group whose
+//     cancel-in-progress spares main (devops.md §9, ci-template v1.22.1), or any workflow regaining a `schedule:` (owner ruling
 //     2026-10-11: no workflow runs on a cron).
 //
 // The gate's own shell is executed, not read: TestCIGateScriptHonoursTheTiers
@@ -69,6 +69,10 @@ const (
 	// per ref, so a branch supersedes only itself.
 	refKeyedGroup = "${{ github.workflow }}-${{ github.ref }}"
 
+	// cancelOffMain is ci-template v1.22.1's cancel-in-progress (devops.md
+	// §9): a PR ref's newer run cancels the older, a run on main never is.
+	cancelOffMain = "${{ github.ref != 'refs/heads/main' }}"
+
 	// scheduleExempt is the one workflow allowed a `schedule:`. automerge.yml
 	// is under owner hold and out of #674's scope.
 	scheduleExempt = "automerge.yml"
@@ -79,8 +83,8 @@ const (
 // integration-features (featureJob) is one job with a matrix leg per feature;
 // ci-gate reads its aggregate result.
 var (
-	prTierJobs   = []string{"lint", "build", "image", "test", "test-sdk", "test-typescript", "security"}
-	fullTierJobs = []string{"integration-standalone", featureJob, "trivy"}
+	prTierJobs   = []string{"image", "test-typescript", "arch-gates"}
+	fullTierJobs = []string{"integration-standalone", featureJob}
 )
 
 // fullTierJob reports whether a job must be in the full tier. Every
@@ -576,13 +580,13 @@ func workflowTriggerProblems(name string, wf workflowFile) []string {
 	}
 	if group != refKeyedGroup {
 		problems = append(problems, name+" runs on pull_request but its concurrency group is "+
-			strconv.Quote(group)+", not "+refKeyedGroup+" (devops.md §9b)")
+			strconv.Quote(group)+", not "+refKeyedGroup+" (devops.md §9)")
 	}
-	// The literal: Gitea treats any non-empty cancel-in-progress as true, so
-	// an expression is not a way to turn it off, and `false` cancels anyway.
-	if cancel != "true" {
+	// The canonical value (ci-template v1.22.1): a PR ref's newer run cancels
+	// the older, and a run on main is never cancelled.
+	if cancel != cancelOffMain {
 		problems = append(problems, name+" runs on pull_request but cancel-in-progress is "+
-			strconv.Quote(cancel)+", not the literal true (devops.md §9b)")
+			strconv.Quote(cancel)+", not "+cancelOffMain+" (devops.md §9)")
 	}
 	return problems
 }
@@ -629,7 +633,7 @@ func TestPullRequestWorkflowsCancelSupersededRuns(t *testing.T) {
 
 // TestWorkflowTriggerProblems_CanFail proves each trigger rule reddens.
 func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
-	const good = "on:\n  pull_request:\n  workflow_dispatch:\nconcurrency:\n  group: " + refKeyedGroup + "\n  cancel-in-progress: true\n"
+	const good = "on:\n  pull_request:\n  workflow_dispatch:\nconcurrency:\n  group: " + refKeyedGroup + "\n  cancel-in-progress: " + cancelOffMain + "\n"
 	parse := func(body string) workflowFile {
 		var wf workflowFile
 		if err := yaml.Unmarshal([]byte(body), &wf); err != nil {
@@ -647,8 +651,9 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 		"schedule":                "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n",
 		"no concurrency":          "on:\n  pull_request:\n",
 		"group not ref-keyed":     strings.Replace(good, refKeyedGroup, "${{ github.workflow }}", 1),
-		"cancel-in-progress off":  strings.Replace(good, "cancel-in-progress: true", "cancel-in-progress: false", 1),
-		"cancel-in-progress gone": strings.Replace(good, "  cancel-in-progress: true\n", "", 1),
+		"cancel-in-progress off":  strings.Replace(good, cancelOffMain, "false", 1),
+		"cancels on main too":     strings.Replace(good, cancelOffMain, "true", 1),
+		"cancel-in-progress gone": strings.Replace(good, "  cancel-in-progress: "+cancelOffMain+"\n", "", 1),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

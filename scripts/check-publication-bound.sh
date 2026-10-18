@@ -341,14 +341,14 @@ scan() { # scan <rule> <regex> <remedy>
 	echo ""
 	echo "VIOLATION: ${rule}"
 	echo "  ${remedy}"
-	# CONTROL characters are replaced before display, and only those. `-a` means
-	# a hit may come from a file that is mostly not text, and a CI log is not
-	# improved by the rest of that line arriving raw -- but `tr -c '[:print:]'`
-	# was too wide: in the C locale it mangles every multi-byte character, so an
-	# em dash in an ordinary markdown line came back as `???` and the check's own
-	# output stopped being quotable. The path and line number are unaffected
-	# either way; this keeps the sentence readable too.
-	LC_ALL=C tr '\000-\010\013\014\016-\037\177' '?' < "$hits" | sed 's/^/    /' 
+	# Path, line and rule only, never the matched text (handbook
+	# ci-standard.md §5): a CI log is read by every agent with repository
+	# access, and the text is what this gate exists to keep out of view. A hit
+	# whose path holds a colon cannot be split from its text, so it is reported
+	# without either. CONTROL characters in a path are replaced before display.
+	LC_ALL=C tr '\000-\010\013\014\016-\037\177' '?' < "$hits" |
+		sed -n -e 's/^\([^:]*:[0-9][0-9]*\):.*$/\1/p' -e t -e "s/.*/(a path containing ':')/p" |
+		while IFS= read -r at; do printf '    %s: %s\n' "$at" "$rule"; done
 	wc -l < "$hits" >> "$found"
 }
 

@@ -46,7 +46,7 @@ the `[]byte` forms (`CredentialRetrieve`, `CredentialRetrieveVersion`, and the
 wire contract does not change.
 
 `make check-no-deprecated-credential-retrieve`
-(`test/buildgates/no_deprecated_credential_retrieve_test.go`, in the Lint job)
+(`test/buildgates/no_deprecated_credential_retrieve_test.go`, in CI's `image` job)
 fails if any Go file reintroduces a deleted credential retrieval declaration
 that returns `[]byte`, or uses the unambiguous removed store-level selectors.
 The protobuf `QRDBService` methods of the same names are allowed because they

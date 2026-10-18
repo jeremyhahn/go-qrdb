@@ -102,7 +102,7 @@ notes and the release binaries:
    every tag together, but says nothing about how soon a *fetch* on a
    different connection observes all of them.
 2. **`gate`** — re-runs the functional build/lint/test signal from ci.yml's
-   `lint`, `build` and `test` jobs against the exact tagged tree. It does not
+   `image` job (lint, build and the unit suites) against the exact tagged tree. It does not
    repeat every ci.yml step: `release-alpha` refuses to tag anything but the
    commit `main`'s own `ci-gate` already verified clean, so re-running a
    guard's self-test or a whole-tree scan against the same tree would answer
@@ -156,6 +156,11 @@ qrdbd and the headless qrdb CLI twice:
   native build, so a change that breaks the arm64 build, plain or FIPS, fails
   the pull request rather than the tag. Nothing runs on arm64 in CI: the
   arm64 integration run is a separate, pre-RC step.
+- **The shipped image is scanned on every pull request.** The same PR-tier
+  `image` job runs `make trivy-image` over the `integration` image after its
+  stages, with `--ignore-unfixed` and the module cache (`/gomodcache`) skipped
+  (handbook `devops.md` §8), so a fixable vulnerability fails the pull request
+  rather than the tag.
 
 The workflow does not build a consumer program against the published tags.
 The integration suites already exercise every SDK and API surface, and the
@@ -166,9 +171,10 @@ owner ruled a post-release consumer build unnecessary.
 The **Release Lockstep** workflow still audits every tag push and every push
 to `main`. It catches what `release-alpha`'s own pre-flight cannot see: a tag
 that is deleted or moved after the fact. It runs on pull requests too, under
-the same ref-keyed `cancel-in-progress: true` concurrency group as CI: it
-publishes nothing, so a superseded audit is safe to cancel, and a tag push is
-its own ref, so it supersedes only a re-push of the same tag. `release.yml`,
+the same ref-keyed concurrency group as CI, whose
+`cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` spares `main`:
+it publishes nothing, so a superseded audit is safe to cancel, and a tag push
+is its own ref, so it supersedes only a re-push of the same tag. `release.yml`,
 which publishes, has no such group.
 
 ## CI tiers
@@ -178,8 +184,8 @@ always runs the full tier. CI runs in two tiers:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `lint`, `build`, `image`, `test`, `test-sdk`, `test-typescript`, `security`, `ci-gate` |
-| Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone`, `integration-features` (one job per feature), `trivy` |
+| PR | every run | `image`, `test-typescript`, `arch-gates`, `ci-gate` |
+| Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone` and `integration-features` (one leg per feature) |
 
 `ci-gate` is the one required check in both. It fails on any result other
 than `success`, with one exception: a job tagged `full` that was skipped
@@ -190,10 +196,11 @@ cancelled the PR's run in progress), so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
 `workflow_dispatch`.
 
-The full-tier jobs wait on the PR tier: `integration-standalone`,
-`integration-features` and `trivy` each need `lint`, `test` and `test-sdk`
-(and `build` through them), so none starts until all three have passed, and a
-pull request that fails lint or a unit suite never holds the shared runners
+The full-tier jobs wait on the PR tier: `integration-standalone` and
+`integration-features` each need `image`, which runs lint, the build, every
+unit suite and the security stages, and `test-typescript` and `arch-gates`
+beside it, so neither starts until the whole PR tier has passed, and
+a pull request that fails lint or a unit suite never holds the shared runners
 for the long legs. A full-tier run on a tree whose PR tier is red therefore
 reports those jobs `skipped`, which `ci-gate` fails.
 
@@ -201,18 +208,28 @@ The `ci:full` label goes on a pull request once, when it is green on the PR
 tier and ready to merge, never earlier and never twice; a `workflow_dispatch`
 of the full tier on the PR branch is the accepted alternative.
 
+Every workflow on pull requests has one concurrency group per ref
+(ci-template v1.22.1, handbook `devops.md` §9): a newer push to a pull
+request's ref cancels that ref's older run, but a push to `main` never
+cancels an in-flight `main` run. The newer `main` run waits for it, so every
+commit on `main` keeps its run and every merge is validated.
+`test/buildgates/ci_tiers_test.go` holds the value.
+
 No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`.
 
-`image` runs the five stages of the handbook CI standard (`ci-standard.md`)
-in the one image built from `build/docker/devcontainer/Dockerfile` at the
-commit under test: build, test, security and deps-check in its `toolchain`
-stage, then `trivy image` over its `integration` stage. The other PR-tier jobs
-still run the same make targets on the runner, and every gate they held is
-kept.
+`image` runs every stage of the handbook CI standard (`ci-standard.md`) in the
+one image built from `build/docker/devcontainer/Dockerfile` at the commit under
+test (ci-template v1.22.1): lint and the lint gates, the server and headless
+CLI build and the linux/arm64 release cross-build, `make coverage` with the
+other unit suites and `test-sdk`, security and deps-check in its `toolchain`
+stage, then `trivy image` over its `integration` stage, all in one job.
+`test-typescript` (the TypeScript SDK and the desktop frontend) and
+`arch-gates` (the import-boundary, public-releasable and compose-target
+gates) run on the runner beside it.
 
-`trivy`, and `image`'s two scans (`make security`'s trivy leg and
+`image`'s two scans (`make security`'s trivy leg and
 `make trivy-image`), scan only with a vulnerability database younger than
 `TRIVY_DB_MAX_AGE_HOURS` (24). `scripts/trivy-certified-db.sh` tries the
 runner's configured cache first, then trivy's documented pair in order,
