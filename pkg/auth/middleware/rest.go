@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 )
 
 // RESTMiddleware returns an http.Handler that wraps the given handler with
@@ -105,7 +106,17 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// through chi's own trie, so templated public routes match here
 		// too. Authenticated/permission routes proceed to authentication
 		// below unchanged.
-		if _, kind, ok := routes.Lookup(r.Method, r.URL.Path); ok && kind == RESTRoutePublic {
+		//
+		// A module-registered OPTIONAL route (HandleOptional →
+		// RESTRouteOptional) short-circuits here too, but only for a
+		// request that presents no credential at all: it reaches the
+		// handler anonymous, with no identity on its context. A request
+		// that presents one falls through to the same authentication as
+		// every other route, so an invalid credential is refused exactly
+		// as it would be on an authenticated route, never downgraded to
+		// anonymous.
+		if _, kind, ok := routes.Lookup(r.Method, r.URL.Path); ok &&
+			(kind == RESTRoutePublic || (kind == RESTRouteOptional && !presentsCredential(r))) {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -228,9 +239,10 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		}
 
 		switch kind {
-		case RESTRoutePublic, RESTRouteAuthenticated:
+		case RESTRoutePublic, RESTRouteAuthenticated, RESTRouteOptional:
 			// Public routes normally short-circuit above; authenticated-only
-			// routes (/metrics) require no specific permission -- EXCEPT a
+			// routes (/metrics), and optional routes whose caller presented
+			// a credential, require no specific permission -- EXCEPT a
 			// holder certificate (go-qrdb#560 review), which carries no
 			// roles by design and is admitted only for the specific
 			// IdentityGated verbs its ceremony enrolment grants. Those
@@ -263,6 +275,20 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// presentsCredential reports whether r carries anything an authenticator
+// could act on: a TLS peer certificate, an Authorization value, a DPoP proof,
+// or either half of a forwarded on-behalf-of assertion. A half-presented
+// assertion counts, so a request that is malformed rather than absent is
+// authenticated (and refused) instead of admitted anonymous. A module's own
+// session cookie is not a credential here: the module reads it in its handler.
+func presentsCredential(r *http.Request) bool {
+	return (r.TLS != nil && len(r.TLS.PeerCertificates) > 0) ||
+		r.Header.Get("Authorization") != "" ||
+		r.Header.Get("DPoP") != "" ||
+		r.Header.Get(forward.HeaderAssertion) != "" ||
+		r.Header.Get(forward.HeaderSignature) != ""
 }
 
 // mapHTTPAuthError maps auth errors to HTTP status codes for the REST auth

@@ -114,7 +114,10 @@ type BaseModule = apimodule.BaseModule
 // ModuleHTTPRegistrar is the permission-recording HTTP registration surface the
 // unified server passes to ServiceModule.RegisterHTTP. Routes registered via
 // Handle declare their permission at the registration site; HandlePublic marks
-// genuine first-contact surfaces. It embeds the live chi.Router.
+// genuine first-contact surfaces; HandleOptional authenticates a caller that
+// presents a credential and admits one that presents none anonymous, the
+// handler telling them apart with IdentityFromContext. It embeds the live
+// chi.Router.
 type ModuleHTTPRegistrar = apimodule.HTTPRegistrar
 
 // ModuleMCPToolPermissioner is the optional ServiceModule extension through

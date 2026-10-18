@@ -40,8 +40,10 @@ site**, and every transport reads the same declaration:
 - **gRPC and Unix** — the `qrdb.v1.permission` proto option on the RPC,
   enforced by a shared interceptor.
 - **REST** — the route declares its permission at registration through the
-  permission-recording registrar (`Handle`) or is explicitly public
-  (`HandlePublic`).
+  permission-recording registrar (`Handle`), is explicitly public
+  (`HandlePublic`), or is explicitly optional-auth (`HandleOptional`: a
+  presented credential is authenticated as on `Handle`, none reaches the
+  handler anonymous).
 - **MCP** — the tool declares its permission through `MCPToolPermissions()`.
 
 Those declarations feed one registry and a **default-deny startup assertion**: a

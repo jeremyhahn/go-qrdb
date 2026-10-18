@@ -1106,15 +1106,19 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	s.routeOwners = map[string]string{}
 	directRoutes := make(map[string][]apimodule.RouteClaim, len(s.modules))
 	for _, m := range s.modules {
-		routeFn := s.route
+		routeFn, optionalFn := s.route, s.optional
 		if fb, ok := m.(apimodule.ModuleAuthFallback); ok {
 			routeFn = func(method, pattern string, perm permission.Permission, h http.HandlerFunc) {
 				s.route(method, pattern, perm, h)
 				s.routePerms.SetFallback(method, pattern, fb)
 			}
+			optionalFn = func(method, pattern string, h http.HandlerFunc) {
+				s.optional(method, pattern, h)
+				s.routePerms.SetFallback(method, pattern, fb)
+			}
 		}
 		s.registeringModule = m.Name()
-		reg := apimodule.NewHTTPRegistrar(r, routeFn, s.public)
+		reg := apimodule.NewHTTPRegistrar(r, routeFn, s.public, optionalFn)
 		m.RegisterHTTP(reg)
 		// Registration is validated once, below; nothing registered later
 		// would be, so later registration is refused outright.
@@ -1599,6 +1603,17 @@ func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.P
 // default-deny startup assertion.
 func (s *Server) public(method, pattern string, h http.HandlerFunc) {
 	s.publicIf(true, method, pattern, h)
+}
+
+// optional registers a route on which authentication is optional: a request
+// presenting a credential is authenticated as on any route, one presenting
+// none reaches the handler anonymous (RESTRouteOptional). Only capability
+// modules register one, through HTTPRegistrar.HandleOptional.
+func (s *Server) optional(method, pattern string, h http.HandlerFunc) {
+	s.claimRoute(method, pattern)
+	s.routePerms.RegisterOptional(method, pattern)
+	s.router.Method(method, pattern, h)
+	s.recordStaticRoute(method, pattern, h)
 }
 
 // publicIf mirrors routeIf for public routes: the public marker is recorded

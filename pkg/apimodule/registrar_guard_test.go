@@ -39,11 +39,14 @@ func TestRegistrar_RecordsEveryDirectRegistrationAndForwardsIt(t *testing.T) {
 		recorded = append(recorded, recordedRoute{method: method, pattern: pattern})
 	}, func(method, pattern string, _ http.HandlerFunc) {
 		recorded = append(recorded, recordedRoute{method: method, pattern: pattern, public: true})
+	}, func(method, pattern string, _ http.HandlerFunc) {
+		recorded = append(recorded, recordedRoute{method: method, pattern: pattern, optional: true})
 	})
 
 	h := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }
 	reg.Handle(http.MethodGet, "/recorded/through/handle", permission.KVGet, h)
 	reg.HandlePublic(http.MethodGet, "/recorded/through/public", h)
+	reg.HandleOptional(http.MethodGet, "/recorded/through/optional", h)
 	reg.Get("/d/get", h)
 	reg.Post("/d/post", h)
 	reg.Put("/d/put", h)
@@ -80,8 +83,8 @@ func TestRegistrar_RecordsEveryDirectRegistrationAndForwardsIt(t *testing.T) {
 	if got := reg.DirectRoutes(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("DirectRoutes =\n%v\nwant\n%v", got, want)
 	}
-	if len(recorded) != 2 {
-		t.Fatalf("permission-recorded routes = %v, want the Handle and HandlePublic ones only", recorded)
+	if len(recorded) != 3 {
+		t.Fatalf("permission-recorded routes = %v, want the Handle, HandlePublic and HandleOptional ones only", recorded)
 	}
 
 	// Recording does not intercept: the live router serves every one.
@@ -97,7 +100,7 @@ func TestRegistrar_RecordsEveryDirectRegistrationAndForwardsIt(t *testing.T) {
 // TestRegistrar_DirectRoutesIsACopy: the server reads the record once; a
 // caller mutating the slice it got must not rewrite what was registered.
 func TestRegistrar_DirectRoutesIsACopy(t *testing.T) {
-	reg := apimodule.NewHTTPRegistrar(chi.NewRouter(), nil, nil)
+	reg := apimodule.NewHTTPRegistrar(chi.NewRouter(), nil, nil, nil)
 	reg.Get("/x", func(http.ResponseWriter, *http.Request) {})
 	got := reg.DirectRoutes()
 	got[0].Pattern = "/tampered"
@@ -109,6 +112,7 @@ func TestRegistrar_DirectRoutesIsACopy(t *testing.T) {
 func TestRegistrar_FreezeRefusesEveryLaterRegistration(t *testing.T) {
 	reg := apimodule.NewHTTPRegistrar(chi.NewRouter(),
 		func(string, string, permission.Permission, http.HandlerFunc) {},
+		func(string, string, http.HandlerFunc) {},
 		func(string, string, http.HandlerFunc) {})
 	stashed := reg.With()
 	reg.Freeze()
@@ -117,6 +121,7 @@ func TestRegistrar_FreezeRefusesEveryLaterRegistration(t *testing.T) {
 	for name, register := range map[string]func(){
 		"Handle":         func() { reg.Handle(http.MethodGet, "/late", permission.KVGet, h) },
 		"HandlePublic":   func() { reg.HandlePublic(http.MethodGet, "/late", h) },
+		"HandleOptional": func() { reg.HandleOptional(http.MethodGet, "/late", h) },
 		"direct Get":     func() { reg.Get("/late", h) },
 		"router Handle":  func() { reg.Router.Handle("/late", http.HandlerFunc(h)) },
 		"stashed inline": func() { stashed.Post("/late", h) },
@@ -137,7 +142,7 @@ func TestRegistrar_FreezeRefusesEveryLaterRegistration(t *testing.T) {
 }
 
 func TestRegistrar_NilRouterStaysNil(t *testing.T) {
-	if reg := apimodule.NewHTTPRegistrar(nil, nil, nil); reg.Router != nil {
+	if reg := apimodule.NewHTTPRegistrar(nil, nil, nil, nil); reg.Router != nil {
 		t.Fatal("a nil live router must not be wrapped into a non-nil one")
 	}
 }
@@ -168,7 +173,7 @@ func TestRegistrar_RefusesRouterMethodsThatBypassRegistration(t *testing.T) {
 		} {
 			t.Run(method+"/"+where, func(t *testing.T) {
 				live := chi.NewRouter()
-				reg := apimodule.NewHTTPRegistrar(live, nil, nil)
+				reg := apimodule.NewHTTPRegistrar(live, nil, nil, nil)
 				r := router(reg)
 				defer func() {
 					refused, ok := recover().(*apimodule.UnsupportedRouterMethodError)

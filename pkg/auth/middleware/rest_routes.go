@@ -44,6 +44,14 @@ const (
 	// RESTRouteAuthenticated routes require an authenticated caller but no
 	// specific permission (e.g. /metrics: any authenticated peer may scrape).
 	RESTRouteAuthenticated
+
+	// RESTRouteOptional routes authenticate a caller that presents a
+	// credential exactly as RESTRouteAuthenticated routes do -- the same
+	// chain, the same rejection of an invalid credential -- and admit a
+	// caller that presents none as anonymous: no identity on the request
+	// context. The handler tells the two apart through
+	// auth.IdentityFromContext.
+	RESTRouteOptional
 )
 
 // RESTAuthFallback authenticates a request whose credentials qrdb's own
@@ -226,6 +234,14 @@ func (rr *RESTRouteRegistry) RegisterAuthenticated(method, pattern string) {
 	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
 	rr.entries[RESTRouteKey(method, pattern)] = restRouteEntry{kind: RESTRouteAuthenticated, pattern: pattern}
+}
+
+// RegisterOptional declares that (method, pattern) authenticates a presented
+// credential but admits a request that presents none as anonymous.
+func (rr *RESTRouteRegistry) RegisterOptional(method, pattern string) {
+	rr.assertNotRegistered(method, pattern)
+	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
+	rr.entries[RESTRouteKey(method, pattern)] = restRouteEntry{kind: RESTRouteOptional, pattern: pattern}
 }
 
 // Lookup resolves the authorization contract for a concrete request

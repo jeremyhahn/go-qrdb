@@ -64,12 +64,25 @@ Every capability declares its required permission **once**:
 | Transport | Where the declaration lives |
 |---|---|
 | gRPC, Unix | the `qrdb.v1.permission` proto option on the RPC, enforced by a shared interceptor |
-| REST | at the route registration site (`Handle`), or `HandlePublic` |
+| REST | at the route registration site (`Handle`), or `HandlePublic`, or `HandleOptional` |
 | MCP | `MCPToolPermissions()`, or `PublicMCPTools()` for a tool that reaches no data |
 
 All of them feed one registry with a **default-deny startup assertion**. A
 route, RPC or tool with no declaration fails the assertion at boot rather than
 serving unauthenticated.
+
+**Optional-auth module routes.** A module route registered with
+`HandleOptional` serves callers with and without a credential. A request that
+presents one — a client certificate, an `Authorization` or `DPoP` header, or a
+forwarded caller assertion — runs the configured auth chain, including the
+module's own `AuthenticateHTTP` fallback, exactly as on a `Handle` route: the
+chain resolves a client certificate to its user account, and an invalid
+credential is refused with the same status and body. A request that presents
+none reaches the handler anonymous. The handler tells the two apart with
+`sdk.IdentityFromContext`, which is nil for an anonymous caller. No permission
+is checked on the route; what an authenticated caller may do there is the
+handler's decision. A certificate from a CA the node does not trust fails the
+TLS handshake before any route is reached.
 
 **MCP public tools.** A module's `PublicMCPTools()` names the tools an
 anonymous MCP caller may call — its first-contact surface, and optionally the

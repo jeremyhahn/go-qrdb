@@ -141,7 +141,22 @@ type BaseModule struct{}   // no-op defaults for every hook EXCEPT Name
 ```go
 func (h *HTTPRegistrar) Handle(method, pattern string, perm permission.Permission, handler http.HandlerFunc)
 func (h *HTTPRegistrar) HandlePublic(method, pattern string, handler http.HandlerFunc)
+func (h *HTTPRegistrar) HandleOptional(method, pattern string, handler http.HandlerFunc)
 ```
+
+`HandleOptional` registers the route as `RESTRouteOptional` in the REST route
+registry, and attaches the module's `ModuleAuthFallback` when it has one, as
+`Handle` does. The REST auth middleware admits an optional-route request
+straight to the handler, with no identity, only when it presents no credential
+at all: no peer certificate, and no `Authorization`, `DPoP`,
+`X-Qrdb-On-Behalf-Assertion` or `X-Qrdb-On-Behalf-Sig` header. Any credential sends the
+request down the authenticated path unchanged, so the chain binds a
+certificate to its user account and a refusal is byte-identical to a `Handle`
+route's (`TestRESTMiddleware_OptionalRoute_InvalidCredentialRejectedAsOnHandle`).
+A credential that authenticates is treated as on an authenticated-only route:
+no permission is checked, and a holder identity is still refused. HTTP/3
+serves the same router and middleware. `sdk.NewModuleHTTPRegistrar` takes the
+optional registration function as its fourth argument.
 
 `RegisterQUIC` takes the identical `grpc.ServiceRegistrar` type `RegisterGRPC`
 does; a module usually implements it by calling the same generated

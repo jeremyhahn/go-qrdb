@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -37,10 +38,11 @@ var _ apimodule.TenantTargetAuthorizer = (*authmw.AuthMiddleware)(nil)
 
 // recordedRoute is one registration observed by the fake registrar helpers.
 type recordedRoute struct {
-	method  string
-	pattern string
-	perm    permission.Permission
-	public  bool
+	method   string
+	pattern  string
+	perm     permission.Permission
+	public   bool
+	optional bool
 }
 
 // newRecordingRegistrar builds an HTTPRegistrar over a real chi router whose
@@ -57,7 +59,11 @@ func newRecordingRegistrar() (*apimodule.HTTPRegistrar, *[]recordedRoute) {
 		seen = append(seen, recordedRoute{method: method, pattern: pattern, public: true})
 	}
 
-	return apimodule.NewHTTPRegistrar(r, route, public), &seen
+	optional := func(method, pattern string, _ http.HandlerFunc) {
+		seen = append(seen, recordedRoute{method: method, pattern: pattern, optional: true})
+	}
+
+	return apimodule.NewHTTPRegistrar(r, route, public, optional), &seen
 }
 
 // TestHandleRecordsThePermission covers the authorized registration path. The
@@ -103,6 +109,46 @@ func TestHandlePublicRecordsNoPermission(t *testing.T) {
 	if got.method != http.MethodGet || got.pattern != "/healthz" {
 		t.Errorf("recorded %s %s, want GET /healthz", got.method, got.pattern)
 	}
+	if got.optional {
+		t.Error("HandlePublic must not register an optional route")
+	}
+}
+
+// TestHandleOptionalRecordsThroughTheOptionalHelper verifies HandleOptional
+// reaches the server's optional helper, with no permission and not as a
+// public route.
+func TestHandleOptionalRecordsThroughTheOptionalHelper(t *testing.T) {
+	reg, seen := newRecordingRegistrar()
+
+	reg.HandleOptional(http.MethodGet, "/oauth/authorize", func(http.ResponseWriter, *http.Request) {})
+
+	if len(*seen) != 1 {
+		t.Fatalf("recorded %d routes, want 1", len(*seen))
+	}
+	got := (*seen)[0]
+	if !got.optional || got.public || got.perm != "" {
+		t.Errorf("recorded %+v, want an optional route with no permission", got)
+	}
+	if got.method != http.MethodGet || got.pattern != "/oauth/authorize" {
+		t.Errorf("recorded %s %s, want GET /oauth/authorize", got.method, got.pattern)
+	}
+}
+
+// TestHandleAndHandlePublicAreNotOptional pins that adding HandleOptional left
+// the other two modes routing to their own helpers only.
+func TestHandleAndHandlePublicAreNotOptional(t *testing.T) {
+	reg, seen := newRecordingRegistrar()
+
+	reg.Handle(http.MethodPost, "/v1/things", permission.KVPut, func(http.ResponseWriter, *http.Request) {})
+	reg.HandlePublic(http.MethodGet, "/healthz", func(http.ResponseWriter, *http.Request) {})
+
+	want := []recordedRoute{
+		{method: http.MethodPost, pattern: "/v1/things", perm: permission.KVPut},
+		{method: http.MethodGet, pattern: "/healthz", public: true},
+	}
+	if !reflect.DeepEqual(*seen, want) {
+		t.Fatalf("recorded %+v, want %+v", *seen, want)
+	}
 }
 
 // TestRegistrarExposesTheLiveRouter pins that the embedded chi.Router is the
@@ -110,7 +156,7 @@ func TestHandlePublicRecordsNoPermission(t *testing.T) {
 // middleware through it, which only works if it is not a copy.
 func TestRegistrarExposesTheLiveRouter(t *testing.T) {
 	router := chi.NewRouter()
-	reg := apimodule.NewHTTPRegistrar(router, nil, nil)
+	reg := apimodule.NewHTTPRegistrar(router, nil, nil, nil)
 
 	if reg.Router == nil {
 		t.Fatal("registrar must expose a router")

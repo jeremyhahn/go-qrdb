@@ -31,9 +31,9 @@ import (
 // startup assertion as the built-in routes.
 //
 // A route registered directly on the embedded chi.Router, bypassing
-// Handle/HandlePublic, is RECORDED (DirectRoutes). One whose pattern no
+// Handle/HandlePublic/HandleOptional, is RECORDED (DirectRoutes). One whose pattern no
 // permission covers fails the default-deny assertion at startup; one that
-// collides with a route registered through Handle/HandlePublic, or with a
+// collides with a route registered through Handle/HandlePublic/HandleOptional, or with a
 // built-in, fails construction too (go-qrdb#194) — chi would otherwise
 // silently serve the direct handler under the other registration's
 // permission. Registration closes when RegisterHTTP returns (Freeze): a
@@ -42,22 +42,24 @@ import (
 type HTTPRegistrar struct {
 	chi.Router
 
-	route  func(method, pattern string, perm permission.Permission, h http.HandlerFunc)
-	public func(method, pattern string, h http.HandlerFunc)
-	rec    *routeRecorder
+	route    func(method, pattern string, perm permission.Permission, h http.HandlerFunc)
+	public   func(method, pattern string, h http.HandlerFunc)
+	optional func(method, pattern string, h http.HandlerFunc)
+	rec      *routeRecorder
 }
 
-// NewHTTPRegistrar builds the registrar the server passes to modules. route and
-// public are the server's own permission-recording registration helpers. The
-// embedded router forwards to r and records direct registrations; a nil r
-// leaves it nil.
+// NewHTTPRegistrar builds the registrar the server passes to modules. route,
+// public and optional are the server's own permission-recording registration
+// helpers behind Handle, HandlePublic and HandleOptional. The embedded router
+// forwards to r and records direct registrations; a nil r leaves it nil.
 func NewHTTPRegistrar(
 	r chi.Router,
 	route func(method, pattern string, perm permission.Permission, h http.HandlerFunc),
 	public func(method, pattern string, h http.HandlerFunc),
+	optional func(method, pattern string, h http.HandlerFunc),
 ) *HTTPRegistrar {
 	rec := &routeRecorder{}
-	h := &HTTPRegistrar{route: route, public: public, rec: rec}
+	h := &HTTPRegistrar{route: route, public: public, optional: optional, rec: rec}
 	if r != nil {
 		h.Router = &recordingRouter{Router: r, rec: rec}
 	}
@@ -80,9 +82,24 @@ func (h *HTTPRegistrar) HandlePublic(method, pattern string, handler http.Handle
 	h.public(method, pattern, handler)
 }
 
+// HandleOptional registers a module route on which authentication is
+// optional. A request that presents a credential (a client certificate, an
+// Authorization value, a DPoP proof, a forwarded assertion) runs the server's
+// auth chain exactly as on a Handle route -- the chain resolves the
+// certificate to its user account, and an invalid credential is refused with
+// the same status and body -- and reaches the handler with that identity on
+// its context. A request that presents none reaches the handler anonymous.
+// The handler tells the two apart with auth.IdentityFromContext
+// (sdk.IdentityFromContext), which is nil for an anonymous caller. No
+// permission is checked: the handler decides what each caller may do.
+func (h *HTTPRegistrar) HandleOptional(method, pattern string, handler http.HandlerFunc) {
+	h.rec.admit(method, pattern)
+	h.optional(method, pattern, handler)
+}
+
 // DirectRoutes returns the routes registered straight on the embedded router
-// (or on an inline router from its With / Group), bypassing Handle and
-// HandlePublic, in registration order. The server checks each against the
+// (or on an inline router from its With / Group), bypassing Handle,
+// HandlePublic and HandleOptional, in registration order. The server checks each against the
 // routes whose permission was recorded.
 func (h *HTTPRegistrar) DirectRoutes() []RouteClaim {
 	h.rec.mu.Lock()
@@ -128,7 +145,9 @@ type ServiceModule interface {
 
 	// RegisterHTTP attaches the module's routes through the server's
 	// permission-recording registrar: each route declares its permission at the
-	// registration site (Handle) or is explicitly public (HandlePublic), feeding
+	// registration site (Handle), is explicitly public (HandlePublic) or
+	// authenticates only a caller that presents a credential (HandleOptional),
+	// feeding
 	// the same authorization registry and default-deny startup assertion as the
 	// server's built-in routes.
 	RegisterHTTP(r *HTTPRegistrar)

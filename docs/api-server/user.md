@@ -213,8 +213,8 @@ built-in endpoint. Nothing is allowed to take over another's route silently, so
 it stops at construction. Parameter names do not distinguish routes:
 `/devices/{id}` and `/devices/{deviceID}` collide. Move the module's routes
 under its own path prefix. If the message says a route was registered
-"directly on the router", the module bypassed `Handle`/`HandlePublic`; register
-it through those. If it names `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or
+"directly on the router", the module bypassed `Handle`/`HandlePublic`/`HandleOptional`;
+register it through those. If it names `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or
 `Use`, the module called a router method that would serve requests outside any
 registration; register a subtree as `Handle(method, "/prefix/*", perm, h)`
 instead.
