@@ -57,6 +57,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 
 	return &transport.BatchResponse{
 		Responses: responses,
+		Revision:  resp.GetRevision(),
 	}, nil
 }
 

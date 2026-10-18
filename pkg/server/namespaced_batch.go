@@ -76,24 +76,24 @@ func (s *namespacedBatchService) stripResponses(responses []service.OpResponse) 
 }
 
 // Execute applies the operations atomically under the namespace prefix.
-func (s *namespacedBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (s *namespacedBatchService) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	ctx = s.scope(ctx)
-	responses, err := s.inner.Execute(ctx, s.prefixOps(ops))
+	result, err := s.inner.Execute(ctx, s.prefixOps(ops))
 	if err != nil {
 		return nil, err
 	}
-	return s.stripResponses(responses), nil
+	return &service.BatchResponse{Revision: result.Revision, Responses: s.stripResponses(result.Responses)}, nil
 }
 
 // ExecuteWithMode applies the operations atomically with the specified write
 // durability under the namespace prefix.
-func (s *namespacedBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, mode writemode.Mode) ([]service.OpResponse, error) {
+func (s *namespacedBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, mode writemode.Mode) (*service.BatchResponse, error) {
 	ctx = s.scope(ctx)
-	responses, err := s.inner.ExecuteWithMode(ctx, s.prefixOps(ops), mode)
+	result, err := s.inner.ExecuteWithMode(ctx, s.prefixOps(ops), mode)
 	if err != nil {
 		return nil, err
 	}
-	return s.stripResponses(responses), nil
+	return &service.BatchResponse{Revision: result.Revision, Responses: s.stripResponses(result.Responses)}, nil
 }
 
 // ExecuteEntity executes entity-typed operations with their entity IDs prefixed

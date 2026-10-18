@@ -1831,9 +1831,12 @@ message BatchRequest {
     repeated Op ops = 1;
 }
 
-// BatchResponse returns the per-operation results.
+// BatchResponse returns the per-operation results and the single MVCC
+// revision every write in the batch committed at (zero when the batch held
+// no put or delete).
 message BatchResponse {
     repeated OpResponse responses = 1;
+    int64 revision = 2;
 }
 
 // BatchImportError describes a single row that failed during import. Named

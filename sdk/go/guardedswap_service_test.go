@@ -20,11 +20,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/mvcchost"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -47,61 +44,17 @@ import (
 // The lesson generalises past this bug: a helper built on a plane it only ever
 // meets through a double needs at least one test against the plane itself.
 
-// smHost is a service.Host backed by a real state machine.
-//
-// service.Host is embedded rather than implemented in full so that any method
-// these tests do not exercise panics with a nil-pointer dereference instead of
-// quietly returning a plausible zero value. The three methods below are the
-// ones the transaction and MVCC services actually call.
-type smHost struct {
-	service.Host
-
-	machine *store.MVCCStateMachine
-
-	mu    sync.Mutex
-	index uint64
-}
-
-// SyncPropose applies the command through the state machine, standing in for
-// the Raft round trip. Serialised, because a replicated log is: this is what
-// makes concurrent guarded swaps resolve against a single ordered history
-// rather than racing inside the state machine.
-func (h *smHost) SyncPropose(ctx context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	h.index++
-	entries := []sm.Entry{{Index: h.index, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := h.machine.Update(ctx, entries, results); err != nil {
-		return sm.Result{}, err
-	}
-	return results[0], nil
-}
-
-func (h *smHost) SyncRead(ctx context.Context, _ uint64, query interface{}) (interface{}, error) {
-	return h.machine.Lookup(ctx, query)
-}
-
 // newRealPlane wires the embedded transport over the real services.
 func newRealPlane(t *testing.T) *embedded.Transport {
 	t.Helper()
 
-	machine := store.NewMVCCStateMachine(nil)
-	ctx := context.Background()
-	if _, err := machine.Open(ctx, t.TempDir(), make(chan struct{})); err != nil {
-		t.Fatalf("open MVCC state machine: %v", err)
-	}
-	t.Cleanup(func() { _ = machine.Close(ctx) })
-
-	host := &smHost{machine: machine}
-	const shardID = 1
-
+	host := mvcchost.New(t)
 	tr, err := embedded.New(
-		service.NewKVService(host, shardID),
-		service.NewAdminService(host),
-		embedded.WithMVCCService(service.NewMVCCKVService(host, shardID)),
-		embedded.WithTransactionService(service.NewTransactionService(host, shardID)),
+		host.KV(),
+		host.Admin(),
+		embedded.WithMVCCService(host.MVCC()),
+		embedded.WithTransactionService(host.Transaction()),
+		embedded.WithBatchService(host.Batch()),
 	)
 	if err != nil {
 		t.Fatalf("embedded.New: %v", err)

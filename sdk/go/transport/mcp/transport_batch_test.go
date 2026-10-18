@@ -27,6 +27,7 @@ import (
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/mvcchost"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -40,6 +41,7 @@ type mockBatchSvc struct {
 	executeErr     error
 	executeModeErr error
 	importErr      error
+	revision       int64 // the batch revision Execute reports
 
 	lastOps        []service.Op
 	lastMode       writemode.Mode
@@ -71,17 +73,17 @@ func newMockBatchSvc() *mockBatchSvc {
 	}
 }
 
-func (m *mockBatchSvc) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchSvc) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastOps = ops
 	if m.executeErr != nil {
 		return nil, m.executeErr
 	}
-	return m.resp, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: m.resp}, nil
 }
 
-func (m *mockBatchSvc) ExecuteWithMode(_ context.Context, ops []service.Op, mode writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchSvc) ExecuteWithMode(_ context.Context, ops []service.Op, mode writemode.Mode) (*service.BatchResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastOps = ops
@@ -89,7 +91,7 @@ func (m *mockBatchSvc) ExecuteWithMode(_ context.Context, ops []service.Op, mode
 	if m.executeModeErr != nil {
 		return nil, m.executeModeErr
 	}
-	return m.resp, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: m.resp}, nil
 }
 
 func (m *mockBatchSvc) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
@@ -112,6 +114,30 @@ func connectBatchInProcess(t *testing.T, svc service.BatchServicer) (*Transport,
 		t.Fatalf("Connect: %v", connErr)
 	}
 	return tr, func() { _ = tr.Close() }
+}
+
+// TestTransport_ExecuteBatch_RevisionFromRealEngine drives a batch through the
+// MCP server into a real MVCC engine and checks that the revision the engine
+// assigned reaches the client unchanged.
+func TestTransport_ExecuteBatch_RevisionFromRealEngine(t *testing.T) {
+	host := mvcchost.New(t)
+	srv := mcpapi.NewServer(
+		newMockKVService(),
+		newMockAdminService(),
+		":0",
+		mcpapi.WithBatch(host.Batch()),
+		mcpapi.WithMVCC(host.MVCC()),
+	)
+	tr, err := NewInProcess(srv.MCPServer())
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	if connErr := tr.Connect(context.Background()); connErr != nil {
+		t.Fatalf("Connect: %v", connErr)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+
+	mvcchost.CheckBatchRevision(t, tr, "mcp-")
 }
 
 func TestExecuteBatch_Success(t *testing.T) {

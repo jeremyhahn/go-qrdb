@@ -433,11 +433,15 @@ type memBatch struct {
 	store                 *memStore
 }
 
-func (b *memBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
-	return b.store.batchExecute(ops)
+func (b *memBatch) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
+	resp, err := b.store.batchExecute(ops)
+	if err != nil {
+		return nil, err
+	}
+	return &service.BatchResponse{Responses: resp}, nil
 }
 
-func (b *memBatch) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (b *memBatch) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return b.Execute(ctx, ops)
 }
 

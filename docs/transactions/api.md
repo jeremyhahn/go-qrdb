@@ -64,7 +64,12 @@ Response — `TransactionResponse`:
 }
 ```
 
-`POST /batch` — `{"ops": [Op, ...]}`, response `{"responses": [OpResponse, ...]}`.
+`POST /batch` — `{"ops": [Op, ...]}`, response
+`{"revision": 4712, "responses": [OpResponse, ...]}`. `revision` is the single
+MVCC revision every op in the batch committed at, `0` for a batch with no put
+or delete; gRPC, Unix and QUIC carry it as `int64 revision = 2` of
+`BatchResponse`, the embedded client as `transport.BatchResponse.Revision`,
+and MCP `qrdb_batch_execute` answers `{"Revision": N, "Responses": [...]}`.
 
 `POST /batch/import/begin` — `ImportOptions` (`format`, `filename`,
 `key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`).

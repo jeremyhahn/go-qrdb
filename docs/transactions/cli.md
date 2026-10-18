@@ -57,6 +57,10 @@ echo '{"ops":[{"type":0,"key":"YQ==","value":"MQ=="},{"type":2,"key":"Yg=="}]}' 
   | qrdb batch execute --file -
 ```
 
+JSON output (the default) carries `revision`, the single MVCC revision every
+op in the batch committed at (`0` for a batch with no put or delete), and the
+positional `responses`. `--output table` prints only the per-op responses.
+
 ## `qrdb batch import`
 
 Import key-value records from a CSV, JSON, NDJSON, YAML or archive file into the

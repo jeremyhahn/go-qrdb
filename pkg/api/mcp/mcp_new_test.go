@@ -166,20 +166,25 @@ func (m *mockTransactionService) ExecuteEntity(_ context.Context, _ *service.Tra
 type mockBatchService struct {
 	executeFn func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
 	importFn  func(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+	revision  int64 // the batch revision Execute reports
 }
 
-func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	if m.executeFn != nil {
-		return m.executeFn(ctx, ops)
+		resp, err := m.executeFn(ctx, ops)
+		if err != nil {
+			return nil, err
+		}
+		return &service.BatchResponse{Revision: m.revision, Responses: resp}, nil
 	}
 	resp := make([]service.OpResponse, len(ops))
 	for i := range ops {
 		resp[i] = service.OpResponse{Succeeded: true}
 	}
-	return resp, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: resp}, nil
 }
 
-func (m *mockBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return m.Execute(ctx, ops)
 }
 
@@ -1215,7 +1220,7 @@ func TestHandleTxExecute_WithFailureOps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleBatchExecute_Success(t *testing.T) {
-	svc := &mockBatchService{}
+	svc := &mockBatchService{revision: 9}
 	handler := handleBatchExecute(svc)
 
 	ops := `[{"type":"put","key":"k1","value":"djE="},{"type":"delete","key":"k2"}]`
@@ -1226,12 +1231,15 @@ func TestHandleBatchExecute_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	text := resultText(t, result)
-	var responses []service.OpResponse
-	if jsonErr := json.Unmarshal([]byte(text), &responses); jsonErr != nil {
+	var resp service.BatchResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if len(responses) != 2 {
-		t.Errorf("expected 2 responses, got %d", len(responses))
+	if len(resp.Responses) != 2 {
+		t.Errorf("expected 2 responses, got %d", len(resp.Responses))
+	}
+	if resp.Revision != 9 {
+		t.Errorf("Revision = %d, want 9", resp.Revision)
 	}
 }
 

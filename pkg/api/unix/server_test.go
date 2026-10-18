@@ -1325,10 +1325,10 @@ func (s *stubTransactionSvc) ExecuteEntity(_ context.Context, _ *service.Transac
 // stubBatchSvc satisfies service.BatchServicer for option propagation tests.
 type stubBatchSvc struct{}
 
-func (s *stubBatchSvc) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+func (s *stubBatchSvc) Execute(_ context.Context, _ []service.Op) (*service.BatchResponse, error) {
 	return nil, nil
 }
-func (s *stubBatchSvc) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (s *stubBatchSvc) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return nil, nil
 }
 func (s *stubBatchSvc) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {

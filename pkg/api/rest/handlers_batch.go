@@ -31,6 +31,7 @@ type batchRequest struct {
 // batchResponse is the JSON payload returned by POST /batch.
 type batchResponse struct {
 	Responses []opResponseJSON `json:"responses"`
+	Revision  int64            `json:"revision"`
 }
 
 // ---------------------------------------------------------------------------
@@ -58,14 +59,14 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	ops := jsonToOps(req.Ops)
 
-	results, err := batchSvc.Execute(ctx, ops)
+	result, err := batchSvc.Execute(ctx, ops)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
-	responses := make([]opResponseJSON, len(results))
-	for i, opResp := range results {
+	responses := make([]opResponseJSON, len(result.Responses))
+	for i, opResp := range result.Responses {
 		responses[i] = opResponseJSON{
 			Kvs:       kvsToResponse(opResp.Kvs),
 			Count:     opResp.Count,
@@ -73,7 +74,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, batchResponse{Responses: responses})
+	writeJSON(w, batchResponse{Responses: responses, Revision: result.Revision})
 }
 
 // ---------------------------------------------------------------------------

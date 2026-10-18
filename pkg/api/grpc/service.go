@@ -1160,17 +1160,17 @@ func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*p
 		ops[i] = protoToOp(op)
 	}
 
-	results, err := batchSvc.Execute(ctx, ops)
+	result, err := batchSvc.Execute(ctx, ops)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 
-	responses := make([]*pb.OpResponse, len(results))
-	for i, r := range results {
+	responses := make([]*pb.OpResponse, len(result.Responses))
+	for i, r := range result.Responses {
 		responses[i] = opResponseToProto(r)
 	}
 
-	return &pb.BatchResponse{Responses: responses}, nil
+	return &pb.BatchResponse{Responses: responses, Revision: result.Revision}, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,13 @@ import (
 // Compile-time interface assertion.
 var _ transport.BatchClient = (*Transport)(nil)
 
+// serverBatchResponse is the JSON shape qrdb_batch_execute returns: the
+// server's service.BatchResponse marshaled with its Go field names.
+type serverBatchResponse struct {
+	Revision  int64              `json:"Revision"`
+	Responses []serverOpResponse `json:"Responses"`
+}
+
 // ---------------------------------------------------------------------------
 // BatchClient implementation
 // ---------------------------------------------------------------------------
@@ -57,13 +64,13 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 		return nil, mapOpsNotFoundError(ops, callErr)
 	}
 
-	var raw []serverOpResponse
+	var raw serverBatchResponse
 	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "ExecuteBatch", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	responses := make([]transport.OpResponse, len(raw))
-	for i, r := range raw {
+	responses := make([]transport.OpResponse, len(raw.Responses))
+	for i, r := range raw.Responses {
 		kvs := make([]*transport.MVCCKeyValue, len(r.Kvs))
 		for j := range r.Kvs {
 			kvs[j] = serverKeyValueToTransport(&r.Kvs[j])
@@ -77,6 +84,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 
 	return &transport.BatchResponse{
 		Responses: responses,
+		Revision:  raw.Revision,
 	}, nil
 }
 

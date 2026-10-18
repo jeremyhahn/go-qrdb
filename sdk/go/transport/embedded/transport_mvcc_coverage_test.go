@@ -491,17 +491,17 @@ func TestEmbeddedBatch_ExecuteWithMode(t *testing.T) {
 // can hit the success branches and the type conversion helpers.
 type fullBatchExecSvc struct{}
 
-func (s *fullBatchExecSvc) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (s *fullBatchExecSvc) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	resps := make([]service.OpResponse, len(ops))
 	for i := range ops {
 		resps[i] = service.OpResponse{Succeeded: true, Count: 1, Kvs: []*kv.KeyValue{
 			{Key: ops[i].Key, Value: ops[i].Value, ModRevision: 1, Version: 1},
 		}}
 	}
-	return resps, nil
+	return &service.BatchResponse{Revision: 1, Responses: resps}, nil
 }
 
-func (s *fullBatchExecSvc) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (s *fullBatchExecSvc) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return s.Execute(ctx, ops)
 }
 

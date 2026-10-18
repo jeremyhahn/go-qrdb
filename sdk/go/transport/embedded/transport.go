@@ -1598,7 +1598,8 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 			return nil, translateError(err)
 		}
 		return &transport.BatchResponse{
-			Responses: toTransportOpResponses(resps),
+			Responses: toTransportOpResponses(resps.Responses),
+			Revision:  resps.Revision,
 		}, nil
 	}
 
@@ -1608,7 +1609,8 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	}
 
 	return &transport.BatchResponse{
-		Responses: toTransportOpResponses(resps),
+		Responses: toTransportOpResponses(resps.Responses),
+		Revision:  resps.Revision,
 	}, nil
 }
 

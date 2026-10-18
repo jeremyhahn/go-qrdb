@@ -329,7 +329,7 @@ func (s *MemStore) txnExecute(compares []service.Compare, successOps, failureOps
 
 // batchExecute applies ops unconditionally within a single revision,
 // mirroring service.BatchServicer.Execute's atomicity contract.
-func (s *MemStore) batchExecute(ops []service.Op) ([]service.OpResponse, error) {
+func (s *MemStore) batchExecute(ops []service.Op) (*service.BatchResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -338,7 +338,7 @@ func (s *MemStore) batchExecute(ops []service.Op) ([]service.OpResponse, error) 
 	for i := range ops {
 		resp[i] = service.OpResponse{Succeeded: true}
 	}
-	return resp, nil
+	return &service.BatchResponse{Responses: resp}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -373,12 +373,12 @@ type Batch struct {
 }
 
 // Execute implements service.BatchServicer.
-func (b *Batch) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (b *Batch) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	return b.store.batchExecute(ops)
 }
 
 // ExecuteWithMode implements service.BatchServicer.
-func (b *Batch) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (b *Batch) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return b.Execute(ctx, ops)
 }
 

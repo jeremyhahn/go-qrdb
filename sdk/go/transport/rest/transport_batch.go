@@ -41,6 +41,7 @@ type batchWireRequest struct {
 // batchWireResponse matches the JSON payload returned by POST /batch.
 type batchWireResponse struct {
 	Responses []txWireOpResponse `json:"responses"`
+	Revision  int64              `json:"revision"`
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 
 	return &transport.BatchResponse{
 		Responses: responses,
+		Revision:  wireResp.Revision,
 	}, nil
 }
 

@@ -145,13 +145,32 @@ type OpResponse struct {
 }
 
 type BatchRequest struct{ Ops []Op }
-type BatchResponse struct{ Responses []OpResponse }
+type BatchResponse struct {
+	Revision  int64
+	Responses []OpResponse
+}
 ```
 
 `encodeServiceOp` maps only `OpPut` and `OpDelete` to protocol opcodes. `OpGet`,
 `OpRange` and any unmapped value in a transaction branch or batch fail closed
 with `UnsupportedTransactionOpError` before anything is proposed, rather than
 defaulting to a write that would corrupt the key.
+
+`BatchResponse.Revision` is the single MVCC revision every op in the batch
+committed at — the state machine's `sm.Result.Value` for the batch's one
+proposal, and the `ModRevision` a later read of any key the batch wrote
+reports. A batch with no put or delete proposes nothing and returns `0`.
+Every transport carries it, with the same meaning:
+
+| Transport | Field |
+|---|---|
+| embedded (`sdk/go/transport/embedded`) | `transport.BatchResponse.Revision`, from the `service.BatchServicer` passed to `embedded.WithBatchService` (`sdk.ServiceBatchServicer` is an alias of that interface) |
+| gRPC, QUIC, Unix | `BatchResponse.revision`, `int64 revision = 2` in `qrdbv1/qrdb.proto` |
+| REST | `"revision"` in the `POST /batch` response body, beside `"responses"` |
+| MCP | `qrdb_batch_execute` returns `{"Revision": N, "Responses": [...]}`, the field naming `qrdb_tx_execute` uses |
+
+The MCP result is an object, not an array: a client reads the per-op results
+from `Responses`.
 
 Import session — `pkg/service.BatchServicer`:
 
@@ -175,8 +194,8 @@ type ImportResult struct {
 }
 
 type BatchServicer interface {
-	Execute(ctx context.Context, ops []Op) ([]OpResponse, error)
-	ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) ([]OpResponse, error)
+	Execute(ctx context.Context, ops []Op) (*BatchResponse, error)
+	ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) (*BatchResponse, error)
 	ExecuteEntity(ctx context.Context, req *BatchEntityRequest) (*BatchEntityResponse, error)
 
 	// ImportBegin starts a chunked import session scoped to the caller's

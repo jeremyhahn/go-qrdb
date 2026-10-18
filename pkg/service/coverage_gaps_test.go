@@ -356,14 +356,14 @@ func TestBatchService_ExecuteWithMode_PutAndDelete(t *testing.T) {
 		{Type: OpPut, Key: []byte("k1"), Value: []byte("v1")},
 		{Type: OpDelete, Key: []byte("k2")},
 	}
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(responses) != 2 {
-		t.Fatalf("expected 2 responses, got %d", len(responses))
+	if len(result.Responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(result.Responses))
 	}
-	for i, r := range responses {
+	for i, r := range result.Responses {
 		if !r.Succeeded {
 			t.Fatalf("response[%d].Succeeded=false, want true", i)
 		}
@@ -386,18 +386,18 @@ func TestBatchService_ExecuteWithMode_ReadGet(t *testing.T) {
 	ops := []Op{
 		{Type: OpGet, Key: []byte("k")},
 	}
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.Sync)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.Sync)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("expected 1 response, got %d", len(responses))
+	if len(result.Responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(result.Responses))
 	}
-	if !responses[0].Succeeded {
+	if !result.Responses[0].Succeeded {
 		t.Fatal("expected Succeeded=true")
 	}
-	if len(responses[0].Kvs) != 1 {
-		t.Fatalf("expected 1 kv, got %d", len(responses[0].Kvs))
+	if len(result.Responses[0].Kvs) != 1 {
+		t.Fatalf("expected 1 kv, got %d", len(result.Responses[0].Kvs))
 	}
 }
 
@@ -418,15 +418,15 @@ func TestBatchService_ExecuteWithMode_ReadRange(t *testing.T) {
 	ops := []Op{
 		{Type: OpRange, Key: []byte("a"), RangeEnd: []byte("z")},
 	}
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.Sync)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.Sync)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("expected 1 response, got %d", len(responses))
+	if len(result.Responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(result.Responses))
 	}
-	if responses[0].Count != 2 {
-		t.Fatalf("expected Count=2, got %d", responses[0].Count)
+	if result.Responses[0].Count != 2 {
+		t.Fatalf("expected Count=2, got %d", result.Responses[0].Count)
 	}
 }
 
@@ -443,15 +443,15 @@ func TestBatchService_Execute_GetKeyNotFound(t *testing.T) {
 	ops := []Op{
 		{Type: OpGet, Key: []byte("missing")},
 	}
-	responses, err := svc.Execute(context.Background(), ops)
+	result, err := svc.Execute(context.Background(), ops)
 	if err != nil {
 		t.Fatalf("unexpected error on key-not-found: %v", err)
 	}
-	if !responses[0].Succeeded {
+	if !result.Responses[0].Succeeded {
 		t.Fatal("expected Succeeded=true for missing key")
 	}
-	if len(responses[0].Kvs) != 0 {
-		t.Fatalf("expected empty Kvs, got %d", len(responses[0].Kvs))
+	if len(result.Responses[0].Kvs) != 0 {
+		t.Fatalf("expected empty Kvs, got %d", len(result.Responses[0].Kvs))
 	}
 }
 
@@ -483,12 +483,12 @@ func TestBatchService_Execute_GetWithRangeEnd(t *testing.T) {
 	}
 	svc := NewBatchService(host, 1)
 	ops := []Op{{Type: OpGet, Key: []byte("a"), RangeEnd: []byte("z")}}
-	responses, err := svc.Execute(context.Background(), ops)
+	result, err := svc.Execute(context.Background(), ops)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if responses[0].Count != 1 {
-		t.Fatalf("expected Count=1, got %d", responses[0].Count)
+	if result.Responses[0].Count != 1 {
+		t.Fatalf("expected Count=1, got %d", result.Responses[0].Count)
 	}
 }
 

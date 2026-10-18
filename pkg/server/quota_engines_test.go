@@ -39,12 +39,12 @@ type countingBatch struct {
 	executed int
 }
 
-func (m *countingBatch) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+func (m *countingBatch) Execute(_ context.Context, _ []service.Op) (*service.BatchResponse, error) {
 	m.executed++
 	return nil, nil
 }
 
-func (m *countingBatch) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *countingBatch) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	m.executed++
 	return nil, nil
 }
@@ -127,7 +127,7 @@ type failingBatch struct {
 	err error
 }
 
-func (m *failingBatch) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+func (m *failingBatch) Execute(_ context.Context, _ []service.Op) (*service.BatchResponse, error) {
 	return nil, m.err
 }
 

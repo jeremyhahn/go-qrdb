@@ -164,9 +164,9 @@ func (m *opRec) record(ops []service.Op) {
 	}
 }
 
-func (m *opRec) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *opRec) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	m.record(ops)
-	return nil, nil
+	return &service.BatchResponse{}, nil
 }
 
 func (m *opRec) txExecute(cmp []service.Compare, ok []service.Op) {

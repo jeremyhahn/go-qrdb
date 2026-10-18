@@ -22,6 +22,10 @@ type BatchRequest struct {
 // BatchResponse is the result of a batch execution.
 type BatchResponse struct {
 	Responses []OpResponse `json:"responses"`
+
+	// Revision is the single MVCC revision every write in the batch
+	// committed at. It is zero when the batch held no put or delete.
+	Revision int64 `json:"revision"`
 }
 
 // ImportOptions configures a batch import operation.

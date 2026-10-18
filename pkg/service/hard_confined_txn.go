@@ -215,14 +215,14 @@ func (e *HardConfinedImportGuardUnavailableError) Error() string {
 	return "service: Import has no hard-confinement guard to enforce on this BatchServicer and refuses rather than import unguarded"
 }
 
-func (h *hardConfinedBatch) Execute(ctx context.Context, ops []Op) ([]OpResponse, error) {
+func (h *hardConfinedBatch) Execute(ctx context.Context, ops []Op) (*BatchResponse, error) {
 	if opsOrComparesTouchHardConfined(nil, ops) {
 		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
 	return h.BatchServicer.Execute(ctx, ops)
 }
 
-func (h *hardConfinedBatch) ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) ([]OpResponse, error) {
+func (h *hardConfinedBatch) ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) (*BatchResponse, error) {
 	if opsOrComparesTouchHardConfined(nil, ops) {
 		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}

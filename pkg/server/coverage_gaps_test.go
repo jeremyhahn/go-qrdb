@@ -416,14 +416,14 @@ type cgCountingBatch struct {
 	err         error
 }
 
-func (m *cgCountingBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *cgCountingBatch) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	m.execCalls++
-	return make([]service.OpResponse, len(ops)), m.err
+	return &service.BatchResponse{Responses: make([]service.OpResponse, len(ops))}, m.err
 }
 
-func (m *cgCountingBatch) ExecuteWithMode(_ context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *cgCountingBatch) ExecuteWithMode(_ context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	m.execCalls++
-	return make([]service.OpResponse, len(ops)), m.err
+	return &service.BatchResponse{Responses: make([]service.OpResponse, len(ops))}, m.err
 }
 
 func (m *cgCountingBatch) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {

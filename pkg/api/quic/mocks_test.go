@@ -451,13 +451,18 @@ func (m *mockTransactionService) ExecuteEntity(ctx context.Context, req *service
 type mockBatchService struct {
 	executeFn       func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
 	executeEntityFn func(ctx context.Context, req *service.BatchEntityRequest) (*service.BatchEntityResponse, error)
+	revision        int64 // the batch revision Execute reports
 }
 
-func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
+	var resp []service.OpResponse
 	if m.executeFn != nil {
-		return m.executeFn(ctx, ops)
+		var err error
+		if resp, err = m.executeFn(ctx, ops); err != nil {
+			return nil, err
+		}
 	}
-	return nil, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: resp}, nil
 }
 
 func (m *mockBatchService) ExecuteEntity(ctx context.Context, req *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
@@ -467,7 +472,7 @@ func (m *mockBatchService) ExecuteEntity(ctx context.Context, req *service.Batch
 	return nil, nil
 }
 
-func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return nil, nil
 }
 

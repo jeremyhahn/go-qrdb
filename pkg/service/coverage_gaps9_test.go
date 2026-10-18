@@ -360,12 +360,12 @@ func TestBatchService_Execute_WriteOnly(t *testing.T) {
 		{Type: OpPut, Key: []byte("k2"), Value: []byte("v2")},
 		{Type: OpDelete, Key: []byte("k3")},
 	}
-	responses, err := svc.Execute(context.Background(), ops)
+	result, err := svc.Execute(context.Background(), ops)
 	if err != nil {
 		t.Fatalf("Execute write-only: %v", err)
 	}
-	if len(responses) != 3 {
-		t.Fatalf("expected 3 responses, got %d", len(responses))
+	if len(result.Responses) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(result.Responses))
 	}
 }
 

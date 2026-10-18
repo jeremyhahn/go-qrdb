@@ -145,13 +145,18 @@ type mockBatchService struct {
 	importAppendFn func(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
 	importCommitFn func(ctx context.Context, sessionID string) (*service.ImportResult, error)
 	importAbortFn  func(ctx context.Context, sessionID string) error
+	revision       int64 // the batch revision Execute reports
 }
 
-func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
+	var resp []service.OpResponse
 	if m.executeFn != nil {
-		return m.executeFn(ctx, ops)
+		var err error
+		if resp, err = m.executeFn(ctx, ops); err != nil {
+			return nil, err
+		}
 	}
-	return nil, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: resp}, nil
 }
 
 func (m *mockBatchService) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
@@ -193,7 +198,7 @@ func (m *mockBatchService) ImportAbort(ctx context.Context, sessionID string) er
 	return nil
 }
 
-func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return nil, nil
 }
 

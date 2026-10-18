@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/mvcchost"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -107,16 +108,19 @@ func (f *fakeTransactionServicer) ExecuteEntity(_ context.Context, _ *service.Tr
 
 type fakeBatchServicer struct{}
 
+// fakeBatchRevision is the batch revision fakeBatchServicer reports.
+const fakeBatchRevision = 42
+
 var _ service.BatchServicer = (*fakeBatchServicer)(nil)
 
-func (f *fakeBatchServicer) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (f *fakeBatchServicer) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	resps := make([]service.OpResponse, len(ops))
 	for i := range ops {
 		resps[i] = service.OpResponse{Succeeded: true}
 	}
-	return resps, nil
+	return &service.BatchResponse{Revision: fakeBatchRevision, Responses: resps}, nil
 }
-func (f *fakeBatchServicer) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (f *fakeBatchServicer) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return f.Execute(ctx, ops)
 }
 func (f *fakeBatchServicer) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
@@ -224,6 +228,29 @@ func connectMVCCTransport(t *testing.T, addr string) (*Transport, func()) {
 		client: pb.NewQRDBServiceClient(conn),
 	}
 	return tr, func() { _ = conn.Close() }
+}
+
+// TestTransport_ExecuteBatch_RevisionFromRealEngine drives a batch through the
+// gRPC server into a real MVCC engine and checks that the revision the engine
+// assigned reaches the client unchanged.
+func TestTransport_ExecuteBatch_RevisionFromRealEngine(t *testing.T) {
+	host := mvcchost.New(t)
+	srv := googlegrpc.NewServer()
+	grpcpkg.RegisterService(srv, newMockKVService(), newMockAdminService(),
+		grpcpkg.WithRegisterMVCC(host.MVCC()),
+		grpcpkg.WithRegisterBatch(host.Batch()),
+	)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	tr, cleanup := connectMVCCTransport(t, lis.Addr().String())
+	t.Cleanup(cleanup)
+
+	mvcchost.CheckBatchRevision(t, tr, "grpc-")
 }
 
 // ===========================================================================

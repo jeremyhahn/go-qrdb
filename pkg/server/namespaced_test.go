@@ -408,11 +408,11 @@ type recBatch struct {
 	lastImportSessionCall string
 }
 
-func (m *recBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *recBatch) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	for _, op := range ops {
 		m.lastKeys = append(m.lastKeys, string(op.Key))
 	}
-	return []service.OpResponse{{Kvs: []*kv.KeyValue{{Key: []byte("p/k")}}}}, nil
+	return &service.BatchResponse{Responses: []service.OpResponse{{Kvs: []*kv.KeyValue{{Key: []byte("p/k")}}}}}, nil
 }
 
 func (m *recBatch) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
@@ -453,8 +453,8 @@ func TestNamespacedBatch_PrefixesAndStrips(t *testing.T) {
 	if len(rec.lastKeys) != 1 || rec.lastKeys[0] != "p/k" {
 		t.Errorf("inner op keys = %v, want [p/k]", rec.lastKeys)
 	}
-	if string(resp[0].Kvs[0].Key) != "k" {
-		t.Errorf("returned kv key = %q, want k", resp[0].Kvs[0].Key)
+	if string(resp.Responses[0].Kvs[0].Key) != "k" {
+		t.Errorf("returned kv key = %q, want k", resp.Responses[0].Kvs[0].Key)
 	}
 }
 

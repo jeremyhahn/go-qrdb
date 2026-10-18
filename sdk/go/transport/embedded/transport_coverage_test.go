@@ -2038,11 +2038,11 @@ type fullBatchSession struct {
 	buf  bytes.Buffer
 }
 
-func (b *fullBatchService) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+func (b *fullBatchService) Execute(_ context.Context, _ []service.Op) (*service.BatchResponse, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (b *fullBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (b *fullBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return nil, errors.New("not implemented")
 }
 

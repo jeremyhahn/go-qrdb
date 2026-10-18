@@ -53,6 +53,14 @@ echo '{"ops":[
 ]}' | qrdb batch execute --file -
 ```
 
+The response carries `revision`: the one MVCC revision every write in the batch
+committed at, which is the `mod_revision` a later read of any of those keys
+reports. A batch with no put or delete commits nothing and answers `0`. Every
+transport returns it — `revision` in the REST JSON, gRPC, QUIC and Unix
+responses, `Revision` on the embedded client's `BatchResponse`, and on MCP
+`qrdb_batch_execute` answers `{"Revision": N, "Responses": [...]}`, an object
+whose `Responses` holds the per-op results.
+
 **Load a CSV.** Pick which column is the key; by default the whole row is stored
 as JSON under it.
 

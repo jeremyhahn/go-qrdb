@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/mvcchost"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -550,6 +551,7 @@ func TestUnixRT_ExecuteTransaction_ServiceError(t *testing.T) {
 type mockBatchSvc struct {
 	executeFn func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
 	importFn  func(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+	revision  int64 // the batch revision Execute reports
 
 	mu          sync.Mutex
 	sessions    map[string]*mockImportSession
@@ -564,18 +566,22 @@ type mockImportSession struct {
 	buf  []byte
 }
 
-func (m *mockBatchSvc) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchSvc) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	if m.executeFn != nil {
-		return m.executeFn(ctx, ops)
+		out, err := m.executeFn(ctx, ops)
+		if err != nil {
+			return nil, err
+		}
+		return &service.BatchResponse{Revision: m.revision, Responses: out}, nil
 	}
 	out := make([]service.OpResponse, len(ops))
 	for i := range ops {
 		out[i] = service.OpResponse{Succeeded: true, Count: 1}
 	}
-	return out, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: out}, nil
 }
 
-func (m *mockBatchSvc) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchSvc) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return m.Execute(ctx, ops)
 }
 
@@ -689,6 +695,20 @@ func TestUnixRT_ExecuteBatch_ServiceError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from server")
 	}
+}
+
+// TestUnixRT_ExecuteBatch_RevisionFromRealEngine drives a batch through the
+// unix-socket server into a real MVCC engine and checks that the revision the
+// engine assigned reaches the client unchanged.
+func TestUnixRT_ExecuteBatch_RevisionFromRealEngine(t *testing.T) {
+	host := mvcchost.New(t)
+	tr, cleanup := startAuthServer(t,
+		unixserver.WithMVCC(host.MVCC()),
+		unixserver.WithBatch(host.Batch()),
+	)
+	t.Cleanup(cleanup)
+
+	mvcchost.CheckBatchRevision(t, tr, "unix-")
 }
 
 // ---------------------------------------------------------------------------

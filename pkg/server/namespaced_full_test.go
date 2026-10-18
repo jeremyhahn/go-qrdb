@@ -879,21 +879,26 @@ type batchRec struct {
 	err      error
 }
 
-func (m *batchRec) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *batchRec) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	for _, op := range ops {
 		m.lastKeys = append(m.lastKeys, string(op.Key))
 	}
 	return nil, m.err
 }
-func (m *batchRec) ExecuteWithMode(_ context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *batchRec) ExecuteWithMode(_ context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	for _, op := range ops {
 		m.lastKeys = append(m.lastKeys, string(op.Key))
 	}
 	if m.err != nil {
 		return nil, m.err
 	}
-	return []service.OpResponse{{Kvs: []*kvKV{{Key: []byte("p/k")}}}}, nil
+	return &service.BatchResponse{Revision: batchRecRevision, Responses: []service.OpResponse{{Kvs: []*kvKV{{Key: []byte("p/k")}}}}}, nil
 }
+
+// batchRecRevision is the commit revision batchRec reports, which the
+// namespaced wrapper must pass through unchanged.
+const batchRecRevision int64 = 7
+
 func (m *batchRec) ExecuteEntity(_ context.Context, req *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
 	if req != nil {
 		for _, op := range req.Ops {
@@ -915,8 +920,11 @@ func TestNamespacedBatch_ExecuteWithModeAndEntity(t *testing.T) {
 	if rec.lastKeys[0] != "p/k" {
 		t.Errorf("ExecuteWithMode inner key = %q", rec.lastKeys[0])
 	}
-	if string(resp[0].Kvs[0].Key) != "k" {
-		t.Errorf("ExecuteWithMode stripped key = %q", resp[0].Kvs[0].Key)
+	if string(resp.Responses[0].Kvs[0].Key) != "k" {
+		t.Errorf("ExecuteWithMode stripped key = %q", resp.Responses[0].Kvs[0].Key)
+	}
+	if resp.Revision != batchRecRevision {
+		t.Errorf("ExecuteWithMode revision = %d, want %d", resp.Revision, batchRecRevision)
 	}
 
 	// ExecuteEntity prefixes each entity op ID.

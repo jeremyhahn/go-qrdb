@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -94,14 +95,14 @@ func TestBatchService_Execute_SuccessMultipleOps(t *testing.T) {
 		{Type: OpDelete, Key: []byte("k3")},
 	}
 
-	responses, err := svc.Execute(context.Background(), ops)
+	result, err := svc.Execute(context.Background(), ops)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if len(responses) != 3 {
-		t.Fatalf("expected 3 responses, got %d", len(responses))
+	if len(result.Responses) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(result.Responses))
 	}
-	for i, r := range responses {
+	for i, r := range result.Responses {
 		if !r.Succeeded {
 			t.Fatalf("response[%d].Succeeded should be true", i)
 		}
@@ -130,12 +131,12 @@ func TestBatchService_Execute_EmptyOps(t *testing.T) {
 	}
 
 	svc := NewBatchService(host, 1)
-	responses, err := svc.Execute(context.Background(), nil)
+	result, err := svc.Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if len(responses) != 0 {
-		t.Fatalf("expected 0 responses, got %d", len(responses))
+	if len(result.Responses) != 0 {
+		t.Fatalf("expected 0 responses, got %d", len(result.Responses))
 	}
 }
 
@@ -147,12 +148,12 @@ func TestBatchService_Execute_EmptyOpsSlice(t *testing.T) {
 	}
 
 	svc := NewBatchService(host, 1)
-	responses, err := svc.Execute(context.Background(), []Op{})
+	result, err := svc.Execute(context.Background(), []Op{})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if len(responses) != 0 {
-		t.Fatalf("expected 0 responses, got %d", len(responses))
+	if len(result.Responses) != 0 {
+		t.Fatalf("expected 0 responses, got %d", len(result.Responses))
 	}
 }
 
@@ -184,16 +185,16 @@ func TestBatchService_Execute_SinglePutOp(t *testing.T) {
 	}
 
 	svc := NewBatchService(host, 1)
-	responses, err := svc.Execute(context.Background(), []Op{
+	result, err := svc.Execute(context.Background(), []Op{
 		{Type: OpPut, Key: []byte("mykey"), Value: []byte("myval")},
 	})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("expected 1 response, got %d", len(responses))
+	if len(result.Responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(result.Responses))
 	}
-	if !responses[0].Succeeded {
+	if !result.Responses[0].Succeeded {
 		t.Fatal("expected response[0].Succeeded=true")
 	}
 }
@@ -236,17 +237,114 @@ func TestBatchService_Execute_MixedPutDeleteOps(t *testing.T) {
 		{Type: OpDelete, Key: []byte("k4")},
 	}
 
-	responses, err := svc.Execute(context.Background(), ops)
+	result, err := svc.Execute(context.Background(), ops)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if len(responses) != 4 {
-		t.Fatalf("expected 4 responses, got %d", len(responses))
+	if len(result.Responses) != 4 {
+		t.Fatalf("expected 4 responses, got %d", len(result.Responses))
 	}
-	for i, r := range responses {
+	for i, r := range result.Responses {
 		if !r.Succeeded {
 			t.Fatalf("response[%d].Succeeded should be true", i)
 		}
+	}
+}
+
+func TestBatchService_Execute_RevisionIsResultValue(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 17}, nil
+		},
+	}
+	svc := NewBatchService(host, 1)
+
+	resp, err := svc.Execute(context.Background(), []Op{
+		{Type: OpPut, Key: []byte("k1"), Value: []byte("v1")},
+		{Type: OpDelete, Key: []byte("k2")},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if resp.Revision != 17 {
+		t.Fatalf("Revision = %d, want sm.Result.Value 17", resp.Revision)
+	}
+}
+
+func TestBatchService_ExecuteWithMode_RevisionIsResultValue(t *testing.T) {
+	host := &mockHost{
+		proposeWithModeFn: func(_ context.Context, _ uint64, _ []byte, _ writemode.Mode) (sm.Result, error) {
+			return sm.Result{Value: 23}, nil
+		},
+	}
+	svc := NewBatchService(host, 1)
+
+	resp, err := svc.ExecuteWithMode(context.Background(), []Op{
+		{Type: OpPut, Key: []byte("k1"), Value: []byte("v1")},
+		{Type: OpDelete, Key: []byte("k2")},
+	}, writemode.Sync)
+	if err != nil {
+		t.Fatalf("ExecuteWithMode: %v", err)
+	}
+	if resp.Revision != 23 {
+		t.Fatalf("Revision = %d, want sm.Result.Value 23", resp.Revision)
+	}
+}
+
+func TestBatchService_Execute_ReadOnlyBatchRevisionZero(t *testing.T) {
+	proposed := false
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 99}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			if _, ok := query.(MVCCRangeQuery); ok {
+				return &MVCCRangeResult{}, nil
+			}
+			return &KeyValue{Key: []byte("k1"), Value: []byte("v1"), ModRevision: 4}, nil
+		},
+	}
+	svc := NewBatchService(host, 1)
+
+	resp, err := svc.Execute(context.Background(), []Op{
+		{Type: OpGet, Key: []byte("k1")},
+		{Type: OpRange, Key: []byte("a"), RangeEnd: []byte("z")},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if proposed {
+		t.Fatal("a read-only batch proposed a write")
+	}
+	if resp.Revision != 0 {
+		t.Fatalf("Revision = %d, want 0 for a batch with no put or delete", resp.Revision)
+	}
+	if len(resp.Responses) != 2 {
+		t.Fatalf("len(Responses) = %d, want 2", len(resp.Responses))
+	}
+}
+
+func TestBatchService_ExecuteWithMode_ReadOnlyBatchRevisionZero(t *testing.T) {
+	host := &mockHost{
+		proposeWithModeFn: func(_ context.Context, _ uint64, _ []byte, _ writemode.Mode) (sm.Result, error) {
+			t.Fatal("a read-only batch proposed a write")
+			return sm.Result{}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return &KeyValue{Key: []byte("k1"), Value: []byte("v1")}, nil
+		},
+	}
+	svc := NewBatchService(host, 1)
+
+	resp, err := svc.ExecuteWithMode(context.Background(), []Op{
+		{Type: OpGet, Key: []byte("k1")},
+	}, writemode.Sync)
+	if err != nil {
+		t.Fatalf("ExecuteWithMode: %v", err)
+	}
+	if resp.Revision != 0 {
+		t.Fatalf("Revision = %d, want 0 for a batch with no put or delete", resp.Revision)
 	}
 }
 
@@ -384,12 +482,12 @@ func TestBatchService_Execute_ResponseCountMatchesOpsCount(t *testing.T) {
 			ops[i] = Op{Type: OpPut, Key: []byte("k"), Value: []byte("v")}
 		}
 
-		responses, err := svc.Execute(context.Background(), ops)
+		result, err := svc.Execute(context.Background(), ops)
 		if err != nil {
 			t.Fatalf("unexpected error for count=%d: %v", count, err)
 		}
-		if len(responses) != count {
-			t.Fatalf("expected %d responses, got %d", count, len(responses))
+		if len(result.Responses) != count {
+			t.Fatalf("expected %d responses, got %d", count, len(result.Responses))
 		}
 	}
 }

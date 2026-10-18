@@ -29,6 +29,12 @@ type KVServicer = service.KVServicer
 // AdminServicer is the service-layer interface for admin/cluster operations.
 type AdminServicer = service.AdminServicer
 
+// ServiceBatchServicer is the service-layer interface for atomic batch
+// operations. A consumer passes a value of this type to
+// embedded.WithBatchService; the BatchResponse it returns carries the single
+// MVCC revision every op in the batch committed at.
+type ServiceBatchServicer = service.BatchServicer
+
 // Host is the interface for the backend host that services operate on.
 type Host = service.Host
 

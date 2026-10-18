@@ -190,22 +190,23 @@ func (m *mockTransactionService) ExecuteEntity(_ context.Context, _ *service.Tra
 
 // mockBatchService implements service.BatchServicer for testing.
 type mockBatchService struct {
-	result []service.OpResponse
-	err    error
+	result   []service.OpResponse
+	revision int64
+	err      error
 }
 
-func (m *mockBatchService) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchService) Execute(_ context.Context, _ []service.Op) (*service.BatchResponse, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.result, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: m.result}, nil
 }
 
-func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.result, nil
+	return &service.BatchResponse{Revision: m.revision, Responses: m.result}, nil
 }
 
 func (m *mockBatchService) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {

@@ -90,12 +90,14 @@ func handleBatchExecute(batchSvc service.BatchServicer) mcpserver.ToolHandlerFun
 			return mcp.NewToolResultError("ops must not be empty"), nil
 		}
 
-		responses, execErr := batchSvc.Execute(ctx, ops)
+		// The result marshals as {"Revision": N, "Responses": [...]}, the
+		// same field naming qrdb_tx_execute uses for its response.
+		result, execErr := batchSvc.Execute(ctx, ops)
 		if execErr != nil {
 			return nil, &ToolError{Tool: "qrdb_batch_execute", Err: execErr}
 		}
 
-		data, jsonErr := json.Marshal(responses)
+		data, jsonErr := json.Marshal(result)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_batch_execute", Err: jsonErr}
 		}

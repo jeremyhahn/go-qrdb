@@ -27,6 +27,7 @@ import (
 	"strconv"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"gopkg.in/yaml.v3"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
@@ -128,20 +129,33 @@ var entityOpTypeHandlers = map[string]byte{
 	"delete": protocol.OpMVCCDelete,
 }
 
+// BatchResponse is the result of an atomic batch.
+type BatchResponse struct {
+	// Revision is the single MVCC revision every write in the batch
+	// committed at. It is zero when the batch held no put or delete, since
+	// nothing was committed.
+	Revision int64
+
+	// Responses holds the per-operation results in the order of the
+	// request's operations.
+	Responses []OpResponse
+}
+
 // BatchServicer provides atomic multi-operation execution at the KV layer.
 // All operations in a batch are applied within a single MVCC revision,
 // guaranteeing atomicity without the conditional logic of transactions.
 type BatchServicer interface {
 	// Execute applies the given operations atomically. All operations
 	// succeed or fail together. Returns the per-operation results in
-	// the same order as the input.
-	Execute(ctx context.Context, ops []Op) ([]OpResponse, error)
+	// the same order as the input, and the single MVCC revision every
+	// write in the batch committed at.
+	Execute(ctx context.Context, ops []Op) (*BatchResponse, error)
 
 	// ExecuteWithMode applies the given operations atomically with the
 	// specified write durability. All operations succeed or fail
 	// together. Returns the per-operation results in the same order
 	// as the input.
-	ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) ([]OpResponse, error)
+	ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) (*BatchResponse, error)
 
 	// ExecuteEntity executes a batch of entity-typed operations with
 	// consistency and write mode options. Entity keys are constructed
@@ -412,7 +426,15 @@ func (s *BatchService) importSessionTTLSeconds() int64 {
 // Read operations (Get, Range) are performed via linearizable reads before
 // writes are committed, providing a consistent snapshot of the pre-batch
 // state. Returns the per-operation results in the same order as the input.
-func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, error) {
+func (s *BatchService) Execute(ctx context.Context, ops []Op) (*BatchResponse, error) {
+	return s.execute(ctx, ops, func(cmd []byte) (sm.Result, error) {
+		return propose(ctx, s.host, s.shardID, cmd)
+	})
+}
+
+// execute is the single body behind Execute and ExecuteWithMode; proposeCmd
+// replicates the encoded write batch with the caller's durability.
+func (s *BatchService) execute(ctx context.Context, ops []Op, proposeCmd func(cmd []byte) (sm.Result, error)) (*BatchResponse, error) {
 	responses := make([]OpResponse, len(ops))
 
 	// Execute read operations first via SyncRead. Reads observe the
@@ -448,12 +470,13 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 		}
 	}
 
+	var revision int64
 	if len(writeOps) > 0 {
 		cmd, encErr := protocol.EncodeBatch(writeOps)
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}
-		result, err := propose(ctx, s.host, s.shardID, cmd)
+		result, err := proposeCmd(cmd)
 		if err != nil {
 			return nil, translateProposeError(err)
 		}
@@ -463,6 +486,9 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 		if resultErr := checkResultError(result); resultErr != nil {
 			return nil, resultErr
 		}
+		// The MVCC state machine applies the whole batch at one new revision
+		// and returns it as the result value.
+		revision = int64(result.Value)
 	}
 
 	// Mark write operations as succeeded.
@@ -472,7 +498,7 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 		}
 	}
 
-	return responses, nil
+	return &BatchResponse{Revision: revision, Responses: responses}, nil
 }
 
 // ExecuteWithMode applies the given operations atomically with the specified
@@ -480,63 +506,10 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 // performed via linearizable reads before writes are committed. Write
 // operations (Put, Delete) are proposed using ProposeWithMode. Returns the
 // per-operation results in the same order as the input.
-func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) ([]OpResponse, error) {
-	responses := make([]OpResponse, len(ops))
-
-	// Execute read operations first via SyncRead. Reads observe the
-	// pre-batch state, consistent with etcd-style batch semantics.
-	for i, op := range ops {
-		switch op.Type {
-		case OpGet:
-			resp, err := s.executeGet(ctx, op)
-			if err != nil {
-				return nil, err
-			}
-			responses[i] = resp
-
-		case OpRange:
-			resp, err := s.executeRange(ctx, op)
-			if err != nil {
-				return nil, err
-			}
-			responses[i] = resp
-		}
-	}
-
-	// Collect and execute write operations with the specified mode.
-	var writeOps [][]byte
-	for _, op := range ops {
-		if op.Type == OpPut || op.Type == OpDelete {
-			encoded, err := encodeServiceOp(op)
-			if err != nil {
-				return nil, &EncodeRequestError{Err: err}
-			}
-			writeOps = append(writeOps, encoded)
-		}
-	}
-
-	if len(writeOps) > 0 {
-		cmd, encErr := protocol.EncodeBatch(writeOps)
-		if encErr != nil {
-			return nil, &EncodeRequestError{Err: encErr}
-		}
-		result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
-		if err != nil {
-			return nil, translateProposeError(err)
-		}
-		if resultErr := checkResultError(result); resultErr != nil {
-			return nil, resultErr
-		}
-	}
-
-	// Mark write operations as succeeded.
-	for i, op := range ops {
-		if op.Type == OpPut || op.Type == OpDelete {
-			responses[i] = OpResponse{Succeeded: true}
-		}
-	}
-
-	return responses, nil
+func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) (*BatchResponse, error) {
+	return s.execute(ctx, ops, func(cmd []byte) (sm.Result, error) {
+		return proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
+	})
 }
 
 // executeGet performs a linearizable read for a single key. Returns an

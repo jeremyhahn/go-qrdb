@@ -256,20 +256,20 @@ func (m *mockTransactionService) ExecuteEntity(_ context.Context, _ *service.Tra
 // mockBatchService implements service.BatchServicer for testing.
 type mockBatchService struct{}
 
-func (m *mockBatchService) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (m *mockBatchService) Execute(_ context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	responses := make([]service.OpResponse, len(ops))
 	for i := range ops {
 		responses[i] = service.OpResponse{Succeeded: true}
 	}
-	return responses, nil
+	return &service.BatchResponse{Responses: responses}, nil
 }
 
-func (m *mockBatchService) ExecuteWithMode(_ context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (m *mockBatchService) ExecuteWithMode(_ context.Context, ops []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	responses := make([]service.OpResponse, len(ops))
 	for i := range ops {
 		responses[i] = service.OpResponse{Succeeded: true}
 	}
-	return responses, nil
+	return &service.BatchResponse{Responses: responses}, nil
 }
 
 func (m *mockBatchService) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {

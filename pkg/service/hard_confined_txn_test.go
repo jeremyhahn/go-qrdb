@@ -51,12 +51,12 @@ type fakeBatch struct {
 	called bool
 }
 
-func (f *fakeBatch) Execute(_ context.Context, _ []Op) ([]OpResponse, error) {
+func (f *fakeBatch) Execute(_ context.Context, _ []Op) (*BatchResponse, error) {
 	f.called = true
 	return nil, nil
 }
 
-func (f *fakeBatch) ExecuteWithMode(_ context.Context, _ []Op, _ writemode.Mode) ([]OpResponse, error) {
+func (f *fakeBatch) ExecuteWithMode(_ context.Context, _ []Op, _ writemode.Mode) (*BatchResponse, error) {
 	f.called = true
 	return nil, nil
 }

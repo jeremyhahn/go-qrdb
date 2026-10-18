@@ -533,7 +533,7 @@ type scopedBatch struct{ scope *databaseScope }
 
 var _ service.BatchServicer = (*scopedBatch)(nil)
 
-func (s *scopedBatch) Execute(ctx context.Context, a1 []service.Op) ([]service.OpResponse, error) {
+func (s *scopedBatch) Execute(ctx context.Context, a1 []service.Op) (*service.BatchResponse, error) {
 	svc, err := s.scope.registry.BatchService(s.scope.tenant(ctx), s.scope.database)
 	if err != nil {
 		return nil, err
@@ -549,7 +549,7 @@ func (s *scopedBatch) ExecuteEntity(ctx context.Context, a1 *service.BatchEntity
 	return svc.ExecuteEntity(ctx, a1)
 }
 
-func (s *scopedBatch) ExecuteWithMode(ctx context.Context, a1 []service.Op, a2 writemode.Mode) ([]service.OpResponse, error) {
+func (s *scopedBatch) ExecuteWithMode(ctx context.Context, a1 []service.Op, a2 writemode.Mode) (*service.BatchResponse, error) {
 	svc, err := s.scope.registry.BatchService(s.scope.tenant(ctx), s.scope.database)
 	if err != nil {
 		return nil, err

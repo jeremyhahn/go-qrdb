@@ -178,11 +178,11 @@ func TestTxExecuteCmd_ServiceError(t *testing.T) {
 // all operations.
 type errorBatchService struct{}
 
-func (e *errorBatchService) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+func (e *errorBatchService) Execute(_ context.Context, _ []service.Op) (*service.BatchResponse, error) {
 	return nil, errors.New("batch: execute failed")
 }
 
-func (e *errorBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+func (e *errorBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) (*service.BatchResponse, error) {
 	return nil, errors.New("batch: execute with mode failed")
 }
 

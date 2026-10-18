@@ -98,7 +98,7 @@ func entityPutBytes(ops []service.BatchEntityOp) int {
 }
 
 // Execute admits the batch's put bytes against the quota, then forwards.
-func (s *quotaBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+func (s *quotaBatchService) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
 	n := opPutBytes(ops)
 	if err := s.reserve(ctx, n); err != nil {
 		return nil, err
@@ -112,7 +112,7 @@ func (s *quotaBatchService) Execute(ctx context.Context, ops []service.Op) ([]se
 }
 
 // ExecuteWithMode admits the batch's put bytes against the quota, then forwards.
-func (s *quotaBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, mode writemode.Mode) ([]service.OpResponse, error) {
+func (s *quotaBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, mode writemode.Mode) (*service.BatchResponse, error) {
 	n := opPutBytes(ops)
 	if err := s.reserve(ctx, n); err != nil {
 		return nil, err

@@ -42,17 +42,17 @@ func (s *Server) handleBatch(ctx context.Context, payload []byte) ([]byte, error
 		ops[i] = protoToOp(op)
 	}
 
-	results, err := batchSvc.Execute(ctx, ops)
+	result, err := batchSvc.Execute(ctx, ops)
 	if err != nil {
 		return nil, err
 	}
 
-	responses := make([]*pb.OpResponse, len(results))
-	for i, r := range results {
+	responses := make([]*pb.OpResponse, len(result.Responses))
+	for i, r := range result.Responses {
 		responses[i] = opResponseToProto(r)
 	}
 
-	resp, err := proto.Marshal(&pb.BatchResponse{Responses: responses})
+	resp, err := proto.Marshal(&pb.BatchResponse{Responses: responses, Revision: result.Revision})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

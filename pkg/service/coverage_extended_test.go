@@ -637,14 +637,14 @@ func TestBatchService_ExecuteWithMode_WritePutOnly(t *testing.T) {
 		{Type: OpPut, Key: []byte("k2"), Value: []byte("v2")},
 	}
 
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
 	if err != nil {
 		t.Fatalf("ExecuteWithMode() unexpected error: %v", err)
 	}
-	if len(responses) != 2 {
-		t.Fatalf("expected 2 responses, got %d", len(responses))
+	if len(result.Responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(result.Responses))
 	}
-	for i, r := range responses {
+	for i, r := range result.Responses {
 		if !r.Succeeded {
 			t.Fatalf("response[%d].Succeeded = false, want true", i)
 		}
@@ -666,14 +666,14 @@ func TestBatchService_ExecuteWithMode_WriteDeleteOnly(t *testing.T) {
 		{Type: OpDelete, Key: []byte("k1")},
 	}
 
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.Sync)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.Sync)
 	if err != nil {
 		t.Fatalf("ExecuteWithMode() unexpected error: %v", err)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("expected 1 response, got %d", len(responses))
+	if len(result.Responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(result.Responses))
 	}
-	if !responses[0].Succeeded {
+	if !result.Responses[0].Succeeded {
 		t.Fatal("response[0].Succeeded = false, want true")
 	}
 }
@@ -690,18 +690,18 @@ func TestBatchService_ExecuteWithMode_ReadOpGet(t *testing.T) {
 		{Type: OpGet, Key: []byte("k1")},
 	}
 
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
 	if err != nil {
 		t.Fatalf("ExecuteWithMode() unexpected error: %v", err)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("expected 1 response, got %d", len(responses))
+	if len(result.Responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(result.Responses))
 	}
-	if !responses[0].Succeeded {
+	if !result.Responses[0].Succeeded {
 		t.Fatal("response[0].Succeeded = false, want true")
 	}
-	if len(responses[0].Kvs) != 1 {
-		t.Fatalf("expected 1 kv, got %d", len(responses[0].Kvs))
+	if len(result.Responses[0].Kvs) != 1 {
+		t.Fatalf("expected 1 kv, got %d", len(result.Responses[0].Kvs))
 	}
 }
 
@@ -722,15 +722,15 @@ func TestBatchService_ExecuteWithMode_ReadOpRange(t *testing.T) {
 		{Type: OpRange, Key: []byte("k"), RangeEnd: []byte("z")},
 	}
 
-	responses, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
+	result, err := svc.ExecuteWithMode(context.Background(), ops, writemode.WALDurable)
 	if err != nil {
 		t.Fatalf("ExecuteWithMode() unexpected error: %v", err)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("expected 1 response, got %d", len(responses))
+	if len(result.Responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(result.Responses))
 	}
-	if responses[0].Count != 2 {
-		t.Fatalf("expected Count=2, got %d", responses[0].Count)
+	if result.Responses[0].Count != 2 {
+		t.Fatalf("expected Count=2, got %d", result.Responses[0].Count)
 	}
 }
 

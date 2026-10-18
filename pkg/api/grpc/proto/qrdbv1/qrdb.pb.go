@@ -2837,10 +2837,13 @@ func (x *BatchRequest) GetOps() []*Op {
 	return nil
 }
 
-// BatchResponse returns the per-operation results.
+// BatchResponse returns the per-operation results and the single MVCC
+// revision every write in the batch committed at (zero when the batch held
+// no put or delete).
 type BatchResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Responses     []*OpResponse          `protobuf:"bytes,1,rep,name=responses,proto3" json:"responses,omitempty"`
+	Revision      int64                  `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2880,6 +2883,13 @@ func (x *BatchResponse) GetResponses() []*OpResponse {
 		return x.Responses
 	}
 	return nil
+}
+
+func (x *BatchResponse) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 // BatchImportError describes a single row that failed during import. Named
@@ -31592,9 +31602,10 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\brevision\x18\x02 \x01(\x03R\brevision\x121\n" +
 	"\tresponses\x18\x03 \x03(\v2\x13.qrdb.v1.OpResponseR\tresponses\"-\n" +
 	"\fBatchRequest\x12\x1d\n" +
-	"\x03ops\x18\x01 \x03(\v2\v.qrdb.v1.OpR\x03ops\"B\n" +
+	"\x03ops\x18\x01 \x03(\v2\v.qrdb.v1.OpR\x03ops\"^\n" +
 	"\rBatchResponse\x121\n" +
-	"\tresponses\x18\x01 \x03(\v2\x13.qrdb.v1.OpResponseR\tresponses\"P\n" +
+	"\tresponses\x18\x01 \x03(\v2\x13.qrdb.v1.OpResponseR\tresponses\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x03R\brevision\"P\n" +
 	"\x10BatchImportError\x12\x10\n" +
 	"\x03row\x18\x01 \x01(\x05R\x03row\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x18\n" +

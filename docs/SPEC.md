@@ -53,6 +53,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | key-value | shipped | KV operations, MVCC revisions, consistency levels, write modes, compaction, selective restore. | [key-value/](key-value/), [01-architecture.md](01-architecture.md), [05-consistency.md](05-consistency.md) |
 | transactions | shipped | Compare-and-swap transactions, atomic batches, file import. | [transactions/](transactions/) |
 | guarded-swap | shipped | `sdk.GuardedSwap`, the optimistic compare-and-set loop over the transaction plane. | [guarded-swap/](guarded-swap/) |
+| batch-revision | shipped | `sdk.ServiceBatchServicer` aliases `service.BatchServicer` so a consumer can pass it to `embedded.WithBatchService`; `transport.BatchResponse.Revision` is the single MVCC revision every op in the batch committed at, on every transport. | #797, [transactions/](transactions/) |
 | storage-compare-and-swap | shipped | `CompareAndSwap` on the `Storage` interface; file-engine guarded writes atomic across processes, or shared opens refused. | #649, #632, [guarded-swap/](guarded-swap/) |
 | watch | shipped | Change streams with replay from a revision. | [watch/](watch/) |
 | leases | shipped | TTL leases and cascade expiry. | [leases/](leases/) |
