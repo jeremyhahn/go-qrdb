@@ -66,7 +66,7 @@ func registerSOGrants() {
 		// User management
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
-		UsersDisable, UsersInvite,
+		UsersDisable, UsersSuspend, UsersUnsuspend, UsersInvite,
 		// Tenant management
 		TenantsCreate, TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
@@ -174,7 +174,8 @@ func registerAdminGrants() {
 		// a non-Owner) Owner targets, as it does for certs:issue.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
-		UsersDisable, UsersAddCertBinding, UsersInvite,
+		UsersDisable, UsersSuspend, UsersUnsuspend,
+		UsersAddCertBinding, UsersInvite,
 		// Role management (read/assign — cannot create/delete system roles)
 		RolesRead, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,

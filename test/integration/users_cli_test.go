@@ -16,7 +16,7 @@
 //go:build integration
 
 // users_cli_test.go drives the `qrdb users` COMMAND TREE (create, list, get,
-// update, delete, enable, disable) through the real client CLI binary
+// update, delete, enable, disable, suspend, unsuspend) through the real client CLI binary
 // (cmd/qrdb), against every transport (REST, gRPC, QUIC, MCP, Unix) sharing
 // the multi_protocol_helpers_test.go harness. This closes the
 // CLI-coverage-audit finding that every one of these subcommands had ZERO
@@ -231,6 +231,168 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	// Clean up the fixture role.
 	if out, err := runCLIProto(t, node, proto, "roles", "delete", role.ID); err != nil {
 		t.Fatalf("[%s] roles delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+}
+
+// TestUsers_CLI_SuspendUnsuspend_PerProtocol drives `users suspend` and
+// `users unsuspend` on every transport. The suspended account's own requests
+// carry a client certificate enrolled BEFORE the suspension, so the refusal
+// proves the lifecycle is checked on every request, not only when a
+// credential is issued.
+func TestUsers_CLI_SuspendUnsuspend_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testUsersSuspendOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testUsersSuspendOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	base := fmt.Sprintf("usus-%s-%d", proto.name, time.Now().UnixNano())
+
+	// The account holds users:read, so `users get` on itself is a request it
+	// is authorised to make while active.
+	out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "create",
+		"--name", base+"-role",
+		"--permissions", "users:read",
+	)
+	if err != nil {
+		t.Fatalf("[%s] roles create (fixture): %v\noutput: %s", proto.name, err, out)
+	}
+	var role roleCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &role); jerr != nil {
+		t.Fatalf("[%s] decode roles create JSON (fixture): %v\noutput: %s", proto.name, jerr, out)
+	}
+
+	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create",
+		"--username", base,
+		"--email", base+"@example.com",
+		"--roles", role.ID,
+	)
+	if err != nil {
+		t.Fatalf("[%s] users create: %v\noutput: %s", proto.name, err, out)
+	}
+	var created userCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &created); jerr != nil || created.ID == 0 {
+		t.Fatalf("[%s] decode users create JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	userID := strconv.FormatUint(created.ID, 10)
+
+	// The account's credential: a client certificate naming it, enrolled on
+	// the account as the default auth.mtls_binding_policy ("required")
+	// demands, issued before any suspension.
+	admin := mtlsHTTPClient(t, node.ca, 15*time.Second)
+	kp := node.ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(base, tenantid.System))
+	bindUserCert(t, admin, node.restPort, created.ID, kp.CertPath)
+	userConn := tenantCLIArgsForProto(node, proto, kp.CertPath, kp.KeyPath)
+
+	asUser := func() (string, error) {
+		return runQRDB(t, node.cli, userConn, "--output", "json", "users", "get", userID)
+	}
+	lifecycle := func(step string) string {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, "--output", "json", "users", "get", userID)
+		if err != nil {
+			t.Fatalf("[%s] %s: users get: %v\noutput: %s", proto.name, step, err, out)
+		}
+		var got userCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("[%s] %s: decode users get JSON: %v\noutput: %s", proto.name, step, jerr, out)
+		}
+		return got.Lifecycle
+	}
+	verb := func(step, name string) {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, "users", name, userID)
+		if err != nil {
+			t.Fatalf("[%s] %s: users %s: %v\noutput: %s", proto.name, step, name, err, out)
+		}
+		if !strings.Contains(out, "OK") {
+			t.Fatalf("[%s] %s: users %s: expected OK, got: %s", proto.name, step, name, out)
+		}
+	}
+
+	if out, err := asUser(); err != nil {
+		t.Fatalf("[%s] request as the active account: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// --- unsuspend on an active user: succeeds and changes nothing ---------
+	verb("unsuspend-active", "unsuspend")
+	if got := lifecycle("unsuspend-active"); got != "active" {
+		t.Fatalf("[%s] lifecycle = %q after unsuspend of an active user, want active", proto.name, got)
+	}
+
+	// --- suspend: lifecycle moves to suspended; the account is refused -----
+	verb("suspend", "suspend")
+	if got := lifecycle("suspend"); got != "suspended" {
+		t.Fatalf("[%s] lifecycle = %q after suspend, want suspended", proto.name, got)
+	}
+	requireRefusedPromptly(t, proto, "request as the suspended account with a pre-suspension certificate", asUser)
+
+	// --- suspend on a suspended user: succeeds and changes nothing ---------
+	verb("suspend-suspended", "suspend")
+	if got := lifecycle("suspend-suspended"); got != "suspended" {
+		t.Fatalf("[%s] lifecycle = %q after suspend of a suspended user, want suspended", proto.name, got)
+	}
+	requireRefusedPromptly(t, proto, "request as the re-suspended account", asUser)
+
+	// --- unsuspend: lifecycle moves back to active; requests succeed -------
+	verb("unsuspend", "unsuspend")
+	if got := lifecycle("unsuspend"); got != "active" {
+		t.Fatalf("[%s] lifecycle = %q after unsuspend, want active", proto.name, got)
+	}
+	if out, err := asUser(); err != nil {
+		t.Fatalf("[%s] request as the unsuspended account: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// --- suspend on a disabled user: the typed lifecycle transition error --
+	verb("disable", "disable")
+	requireRefusedPromptly(t, proto, "request as the disabled account", asUser)
+	out, err = runCLIProto(t, node, proto, "users", "suspend", userID)
+	if err == nil {
+		t.Fatalf("[%s] users suspend of a disabled user should fail, got: %s", proto.name, out)
+	}
+	if !strings.Contains(out, "cannot transition user "+userID+" from disabled to suspended") {
+		t.Fatalf("[%s] users suspend of a disabled user: expected the lifecycle transition error, got: %s", proto.name, out)
+	}
+	if got := lifecycle("suspend-disabled"); got != "disabled" {
+		t.Fatalf("[%s] lifecycle = %q after a refused suspend of a disabled user, want disabled", proto.name, got)
+	}
+
+	if out, err := runCLIProto(t, node, proto, "users", "delete", userID); err != nil {
+		t.Fatalf("[%s] users delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+	if out, err := runCLIProto(t, node, proto, "roles", "delete", role.ID); err != nil {
+		t.Fatalf("[%s] roles delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+}
+
+// refusalBound is how long a refused request may take on any transport: far
+// below the CLI's --timeout, so a client that waits out its bound on a
+// refusal, rather than returning it, fails here.
+const refusalBound = 5 * time.Second
+
+// requireRefusedPromptly runs a request the server must refuse and asserts,
+// on every transport alike, that it fails with the auth chain's typed
+// refusal of the account and that it fails at once.
+func requireRefusedPromptly(t *testing.T, proto multiProtocol, step string, request func() (string, error)) {
+	t.Helper()
+	start := time.Now()
+	out, err := request()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("[%s] %s: request succeeded, want it refused: %s", proto.name, step, out)
+	}
+	if !strings.Contains(out, "user cannot authenticate") {
+		t.Fatalf("[%s] %s: want the typed refusal of the account, got: %s", proto.name, step, out)
+	}
+	if elapsed > refusalBound {
+		t.Fatalf("[%s] %s: refusal took %v, want it within %v", proto.name, step, elapsed, refusalBound)
 	}
 }
 

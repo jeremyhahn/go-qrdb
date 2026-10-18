@@ -49,6 +49,8 @@ type mockUserSvc struct {
 	listFn          func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableFn        func(ctx context.Context, id uint64) error
 	disableFn       func(ctx context.Context, id uint64) error
+	suspendFn       func(ctx context.Context, id uint64) error
+	unsuspendFn     func(ctx context.Context, id uint64) error
 }
 
 func (m *mockUserSvc) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -111,6 +113,20 @@ func (m *mockUserSvc) EnableUser(ctx context.Context, id uint64) error {
 func (m *mockUserSvc) DisableUser(ctx context.Context, id uint64) error {
 	if m.disableFn != nil {
 		return m.disableFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserSvc) SuspendUser(ctx context.Context, id uint64) error {
+	if m.suspendFn != nil {
+		return m.suspendFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserSvc) UnsuspendUser(ctx context.Context, id uint64) error {
+	if m.unsuspendFn != nil {
+		return m.unsuspendFn(ctx, id)
 	}
 	return nil
 }
@@ -471,6 +487,26 @@ func TestUnixRT_EnableDisableUser(t *testing.T) {
 	}
 	if err := tr.DisableUser(context.Background(), 1); err != nil {
 		t.Fatalf("DisableUser: %v", err)
+	}
+}
+
+func TestUnixRT_SuspendUnsuspendUser(t *testing.T) {
+	suspendCh, unsuspendCh := make(chan uint64, 1), make(chan uint64, 1)
+	usvc := &mockUserSvc{
+		suspendFn:   func(_ context.Context, id uint64) error { suspendCh <- id; return nil },
+		unsuspendFn: func(_ context.Context, id uint64) error { unsuspendCh <- id; return nil },
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	if err := tr.SuspendUser(context.Background(), 7); err != nil {
+		t.Fatalf("SuspendUser: %v", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 8); err != nil {
+		t.Fatalf("UnsuspendUser: %v", err)
+	}
+	if suspended, unsuspended := <-suspendCh, <-unsuspendCh; suspended != 7 || unsuspended != 8 {
+		t.Fatalf("service saw suspend %d, unsuspend %d; want 7, 8", suspended, unsuspended)
 	}
 }
 

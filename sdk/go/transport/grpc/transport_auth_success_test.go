@@ -79,8 +79,10 @@ func (f *fakeUserServicer) ListUsers(_ context.Context, _ *user.ListUsersRequest
 	}, nil
 }
 
-func (f *fakeUserServicer) EnableUser(_ context.Context, _ uint64) error  { return nil }
-func (f *fakeUserServicer) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (f *fakeUserServicer) EnableUser(_ context.Context, _ uint64) error    { return nil }
+func (f *fakeUserServicer) DisableUser(_ context.Context, _ uint64) error   { return nil }
+func (f *fakeUserServicer) SuspendUser(_ context.Context, _ uint64) error   { return nil }
+func (f *fakeUserServicer) UnsuspendUser(_ context.Context, _ uint64) error { return nil }
 func (f *fakeUserServicer) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
 	return nil, nil
 }
@@ -306,6 +308,16 @@ func TestGRPCUser_AllMethods_Success(t *testing.T) {
 	t.Run("DisableUser", func(t *testing.T) {
 		if err := tr.DisableUser(ctx, 1); err != nil {
 			t.Fatalf("DisableUser: %v", err)
+		}
+	})
+	t.Run("SuspendUser", func(t *testing.T) {
+		if err := tr.SuspendUser(ctx, 1); err != nil {
+			t.Fatalf("SuspendUser: %v", err)
+		}
+	})
+	t.Run("UnsuspendUser", func(t *testing.T) {
+		if err := tr.UnsuspendUser(ctx, 1); err != nil {
+			t.Fatalf("UnsuspendUser: %v", err)
 		}
 	})
 }

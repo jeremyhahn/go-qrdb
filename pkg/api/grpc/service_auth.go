@@ -282,6 +282,32 @@ func (s *qrdbServiceServer) DisableUser(ctx context.Context, req *pb.DisableUser
 	return &emptypb.Empty{}, nil
 }
 
+// SuspendUser moves an active user account to suspended.
+func (s *qrdbServiceServer) SuspendUser(ctx context.Context, req *pb.SuspendUserRequest) (*emptypb.Empty, error) {
+	if s.userSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	if err := s.userSvc.SuspendUser(ctx, req.GetId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// UnsuspendUser returns a suspended user account to active.
+func (s *qrdbServiceServer) UnsuspendUser(ctx context.Context, req *pb.UnsuspendUserRequest) (*emptypb.Empty, error) {
+	if s.userSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	if err := s.userSvc.UnsuspendUser(ctx, req.GetId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Role management handlers
 // ---------------------------------------------------------------------------

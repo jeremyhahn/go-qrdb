@@ -161,7 +161,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			fb := routes.FallbackFor(r.Method, r.URL.Path)
 			if fb == nil {
 				code := mapHTTPAuthError(authnErr)
-				writeJSONError(w, code, authnErr.Error())
+				WriteJSONError(w, code, authnErr.Error())
 				return
 			}
 			fbIdentity, fbErr := fb.AuthenticateHTTP(r.WithContext(ctx))
@@ -169,10 +169,10 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 				code := mapHTTPAuthError(authnErr)
 				if fbErr != nil {
 					code = mapHTTPAuthError(fbErr)
-					writeJSONError(w, code, fbErr.Error())
+					WriteJSONError(w, code, fbErr.Error())
 					return
 				}
-				writeJSONError(w, code, authnErr.Error())
+				WriteJSONError(w, code, authnErr.Error())
 				return
 			}
 			// No auth method: this identity came from a capability module's own
@@ -182,7 +182,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			ctx, identity, authnErr = m.finalizeIdentity(ctx, fbIdentity, unknownMethod())
 			if authnErr != nil {
 				code := mapHTTPAuthError(authnErr)
-				writeJSONError(w, code, authnErr.Error())
+				WriteJSONError(w, code, authnErr.Error())
 				return
 			}
 		}
@@ -218,7 +218,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			if allowed := routes.MethodsForPath(r.URL.Path); len(allowed) > 0 {
 				allow := strings.Join(allowed, ", ")
 				w.Header().Set("Allow", allow)
-				writeJSONError(w, http.StatusMethodNotAllowed,
+				WriteJSONError(w, http.StatusMethodNotAllowed,
 					"method not allowed: "+r.Method+" is not supported for "+
 						r.URL.Path+" (supported: "+allow+")")
 				return
@@ -228,7 +228,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			// registered routes may answer there (go-qrdb#194). 404, because
 			// no route exists -- the caller has already authenticated.
 			if routes.UnderModulePrefix(r.URL.Path) {
-				writeJSONError(w, http.StatusNotFound,
+				WriteJSONError(w, http.StatusNotFound,
 					"not found: "+r.URL.Path+" matches no registered route under a module-owned prefix")
 				return
 			}
@@ -251,7 +251,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			// this branch at all has no business here.
 			if auth.IsHolderIdentity(identity) {
 				err := &HolderIdentityNotPermittedError{Method: r.Method, Path: r.URL.Path}
-				writeJSONError(w, mapHTTPAuthError(err), err.Error())
+				WriteJSONError(w, mapHTTPAuthError(err), err.Error())
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -269,7 +269,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			// net/http silently drops headers set after the status line has
 			// gone out.
 			setRetryAfterHeader(w, authzErr)
-			writeJSONError(w, code, authzErr.Error())
+			WriteJSONError(w, code, authzErr.Error())
 			return
 		}
 
@@ -323,9 +323,10 @@ type restErrorResponse struct {
 	Error string `json:"error"`
 }
 
-// writeJSONError writes a JSON error response with the given HTTP
-// status code and message.
-func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
+// WriteJSONError writes a JSON error response with the given HTTP
+// status code and message: the body every HTTP transport's auth chain
+// refuses with, REST's and MCP's alike, so a client decodes one shape.
+func WriteJSONError(w http.ResponseWriter, statusCode int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(restErrorResponse{Error: message}); err != nil {

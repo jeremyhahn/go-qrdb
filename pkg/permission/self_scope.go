@@ -336,6 +336,8 @@ func selfScopedPermissions() []Permission {
 		UsersGetByCertThumbprint,
 		UsersList,
 		UsersRead,
+		UsersSuspend,
+		UsersUnsuspend,
 		UsersUpdate,
 
 		// vector

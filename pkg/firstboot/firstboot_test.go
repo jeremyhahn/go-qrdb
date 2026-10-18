@@ -201,6 +201,10 @@ func (f *fakeUsers) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*use
 }
 func (f *fakeUsers) EnableUser(_ context.Context, _ uint64) error  { return nil }
 func (f *fakeUsers) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (f *fakeUsers) SuspendUser(_ context.Context, _ uint64) error { return nil }
+func (f *fakeUsers) UnsuspendUser(_ context.Context, _ uint64) error {
+	return nil
+}
 func (f *fakeUsers) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
 	return nil, nil
 }

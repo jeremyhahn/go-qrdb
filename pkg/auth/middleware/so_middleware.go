@@ -115,7 +115,7 @@ func SOMiddleware(
 
 		if err := gate.Enforce(ctx, perm, r.URL.Path, r.Method); err != nil {
 			setRetryAfterHeader(w, err)
-			writeJSONError(w, HTTPStatus(err, http.StatusServiceUnavailable), err.Error())
+			WriteJSONError(w, HTTPStatus(err, http.StatusServiceUnavailable), err.Error())
 			return
 		}
 

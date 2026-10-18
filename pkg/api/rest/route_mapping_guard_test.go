@@ -326,6 +326,8 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"DELETE", "/users/abc123", permission.UsersDelete},
 		{"POST", "/users/abc123/enable", permission.UsersEnable},
 		{"POST", "/users/abc123/disable", permission.UsersDisable},
+		{"POST", "/users/abc123/suspend", permission.UsersSuspend},
+		{"POST", "/users/abc123/unsuspend", permission.UsersUnsuspend},
 		{"POST", "/users/abc123/cert-bindings", permission.UsersAddCertBinding},
 		{"DELETE", "/users/abc123/cert-bindings/AAAA", permission.UsersRemoveCertBinding},
 		{"GET", "/users/by-cert-thumbprint/AbC-_123", permission.UsersGetByCertThumbprint},

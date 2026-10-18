@@ -111,7 +111,7 @@ A token is single-use: a second `qrdb enroll` with the same token gets the
 same opaque refusal an unknown or expired token gets, by design (see
 [user.md](user.md#inviting-somebody-instead)).
 
-### `qrdb users get <id>` / `delete <id>` / `enable <id>` / `disable <id>`
+### `qrdb users get <id>` / `delete <id>` / `enable <id>` / `disable <id>` / `suspend <id>` / `unsuspend <id>`
 
 All take the user **ID**, no flags.
 
@@ -119,6 +119,8 @@ All take the user **ID**, no flags.
 qrdb users get 1f2e...
 qrdb users disable 1f2e...     # blocks authentication, keeps the record
 qrdb users enable 1f2e...
+qrdb users suspend 1f2e...     # administrative hold, refuses even existing tokens
+qrdb users unsuspend 1f2e...
 qrdb users delete 1f2e...      # refused for built-in (System) users
 ```
 
@@ -133,6 +135,12 @@ the state (`Lifecycle:`; the `LIFECYCLE` column in `list`), which distinguishes
 an account awaiting activation (`pending`), an administrative hold
 (`suspended`), an automated lockout (`locked`) and a deactivated record
 (`disabled`).
+
+`suspend` and `unsuspend` move only between `active` and `suspended`. Repeating
+either is a no-op; from any other state (a `disabled`, `locked` or `pending`
+account) both are refused with a `LifecycleTransitionError`, so `unsuspend`
+never brings back an account that `enable` owns. A suspended account's requests
+are refused, including those carrying a token issued before the suspension.
 
 > **Breaking change.** `users get` and `users list` no longer print an
 > `Enabled` line or `ENABLED` column, and `--output json|yaml` no longer carries

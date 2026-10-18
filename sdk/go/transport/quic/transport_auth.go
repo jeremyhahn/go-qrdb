@@ -130,6 +130,16 @@ type disableUserWireRequest struct {
 	ID uint64 `json:"id"`
 }
 
+// suspendUserWireRequest is the JSON wire payload for user.Suspend.
+type suspendUserWireRequest struct {
+	ID uint64 `json:"id"`
+}
+
+// unsuspendUserWireRequest is the JSON wire payload for user.Unsuspend.
+type unsuspendUserWireRequest struct {
+	ID uint64 `json:"id"`
+}
+
 // userWireResponse is the JSON wire representation of a user entity
 // returned by the server.
 type userWireResponse struct {
@@ -657,6 +667,46 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	_, err = t.call(ctx, "user.Disable", payload)
 	if err != nil {
 		return mapUserNotFound("DisableUser", id, err)
+	}
+
+	return nil
+}
+
+// SuspendUser moves an active user account to suspended via the QUIC
+// user.Suspend method.
+func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(suspendUserWireRequest{ID: id})
+	if err != nil {
+		return &transport.RequestError{Method: "SuspendUser", Err: &MarshalError{Err: err}}
+	}
+
+	_, err = t.call(ctx, "user.Suspend", payload)
+	if err != nil {
+		return mapUserNotFound("SuspendUser", id, err)
+	}
+
+	return nil
+}
+
+// UnsuspendUser moves a suspended user account back to active via the QUIC
+// user.Unsuspend method.
+func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(unsuspendUserWireRequest{ID: id})
+	if err != nil {
+		return &transport.RequestError{Method: "UnsuspendUser", Err: &MarshalError{Err: err}}
+	}
+
+	_, err = t.call(ctx, "user.Unsuspend", payload)
+	if err != nil {
+		return mapUserNotFound("UnsuspendUser", id, err)
 	}
 
 	return nil

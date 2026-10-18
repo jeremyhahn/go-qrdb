@@ -133,6 +133,9 @@ func (m *mockUserServicer) DisableUser(_ context.Context, _ uint64) error {
 	return nil
 }
 
+func (m *mockUserServicer) SuspendUser(_ context.Context, _ uint64) error   { return nil }
+func (m *mockUserServicer) UnsuspendUser(_ context.Context, _ uint64) error { return nil }
+
 func (m *mockUserServicer) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
 	return nil, nil
 }
@@ -1870,7 +1873,7 @@ func TestMapHTTPAuthError(t *testing.T) {
 
 func TestWriteJSONError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeJSONError(rec, http.StatusForbidden, "access denied")
+	WriteJSONError(rec, http.StatusForbidden, "access denied")
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d", rec.Code)

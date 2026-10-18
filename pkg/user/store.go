@@ -2169,6 +2169,104 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// SuspendUser moves an active user to LifecycleSuspended. Suspending a user
+// already suspended succeeds and writes nothing; any other source state is
+// refused with a *LifecycleTransitionError.
+func (s *kvUserStore) SuspendUser(ctx context.Context, id uint64) error {
+	return s.suspension(ctx, id, "suspend", LifecycleActive, LifecycleSuspended)
+}
+
+// UnsuspendUser moves a suspended user back to LifecycleActive. Unsuspending a
+// user already active succeeds and writes nothing; any other source state is
+// refused with a *LifecycleTransitionError.
+func (s *kvUserStore) UnsuspendUser(ctx context.Context, id uint64) error {
+	return s.suspension(ctx, id, "unsuspend", LifecycleSuspended, LifecycleActive)
+}
+
+// suspension is the one transition SuspendUser and UnsuspendUser share: from
+// exactly one source state to one target, idempotent on the target. It is
+// narrower than the lifecycle graph on purpose. The graph lets a locked
+// account become suspended and any non-terminal one become active, but
+// unsuspending is not enabling: a disabled or locked account brought back by
+// an unsuspend would bypass the verb, permission and audit event that owns
+// that state.
+func (s *kvUserStore) suspension(ctx context.Context, id uint64, op string, from, to Lifecycle) error {
+	if id == 0 {
+		return &ValidationError{Field: "id", Reason: "must not be zero"}
+	}
+
+	// Read the raw bytes and commit conditionally, as EnableUser does: the
+	// WHOLE record is written back, so an unconditional put would revert a
+	// concurrent UpdateUser.
+	base, err := s.store.Get(ctx, primaryKey(id))
+	if err != nil {
+		return &StoreError{Op: op, Detail: "primary lookup", Err: err}
+	}
+	if base == nil {
+		return &UserNotFoundError{ID: id}
+	}
+	user := &User{}
+	if uerr := json.Unmarshal(base, user); uerr != nil {
+		return &StoreError{Op: op, Detail: "unmarshal", Err: uerr}
+	}
+
+	switch user.Lifecycle {
+	case to:
+		return nil
+	case from:
+	default:
+		return &LifecycleTransitionError{ID: id, From: user.Lifecycle, To: to}
+	}
+
+	prior := *user
+	if err := applyLifecycle(user, to); err != nil {
+		return err
+	}
+	// A suspended bootstrap admin cannot log in, so under "required" the
+	// suspension is refused, exactly as DisableUser refuses it.
+	if err := s.guardBootstrapAdmin(&prior, user); err != nil {
+		return err
+	}
+	user.UpdatedAt = time.Now().UTC()
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return &StoreError{Op: op, Detail: "marshal", Err: err}
+	}
+
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return &StoreError{Op: op, Detail: "conditional commit", Err: ErrStoreNotAtomic}
+	}
+	swapped, serr := atomicStore.CompareAndSwap(ctx, primaryKey(id), base, data)
+	switch {
+	case serr != nil:
+		// Ambiguous, not failed — disambiguated as EnableUser does.
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+		actual, rerr := s.store.Get(rctx, primaryKey(id))
+		rcancel()
+		switch {
+		case rerr != nil:
+			return &CommitOutcomeUnknownError{ID: id, Err: serr}
+		case bytes.Equal(actual, data):
+			// It landed — fall through to the audit path below.
+		case bytes.Equal(actual, base):
+			return &StoreError{Op: op, Detail: "put", Err: serr}
+		default:
+			return &ConcurrentUpdateError{ID: id}
+		}
+	case !swapped:
+		return &ConcurrentUpdateError{ID: id}
+	}
+
+	s.emitAudit(ctx, op, id, map[string]any{
+		"username":  user.Username,
+		"tenantID":  user.TenantID,
+		"lifecycle": string(user.Lifecycle),
+	})
+	return nil
+}
+
 // onlyReassertsLifecycle reports whether req asks for nothing except the
 // lifecycle state the record already holds — the shape of a retried deletion
 // marker, which must stay permitted on a terminal record so a partially

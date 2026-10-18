@@ -204,6 +204,7 @@ func TestUserTools_BootstrapAdminLockoutIsFailedPrecondition(t *testing.T) {
 		},
 		deleteUserFn:  func(context.Context, uint64) error { return lockout(user.AdminLockoutDelete) },
 		disableUserFn: func(context.Context, uint64) error { return lockout(user.AdminLockoutLifecycle) },
+		suspendUserFn: func(context.Context, uint64) error { return lockout(user.AdminLockoutLifecycle) },
 		updateUserFn: func(context.Context, *user.UpdateUserRequest) (*user.User, error) {
 			return nil, lockout(user.AdminLockoutRename)
 		},
@@ -217,6 +218,7 @@ func TestUserTools_BootstrapAdminLockoutIsFailedPrecondition(t *testing.T) {
 		}, map[string]any{"user_id": "1001", "thumbprint": "AAAA"}},
 		"qrdb_user_delete":  {handleUserDelete, map[string]any{"id": "1001"}},
 		"qrdb_user_disable": {handleUserDisable, map[string]any{"id": "1001"}},
+		"qrdb_user_suspend": {handleUserSuspend, map[string]any{"id": "1001"}},
 		"qrdb_user_update": {func(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return handleUserUpdate(svc, nil, nil, nil)
 		}, map[string]any{"id": "1001", "username": "root"}},

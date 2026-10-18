@@ -195,6 +195,12 @@ func (t *Transport) connectOnce(ctx context.Context) error {
 	if err := t.probeHealth(ctx); err != nil {
 		_ = t.conn.CloseWithError(0, "health check failed")
 		t.conn = nil
+		// A server that refuses the caller's credential has answered: its
+		// typed refusal is the result, as on every other transport, not a
+		// connectivity failure.
+		if refusal, ok := unauthenticatedRefusal(err); ok {
+			return refusal
+		}
 		return &transport.ConnectionError{
 			Address: t.config.Address,
 			Err:     &dialError{Err: err},
@@ -206,15 +212,31 @@ func (t *Transport) connectOnce(ctx context.Context) error {
 // retryableConnect reports whether another connect attempt could succeed
 // where err failed: anything but a TLS handshake failure -- a certificate
 // either side does not accept, or no protocol in common, raised as a QUIC
-// CRYPTO_ERROR by whichever side refused -- or a server that is not a qrdb
-// QUIC listener. Those are configuration, and a retry meets them again.
+// CRYPTO_ERROR by whichever side refused --, a server that is not a qrdb
+// QUIC listener, or a server that refuses the caller's credential. Those are
+// configuration or a verdict, and a retry meets them again.
 func retryableConnect(err error) bool {
 	var tlsErr *quicgo.TransportError
 	if errors.As(err, &tlsErr) && tlsErr.ErrorCode.IsCryptoError() {
 		return false
 	}
+	if _, ok := unauthenticatedRefusal(err); ok {
+		return false
+	}
 	var alpn *alpnMismatchError
 	return !errors.As(err, &alpn)
+}
+
+// unauthenticatedRefusal returns the server's typed refusal of the caller's
+// credential (wire.StatusUnauthenticated) when err carries one: a revoked or
+// unbound certificate, or an account whose lifecycle forbids it to
+// authenticate. The server reached that verdict, so a retry meets it again.
+func unauthenticatedRefusal(err error) (*transport.RequestError, bool) {
+	var reqErr *transport.RequestError
+	if errors.As(err, &reqErr) && reqErr.StatusCode == int(wire.StatusUnauthenticated) {
+		return reqErr, true
+	}
+	return nil, false
 }
 
 // dial opens the QUIC connection and negotiates ProtocolV3, without the

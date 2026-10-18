@@ -608,6 +608,32 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	return mapUserNotFound(id, err)
 }
 
+// SuspendUser moves an active user account to suspended. Calls the
+// qrdb_user_suspend MCP tool.
+func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_user_suspend", map[string]any{
+		"id": strconv.FormatUint(id, 10),
+	})
+	return mapUserNotFound(id, err)
+}
+
+// UnsuspendUser moves a suspended user account back to active. Calls the
+// qrdb_user_unsuspend MCP tool.
+func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_user_unsuspend", map[string]any{
+		"id": strconv.FormatUint(id, 10),
+	})
+	return mapUserNotFound(id, err)
+}
+
 // ---------------------------------------------------------------------------
 // RoleClient implementation
 // ---------------------------------------------------------------------------

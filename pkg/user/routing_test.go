@@ -662,6 +662,8 @@ func TestRoutingUserService_ByIDFailsClosedWhenOwnerSealed(t *testing.T) {
 		}},
 		{"EnableUser", func() error { return svc.EnableUser(ctx, created.ID) }},
 		{"DisableUser", func() error { return svc.DisableUser(ctx, created.ID) }},
+		{"SuspendUser", func() error { return svc.SuspendUser(ctx, created.ID) }},
+		{"UnsuspendUser", func() error { return svc.UnsuspendUser(ctx, created.ID) }},
 		{"DeleteUser", func() error { return svc.DeleteUser(ctx, created.ID) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

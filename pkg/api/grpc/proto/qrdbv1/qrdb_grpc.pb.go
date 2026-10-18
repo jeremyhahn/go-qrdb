@@ -138,6 +138,8 @@ const (
 	QRDBService_ListUsers_FullMethodName                         = "/qrdb.v1.QRDBService/ListUsers"
 	QRDBService_EnableUser_FullMethodName                        = "/qrdb.v1.QRDBService/EnableUser"
 	QRDBService_DisableUser_FullMethodName                       = "/qrdb.v1.QRDBService/DisableUser"
+	QRDBService_SuspendUser_FullMethodName                       = "/qrdb.v1.QRDBService/SuspendUser"
+	QRDBService_UnsuspendUser_FullMethodName                     = "/qrdb.v1.QRDBService/UnsuspendUser"
 	QRDBService_CreateRole_FullMethodName                        = "/qrdb.v1.QRDBService/CreateRole"
 	QRDBService_GetRole_FullMethodName                           = "/qrdb.v1.QRDBService/GetRole"
 	QRDBService_GetRoleByName_FullMethodName                     = "/qrdb.v1.QRDBService/GetRoleByName"
@@ -543,6 +545,10 @@ type QRDBServiceClient interface {
 	EnableUser(ctx context.Context, in *EnableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// DisableUser deactivates a user account.
 	DisableUser(ctx context.Context, in *DisableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// SuspendUser moves an active user account to suspended.
+	SuspendUser(ctx context.Context, in *SuspendUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// UnsuspendUser returns a suspended user account to active.
+	UnsuspendUser(ctx context.Context, in *UnsuspendUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CreateRole creates a new role.
 	CreateRole(ctx context.Context, in *CreateRoleRequest, opts ...grpc.CallOption) (*RoleResponse, error)
 	// GetRole retrieves a role by ID.
@@ -1951,6 +1957,26 @@ func (c *qRDBServiceClient) DisableUser(ctx context.Context, in *DisableUserRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_DisableUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) SuspendUser(ctx context.Context, in *SuspendUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_SuspendUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UnsuspendUser(ctx context.Context, in *UnsuspendUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_UnsuspendUser_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3530,6 +3556,10 @@ type QRDBServiceServer interface {
 	EnableUser(context.Context, *EnableUserRequest) (*emptypb.Empty, error)
 	// DisableUser deactivates a user account.
 	DisableUser(context.Context, *DisableUserRequest) (*emptypb.Empty, error)
+	// SuspendUser moves an active user account to suspended.
+	SuspendUser(context.Context, *SuspendUserRequest) (*emptypb.Empty, error)
+	// UnsuspendUser returns a suspended user account to active.
+	UnsuspendUser(context.Context, *UnsuspendUserRequest) (*emptypb.Empty, error)
 	// CreateRole creates a new role.
 	CreateRole(context.Context, *CreateRoleRequest) (*RoleResponse, error)
 	// GetRole retrieves a role by ID.
@@ -4206,6 +4236,12 @@ func (UnimplementedQRDBServiceServer) EnableUser(context.Context, *EnableUserReq
 }
 func (UnimplementedQRDBServiceServer) DisableUser(context.Context, *DisableUserRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method DisableUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) SuspendUser(context.Context, *SuspendUserRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SuspendUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) UnsuspendUser(context.Context, *UnsuspendUserRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnsuspendUser not implemented")
 }
 func (UnimplementedQRDBServiceServer) CreateRole(context.Context, *CreateRoleRequest) (*RoleResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateRole not implemented")
@@ -6479,6 +6515,42 @@ func _QRDBService_DisableUser_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).DisableUser(ctx, req.(*DisableUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_SuspendUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).SuspendUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_SuspendUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).SuspendUser(ctx, req.(*SuspendUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UnsuspendUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnsuspendUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UnsuspendUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UnsuspendUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UnsuspendUser(ctx, req.(*UnsuspendUserRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -9241,6 +9313,14 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DisableUser",
 			Handler:    _QRDBService_DisableUser_Handler,
+		},
+		{
+			MethodName: "SuspendUser",
+			Handler:    _QRDBService_SuspendUser_Handler,
+		},
+		{
+			MethodName: "UnsuspendUser",
+			Handler:    _QRDBService_UnsuspendUser_Handler,
 		},
 		{
 			MethodName: "CreateRole",

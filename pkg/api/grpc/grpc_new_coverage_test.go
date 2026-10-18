@@ -601,6 +601,10 @@ func (m *mockUserServiceForGRPC) ListUsers(_ context.Context, _ *user.ListUsersR
 }
 func (m *mockUserServiceForGRPC) EnableUser(_ context.Context, _ uint64) error  { return nil }
 func (m *mockUserServiceForGRPC) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (m *mockUserServiceForGRPC) SuspendUser(_ context.Context, _ uint64) error { return nil }
+func (m *mockUserServiceForGRPC) UnsuspendUser(_ context.Context, _ uint64) error {
+	return nil
+}
 func (m *mockUserServiceForGRPC) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
 	return nil, nil
 }

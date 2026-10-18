@@ -149,6 +149,8 @@ var expectedMethods = []string{
 	"user.List",
 	"user.Enable",
 	"user.Disable",
+	"user.Suspend",
+	"user.Unsuspend",
 
 	// Role management (10)
 	"role.Create",
@@ -277,6 +279,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 200 = 198 + user.Suspend and user.Unsuspend, the suspension verbs
+	// granted beside user.Enable and user.Disable (docs/identity-rbac).
 	// 198 = 197 + role.Authorize, the server-side Authorize decision,
 	// identity-gated with permissions:resolve for another identity.
 	// 197 = 196 + role.ListOwnPermissions, the authenticated caller's own
@@ -348,7 +352,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 198
+	const wantCount = 200
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -448,7 +452,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"index":    5,
 		"ts":       10,
 		"vector":   20,
-		"user":     12,
+		"user":     14,
 		"role":     13,
 		"cert":     5,
 		"barrier":  21,

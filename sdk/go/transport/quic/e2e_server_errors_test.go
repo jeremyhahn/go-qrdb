@@ -498,6 +498,20 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
+	t.Run("user.Suspend", func(t *testing.T) {
+		srv, tr := startE2EServer(t)
+		serverErr(srv, "user.Suspend", "err")
+		if err := tr.SuspendUser(context.Background(), 1); err == nil {
+			t.Fatal("expected err")
+		}
+	})
+	t.Run("user.Unsuspend", func(t *testing.T) {
+		srv, tr := startE2EServer(t)
+		serverErr(srv, "user.Unsuspend", "err")
+		if err := tr.UnsuspendUser(context.Background(), 1); err == nil {
+			t.Fatal("expected err")
+		}
+	})
 
 	t.Run("role.Create", func(t *testing.T) {
 		srv, tr := startE2EServer(t)

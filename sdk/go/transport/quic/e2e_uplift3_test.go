@@ -53,6 +53,8 @@ func TestE2E_Auth_DisableUser_RPCError(t *testing.T) {
 		return wire.StatusError, []byte("forbidden")
 	})
 	assertQuicRequestError(t, tr.DisableUser(context.Background(), 1))
+	assertQuicRequestError(t, tr.SuspendUser(context.Background(), 1))
+	assertQuicRequestError(t, tr.UnsuspendUser(context.Background(), 1))
 }
 
 func TestE2E_Auth_DeleteRole_RPCError(t *testing.T) {

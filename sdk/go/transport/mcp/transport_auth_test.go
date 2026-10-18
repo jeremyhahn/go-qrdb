@@ -39,14 +39,16 @@ import (
 type mockUserSvc struct {
 	mu sync.Mutex
 
-	createErr  error
-	getErr     error
-	getByErr   error
-	updateErr  error
-	deleteErr  error
-	listErr    error
-	enableErr  error
-	disableErr error
+	createErr    error
+	getErr       error
+	getByErr     error
+	updateErr    error
+	deleteErr    error
+	listErr      error
+	enableErr    error
+	disableErr   error
+	suspendErr   error
+	unsuspendErr error
 
 	lastCreate    *user.CreateUserRequest
 	lastGetID     uint64
@@ -57,6 +59,8 @@ type mockUserSvc struct {
 	lastList      *user.ListUsersRequest
 	lastEnable    uint64
 	lastDisable   uint64
+	lastSuspend   uint64
+	lastUnsuspend uint64
 
 	getResp  *user.User
 	listResp *user.ListUsersResponse
@@ -179,6 +183,20 @@ func (m *mockUserSvc) DisableUser(_ context.Context, id uint64) error {
 	defer m.mu.Unlock()
 	m.lastDisable = id
 	return m.disableErr
+}
+
+func (m *mockUserSvc) SuspendUser(_ context.Context, id uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastSuspend = id
+	return m.suspendErr
+}
+
+func (m *mockUserSvc) UnsuspendUser(_ context.Context, id uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastUnsuspend = id
+	return m.unsuspendErr
 }
 
 func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
@@ -809,6 +827,39 @@ func TestDisableUser_ServiceError(t *testing.T) {
 
 	if err := tr.DisableUser(context.Background(), 1); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestSuspendUnsuspendUser_Success(t *testing.T) {
+	svc := newMockUserSvc()
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	if err := tr.SuspendUser(context.Background(), 7); err != nil {
+		t.Fatalf("SuspendUser: %v", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 8); err != nil {
+		t.Fatalf("UnsuspendUser: %v", err)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastSuspend != 7 || svc.lastUnsuspend != 8 {
+		t.Fatalf("service saw suspend %d, unsuspend %d; want 7, 8", svc.lastSuspend, svc.lastUnsuspend)
+	}
+}
+
+func TestSuspendUnsuspendUser_ServiceError(t *testing.T) {
+	svc := newMockUserSvc()
+	svc.suspendErr = errors.New("suspend failed")
+	svc.unsuspendErr = errors.New("unsuspend failed")
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	if err := tr.SuspendUser(context.Background(), 1); err == nil {
+		t.Fatal("SuspendUser: expected error")
+	}
+	if err := tr.UnsuspendUser(context.Background(), 1); err == nil {
+		t.Fatal("UnsuspendUser: expected error")
 	}
 }
 

@@ -348,6 +348,8 @@ var quicMethodExclusions = map[string]string{
 	"user.Create":                        "target-resolved",
 	"user.Delete":                        "target-resolved",
 	"user.Disable":                       "target-resolved",
+	"user.Suspend":                       "target-resolved",
+	"user.Unsuspend":                     "target-resolved",
 	"user.Enable":                        "target-resolved",
 	"user.Get":                           "target-resolved",
 	"user.GetByEmail":                    "target-resolved",

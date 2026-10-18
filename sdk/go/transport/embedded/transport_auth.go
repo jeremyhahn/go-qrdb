@@ -312,6 +312,36 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	return t.userSvc.DisableUser(ctx, id)
 }
 
+// SuspendUser moves an active user account to suspended via the embedded
+// user service.
+func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
+	if err := t.gate("SuspendUser"); err != nil {
+		return err
+	}
+	if t.userSvc == nil {
+		return &transport.NotImplementedError{Method: "SuspendUser"}
+	}
+	if err := t.authorizeUserTarget(ctx, id, permission.UsersSuspend); err != nil {
+		return err
+	}
+	return t.userSvc.SuspendUser(ctx, id)
+}
+
+// UnsuspendUser moves a suspended user account back to active via the
+// embedded user service.
+func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
+	if err := t.gate("UnsuspendUser"); err != nil {
+		return err
+	}
+	if t.userSvc == nil {
+		return &transport.NotImplementedError{Method: "UnsuspendUser"}
+	}
+	if err := t.authorizeUserTarget(ctx, id, permission.UsersUnsuspend); err != nil {
+		return err
+	}
+	return t.userSvc.UnsuspendUser(ctx, id)
+}
+
 // ---------------------------------------------------------------------------
 // RoleClient implementation
 // ---------------------------------------------------------------------------

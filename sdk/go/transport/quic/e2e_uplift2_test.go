@@ -245,6 +245,12 @@ func TestQUICExtraClosed_Auth(t *testing.T) {
 	if err := tr.DisableUser(context.Background(), 1); !errorsAsP(err, &ce) {
 		t.Errorf("DisableUser: %v", err)
 	}
+	if err := tr.SuspendUser(context.Background(), 1); !errorsAsP(err, &ce) {
+		t.Errorf("SuspendUser: %v", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 1); !errorsAsP(err, &ce) {
+		t.Errorf("UnsuspendUser: %v", err)
+	}
 	if err := tr.DeleteRole(context.Background(), "r"); !errorsAsP(err, &ce) {
 		t.Errorf("DeleteRole: %v", err)
 	}

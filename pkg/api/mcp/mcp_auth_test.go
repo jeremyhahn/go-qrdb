@@ -48,6 +48,8 @@ type mockUserService struct {
 	listUsersFn               func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn              func(ctx context.Context, id uint64) error
 	disableUserFn             func(ctx context.Context, id uint64) error
+	suspendUserFn             func(ctx context.Context, id uint64) error
+	unsuspendUserFn           func(ctx context.Context, id uint64) error
 	addCertBindingFn          func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn       func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
@@ -158,6 +160,20 @@ func (m *mockUserService) EnableUser(ctx context.Context, id uint64) error {
 func (m *mockUserService) DisableUser(ctx context.Context, id uint64) error {
 	if m.disableUserFn != nil {
 		return m.disableUserFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserService) SuspendUser(ctx context.Context, id uint64) error {
+	if m.suspendUserFn != nil {
+		return m.suspendUserFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserService) UnsuspendUser(ctx context.Context, id uint64) error {
+	if m.unsuspendUserFn != nil {
+		return m.unsuspendUserFn(ctx, id)
 	}
 	return nil
 }
@@ -887,6 +903,116 @@ func TestUserDisableTool_ServiceError(t *testing.T) {
 	}
 }
 
+func TestUserSuspendTool_Success(t *testing.T) {
+	var got uint64
+	svc := &mockUserService{
+		suspendUserFn: func(_ context.Context, id uint64) error {
+			got = id
+			return nil
+		},
+	}
+	handler := handleUserSuspend(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"id": "1001",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text := resultText(t, result); text != "ok" {
+		t.Errorf("expected 'ok', got %q", text)
+	}
+	if got != 1001 {
+		t.Errorf("SuspendUser id = %d, want 1001", got)
+	}
+}
+
+func TestUserSuspendTool_InvalidID(t *testing.T) {
+	handler := handleUserSuspend(&mockUserService{})
+
+	for _, args := range []map[string]any{{}, {"id": "not-a-number"}} {
+		result, err := handler(context.Background(), makeReq(args))
+		if err != nil {
+			t.Fatalf("args %v: unexpected error: %v", args, err)
+		}
+		if !result.IsError {
+			t.Errorf("args %v: expected an error result", args)
+		}
+	}
+}
+
+func TestUserSuspendTool_ServiceError(t *testing.T) {
+	svc := &mockUserService{
+		suspendUserFn: func(_ context.Context, _ uint64) error {
+			return errors.New("suspend failed")
+		},
+	}
+	handler := handleUserSuspend(svc)
+
+	_, err := handler(context.Background(), makeReq(map[string]any{
+		"id": "1001",
+	}))
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) || toolErr.Tool != "qrdb_user_suspend" {
+		t.Errorf("expected *ToolError for qrdb_user_suspend, got %v", err)
+	}
+}
+
+func TestUserUnsuspendTool_Success(t *testing.T) {
+	var got uint64
+	svc := &mockUserService{
+		unsuspendUserFn: func(_ context.Context, id uint64) error {
+			got = id
+			return nil
+		},
+	}
+	handler := handleUserUnsuspend(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"id": "1001",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text := resultText(t, result); text != "ok" {
+		t.Errorf("expected 'ok', got %q", text)
+	}
+	if got != 1001 {
+		t.Errorf("UnsuspendUser id = %d, want 1001", got)
+	}
+}
+
+func TestUserUnsuspendTool_InvalidID(t *testing.T) {
+	handler := handleUserUnsuspend(&mockUserService{})
+
+	for _, args := range []map[string]any{{}, {"id": "not-a-number"}} {
+		result, err := handler(context.Background(), makeReq(args))
+		if err != nil {
+			t.Fatalf("args %v: unexpected error: %v", args, err)
+		}
+		if !result.IsError {
+			t.Errorf("args %v: expected an error result", args)
+		}
+	}
+}
+
+func TestUserUnsuspendTool_ServiceError(t *testing.T) {
+	svc := &mockUserService{
+		unsuspendUserFn: func(_ context.Context, _ uint64) error {
+			return errors.New("unsuspend failed")
+		},
+	}
+	handler := handleUserUnsuspend(svc)
+
+	_, err := handler(context.Background(), makeReq(map[string]any{
+		"id": "1001",
+	}))
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) || toolErr.Tool != "qrdb_user_unsuspend" {
+		t.Errorf("expected *ToolError for qrdb_user_unsuspend, got %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // User tools registration test
 // ---------------------------------------------------------------------------
@@ -908,6 +1034,8 @@ func TestUserTools_Registration(t *testing.T) {
 		"qrdb_user_list",
 		"qrdb_user_enable",
 		"qrdb_user_disable",
+		"qrdb_user_suspend",
+		"qrdb_user_unsuspend",
 	}
 
 	if len(tools) != len(expectedNames) {

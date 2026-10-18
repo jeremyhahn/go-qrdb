@@ -315,6 +315,52 @@ func TestRESTDisableUser_Closed(t *testing.T) {
 	}
 }
 
+func TestRESTSuspendUnsuspendUser_Success(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/users/1/suspend"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	rs.handle(exactPath(http.MethodPost, "/users/1/unsuspend"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	if err := rt.SuspendUser(context.Background(), 1); err != nil {
+		t.Fatalf("SuspendUser: %v", err)
+	}
+	if err := rt.UnsuspendUser(context.Background(), 1); err != nil {
+		t.Fatalf("UnsuspendUser: %v", err)
+	}
+}
+
+func TestRESTSuspendUnsuspendUser_NotFound(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	notFound := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}
+	rs.handle(exactPath(http.MethodPost, "/users/7/suspend"), notFound)
+	rs.handle(exactPath(http.MethodPost, "/users/7/unsuspend"), notFound)
+	for name, call := range map[string]func() error{
+		"SuspendUser":   func() error { return rt.SuspendUser(context.Background(), 7) },
+		"UnsuspendUser": func() error { return rt.UnsuspendUser(context.Background(), 7) },
+	} {
+		var unf *transport.UserNotFoundError
+		if err := call(); !errors.As(err, &unf) {
+			t.Errorf("%s: expected UserNotFoundError, got %T: %v", name, err, err)
+		}
+	}
+}
+
+func TestRESTSuspendUnsuspendUser_Closed(t *testing.T) {
+	rt, _, _ := newExtTransport(t)
+	_ = rt.Close()
+	var ce *transport.ClosedError
+	if err := rt.SuspendUser(context.Background(), 1); !errors.As(err, &ce) {
+		t.Fatalf("SuspendUser: expected ClosedError, got %T", err)
+	}
+	if err := rt.UnsuspendUser(context.Background(), 1); !errors.As(err, &ce) {
+		t.Fatalf("UnsuspendUser: expected ClosedError, got %T", err)
+	}
+}
+
 // ===========================================================================
 // Role CRUD
 // ===========================================================================

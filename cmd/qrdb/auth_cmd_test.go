@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -82,6 +83,12 @@ func (m *mockAuthTransport) EnableUser(ctx context.Context, id uint64) error {
 }
 func (m *mockAuthTransport) DisableUser(ctx context.Context, id uint64) error {
 	return m.users.DisableUser(ctx, id)
+}
+func (m *mockAuthTransport) SuspendUser(ctx context.Context, id uint64) error {
+	return m.users.SuspendUser(ctx, id)
+}
+func (m *mockAuthTransport) UnsuspendUser(ctx context.Context, id uint64) error {
+	return m.users.UnsuspendUser(ctx, id)
 }
 
 // Role client delegation.
@@ -269,6 +276,34 @@ func (m *mockUserClient) DisableUser(_ context.Context, id uint64) error {
 	u.Lifecycle = "disabled"
 	m.disabled[id] = true
 	return nil
+}
+
+// SuspendUser follows the store's rule: active becomes suspended, an already
+// suspended user succeeds unchanged, and any other state is refused.
+func (m *mockUserClient) SuspendUser(_ context.Context, id uint64) error {
+	return m.suspension(id, user.LifecycleActive, user.LifecycleSuspended)
+}
+
+// UnsuspendUser is SuspendUser's inverse under the same rule: it brings back
+// only a suspended user, never a disabled or locked one.
+func (m *mockUserClient) UnsuspendUser(_ context.Context, id uint64) error {
+	return m.suspension(id, user.LifecycleSuspended, user.LifecycleActive)
+}
+
+func (m *mockUserClient) suspension(id uint64, from, to user.Lifecycle) error {
+	u, ok := m.users[id]
+	if !ok {
+		return &transport.UserNotFoundError{ID: id}
+	}
+	switch user.Lifecycle(u.Lifecycle) {
+	case to:
+		return nil
+	case from:
+		u.Lifecycle = string(to)
+		return nil
+	default:
+		return &user.LifecycleTransitionError{ID: id, From: user.Lifecycle(u.Lifecycle), To: to}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -849,6 +884,127 @@ func TestUsersDisableCmd_NotFound(t *testing.T) {
 	var nfe *transport.UserNotFoundError
 	if !errors.As(err, &nfe) {
 		t.Fatalf("expected UserNotFoundError, got: %T: %v", err, err)
+	}
+}
+
+func TestUsersSuspendCmd_Success(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "users", "suspend", "2")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "OK") {
+		t.Fatalf("expected OK output, got: %q", out)
+	}
+}
+
+func TestUsersSuspendCmd_InvalidID(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "users", "suspend", "not-a-number")
+	var ide *InvalidUserIDError
+	if !errors.As(err, &ide) {
+		t.Fatalf("expected InvalidUserIDError, got: %T: %v", err, err)
+	}
+}
+
+func TestUsersSuspendCmd_NotFound(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "users", "suspend", "999999")
+	var nfe *transport.UserNotFoundError
+	if !errors.As(err, &nfe) {
+		t.Fatalf("expected UserNotFoundError, got: %T: %v", err, err)
+	}
+}
+
+func TestUsersSuspendCmd_RequiresOneArg(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	if _, err := executeCommand(root, "users", "suspend"); err == nil {
+		t.Fatal("expected error when the id is missing")
+	}
+}
+
+func TestUsersUnsuspendCmd_AlreadyActiveIsIdempotent(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "users", "unsuspend", "2")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "OK") {
+		t.Fatalf("expected OK output, got: %q", out)
+	}
+}
+
+func TestUsersUnsuspendCmd_InvalidID(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "users", "unsuspend", "18446744073709551616")
+	var ide *InvalidUserIDError
+	if !errors.As(err, &ide) {
+		t.Fatalf("expected InvalidUserIDError, got: %T: %v", err, err)
+	}
+}
+
+func TestUsersUnsuspendCmd_NotFound(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "users", "unsuspend", "999999")
+	var nfe *transport.UserNotFoundError
+	if !errors.As(err, &nfe) {
+		t.Fatalf("expected UserNotFoundError, got: %T: %v", err, err)
+	}
+}
+
+func TestUsersUnsuspendCmd_RequiresOneArg(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	if _, err := executeCommand(root, "users", "unsuspend", "1", "2"); err == nil {
+		t.Fatal("expected error for two ids")
+	}
+}
+
+// TestMockAuthTransport_SuspensionLifecycle pins the double the command tests
+// run against to the store's rule, so a command test cannot pass on a double
+// that accepts a transition the server refuses.
+func TestMockAuthTransport_SuspensionLifecycle(t *testing.T) {
+	ctx := context.Background()
+	m, err := newMockAuthTransport()
+	if err != nil {
+		t.Fatalf("newMockAuthTransport: %v", err)
+	}
+
+	if err := m.SuspendUser(ctx, 2); err != nil {
+		t.Fatalf("suspend active: %v", err)
+	}
+	if err := m.SuspendUser(ctx, 2); err != nil {
+		t.Fatalf("suspend suspended must be idempotent: %v", err)
+	}
+	if err := m.UnsuspendUser(ctx, 2); err != nil {
+		t.Fatalf("unsuspend suspended: %v", err)
+	}
+	if err := m.UnsuspendUser(ctx, 2); err != nil {
+		t.Fatalf("unsuspend active must be idempotent: %v", err)
+	}
+
+	if err := m.DisableUser(ctx, 2); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	var lte *user.LifecycleTransitionError
+	if err := m.SuspendUser(ctx, 2); !errors.As(err, &lte) {
+		t.Fatalf("suspend disabled: expected LifecycleTransitionError, got: %T: %v", err, err)
+	}
+	if lte.From != "disabled" || lte.To != user.LifecycleSuspended {
+		t.Fatalf("suspend disabled: got transition %q -> %q", lte.From, lte.To)
+	}
+	if err := m.UnsuspendUser(ctx, 2); !errors.As(err, &lte) {
+		t.Fatalf("unsuspend disabled: expected LifecycleTransitionError, got: %T: %v", err, err)
+	}
+	if lte.To != user.LifecycleActive {
+		t.Fatalf("unsuspend disabled: got target %q, want active", lte.To)
 	}
 }
 

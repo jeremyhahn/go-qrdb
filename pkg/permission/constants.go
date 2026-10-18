@@ -244,6 +244,10 @@ const (
 	UsersEnable Permission = "users:enable"
 	// UsersDisable grants access to disable user accounts.
 	UsersDisable Permission = "users:disable"
+	// UsersSuspend grants access to suspend active user accounts.
+	UsersSuspend Permission = "users:suspend"
+	// UsersUnsuspend grants access to return suspended user accounts to active.
+	UsersUnsuspend Permission = "users:unsuspend"
 	// UsersGetByCertThumbprint grants access to resolve a user by an mTLS
 	// certificate SPKI thumbprint. It is a read, distinct from UsersRead so the
 	// identity-lookup surface can be granted independently.
@@ -1037,6 +1041,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			UsersCreate, UsersRead, UsersUpdate, UsersDelete,
 			UsersList, UsersEnable, UsersDisable,
+			UsersSuspend, UsersUnsuspend,
 			UsersGetByCertThumbprint, UsersAddCertBinding,
 			UsersRemoveCertBinding, UsersInvite,
 		},

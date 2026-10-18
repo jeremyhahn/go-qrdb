@@ -49,6 +49,8 @@ type mockUserService struct {
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn        func(ctx context.Context, id uint64) error
 	disableUserFn       func(ctx context.Context, id uint64) error
+	suspendUserFn       func(ctx context.Context, id uint64) error
+	unsuspendUserFn     func(ctx context.Context, id uint64) error
 	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
@@ -112,6 +114,20 @@ func (m *mockUserService) EnableUser(ctx context.Context, id uint64) error {
 func (m *mockUserService) DisableUser(ctx context.Context, id uint64) error {
 	if m.disableUserFn != nil {
 		return m.disableUserFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserService) SuspendUser(ctx context.Context, id uint64) error {
+	if m.suspendUserFn != nil {
+		return m.suspendUserFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserService) UnsuspendUser(ctx context.Context, id uint64) error {
+	if m.unsuspendUserFn != nil {
+		return m.unsuspendUserFn(ctx, id)
 	}
 	return nil
 }

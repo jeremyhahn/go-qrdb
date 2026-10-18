@@ -151,6 +151,48 @@ const PermissionAdminStatus = permission.AdminStatus
 const PermissionAdminPeers = permission.AdminPeers
 
 // ---------------------------------------------------------------------------
+// Identity, RBAC and audit-read permissions
+//
+// The permission names a layer authorizing its own requests through
+// RBACAuthorizer checks for user and role management and for reading the
+// audit trail (go-xkms key authorization). Aliases of pkg/permission.
+// ---------------------------------------------------------------------------
+
+// User management permissions ("users:*").
+const (
+	PermissionUsersCreate              = permission.UsersCreate
+	PermissionUsersRead                = permission.UsersRead
+	PermissionUsersUpdate              = permission.UsersUpdate
+	PermissionUsersDelete              = permission.UsersDelete
+	PermissionUsersList                = permission.UsersList
+	PermissionUsersEnable              = permission.UsersEnable
+	PermissionUsersDisable             = permission.UsersDisable
+	PermissionUsersGetByCertThumbprint = permission.UsersGetByCertThumbprint
+	PermissionUsersAddCertBinding      = permission.UsersAddCertBinding
+	PermissionUsersRemoveCertBinding   = permission.UsersRemoveCertBinding
+	PermissionUsersInvite              = permission.UsersInvite
+)
+
+// Role management permissions ("roles:*").
+const (
+	PermissionRolesCreate   = permission.RolesCreate
+	PermissionRolesRead     = permission.RolesRead
+	PermissionRolesUpdate   = permission.RolesUpdate
+	PermissionRolesDelete   = permission.RolesDelete
+	PermissionRolesList     = permission.RolesList
+	PermissionRolesAssign   = permission.RolesAssign
+	PermissionRolesUnassign = permission.RolesUnassign
+)
+
+// Audit read permissions: reading ("audit:read"), filtered querying
+// ("audit:query") and streaming ("audit:stream") audit events.
+const (
+	PermissionAuditRead   = permission.AuditRead
+	PermissionAuditQuery  = permission.AuditQuery
+	PermissionAuditStream = permission.AuditStream
+)
+
+// ---------------------------------------------------------------------------
 // Permission scope types and registration
 //
 // RegisterScope (and the Scope constants below) close a re-export gap: a

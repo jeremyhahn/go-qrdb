@@ -145,6 +145,28 @@ func TestE2E_DisableUser_HappyPath(t *testing.T) {
 	}
 }
 
+func TestE2E_SuspendUnsuspendUser_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	suspendCh, unsuspendCh := make(chan string, 1), make(chan string, 1)
+	srv.SetResponder("user.Suspend", func(p []byte) (uint16, []byte) {
+		suspendCh <- string(p)
+		return wire.StatusOK, nil
+	})
+	srv.SetResponder("user.Unsuspend", func(p []byte) (uint16, []byte) {
+		unsuspendCh <- string(p)
+		return wire.StatusOK, nil
+	})
+	if err := tr.SuspendUser(context.Background(), 7); err != nil {
+		t.Fatalf("SuspendUser: %v", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 8); err != nil {
+		t.Fatalf("UnsuspendUser: %v", err)
+	}
+	if suspended, unsuspended := <-suspendCh, <-unsuspendCh; suspended != `{"id":7}` || unsuspended != `{"id":8}` {
+		t.Fatalf("wire payloads = %q, %q; want {\"id\":7}, {\"id\":8}", suspended, unsuspended)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Roles
 // ---------------------------------------------------------------------------

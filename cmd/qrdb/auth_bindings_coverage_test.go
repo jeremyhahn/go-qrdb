@@ -38,15 +38,17 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockUserService struct {
-	createFn   func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getFn      func(ctx context.Context, id uint64) (*user.User, error)
-	getByName  func(ctx context.Context, tenantID, username string) (*user.User, error)
-	getByEmail func(ctx context.Context, tenantID, email string) (*user.User, error)
-	updateFn   func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteFn   func(ctx context.Context, id uint64) error
-	listFn     func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableFn   func(ctx context.Context, id uint64) error
-	disableFn  func(ctx context.Context, id uint64) error
+	createFn    func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+	getFn       func(ctx context.Context, id uint64) (*user.User, error)
+	getByName   func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getByEmail  func(ctx context.Context, tenantID, email string) (*user.User, error)
+	updateFn    func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+	deleteFn    func(ctx context.Context, id uint64) error
+	listFn      func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
+	enableFn    func(ctx context.Context, id uint64) error
+	disableFn   func(ctx context.Context, id uint64) error
+	suspendFn   func(ctx context.Context, id uint64) error
+	unsuspendFn func(ctx context.Context, id uint64) error
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -115,6 +117,20 @@ func (m *mockUserService) EnableUser(ctx context.Context, id uint64) error {
 func (m *mockUserService) DisableUser(ctx context.Context, id uint64) error {
 	if m.disableFn != nil {
 		return m.disableFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserService) SuspendUser(ctx context.Context, id uint64) error {
+	if m.suspendFn != nil {
+		return m.suspendFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockUserService) UnsuspendUser(ctx context.Context, id uint64) error {
+	if m.unsuspendFn != nil {
+		return m.unsuspendFn(ctx, id)
 	}
 	return nil
 }
@@ -475,6 +491,92 @@ func TestUserBinding_Disable_ServiceError(t *testing.T) {
 
 	if err := b.Disable("1001"); err == nil {
 		t.Fatal("expected error from Disable")
+	}
+}
+
+func TestUserBinding_Suspend_Success(t *testing.T) {
+	var got uint64
+	svc := &mockUserService{
+		suspendFn: func(_ context.Context, id uint64) error {
+			got = id
+			return nil
+		},
+	}
+	conn := newAuthTestConnectionBinding(t, svc, nil, nil)
+	b := NewUserBinding(testLogger(t), conn)
+
+	if err := b.Suspend("1001"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got != 1001 {
+		t.Fatalf("SuspendUser got id %d, want 1001", got)
+	}
+}
+
+func TestUserBinding_Suspend_ServiceError(t *testing.T) {
+	svc := &mockUserService{
+		suspendFn: func(_ context.Context, _ uint64) error {
+			return errors.New("suspend failed")
+		},
+	}
+	conn := newAuthTestConnectionBinding(t, svc, nil, nil)
+	b := NewUserBinding(testLogger(t), conn)
+
+	if err := b.Suspend("1001"); err == nil {
+		t.Fatal("expected error from Suspend")
+	}
+}
+
+func TestUserBinding_Suspend_InvalidID(t *testing.T) {
+	conn := newAuthTestConnectionBinding(t, &mockUserService{}, nil, nil)
+	b := NewUserBinding(testLogger(t), conn)
+
+	var ide *InvalidUserIDError
+	if err := b.Suspend("not-a-number"); !errors.As(err, &ide) {
+		t.Fatalf("expected InvalidUserIDError, got: %T: %v", err, err)
+	}
+}
+
+func TestUserBinding_Unsuspend_Success(t *testing.T) {
+	var got uint64
+	svc := &mockUserService{
+		unsuspendFn: func(_ context.Context, id uint64) error {
+			got = id
+			return nil
+		},
+	}
+	conn := newAuthTestConnectionBinding(t, svc, nil, nil)
+	b := NewUserBinding(testLogger(t), conn)
+
+	if err := b.Unsuspend("1001"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got != 1001 {
+		t.Fatalf("UnsuspendUser got id %d, want 1001", got)
+	}
+}
+
+func TestUserBinding_Unsuspend_ServiceError(t *testing.T) {
+	svc := &mockUserService{
+		unsuspendFn: func(_ context.Context, _ uint64) error {
+			return errors.New("unsuspend failed")
+		},
+	}
+	conn := newAuthTestConnectionBinding(t, svc, nil, nil)
+	b := NewUserBinding(testLogger(t), conn)
+
+	if err := b.Unsuspend("1001"); err == nil {
+		t.Fatal("expected error from Unsuspend")
+	}
+}
+
+func TestUserBinding_Unsuspend_InvalidID(t *testing.T) {
+	conn := newAuthTestConnectionBinding(t, &mockUserService{}, nil, nil)
+	b := NewUserBinding(testLogger(t), conn)
+
+	var ide *InvalidUserIDError
+	if err := b.Unsuspend("not-a-number"); !errors.As(err, &ide) {
+		t.Fatalf("expected InvalidUserIDError, got: %T: %v", err, err)
 	}
 }
 

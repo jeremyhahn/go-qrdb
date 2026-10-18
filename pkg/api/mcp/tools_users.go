@@ -266,6 +266,16 @@ func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authm
 			Perm:    permission.UsersDisable,
 			Handler: handleUserDisable(svc),
 		},
+		{
+			Tool:    toolUserSuspend(),
+			Perm:    permission.UsersSuspend,
+			Handler: handleUserSuspend(svc),
+		},
+		{
+			Tool:    toolUserUnsuspend(),
+			Perm:    permission.UsersUnsuspend,
+			Handler: handleUserUnsuspend(svc),
+		},
 	}
 }
 
@@ -883,6 +893,68 @@ func handleUserDisable(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 
 		if err := svc.DisableUser(ctx, id); err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_disable", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolUserSuspend defines the qrdb_user_suspend tool schema.
+func toolUserSuspend() mcp.Tool {
+	return mcp.NewTool("qrdb_user_suspend",
+		mcp.WithDescription("Suspend an active user account, refusing its requests until it is unsuspended."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The user UUID to suspend."),
+		),
+	)
+}
+
+// handleUserSuspend returns a tool handler that delegates to svc.SuspendUser.
+func handleUserSuspend(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
+		}
+
+		if err := svc.SuspendUser(ctx, id); err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_suspend", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolUserUnsuspend defines the qrdb_user_unsuspend tool schema.
+func toolUserUnsuspend() mcp.Tool {
+	return mcp.NewTool("qrdb_user_unsuspend",
+		mcp.WithDescription("Return a suspended user account to active."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The user UUID to unsuspend."),
+		),
+	)
+}
+
+// handleUserUnsuspend returns a tool handler that delegates to svc.UnsuspendUser.
+func handleUserUnsuspend(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
+		}
+
+		if err := svc.UnsuspendUser(ctx, id); err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_unsuspend", Err: err}
 		}
 
 		return mcp.NewToolResultText("ok"), nil

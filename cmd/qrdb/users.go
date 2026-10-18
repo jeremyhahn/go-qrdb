@@ -26,12 +26,13 @@ import (
 )
 
 // newUsersCmd creates the "users" command group with all user management
-// subcommands: list, create, get, update, delete, enable, and disable.
+// subcommands: list, create, get, update, delete, enable, disable, suspend
+// and unsuspend.
 func newUsersCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "users",
 		Short: "User management",
-		Long:  "Create, update, delete, enable, disable, and list passwordless user accounts.",
+		Long:  "Create, update, delete, enable, disable, suspend, unsuspend, and list passwordless user accounts.",
 	}
 
 	cmd.AddCommand(
@@ -42,6 +43,8 @@ func newUsersCmd() *cobra.Command {
 		newUsersDeleteCmd(),
 		newUsersEnableCmd(),
 		newUsersDisableCmd(),
+		newUsersSuspendCmd(),
+		newUsersUnsuspendCmd(),
 		newUsersInviteCmd(),
 	)
 
@@ -415,6 +418,52 @@ func newUsersDisableCmd() *cobra.Command {
 			}
 
 			if err := client.Users().DisableUser(cmd.Context(), id); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+}
+
+// newUsersSuspendCmd creates the "users suspend" subcommand.
+func newUsersSuspendCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "suspend <id>",
+		Short: "Suspend an active user account",
+		Long: "Suspend an active user account. Its requests are refused, including those " +
+			"carrying a token issued before the suspension, until it is unsuspended.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseUserID(args[0])
+			if err != nil {
+				return err
+			}
+
+			if err := client.Users().SuspendUser(cmd.Context(), id); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+}
+
+// newUsersUnsuspendCmd creates the "users unsuspend" subcommand.
+func newUsersUnsuspendCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unsuspend <id>",
+		Short: "Return a suspended user account to active",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseUserID(args[0])
+			if err != nil {
+				return err
+			}
+
+			if err := client.Users().UnsuspendUser(cmd.Context(), id); err != nil {
 				return err
 			}
 

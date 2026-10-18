@@ -762,6 +762,18 @@ type UserClient interface {
 
 	// DisableUser deactivates a user account.
 	DisableUser(ctx context.Context, id uint64) error
+
+	// SuspendUser moves an active user account to suspended, refusing its
+	// requests, including those carrying a token issued before the
+	// suspension, until it is unsuspended. Suspending a suspended user
+	// succeeds; any other source state is refused with the typed lifecycle
+	// error.
+	SuspendUser(ctx context.Context, id uint64) error
+
+	// UnsuspendUser moves a suspended user account back to active.
+	// Unsuspending an active user succeeds; any other source state is
+	// refused with the typed lifecycle error.
+	UnsuspendUser(ctx context.Context, id uint64) error
 }
 
 // ---------------------------------------------------------------------------

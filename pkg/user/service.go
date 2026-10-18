@@ -67,6 +67,12 @@ type UserServicer interface {
 
 	// DisableUser deactivates a user account.
 	DisableUser(ctx context.Context, id uint64) error
+
+	// SuspendUser moves an active user to suspended; idempotent on suspended.
+	SuspendUser(ctx context.Context, id uint64) error
+
+	// UnsuspendUser moves a suspended user back to active; idempotent on active.
+	UnsuspendUser(ctx context.Context, id uint64) error
 }
 
 // CertActivator gives a pending account its first credential. It is

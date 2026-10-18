@@ -141,6 +141,17 @@ tail -F /var/lib/qrdb/audit.log | your-shipper
 
 **There is no built-in shipping**, no syslog output and no remote sink.
 
+## From the SDK
+
+A Go program that gates audit access with the SDK's RBAC authorizer
+(`sdk.NewRBACAuthorizer`, see the identity-rbac user guide) checks these permissions:
+
+- `sdk.PermissionAuditRead` (`audit:read`)
+- `sdk.PermissionAuditQuery` (`audit:query`)
+- `sdk.PermissionAuditStream` (`audit:stream`)
+
+Each one has the same value as the permission the server checks.
+
 ## Troubleshooting
 
 **`audit query --tenant-id <t>` is refused with a permission error.** `<t>` is

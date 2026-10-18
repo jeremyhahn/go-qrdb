@@ -167,3 +167,45 @@ func (b *UserBinding) Disable(id string) error {
 	b.logger.Debug("Disable completed", "id", id)
 	return nil
 }
+
+// Suspend moves an active user account to suspended.
+func (b *UserBinding) Suspend(id string) error {
+	b.logger.Debug("Suspend called", "id", id)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("Suspend failed", "error", err)
+		return err
+	}
+	uid, err := parseUserID(id)
+	if err != nil {
+		b.logger.Error("Suspend failed", "id", id, "error", err)
+		return err
+	}
+	if err := cl.Users().SuspendUser(context.Background(), uid); err != nil {
+		b.logger.Error("Suspend failed", "id", id, "error", err)
+		return err
+	}
+	b.logger.Debug("Suspend completed", "id", id)
+	return nil
+}
+
+// Unsuspend moves a suspended user account back to active.
+func (b *UserBinding) Unsuspend(id string) error {
+	b.logger.Debug("Unsuspend called", "id", id)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("Unsuspend failed", "error", err)
+		return err
+	}
+	uid, err := parseUserID(id)
+	if err != nil {
+		b.logger.Error("Unsuspend failed", "id", id, "error", err)
+		return err
+	}
+	if err := cl.Users().UnsuspendUser(context.Background(), uid); err != nil {
+		b.logger.Error("Unsuspend failed", "id", id, "error", err)
+		return err
+	}
+	b.logger.Debug("Unsuspend completed", "id", id)
+	return nil
+}

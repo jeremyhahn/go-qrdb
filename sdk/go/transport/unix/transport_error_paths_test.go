@@ -136,6 +136,20 @@ func TestUnixRT_DisableUser_Error(t *testing.T) {
 	}
 }
 
+func TestUnixRT_SuspendUnsuspendUser_Error(t *testing.T) {
+	fail := func(_ context.Context, _ uint64) error { return errServiceFailed }
+	usvc := &mockUserSvc{suspendFn: fail, unsuspendFn: fail}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	if err := tr.SuspendUser(context.Background(), 1); err == nil {
+		t.Fatal("SuspendUser: expected error")
+	}
+	if err := tr.UnsuspendUser(context.Background(), 1); err == nil {
+		t.Fatal("UnsuspendUser: expected error")
+	}
+}
+
 // ===========================================================================
 // Role service error paths
 // ===========================================================================

@@ -51,6 +51,8 @@ type mockUserService struct {
 	listErr           error
 	enableErr         error
 	disableErr        error
+	suspendErr        error
+	unsuspendErr      error
 	lastUpdateRoleIDs []string
 	lastGetID         uint64
 	lastCreateReq     *user.CreateUserRequest
@@ -110,6 +112,14 @@ func (m *mockUserService) EnableUser(_ context.Context, _ uint64) error {
 
 func (m *mockUserService) DisableUser(_ context.Context, _ uint64) error {
 	return m.disableErr
+}
+
+func (m *mockUserService) SuspendUser(_ context.Context, _ uint64) error {
+	return m.suspendErr
+}
+
+func (m *mockUserService) UnsuspendUser(_ context.Context, _ uint64) error {
+	return m.unsuspendErr
 }
 
 func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {

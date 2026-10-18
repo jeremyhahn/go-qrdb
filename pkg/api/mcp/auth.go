@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -254,6 +253,9 @@ func (s *Server) admitAnonymous(r *http.Request, authErr error) (*http.Request, 
 //
 // The bearer challenge rides only a 401: it tells an OAuth client to go and
 // authorize, which is the wrong advice when the credential was never judged.
+// The body is REST's JSON error ({"error": <the refusal>}), so the client
+// learns why it was refused -- a suspended or disabled account, a revoked
+// certificate -- exactly as a REST caller does.
 func writeAuthenticationRefusal(w http.ResponseWriter, err error, bearerChallenge string) {
 	status := authmw.HTTPStatus(err, http.StatusUnauthorized)
 	if status == http.StatusUnauthorized {
@@ -268,7 +270,9 @@ func writeAuthenticationRefusal(w http.ResponseWriter, err error, bearerChalleng
 	if delay, ok := authmw.RetryAfter(err); ok {
 		w.Header().Set("Retry-After", strconv.FormatInt(authmw.RetryAfterSeconds(delay), 10))
 	}
-	http.Error(w, strings.ToLower(http.StatusText(status)), status)
+	// The refusal's own message rides in REST's JSON error body, so a client
+	// shows the same typed refusal on every transport.
+	authmw.WriteJSONError(w, status, err.Error())
 }
 
 // defaultMaxRequestBodyBytes bounds an authenticated MCP HTTP request body

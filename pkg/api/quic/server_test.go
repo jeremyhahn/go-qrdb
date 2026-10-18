@@ -251,7 +251,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"user.GetByCertThumbprint": true, "user.AddCertBinding": true,
 		"user.RemoveCertBinding": true, "user.Update": true,
 		"user.Delete": true, "user.List": true, "user.Enable": true,
-		"user.Disable": true,
+		"user.Disable": true, "user.Suspend": true, "user.Unsuspend": true,
 		// Role management
 		"role.Create": true, "role.Get": true, "role.GetByName": true,
 		"role.Update": true, "role.Delete": true, "role.List": true,
@@ -510,7 +510,7 @@ func TestBuildHandlers_UserMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	userMethods := []string{
 		"user.Create", "user.Get", "user.GetByUsername", "user.GetByEmail", "user.Update", "user.Delete",
-		"user.List", "user.Enable", "user.Disable",
+		"user.List", "user.Enable", "user.Disable", "user.Suspend", "user.Unsuspend",
 	}
 	for _, m := range userMethods {
 		if _, ok := srv.handlers[m]; !ok {

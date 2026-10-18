@@ -132,6 +132,10 @@ func (f *fakeUserService) ListUsers(context.Context, *user.ListUsersRequest) (*u
 }
 func (f *fakeUserService) EnableUser(context.Context, uint64) error  { return errors.ErrUnsupported }
 func (f *fakeUserService) DisableUser(context.Context, uint64) error { return errors.ErrUnsupported }
+func (f *fakeUserService) SuspendUser(context.Context, uint64) error { return errors.ErrUnsupported }
+func (f *fakeUserService) UnsuspendUser(context.Context, uint64) error {
+	return errors.ErrUnsupported
+}
 
 var _ user.UserServicer = (*fakeUserService)(nil)
 

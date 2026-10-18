@@ -857,6 +857,78 @@ func TestGRPC_DisableUser_NilService(t *testing.T) {
 	}
 }
 
+func TestGRPC_SuspendUser_Success(t *testing.T) {
+	userSvc := &mockUserService{}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	_, err := client.SuspendUser(context.Background(), &pb.SuspendUserRequest{Id: 1})
+	if err != nil {
+		t.Fatalf("SuspendUser failed: %v", err)
+	}
+}
+
+func TestGRPC_SuspendUser_Error(t *testing.T) {
+	userSvc := &mockUserService{
+		suspendErr: &user.UserNotFoundError{ID: 1},
+	}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	_, err := client.SuspendUser(context.Background(), &pb.SuspendUserRequest{Id: 1})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestGRPC_SuspendUser_NilService(t *testing.T) {
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+
+	_, err := client.SuspendUser(context.Background(), &pb.SuspendUserRequest{Id: 1})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %v", err)
+	}
+}
+
+func TestGRPC_UnsuspendUser_Success(t *testing.T) {
+	userSvc := &mockUserService{}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	_, err := client.UnsuspendUser(context.Background(), &pb.UnsuspendUserRequest{Id: 1})
+	if err != nil {
+		t.Fatalf("UnsuspendUser failed: %v", err)
+	}
+}
+
+func TestGRPC_UnsuspendUser_Error(t *testing.T) {
+	userSvc := &mockUserService{
+		unsuspendErr: &user.UserNotFoundError{ID: 1},
+	}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	_, err := client.UnsuspendUser(context.Background(), &pb.UnsuspendUserRequest{Id: 1})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestGRPC_UnsuspendUser_NilService(t *testing.T) {
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+
+	_, err := client.UnsuspendUser(context.Background(), &pb.UnsuspendUserRequest{Id: 1})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Role handler tests
 // ---------------------------------------------------------------------------

@@ -346,6 +346,12 @@ func TestQUICAuth_AfterClose(t *testing.T) {
 	if err := tr.DisableUser(context.Background(), 1); !errors.As(err, &ce) {
 		t.Errorf("DisableUser: %v", err)
 	}
+	if err := tr.SuspendUser(context.Background(), 1); !errors.As(err, &ce) {
+		t.Errorf("SuspendUser: %v", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 1); !errors.As(err, &ce) {
+		t.Errorf("UnsuspendUser: %v", err)
+	}
 	if _, err := tr.CreateRole(context.Background(), &transport.CreateRoleRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CreateRole: %v", err)
 	}

@@ -1286,6 +1286,10 @@ func (s *stubUserService) ListUsers(_ context.Context, _ *user.ListUsersRequest)
 }
 func (s *stubUserService) EnableUser(_ context.Context, _ uint64) error  { return nil }
 func (s *stubUserService) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (s *stubUserService) SuspendUser(_ context.Context, _ uint64) error { return nil }
+func (s *stubUserService) UnsuspendUser(_ context.Context, _ uint64) error {
+	return nil
+}
 func (s *stubUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
 	return nil, nil
 }

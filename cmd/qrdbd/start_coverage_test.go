@@ -360,6 +360,9 @@ func (m *mockUserServicer) DisableUser(_ context.Context, _ uint64) error {
 	return nil
 }
 
+func (m *mockUserServicer) SuspendUser(_ context.Context, _ uint64) error   { return nil }
+func (m *mockUserServicer) UnsuspendUser(_ context.Context, _ uint64) error { return nil }
+
 func (m *mockUserServicer) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
 	return nil, nil
 }

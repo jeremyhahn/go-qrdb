@@ -536,7 +536,7 @@ func TestWriteJSONError_EncoderFailure(t *testing.T) {
 	// It logs the error via slog, which we cannot easily capture, but
 	// we verify no panic and the status code + headers are set correctly.
 	w := newBrokenWriter()
-	writeJSONError(w, http.StatusForbidden, "access denied")
+	WriteJSONError(w, http.StatusForbidden, "access denied")
 
 	if w.statusCode != http.StatusForbidden {
 		t.Errorf("expected status 403, got %d", w.statusCode)
@@ -561,7 +561,7 @@ func TestWriteJSONError_VariousStatusCodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			writeJSONError(rec, tt.code, tt.message)
+			WriteJSONError(rec, tt.code, tt.message)
 
 			if rec.Code != tt.code {
 				t.Errorf("expected %d, got %d", tt.code, rec.Code)

@@ -18,6 +18,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,48 @@ type NoopAuthorizer = auth.NoopAuthorizer
 // errors.As rather than treating every error as a denial. (An authorizer
 // wrapped by DecorateAuthorizer adds the ABAC policy's own denial.)
 type PermissionDeniedError = rbac.PermissionDeniedError
+
+// RBACAuthorizer is qrdb's role-based Authorizer: the one policy decision
+// point every transport runs. A layer that authorizes its own requests (go-xkms
+// key operations) constructs it with NewRBACAuthorizer and gets the server's
+// exact decision, never a fork of it. (Aliases pkg/auth/rbac.RBACAuthorizer.)
+type RBACAuthorizer = rbac.RBACAuthorizer
+
+// NewRBACAuthorizer returns an RBACAuthorizer that resolves each identity's
+// permissions through roles. (Aliases pkg/auth/rbac.New.)
+var NewRBACAuthorizer = rbac.New
+
+// RBACOption configures an RBACAuthorizer. (Aliases pkg/auth/rbac.Option.)
+type RBACOption = rbac.Option
+
+// WithRBACCacheTTL sets how long resolved permissions are cached; the default
+// is 30 seconds. (Aliases pkg/auth/rbac.WithCacheTTL.)
+var WithRBACCacheTTL = rbac.WithCacheTTL
+
+// WithRBACStrictSeparation enables strict separation of duties, under which
+// the Owner role is not honored. The daemon enables it in FIPS mode.
+// (Aliases pkg/auth/rbac.WithStrictSeparation.)
+var WithRBACStrictSeparation = rbac.WithStrictSeparation
+
+// WithRBACRoleServiceFallback installs a stale-read role store consulted for
+// the system tenant when the linearizable resolve fails transiently.
+// (Aliases pkg/auth/rbac.WithRoleServiceFallback.)
+var WithRBACRoleServiceFallback = rbac.WithRoleServiceFallback
+
+// WithRBACScopeResolver installs a tenant-aware PermissionScopeResolver
+// (typically a *TenantScopeStore), so each permission's scope resolves in the
+// identity's own tenant. (Aliases pkg/auth/rbac.WithScopeResolver.)
+var WithRBACScopeResolver = rbac.WithScopeResolver
+
+// RBACResolveError is the RBAC authorizer failing to decide: the role service
+// could not resolve the identity's permissions. It is not a denial; a caller
+// tells it apart from PermissionDeniedError with errors.As.
+// (Aliases pkg/auth/rbac.ResolveError.)
+type RBACResolveError = rbac.ResolveError
+
+// RoleServicer is the role store NewRBACAuthorizer resolves permissions
+// through. (Aliases pkg/role.RoleServicer.)
+type RoleServicer = role.RoleServicer
 
 // MethodMTLS is the name the built-in mTLS authenticator reports, and
 // therefore the exact token a user's permitted-method policy

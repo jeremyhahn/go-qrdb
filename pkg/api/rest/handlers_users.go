@@ -325,6 +325,24 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 			s.handleDisableUser(w, r, id)
 			return
 		}
+		if seg, found := strings.CutSuffix(rest, "/suspend"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, mapHTTPError(err), err)
+				return
+			}
+			s.handleSuspendUser(w, r, id)
+			return
+		}
+		if seg, found := strings.CutSuffix(rest, "/unsuspend"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, mapHTTPError(err), err)
+				return
+			}
+			s.handleUnsuspendUser(w, r, id)
+			return
+		}
 		if seg, found := strings.CutSuffix(rest, "/cert-bindings"); found && seg != "" {
 			id, err := parseUserID(seg)
 			if err != nil {
@@ -598,6 +616,30 @@ func (s *Server) handleDisableUser(w http.ResponseWriter, r *http.Request, id ui
 	defer cancel()
 
 	if err := s.userSvc.DisableUser(ctx, id); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, okResponse{Status: "ok"})
+}
+
+func (s *Server) handleSuspendUser(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.userSvc.SuspendUser(ctx, id); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, okResponse{Status: "ok"})
+}
+
+func (s *Server) handleUnsuspendUser(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.userSvc.UnsuspendUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

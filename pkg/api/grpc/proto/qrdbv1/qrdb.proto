@@ -650,6 +650,16 @@ service QRDBService {
         option (qrdb.v1.permission) = "users:disable";
     }
 
+    // SuspendUser moves an active user account to suspended.
+    rpc SuspendUser(SuspendUserRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "users:suspend";
+    }
+
+    // UnsuspendUser returns a suspended user account to active.
+    rpc UnsuspendUser(UnsuspendUserRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "users:unsuspend";
+    }
+
     // -----------------------------------------------------------------------
     // Role management
     // -----------------------------------------------------------------------
@@ -2993,6 +3003,16 @@ message EnableUserRequest {
 
 // DisableUserRequest deactivates a user account.
 message DisableUserRequest {
+    uint64 id = 1;
+}
+
+// SuspendUserRequest moves an active user account to suspended.
+message SuspendUserRequest {
+    uint64 id = 1;
+}
+
+// UnsuspendUserRequest returns a suspended user account to active.
+message UnsuspendUserRequest {
     uint64 id = 1;
 }
 

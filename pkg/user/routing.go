@@ -526,3 +526,27 @@ func (r *routingUserService) DisableUser(ctx context.Context, id uint64) error {
 	}
 	return svc.DisableUser(ctx, id)
 }
+
+func (r *routingUserService) SuspendUser(ctx context.Context, id uint64) error {
+	target, err := r.targetTenant(ctx, id, "suspend user")
+	if err != nil {
+		return err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return err
+	}
+	return svc.SuspendUser(ctx, id)
+}
+
+func (r *routingUserService) UnsuspendUser(ctx context.Context, id uint64) error {
+	target, err := r.targetTenant(ctx, id, "unsuspend user")
+	if err != nil {
+		return err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return err
+	}
+	return svc.UnsuspendUser(ctx, id)
+}

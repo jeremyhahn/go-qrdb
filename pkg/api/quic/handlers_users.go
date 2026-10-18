@@ -130,6 +130,16 @@ type disableUserWireRequest struct {
 	ID uint64 `json:"id"`
 }
 
+// suspendUserWireRequest is the JSON wire payload for user.Suspend.
+type suspendUserWireRequest struct {
+	ID uint64 `json:"id"`
+}
+
+// unsuspendUserWireRequest is the JSON wire payload for user.Unsuspend.
+type unsuspendUserWireRequest struct {
+	ID uint64 `json:"id"`
+}
+
 // userWireResponse is the JSON wire representation of a user entity.
 type userWireResponse struct {
 	ID       uint64   `json:"id"`
@@ -518,6 +528,48 @@ func (s *Server) handleDisableUser(ctx context.Context, payload []byte) ([]byte,
 	}
 
 	if err := s.userSvc.DisableUser(ctx, req.ID); err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(statusWireResponse{Status: "ok"})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+func (s *Server) handleSuspendUser(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req suspendUserWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := s.userSvc.SuspendUser(ctx, req.ID); err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(statusWireResponse{Status: "ok"})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+func (s *Server) handleUnsuspendUser(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req unsuspendUserWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := s.userSvc.UnsuspendUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
 

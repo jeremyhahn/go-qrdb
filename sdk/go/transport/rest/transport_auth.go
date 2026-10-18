@@ -436,6 +436,26 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	return userNotFound(id, t.postJSON(ctx, "DisableUser", "/users/"+strconv.FormatUint(id, 10)+"/disable", nil))
 }
 
+// SuspendUser moves an active user account to suspended. Maps to
+// POST /users/{id}/suspend.
+func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	return userNotFound(id, t.postJSON(ctx, "SuspendUser", "/users/"+strconv.FormatUint(id, 10)+"/suspend", nil))
+}
+
+// UnsuspendUser moves a suspended user account back to active. Maps to
+// POST /users/{id}/unsuspend.
+func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	return userNotFound(id, t.postJSON(ctx, "UnsuspendUser", "/users/"+strconv.FormatUint(id, 10)+"/unsuspend", nil))
+}
+
 // ---------------------------------------------------------------------------
 // RoleClient implementation
 // ---------------------------------------------------------------------------

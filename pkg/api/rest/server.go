@@ -2117,6 +2117,8 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodDelete, "/users/{id}", permission.UsersDelete, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/suspend", permission.UsersSuspend, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/unsuspend", permission.UsersUnsuspend, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, s.handleUser)
 	s.route(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, s.handleUser)
 	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)

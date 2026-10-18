@@ -626,7 +626,10 @@ func TestAll_TotalCount(t *testing.T) {
 	//   digest (docs/clustering/api.md#replica-state-hashes) = 389 total.
 	// + 1 certs:delegate, a tenant's own CA issuing a delegation certificate
 	//   to a service principal (ScopeTenantOnly) = 390 total.
-	const expectedTotal = 390
+	// + 2 users:suspend, users:unsuspend: suspension's own verbs, separate
+	//   from users:update so it carries its own grant and audit event
+	//   (go-qrdb#801) = 392 total.
+	const expectedTotal = 392
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

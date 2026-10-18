@@ -313,6 +313,34 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// SuspendUser moves an active user account to suspended.
+func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.SuspendUser(ctx, &pb.SuspendUserRequest{Id: id})
+	if err != nil {
+		return mapUserNotFound("SuspendUser", id, err)
+	}
+
+	return nil
+}
+
+// UnsuspendUser moves a suspended user account back to active.
+func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.UnsuspendUser(ctx, &pb.UnsuspendUserRequest{Id: id})
+	if err != nil {
+		return mapUserNotFound("UnsuspendUser", id, err)
+	}
+
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // RoleClient implementation
 // ---------------------------------------------------------------------------

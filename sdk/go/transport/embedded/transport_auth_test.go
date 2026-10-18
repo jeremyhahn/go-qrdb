@@ -44,6 +44,8 @@ type mockUserServicer struct {
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn        func(ctx context.Context, id uint64) error
 	disableUserFn       func(ctx context.Context, id uint64) error
+	suspendUserFn       func(ctx context.Context, id uint64) error
+	unsuspendUserFn     func(ctx context.Context, id uint64) error
 	userByCertThumbFn   func(ctx context.Context, thumbprint string) (*user.User, error)
 	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
@@ -83,6 +85,14 @@ func (m *mockUserServicer) EnableUser(ctx context.Context, id uint64) error {
 
 func (m *mockUserServicer) DisableUser(ctx context.Context, id uint64) error {
 	return m.disableUserFn(ctx, id)
+}
+
+func (m *mockUserServicer) SuspendUser(ctx context.Context, id uint64) error {
+	return m.suspendUserFn(ctx, id)
+}
+
+func (m *mockUserServicer) UnsuspendUser(ctx context.Context, id uint64) error {
+	return m.unsuspendUserFn(ctx, id)
 }
 
 func (m *mockUserServicer) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
@@ -736,6 +746,45 @@ func TestDisableUser_ServiceError(t *testing.T) {
 	var unf *transport.UserNotFoundError
 	if !errors.As(err, &unf) {
 		t.Errorf("expected *transport.UserNotFoundError, got %T", err)
+	}
+}
+
+func TestSuspendUnsuspendUser_Success(t *testing.T) {
+	var suspended, unsuspended uint64
+	mock := &mockUserServicer{
+		suspendUserFn:   func(_ context.Context, id uint64) error { suspended = id; return nil },
+		unsuspendUserFn: func(_ context.Context, id uint64) error { unsuspended = id; return nil },
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	if err := tr.SuspendUser(context.Background(), 1001); err != nil {
+		t.Fatalf("SuspendUser: %v", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 1002); err != nil {
+		t.Fatalf("UnsuspendUser: %v", err)
+	}
+	if suspended != 1001 || unsuspended != 1002 {
+		t.Fatalf("service saw suspend %d, unsuspend %d; want 1001, 1002", suspended, unsuspended)
+	}
+}
+
+func TestSuspendUnsuspendUser_NilService(t *testing.T) {
+	tr := newAuthTransport(t)
+	assertNotImplementedError(t, tr.SuspendUser(context.Background(), 1001), "SuspendUser")
+	assertNotImplementedError(t, tr.UnsuspendUser(context.Background(), 1001), "UnsuspendUser")
+}
+
+func TestSuspendUnsuspendUser_ServiceError(t *testing.T) {
+	notFound := func(_ context.Context, id uint64) error { return &user.UserNotFoundError{ID: id} }
+	mock := &mockUserServicer{suspendUserFn: notFound, unsuspendUserFn: notFound}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	var unf *transport.UserNotFoundError
+	if err := tr.SuspendUser(context.Background(), 9999); !errors.As(err, &unf) {
+		t.Errorf("SuspendUser: expected *transport.UserNotFoundError, got %T", err)
+	}
+	if err := tr.UnsuspendUser(context.Background(), 9999); !errors.As(err, &unf) {
+		t.Errorf("UnsuspendUser: expected *transport.UserNotFoundError, got %T", err)
 	}
 }
 

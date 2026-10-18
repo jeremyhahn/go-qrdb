@@ -59,6 +59,8 @@ var targetResolvedOperations = map[string]struct{}{
 	"ListUsers":                    {},
 	"EnableUser":                   {},
 	"DisableUser":                  {},
+	"SuspendUser":                  {},
+	"UnsuspendUser":                {},
 	"AssignRole":                   {},
 	"UnassignRole":                 {},
 	"CreateRole":                   {},

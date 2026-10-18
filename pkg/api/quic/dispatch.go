@@ -249,6 +249,8 @@ func (s *Server) buildHandlers() {
 	s.handle("user.List", permission.UsersList, s.handleListUsers)
 	s.handle("user.Enable", permission.UsersEnable, s.handleEnableUser)
 	s.handle("user.Disable", permission.UsersDisable, s.handleDisableUser)
+	s.handle("user.Suspend", permission.UsersSuspend, s.handleSuspendUser)
+	s.handle("user.Unsuspend", permission.UsersUnsuspend, s.handleUnsuspendUser)
 
 	// Role management
 	s.handle("role.Create", permission.RolesCreate, s.handleCreateRole)

@@ -410,6 +410,23 @@ If you embed qrdb with the Go SDK, run first boot through `Node.FirstBoot`
 rather than `firstboot.Initialize` directly: it holds first boot to the node's
 policy and checks the result against the node's own user store.
 
+## From the SDK
+
+A Go program that authorizes its own requests imports only the SDK
+(`github.com/jeremyhahn/go-qrdb/sdk/go`) and gets the server's own decision:
+
+- `sdk.Identity`, `sdk.IdentityFromContext` and `sdk.WithIdentity` carry the caller.
+- `sdk.NewRBACAuthorizer(roles, opts...)` builds the authorizer over a
+  `sdk.RoleServicer`. Its options are `sdk.WithRBACCacheTTL`,
+  `sdk.WithRBACStrictSeparation`, `sdk.WithRBACRoleServiceFallback` and
+  `sdk.WithRBACScopeResolver`.
+- `Authorize(ctx, identity, resource, action)` returns nil when the call is allowed.
+  `*sdk.PermissionDeniedError` means the caller was denied.
+  `*sdk.RBACResolveError` means the role store could not be read, so no
+  decision was made. Use `errors.As` to tell the two apart.
+- The user and role management permissions are `sdk.PermissionUsers*` and
+  `sdk.PermissionRoles*`.
+
 ## Troubleshooting
 
 **"role not found" when assigning.** `assign` and `unassign` take role and user

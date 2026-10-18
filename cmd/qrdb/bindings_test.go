@@ -1482,6 +1482,18 @@ func TestUserBinding_Disable_NotConnected(t *testing.T) {
 	assertNotConnected(t, err)
 }
 
+func TestUserBinding_Suspend_NotConnected(t *testing.T) {
+	b := NewUserBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	err := b.Suspend("id")
+	assertNotConnected(t, err)
+}
+
+func TestUserBinding_Unsuspend_NotConnected(t *testing.T) {
+	b := NewUserBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	err := b.Unsuspend("id")
+	assertNotConnected(t, err)
+}
+
 // ---------------------------------------------------------------------------
 // InvitationBinding tests
 // ---------------------------------------------------------------------------

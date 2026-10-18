@@ -46,6 +46,8 @@ func TestGRPCUser_AllMethods_Closed(t *testing.T) {
 		{"ListUsers", func() error { _, e := tr.ListUsers(ctx, &transport.ListUsersRequest{}); return e }},
 		{"EnableUser", func() error { return tr.EnableUser(ctx, 1) }},
 		{"DisableUser", func() error { return tr.DisableUser(ctx, 1) }},
+		{"SuspendUser", func() error { return tr.SuspendUser(ctx, 1) }},
+		{"UnsuspendUser", func() error { return tr.UnsuspendUser(ctx, 1) }},
 	}
 
 	for _, c := range cases {
@@ -465,6 +467,12 @@ func TestGRPCServer_AuthCtxCanceled(t *testing.T) {
 	}
 	if err := tr.DisableUser(canceledCtx, 1); err == nil {
 		t.Fatal("DisableUser: expected error")
+	}
+	if err := tr.SuspendUser(canceledCtx, 1); err == nil {
+		t.Fatal("SuspendUser: expected error")
+	}
+	if err := tr.UnsuspendUser(canceledCtx, 1); err == nil {
+		t.Fatal("UnsuspendUser: expected error")
 	}
 	if _, err := tr.CreateRole(canceledCtx, &transport.CreateRoleRequest{}); err == nil {
 		t.Fatal("CreateRole: expected error")

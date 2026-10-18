@@ -22,6 +22,8 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | List | `GET /users/list` | `ListUsers` | `user.List` | `qrdb_user_list` | `ListUsers` | `users:list` |
 | Enable | `POST /users/{id}/enable` | `EnableUser` | `user.Enable` | `qrdb_user_enable` | `EnableUser` | `users:enable` |
 | Disable | `POST /users/{id}/disable` | `DisableUser` | `user.Disable` | `qrdb_user_disable` | `DisableUser` | `users:disable` |
+| Suspend | `POST /users/{id}/suspend` | `SuspendUser` | `user.Suspend` | `qrdb_user_suspend` | `SuspendUser` | `users:suspend` |
+| Unsuspend | `POST /users/{id}/unsuspend` | `UnsuspendUser` | `user.Unsuspend` | `qrdb_user_unsuspend` | `UnsuspendUser` | `users:unsuspend` |
 
 ## Capability matrix — invitation self-enrolment
 
@@ -420,7 +422,7 @@ certificate**, with `user.BootstrapAdminLockoutError` naming the `Reason`:
 |---|---|
 | Withdrawing its last live binding — through `DELETE …/cert-bindings/{thumbprint}`, or a `PUT /users/{id}` that replaces its bindings with none live | `no_live_binding` |
 | `DELETE /users/{id}` | `delete` |
-| `POST /users/{id}/disable`, or a lifecycle change to `suspended`, `locked`, `disabled` or `deleting` | `lifecycle` |
+| `POST /users/{id}/disable`, `POST /users/{id}/suspend`, or a lifecycle change to `suspended`, `locked`, `disabled` or `deleting` | `lifecycle` |
 | A permitted-method list that omits `mtls` | `mtls_not_permitted` |
 | A new `username` | `rename` |
 
@@ -595,7 +597,11 @@ not-permitted-here state returns an `InvalidLifecycleError` naming what is
 allowed. Only `pending`, `active` and `disabled` may be created directly.
 
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
-they are refused on an account already marked `deleting`.
+they are refused on an account already marked `deleting`. `SuspendUser` and
+`UnsuspendUser` move only between `active` and `suspended`: each is a no-op on
+an account already in its target state and a `LifecycleTransitionError` from
+any other state. A suspended account is refused on every request, including
+one carrying a credential issued before the suspension.
 
 > **Breaking change.** `groupIDs` (`group_ids` on REST, gRPC and MCP) has been
 > removed from the `User` schema and from the create and update requests on
