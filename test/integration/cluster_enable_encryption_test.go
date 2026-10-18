@@ -238,13 +238,17 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	}
 	t.Logf("cluster enable-encryption requested on leader (status %d)", status)
 
-	// Every other node waits for its own credential: it must still be
-	// serving the none barrier. Then each receives its own file; the leader
-	// never gets one.
-	leaderIdx := adminPortIndex(t, adminPorts, leaderPort)
-	time.Sleep(3 * time.Second)
+	// The node that accepted the request recycles with the request's
+	// credential and comes back sealed. Every other node waits for its own
+	// credential: it must still be serving the none barrier. Then each
+	// receives its own file; the holder never gets one.
+	holderIdx := waitForCredentialHolder(t, 3, func(i int) bool {
+		_, sealed, ok := barrierStatusJSON(t, ca, adminPorts[i])
+		return ok && sealed
+	}, 180*time.Second)
+	t.Logf("node %d recycled with the request's held credential", holderIdx+1)
 	for i := range 3 {
-		if i == leaderIdx {
+		if i == holderIdx {
 			continue
 		}
 		// The leader's own recycle is an in-process reboot, and the follower
@@ -559,11 +563,16 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	}
 	t.Log("tenant cluster enable-encryption requested on leader")
 
-	// The leader recycles with the request's credential; every other replica
-	// reads its own file, written now.
-	tenantLeaderIdx := adminPortIndex(t, adminPorts, leaderPort)
+	// The node that accepted the request recycles with the request's
+	// credential and needs no file; every other replica reads its own file,
+	// written once the holder is known.
+	tenantHolderIdx := waitForCredentialHolder(t, 3, func(i int) bool {
+		strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
+		return ok && strategy == "passphrase" && !sealed
+	}, 180*time.Second)
+	t.Logf("node %d recycled with the request's held credential", tenantHolderIdx+1)
 	for i := range 3 {
-		if i != tenantLeaderIdx {
+		if i != tenantHolderIdx {
 			writeMigrationCredential(t, credDirs[i], "tenant-"+tenantID, tenantPass)
 		}
 	}
@@ -691,6 +700,36 @@ func migrationCredentialsDir(t *testing.T) string {
 
 // writeMigrationCredential writes a node's own enable-encryption credential
 // file, mode 0600, as an operator would.
+// waitForCredentialHolder returns the index of the one node that migrates
+// while no node has a credential file: the node that accepted the request and
+// holds its credential in memory. That is wherever the coordinator shard's
+// leader was when the request arrived -- the request is forwarded there --
+// and an election can move it between any leader lookup the test makes and
+// the request, so the test observes the holder rather than guessing it. A
+// second node migrating without its own file fails the test.
+func waitForCredentialHolder(t *testing.T, nodes int, migrated func(i int) bool, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		holder := -1
+		for i := range nodes {
+			if !migrated(i) {
+				continue
+			}
+			if holder >= 0 {
+				t.Fatalf("nodes %d and %d both migrated before either had a credential file", holder+1, i+1)
+			}
+			holder = i
+		}
+		if holder >= 0 {
+			return holder
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("no node migrated with the request's held credential within %v", timeout)
+	return -1
+}
+
 func writeMigrationCredential(t *testing.T, dir, name, credential string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(credential+"\n"), 0o600); err != nil {

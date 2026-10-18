@@ -2593,6 +2593,8 @@ func runStart(f *startFlags) (err error) {
 					self:        f.raftAddress,
 					barrierReg:  barrierRegistry,
 					modeCheck:   tenantSvcInst,
+					leader:      host,
+					leaderShard: shard.ShardKV,
 				}
 				reconciler := clustermig.NewReconciler(svcNode.ClusterMigStore, f.raftAddress,
 					&daemonLocalRecycler{migrator: localMig, barrierReg: barrierRegistry},

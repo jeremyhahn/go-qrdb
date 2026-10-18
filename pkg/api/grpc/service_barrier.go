@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -187,11 +188,13 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(ctx context.Context, req *pb
 		availability = seal.AvailabilityOnline
 	}
 
-	// The request's passphrase is copied into protected memory and the
-	// decoded copy wiped at once — the credential is what the migration reads
-	// from here on, so nothing needs the request's plaintext past this line.
+	// The request's passphrase is copied into protected memory, and the
+	// migration reads only that credential. The decoded copy is wiped when
+	// this handler returns, not at once: a follower forwards the unchanged
+	// request to the leader, and a wiped passphrase would seal the leader's
+	// barrier under zeros.
 	creds, err := seal.CredentialsFor(ctx, req.GetPassphrase())
-	secure.Wipe(req.GetPassphrase())
+	defer secure.Wipe(req.GetPassphrase())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -228,7 +231,7 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(ctx context.Context, req *pb
 	select {
 	case err := <-resultCh:
 		if err != nil {
-			return nil, mapServiceError(err)
+			return s.enableEncryptionRefused(ctx, req, err)
 		}
 		// Completed within the window with no error: an unusually fast
 		// migration (e.g. an empty barrier) already finished. Fall through
@@ -252,6 +255,31 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(ctx context.Context, req *pb
 		Status: "migration_started",
 		Scope:  string(scope.Kind),
 	}, nil
+}
+
+// enableEncryptionRefused answers a BarrierEnableEncryption the migrator
+// refused. A follower's not-leader refusal forwards the identical request to
+// the system-shard leader, as CeremonyInitialize does, while the passphrase
+// is still intact: the handler wipes it on return, so the replica-forwarding
+// interceptor, which runs after the handler, must never replay it. When the
+// request cannot be forwarded the refusal is answered Unavailable without the
+// leader's address, which is what would arm that replay.
+func (s *qrdbServiceServer) enableEncryptionRefused(ctx context.Context, req *pb.BarrierEnableEncryptionRequest, err error) (*pb.BarrierEnableEncryptionResponse, error) {
+	var notLeader *service.NotLeaderError
+	if !errors.As(err, &notLeader) {
+		return nil, mapServiceError(err)
+	}
+	if s.replicaForwarder != nil && !forwardedIn(ctx) {
+		if reply, ferr, forwarded := s.replicaForwarder.forwardAdminWrite(ctx, pb.QRDBService_BarrierEnableEncryption_FullMethodName, req, notLeader.LeaderAddress); forwarded {
+			if ferr != nil {
+				return nil, ferr
+			}
+			if resp, ok := reply.(*pb.BarrierEnableEncryptionResponse); ok {
+				return resp, nil
+			}
+		}
+	}
+	return nil, mapServiceError(&service.NotLeaderError{ShardID: notLeader.ShardID, LeaderID: notLeader.LeaderID})
 }
 
 // BarrierRecoveryGenerate creates the independent recovery-key domain, split

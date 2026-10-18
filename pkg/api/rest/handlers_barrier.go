@@ -261,8 +261,18 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "encryption-migration"})
 		return
 	}
+	// The body is read into a []byte, rather than decoded straight off
+	// r.Body, so a node that does not lead the shard the cluster migration
+	// intent is written on can replay the identical request at the leader
+	// through tryForwardWrite (node parity). It carries the passphrase, so it
+	// is wiped once this handler, and any forward it makes, is done with it.
+	body, ok := readBoundedBody(w, r, resolveMaxBodyBytes(s.maxBodyBytes))
+	if !ok {
+		return
+	}
+	defer secure.Wipe(body)
 	var req barrierEnableEncryptionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -316,6 +326,9 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 	select {
 	case err := <-resultCh:
 		if err != nil {
+			if s.tryForwardWrite(w, r, body, err) {
+				return
+			}
 			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}

@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -236,6 +237,10 @@ var dataPlaneRules = []rule{
 	as(&service.LeaseExpiredError{}, NotFound),
 	as(&service.LeaseExistsError{}, AlreadyExists),
 	as(&service.NotLeaderError{}, Unavailable),
+	// The cluster enable-encryption coordinator's refusal on a node that does
+	// not lead the shard its intent is written on: an election in progress,
+	// the same transient condition as the typed refusal above.
+	is(clustermig.ErrNotLeader, Unavailable),
 	// A request Raft timed out: a proposal or read that met an election, or a
 	// leader still committing the first entry of its term, and found no leader
 	// to answer it in time. Retryable once a leader serves, on every

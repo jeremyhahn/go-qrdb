@@ -22,6 +22,8 @@ import (
 	"slices"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -195,6 +197,38 @@ type clusterCoordinatorMigrator struct {
 	self        string                       // this node's ID among the owners
 	barrierReg  *seal.BarrierRegistry        // dedicated-barrier authority check; may be nil
 	modeCheck   barrierModeChecker           // target-strategy entitlement check; may be nil
+	leader      systemLeaderLocator          // names the coordinator shard's leader; may be nil
+	leaderShard uint64                       // the shard whose leader writes the intent
+}
+
+// systemLeaderLocator is the slice of the Raft host that names a shard's
+// current leader: its replica ID, and that replica's address in the locally
+// committed membership. Both answers are local and never block.
+type systemLeaderLocator interface {
+	GetLeaderID(shardID uint64) (uint64, bool, error)
+	GetShardMembership(shardID uint64) (*quicraft.Membership, error)
+}
+
+// notLeaderRefusal is the coordinator's not-leader refusal as the typed
+// *service.NotLeaderError every transport recognizes, naming the leader of the
+// shard the intent is written on so the transport replays the request there:
+// every node serves enable-encryption. While an election is in progress the
+// leader is unknown and the refusal names none; the transports then answer
+// Unavailable, the retryable "leadership is settling" signal.
+func (m *clusterCoordinatorMigrator) notLeaderRefusal() error {
+	nle := &service.NotLeaderError{ShardID: m.leaderShard}
+	if m.leader == nil {
+		return nle
+	}
+	leaderID, ok, err := m.leader.GetLeaderID(m.leaderShard)
+	if err != nil || !ok {
+		return nle
+	}
+	nle.LeaderID = leaderID
+	if membership, merr := m.leader.GetShardMembership(m.leaderShard); merr == nil && membership != nil {
+		nle.LeaderAddress = membership.Nodes[leaderID]
+	}
+	return nle
 }
 
 // barrierModeChecker is the narrow slice of the tenant service the coordinator
@@ -259,5 +293,8 @@ func (m *clusterCoordinatorMigrator) EnableEncryption(ctx context.Context, scope
 		return func() { m.credentials.Release(rec) }, nil
 	}
 	_, err := m.coord.Request(ctx, tenantID, "", opts, clustermig.WithPrepare(hold))
+	if errors.Is(err, clustermig.ErrNotLeader) {
+		return m.notLeaderRefusal()
+	}
 	return err
 }

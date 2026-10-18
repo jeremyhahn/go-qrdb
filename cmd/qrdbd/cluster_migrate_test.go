@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
@@ -402,5 +404,71 @@ func TestClusterCoordinatorMigrator_ReleasesWhenTheWriteFails(t *testing.T) {
 	gen1 := &clustermig.ClusterMigration{Target: seal.StrategyPassphrase, Owners: []string{"n1"}, Generation: 1}
 	if _, err := local.Credential(ctx, gen1); !errors.Is(err, clustermig.ErrCredentialAwaited) {
 		t.Fatalf("a credential is still held for a record never written: err = %v", err)
+	}
+}
+
+// fakeLeaderLocator answers systemLeaderLocator from fixed values.
+type fakeLeaderLocator struct {
+	leaderID  uint64
+	hasLeader bool
+	leaderErr error
+	nodes     map[uint64]string
+	memberErr error
+}
+
+var _ systemLeaderLocator = fakeLeaderLocator{}
+
+func (f fakeLeaderLocator) GetLeaderID(uint64) (uint64, bool, error) {
+	return f.leaderID, f.hasLeader, f.leaderErr
+}
+
+func (f fakeLeaderLocator) GetShardMembership(uint64) (*quicraft.Membership, error) {
+	if f.memberErr != nil {
+		return nil, f.memberErr
+	}
+	return &quicraft.Membership{Nodes: f.nodes}, nil
+}
+
+// TestClusterCoordinatorMigrator_FollowerNamesTheLeader pins the refusal a
+// node that does not lead the coordinator's shard returns: the typed
+// *service.NotLeaderError every transport forwards on, naming the leader, and
+// never the bare clustermig sentinel, which no transport forwards and REST
+// once answered with a 500 (main red, run 56290). With no leader known yet the
+// refusal still has the typed shape, naming none, and no intent is written.
+func TestClusterCoordinatorMigrator_FollowerNamesTheLeader(t *testing.T) {
+	ctx := context.Background()
+	nodes := map[uint64]string{1: "10.0.0.1:5000", 2: "10.0.0.2:5000", 3: "10.0.0.3:5000"}
+	cases := map[string]struct {
+		leader   systemLeaderLocator
+		wantID   uint64
+		wantAddr string
+	}{
+		"leader known":          {fakeLeaderLocator{leaderID: 3, hasLeader: true, nodes: nodes}, 3, "10.0.0.3:5000"},
+		"election in progress":  {fakeLeaderLocator{nodes: nodes}, 0, ""},
+		"leader lookup fails":   {fakeLeaderLocator{leaderErr: errors.New("shard not found")}, 0, ""},
+		"membership read fails": {fakeLeaderLocator{leaderID: 2, hasLeader: true, memberErr: errors.New("shard not found")}, 2, ""},
+		"no locator wired":      {nil, 0, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := clustermig.NewStore(newCMMemKV())
+			coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1"}},
+				func() bool { return false }, nil)
+			m := &clusterCoordinatorMigrator{
+				coord: coord, credentials: clustermig.NewLocalCredentials(""), self: "n1",
+				leader: tc.leader, leaderShard: 1,
+			}
+			err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, validMigOpts())
+			var nle *service.NotLeaderError
+			if !errors.As(err, &nle) {
+				t.Fatalf("EnableEncryption on a follower = %v, want *service.NotLeaderError", err)
+			}
+			if nle.ShardID != 1 || nle.LeaderID != tc.wantID || nle.LeaderAddress != tc.wantAddr {
+				t.Fatalf("refusal = %+v, want shard 1, leader %d at %q", nle, tc.wantID, tc.wantAddr)
+			}
+			if rec, _ := store.GetMigration(ctx, "", ""); rec != nil {
+				t.Fatalf("a follower wrote an intent record: %+v", rec)
+			}
+		})
 	}
 }

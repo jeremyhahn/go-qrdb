@@ -15,6 +15,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"net"
@@ -63,8 +64,9 @@ type fakeTarget struct {
 	answer   atomic.Pointer[func(ctx context.Context) error]
 	unmarked bool
 
-	mu   sync.Mutex
-	seen []seenCall
+	mu         sync.Mutex
+	seen       []seenCall
+	passphrase []byte
 }
 
 // setAnswer sets how the target answers. The serve goroutine reads it, so a
@@ -97,6 +99,24 @@ func (f *fakeTarget) CeremonyInitialize(ctx context.Context, _ *pb.CeremonyIniti
 		}
 	}
 	return &pb.CeremonyInitializeResponse{SpkiPin: "leader-answered"}, nil
+}
+
+// BarrierEnableEncryption answers as the system shard's leader would and
+// keeps the passphrase it was sent, so a test can see what a follower
+// forwarded.
+func (f *fakeTarget) BarrierEnableEncryption(_ context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
+	f.calls.Add(1)
+	f.mu.Lock()
+	f.passphrase = bytes.Clone(req.GetPassphrase())
+	f.mu.Unlock()
+	return &pb.BarrierEnableEncryptionResponse{Status: "leader-answered"}, nil
+}
+
+// forwardedPassphrase returns the passphrase BarrierEnableEncryption was sent.
+func (f *fakeTarget) forwardedPassphrase() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.passphrase
 }
 
 // RemoveMember answers as the system shard's leader would: it is where a

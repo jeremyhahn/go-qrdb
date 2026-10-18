@@ -92,7 +92,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 		// 2026-10-06).
 		var notLeader *service.AdminCredentialNotLeaderError
 		if errors.As(err, &notLeader) {
-			if remote, ok := t.forwardAdminTo(ctx, notLeader); ok {
+			if remote, ok := t.forwardAdminTo(ctx, notLeader, notLeader.LeaderAddress); ok {
 				return remote.CeremonyInitialize(ctx, req)
 			}
 		}

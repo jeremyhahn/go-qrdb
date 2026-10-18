@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -241,12 +242,13 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 		availability = seal.AvailabilityOnline
 	}
 
-	// The request's passphrase is copied into protected memory and the
-	// decoded copy wiped at once -- the credential is what the migration
-	// reads from here on, so nothing needs the request's plaintext past this
-	// line.
+	// The request's passphrase is copied into protected memory, and the
+	// migration reads only that credential. The decoded copy is wiped when
+	// this call returns, not at once: a follower forwards the unchanged
+	// request to the leader, and a wiped passphrase would seal the leader's
+	// barrier under zeros.
 	creds, err := seal.CredentialsFor(ctx, req.Passphrase)
-	secure.Wipe(req.Passphrase)
+	defer secure.Wipe(req.Passphrase)
 	if err != nil {
 		return nil, delayed("BarrierEnableEncryption", err)
 	}
@@ -283,6 +285,16 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	select {
 	case err := <-resultCh:
 		if err != nil {
+			// A follower forwards the identical request to the system-shard
+			// leader when the embedding is configured to forward
+			// (WithReplicaForwarding), as CeremonyInitialize does; otherwise
+			// the refusal names the leader (node parity).
+			var notLeader *service.NotLeaderError
+			if errors.As(err, &notLeader) {
+				if remote, ok := t.forwardAdminTo(ctx, notLeader, notLeader.LeaderAddress); ok {
+					return remote.BarrierEnableEncryption(ctx, req)
+				}
+			}
 			return nil, delayed("BarrierEnableEncryption", err)
 		}
 		// Completed within the window with no error: an unusually fast

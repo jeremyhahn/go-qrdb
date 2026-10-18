@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -218,6 +219,25 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 	} {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestClassify_ClusterMigNotLeaderIsUnavailable pins the cluster
+// enable-encryption coordinator's not-leader refusal to Unavailable, as
+// quicraft.ErrNotLeader is: an election in progress is a retryable condition,
+// never the 500 it reached a client as before it had a row (main red, run
+// 56290).
+func TestClassify_ClusterMigNotLeaderIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"the bare sentinel", clustermig.ErrNotLeader},
+		{"wrapped by a caller", wrapped{clustermig.ErrNotLeader}},
+	} {
+		if got := Classify(tc.err); got != Unavailable {
+			t.Errorf("%s: Classify = %v, want Unavailable", tc.name, got)
 		}
 	}
 }
