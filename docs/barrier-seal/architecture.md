@@ -361,6 +361,18 @@ to its own server, so no other process on the host can take one meanwhile
 (see "Pre-bound sockets" in
 [the API server architecture](../api-server/architecture.md)).
 
+**A migration's owners recycle one at a time, and a node counts as back once
+its Raft log has caught up.** Once the `rolling-migration` cluster feature is
+active, the migration record orders the owners in steps. The next owner's turn
+starts only when the last one has acked the migration, and also holds the
+shard's log up to the commit index seen at that ack. So the shard is never
+short of two replicas' logs at once. The step is advanced by the leader of the
+scope's own Raft shard, the one node that knows how far each replica has
+replicated. While that shard has no leader, no node advances the step. Every
+write of the record is guarded on the record as read, so a node that has lost
+leadership cannot undo a newer step. The detail is
+[engineering.md](engineering.md#owners-recycle-one-at-a-time).
+
 
 ## Sealing in a cluster
 

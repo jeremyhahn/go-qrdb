@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -30,7 +31,9 @@ type errKV struct{ err error }
 
 func (k errKV) Put(context.Context, string, []byte) error   { return k.err }
 func (k errKV) Get(context.Context, string) ([]byte, error) { return nil, k.err }
-func (k errKV) Delete(context.Context, string) error        { return k.err }
+func (k errKV) PutAllIfUnchanged(context.Context, string, []byte, []kvstore.KV) (bool, error) {
+	return false, k.err
+}
 func (k errKV) Scan(context.Context, string, func(string, []byte) error) error {
 	return k.err
 }
@@ -59,7 +62,7 @@ func TestStore_KVErrorsWrapped(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"PutMigration", func() error { return s.PutMigration(ctx, m) }},
+		{"swapMigration", func() error { return s.swapMigration(ctx, nil, m) }},
 		{"GetMigration", func() error { _, e := s.GetMigration(ctx, tid, db); return e }},
 		{"PutNodeStatus", func() error {
 			return s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{NodeID: "n1"})
@@ -139,8 +142,8 @@ func (k *readOKWriteErrKV) Put(context.Context, string, []byte) error { return k
 func (k *readOKWriteErrKV) Get(ctx context.Context, key string) ([]byte, error) {
 	return k.inner.Get(ctx, key)
 }
-func (k *readOKWriteErrKV) Delete(ctx context.Context, key string) error {
-	return k.inner.Delete(ctx, key)
+func (k *readOKWriteErrKV) PutAllIfUnchanged(context.Context, string, []byte, []kvstore.KV) (bool, error) {
+	return false, k.putErr
 }
 func (k *readOKWriteErrKV) Scan(ctx context.Context, prefix string, fn func(string, []byte) error) error {
 	return k.inner.Scan(ctx, prefix, fn)

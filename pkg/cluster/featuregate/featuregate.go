@@ -184,9 +184,18 @@ const PerNodeBarrierKeys Feature = "per-node-barrier-keys"
 // docs/decisions/verifiable-log.md, section 3.
 const VerifiableLog Feature = "verifiable-log"
 
+// RollingMigration is the per-node step record of a cluster encryption
+// migration (clustermig.ClusterMigration.Steps): the coordinator hands the
+// recycle to one owner at a time, and each owner recycles only on its turn.
+// A node that predates it ignores the steps and recycles at once, which with
+// a peer down loses quorum, so no request carries steps until every node
+// can honour them. Like ClusterSeal it is enforced per node by each node's
+// reconciler, so it is judged by ACTIVATION.
+const RollingMigration Feature = "rolling-migration"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -111,6 +112,22 @@ func WithBarrierDatabases(dbs BarrierDatabases) BarrierServiceOption {
 // no Raft shards -- nothing is paused.
 func WithShardPauser(p ShardPauser) BarrierServiceOption {
 	return func(b *BarrierService) { b.shards = p }
+}
+
+// ClusterMigrations reads a barrier's cluster-wide encryption migration from
+// the replicated record: nil when none is in progress. *clustermig.Store
+// implements it.
+type ClusterMigrations interface {
+	Report(ctx context.Context, tenantID, database string) (*clustermig.Report, error)
+}
+
+var _ ClusterMigrations = (*clustermig.Store)(nil)
+
+// WithClusterMigrations has the barrier status report the node barrier's
+// cluster-wide encryption migration, read through m. Without it the status
+// carries none.
+func WithClusterMigrations(m ClusterMigrations) BarrierServiceOption {
+	return func(b *BarrierService) { b.migrations = m }
 }
 
 // seal seals the node barrier: cluster-wide through the sealer when active,

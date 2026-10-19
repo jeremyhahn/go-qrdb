@@ -33,6 +33,13 @@ type recordingRecycler struct {
 	lastCred  []byte
 	failFirst int
 	failErr   error
+	atTarget  bool
+}
+
+func (r *recordingRecycler) AtTarget(*ClusterMigration) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.atTarget
 }
 
 func (r *recordingRecycler) Recycle(_ context.Context, m *ClusterMigration, cred []byte) error {
@@ -182,11 +189,11 @@ func TestReconciler_MultipleScopes(t *testing.T) {
 	// Scope 1: tenant/db (this node owns).
 	seedMigration(t, s, 1, []string{"n1"})
 	// Scope 2: system (this node owns).
-	if err := s.PutMigration(ctx, &ClusterMigration{
+	if err := s.swapMigration(ctx, nil, &ClusterMigration{
 		Target: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
 		Owners: []string{"n1"}, Generation: 1,
 	}); err != nil {
-		t.Fatalf("PutMigration(system): %v", err)
+		t.Fatalf("swapMigration(system): %v", err)
 	}
 	rec := &recordingRecycler{}
 	r := NewReconciler(s, "n1", rec, nil, nil, nil)
@@ -300,13 +307,72 @@ func TestReconciler_AwaitsCredentialWithoutCountingAttempts(t *testing.T) {
 	}
 }
 
+// TestReconciler_AtTargetAcksWithoutCredential proves an owner whose barrier
+// is already at the target acks complete without asking for a credential or
+// recycling again, and releases any credential it held.
+func TestReconciler_AtTargetAcksWithoutCredential(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	rec := &recordingRecycler{atTarget: true}
+	src := &staticSource{err: ErrCredentialAwaited}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
+
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("ReconcileOnce = %d, %v; want 1, nil", n, err)
+	}
+	if src.asked != 0 || rec.count() != 0 {
+		t.Fatalf("asked %d times, recycled %d times; an owner at the target needs neither", src.asked, rec.count())
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil || st.Phase != seal.PhaseComplete || st.Generation != 1 {
+		t.Fatalf("status = %+v, want gen1 complete", st)
+	}
+	if len(src.released) != 1 || src.released[0] != 1 {
+		t.Fatalf("released = %v, want [1]", src.released)
+	}
+}
+
+// TestReconciler_AwaitingOwnerAcksOnceAtTarget proves the SYSTEM-scope reboot
+// case: the recycle reached the target but its ack and the held credential
+// were lost, so the owner was left awaiting a credential. Once its barrier
+// reports the target, the next pass acks complete without one.
+func TestReconciler_AwaitingOwnerAcksOnceAtTarget(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	rec := &recordingRecycler{}
+	src := &staticSource{err: ErrCredentialAwaited}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
+
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 0 {
+		t.Fatalf("first pass = %d, %v; want 0, nil", n, err)
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil || st.Phase != PhaseAwaitingCredential {
+		t.Fatalf("status = %+v, want awaiting-credential", st)
+	}
+	asked := src.asked
+
+	rec.mu.Lock()
+	rec.atTarget = true
+	rec.mu.Unlock()
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("pass at target = %d, %v; want 1, nil", n, err)
+	}
+	if src.asked != asked || rec.count() != 0 {
+		t.Fatalf("asked %d more times, recycled %d times; want neither", src.asked-asked, rec.count())
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st.Phase != seal.PhaseComplete || st.Attempts != 0 {
+		t.Fatalf("status = %+v, want complete with 0 attempts", st)
+	}
+}
+
 // TestReconciler_ShamirTargetNeedsNoCredential proves a Shamir target never
 // asks for a credential: each node mints its own key and seals a fresh share
 // set to its own officers.
 func TestReconciler_ShamirTargetNeedsNoCredential(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.PutMigration(ctx, &ClusterMigration{
+	if err := s.swapMigration(ctx, nil, &ClusterMigration{
 		TenantID: tid, Database: db, Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
 		ShamirThreshold: 2, ShamirTotal: 3, Owners: []string{"n1"}, Generation: 1,
 	}); err != nil {
@@ -495,6 +561,8 @@ func TestReconciler_BoundedRetry_NewGenerationResetsAttempts(t *testing.T) {
 // to observe reconciler-internal state (e.g. a checkpoint write) from inside
 // the Recycle call rather than merely record its arguments.
 type recycleFunc func(ctx context.Context, m *ClusterMigration, credential []byte) error
+
+func (recycleFunc) AtTarget(*ClusterMigration) bool { return false }
 
 func (f recycleFunc) Recycle(ctx context.Context, m *ClusterMigration, credential []byte) error {
 	return f(ctx, m, credential)

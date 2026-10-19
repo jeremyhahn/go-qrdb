@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -27,6 +28,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -51,11 +53,21 @@ func (k *cmMemKV) Get(_ context.Context, key string) ([]byte, error) {
 	defer k.mu.Unlock()
 	return k.m[key], nil
 }
-func (k *cmMemKV) Delete(_ context.Context, key string) error {
+func (k *cmMemKV) PutAllIfUnchanged(_ context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	delete(k.m, key)
-	return nil
+	cur, ok := k.m[guardKey]
+	if guardValue == nil && ok || guardValue != nil && (!ok || !bytes.Equal(cur, guardValue)) {
+		return false, nil
+	}
+	for _, w := range writes {
+		if w.Delete {
+			delete(k.m, w.Key)
+			continue
+		}
+		k.m[w.Key] = bytes.Clone(w.Value)
+	}
+	return true, nil
 }
 func (k *cmMemKV) Scan(_ context.Context, prefix string, fn func(string, []byte) error) error {
 	k.mu.Lock()
@@ -171,10 +183,11 @@ func TestDaemonLocalRecycler_CarriesShamirFields(t *testing.T) {
 	}
 }
 
-// TestDaemonLocalRecycler_AlreadyAtTarget proves the idempotency skip: when the
-// local barrier already reports the target strategy, Recycle is a no-op (the
-// migrator is never invoked) — the post-reboot/re-issue resume path.
-func TestDaemonLocalRecycler_AlreadyAtTarget(t *testing.T) {
+// TestDaemonLocalRecycler_AtTarget proves the idempotency check the reconciler
+// asks before it takes a credential: only a local barrier that already reports
+// the target strategy is at target, and an unavailable barrier fails open — the
+// post-reboot/re-issue resume path.
+func TestDaemonLocalRecycler_AtTarget(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.DiscardHandler)
 
@@ -195,20 +208,22 @@ func TestDaemonLocalRecycler_AlreadyAtTarget(t *testing.T) {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	mig := &recordingMigrator{}
-	r := &daemonLocalRecycler{migrator: mig, barrierReg: reg}
-	// Target == the barrier's current strategy → already-at-target → no-op.
-	target := sb.Status().Strategy
-	if err := r.Recycle(ctx, &clustermig.ClusterMigration{Target: target}, []byte("x")); err != nil {
-		t.Fatalf("Recycle(already-at-target): %v", err)
+	r := &daemonLocalRecycler{migrator: &recordingMigrator{}, barrierReg: reg}
+	// Target == the barrier's current strategy → at target.
+	if !r.AtTarget(&clustermig.ClusterMigration{Target: sb.Status().Strategy}) {
+		t.Fatal("system barrier at the target strategy must report AtTarget")
 	}
-	if mig.scope.Kind != "" {
-		t.Fatal("migrator must not be invoked when already at the target strategy")
+	// A DIFFERENT target → not at target.
+	if r.AtTarget(&clustermig.ClusterMigration{Target: seal.StrategyShamir}) {
+		t.Fatal("a different target strategy must not report AtTarget")
 	}
-	// A DIFFERENT target → not at target → migrator invoked.
-	r.Recycle(ctx, &clustermig.ClusterMigration{Target: seal.StrategyShamir}, []byte("x"))
-	if mig.scope.Kind != service.ScopeSystem {
-		t.Fatal("migrator should run when the target differs from the current strategy")
+	// A tenant scope with no tenant barrier → not at target (fails open).
+	if r.AtTarget(&clustermig.ClusterMigration{TenantID: "absent", Database: "db", Target: sb.Status().Strategy}) {
+		t.Fatal("a missing tenant barrier must not report AtTarget")
+	}
+	// No registry → not at target (fails open).
+	if (&daemonLocalRecycler{}).AtTarget(&clustermig.ClusterMigration{Target: sb.Status().Strategy}) {
+		t.Fatal("a recycler without a registry must not report AtTarget")
 	}
 }
 
@@ -288,9 +303,9 @@ func TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds(t *testing.T) {
 	}
 }
 
-// TestReapCompletedMigrations proves the leader reaps a completed migration and
+// TestCoordinateMigrations_ReapsCompleted proves the leader reaps a completed migration and
 // leaves an incomplete one in place.
-func TestReapCompletedMigrations(t *testing.T) {
+func TestCoordinateMigrations_ReapsCompleted(t *testing.T) {
 	ctx := context.Background()
 	store := clustermig.NewStore(newCMMemKV())
 	coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1"}},
@@ -300,7 +315,7 @@ func TestReapCompletedMigrations(t *testing.T) {
 	if _, err := coord.Request(ctx, "acme", "", validMigOpts()); err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	reapCompletedMigrations(ctx, coord, store)
+	coordinateMigrations(ctx, coord, store)
 	if got, _ := store.GetMigration(ctx, "acme", ""); got == nil {
 		t.Fatal("incomplete migration must not be reaped")
 	}
@@ -308,7 +323,7 @@ func TestReapCompletedMigrations(t *testing.T) {
 	if err := store.PutNodeStatus(ctx, "acme", "", &clustermig.NodeMigrationStatus{NodeID: "n1", Generation: 1, Phase: seal.PhaseComplete}); err != nil {
 		t.Fatalf("PutNodeStatus: %v", err)
 	}
-	reapCompletedMigrations(ctx, coord, store)
+	coordinateMigrations(ctx, coord, store)
 	// GetMigration returns (nil, nil) once the record is reaped and (nil, err)
 	// if the read itself failed; checking only got == nil scores a broken read
 	// as "reaped", the same defect #236 fixed elsewhere and #255 found #236 had
@@ -319,6 +334,97 @@ func TestReapCompletedMigrations(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatal("completed migration must be reaped")
+	}
+}
+
+func TestCoordinateMigrations_AdvancesARollingMigration(t *testing.T) {
+	ctx := context.Background()
+	store := clustermig.NewStore(newCMMemKV())
+	coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1", "n2"}},
+		func() bool { return true }, func() int64 { return 1 },
+		clustermig.WithRollingSteps(func() bool { return true }, "n1"))
+	if _, err := coord.Request(ctx, "acme", "", validMigOpts()); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	complete := func(node string) {
+		t.Helper()
+		if err := store.PutNodeStatus(ctx, "acme", "", &clustermig.NodeMigrationStatus{NodeID: node, Generation: 1, Phase: seal.PhaseComplete}); err != nil {
+			t.Fatalf("PutNodeStatus: %v", err)
+		}
+	}
+	// n2 recycles first; once it acks, a tick hands the turn to n1.
+	complete("n2")
+	coordinateMigrations(ctx, coord, store)
+	got, err := store.GetMigration(ctx, "acme", "")
+	if err != nil || got == nil {
+		t.Fatalf("GetMigration = %v, %v; want the rolling record", got, err)
+	}
+	want := []clustermig.NodeStep{{NodeID: "n2", State: clustermig.StepServing}, {NodeID: "n1", State: clustermig.StepRecycling}}
+	if len(got.Steps) != len(want) || got.Steps[0] != want[0] || got.Steps[1] != want[1] {
+		t.Fatalf("Steps = %+v, want %+v", got.Steps, want)
+	}
+	// n1's ack: the same tick records it serving and reaps the record.
+	complete("n1")
+	coordinateMigrations(ctx, coord, store)
+	if got, err := store.GetMigration(ctx, "acme", ""); err != nil || got != nil {
+		t.Fatalf("GetMigration after the last step = %+v, %v; want reaped", got, err)
+	}
+}
+
+// shardProgress is a clustermig.ReplicationProgress for one shard whose
+// leadership the test sets: every replica holds the log up to commit.
+type shardProgress struct {
+	leads  bool
+	commit uint64
+}
+
+var _ clustermig.ReplicationProgress = shardProgress{}
+
+func (p shardProgress) Leads(uint64) bool { return p.leads }
+
+func (p shardProgress) CommitIndex(uint64) (uint64, bool, error) { return p.commit, true, nil }
+
+func (p shardProgress) MatchIndex(uint64, string) (uint64, bool, error) { return p.commit, true, nil }
+
+// TestCoordinateMigrations_TheShardLeaderAdvances proves a tick on a node that
+// follows the system shard still advances a rolling migration on a shard it
+// leads, and a tick on the system shard's leader, not leading that shard,
+// leaves it alone.
+func TestCoordinateMigrations_TheShardLeaderAdvances(t *testing.T) {
+	ctx := context.Background()
+	store := clustermig.NewStore(newCMMemKV())
+	coordinator := func(systemLeader, shardLeader bool) *clustermig.Coordinator {
+		return clustermig.NewCoordinator(store, fixedResolver{shard: 9, owners: []string{"n1", "n2"}},
+			func() bool { return systemLeader }, func() int64 { return 1 },
+			clustermig.WithRollingSteps(func() bool { return true }, "n1"),
+			clustermig.WithCatchUp(shardProgress{leads: shardLeader, commit: 12}))
+	}
+	if _, err := coordinator(true, false).Request(ctx, "acme", "orders", validMigOpts()); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if err := store.PutNodeStatus(ctx, "acme", "orders", &clustermig.NodeMigrationStatus{NodeID: "n2", Generation: 1, Phase: seal.PhaseComplete}); err != nil {
+		t.Fatalf("PutNodeStatus: %v", err)
+	}
+	steps := func() []clustermig.NodeStep {
+		t.Helper()
+		got, err := store.GetMigration(ctx, "acme", "orders")
+		if err != nil || got == nil {
+			t.Fatalf("GetMigration = %v, %v; want the rolling record", got, err)
+		}
+		return got.Steps
+	}
+
+	coordinateMigrations(ctx, coordinator(true, false), store)
+	if got := steps(); got[0].State != clustermig.StepRecycling {
+		t.Fatalf("Steps after the system leader's tick = %+v, want n2 still recycling", got)
+	}
+	coordinateMigrations(ctx, coordinator(false, true), store)
+	want := []clustermig.NodeStep{
+		{NodeID: "n2", State: clustermig.StepServing, CatchUpIndex: 12},
+		{NodeID: "n1", State: clustermig.StepRecycling},
+	}
+	if got := steps(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Steps after the shard leader's tick = %+v, want %+v", got, want)
 	}
 }
 
@@ -342,6 +448,7 @@ func TestRunClusterMigReconciler_StopsOnContextCancel(t *testing.T) {
 
 type noopRecycler struct{}
 
+func (noopRecycler) AtTarget(*clustermig.ClusterMigration) bool                          { return false }
 func (noopRecycler) Recycle(context.Context, *clustermig.ClusterMigration, []byte) error { return nil }
 
 // TestRunClusterMigReconciler_Tick proves a running loop performs a reconcile +
@@ -387,6 +494,10 @@ func validMigOpts() seal.MigrationOptions {
 type failingPutKV struct{ *cmMemKV }
 
 func (failingPutKV) Put(context.Context, string, []byte) error { return errors.New("no quorum") }
+
+func (failingPutKV) PutAllIfUnchanged(context.Context, string, []byte, []kvstore.KV) (bool, error) {
+	return false, errors.New("no quorum")
+}
 
 // TestClusterCoordinatorMigrator_ReleasesWhenTheWriteFails proves the
 // credential held for a request is released when its record is never

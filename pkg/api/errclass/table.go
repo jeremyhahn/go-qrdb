@@ -1367,6 +1367,7 @@ var raftTransientRules = []rule{{
 		quicraft.ErrNotLeader,
 		quicraft.ErrReadIndexNotReady,
 		quicraft.ErrSnapshotInProgress,
+		quicraft.ErrTransferInProgress,
 	},
 }}
 

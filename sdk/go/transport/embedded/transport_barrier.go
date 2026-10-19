@@ -140,13 +140,14 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 		return nil, delayed("BarrierStatus", err)
 	}
 	resp := &transport.BarrierStatusResponse{
-		Sealed:          info.Sealed,
-		Initialized:     info.Initialized,
-		Strategy:        info.Strategy,
-		HardwareBacked:  info.HardwareBacked,
-		ShamirThreshold: info.ShamirThreshold,
-		ShamirTotal:     info.ShamirTotal,
-		ClusterSeal:     sealconv.FromReport(info.ClusterSeal),
+		Sealed:           info.Sealed,
+		Initialized:      info.Initialized,
+		Strategy:         info.Strategy,
+		HardwareBacked:   info.HardwareBacked,
+		ShamirThreshold:  info.ShamirThreshold,
+		ShamirTotal:      info.ShamirTotal,
+		ClusterSeal:      sealconv.FromReport(info.ClusterSeal),
+		ClusterMigration: sealconv.MigrationFromReport(info.ClusterMigration),
 	}
 	if !info.InitializedAt.IsZero() {
 		resp.InitializedAt = info.InitializedAt.Format(time.RFC3339)

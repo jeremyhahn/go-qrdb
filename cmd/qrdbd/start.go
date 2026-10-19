@@ -2583,8 +2583,19 @@ func runStart(f *startFlags) (err error) {
 					id, ok, lerr := host.GetLeaderID(shard.ShardKV)
 					return lerr == nil && ok && id == localReplicaID
 				}
+				// A rolling step hands on only once its owner's Raft log has
+				// caught up to the commit index the leader saw at its ack.
+				coordOpts := []clustermig.CoordinatorOption{
+					clustermig.WithCatchUp(server.NewReplicationProgress(host)),
+					clustermig.WithLogger(slog.Default()),
+				}
+				if featureGate != nil {
+					coordOpts = append(coordOpts, clustermig.WithRollingSteps(func() bool {
+						return featureGate.Activated(featuregate.RollingMigration)
+					}, f.raftAddress))
+				}
 				coord := clustermig.NewCoordinator(svcNode.ClusterMigStore, ownerResolver,
-					isLeader, func() int64 { return time.Now().Unix() })
+					isLeader, func() int64 { return time.Now().Unix() }, coordOpts...)
 				migCredentials := clustermig.NewLocalCredentials(f.sealConfig.MigrationCredentialsDir)
 				clusterMig = &clusterCoordinatorMigrator{
 					coord:       coord,

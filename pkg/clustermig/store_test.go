@@ -16,6 +16,7 @@
 package clustermig
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -41,6 +43,25 @@ func (k *memKV) Put(_ context.Context, key string, v []byte) error {
 	copy(cp, v)
 	k.m[key] = cp
 	return nil
+}
+
+// PutAllIfUnchanged applies writes only while guardKey holds guardValue (nil:
+// absent), as kvstore.GuardedBatchKVStore does.
+func (k *memKV) PutAllIfUnchanged(_ context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	cur, ok := k.m[guardKey]
+	if guardValue == nil && ok || guardValue != nil && (!ok || !bytes.Equal(cur, guardValue)) {
+		return false, nil
+	}
+	for _, w := range writes {
+		if w.Delete {
+			delete(k.m, w.Key)
+			continue
+		}
+		k.m[w.Key] = bytes.Clone(w.Value)
+	}
+	return true, nil
 }
 
 func (k *memKV) Get(_ context.Context, key string) ([]byte, error) {
@@ -155,12 +176,17 @@ func requireNodeStatusAbsent(t *testing.T, ctx context.Context, s *Store, nodeID
 
 func seedMigration(t *testing.T, s *Store, gen uint64, owners []string) {
 	t.Helper()
-	if err := s.PutMigration(context.Background(), &ClusterMigration{
+	ctx := context.Background()
+	_, prev, err := s.readMigration(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("readMigration: %v", err)
+	}
+	if err := s.swapMigration(ctx, prev, &ClusterMigration{
 		TenantID: tid, Database: db, ShardID: 7,
 		Target: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
 		Owners: owners, Generation: gen,
 	}); err != nil {
-		t.Fatalf("PutMigration: %v", err)
+		t.Fatalf("swapMigration: %v", err)
 	}
 }
 
@@ -260,11 +286,11 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_Validation(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.PutMigration(ctx, nil); !errors.Is(err, ErrNilMigration) {
-		t.Fatalf("PutMigration(nil) = %v, want ErrNilMigration", err)
+	if err := s.swapMigration(ctx, nil, nil); !errors.Is(err, ErrNilMigration) {
+		t.Fatalf("swapMigration(nil) = %v, want ErrNilMigration", err)
 	}
-	if err := s.PutMigration(ctx, &ClusterMigration{TenantID: tid}); !errors.Is(err, ErrEmptyTarget) {
-		t.Fatalf("PutMigration(no target) = %v, want ErrEmptyTarget", err)
+	if err := s.swapMigration(ctx, nil, &ClusterMigration{TenantID: tid}); !errors.Is(err, ErrEmptyTarget) {
+		t.Fatalf("swapMigration(no target) = %v, want ErrEmptyTarget", err)
 	}
 	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{}); !errors.Is(err, ErrNilStatus) {
 		t.Fatalf("PutNodeStatus(no node) = %v, want ErrNilStatus", err)
@@ -285,13 +311,13 @@ func TestStore_Validation(t *testing.T) {
 func TestStore_ShamirFieldsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.PutMigration(ctx, &ClusterMigration{
+	if err := s.swapMigration(ctx, nil, &ClusterMigration{
 		TenantID: "", Database: "",
 		Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
 		ShamirThreshold: 2, ShamirTotal: 3,
 		Owners: []string{"n1"}, Generation: 1,
 	}); err != nil {
-		t.Fatalf("PutMigration: %v", err)
+		t.Fatalf("swapMigration: %v", err)
 	}
 	got, err := s.GetMigration(ctx, "", "")
 	if err != nil || got == nil {

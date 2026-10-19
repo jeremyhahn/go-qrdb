@@ -90,6 +90,40 @@ type BarrierStatusResponse struct {
 
 	// ClusterSeal is the node barrier's cluster seal state.
 	ClusterSeal *ClusterSeal `json:"cluster_seal,omitempty"`
+
+	// ClusterMigration is the node barrier's cluster-wide encryption
+	// migration in progress; nil when none is, and on a sealed node.
+	ClusterMigration *ClusterMigration `json:"cluster_migration,omitempty"`
+}
+
+// ClusterMigration is a barrier's cluster-wide encryption migration in
+// progress, read from the replicated record so every node answers the same.
+type ClusterMigration struct {
+	// Unconfirmed is true when the record could not be read just now; every
+	// other field is then empty. It is never a claim that none is running.
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
+	// Target is the strategy every owner converges to.
+	Target string `json:"target,omitempty"`
+	// Generation is the request the nodes below report against.
+	Generation uint64 `json:"generation,omitempty"`
+	// Acked of Total owners have confirmed the target.
+	Acked int `json:"acked"`
+	Total int `json:"total"`
+	// Nodes is every owner, in rolling order when the request has steps.
+	Nodes []ClusterMigrationNode `json:"nodes,omitempty"`
+}
+
+// ClusterMigrationNode is one owner's place in a cluster migration.
+type ClusterMigrationNode struct {
+	NodeID string `json:"node_id"`
+	// Step is the owner's turn: pending, recycling or serving. It is empty
+	// for a request where every owner recycles at once.
+	Step string `json:"step,omitempty"`
+	// Phase, Attempts and Detail are the owner's own report; Phase is empty
+	// until it reports.
+	Phase    string `json:"phase,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // ClusterSeal is one barrier's cluster seal state as the node that answered

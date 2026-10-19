@@ -39,6 +39,7 @@ func TestLeadershipTransient_ElectionErrors(t *testing.T) {
 		"quicraft not leader":     quicraft.ErrNotLeader,
 		"shard not ready":         quicraft.ErrShardNotReady,
 		"read index not ready":    quicraft.ErrReadIndexNotReady,
+		"transfer in progress":    quicraft.ErrTransferInProgress,
 		"not leader, none known":  &NotLeaderError{ShardID: 1},
 		"not leader, leader read": &NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "db.example.com:7000"},
 	}

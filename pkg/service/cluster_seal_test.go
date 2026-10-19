@@ -18,11 +18,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -121,6 +123,100 @@ func TestBarrierStatus_CarriesTheClusterSeal(t *testing.T) {
 			PrincipalTenant: "system", Node: "192.0.2.1:5000", At: at, Local: clusterseal.LocalHeld}
 		if *st.ClusterSeal != want {
 			t.Fatalf("ClusterSeal = %+v, want %+v", *st.ClusterSeal, want)
+		}
+	})
+}
+
+// fakeClusterMigrations answers Report with a fixed report or error and
+// records each call's scope and whether its context was bounded.
+type fakeClusterMigrations struct {
+	report  *clustermig.Report
+	err     error
+	scopes  []string
+	bounded bool
+}
+
+func (f *fakeClusterMigrations) Report(ctx context.Context, tenantID, database string) (*clustermig.Report, error) {
+	f.scopes = append(f.scopes, tenantID+"/"+database)
+	_, f.bounded = ctx.Deadline()
+	return f.report, f.err
+}
+
+var _ ClusterMigrations = (*fakeClusterMigrations)(nil)
+
+func newMigrationBarrierService(t *testing.T, m ClusterMigrations) BarrierServicer {
+	t.Helper()
+	barrier, _ := newTestSoftwareBarrier(t)
+	svc := NewBarrierService(barrier, WithClusterMigrations(m))
+	if err := svc.BarrierInitialize(context.Background(), []byte("my-secret")); err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func TestBarrierStatus_CarriesTheClusterMigration(t *testing.T) {
+	ctx := context.Background()
+	t.Run("no migrations source", func(t *testing.T) {
+		st, err := initAndUnsealSoftwareBarrier(t).BarrierStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.ClusterMigration != nil {
+			t.Fatalf("ClusterMigration = %+v, want nil", st.ClusterMigration)
+		}
+	})
+	t.Run("none in progress", func(t *testing.T) {
+		m := &fakeClusterMigrations{}
+		st, err := newMigrationBarrierService(t, m).BarrierStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.ClusterMigration != nil {
+			t.Fatalf("ClusterMigration = %+v, want nil", st.ClusterMigration)
+		}
+	})
+	t.Run("in progress reads the system scope", func(t *testing.T) {
+		want := &clustermig.Report{
+			Target: seal.StrategyPassphrase, Generation: 3, Acked: 1, Total: 2,
+			Nodes: []clustermig.NodeReport{
+				{NodeID: "n2", Step: clustermig.StepServing, Phase: seal.PhaseComplete},
+				{NodeID: "n1", Step: clustermig.StepRecycling, Phase: seal.PhaseCopying},
+			},
+		}
+		m := &fakeClusterMigrations{report: want}
+		st, err := newMigrationBarrierService(t, m).BarrierStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.ClusterMigration != want {
+			t.Fatalf("ClusterMigration = %+v, want the store's report %+v", st.ClusterMigration, want)
+		}
+		if !slices.Equal(m.scopes, []string{"/"}) || !m.bounded {
+			t.Fatalf("Report calls = %q (bounded %v), want one bounded call for the system scope", m.scopes, m.bounded)
+		}
+	})
+	t.Run("unreadable is unconfirmed, not absent", func(t *testing.T) {
+		m := &fakeClusterMigrations{err: errors.New("no leader")}
+		st, err := newMigrationBarrierService(t, m).BarrierStatus(ctx)
+		if err != nil {
+			t.Fatalf("BarrierStatus failed with the migration unreadable: %v", err)
+		}
+		if !reflect.DeepEqual(st.ClusterMigration, &clustermig.Report{Unconfirmed: true}) {
+			t.Fatalf("ClusterMigration = %+v, want unconfirmed and otherwise empty", st.ClusterMigration)
+		}
+	})
+	t.Run("sealed node does not read the record", func(t *testing.T) {
+		m := &fakeClusterMigrations{report: &clustermig.Report{Total: 1}}
+		svc := newMigrationBarrierService(t, m)
+		if err := svc.BarrierSeal(ctx); err != nil {
+			t.Fatal(err)
+		}
+		st, err := svc.BarrierStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !st.Sealed || st.ClusterMigration != nil || len(m.scopes) != 0 {
+			t.Fatalf("sealed status = %+v after %d reads, want sealed, no migration, no read", st, len(m.scopes))
 		}
 	})
 }

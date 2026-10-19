@@ -183,6 +183,15 @@ The directory and the file must be owned by the user the daemon runs as; no
 one else may write the directory or read the file. A node without its file waits, in phase `awaiting-credential`, and
 carries on as soon as the file is there. A Shamir target needs no file.
 
+Once every node runs a release with the `rolling-migration` cluster feature,
+the nodes take their turn one at a time, the node that accepted the command
+last: a node starts only after the one before it has come back and reported
+the migration complete. A system-barrier migration brings each node back
+sealed, so unseal each one with the new passphrase as it comes back; the next
+node waits until you do. The cluster keeps its quorum, and keeps taking
+writes, throughout. A node that never comes back holds the rest at its turn
+rather than taking a second node away.
+
 **Dual control on the system barrier moved to `qrdb init`, not lost.**
 `barrier init --so-pin/--user-pin` was always the system barrier only
 (`POST /v1/barrier/initialize` carries no tenant scope), and now refuses it

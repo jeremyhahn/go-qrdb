@@ -404,13 +404,16 @@ func LeaderAddress(err error) (string, bool) {
 // leadershipTransient are the Raft errors of a shard electing a leader or
 // moving it: a request that timed out while no leader answered, was aborted
 // by the leadership change, reached a replica that is not, or not yet, the
-// leader, or reached a leader still inside its ReadIndex warm-up.
+// leader, reached a leader still inside its ReadIndex warm-up, or reached a
+// leader handing its leadership to another replica, which refuses the request
+// before it enters the log.
 var leadershipTransient = []error{
 	quicraft.ErrTimeout,
 	quicraft.ErrAborted,
 	quicraft.ErrNotLeader,
 	quicraft.ErrShardNotReady,
 	quicraft.ErrReadIndexNotReady,
+	quicraft.ErrTransferInProgress,
 }
 
 // LeadershipTransient reports whether err, from a read or write through this

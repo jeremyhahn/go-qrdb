@@ -15,7 +15,10 @@
 
 package clustermig
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+)
 
 var (
 	// ErrNilMigration is returned when a nil ClusterMigration is persisted.
@@ -30,6 +33,12 @@ var (
 	// ErrNoOwners is returned when a migration is requested for a scope whose
 	// owner set resolves empty (no placed replicas / no cluster members).
 	ErrNoOwners = errors.New("clustermig: migration scope has no owners")
+
+	// ErrMigrationMoved refuses a migration record write whose writer read a
+	// record that has since changed: a former leader's Advance or Request
+	// racing the new leader's. Nothing was written; the writer re-reads on
+	// its next pass, if it is still the leader.
+	ErrMigrationMoved = errors.New("clustermig: migration record changed since it was read")
 	// ErrCredentialAwaited is returned by a CredentialSource when this node's
 	// credential is not there yet: no request credential is held for the
 	// migration and no credential file exists. The owner waits in phase
@@ -59,3 +68,25 @@ type StoreError struct {
 
 func (e *StoreError) Error() string { return "clustermig: " + e.Op + ": " + e.Err.Error() }
 func (e *StoreError) Unwrap() error { return e.Err }
+
+// NotShardLeaderError is a ReplicationProgress query on a node that does not
+// lead the shard: only the leader tracks how far each replica's log has got,
+// so the rolling step waits, and Advance reports why.
+type NotShardLeaderError struct {
+	ShardID uint64
+}
+
+func (e *NotShardLeaderError) Error() string {
+	return "clustermig: replication progress of shard " + strconv.FormatUint(e.ShardID, 10) + " is known only to its leader"
+}
+
+// NotShardMemberError is a ReplicationProgress query for a node that is not a
+// replica of the shard, so it has no log to catch up.
+type NotShardMemberError struct {
+	ShardID uint64
+	NodeID  string
+}
+
+func (e *NotShardMemberError) Error() string {
+	return "clustermig: node " + e.NodeID + " is not a replica of shard " + strconv.FormatUint(e.ShardID, 10)
+}

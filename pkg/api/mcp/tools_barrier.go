@@ -381,6 +381,9 @@ func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 			resp["shamir_total"] = status.ShamirTotal
 		}
 		resp["cluster_seal"] = clusterSealOrInactive(status.ClusterSeal)
+		if status.ClusterMigration != nil {
+			resp["cluster_migration"] = status.ClusterMigration
+		}
 
 		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {

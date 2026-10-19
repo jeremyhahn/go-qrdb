@@ -149,6 +149,7 @@ func renderBarrierStatus(resp *transport.BarrierStatusResponse) error {
 		_, _ = fmt.Fprintf(outputWriter, "HardwareBacked:  %t\n", resp.HardwareBacked)
 		_, _ = fmt.Fprintf(outputWriter, "InitializedAt:   %s\n", resp.InitializedAt)
 		printClusterSeal(resp.ClusterSeal)
+		printClusterMigration(resp.ClusterMigration)
 		return nil
 	}
 }

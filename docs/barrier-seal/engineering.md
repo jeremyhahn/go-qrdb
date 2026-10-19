@@ -821,6 +821,98 @@ supersedes the stranded one. No other node is affected, and nothing proceeds
 on a credential this node no longer holds. The request's caller saw an error
 and, retrying, issues exactly that new request.
 
+### Owners recycle one at a time
+
+A system-scope recycle is an in-process reboot that comes back sealed, so
+recycling every owner at once takes the whole shard away. Once the
+`rolling-migration` cluster feature is activated -- every system-shard member
+advertises it -- the coordinator writes the request with
+`ClusterMigration.Steps`: one `NodeStep` per owner, the coordinating leader
+last, each `pending`, `recycling` or `serving`. The first step is
+`recycling` when the record is written.
+
+| Step state | Meaning |
+|---|---|
+| `pending` | waiting for every step before it to be `serving` |
+| `recycling` | this owner's turn: its reconciler may recycle it |
+| `serving` | this owner acked the generation with `PhaseComplete`, and its Raft log caught up |
+
+A reconciler recycles its own node only while the node's step is
+`recycling`; an owner missing from the steps waits. On every tick
+`coordinateMigrations` in `qrdbd` runs `Coordinator.Advance` for every
+migration record, on every node. Once the recycling owner's
+`NodeMigrationStatus` for the generation is `PhaseComplete` and its Raft log
+has caught up, `Advance` marks the owner `serving` and makes the next owner
+`recycling`, in one record write. So at most one owner is away at any moment,
+and a restarted or new coordinator resumes from the replicated record rather
+than from memory. `IsComplete` of a rolling migration needs every step
+`serving`.
+
+**An owner is back when its log has caught up, not when its barrier is
+resealed.** A node that recycled missed the entries committed while it was
+away. Without the gate, the next owner could leave while the last one was
+still behind, and the shard would have two replicas short of its log. The
+first `Advance` that sees the ack records the shard's commit index in the step
+(`NodeStep.CatchUpIndex`). Every later call compares that fixed target with the
+index the shard's leader knows the owner holds (its match index), and hands on
+once the owner reaches it. The target is in the record, so a new coordinator
+judges the same target. Neither call waits: the reconciler's tick is the poll.
+`clustermig.ReplicationProgress` is the seam. `pkg/server` implements it over
+the Raft host, and `qrdbd` passes it in through `WithCatchUp`. A scope with no
+single Raft shard (`ShardID` 0), such as a whole tenant, hands on at the ack.
+
+**Who coordinates.** Only a shard's leader tracks how far each replica's log
+has replicated. So a migration whose scope has its own shard is advanced by
+the node that leads that shard, which need not lead the system shard. Every
+other migration is advanced by the system shard's leader, which also runs
+`Request` and `Reap`. While the shard has no leader, no node advances the
+migration, and the turn stays where it is. A node that has stopped leading but
+has not yet heard so cannot undo a newer write: every write and delete of the
+record is a guarded transaction on the record as it was read, and a record
+that has moved since then refuses it with `ErrMigrationMoved`. Each call also
+holds a lock on its own node, so `Request` and `Advance` on one node do not
+refuse each other's writes.
+
+Each hand-on is logged once, by the node that wrote it, as
+`cluster-migration step handed on` with `scope`, `generation`, `node` (the
+owner whose turn ended) and `catch_up_index`.
+
+The feature is judged by activation, like `cluster-seal`: each node's
+reconciler enforces the steps, and a node whose binary predates them would
+ignore them and recycle at once. Until it is activated no request carries
+steps, and every owner recycles as soon as it has its credential.
+
+```go
+// pkg/clustermig
+type StepState string // "pending" | "recycling" | "serving"
+type NodeStep struct {
+	NodeID       string    `json:"node_id"`
+	State        StepState `json:"state"`
+	CatchUpIndex uint64    `json:"catch_up_index,omitempty"`
+}
+type ReplicationProgress interface {
+	Leads(shardID uint64) bool
+	CommitIndex(shardID uint64) (index uint64, ok bool, err error)
+	MatchIndex(shardID uint64, nodeID string) (match uint64, ok bool, err error)
+}
+func WithRollingSteps(rolling func() bool, self string) CoordinatorOption // rolling reports featuregate.RollingMigration activated
+func WithCatchUp(p ReplicationProgress) CoordinatorOption
+func WithLogger(logger *slog.Logger) CoordinatorOption
+func (c *Coordinator) Advance(ctx context.Context, tenantID, database string) (bool, error) // true: it wrote the record
+var ErrMigrationMoved error // the record changed since it was read; the write was refused
+```
+
+`TestClusterEnableEncryption_Rolling_RF3` (`test/integration`) runs a rolling
+system-scope `enable-encryption` on three nodes with a writer putting keys
+throughout. It fails the first time two nodes are away together, holds each
+recycled node sealed until writes have committed without it, and reads back
+every acknowledged write afterwards. It also reads the nodes' logs for the
+three hand-on lines: each turn's `catch_up_index` must be above zero and above
+the previous turn's. The refusal of a stale coordinator's write, and a shard
+with no leader, are unit-tested in `pkg/clustermig`. A write is retried only in the class the
+key-value API documents as retryable: `503 UNAVAILABLE`, or a node that does
+not answer, retried on another node.
+
 > **Correction to `seal/README.md`.** That document states the strategy is fixed
 > at initialization and that moving off `none` is "a planned backup/restore
 > migration into a freshly-keyed instance". `barrier enable-encryption` has
@@ -1094,6 +1186,8 @@ key.
 | A tenant seals another tenant's database, or the `system` tenant a tenant's | refused as not found (`databases:*` seal permissions are owner-only) | **yes** |
 | Migration owner without its credential file | phase `awaiting-credential`, retried | **yes** |
 | Request's record write fails but commits (timeout, lost leader) | the accepting node's held credential was released by the undo; that node reports `awaiting-credential` until its file is placed or a new request supersedes the generation | **yes** |
+| Rolling migration: the owner on its turn never acks (no credential, recycle failing, left sealed) | its step stays `recycling` and every later owner stays `pending`; the cluster keeps quorum on the owners not yet recycled | **yes** |
+| Rolling migration: the coordinating leader changes mid-migration | the new leader's coordinator resumes from the replicated `Steps`; no owner is recycled twice | **yes** |
 
 ## Permission model
 

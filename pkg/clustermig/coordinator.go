@@ -17,6 +17,9 @@ package clustermig
 
 import (
 	"context"
+	"log/slog"
+	"slices"
+	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -43,17 +46,64 @@ type Coordinator struct {
 	owners   OwnerResolver
 	isLeader func() bool
 	nowUnix  func() int64
+
+	// rolling and self enable rolling migrations (WithRollingSteps).
+	rolling func() bool
+	self    string
+
+	// progress gates a rolling step's hand-on on the owner's Raft log having
+	// caught up (WithCatchUp); nil hands on at the ack alone.
+	progress ReplicationProgress
+
+	// logger records each rolling step's hand-on (WithLogger).
+	logger *slog.Logger
+
+	// mu serialises this node's own read-modify-writes of a migration record,
+	// so Request and Advance on one node do not refuse each other's writes.
+	// It cannot serialise them across nodes: a former leader that still
+	// believes it leads is refused by the guarded write instead
+	// (Store.swapMigration, ErrMigrationMoved).
+	mu sync.Mutex
+}
+
+// CoordinatorOption configures a Coordinator.
+type CoordinatorOption func(*Coordinator)
+
+// WithRollingSteps makes every request the Coordinator writes while rolling
+// reports true a rolling one: its owners recycle one at a time in
+// ClusterMigration.Steps, with self, this node's NodeID, last. rolling
+// reports whether featuregate.RollingMigration is activated cluster-wide; the
+// composer supplies it, so this package does not depend on the gate. A nil
+// rolling leaves every request recycling all owners at once.
+func WithRollingSteps(rolling func() bool, self string) CoordinatorOption {
+	return func(c *Coordinator) {
+		c.rolling = rolling
+		c.self = self
+	}
+}
+
+// WithLogger logs each rolling step the coordinator hands on, with the commit
+// index its owner caught up to. Without it the coordinator logs nothing.
+func WithLogger(logger *slog.Logger) CoordinatorOption {
+	return func(c *Coordinator) { c.logger = logger }
 }
 
 // NewCoordinator constructs a Coordinator. isLeader gates intent writes to the
 // leader (the replicated record must be written exactly once per request).
 // nowUnix stamps the request time; pass nil to omit the timestamp (the state
 // machine has no wall clock, so callers supply one).
-func NewCoordinator(store *Store, owners OwnerResolver, isLeader func() bool, nowUnix func() int64) *Coordinator {
+func NewCoordinator(store *Store, owners OwnerResolver, isLeader func() bool, nowUnix func() int64, opts ...CoordinatorOption) *Coordinator {
 	if isLeader == nil {
 		isLeader = func() bool { return true }
 	}
-	return &Coordinator{store: store, owners: owners, isLeader: isLeader, nowUnix: nowUnix}
+	c := &Coordinator{store: store, owners: owners, isLeader: isLeader, nowUnix: nowUnix}
+	for _, o := range opts {
+		o(c)
+	}
+	if c.logger == nil {
+		c.logger = slog.New(slog.DiscardHandler)
+	}
+	return c
 }
 
 // Prepare runs with a request's complete record -- generation included --
@@ -105,10 +155,14 @@ func (c *Coordinator) Request(ctx context.Context, tenantID, database string, op
 	// Bump the generation past any prior request for this scope so a stale or
 	// aborted request's acks never satisfy the new one (the Store completion
 	// logic matches on Generation).
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var gen uint64 = 1
-	if prev, gerr := c.store.GetMigration(ctx, tenantID, database); gerr != nil {
-		return nil, gerr
-	} else if prev != nil {
+	prev, prevRaw, err := c.store.readMigration(ctx, tenantID, database)
+	if err != nil {
+		return nil, err
+	}
+	if prev != nil {
 		gen = prev.Generation + 1
 	}
 
@@ -130,6 +184,9 @@ func (c *Coordinator) Request(ctx context.Context, tenantID, database string, op
 	if c.nowUnix != nil {
 		m.RequestedAtUnix = c.nowUnix()
 	}
+	if c.rolling != nil && c.rolling() {
+		m.Steps = rollingSteps(owners, c.self)
+	}
 
 	var undo func()
 	if ro.prepare != nil {
@@ -139,7 +196,7 @@ func (c *Coordinator) Request(ctx context.Context, tenantID, database string, op
 		}
 		undo = u
 	}
-	if perr := c.store.PutMigration(ctx, m); perr != nil {
+	if perr := c.store.swapMigration(ctx, prevRaw, m); perr != nil {
 		if undo != nil {
 			undo()
 		}
@@ -161,12 +218,72 @@ func (c *Coordinator) Reap(ctx context.Context, tenantID, database string) (bool
 	if !c.isLeader() {
 		return false, nil
 	}
-	done, err := c.store.IsComplete(ctx, tenantID, database)
-	if err != nil || !done {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.store.deleteIfComplete(ctx, tenantID, database)
+}
+
+// Advance moves a rolling migration on: once the owner whose step is
+// StepRecycling has acked the current Generation with PhaseComplete and, with
+// WithCatchUp, its Raft log has caught up, its step becomes StepServing and
+// the next owner's StepRecycling, in one write. The first call that sees the
+// ack records the catch-up target in the step (NodeStep.CatchUpIndex); a later
+// call, on this leader or the next, hands on once the owner reaches it. It
+// reports whether it wrote the record. A migration without steps, one whose
+// recycling owner has not acked or caught up yet, and every call on a node
+// that does not coordinate the migration (coordinates) are left alone, so at
+// most one owner is ever away from the cluster for the migration, and a
+// coordinator that restarts, or a new leader's, picks up from the replicated
+// record where the last one left off.
+// Every write is guarded on the record as read, so a former leader's
+// Advance is refused with ErrMigrationMoved rather than undoing a newer one.
+func (c *Coordinator) Advance(ctx context.Context, tenantID, database string) (bool, error) {
+	if c.progress == nil && !c.isLeader() {
+		return false, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m, raw, err := c.store.readMigration(ctx, tenantID, database)
+	if err != nil || m == nil || !c.coordinates(m.ShardID) {
 		return false, err
 	}
-	if derr := c.store.Delete(ctx, tenantID, database); derr != nil {
-		return false, derr
+	next := slices.IndexFunc(m.Steps, func(s NodeStep) bool { return s.State != StepServing })
+	if next < 0 {
+		return false, nil
+	}
+	var handedOn *NodeStep
+	if m.Steps[next].State == StepRecycling {
+		st, err := c.store.GetNodeStatus(ctx, tenantID, database, m.Steps[next].NodeID)
+		if err != nil {
+			return false, err
+		}
+		if st == nil || st.Generation != m.Generation || st.Phase != seal.PhaseComplete {
+			return false, nil
+		}
+		done, changed, err := c.caughtUp(m.ShardID, &m.Steps[next])
+		if err != nil || (!done && !changed) {
+			return false, err
+		}
+		if done {
+			m.Steps[next].State = StepServing
+			handedOn = &m.Steps[next]
+			next++
+			if next < len(m.Steps) {
+				m.Steps[next].State = StepRecycling
+			}
+		}
+	} else {
+		m.Steps[next].State = StepRecycling
+	}
+	if err := c.store.swapMigration(ctx, raw, m); err != nil {
+		return false, err
+	}
+	if handedOn != nil {
+		c.logger.Info("cluster-migration step handed on",
+			slog.String("scope", scopeLabel(tenantID, database)),
+			slog.Uint64("generation", m.Generation),
+			slog.String("node", handedOn.NodeID),
+			slog.Uint64("catch_up_index", handedOn.CatchUpIndex))
 	}
 	return true, nil
 }

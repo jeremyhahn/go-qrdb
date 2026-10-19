@@ -118,13 +118,14 @@ func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty)
 // sealed node reports it and Sealed and nothing else.
 func BarrierStatusToProto(info *service.BarrierStatusInfo) *pb.BarrierStatusResponse {
 	out := &pb.BarrierStatusResponse{
-		Sealed:          info.Sealed,
-		Initialized:     info.Initialized,
-		Strategy:        info.Strategy,
-		HardwareBacked:  info.HardwareBacked,
-		ShamirThreshold: int32(info.ShamirThreshold),
-		ShamirTotal:     int32(info.ShamirTotal),
-		ClusterSeal:     ClusterSealToProto(info.ClusterSeal),
+		Sealed:           info.Sealed,
+		Initialized:      info.Initialized,
+		Strategy:         info.Strategy,
+		HardwareBacked:   info.HardwareBacked,
+		ShamirThreshold:  int32(info.ShamirThreshold),
+		ShamirTotal:      int32(info.ShamirTotal),
+		ClusterSeal:      ClusterSealToProto(info.ClusterSeal),
+		ClusterMigration: ClusterMigrationToProto(info.ClusterMigration),
 	}
 	if !info.InitializedAt.IsZero() {
 		out.InitializedAt = info.InitializedAt.Format(time.RFC3339Nano)

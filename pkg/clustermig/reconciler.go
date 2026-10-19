@@ -49,6 +49,15 @@ var MaxRecycleAttempts = 5
 // independent — there is no shared cluster key to coordinate, so the Reconciler
 // can drive nodes in any order (rolling).
 type LocalRecycler interface {
+	// AtTarget reports whether this node's barrier for m's scope is already
+	// keyed at m.Target: the recycle ran, and only its ack is owed. The
+	// Reconciler asks before it takes a credential, so an owner whose ack was
+	// lost -- a SYSTEM-scope recycle reboots the data plane, reconciler and
+	// in-memory held credential included, before the ack lands -- acks on
+	// the next pass instead of waiting for a credential it no longer needs.
+	// It reports false when the barrier is unavailable, so the recycle is
+	// attempted rather than skipped.
+	AtTarget(m *ClusterMigration) bool
 	Recycle(ctx context.Context, m *ClusterMigration, credential []byte) error
 }
 
@@ -126,7 +135,9 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (recycled int, err error
 // it — but the scope stays incomplete forever (Store.IsComplete only counts
 // PhaseComplete), leaving the failure durably visible until the operator
 // re-issues the request (a new generation resets the budget, see
-// recordFailure/currentStatus).
+// recordFailure/currentStatus). In a rolling migration a node is owed only
+// on its turn, while its step is StepRecycling: an exhausted node then stalls
+// the rollout at its step rather than letting the next owner go down too.
 func (r *Reconciler) owedByThisNode(ctx context.Context, m *ClusterMigration) (bool, error) {
 	isOwner := false
 	for _, o := range m.Owners {
@@ -135,7 +146,7 @@ func (r *Reconciler) owedByThisNode(ctx context.Context, m *ClusterMigration) (b
 			break
 		}
 	}
-	if !isOwner {
+	if !isOwner || !m.turnOf(r.nodeID) {
 		return false, nil
 	}
 	st, err := r.store.GetNodeStatus(ctx, m.TenantID, m.Database, r.nodeID)
@@ -183,6 +194,17 @@ func (r *Reconciler) recycleScope(ctx context.Context, m *ClusterMigration) erro
 	prevAttempts := 0
 	if current != nil {
 		prevAttempts = current.Attempts
+	}
+
+	// A barrier already at the target owes only its ack: write it without
+	// asking for a credential the recycle no longer needs.
+	if r.recycler.AtTarget(m) {
+		r.putStatus(ctx, m, seal.PhaseComplete, "", 0)
+		r.release(m)
+		r.logger.Info("local barrier already at target; acked",
+			slog.String("scope", scopeLabel(m.TenantID, m.Database)),
+			slog.Uint64("generation", m.Generation))
+		return nil
 	}
 
 	// Take this node's own credential for the recycle; a Shamir target needs

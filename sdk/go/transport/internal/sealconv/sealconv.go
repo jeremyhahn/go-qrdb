@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sealconv converts a barrier's cluster seal state into the
-// transport-neutral transport.ClusterSeal: from the protobuf the gRPC, Unix
+// Package sealconv converts a barrier's cluster seal state and cluster
+// migration into the transport-neutral transport.ClusterSeal and
+// transport.ClusterMigration: from the protobuf the gRPC, Unix
 // and QUIC transports exchange, and from the service report the embedded
 // transport holds. It is internal: only the transport implementations may
 // import it.
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -61,6 +63,56 @@ func FromReport(r *clusterseal.Report) *transport.ClusterSeal {
 	}
 	if !r.At.IsZero() {
 		out.At = r.At.UTC().Format(time.RFC3339Nano)
+	}
+	return out
+}
+
+// MigrationFromProto converts a protobuf ClusterMigrationState; nil, no
+// migration in progress, stays nil.
+func MigrationFromProto(s *pb.ClusterMigrationState) *transport.ClusterMigration {
+	if s == nil {
+		return nil
+	}
+	out := &transport.ClusterMigration{
+		Unconfirmed: s.GetUnconfirmed(),
+		Target:      s.GetTarget(),
+		Generation:  s.GetGeneration(),
+		Acked:       int(s.GetAcked()),
+		Total:       int(s.GetTotal()),
+	}
+	for _, n := range s.GetNodes() {
+		out.Nodes = append(out.Nodes, transport.ClusterMigrationNode{
+			NodeID:   n.GetNodeId(),
+			Step:     n.GetStep(),
+			Phase:    n.GetPhase(),
+			Attempts: int(n.GetAttempts()),
+			Detail:   n.GetDetail(),
+		})
+	}
+	return out
+}
+
+// MigrationFromReport converts a service cluster migration report; nil, no
+// migration in progress, stays nil.
+func MigrationFromReport(r *clustermig.Report) *transport.ClusterMigration {
+	if r == nil {
+		return nil
+	}
+	out := &transport.ClusterMigration{
+		Unconfirmed: r.Unconfirmed,
+		Target:      string(r.Target),
+		Generation:  r.Generation,
+		Acked:       r.Acked,
+		Total:       r.Total,
+	}
+	for _, n := range r.Nodes {
+		out.Nodes = append(out.Nodes, transport.ClusterMigrationNode{
+			NodeID:   n.NodeID,
+			Step:     string(n.Step),
+			Phase:    string(n.Phase),
+			Attempts: n.Attempts,
+			Detail:   n.Detail,
+		})
 	}
 	return out
 }

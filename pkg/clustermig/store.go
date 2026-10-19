@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -51,11 +52,14 @@ const nodesSegment = "/nodes/"
 
 // KV is the minimal replicated system-KV substrate the store needs; the shared
 // system KVStore satisfies it directly (same substrate as placement/tenant).
+// PutAllIfUnchanged is kvstore.GuardedBatchKVStore's guarded write, the one
+// the migration record is written and deleted through (swapMigration,
+// deleteGuarded).
 type KV interface {
 	Put(ctx context.Context, key string, value []byte) error
 	Get(ctx context.Context, key string) ([]byte, error)
-	Delete(ctx context.Context, key string) error
 	Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error
+	PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (applied bool, err error)
 }
 
 // ClusterMigration is the replicated intent record written once by the leader
@@ -94,6 +98,15 @@ type ClusterMigration struct {
 	// only counts toward completion when its Generation matches; this guards
 	// against a stale/aborted request racing a newer one.
 	Generation uint64 `json:"generation"`
+
+	// Steps is the rolling order: one entry per owner, recycled one at a
+	// time, each only once every step before it is StepServing. The
+	// Coordinator alone advances it (Coordinator.Advance) and a Reconciler
+	// recycles its node only while the node's step is StepRecycling, so a
+	// restarted coordinator resumes from this record. Empty is a request
+	// made before featuregate.RollingMigration was activated: every owner
+	// recycles at once.
+	Steps []NodeStep `json:"steps,omitempty"`
 
 	// RequestedAtUnix is the request timestamp (caller-stamped; the state machine
 	// has no wall clock).
@@ -147,8 +160,15 @@ func nodeStatusKey(tenantID, database, nodeID string) string {
 	return Prefix + tenantID + "/" + database + nodesSegment + nodeID
 }
 
-// PutMigration writes (or overwrites) the intent record for its scope.
-func (s *Store) PutMigration(ctx context.Context, m *ClusterMigration) error {
+// swapMigration writes the intent record for m's scope only while the stored
+// record still holds prev, the bytes readMigration returned (nil: there is no
+// record). The guard is the record as its writer read it, so it compares the
+// Generation and every step, and the record never returns to bytes it held
+// before: every write either bumps the Generation or moves a step on. A
+// writer that read an older record -- a former leader still finishing its
+// tick after the leadership moved -- is refused with ErrMigrationMoved and
+// the record is unchanged.
+func (s *Store) swapMigration(ctx context.Context, prev []byte, m *ClusterMigration) error {
 	if m == nil {
 		return ErrNilMigration
 	}
@@ -159,26 +179,38 @@ func (s *Store) PutMigration(ctx context.Context, m *ClusterMigration) error {
 	if err != nil {
 		return &StoreError{Op: "marshal-migration", Err: err}
 	}
-	if err := s.kv.Put(ctx, migrationKey(m.TenantID, m.Database), b); err != nil {
+	key := migrationKey(m.TenantID, m.Database)
+	applied, err := s.kv.PutAllIfUnchanged(ctx, key, prev, []kvstore.KV{{Key: key, Value: b}})
+	if err != nil {
 		return &StoreError{Op: "put-migration", Err: err}
+	}
+	if !applied {
+		return ErrMigrationMoved
 	}
 	return nil
 }
 
 // GetMigration returns the intent record for a scope, or (nil, nil) when absent.
 func (s *Store) GetMigration(ctx context.Context, tenantID, database string) (*ClusterMigration, error) {
+	m, _, err := s.readMigration(ctx, tenantID, database)
+	return m, err
+}
+
+// readMigration returns the intent record for a scope and the exact bytes it
+// was decoded from, which swapMigration guards on. Both are nil when absent.
+func (s *Store) readMigration(ctx context.Context, tenantID, database string) (*ClusterMigration, []byte, error) {
 	raw, err := s.kv.Get(ctx, migrationKey(tenantID, database))
 	if err != nil {
-		return nil, &StoreError{Op: "get-migration", Err: err}
+		return nil, nil, &StoreError{Op: "get-migration", Err: err}
 	}
 	if len(raw) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var m ClusterMigration
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, &StoreError{Op: "unmarshal-migration", Err: err}
+		return nil, nil, &StoreError{Op: "unmarshal-migration", Err: err}
 	}
-	return &m, nil
+	return &m, raw, nil
 }
 
 // PutNodeStatus writes one node's status for the scope.
@@ -262,19 +294,55 @@ func (s *Store) ListMigrations(ctx context.Context) ([]*ClusterMigration, error)
 }
 
 // Delete removes the intent record and all per-node statuses for the scope. It
-// is called once the migration is complete (or to clear an aborted one).
+// is called once the migration is complete (or to clear an aborted one). The
+// delete is guarded on the record it read, so a request written since is
+// refused with ErrMigrationMoved rather than deleted.
 func (s *Store) Delete(ctx context.Context, tenantID, database string) error {
+	_, raw, err := s.readMigration(ctx, tenantID, database)
+	if err != nil {
+		return err
+	}
+	return s.deleteGuarded(ctx, tenantID, database, raw)
+}
+
+// deleteIfComplete deletes a scope's migration record and its acks if the
+// record is complete, deciding completion and guarding the delete on one read
+// of the record. It reports whether it deleted.
+func (s *Store) deleteIfComplete(ctx context.Context, tenantID, database string) (bool, error) {
+	m, raw, err := s.readMigration(ctx, tenantID, database)
+	if err != nil || m == nil {
+		return false, err
+	}
+	if done, err := s.complete(ctx, m); err != nil || !done {
+		return false, err
+	}
+	if err := s.deleteGuarded(ctx, tenantID, database, raw); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// deleteGuarded deletes the record and every ack in one write, applied only
+// while the record is still prev (nil: still absent). A refusal is
+// ErrMigrationMoved: a newer request replaced the record this delete was
+// decided on, and it and its acks are left alone.
+func (s *Store) deleteGuarded(ctx context.Context, tenantID, database string, prev []byte) error {
 	statuses, err := s.ListNodeStatuses(ctx, tenantID, database)
 	if err != nil {
 		return err
 	}
+	key := migrationKey(tenantID, database)
+	writes := make([]kvstore.KV, 0, len(statuses)+1)
 	for _, st := range statuses {
-		if derr := s.kv.Delete(ctx, nodeStatusKey(tenantID, database, st.NodeID)); derr != nil {
-			return &StoreError{Op: "delete-status", Err: derr}
-		}
+		writes = append(writes, kvstore.KV{Key: nodeStatusKey(tenantID, database, st.NodeID), Delete: true})
 	}
-	if derr := s.kv.Delete(ctx, migrationKey(tenantID, database)); derr != nil {
-		return &StoreError{Op: "delete-migration", Err: derr}
+	writes = append(writes, kvstore.KV{Key: key, Delete: true})
+	applied, err := s.kv.PutAllIfUnchanged(ctx, key, prev, writes)
+	if err != nil {
+		return &StoreError{Op: "delete-migration", Err: err}
+	}
+	if !applied {
+		return ErrMigrationMoved
 	}
 	return nil
 }
@@ -284,15 +352,23 @@ func (s *Store) Delete(ctx context.Context, tenantID, database string) error {
 // is for a stale generation, missing, or in any non-complete phase keeps the
 // migration incomplete — the cluster never declares done until all owners
 // confirm, but it never blocks on a laggard either (callers poll/observe).
+// A rolling migration (one with Steps) is complete once every step is
+// StepServing: the last owner's ack alone is not enough until the
+// Coordinator has recorded it serving.
 func (s *Store) IsComplete(ctx context.Context, tenantID, database string) (bool, error) {
 	m, err := s.GetMigration(ctx, tenantID, database)
-	if err != nil {
+	if err != nil || m == nil {
 		return false, err
 	}
-	if m == nil {
-		return false, nil
+	return s.complete(ctx, m)
+}
+
+// complete reports whether m, as read, is complete (see IsComplete).
+func (s *Store) complete(ctx context.Context, m *ClusterMigration) (bool, error) {
+	if len(m.Steps) > 0 {
+		return m.rolledOut(), nil
 	}
-	statuses, err := s.ListNodeStatuses(ctx, tenantID, database)
+	statuses, err := s.ListNodeStatuses(ctx, m.TenantID, m.Database)
 	if err != nil {
 		return false, err
 	}
@@ -313,29 +389,11 @@ func (s *Store) IsComplete(ctx context.Context, tenantID, database string) (bool
 // Progress returns (acked, total) for the current generation: how many owners
 // have reached PhaseComplete out of the owner set. Useful for status surfacing.
 func (s *Store) Progress(ctx context.Context, tenantID, database string) (acked, total int, err error) {
-	m, err := s.GetMigration(ctx, tenantID, database)
-	if err != nil {
+	r, err := s.Report(ctx, tenantID, database)
+	if err != nil || r == nil {
 		return 0, 0, err
 	}
-	if m == nil {
-		return 0, 0, nil
-	}
-	statuses, err := s.ListNodeStatuses(ctx, tenantID, database)
-	if err != nil {
-		return 0, 0, err
-	}
-	done := make(map[string]bool, len(statuses))
-	for _, st := range statuses {
-		if st.Generation == m.Generation && st.Phase == seal.PhaseComplete {
-			done[st.NodeID] = true
-		}
-	}
-	for _, owner := range m.Owners {
-		if done[owner] {
-			acked++
-		}
-	}
-	return acked, len(m.Owners), nil
+	return r.Acked, r.Total, nil
 }
 
 // scopeLabel is a human-readable scope id for logs/errors.

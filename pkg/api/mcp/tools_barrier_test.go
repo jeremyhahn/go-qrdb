@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -528,6 +529,46 @@ func TestHandleBarrierStatus_ShamirFields(t *testing.T) {
 	}
 	if _, ok := raw["initialized_at"]; ok {
 		t.Error("expected initialized_at omitted for zero InitializedAt")
+	}
+}
+
+func TestHandleBarrierStatus_ClusterMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mig  *clustermig.Report
+		want string
+	}{
+		{name: "none in progress"},
+		{name: "unconfirmed", mig: &clustermig.Report{Unconfirmed: true}, want: `{"unconfirmed":true,"acked":0,"total":0}`},
+		{name: "in progress", mig: &clustermig.Report{
+			Target: seal.StrategyPassphrase, Generation: 2, Acked: 0, Total: 1,
+			Nodes: []clustermig.NodeReport{{NodeID: "n1", Step: clustermig.StepRecycling, Phase: seal.PhaseFailed, Attempts: 1, Detail: "credential missing"}},
+		}, want: `{"target":"passphrase","generation":2,"acked":0,"total":1,"nodes":[{"node_id":"n1","step":"recycling","phase":"failed","attempts":1,"detail":"credential missing"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newMockBarrierService()
+			svc.statusFn = func(context.Context) (*service.BarrierStatusInfo, error) {
+				return &service.BarrierStatusInfo{Strategy: "none", ClusterMigration: tc.mig}, nil
+			}
+			result, err := handleBarrierStatus(svc)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_status", map[string]any{}))
+			if err != nil {
+				t.Fatalf("handleBarrierStatus: %v", err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(resultText(t, result)), &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, ok := raw["cluster_migration"]
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("cluster_migration = %s, want it absent", got)
+				}
+				return
+			}
+			if string(got) != tc.want {
+				t.Errorf("cluster_migration = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

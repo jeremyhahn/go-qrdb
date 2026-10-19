@@ -99,14 +99,15 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 		return nil, &unmarshalError{Err: err}
 	}
 	return &transport.BarrierStatusResponse{
-		Sealed:          resp.GetSealed(),
-		Initialized:     resp.GetInitialized(),
-		Strategy:        resp.GetStrategy(),
-		HardwareBacked:  resp.GetHardwareBacked(),
-		InitializedAt:   resp.GetInitializedAt(),
-		ShamirThreshold: int(resp.GetShamirThreshold()),
-		ShamirTotal:     int(resp.GetShamirTotal()),
-		ClusterSeal:     sealconv.FromProto(resp.GetClusterSeal()),
+		Sealed:           resp.GetSealed(),
+		Initialized:      resp.GetInitialized(),
+		Strategy:         resp.GetStrategy(),
+		HardwareBacked:   resp.GetHardwareBacked(),
+		InitializedAt:    resp.GetInitializedAt(),
+		ShamirThreshold:  int(resp.GetShamirThreshold()),
+		ShamirTotal:      int(resp.GetShamirTotal()),
+		ClusterSeal:      sealconv.FromProto(resp.GetClusterSeal()),
+		ClusterMigration: sealconv.MigrationFromProto(resp.GetClusterMigration()),
 	}, nil
 }
 

@@ -3940,6 +3940,39 @@ message BarrierStatusResponse {
     // node reports only sealed and initialized; every other field is empty
     // until it is unsealed.
     bool initialized = 8;
+    // cluster_migration is the node barrier's cluster-wide encryption
+    // migration in progress; absent when none is, and on a sealed node.
+    ClusterMigrationState cluster_migration = 9;
+}
+
+// ClusterMigrationState is a barrier's cluster-wide encryption migration in
+// progress, read from the replicated record so every node answers the same.
+message ClusterMigrationState {
+    // unconfirmed is true when the record could not be read just now; every
+    // other field is then empty.
+    bool unconfirmed = 1;
+    // target is the strategy every owner converges to.
+    string target = 2;
+    // generation is the request the nodes below report against.
+    uint64 generation = 3;
+    // acked of total owners have confirmed the target.
+    int32 acked = 4;
+    int32 total = 5;
+    // nodes is every owner, in rolling order when the request has steps.
+    repeated ClusterMigrationNode nodes = 6;
+}
+
+// ClusterMigrationNode is one owner's place in a cluster migration.
+message ClusterMigrationNode {
+    string node_id = 1;
+    // step is the owner's turn: pending, recycling or serving; empty for a
+    // request where every owner recycles at once.
+    string step = 2;
+    // phase, attempts and detail are the owner's own report; phase is empty
+    // until it reports.
+    string phase = 3;
+    int32 attempts = 4;
+    string detail = 5;
 }
 
 // ClusterSealState is one barrier's cluster seal state as the receiving node

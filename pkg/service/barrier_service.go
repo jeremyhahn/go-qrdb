@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -148,6 +149,12 @@ type BarrierStatusInfo struct {
 
 	// ClusterSeal is the node barrier's cluster seal state. Never nil.
 	ClusterSeal *clusterseal.Report
+	// ClusterMigration is the cluster-wide encryption migration of the node
+	// barrier in progress, read from the replicated record so every node
+	// answers the same (WithClusterMigrations). It is nil when none is in
+	// progress, and on a sealed node, whose barrier keeps the record
+	// unreadable.
+	ClusterMigration *clustermig.Report
 }
 
 // ShamirInitInfo contains the output of a Shamir initialization or rekey
@@ -312,6 +319,9 @@ type BarrierService struct {
 	// shards, when set, has a node seal pause every Raft shard the node
 	// hosts before it wipes a key (WithShardPauser).
 	shards ShardPauser
+	// migrations, when set, has the status report the node barrier's
+	// cluster-wide encryption migration (WithClusterMigrations).
+	migrations ClusterMigrations
 }
 
 // Compile-time interface check.
@@ -418,15 +428,37 @@ func (s *BarrierService) BarrierStatus(ctx context.Context) (*BarrierStatusInfo,
 		return s.sealedStatus(ctx)
 	}
 	return &BarrierStatusInfo{
-		Sealed:          status.Sealed,
-		Initialized:     true,
-		Strategy:        string(status.Strategy),
-		HardwareBacked:  status.HardwareBacked,
-		InitializedAt:   status.InitializedAt,
-		ShamirThreshold: status.ShamirThreshold,
-		ShamirTotal:     status.ShamirTotal,
-		ClusterSeal:     clusterseal.ReportOf(s.sealer, clusterseal.NodeBarrier()),
+		Sealed:           status.Sealed,
+		Initialized:      true,
+		Strategy:         string(status.Strategy),
+		HardwareBacked:   status.HardwareBacked,
+		InitializedAt:    status.InitializedAt,
+		ShamirThreshold:  status.ShamirThreshold,
+		ShamirTotal:      status.ShamirTotal,
+		ClusterSeal:      clusterseal.ReportOf(s.sealer, clusterseal.NodeBarrier()),
+		ClusterMigration: s.nodeMigration(ctx),
 	}, nil
+}
+
+// migrationReportTimeout bounds the replicated read behind a status's
+// migration report, so a node without a quorum still answers its status
+// promptly, with the migration unconfirmed.
+const migrationReportTimeout = 2 * time.Second
+
+// nodeMigration reports the node barrier's migration: the system scope, an
+// empty tenant and database. A record that cannot be read just now is
+// reported unconfirmed, not absent, and does not fail the status.
+func (s *BarrierService) nodeMigration(ctx context.Context) *clustermig.Report {
+	if s.migrations == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, migrationReportTimeout)
+	defer cancel()
+	r, err := s.migrations.Report(ctx, "", "")
+	if err != nil {
+		return &clustermig.Report{Unconfirmed: true}
+	}
+	return r
 }
 
 // sealedStatus is a sealed barrier's whole status: sealed, and whether it is

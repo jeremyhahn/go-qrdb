@@ -100,6 +100,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | Feature | Status | Requirements | Detail |
 |---|---|---|---|
 | barrier-seal | shipped | The at-rest barrier, strategies, the strategy registry, enable-encryption, the per-node key architecture. | [barrier-seal/](barrier-seal/), [seal/](seal/) |
+| rolling-enable-encryption | in progress | `cluster enable-encryption` recycles one node at a time, each only after the previous node is back and serving at the new strategy, with order and progress kept in a replicated per-node step record in the migration record, behind a cluster feature gate, so a restarted coordinator resumes where it left off. | #775, [barrier-seal/](barrier-seal/) |
 | shamir-custody | shipped | Security Officers, M-of-N shares, rekey, recovery keys, root tokens. | [shamir-custody/](shamir-custody/), [seal/](seal/) |
 | ceremony | shipped | The initialization ceremony state machine and the share lifecycle. | [ceremony/](ceremony/), [ceremony-sdk.md](ceremony-sdk.md) |
 | firstboot | shipped | The system tenant, built-in roles, the platform admin, the admin credential paths. | [firstboot/](firstboot/), [bootstrap.md](bootstrap.md) |

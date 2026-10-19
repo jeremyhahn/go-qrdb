@@ -54,25 +54,32 @@ func runClusterMigReconciler(ctx context.Context, r *clustermig.Reconciler, coor
 			} else if n > 0 {
 				slog.Info("cluster-migration: recycled local scopes", slog.Int("count", n))
 			}
-			reapCompletedMigrations(ctx, coord, store)
+			coordinateMigrations(ctx, coord, store)
 		}
 	}
 }
 
-// reapCompletedMigrations deletes every migration record that has reached
-// cluster-wide completion. Reap is leader-gated and no-ops on a follower or an
-// incomplete migration, so this is safe to call on every node each tick.
-func reapCompletedMigrations(ctx context.Context, coord *clustermig.Coordinator, store *clustermig.Store) {
-	// Followers have nothing to reap (Reap is leader-gated); skip the store scan
-	// entirely so a follower does not pay a __sys:encmig/ prefix scan every tick.
-	if !coord.IsLeader() {
-		return
-	}
+// coordinateMigrations moves every rolling migration on by its next step
+// (Coordinator.Advance) and deletes every migration record that has reached
+// cluster-wide completion. Advance and Reap no-op on a node that does not
+// coordinate the migration, a migration whose recycling owner has not acked,
+// or an incomplete migration, so this is safe to call on every node each tick.
+func coordinateMigrations(ctx context.Context, coord *clustermig.Coordinator, store *clustermig.Store) {
+	// Every node scans, the reconciler's own scan's cost again: a rolling
+	// migration on a database's own Raft shard is advanced by the node leading
+	// that shard, which need not lead the system shard (Coordinator.Advance).
+	// Reap stays with the system shard's leader.
 	migrations, err := store.ListMigrations(ctx)
 	if err != nil {
 		return
 	}
 	for _, m := range migrations {
+		if _, aerr := coord.Advance(ctx, m.TenantID, m.Database); aerr != nil {
+			slog.Warn("cluster-migration advance failed",
+				slog.String("tenant", m.TenantID), slog.String("database", m.Database),
+				slog.Any("error", aerr))
+			continue
+		}
 		if _, rerr := coord.Reap(ctx, m.TenantID, m.Database); rerr != nil {
 			slog.Warn("cluster-migration reap failed",
 				slog.String("tenant", m.TenantID), slog.String("database", m.Database),
@@ -94,14 +101,15 @@ type daemonLocalRecycler struct {
 // Compile-time check.
 var _ clustermig.LocalRecycler = (*daemonLocalRecycler)(nil)
 
-// alreadyAtTarget reports whether this node's local barrier for the scope is
-// already sealed by the migration's target strategy. It makes Recycle idempotent
-// across the SYSTEM-scope in-process reboot (which tears down the data plane —
-// including the reconciler — before the ack can be written) and across a re-issue:
-// after the reboot+unseal the new reconciler sees the keyed barrier and acks
-// without re-recycling. Fails open (false → attempt the recycle) when the barrier
-// is unavailable.
-func (r *daemonLocalRecycler) alreadyAtTarget(m *clustermig.ClusterMigration) bool {
+// AtTarget reports whether this node's local barrier for the scope is already
+// sealed by the migration's target strategy. The reconciler asks it before it
+// takes a credential, which makes the recycle idempotent across the SYSTEM-scope
+// in-process reboot (which tears down the data plane — including the reconciler
+// and the request's held credential — before the ack can be written) and across a
+// re-issue: after the reboot+unseal the new reconciler sees the keyed barrier and
+// acks without a credential and without re-recycling. Fails open (false → attempt
+// the recycle) when the barrier is unavailable.
+func (r *daemonLocalRecycler) AtTarget(m *clustermig.ClusterMigration) bool {
 	if r.barrierReg == nil {
 		return false
 	}
@@ -121,11 +129,6 @@ func (r *daemonLocalRecycler) alreadyAtTarget(m *clustermig.ClusterMigration) bo
 func (r *daemonLocalRecycler) Recycle(ctx context.Context, m *clustermig.ClusterMigration, credential []byte) error {
 	if r.migrator == nil {
 		return service.ErrMigrationProviderUnavailable
-	}
-	// Idempotency: if this node's barrier is already keyed at the target, the
-	// recycle ran (this is a post-reboot/re-issue pass) — ack without redoing it.
-	if r.alreadyAtTarget(m) {
-		return nil
 	}
 	// Hand the recycle its OWN credential. The SYSTEM-scope recycle is async
 	// across an in-process reboot: EnableEncryption returns early (the boot

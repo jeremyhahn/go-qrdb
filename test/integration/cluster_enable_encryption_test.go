@@ -21,11 +21,12 @@ package integration_test
 // real 3-node cluster: a system barrier that boots UNENCRYPTED (strategy "none")
 // is migrated to a passphrase strategy cluster-wide via a single
 // POST /v1/barrier/enable-encryption to the leader. The leader writes a
-// replicated migration intent that carries no credential: the leader recycles
-// with the request's passphrase, held in memory, and every other node waits in
+// replicated migration intent that carries no credential and rolls the nodes
+// one at a time, the leader last: every other node waits in
 // awaiting-credential until its own credential file appears under
 // seal.migration_credentials_dir, then recycles its local at-rest stores in
-// place. After each node comes back up keyed-and-sealed and is unsealed with
+// place, and the leader recycles with the request's passphrase, held in
+// memory. After each node comes back up keyed-and-sealed and is unsealed with
 // the new passphrase, ALL pre-migration data survives on every node and the
 // barrier reports the passphrase strategy — proving rolling, per-node,
 // zero-data-loss cluster encryption with no secret in the Raft log and none
@@ -46,6 +47,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -133,77 +135,8 @@ tenant:
 // TestClusterEnableEncryption_SystemScope_RF3 is the Phase D cluster integration
 // test for the system barrier scope.
 func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
-	bin := buildBinary(t)
-	ca := generateTestCA(t)
-
-	raftPorts := allocatePorts(t, 3)
-	adminPorts := allocateTCPPorts(t, 3)
-	grpcPorts := allocateTCPPorts(t, 3)
-	peersFlag := buildPeersFlag(raftPorts)
-
-	nodeCertPaths := make([]string, 3)
-	nodeKeyPaths := make([]string, 3)
-	peerAdminURLs := make(map[string]string, 3)
-	for i := range 3 {
-		raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[i])
-		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, iraftTrustDomain)
-		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
-	}
-
-	dataDirs := make([]string, 3)
-	configPaths := make([]string, 3)
-	credDirs := make([]string, 3)
-	for i := range 3 {
-		dataDirs[i] = t.TempDir()
-		credDirs[i] = migrationCredentialsDir(t)
-		configPaths[i] = writeNoneSealClusterConfig(t, t.TempDir(), credDirs[i], peerAdminURLs)
-	}
-
-	startNodeR1 := func(i int) {
-		args := []string{
-			"start",
-			"--config", configPaths[i],
-			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
-			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
-			"--data-dir", dataDirs[i],
-			"--sm", "pebble",
-			"--discovery", "static",
-			"--peers", peersFlag,
-			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
-			"--shard-id", "1",
-			"--replica-id", fmt.Sprintf("%d", i+1),
-			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
-			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
-			"--cluster-trust-domain", iraftTrustDomain,
-			"--tls-ca-file", ca.CertPath,
-			"--tls-cert-file", nodeCertPaths[i],
-			"--tls-key-file", nodeKeyPaths[i],
-		}
-		startNode(t, bin, args, fmt.Sprintf("[cenc-node%d] ", i+1))
-	}
-	for i := range 3 {
-		startNodeR1(i)
-	}
-
-	// Sealed-window: initialize the none barrier (empty secret) on all 3 nodes.
-	var sealWg sync.WaitGroup
-	sealWg.Add(3)
-	for i := range 3 {
-		go func(idx int) {
-			defer sealWg.Done()
-			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
-			initAndUnsealBarrier(t, ca, adminPorts[idx], "")
-		}(i)
-	}
-	sealWg.Wait()
-
-	for i, dir := range dataDirs {
-		waitForHealthy(t, dir, 60*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
-	}
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-	warmupWrite(t, ca, leaderPort, 15*time.Second)
-	t.Logf("cluster healthy (none barrier), leader on admin port %d", leaderPort)
+	c := startNoneSealSystemRF3(t, "cenc")
+	ca, adminPorts, dataDirs, credDirs, leaderPort := c.ca, c.adminPorts, c.dataDirs, c.credDirs, c.leaderPort
 
 	// Confirm the source barrier is genuinely unencrypted on every node.
 	for i := range 3 {
@@ -223,6 +156,10 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 		}
 	}
 
+	// The rolling gate activates once every member advertises the feature; a
+	// request made before then has no steps and would not run in turn.
+	waitForFeatureActive(t, c.logs, featuregate.RollingMigration, 90*time.Second)
+
 	// Trigger the cluster-wide system enable-encryption on the LEADER. The
 	// coordinator writes the replicated intent, which carries no credential;
 	// the leader holds the request's passphrase for its own recycle. No node
@@ -238,39 +175,33 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	}
 	t.Logf("cluster enable-encryption requested on leader (status %d)", status)
 
-	// The node that accepted the request recycles with the request's
-	// credential and comes back sealed. Every other node waits for its own
-	// credential: it must still be serving the none barrier. Then each
-	// receives its own file; the holder never gets one.
-	holderIdx := waitForCredentialHolder(t, 3, func(i int) bool {
-		_, sealed, ok := barrierStatusJSON(t, ca, adminPorts[i])
-		return ok && sealed
-	}, 180*time.Second)
-	t.Logf("node %d recycled with the request's held credential", holderIdx+1)
+	// The migration rolls one node at a time, and the node that accepted the
+	// request -- the holder of its credential -- goes last. Every other node
+	// waits for its own credential, so no node can migrate yet: each must
+	// still be serving the none barrier. Then each receives its own file; the
+	// holder never gets one, and recycles with the request's credential once
+	// the others are done.
+	holderIdx := adminPortIndex(t, adminPorts, leaderPort)
 	for i := range 3 {
-		if i == holderIdx {
-			continue
-		}
-		// The leader's own recycle is an in-process reboot, and the follower
-		// reconcilers are recycling as their credentials land, so quorum can be
-		// gone for this window: wait for a definitive answer, and fail only on
-		// a definitive wrong one.
 		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "none" {
-			t.Fatalf("node %d migrated before it had its own credential: %s", i+1, got)
+			t.Fatalf("node %d migrated before any node had its own credential: %s", i+1, got)
 		}
-		writeMigrationCredential(t, credDirs[i], "system", newPassphrase)
+		if i != holderIdx {
+			writeMigrationCredential(t, credDirs[i], "system", newPassphrase)
+		}
 	}
 
 	// Each node's reconciler picks up the intent, opens its sealed credential, and
 	// recycles its data plane in process — coming back up keyed-and-SEALED. Wait
 	// for every node to reach the sealed state, then unseal it with the new
-	// passphrase so it resumes serving.
+	// passphrase so it resumes serving. The steps run in turn, so the last
+	// node's wait spans every turn before it, as in the rolling test.
 	var unsealWg sync.WaitGroup
 	unsealWg.Add(3)
 	for i := range 3 {
 		go func(idx int) {
 			defer unsealWg.Done()
-			waitForBarrierSealedAgain(t, ca, adminPorts[idx], 180*time.Second)
+			waitForBarrierSealedAgain(t, ca, adminPorts[idx], 420*time.Second)
 			t.Logf("node %d barrier sealed (migrated); unsealing with new passphrase", idx+1)
 			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
 			unsealBody, unsealStatus := iraftAPIPost(t, sysClient,
@@ -351,6 +282,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		configPaths[i] = writeNoneSealRaftClusterConfig(t, t.TempDir(), credDirs[i], peerAdminURLs)
 	}
 
+	logs := make([]*nodeLog, 3)
 	for i := range 3 {
 		args := []string{
 			"start",
@@ -371,7 +303,8 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
-		startNode(t, bin, args, fmt.Sprintf("[tenc-node%d] ", i+1))
+		logs[i] = &nodeLog{}
+		logs[i].cmd = startNode(t, bin, args, fmt.Sprintf("[tenc-node%d] ", i+1), logs[i])
 	}
 
 	// Bring up the (none) system barrier on all 3 nodes.
@@ -548,6 +481,10 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		}
 	}
 
+	// The rolling gate activates once every member advertises the feature; a
+	// request made before then has no steps and would not run in turn.
+	waitForFeatureActive(t, logs, featuregate.RollingMigration, 90*time.Second)
+
 	// Trigger the cluster-wide TENANT enable-encryption on the leader. A
 	// tenant's barrier is migrated under tenant_barrier:enable_encryption for
 	// THAT tenant (go-qrdb#791): the system root, outside the tenant, is
@@ -566,15 +503,15 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	}
 	t.Log("tenant cluster enable-encryption requested on leader")
 
-	// The node that accepted the request recycles with the request's
-	// credential and needs no file; every other replica reads its own file,
-	// written once the holder is known.
-	tenantHolderIdx := waitForCredentialHolder(t, 3, func(i int) bool {
-		strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
-		return ok && strategy == "passphrase" && !sealed
-	}, 180*time.Second)
-	t.Logf("node %d recycled with the request's held credential", tenantHolderIdx+1)
+	// The migration rolls one replica at a time, and the node that accepted
+	// the request recycles last, with the request's credential and no file.
+	// Every other replica waits for its own file, so none can migrate before
+	// the files land.
+	tenantHolderIdx := adminPortIndex(t, adminPorts, leaderPort)
 	for i := range 3 {
+		if strategy, _, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); !ok || strategy != "none" {
+			t.Fatalf("node %d tenant strategy = %q (ok=%v) before any replica had its own credential, want none", i+1, strategy, ok)
+		}
 		if i != tenantHolderIdx {
 			writeMigrationCredential(t, credDirs[i], "tenant-"+tenantID, tenantPass)
 		}
@@ -660,6 +597,115 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 }
 
 // adminPortIndex returns the index of port in ports.
+// noneSealRF3 is a running three-node cluster whose system barrier is
+// initialized with the none strategy, each node with its own, still empty,
+// migration-credentials directory. Every node serves every transport, so a
+// test can drive the qrdb CLI over any of them (nodes, adminCert, adminKey).
+type noneSealRF3 struct {
+	ca         *testCA
+	adminPorts []int
+	dataDirs   []string
+	credDirs   []string
+	leaderPort int
+	nodes      []gatedClusterNode
+	logs       []*nodeLog
+	adminCert  string
+	adminKey   string
+}
+
+// startNoneSealSystemRF3 starts three nodes on one system shard, initializes
+// and unseals the none barrier on each, and returns once a leader has taken a
+// write. name prefixes each node's log lines.
+func startNoneSealSystemRF3(t *testing.T, name string) *noneSealRF3 {
+	t.Helper()
+	bin := buildBinary(t)
+	ca := generateTestCA(t)
+
+	raftPorts := allocatePorts(t, 3)
+	adminPorts := allocateTCPPorts(t, 3)
+	grpcPorts := allocateTCPPorts(t, 3)
+	mcpPorts := allocateTCPPorts(t, 3)
+	quicPorts := allocatePorts(t, 3)
+	peersFlag := buildPeersFlag(raftPorts)
+
+	nodeCertPaths := make([]string, 3)
+	nodeKeyPaths := make([]string, 3)
+	peerAdminURLs := make(map[string]string, 3)
+	for i := range 3 {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[i])
+		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, iraftTrustDomain)
+		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
+	}
+
+	dataDirs := make([]string, 3)
+	configPaths := make([]string, 3)
+	credDirs := make([]string, 3)
+	for i := range 3 {
+		dataDirs[i] = t.TempDir()
+		credDirs[i] = migrationCredentialsDir(t)
+		configPaths[i] = writeNoneSealClusterConfig(t, t.TempDir(), credDirs[i], peerAdminURLs)
+	}
+
+	nodes := make([]gatedClusterNode, 3)
+	logs := make([]*nodeLog, 3)
+	for i := range 3 {
+		sockDir, err := os.MkdirTemp("", "qrdb-rf3-")
+		if err != nil {
+			t.Fatalf("socket dir: %v", err)
+		}
+		t.Cleanup(func() { os.RemoveAll(sockDir) })
+		nodes[i] = gatedClusterNode{admin: adminPorts[i], grpcPort: grpcPorts[i], quicPort: quicPorts[i],
+			mcpPort: mcpPorts[i], unixSock: filepath.Join(sockDir, "qrdbd.sock")}
+		args := []string{
+			"start",
+			"--config", configPaths[i],
+			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
+			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
+			"--data-dir", dataDirs[i],
+			"--sm", "pebble",
+			"--discovery", "static",
+			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
+			"--shard-id", "1",
+			"--replica-id", fmt.Sprintf("%d", i+1),
+			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPorts[i]),
+			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
+			"--enable-unix", "--unix-socket-path", nodes[i].unixSock,
+			"--cluster-trust-domain", iraftTrustDomain,
+			"--tls-ca-file", ca.CertPath,
+			"--tls-cert-file", nodeCertPaths[i],
+			"--tls-key-file", nodeKeyPaths[i],
+		}
+		logs[i] = &nodeLog{}
+		logs[i].cmd = startNode(t, bin, args, fmt.Sprintf("[%s-node%d] ", name, i+1), logs[i])
+	}
+
+	// Sealed-window: initialize the none barrier (empty secret) on all 3 nodes.
+	var sealWg sync.WaitGroup
+	sealWg.Add(3)
+	for i := range 3 {
+		go func(idx int) {
+			defer sealWg.Done()
+			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
+			initAndUnsealBarrier(t, ca, adminPorts[idx], "")
+		}(i)
+	}
+	sealWg.Wait()
+
+	for i, dir := range dataDirs {
+		waitForHealthy(t, dir, 60*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+	}
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	warmupWrite(t, ca, leaderPort, 15*time.Second)
+	t.Logf("cluster healthy (none barrier), leader on admin port %d", leaderPort)
+	adminCert, adminKey := ca.boundAdminCert(t, dataDirs[0])
+	return &noneSealRF3{ca: ca, adminPorts: adminPorts, dataDirs: dataDirs, credDirs: credDirs, leaderPort: leaderPort,
+		nodes: nodes, logs: logs, adminCert: adminCert, adminKey: adminKey}
+}
+
 func adminPortIndex(t *testing.T, ports []int, port int) int {
 	t.Helper()
 	for i, p := range ports {
@@ -685,34 +731,6 @@ func migrationCredentialsDir(t *testing.T) string {
 
 // writeMigrationCredential writes a node's own enable-encryption credential
 // file, mode 0600, as an operator would.
-// waitForCredentialHolder returns the index of the one node that migrates
-// while no node has a credential file: the node that accepted the request and
-// holds its credential in memory. That is wherever the coordinator shard's
-// leader was when the request arrived -- the request is forwarded there --
-// and an election can move it between any leader lookup the test makes and
-// the request, so the test observes the holder rather than guessing it. A
-// second node migrating without its own file fails the test.
-func waitForCredentialHolder(t *testing.T, nodes int, migrated func(i int) bool, timeout time.Duration) int {
-	t.Helper()
-	holder := -1
-	if pollUntil(timeout, 250*time.Millisecond, func() bool {
-		for i := range nodes {
-			if !migrated(i) {
-				continue
-			}
-			if holder >= 0 {
-				t.Fatalf("nodes %d and %d both migrated before either had a credential file", holder+1, i+1)
-			}
-			holder = i
-		}
-		return holder >= 0
-	}) {
-		return holder
-	}
-	t.Fatalf("no node migrated with the request's held credential within %v", timeout)
-	return -1
-}
-
 func writeMigrationCredential(t *testing.T, dir, name, credential string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(credential+"\n"), 0o600); err != nil {

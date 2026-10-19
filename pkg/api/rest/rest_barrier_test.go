@@ -20,12 +20,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -946,6 +948,38 @@ func TestBarrierStatusToResponse_CarriesInitialized(t *testing.T) {
 				t.Errorf("sealed response carries %q", absent)
 			}
 		}
+	}
+}
+
+func TestBarrierStatusToResponse_ClusterMigration(t *testing.T) {
+	if _, ok := barrierStatusToResponse(&service.BarrierStatusInfo{})["cluster_migration"]; ok {
+		t.Error("no migration in progress carries cluster_migration, want it absent")
+	}
+	raw, err := json.Marshal(barrierStatusToResponse(&service.BarrierStatusInfo{ClusterMigration: &clustermig.Report{
+		Target: seal.StrategyPassphrase, Generation: 3, Acked: 1, Total: 2,
+		Nodes: []clustermig.NodeReport{
+			{NodeID: "n1", Step: clustermig.StepServing, Phase: seal.PhaseComplete},
+			{NodeID: "n2", Step: clustermig.StepPending},
+		},
+	}}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		ClusterMigration map[string]any `json:"cluster_migration"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := map[string]any{
+		"target": "passphrase", "generation": float64(3), "acked": float64(1), "total": float64(2),
+		"nodes": []any{
+			map[string]any{"node_id": "n1", "step": "serving", "phase": "complete"},
+			map[string]any{"node_id": "n2", "step": "pending"},
+		},
+	}
+	if !reflect.DeepEqual(wire.ClusterMigration, want) {
+		t.Errorf("cluster_migration = %v, want %v", wire.ClusterMigration, want)
 	}
 }
 

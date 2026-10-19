@@ -14,7 +14,10 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/service"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
 
 // ---------------------------------------------------------------------------
 // Enable-encryption service sentinel errors
@@ -53,6 +56,13 @@ type BarrierService = service.BarrierService
 
 // BarrierStatusInfo reports the current state of a barrier.
 type BarrierStatusInfo = service.BarrierStatusInfo
+
+// ClusterMigrationReport is the cluster-wide encryption migration a barrier
+// status carries while one is in progress.
+type ClusterMigrationReport = clustermig.Report
+
+// ClusterMigrationNodeReport is one owner's place in a cluster migration.
+type ClusterMigrationNodeReport = clustermig.NodeReport
 
 // ShamirInitInfo holds the result of a Shamir barrier initialization.
 type ShamirInitInfo = service.ShamirInitInfo

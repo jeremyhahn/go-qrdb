@@ -490,6 +490,9 @@ func barrierStatusToResponse(info *service.BarrierStatusInfo) map[string]interfa
 		resp["shamir_total"] = info.ShamirTotal
 	}
 	resp["cluster_seal"] = clusterSealOrInactive(info.ClusterSeal)
+	if info.ClusterMigration != nil {
+		resp["cluster_migration"] = info.ClusterMigration
+	}
 	return resp
 }
 

@@ -24,11 +24,13 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -359,5 +361,31 @@ func TestBarrierStatusToProto_Initialized(t *testing.T) {
 	}
 	if got.GetSealed() || !got.GetHardwareBacked() || got.GetShamirThreshold() != 2 || got.GetShamirTotal() != 3 {
 		t.Errorf("BarrierStatusToProto = %+v, want unsealed hardware-backed 2-of-3", got)
+	}
+}
+
+func TestBarrierStatusToProto_ClusterMigration(t *testing.T) {
+	if got := BarrierStatusToProto(&service.BarrierStatusInfo{}); got.GetClusterMigration() != nil {
+		t.Errorf("no migration in progress rendered %+v, want the field absent", got.GetClusterMigration())
+	}
+	got := BarrierStatusToProto(&service.BarrierStatusInfo{ClusterMigration: &clustermig.Report{
+		Target: seal.StrategyPassphrase, Generation: 4, Acked: 1, Total: 2,
+		Nodes: []clustermig.NodeReport{
+			{NodeID: "n1", Step: clustermig.StepServing, Phase: seal.PhaseComplete},
+			{NodeID: "n2", Step: clustermig.StepRecycling, Phase: seal.PhaseFailed, Attempts: 2, Detail: "credential missing"},
+		},
+	}}).GetClusterMigration()
+	want := &pb.ClusterMigrationState{
+		Target: "passphrase", Generation: 4, Acked: 1, Total: 2,
+		Nodes: []*pb.ClusterMigrationNode{
+			{NodeId: "n1", Step: "serving", Phase: "complete"},
+			{NodeId: "n2", Step: "recycling", Phase: "failed", Attempts: 2, Detail: "credential missing"},
+		},
+	}
+	if !proto.Equal(got, want) {
+		t.Errorf("ClusterMigration = %+v, want %+v", got, want)
+	}
+	if got := ClusterMigrationToProto(&clustermig.Report{Unconfirmed: true}); !got.GetUnconfirmed() || len(got.GetNodes()) != 0 {
+		t.Errorf("unconfirmed = %+v, want unconfirmed with no nodes", got)
 	}
 }

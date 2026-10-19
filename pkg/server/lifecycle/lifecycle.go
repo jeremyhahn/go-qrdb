@@ -1428,9 +1428,9 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			return err
 		}
 		n.Ceremony = service.NewCeremonyService(ceremonyCoreSvc)
-		n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc, barrierServiceOpts(infra)...)
+		n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc, n.barrierServiceOpts(infra)...)
 	} else {
-		n.Barrier = service.NewBarrierService(infra.SealBarrier, barrierServiceOpts(infra)...)
+		n.Barrier = service.NewBarrierService(infra.SealBarrier, n.barrierServiceOpts(infra)...)
 	}
 
 	// The node unseal brings back only the system-managed tenants the node
@@ -1901,7 +1901,7 @@ func databaseUnsealGate(dbs *database.Manager, sealer clusterseal.Sealer) func(n
 }
 
 // barrierServiceOpts returns the BarrierService options infra asks for.
-func barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
+func (n *Node) barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
 	var opts []service.BarrierServiceOption
 	if infra.ClusterSealer != nil {
 		opts = append(opts, service.WithClusterSealer(infra.ClusterSealer))
@@ -1917,6 +1917,11 @@ func barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
 	// It pauses every Raft shard the node hosts before any key goes.
 	if infra.ShardPauser != nil {
 		opts = append(opts, service.WithShardPauser(infra.ShardPauser))
+	}
+	// Its status reports a cluster-wide encryption migration from the
+	// replicated record, so every node answers the same.
+	if n.ClusterMigStore != nil {
+		opts = append(opts, service.WithClusterMigrations(n.ClusterMigStore))
 	}
 	return opts
 }
