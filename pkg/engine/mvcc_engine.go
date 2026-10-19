@@ -974,7 +974,10 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, lr *lease.Lessor, batch stor
 		return sm.Result{}, nil, err
 	}
 
-	prevKv, _ := s.GetInBatch(batch, key)
+	prevKv, err := getInBatchAllowingAbsence(s, batch, key)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
 
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
@@ -1353,7 +1356,10 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 		return res, nil, nil
 	}
 
-	prevKv, _ := s.GetInBatch(batch, key)
+	prevKv, err := getInBatchAllowingAbsence(s, batch, key)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
 
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
@@ -1759,7 +1765,10 @@ func decodedCompareToService(dc protocol.DecodedCompare) service.Compare {
 func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, op protocol.DecodedOp, rev int64) ([]Notification, error) {
 	switch op.Type {
 	case protocol.OpMVCCPut:
-		prevKv, _ := s.GetInBatch(batch, op.Key)
+		prevKv, err := getInBatchAllowingAbsence(s, batch, op.Key)
+		if err != nil {
+			return nil, err
+		}
 		// Validate index constraints before writing to the batch so that a
 		// unique violation aborts the operation without leaving partial state.
 		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
@@ -1899,8 +1908,9 @@ func (e *MVCCEngine) handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch st
 			}
 			prevKv, delErr := s.DeleteInBatch(batch, key, rev)
 			if delErr != nil {
-				// DeleteInBatch fails only on a storage write fault (an absent
-				// key tombstones without error). That is an apply fault, as on
+				// DeleteInBatch fails only on a storage fault reading the previous
+				// value or writing the tombstone (an absent key tombstones without
+				// error). That is an apply fault, as on
 				// the Pebble state machine: the lessor has already dropped the
 				// lease, so carrying on would leave the key with nothing to
 				// expire it, on this replica alone.

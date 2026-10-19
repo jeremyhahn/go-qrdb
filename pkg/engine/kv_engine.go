@@ -439,7 +439,10 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 	// Read previous value for index cleanup and watch notification.
 	var prevKv *qkv.KeyValue
 	if len(e.indexes) > 0 || e.hub != nil {
-		oldVal, _ := e.stg.Get(cmd.Key)
+		oldVal, gerr := e.stg.Get(cmd.Key)
+		if gerr != nil {
+			return sm.Result{Value: 1}, gerr
+		}
 		if oldVal != nil {
 			prevKv = &qkv.KeyValue{Key: cmd.Key, Value: oldVal}
 		}
@@ -934,7 +937,10 @@ func kvHandleDelete(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 	// Read previous value for index cleanup and watch notification.
 	var prevKv *qkv.KeyValue
 	if len(e.indexes) > 0 || e.hub != nil {
-		oldVal, _ := e.stg.Get(cmd.Key)
+		oldVal, gerr := e.stg.Get(cmd.Key)
+		if gerr != nil {
+			return sm.Result{Value: 1}, gerr
+		}
 		if oldVal != nil {
 			prevKv = &qkv.KeyValue{Key: cmd.Key, Value: oldVal}
 		}
@@ -1166,7 +1172,11 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 		switch op.Type {
 		case protocol.OpFSMPut:
 			if len(e.indexes) > 0 || e.hub != nil {
-				oldVal, _ := e.stg.Get(op.Key)
+				oldVal, gerr := e.stg.Get(op.Key)
+				if gerr != nil {
+					_ = batch.Rollback()
+					return sm.Result{Value: 1}, gerr
+				}
 				if oldVal != nil {
 					metas[i].prevKv = &qkv.KeyValue{Key: op.Key, Value: oldVal}
 				}
@@ -1189,7 +1199,11 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 			}
 		case protocol.OpFSMDelete:
 			if len(e.indexes) > 0 || len(e.compoundIndexes) > 0 || e.hub != nil {
-				oldVal, _ := e.stg.Get(op.Key)
+				oldVal, gerr := e.stg.Get(op.Key)
+				if gerr != nil {
+					_ = batch.Rollback()
+					return sm.Result{Value: 1}, gerr
+				}
 				if oldVal != nil {
 					metas[i].prevKv = &qkv.KeyValue{Key: op.Key, Value: oldVal}
 				}

@@ -16,6 +16,7 @@ package mvcc
 
 import (
 	"bytes"
+	"errors"
 	"sort"
 	"sync/atomic"
 
@@ -629,10 +630,22 @@ func (s *Store) PutInBatch(batch storage.Batch, key, value []byte, leaseID int64
 // at the specified revision. Used by the state machine. Returns the
 // previous KeyValue, or nil if the key didn't exist.
 func (s *Store) DeleteInBatch(batch storage.Batch, key []byte, rev int64) (*service.KeyValue, error) {
+	// A storage fault reading the previous value is returned, not taken as
+	// "no previous value": the caller retracts the previous value's index
+	// entries, and a replica that skipped that on a LOCAL fault would diverge
+	// from peers applying the same entry (see getFrom). Absence is still
+	// "no previous value".
 	var prevKV *service.KeyValue
+	var storeErr *StoreError
 	meta, err := s.getMetadataFrom(batch, key)
+	if errors.As(err, &storeErr) {
+		return nil, err
+	}
 	if err == nil {
 		prevValue, err := s.getDataAtRevisionFrom(batch, key, meta.ModRevision)
+		if errors.As(err, &storeErr) {
+			return nil, err
+		}
 		if err == nil {
 			prevKV = &service.KeyValue{
 				Key:            key,
