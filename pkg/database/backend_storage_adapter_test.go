@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 
@@ -85,6 +86,32 @@ func TestBackendStorageAdapter_Delete(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("Get after delete: got %q, want nil", got)
+	}
+}
+
+func TestBackendStorageAdapter_DeleteRange(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	ctx := context.Background()
+
+	for _, k := range []string{"r1", "r2", "r3"} {
+		if err := a.Put(ctx, k, []byte("val")); err != nil {
+			t.Fatalf("Put %q: %v", k, err)
+		}
+	}
+
+	if err := a.DeleteRange(ctx, []byte("r1"), []byte("r3")); err != nil {
+		t.Fatalf("DeleteRange: unexpected error: %v", err)
+	}
+
+	want := map[string]bool{"r1": false, "r2": false, "r3": true}
+	for k, present := range want {
+		got, err := a.Get(ctx, k)
+		if err != nil {
+			t.Fatalf("Get %q after DeleteRange: %v", k, err)
+		}
+		if (got != nil) != present {
+			t.Errorf("Get %q after DeleteRange: present = %v, want %v", k, got != nil, present)
+		}
 	}
 }
 
@@ -246,19 +273,100 @@ func TestBackendStorageAdapter_Exists_GetError(t *testing.T) {
 	}
 }
 
+// TestBackendStorageAdapter_GuardedOps_InnerErrors drives each guarded write
+// through an inner backend fault: a failed read, and a failed write once the
+// comparison has passed. Every case must report not-applied with the inner
+// error, never a silent success.
+func TestBackendStorageAdapter_GuardedOps_InnerErrors(t *testing.T) {
+	getErr := errors.New("inner get failed")
+	putErr := errors.New("inner put failed")
+	deleteErr := errors.New("inner delete failed")
+	ctx := context.Background()
+	current := []byte("cur")
+
+	tests := []struct {
+		name    string
+		mock    *mockStorageAdapterBackend
+		op      func(*BackendStorageAdapter) (bool, error)
+		wantErr error
+	}{
+		{
+			name: "PutIfAbsent get error",
+			mock: &mockStorageAdapterBackend{getErr: getErr},
+			op: func(a *BackendStorageAdapter) (bool, error) {
+				return a.PutIfAbsent(ctx, "k", []byte("v"))
+			},
+			wantErr: getErr,
+		},
+		{
+			name: "PutIfAbsent put error",
+			mock: &mockStorageAdapterBackend{putErr: putErr},
+			op: func(a *BackendStorageAdapter) (bool, error) {
+				return a.PutIfAbsent(ctx, "k", []byte("v"))
+			},
+			wantErr: putErr,
+		},
+		{
+			name: "CompareAndDelete get error",
+			mock: &mockStorageAdapterBackend{getErr: getErr},
+			op: func(a *BackendStorageAdapter) (bool, error) {
+				return a.CompareAndDelete(ctx, "k", current)
+			},
+			wantErr: getErr,
+		},
+		{
+			name: "CompareAndDelete delete error",
+			mock: &mockStorageAdapterBackend{getVal: current, deleteErr: deleteErr},
+			op: func(a *BackendStorageAdapter) (bool, error) {
+				return a.CompareAndDelete(ctx, "k", current)
+			},
+			wantErr: deleteErr,
+		},
+		{
+			name: "CompareAndSwap get error",
+			mock: &mockStorageAdapterBackend{getErr: getErr},
+			op: func(a *BackendStorageAdapter) (bool, error) {
+				return a.CompareAndSwap(ctx, "k", current, []byte("next"))
+			},
+			wantErr: getErr,
+		},
+		{
+			name: "CompareAndSwap put error",
+			mock: &mockStorageAdapterBackend{getVal: current, putErr: putErr},
+			op: func(a *BackendStorageAdapter) (bool, error) {
+				return a.CompareAndSwap(ctx, "k", current, []byte("next"))
+			},
+			wantErr: putErr,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applied, err := tt.op(NewBackendStorageAdapter(tt.mock))
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+			if applied {
+				t.Error("applied = true on an inner error, want false")
+			}
+		})
+	}
+}
+
 // mockStorageAdapterBackend is a minimal Backend mock for adapter error tests.
 type mockStorageAdapterBackend struct {
-	getVal  []byte
-	getErr  error
-	listVal []string
-	listErr error
+	getVal    []byte
+	getErr    error
+	listVal   []string
+	listErr   error
+	putErr    error
+	deleteErr error
 }
 
 func (m *mockStorageAdapterBackend) Get(_ context.Context, _ []byte) ([]byte, error) {
 	return m.getVal, m.getErr
 }
-func (m *mockStorageAdapterBackend) Put(_ context.Context, _, _ []byte) error { return nil }
-func (m *mockStorageAdapterBackend) Delete(_ context.Context, _ []byte) error { return nil }
+func (m *mockStorageAdapterBackend) Put(_ context.Context, _, _ []byte) error { return m.putErr }
+func (m *mockStorageAdapterBackend) Delete(_ context.Context, _ []byte) error { return m.deleteErr }
 
 func (m *mockStorageAdapterBackend) DeleteRange(_ context.Context, _, _ []byte) error { return nil }
 func (m *mockStorageAdapterBackend) List(_ context.Context, _ string) ([]string, error) {

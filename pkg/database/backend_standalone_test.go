@@ -140,6 +140,32 @@ func TestStandaloneBackend_Delete(t *testing.T) {
 	}
 }
 
+func TestStandaloneBackend_DeleteRange(t *testing.T) {
+	b := newTestBackend(t)
+	ctx := context.Background()
+
+	for _, k := range []string{"a", "b", "c", "d"} {
+		if err := b.Put(ctx, []byte(k), []byte("v")); err != nil {
+			t.Fatalf("Put %q: unexpected error: %v", k, err)
+		}
+	}
+
+	if err := b.DeleteRange(ctx, []byte("b"), []byte("d")); err != nil {
+		t.Fatalf("DeleteRange: unexpected error: %v", err)
+	}
+
+	want := map[string]bool{"a": true, "b": false, "c": false, "d": true}
+	for k, present := range want {
+		got, err := b.Get(ctx, []byte(k))
+		if err != nil {
+			t.Fatalf("Get %q after DeleteRange: unexpected error: %v", k, err)
+		}
+		if (got != nil) != present {
+			t.Errorf("Get %q after DeleteRange: present = %v, want %v", k, got != nil, present)
+		}
+	}
+}
+
 func TestStandaloneBackend_Delete_NonExistent(t *testing.T) {
 	b := newTestBackend(t)
 	ctx := context.Background()

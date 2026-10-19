@@ -376,6 +376,33 @@ func TestRemoteBackend_Delete_Error(t *testing.T) {
 	}
 }
 
+func TestRemoteBackend_DeleteRange(t *testing.T) {
+	mock := &mockRemoteTransport{}
+	backend := NewRemoteBackend(mock)
+	ctx := context.Background()
+
+	if err := backend.DeleteRange(ctx, []byte("a"), []byte("z")); err != nil {
+		t.Fatalf("DeleteRange: unexpected error: %v", err)
+	}
+	if !mock.deleteCalled {
+		t.Error("DeleteRange: transport.DeleteRange not called")
+	}
+	if string(mock.deleteKey) != "az" {
+		t.Errorf("DeleteRange: transport got bounds %q, want %q", mock.deleteKey, "az")
+	}
+}
+
+func TestRemoteBackend_DeleteRange_Error(t *testing.T) {
+	transportErr := errors.New("delete range failed")
+	mock := &mockRemoteTransport{deleteErr: transportErr}
+	backend := NewRemoteBackend(mock)
+
+	err := backend.DeleteRange(context.Background(), []byte("a"), []byte("z"))
+	if !errors.Is(err, transportErr) {
+		t.Errorf("DeleteRange error: got %v, want %v", err, transportErr)
+	}
+}
+
 func TestRemoteBackend_List(t *testing.T) {
 	mock := &mockRemoteTransport{
 		listValue: []string{"users/alice", "users/bob"},

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
@@ -320,6 +321,45 @@ func TestBarrierBackend_Sealed_Delete(t *testing.T) {
 	}
 }
 
+func TestBarrierBackend_DeleteRange(t *testing.T) {
+	barrier := &xorBarrier{mask: 0xAA}
+	b := newBarrierTestBackend(t, barrier)
+	ctx := context.Background()
+
+	for _, k := range []string{"k1", "k2", "k3"} {
+		if err := b.Put(ctx, []byte(k), []byte("value")); err != nil {
+			t.Fatalf("Put %q: %v", k, err)
+		}
+	}
+
+	if err := b.DeleteRange(ctx, []byte("k1"), []byte("k3")); err != nil {
+		t.Fatalf("DeleteRange: unexpected error: %v", err)
+	}
+
+	want := map[string]bool{"k1": false, "k2": false, "k3": true}
+	for k, present := range want {
+		got, err := b.Get(ctx, []byte(k))
+		if err != nil {
+			t.Fatalf("Get %q after DeleteRange: %v", k, err)
+		}
+		if (got != nil) != present {
+			t.Errorf("Get %q after DeleteRange: present = %v, want %v", k, got != nil, present)
+		}
+	}
+}
+
+func TestBarrierBackend_Sealed_DeleteRange(t *testing.T) {
+	barrier := &xorBarrier{mask: 0xAA, sealed: true}
+	b := newBarrierTestBackend(t, barrier)
+	ctx := context.Background()
+
+	err := b.DeleteRange(ctx, []byte("a"), []byte("z"))
+	var sealErr *SealedError
+	if !errors.As(err, &sealErr) {
+		t.Errorf("DeleteRange: expected *SealedError, got %T: %v", err, err)
+	}
+}
+
 func TestBarrierBackend_Sealed_List(t *testing.T) {
 	barrier := &xorBarrier{mask: 0xAA, sealed: true}
 	b := newBarrierTestBackend(t, barrier)
@@ -568,4 +608,120 @@ func TestBarrierBackend_CompareAndDelete(t *testing.T) {
 			t.Errorf("a refusal while sealed must not delete: value = %q, want %q", got, "v1")
 		}
 	})
+}
+
+// encryptFailBarrier decrypts like xorBarrier but fails every Encrypt, so a
+// guarded swap can pass its plaintext comparison and then fail sealing the
+// replacement value.
+type encryptFailBarrier struct {
+	xorBarrier
+}
+
+func (e *encryptFailBarrier) Encrypt(_, _ []byte) ([]byte, error) {
+	return nil, errors.New("encrypt failed")
+}
+
+var _ BarrierEncryptor = (*encryptFailBarrier)(nil)
+
+// getFailAtomicBackend is an AtomicBackend whose reads fail, for the guarded
+// operations' read-before-compare error path.
+type getFailAtomicBackend struct {
+	*StandaloneBackend
+	err error
+}
+
+func (g *getFailAtomicBackend) Get(_ context.Context, _ []byte) ([]byte, error) {
+	return nil, g.err
+}
+
+var _ AtomicBackend = (*getFailAtomicBackend)(nil)
+
+// TestBarrierBackend_GuardedOps_Faults covers each guarded write's refusal and
+// fault paths through the barrier: sealed, an inner backend without atomic
+// writes, a failed inner read, an undecryptable stored value, and a value the
+// barrier cannot encrypt. Every case reports not-applied with a typed error.
+func TestBarrierBackend_GuardedOps_Faults(t *testing.T) {
+	ctx := context.Background()
+	getErr := errors.New("inner get failed")
+
+	newStandalone := func(t *testing.T) *StandaloneBackend {
+		t.Helper()
+		store := memory.NewStorage()
+		t.Cleanup(func() { _ = store.Close() })
+		return NewStandaloneBackend(store)
+	}
+	// seeded returns a standalone backend holding key "k" stored under the
+	// 0xAA xor mask, so a xor-decrypting barrier reads it back as "v0".
+	seeded := func(t *testing.T) *StandaloneBackend {
+		t.Helper()
+		inner := newStandalone(t)
+		if err := NewBarrierBackend(inner, &xorBarrier{mask: 0xAA}).Put(ctx, []byte("k"), []byte("v0")); err != nil {
+			t.Fatalf("seed Put: %v", err)
+		}
+		return inner
+	}
+
+	putIfAbsent := func(b *BarrierBackend) (bool, error) { return b.PutIfAbsent(ctx, []byte("k"), []byte("v")) }
+	cas := func(b *BarrierBackend) (bool, error) {
+		return b.CompareAndSwap(ctx, []byte("k"), []byte("v0"), []byte("v1"))
+	}
+	cad := func(b *BarrierBackend) (bool, error) { return b.CompareAndDelete(ctx, []byte("k"), []byte("v0")) }
+
+	isSealed := func(err error) bool { var e *SealedError; return errors.As(err, &e) }
+	isEncrypt := func(err error) bool { var e *BarrierEncryptError; return errors.As(err, &e) }
+	isDecrypt := func(err error) bool { var e *BarrierDecryptError; return errors.As(err, &e) }
+	isUnsupported := func(err error) bool { return errors.Is(err, kvstore.ErrAtomicWriteUnsupported) }
+	isGetErr := func(err error) bool { return errors.Is(err, getErr) }
+
+	tests := []struct {
+		name    string
+		backend func(t *testing.T) *BarrierBackend
+		op      func(*BarrierBackend) (bool, error)
+		wantErr func(error) bool
+	}{
+		{"PutIfAbsent sealed", func(t *testing.T) *BarrierBackend {
+			return newBarrierTestBackend(t, &xorBarrier{mask: 0xAA, sealed: true})
+		}, putIfAbsent, isSealed},
+		{"PutIfAbsent non-atomic inner", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(&mockStorageAdapterBackend{}, &xorBarrier{mask: 0xAA})
+		}, putIfAbsent, isUnsupported},
+		{"PutIfAbsent encrypt error", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(newStandalone(t), &failBarrier{})
+		}, putIfAbsent, isEncrypt},
+		{"CompareAndSwap sealed", func(t *testing.T) *BarrierBackend {
+			return newBarrierTestBackend(t, &xorBarrier{mask: 0xAA, sealed: true})
+		}, cas, isSealed},
+		{"CompareAndSwap non-atomic inner", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(&mockStorageAdapterBackend{}, &xorBarrier{mask: 0xAA})
+		}, cas, isUnsupported},
+		{"CompareAndSwap get error", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(&getFailAtomicBackend{StandaloneBackend: newStandalone(t), err: getErr}, &xorBarrier{mask: 0xAA})
+		}, cas, isGetErr},
+		{"CompareAndSwap decrypt error", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(seeded(t), &failBarrier{})
+		}, cas, isDecrypt},
+		{"CompareAndSwap encrypt error", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(seeded(t), &encryptFailBarrier{xorBarrier{mask: 0xAA}})
+		}, cas, isEncrypt},
+		{"CompareAndDelete non-atomic inner", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(&mockStorageAdapterBackend{}, &xorBarrier{mask: 0xAA})
+		}, cad, isUnsupported},
+		{"CompareAndDelete get error", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(&getFailAtomicBackend{StandaloneBackend: newStandalone(t), err: getErr}, &xorBarrier{mask: 0xAA})
+		}, cad, isGetErr},
+		{"CompareAndDelete decrypt error", func(t *testing.T) *BarrierBackend {
+			return NewBarrierBackend(seeded(t), &failBarrier{})
+		}, cad, isDecrypt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applied, err := tt.op(tt.backend(t))
+			if !tt.wantErr(err) {
+				t.Errorf("unexpected error %T: %v", err, err)
+			}
+			if applied {
+				t.Error("applied = true on a refused or failed operation, want false")
+			}
+		})
+	}
 }
