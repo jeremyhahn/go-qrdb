@@ -105,3 +105,38 @@ func TestAuthFactorTenantMismatch_ConstructibleThroughTheSDK(t *testing.T) {
 		t.Errorf("fields did not survive the alias: got Requested=%q Context=%q", target.Requested, target.Context)
 	}
 }
+
+// newCeremonyBarrierService wires a BarrierService to a real ceremony, the
+// configuration under which barrier init refuses the system barrier.
+func newCeremonyBarrierService(t *testing.T) BarrierServicer {
+	t.Helper()
+	barrier := newTestBarrier(t)
+	ceremonyCore, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, slog.Default())
+	if err != nil {
+		t.Fatalf("NewCeremonyService: %v", err)
+	}
+	return NewBarrierServiceWithCeremony(barrier, ceremonyCore)
+}
+
+// TestSystemBarrierInitRefused_MatchesThroughTheSDK drives the real service
+// path: with a ceremony wired, BarrierInitialize refuses, and the refusal is
+// caught through the SDK alias without importing pkg/service.
+func TestSystemBarrierInitRefused_MatchesThroughTheSDK(t *testing.T) {
+	err := newCeremonyBarrierService(t).BarrierInitialize(t.Context(), []byte("passphrase"))
+
+	var target *SystemBarrierInitRefusedError
+	if !errors.As(err, &target) {
+		t.Fatalf("BarrierInitialize = %T: %v, want *SystemBarrierInitRefusedError", err, err)
+	}
+}
+
+// TestSystemBarrierInitRefused_ShamirMatchesThroughTheSDK covers the second
+// refusing path, BarrierInitializeShamir.
+func TestSystemBarrierInitRefused_ShamirMatchesThroughTheSDK(t *testing.T) {
+	_, err := newCeremonyBarrierService(t).BarrierInitializeShamir(t.Context(), 2, 3, "")
+
+	var target *SystemBarrierInitRefusedError
+	if !errors.As(err, &target) {
+		t.Fatalf("BarrierInitializeShamir = %T: %v, want *SystemBarrierInitRefusedError", err, err)
+	}
+}

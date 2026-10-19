@@ -58,6 +58,11 @@ type OfficerConfig = ceremony.OfficerConfig
 // and Shamir parameters.
 type CeremonyConfig = ceremony.CeremonyConfig
 
+// InitializeOptions carries the inputs of a ceremony initialization: the SO
+// and user PINs, the credential seal strategy, the Shamir threshold, factor
+// policy and officers, and the bootstrap admin's credential selection.
+type InitializeOptions = ceremony.InitializeOptions
+
 // ---------------------------------------------------------------------------
 // Ceremony result types
 // ---------------------------------------------------------------------------

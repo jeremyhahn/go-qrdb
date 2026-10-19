@@ -133,6 +133,14 @@ type AuthFactorServicer = service.AuthFactorServicer
 // never construct or catch.
 type AuthFactorTenantMismatchError = service.AuthFactorTenantMismatchError
 
+// SystemBarrierInitRefusedError is returned by BarrierService's
+// BarrierInitialize and BarrierInitializeShamir when the service is wired to
+// a ceremony: the system barrier is initialized only through the ceremony's
+// Initialize (qrdb init), never through barrier init (aliases
+// service.SystemBarrierInitRefusedError). A composing service matches it with
+// errors.As without importing pkg/service.
+type SystemBarrierInitRefusedError = service.SystemBarrierInitRefusedError
+
 // UserAuthFactorServicer is the service-layer interface for per-user auth
 // factor management.
 type UserAuthFactorServicer = service.UserAuthFactorServicer
