@@ -42,11 +42,21 @@ type ValidationError struct {
 
 	// Reason describes why the field value is invalid.
 	Reason string
+
+	// Err is the typed error the field's own validation reported, when it
+	// has one; nil otherwise.
+	Err error
 }
 
 // Error returns a human-readable description of the validation failure.
 func (e *ValidationError) Error() string {
 	return "config: validation failed for " + strconv.Quote(e.Field) + ": " + e.Reason
+}
+
+// Unwrap returns the field's own validation error for use with errors.Is and
+// errors.As, or nil.
+func (e *ValidationError) Unwrap() error {
+	return e.Err
 }
 
 // UnknownFieldError is returned when a configuration file carries a key that

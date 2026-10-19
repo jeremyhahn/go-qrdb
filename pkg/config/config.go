@@ -595,6 +595,12 @@ type ServerConfig struct {
 	// load. Sourced from --secure-memory-budget-mib,
 	// QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB or server.secure_memory_budget_mib.
 	SecureMemoryBudgetMiB int64 `yaml:"secure_memory_budget_mib"`
+
+	// GRPCWeb serves the gRPC-Web protocol for every gRPC service the node
+	// hosts from the admin/REST server, under /grpc-web/, through the gRPC
+	// server's own interceptor chain. Off by default; enabling it requires
+	// protocols.grpc.
+	GRPCWeb GRPCWebConfig `yaml:"grpc_web"`
 }
 
 // DefaultSecureMemoryBudgetMiB is the locked-memory budget an unconfigured
@@ -1420,6 +1426,24 @@ type CORSConfig struct {
 	MaxAge int `yaml:"max_age"`
 }
 
+// GRPCWebConfig is the server.grpc_web block: gRPC-Web on the REST server.
+// The zero value is off. pkg/server hands it to pkg/api/grpcweb, whose
+// Config has the same fields and judges the CORS ones.
+type GRPCWebConfig struct {
+	// Enabled serves gRPC-Web under /grpc-web/.
+	Enabled bool `yaml:"enabled"`
+
+	// AllowedOrigins lists the browser origins CORS admits, each a
+	// serialized origin (https://app.example.com, with a port when it is not
+	// the scheme's default) or "*" for any origin. Empty admits no
+	// cross-origin browser call.
+	AllowedOrigins []string `yaml:"allowed_origins"`
+
+	// AllowCredentials lets a cross-origin browser call carry credentials.
+	// It cannot be combined with the "*" origin.
+	AllowCredentials bool `yaml:"allow_credentials"`
+}
+
 // SQLConfig configures the SQL wire protocol layer shared by both
 // MySQL and PostgreSQL protocol servers.
 type SQLConfig struct {
@@ -2127,6 +2151,17 @@ var validDatabaseBackends = map[string]struct{}{
 	"objstore": {},
 }
 
+// validateGRPCWeb checks that an enabled server.grpc_web has the gRPC server
+// it is served through. Its CORS fields are the gRPC-Web handler's to judge:
+// pkg/server checks them at Start and reports them as a *ValidationError
+// naming the field.
+func (c *Config) validateGRPCWeb() error {
+	if c.Server.GRPCWeb.Enabled && !c.Protocols.GRPC {
+		return &ValidationError{Field: "server.grpc_web.enabled", Reason: "requires protocols.grpc: gRPC-Web is served through the gRPC server"}
+	}
+	return nil
+}
+
 // Validate checks the configuration for required fields and valid values.
 // It returns the first validation error encountered, or nil if the
 // configuration is valid.
@@ -2167,6 +2202,9 @@ func (c *Config) Validate() error {
 		// SMALLER effective budget than configured instead of failing
 		// (go-qrdb#114 review, round 2).
 		return &ValidationError{Field: "server.secure_memory_budget_mib", Reason: "too large: converting to bytes would overflow"}
+	}
+	if err := c.validateGRPCWeb(); err != nil {
+		return err
 	}
 
 	if c.Transport.MaxMessageBytes < 0 {

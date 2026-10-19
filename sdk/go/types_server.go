@@ -20,6 +20,7 @@ import (
 	restapi "github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
@@ -185,6 +186,27 @@ const (
 // its Start/Stop lifecycle runs with the server's.
 var WithModule = qrdbserver.WithModule
 
+// gRPC-Web on the embedded server's REST listener. WithGRPCWeb serves the
+// gRPC-Web protocol for every gRPC service the server hosts -- its own and
+// every WithModule module's -- under /grpc-web/, on HTTP/1.1, HTTP/2 and
+// HTTP/3, through the gRPC server's own interceptor chain, replacing the
+// configuration file's server.grpc_web block. It is off by default. Start
+// refuses an AllowedOrigins entry that is neither "*" nor a serialized origin
+// (scheme://host[:port]), and "*" with AllowCredentials, with a
+// *DaemonConfigValidationError naming the server.grpc_web field.
+type (
+	// GRPCWebConfig configures gRPC-Web: Enabled, and the CORS policy a
+	// browser client needs (AllowedOrigins, AllowCredentials), off when
+	// AllowedOrigins is empty. The zero value is off.
+	GRPCWebConfig = config.GRPCWebConfig
+	// GRPCWebUnavailableError is Start's refusal of gRPC-Web enabled while
+	// protocols.grpc or protocols.rest is off.
+	GRPCWebUnavailableError = qrdbserver.GRPCWebUnavailableError
+)
+
+// WithGRPCWeb enables gRPC-Web with cfg; see GRPCWebConfig.
+var WithGRPCWeb = qrdbserver.WithGRPCWeb
+
 // NewModuleHTTPRegistrar builds the permission-recording registrar the server
 // passes to ServiceModule.RegisterHTTP. Exported for module hosts and module
 // tests that need a capture registrar without importing pkg/apimodule.
@@ -212,6 +234,9 @@ type (
 	// RESTDirectRouteCollisionError is the panic of a direct router
 	// registration that a permission-recorded registration also claims.
 	RESTDirectRouteCollisionError = restapi.DirectRouteCollisionError
+	// RESTGRPCWebRouteCollisionError is the panic of a REST route that
+	// would match a path under /grpc-web/ while gRPC-Web is enabled.
+	RESTGRPCWebRouteCollisionError = restapi.GRPCWebRouteCollisionError
 )
 
 // RESTRouteKey is the identity of a REST route: method plus pattern with

@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/grpcweb"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -63,6 +64,29 @@ func (e *DirectRouteCollisionError) Error() string {
 	return "rest: module " + e.Module + " registered " + e.Method + " " + e.Pattern +
 		" directly on the router, and " + e.Holder + " registered the same route with a permission;" +
 		" register module routes through HTTPRegistrar.Handle or HandlePublic"
+}
+
+// GRPCWebRouteCollisionError is the panic value NewServer raises when gRPC-Web
+// is enabled and a registered route would match a path under
+// grpcweb.PathPrefix. gRPC-Web is dispatched ahead of the router, so the route
+// would silently never be served.
+type GRPCWebRouteCollisionError struct {
+	Method  string
+	Pattern string
+
+	// Holder is the registration that claimed the route: "built-in",
+	// "module <name>", or empty for a route a module registered directly on
+	// the router.
+	Holder string
+}
+
+func (e *GRPCWebRouteCollisionError) Error() string {
+	holder := e.Holder
+	if holder == "" {
+		holder = "a direct registration"
+	}
+	return "rest: " + holder + " registered " + e.Method + " " + e.Pattern +
+		", which collides with the gRPC-Web prefix " + grpcweb.PathPrefix
 }
 
 // StartError is returned when the REST HTTP server fails to start

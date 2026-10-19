@@ -1,6 +1,6 @@
 # Unified API Server — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
 
 ## Exported surface
 
@@ -88,6 +88,7 @@ var WithRESTPacketConn   = qrdbserver.WithRESTPacketConn
 var WithGRPCListener     = qrdbserver.WithGRPCListener
 var WithQUICPacketConn   = qrdbserver.WithQUICPacketConn
 var WithMCPListener      = qrdbserver.WithMCPListener
+var WithGRPCWeb          = qrdbserver.WithGRPCWeb
 
 type ServiceModule                = apimodule.ServiceModule
 type BaseModule                   = apimodule.BaseModule
@@ -412,6 +413,59 @@ admin credential, the tools that gate admits are listed as well.
 | QUIC | method/frame dispatch — module unary RPCs are reached via `RegisterQUIC` projection |
 | MCP | Model Context Protocol tools |
 
+### gRPC-Web
+
+`pkg/api/grpcweb`:
+
+```go
+const PathPrefix = "/grpc-web/"
+
+type Config struct {
+	Enabled          bool
+	AllowedOrigins   []string
+	AllowCredentials bool
+}
+func (c Config) Validate() error   // *OriginError, *WildcardCredentialsError
+
+func NewHandler(cfg Config, backend http.Handler) (*Handler, error)
+```
+
+The `server.grpc_web` block is `config.GRPCWebConfig`, the same three fields
+with their YAML keys; `pkg/config` imports no API package, so `pkg/server`
+converts the block to `grpcweb.Config`. `qrdbd start` copies it into the server
+configuration (`applyConfigToFlags`, `buildServerConfig`); it has no flag.
+`server.WithGRPCWeb(cfg config.GRPCWebConfig)` (SDK `sdk.WithGRPCWeb`,
+`sdk.GRPCWebConfig`) replaces the block for an embedded node. `pkg/server` hands
+`rest.WithGRPCWeb(cfg, backend)` a backend that is the gRPC listener's own
+`*grpc.Server`, published by `startGRPC` through an atomic pointer: REST starts
+first, so a call before that, or after the gRPC server stops, is answered
+`Unavailable`.
+
+The handler is framing only (`docs/reference/grpc-web-protocol.md`, over
+`docs/reference/grpc-http2-protocol.md`): it relabels the media type, sets the
+request to HTTP/2 for `(*grpc.Server).ServeHTTP`, decodes and encodes the
+base64 text form, moves the gRPC trailers into the body's final trailer frame
+(flag `0x80`, lowercase `name: value` lines ending CRLF, sorted), and answers
+CORS. It is not a vanguard or connect translation; see
+[architecture.md](architecture.md#alternatives-rejected) for why.
+
+Invariants:
+
+- **One interceptor chain.** A gRPC-Web call reaches the same unary and stream
+  interceptors as a call on the gRPC listener, with `peer.AuthInfo` built from
+  the request's TLS state. `TestGRPCWeb_InterceptorParity` (`pkg/api/grpc`)
+  and `TestGRPCWeb_SameAnswerAsNativeGRPC` (`test/integration`) hold every
+  caller to the same status code on both.
+- **The prefix has one owner.** `grpcWebDispatch` runs before every REST layer;
+  a REST route whose first segment matches or could match `grpc-web` panics
+  `*rest.GRPCWebRouteCollisionError` at construction.
+- **Off by default, and refused when it cannot be served.** `config.Validate`
+  refuses `enabled` without `protocols.grpc` (`*config.ValidationError`, field
+  `server.grpc_web.enabled`). `Server.Start` checks the CORS fields with
+  `grpcweb.Config.Validate`, whether or not `Enabled` is set, and reports a
+  fault as a `*config.ValidationError` naming the field; it refuses an enabled
+  configuration with gRPC or REST off (`*server.GRPCWebUnavailableError`).
+
 **One path per request on every HTTP surface.** The REST handler chain opens
 with `canonicalPathMiddleware`, which clears `r.URL.RawPath` so chi routes on
 the same decoded `r.URL.Path` that authorization, the sealed-window allowlist,
@@ -448,6 +502,11 @@ over the same services, not a seventh transport.
 | gRPC or Unix socket connection opening more than `DefaultMaxConcurrentStreams` simultaneous RPCs (configurable with `WithMaxConcurrentStreams`) | grpc-go refuses the extra stream at the HTTP/2 layer | **yes** |
 | gRPC or Unix socket client ping faster than the keepalive `EnforcementPolicy`'s `MinTime` (5s) with no active stream | connection closed with `ENHANCE_YOUR_CALM` | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
+| `server.grpc_web` with an origin that is not `*` or a serialized origin, or `*` with `allow_credentials` | `Start` returns a `*config.ValidationError` (field `server.grpc_web.allowed_origins` / `.allow_credentials`) wrapping `*grpcweb.OriginError` / `*grpcweb.WildcardCredentialsError`; the node does not start | **yes** |
+| `server.grpc_web.enabled` with gRPC (or REST) off | `*config.ValidationError` from `Validate`; `*server.GRPCWebUnavailableError` from `Start` | **yes** |
+| A REST route under `/grpc-web/` | `*rest.GRPCWebRouteCollisionError` panics at construction | **yes** |
+| gRPC-Web request that is not `POST`, or not a gRPC-Web media type | 405 with `Allow: POST`, or 415; never reaches the gRPC server | **yes** |
+| gRPC-Web CORS preflight from an origin not listed, or for a method other than `POST` | 403, no CORS headers | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |
 | A presented identity claiming a service principal (subject `qrdb-service:*` or the principal marker), from any authenticator, an on-behalf assertion or a module fallback, on any network transport — other than a tenant-issued delegation the mTLS authenticator verified in full | `*ServicePrincipalPresentedError`, which unwraps to `auth.ErrUnauthenticated`: REST 401, gRPC/Unix `Unauthenticated`, and the same class on QUIC, MCP, SQL and etcd. No identity is bound | **yes** |
@@ -501,6 +560,10 @@ Transport enablement is per protocol in the daemon config; see
 [../configuration/](../configuration/). Which transports are composed at all
 follows the run mode ([../run-modes/](../run-modes/)).
 
+gRPC-Web is `server.grpc_web` (`enabled`, `allowed_origins`,
+`allow_credentials`), off by default, with no `qrdbd` flag; `server.WithGRPCWeb`
+replaces it for an embedded node. See [gRPC-Web](#grpc-web) above.
+
 ## Test strategy
 
 - **Unit**: the default-deny startup assertion (a route without a declaration
@@ -523,6 +586,14 @@ follows the run mode ([../run-modes/](../run-modes/)).
   `pkg/` (`sdk/go/node/service_principal_sdk_test.go`).
 - **Transport parity** is the standing integration property: the same capability
   reaches the same decision on all six.
+- **gRPC-Web parity.** `TestGRPCWeb_InterceptorParity` (`pkg/api/grpc`) calls
+  one server natively and as gRPC-Web for each caller shape and requires the
+  same code and the same interceptor log. `TestGRPCWeb_SameAnswerAsNativeGRPC`
+  (`test/integration`, in `make integration-test-api-server`) does the same
+  against a live `qrdbd` with `server.grpc_web.enabled`: the admin certificate,
+  a tenant writer, no credentials, a bearer the node never issued, another
+  tenant's certificate and an unprivileged bound user. `pkg/api/grpcweb` unit
+  tests cover the framing, the text encoding and CORS.
 
 ## Observability
 

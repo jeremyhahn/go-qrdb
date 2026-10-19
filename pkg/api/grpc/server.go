@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -137,9 +138,12 @@ type Server struct {
 	replicatedAudit   *service.OptInAuditLogger
 
 	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
-	soGate   *authmw.SOGate
-	addr     string
-	server   *grpc.Server
+	soGate *authmw.SOGate
+	addr   string
+	server *grpc.Server
+	// serving is server while it serves, for ServeHTTP, which net/http
+	// calls from other goroutines than Start's and Stop's.
+	serving  atomic.Pointer[grpc.Server]
 	listener net.Listener
 	tls      *tls.Config
 	tlsErr   error
@@ -804,6 +808,7 @@ func (s *Server) Start() error {
 	}
 	slog.Info("gRPC server started", "addr", ln.Addr().String(), "proto", proto)
 
+	s.serving.Store(s.server)
 	go func() {
 		if serveErr := s.server.Serve(ln); serveErr != nil {
 			slog.Error("gRPC server error", "error", serveErr)
@@ -932,6 +937,7 @@ func (s *Server) Stop() {
 	if s.server == nil {
 		return
 	}
+	s.serving.Store(nil)
 	s.server.GracefulStop()
 	if s.forwarder != nil {
 		s.forwarder.Close()

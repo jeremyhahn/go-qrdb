@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
@@ -191,6 +191,18 @@ neither owns a verb neither registered. See
   bypass wearing a fallback's clothes.
 - **A second server beside the first.** Rejected — that is what the module seam
   exists to avoid.
+- **gRPC-Web through connectrpc's vanguard (`vanguardgrpc`).** Rejected on
+  measurement. At v0.5.0 it no longer fronts a `*grpc.Server`: it re-registers
+  the generated services on a connect server and calls each method handler with
+  a nil gRPC interceptor, and the handler's peer carries an address but no TLS
+  state. The one interceptor chain is skipped and the client certificate is
+  lost, so a probe got `PermissionDenied` over gRPC-Web where native gRPC
+  answered `OK` (admin certificate) and `Unauthenticated` (no credentials). The
+  framing is small and specified, so it is implemented in `pkg/api/grpcweb`
+  over the gRPC server's own handler instead.
+- **gRPC-Web through an external proxy (Envoy).** Rejected: a second process
+  terminating TLS loses the caller's certificate at the node, the identity every
+  authorization decision starts from.
 - **A `RegisterQUIC(reg *QUICRegistrar)` with its own `Handle`-style method
   registration, mirroring `HTTPRegistrar`.** Rejected: it would make a module
   declare its QUIC methods (and, to stay fail-closed, their permissions) a
@@ -278,6 +290,7 @@ neither owns a verb neither registered. See
 | Unified server, transport hosting, authorization registry | `pkg/server` | go-qrdb |
 | `ServiceModule` and its extensions | `pkg/apimodule` | go-qrdb |
 | Per-transport handlers | `pkg/api/{rest,grpc,quic,mcp,unix,etcd}` | go-qrdb |
+| gRPC-Web framing over the gRPC server's handler | `pkg/api/grpcweb` | go-qrdb |
 | Per-(tenant, database) service resolution | `pkg/service` (`service.Registry`) | go-qrdb |
 | Node composition entry points | `sdk/go/node` | go-qrdb |
 | SDK Tier 2 aliases | `sdk/go/types_server.go` | go-qrdb |
@@ -322,6 +335,45 @@ it. `Reserve` is for processes that start many listeners in a row — tests and
 ephemeral range, certifies each port on TCP and UDP together, and keeps a
 cross-process lock on it, so no other process in the network namespace is
 handed the same number.
+
+### gRPC-Web — the gRPC server's own handler, not a seventh chain
+
+A browser cannot speak native gRPC: it can neither read HTTP/2 trailers nor
+present the framing gRPC needs. gRPC-Web (`docs/reference/grpc-web-protocol.md`)
+is the standard answer, and the node serves it from the REST server under
+`/grpc-web/` when `server.grpc_web.enabled` is set (or `server.WithGRPCWeb` is
+given). It is **a wire encoding of the gRPC transport, not a transport of its
+own**:
+
+```
+  browser / gRPC-Web client
+        │ POST /grpc-web/qrdb.v1.QRDBService/Put   (REST listener: HTTP/1.1, HTTP/2, HTTP/3)
+        ▼
+  pkg/api/rest  grpcWebDispatch ── ahead of every REST layer
+        ▼
+  pkg/api/grpcweb  Handler ── framing only: media type, base64 text, trailer frame, CORS
+        ▼
+  (*grpc.Server).ServeHTTP ── the gRPC server's own interceptor chain
+        ▼
+  pkg/service
+```
+
+`pkg/api/grpcweb` translates each request into a native gRPC request and hands
+it to `(*grpc.Server).ServeHTTP` of the server that serves the gRPC listener.
+So a gRPC-Web call runs **the one gRPC interceptor chain** — authentication,
+tenant derivation, the sealed window, the `qrdb.v1.permission` check, request
+logging — and grpc-go reads the caller's client certificate from the request's
+TLS state exactly as it does on the gRPC listener. Every gRPC service the
+server hosts is reachable, its own and every module's, with no registration
+of its own. The translator holds no authorization logic, so there is nothing
+in it to drift from native gRPC.
+
+The REST server sends a request under the prefix straight to the translator,
+ahead of its own authentication, authorization and CORS layers — those would be
+a second chain — and refuses at construction any REST route that would match a
+path under the prefix (`*rest.GRPCWebRouteCollisionError`), so the prefix has
+one owner. CORS for gRPC-Web is its own, configured beside it
+(`allowed_origins`, `allow_credentials`), off unless origins are listed.
 
 ### Metrics: one gatherer, two registries
 
@@ -521,6 +573,10 @@ kernel-assigned port.
   principal's grants (see
   [../identity-rbac/](../identity-rbac/architecture.md#tenant-issued-delegations)).
   See [engineering.md](engineering.md#service-principal).
+- **gRPC-Web is decided by the gRPC chain, never by REST's.** A call under
+  `/grpc-web/` bypasses the REST middleware and reaches the gRPC server's own
+  interceptors with its TLS state intact, so every caller gets the status code
+  native gRPC gives it. A REST route under the prefix fails construction.
 - **A malformed public gRPC method name is rejected at registration**, so a typo
   fails startup loudly instead of silently leaving a method auth-gated.
 - **A REST route has exactly one owner.** Modules register before the

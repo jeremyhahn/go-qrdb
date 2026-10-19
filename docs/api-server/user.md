@@ -1,6 +1,6 @@
 # Unified API Server — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
 
 One server, six ways to reach it. Which one you pick is a deployment and
 performance question, not a capability question — the same operations are
@@ -46,6 +46,35 @@ REST and gRPC are on by default; QUIC, MCP and Unix are off until enabled. The
 REST port also serves HTTP/3 on UDP. Plus, when enabled: MySQL 3306, PostgreSQL
 5432, and a per-database etcd listener at the database's `listen_addr` (no
 daemon default; `qrdb database create --etcd` suggests `localhost:2379`).
+
+## Calling from a browser — gRPC-Web
+
+A browser cannot speak native gRPC, so the REST port can also serve every gRPC
+service as gRPC-Web. It is off by default; turn it on in the config file:
+
+```yaml
+protocols:
+  rest: true
+  grpc: true          # required: gRPC-Web is served through the gRPC server
+server:
+  grpc_web:
+    enabled: true
+    allowed_origins:            # browser origins allowed to call; empty = none
+      - https://app.example.com
+    allow_credentials: true     # let the browser send its client certificate
+```
+
+There is no `qrdbd start` flag for it. Point a gRPC-Web client (grpc-web,
+connect-web, or any client speaking the protocol) at
+`https://db.example.com:63002/grpc-web`. Select a database with the
+`x-qrdb-database` header.
+
+A gRPC-Web call is a gRPC call: it authenticates with your client certificate
+and gets exactly the status code native gRPC would give the same caller. An
+`allowed_origins` entry is a full origin (`https://app.example.com`, with the
+port when it is not 443) or `*`; `*` cannot be combined with
+`allow_credentials`, and either mistake stops the node at startup with a
+configuration error naming the key.
 
 ## Scoping your requests
 
@@ -225,6 +254,11 @@ node is not the leader and no resolver is configured. `qrdb barrier status` and
 barrier is not sealed: this node cannot read the cluster seal records — the
 system shard has no leader, for example — and the call succeeds on retry once
 it can.
+
+**Every gRPC-Web call answers `Unimplemented` / HTTP 404.** gRPC-Web is not
+enabled on that node: set `server.grpc_web.enabled: true`. A browser call that
+fails before reaching the node with a CORS error means its origin is not in
+`allowed_origins`.
 
 **The same call behaves differently on two transports.** It should not — that is
 the property this feature exists to guarantee, and the parity suite exists to

@@ -41,6 +41,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/grpcweb"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -148,6 +149,8 @@ type Server struct {
 	tenantOnboarding  service.TenantOnboardingServicer
 	authMW            *authmw.AuthMiddleware
 	corsConfig        *CORSConfig
+	grpcWebConfig     grpcweb.Config
+	grpcWebBackend    http.Handler
 	gatherer          prometheus.Gatherer
 	resolver          LeaderAdminResolver
 	forwardClient     *http.Client
@@ -1151,6 +1154,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// DEFAULT-DENY structural invariant: every registered route must carry a
 	// permission or an explicit public/authenticated marker.
 	s.assertRoutesAuthorized()
+	grpcWeb := s.grpcWebHandler()
+	if grpcWeb != nil {
+		s.assertNoGRPCWebCollisions(r)
+	}
 
 	// Build the middleware chain from innermost to outermost:
 	//   router → auth → sealed-window → scope → CORS
@@ -1211,6 +1218,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// does -- sealed window, authentication and authorization, SO dual
 	// factor, and chi's routing. See its own doc comment. The HTTP/3
 	// server serves this same handler, so both listeners get it.
+	// gRPC-Web is dispatched ahead of every REST layer above: its backend,
+	// the gRPC server's own handler, runs the gRPC interceptor chain, so
+	// none of REST's would apply twice. Everything below still covers it.
+	if grpcWeb != nil {
+		handler = grpcWebDispatch(grpcWeb, handler)
+	}
 	handler = canonicalPathMiddleware(handler)
 	// TRULY outermost: remoteAddrMiddleware wraps even canonicalPathMiddleware,
 	// so it runs ahead of the awaiting-admin-credential gate's bypass to the

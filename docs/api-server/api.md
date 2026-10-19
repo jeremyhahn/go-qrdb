@@ -1,6 +1,6 @@
 # Unified API Server — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
 
 This feature *is* the API surface — it hosts every other feature's capabilities.
 What follows is the shape common to all of them; the capability tables live in
@@ -20,6 +20,25 @@ each feature's own `api.md`.
 **The Unix transport is not a distinct protocol.** It serves the same gRPC wire
 over a domain socket, which is why every feature's `api.md` gives one column for
 both.
+
+**gRPC-Web is not a distinct transport either.** With `server.grpc_web.enabled`,
+the REST listener (HTTP/1.1, HTTP/2 and HTTP/3) serves every gRPC service the
+node hosts as gRPC-Web, under `/grpc-web/`: a client takes
+`https://db.example.com:63002/grpc-web` as its base URL, and
+`POST /grpc-web/qrdb.v1.QRDBService/Put` is the gRPC method
+`/qrdb.v1.QRDBService/Put`. It runs the gRPC server's own interceptor chain, so
+its authentication, authorization and status codes are gRPC's column in every
+table here.
+
+| | |
+|---|---|
+| Method | `POST`; a CORS preflight `OPTIONS` is answered; anything else 405 with `Allow: POST` |
+| Request `Content-Type` | `application/grpc-web` or `application/grpc-web-text`, with an optional message-format suffix (`+proto` when absent) passed to the gRPC server as `application/grpc+<format>`; any other media type 415 |
+| Response encoding | binary, or base64 text when the request was text or its `Accept` names `application/grpc-web-text` |
+| Status | `grpc-status` / `grpc-message` in the final trailer frame, or in the headers of a trailers-only response |
+| Metadata | request headers: `x-qrdb-database`, `authorization`, and any other gRPC metadata |
+| Credential | the TLS client certificate, read by the gRPC chain as on the gRPC listener |
+| CORS | only for the origins in `server.grpc_web.allowed_origins`; `Grpc-Status`, `Grpc-Message` and `Grpc-Status-Details-Bin` are exposed; an unlisted origin's preflight is 403 |
 
 Beside these run **per-database protocol listeners** — MySQL and PostgreSQL
 ([../sql/api.md](../sql/api.md)) and etcd v3
@@ -173,7 +192,7 @@ revocation state answers 503 rather than admitting the delivery.
 | What | How it travels |
 |---|---|
 | **Tenant** | derived from the authenticated mTLS identity — **never a request field** |
-| **Database** | `X-QRDB-Database` on REST, `x-qrdb-database` metadata on gRPC/Unix, the equivalent field on QUIC/MCP, `Client.DatabaseScoped(name)` embedded |
+| **Database** | `X-QRDB-Database` on REST, `x-qrdb-database` metadata on gRPC/Unix (a request header on gRPC-Web), the equivalent field on QUIC/MCP, `Client.DatabaseScoped(name)` embedded |
 | **Consistency** | `consistency` parameter or field: `strong`, `linearizable`, `lease_read`, `eventual` |
 | **Write mode** | request field: `sync`, `wal_durable`, `batched` |
 

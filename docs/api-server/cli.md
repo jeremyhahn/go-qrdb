@@ -1,6 +1,6 @@
 # Unified API Server — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
 
 **No `qrdb` verb group.** The unified server is hosting infrastructure: it is
 configured on the daemon and observed through `admin`, not driven by a client
@@ -24,6 +24,11 @@ qrdbd start \
 
 The per-database etcd listener is configured on the database, not here — see
 [../etcd-compatibility/cli.md](../etcd-compatibility/cli.md).
+
+gRPC-Web has no flag: it is the `server.grpc_web` block of the configuration
+file `qrdbd start --config` reads, served on the REST listener under
+`/grpc-web/` — see [user.md](user.md#calling-from-a-browser--grpc-web). It is a
+browser transport; `qrdb` never uses it, so it is not a `--transport` value.
 
 ## Selecting a transport as a client
 

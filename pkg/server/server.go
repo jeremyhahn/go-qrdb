@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -148,6 +149,10 @@ type Server struct {
 	// ReplicaForwarder.
 	inProcess inProcessForwarding
 
+	// grpcWebBackend is the gRPC server the REST server's gRPC-Web handler
+	// calls into, published by startGRPC once it is built; see serveGRPCWeb.
+	grpcWebBackend atomic.Pointer[grpcapi.Server]
+
 	config      *config.Config
 	kvSvc       service.KVServicer
 	adminSvc    service.AdminServicer
@@ -204,6 +209,9 @@ type serverOptions struct {
 	// modules are capability modules a higher layer (e.g. go-xkms) registers via
 	// WithModule. Each is exposed across every transport by the start* methods.
 	modules []apimodule.ServiceModule
+	// grpcWeb is WithGRPCWeb's gRPC-Web configuration, replacing the
+	// configuration file's server.grpc_web; nil when it was not given.
+	grpcWeb *config.GRPCWebConfig
 	// mcpServerOpts are embedder-supplied MCP transport options appended
 	// after the built-in ones at MCP server construction (WithMCPServerOptions)
 	// — e.g. the OAuth discovery surface (mcpapi.WithBearerChallenge,
@@ -1696,6 +1704,9 @@ func (s *Server) start() error {
 		binder.BindRegistry(s.buildServiceRegistry(), opts...)
 	}
 
+	if err := s.checkGRPCWeb(); err != nil {
+		return err
+	}
 	if s.config.Protocols.REST {
 		if err := s.startREST(); err != nil {
 			return err
@@ -2146,6 +2157,9 @@ func (s *Server) startREST() error {
 	if len(s.opts.modules) > 0 {
 		restOpts = append(restOpts, rest.WithServiceModules(s.opts.modules))
 	}
+	if gw := s.grpcWebConfig(); gw.Enabled {
+		restOpts = append(restOpts, rest.WithGRPCWeb(gw, http.HandlerFunc(s.serveGRPCWeb)))
+	}
 
 	if s.opts.sealedWindowListener {
 		// One sealed REST surface: the listener serves exactly what a host
@@ -2399,6 +2413,7 @@ func (s *Server) startGRPC() error {
 	}
 
 	s.grpcSrv = grpcapi.NewServer(s.kvSvc, s.adminSvc, addr, grpcOpts...)
+	s.grpcWebBackend.Store(s.grpcSrv)
 
 	if err := s.grpcSrv.Start(); err != nil {
 		return err

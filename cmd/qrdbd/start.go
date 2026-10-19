@@ -137,6 +137,10 @@ type startFlags struct {
 	// observability is the config file's observability section; no flag
 	// moves it. configureObservability applies it.
 	observability qrdbconfig.ObservabilityConfig
+	// grpcWeb is the config file's server.grpc_web section; no flag moves
+	// it. buildServerConfig carries it to the server, which serves gRPC-Web
+	// from the REST server when it is enabled.
+	grpcWeb qrdbconfig.GRPCWebConfig
 	// host is the bind host every API listener uses (REST/HTTP3, gRPC,
 	// QUIC, MCP, MySQL, PgSQL). It reaches them through buildServerConfig
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
@@ -778,6 +782,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 		f.replicaForwardingTimeout = cfg.ReplicaForwarding.Timeout
 	}
 	f.observability = cfg.Observability
+	f.grpcWeb = cfg.Server.GRPCWeb
 	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
 		f.advertiseHost = cfg.Server.AdvertiseHost
 	}
@@ -3293,7 +3298,8 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 			// orchestrator opens joins it with its port, so server.host,
 			// QRDB_SERVER_HOST and --host reach all of them (go-qrdb#167:
 			// this line used to discard all three).
-			Host: f.host,
+			Host:    f.host,
+			GRPCWeb: f.grpcWeb,
 		},
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
