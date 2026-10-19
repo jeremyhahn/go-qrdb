@@ -732,6 +732,7 @@ func TestGuardedCollectionService_ScopesOnlyWrites(t *testing.T) {
 		"InsertDocument":   func() { _, _ = svc.InsertDocument(ctx, &service.InsertDocumentRequest{}) },
 		"UpdateDocument":   func() { _, _ = svc.UpdateDocument(ctx, &service.UpdateDocumentRequest{}) },
 		"DeleteDocument":   func() { _, _ = svc.DeleteDocument(ctx, &service.DeleteDocumentRequest{}) },
+		"UpsertDocument":   func() { _, _ = svc.UpsertDocument(ctx, &service.UpsertDocumentRequest{}) },
 	}
 	for name, call := range writes {
 		call()
