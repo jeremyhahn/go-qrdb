@@ -17,10 +17,12 @@ package engine
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -168,6 +170,88 @@ func TestKVEngine_PreviousValueReadFaultIsFatal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// PutWithIndexes and DeleteWithIndexes return a fault reading the key's
+// previous value and write nothing: neither the value nor any index entry.
+// Taking the fault for "no previous value" would leave the previous value's
+// index entries pointing at a value that no longer carries those fields. An
+// absent key is still "no previous value" and is written.
+func TestKVEngine_WithIndexesPreviousValueReadFault(t *testing.T) {
+	put := func(key, doc string) func(*KVEngine) error {
+		return func(e *KVEngine) error { return e.PutWithIndexes([]byte(key), []byte(doc)) }
+	}
+	del := func(key string) func(*KVEngine) error {
+		return func(e *KVEngine) error { return e.DeleteWithIndexes([]byte(key)) }
+	}
+	cases := []struct {
+		name       string
+		failKey    string
+		write      func(*KVEngine) error
+		wantErr    error
+		wantValues map[string]string
+		wantIndex  map[string][]string
+	}{
+		{
+			name: "put faulted", failKey: "user:2", write: put("user:2", faultDocC), wantErr: errReadFault,
+			wantValues: map[string]string{"user:2": faultDocB},
+			wantIndex:  map[string][]string{"b@example.com": {"user:2"}, "c@example.com": nil},
+		},
+		{
+			name: "delete faulted", failKey: "user:2", write: del("user:2"), wantErr: errReadFault,
+			wantValues: map[string]string{"user:2": faultDocB},
+			wantIndex:  map[string][]string{"b@example.com": {"user:2"}},
+		},
+		{
+			name: "put absent key", write: put("user:3", faultDocC),
+			wantValues: map[string]string{"user:2": faultDocB, "user:3": faultDocC},
+			wantIndex:  map[string][]string{"b@example.com": {"user:2"}, "c@example.com": {"user:3"}},
+		},
+		{
+			name: "delete absent key", write: del("user:9"),
+			wantValues: map[string]string{"user:2": faultDocB, "user:9": ""},
+			wantIndex:  map[string][]string{"b@example.com": {"user:2"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := &readFaultStorage{Storage: newMemoryBacked(t)}
+			eng := newIndexedFaultKVEngine(t, stg, true)
+
+			stg.failKey = tc.failKey
+			err := tc.write(eng)
+			stg.failKey = ""
+
+			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
+				t.Fatalf("write = %v, want %v", err, tc.wantErr)
+			}
+			for key, want := range tc.wantValues {
+				got, _ := eng.Lookup(context.Background(), key)
+				if string(asBytes(got)) != want {
+					t.Errorf("%s = %q, want %q", key, asBytes(got), want)
+				}
+			}
+			for email, want := range tc.wantIndex {
+				if got := emailIndexed(t, eng, email); !slices.Equal(got, want) {
+					t.Errorf("by_email[%s] = %v, want %v", email, got, want)
+				}
+			}
+		})
+	}
+}
+
+// emailIndexed returns the keys the by_email index holds for email.
+func emailIndexed(t *testing.T, eng *KVEngine, email string) []string {
+	t.Helper()
+	res, err := eng.Lookup(context.Background(), index.IndexQueryRequest{IndexName: "by_email", Value: []byte(email)})
+	if err != nil {
+		t.Fatalf("Lookup by_email[%s]: %v", email, err)
+	}
+	var keys []string
+	for _, k := range res.([][]byte) {
+		keys = append(keys, string(k))
+	}
+	return keys
 }
 
 // asBytes reads a key Lookup's result, nil for an absent key.

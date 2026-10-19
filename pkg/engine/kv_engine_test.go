@@ -17,6 +17,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -921,6 +922,54 @@ func TestKVEngine_BatchWithIndexes(t *testing.T) {
 	ids := got.([][]byte)
 	if len(ids) != 1 {
 		t.Errorf("expected 1 ID from batch index, got %d", len(ids))
+	}
+}
+
+// A batch that puts one key twice leaves only the second value's index
+// entries: the second put's previous value is the batch's own first put, whose
+// entries it retracts, not the value committed before the batch. A delete that
+// follows a put in the same batch retracts that put's entries the same way.
+func TestKVEngine_BatchPutsOneKeyTwice(t *testing.T) {
+	const faultDocD = `{"email":"d@example.com"}`
+	put := func(key, doc string) []byte {
+		return mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte(key), []byte(doc), nil, 0))
+	}
+	del := func(key string) []byte {
+		return mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte(key), nil, nil, 0))
+	}
+	cases := []struct {
+		name      string
+		key       string
+		ops       [][]byte
+		wantValue string
+		wantIndex map[string][]string
+	}{
+		{name: "absent key", key: "user:3", ops: [][]byte{put("user:3", faultDocC), put("user:3", faultDocD)},
+			wantValue: faultDocD, wantIndex: map[string][]string{
+				"c@example.com": nil, "d@example.com": {"user:3"}, "b@example.com": {"user:2"},
+			}},
+		{name: "existing key", key: "user:1", ops: [][]byte{put("user:1", faultDocC), put("user:1", faultDocD)},
+			wantValue: faultDocD, wantIndex: map[string][]string{
+				"a@example.com": nil, "c@example.com": nil, "d@example.com": {"user:1"}, "b@example.com": {"user:2"},
+			}},
+		{name: "put then delete", key: "user:3", ops: [][]byte{put("user:3", faultDocC), del("user:3")},
+			wantIndex: map[string][]string{"c@example.com": nil, "b@example.com": {"user:2"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := newIndexedFaultKVEngine(t, newMemoryBacked(t), true)
+			applyKVEntries(t, eng, []sm.Entry{{Index: 10, Cmd: mustEncode(protocol.EncodeBatch(tc.ops))}})
+
+			got, _ := eng.Lookup(context.Background(), tc.key)
+			if string(asBytes(got)) != tc.wantValue {
+				t.Fatalf("%s = %q, want %q", tc.key, asBytes(got), tc.wantValue)
+			}
+			for email, want := range tc.wantIndex {
+				if got := emailIndexed(t, eng, email); !slices.Equal(got, want) {
+					t.Errorf("by_email[%s] = %v, want %v", email, got, want)
+				}
+			}
+		})
 	}
 }
 

@@ -1162,7 +1162,10 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
-	// Collect previous values for index cleanup and watch notification.
+	// Collect previous values for index cleanup and watch notification. Each
+	// is read through the batch, so an op that follows an earlier write to the
+	// same key in this batch sees that write as its previous value and
+	// retracts its index entries, not the value committed before the batch.
 	type opMeta struct {
 		prevKv *qkv.KeyValue
 	}
@@ -1172,7 +1175,7 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 		switch op.Type {
 		case protocol.OpFSMPut:
 			if len(e.indexes) > 0 || e.hub != nil {
-				oldVal, gerr := e.stg.Get(op.Key)
+				oldVal, gerr := batch.Get(op.Key)
 				if gerr != nil {
 					_ = batch.Rollback()
 					return sm.Result{Value: 1}, gerr
@@ -1199,7 +1202,7 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 			}
 		case protocol.OpFSMDelete:
 			if len(e.indexes) > 0 || len(e.compoundIndexes) > 0 || e.hub != nil {
-				oldVal, gerr := e.stg.Get(op.Key)
+				oldVal, gerr := batch.Get(op.Key)
 				if gerr != nil {
 					_ = batch.Rollback()
 					return sm.Result{Value: 1}, gerr
@@ -1430,7 +1433,14 @@ func defaultLogger() *logger.Logger {
 // name carries, so it holds for a bare, a per-tenant and a per-(tenant,
 // database) key alike, with nothing about the layout assumed here.
 func (e *KVEngine) PutWithIndexes(key, value []byte) error {
-	prevVal, _ := e.stg.Get(key)
+	// A fault reading the previous value is returned, not taken for "no
+	// previous value": that would write the key without retracting the
+	// previous value's index entries, leaving them pointing at a value that no
+	// longer carries those fields. Absence (nil, nil) is "no previous value".
+	prevVal, err := e.stg.Get(key)
+	if err != nil {
+		return err
+	}
 	var prevKv *qkv.KeyValue
 	if prevVal != nil {
 		prevKv = &qkv.KeyValue{Key: key, Value: prevVal}
@@ -1455,7 +1465,12 @@ func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 // whose key scope covers it; see PutWithIndexes for why the selection is by
 // scope.
 func (e *KVEngine) DeleteWithIndexes(key []byte) error {
-	prevVal, _ := e.stg.Get(key)
+	// As in PutWithIndexes, a read fault is returned rather than taken for
+	// absence, which would delete the key and leave its index entries behind.
+	prevVal, err := e.stg.Get(key)
+	if err != nil {
+		return err
+	}
 	var prevKv *qkv.KeyValue
 	if prevVal != nil {
 		prevKv = &qkv.KeyValue{Key: key, Value: prevVal}
