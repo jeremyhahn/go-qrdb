@@ -276,7 +276,13 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error) {
 	if c.closed.Load() {
 		return nil, &ClientClosedError{}
 	}
-	return transport.WithTenant(c.KV(), tenantID)
+	kv, err := transport.WithTenant(c.KV(), tenantID)
+	if err != nil {
+		// A nil *TenantKVClient in the interface result would compare
+		// non-nil; return an untyped nil beside the error.
+		return nil, err
+	}
+	return kv, nil
 }
 
 // DatabaseScoped returns a client whose data-plane operations target the named
