@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -199,5 +200,92 @@ func TestFirstAdminProofError_WithoutCause(t *testing.T) {
 	}
 	if !strings.HasSuffix(err.Error(), string(initproof.ReasonWrongKey)) {
 		t.Fatalf("Error() = %q", err.Error())
+	}
+}
+
+// TestRefusalErrors_MessageNamesEveryField checks that each refusal's
+// message carries the values an operator needs to act on it.
+func TestRefusalErrors_MessageNamesEveryField(t *testing.T) {
+	cause := errors.New("disk on fire")
+	tests := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"platform operator required", &PlatformOperatorRequiredError{IdentityTenantID: "acme", Op: "create a tenant"},
+			[]string{"acme", "create a tenant", "platform operator"}},
+		{"volume pool reserve", &VolumePoolReserveError{TenantID: "acme", Pool: "fast", Err: cause},
+			[]string{"acme", "fast", "disk on fire"}},
+		{"roster requires shamir", &RosterRequiresShamirError{Strategy: "passphrase"},
+			[]string{"shamir", "passphrase"}},
+		{"invalid factor policy", &InvalidFactorPolicyError{Policy: "bogus"},
+			[]string{"bogus"}},
+		{"database list", &DatabaseListError{TenantID: "acme", Err: cause},
+			[]string{"acme", "disk on fire"}},
+		{"strict requires dedicated storage", &StrictRequiresDedicatedStorageError{IsolationType: IsolationPrefix},
+			[]string{string(IsolationPrefix), "strict"}},
+		{"isolation policy change", &IsolationPolicyChangeError{From: "strict", To: "standard"},
+			[]string{"strict", "standard", "tighten only"}},
+		{"invalid isolation policy", &InvalidIsolationPolicyError{Value: "loose"},
+			[]string{`"loose"`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := tt.err.Error()
+			for _, w := range tt.want {
+				if !strings.Contains(msg, w) {
+					t.Errorf("Error() = %q, want it to contain %q", msg, w)
+				}
+			}
+		})
+	}
+}
+
+// TestRefusalErrors_UnwrapReachesTheCause checks that the wrapping refusals
+// keep their cause reachable through errors.Is.
+func TestRefusalErrors_UnwrapReachesTheCause(t *testing.T) {
+	cause := errors.New("underlying")
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"volume pool reserve", &VolumePoolReserveError{TenantID: "acme", Pool: "fast", Err: cause}},
+		{"keyspace reclaim", &KeyspaceReclaimError{TenantID: "acme", Err: cause}},
+		{"database list", &DatabaseListError{TenantID: "acme", Err: cause}},
+		{"teardown", &TeardownError{TenantID: "acme", Err: &KeyspaceReclaimError{TenantID: "acme", Err: cause}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !errors.Is(tt.err, cause) {
+				t.Fatalf("errors.Is(%v, cause) = false", tt.err)
+			}
+		})
+	}
+}
+
+// TestTenantDeletedError_MessageWithAndWithoutTime covers both forms: a
+// decoded tombstone names when the id was retired, an undecodable one does
+// not.
+func TestTenantDeletedError_MessageWithAndWithoutTime(t *testing.T) {
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []struct {
+		name    string
+		err     *TenantDeletedError
+		want    string
+		notWant string
+	}{
+		{"zero time", &TenantDeletedError{TenantID: "acme"}, "acme was deleted and cannot be reused", "deleted at"},
+		{"with time", &TenantDeletedError{TenantID: "acme", DeletedAt: at}, "deleted at 2026-01-02T03:04:05Z", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := tt.err.Error()
+			if !strings.Contains(msg, tt.want) {
+				t.Errorf("Error() = %q, want it to contain %q", msg, tt.want)
+			}
+			if tt.notWant != "" && strings.Contains(msg, tt.notWant) {
+				t.Errorf("Error() = %q, must not contain %q", msg, tt.notWant)
+			}
+		})
 	}
 }

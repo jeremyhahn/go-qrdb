@@ -628,3 +628,216 @@ func TestIdentityIndex_PrepareClaimRefusesEmptyID(t *testing.T) {
 		t.Fatalf("PrepareClaim(\"\") err = %v, want ErrEmptyIdentityID", err)
 	}
 }
+
+// newSystemIdentityIndex is an IdentityIndex over an in-memory atomic store
+// in the system tenant's identity namespace.
+func newSystemIdentityIndex(t *testing.T) IdentityIndex {
+	t.Helper()
+	backing, err := kvstore.NewNamespacedKVStore(
+		kvstore.NewMemoryKVStore(), IdentityNamespace(tenantid.System))
+	if err != nil {
+		t.Fatalf("NewNamespacedKVStore: %v", err)
+	}
+	index, err := NewIdentityIndex(backing)
+	if err != nil {
+		t.Fatalf("NewIdentityIndex: %v", err)
+	}
+	return index
+}
+
+var errIndexFault = errors.New("identity index fault")
+
+// faultIdentityIndex fails Lookup or Forget on demand and otherwise
+// delegates to the wrapped index.
+type faultIdentityIndex struct {
+	IdentityIndex
+	failLookup bool
+	failForget bool
+}
+
+func (f *faultIdentityIndex) Lookup(ctx context.Context, kind IdentityKind, id string) (Claim, bool, error) {
+	if f.failLookup {
+		return Claim{}, false, errIndexFault
+	}
+	return f.IdentityIndex.Lookup(ctx, kind, id)
+}
+
+func (f *faultIdentityIndex) Forget(ctx context.Context, kind IdentityKind, id, token string) error {
+	if f.failForget {
+		return errIndexFault
+	}
+	return f.IdentityIndex.Forget(ctx, kind, id, token)
+}
+
+var _ IdentityIndex = (*faultIdentityIndex)(nil)
+
+func TestIdentityID_FormatsDecimal(t *testing.T) {
+	tests := []struct {
+		in   uint64
+		want string
+	}{
+		{0, "0"},
+		{42, "42"},
+		{18446744073709551615, "18446744073709551615"},
+	}
+	for _, tt := range tests {
+		if got := IdentityID(tt.in); got != tt.want {
+			t.Errorf("IdentityID(%d) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestIdentityIndexErrors_Messages(t *testing.T) {
+	cause := errors.New("store down")
+	tests := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"conflict", &IdentityClaimConflictError{Kind: IdentityUser, ID: "7"}, []string{string(IdentityUser), "7", "already claimed"}},
+		{"stale", &IdentityClaimStaleError{Kind: IdentityRole, ID: "admin"}, []string{string(IdentityRole), "admin", "no longer"}},
+		{"index", &IdentityIndexError{Op: "lookup", Kind: IdentityUser, ID: "7", Err: cause}, []string{"lookup", "7", "store down"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := tt.err.Error()
+			for _, w := range tt.want {
+				if !strings.Contains(msg, w) {
+					t.Errorf("Error() = %q, want it to contain %q", msg, w)
+				}
+			}
+		})
+	}
+	if !errors.Is(&IdentityIndexError{Op: "lookup", Err: cause}, cause) {
+		t.Fatal("IdentityIndexError does not unwrap to its cause")
+	}
+}
+
+func TestReconcileDeletedIdentity(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name         string
+		owner        string
+		recordFor    string // tenant holding the claim; "" records nothing
+		id           string
+		nilIndex     bool
+		fault        faultIdentityIndex
+		wantReleased bool
+		wantErr      error
+		wantHeld     bool
+	}{
+		{name: "nil index", nilIndex: true, id: "1"},
+		{name: "empty id", id: ""},
+		{name: "not held", id: "1"},
+		{name: "held by owner", recordFor: "acme", owner: "acme", id: "1", wantReleased: true},
+		{name: "system owner canonicalizes", recordFor: tenantid.System, owner: "", id: "1", wantReleased: true},
+		{name: "held by another tenant", recordFor: "other", owner: "acme", id: "1", wantHeld: true},
+		{name: "lookup fails", recordFor: "acme", owner: "acme", id: "1",
+			fault: faultIdentityIndex{failLookup: true}, wantErr: errIndexFault},
+		{name: "forget fails", recordFor: "acme", owner: "acme", id: "1",
+			fault: faultIdentityIndex{failForget: true}, wantErr: errIndexFault},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := newSystemIdentityIndex(t)
+			if tt.recordFor != "" {
+				if _, err := base.Record(ctx, IdentityUser, tt.id, tt.recordFor); err != nil {
+					t.Fatalf("Record: %v", err)
+				}
+			}
+			fault := tt.fault
+			fault.IdentityIndex = base
+			var index IdentityIndex = &fault
+			if tt.nilIndex {
+				index = nil
+			}
+			released, err := ReconcileDeletedIdentity(ctx, index, IdentityUser, tt.id, tt.owner)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReconcileDeletedIdentity: %v", err)
+			}
+			if released != tt.wantReleased {
+				t.Fatalf("released = %v, want %v", released, tt.wantReleased)
+			}
+			if tt.id == "" || tt.nilIndex {
+				return
+			}
+			if _, held, lerr := base.Lookup(ctx, IdentityUser, tt.id); lerr != nil || held != tt.wantHeld {
+				t.Fatalf("after reconcile held = %v (err %v), want %v", held, lerr, tt.wantHeld)
+			}
+		})
+	}
+}
+
+func TestReconcileDeletedIdentity_StaleReleaseReportsNothingReleased(t *testing.T) {
+	ctx := context.Background()
+	base := newSystemIdentityIndex(t)
+	if _, err := base.Record(ctx, IdentityRole, "r", "acme"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	stale := &staleForgetIndex{IdentityIndex: base}
+	released, err := ReconcileDeletedIdentity(ctx, stale, IdentityRole, "r", "acme")
+	if err != nil || released {
+		t.Fatalf("ReconcileDeletedIdentity on a stale release = (%v, %v), want (false, nil)", released, err)
+	}
+}
+
+// staleForgetIndex answers every Forget as if a newer claim had replaced
+// the one read.
+type staleForgetIndex struct{ IdentityIndex }
+
+func (s *staleForgetIndex) Forget(_ context.Context, kind IdentityKind, id, _ string) error {
+	return &IdentityClaimStaleError{Kind: kind, ID: id}
+}
+
+var _ IdentityIndex = (*staleForgetIndex)(nil)
+
+func TestOwningTenant(t *testing.T) {
+	tests := []struct {
+		name      string
+		caller    string
+		recordFor string
+		id        string
+		nilIndex  bool
+		failLook  bool
+		want      string
+		wantErr   error
+	}{
+		{name: "nil index routes to caller", caller: "acme", nilIndex: true, id: "1", want: "acme"},
+		{name: "empty id routes to caller", caller: "acme", id: "", want: "acme"},
+		{name: "unclaimed routes to caller", caller: "acme", id: "1", want: "acme"},
+		{name: "own claim", caller: "acme", recordFor: "acme", id: "1", want: "acme"},
+		{name: "foreign claim routes to caller", caller: "acme", recordFor: "other", id: "1", want: "acme"},
+		{name: "lookup fails", caller: "acme", id: "1", failLook: true, wantErr: errIndexFault},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := WithTenantID(context.Background(), tt.caller)
+			base := newSystemIdentityIndex(t)
+			if tt.recordFor != "" {
+				if _, err := base.Record(ctx, IdentityUser, tt.id, tt.recordFor); err != nil {
+					t.Fatalf("Record: %v", err)
+				}
+			}
+			var index IdentityIndex = &faultIdentityIndex{IdentityIndex: base, failLookup: tt.failLook}
+			if tt.nilIndex {
+				index = nil
+			}
+			got, err := OwningTenant(ctx, index, IdentityUser, tt.id, "get user")
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("OwningTenant = (%q, %v), want (%q, nil)", got, err, tt.want)
+			}
+		})
+	}
+}

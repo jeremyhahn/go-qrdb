@@ -246,3 +246,66 @@ func TestUpdateQuotas_Prefix_NeverTouchesTheCatalog(t *testing.T) {
 		t.Fatalf("Resolve(prefix tenant) error = %v, want *volume.AssignmentNotFoundError (no catalog Assignment at all)", err)
 	}
 }
+
+// TestCreateTenant_Volume_Refusals covers each refusal CreateTenant makes
+// before or while reserving volume-pool capacity.
+func TestCreateTenant_Volume_Refusals(t *testing.T) {
+	noPools := volumeEntitlements()
+	noPools.AllowedVolumePools = nil
+	ghostPool := volumeEntitlements()
+	ghostPool.AllowedVolumePools = []string{"default", "ghost"}
+
+	tests := []struct {
+		name         string
+		ents         *quota.Entitlements
+		noAllocator  bool
+		opts         []CreateTenantOption
+		wantFeature  string
+		wantSentinel error
+		wantReserve  bool
+	}{
+		{name: "no allocator", ents: volumeEntitlements(), noAllocator: true, wantSentinel: seal.ErrPoolNotConfigured},
+		{name: "no default pool", ents: noPools, wantFeature: "volume_pool:<none>"},
+		{name: "pool not entitled", ents: volumeEntitlements(), opts: []CreateTenantOption{WithVolumePool("other")},
+			wantFeature: "volume_pool:other"},
+		{name: "pool not in catalog", ents: ghostPool, opts: []CreateTenantOption{WithVolumePool("ghost")},
+			wantReserve: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := newTestBarrierRegistry(t)
+			svcOpts := []TenantServiceOption{WithDefaultEntitlements(tt.ents)}
+			if !tt.noAllocator {
+				svcOpts = append(svcOpts, WithVolumeAllocator(volumeAllocatorFor(t, reg)))
+			}
+			svc, err := NewTenantService(seal.NewMemoryBackend(), reg, testLogger(), svcOpts...)
+			if err != nil {
+				t.Fatalf("NewTenantService: %v", err)
+			}
+			_, err = svc.CreateTenant(context.Background(), "vol", "Vol", IsolationVolume, tt.opts...)
+			switch {
+			case tt.wantSentinel != nil:
+				if !errors.Is(err, tt.wantSentinel) {
+					t.Fatalf("err = %v, want %v", err, tt.wantSentinel)
+				}
+			case tt.wantFeature != "":
+				var entErr *quota.EntitlementError
+				if !errors.As(err, &entErr) || entErr.Feature != tt.wantFeature {
+					t.Fatalf("err = %v, want *quota.EntitlementError for %q", err, tt.wantFeature)
+				}
+			case tt.wantReserve:
+				var resErr *VolumePoolReserveError
+				if !errors.As(err, &resErr) || resErr.Pool != "ghost" {
+					t.Fatalf("err = %v, want *VolumePoolReserveError for pool ghost", err)
+				}
+				var notFound *volume.PoolNotFoundError
+				if !errors.As(err, &notFound) {
+					t.Fatalf("err = %v, want it to wrap *volume.PoolNotFoundError", err)
+				}
+			}
+			if _, gerr := svc.GetTenant(context.Background(), "vol"); !errors.Is(gerr, ErrTenantNotFound) {
+				t.Fatalf("GetTenant after refused create = %v, want ErrTenantNotFound", gerr)
+			}
+		})
+	}
+}
