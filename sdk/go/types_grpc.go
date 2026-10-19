@@ -46,6 +46,12 @@ var WithRegisterRebalanceService = qrdbgrpc.WithRegisterRebalanceService
 // qrdb gRPC service.
 var WithRegisterBarrierService = qrdbgrpc.WithRegisterBarrierService
 
+// WithRegisterPINBackend attaches the PIN backend that gates the barrier
+// administrative RPCs (BarrierSeal, BarrierRecoveryGenerate, ...) on the SO
+// PIN. Without it those RPCs fail closed. The backend is decorated with the SO
+// PIN lockout, so a raw backend is still throttled.
+var WithRegisterPINBackend = qrdbgrpc.WithRegisterPINBackend
+
 // WithRegisterCeremonyService attaches a ceremony service to the registered
 // qrdb gRPC service.
 var WithRegisterCeremonyService = qrdbgrpc.WithRegisterCeremonyService
