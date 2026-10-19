@@ -22,6 +22,8 @@ import (
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 func TestDatabaseNotFoundError(t *testing.T) {
@@ -250,4 +252,67 @@ func TestAutoIncrementUnavailableError_MatchesSentinelMessage(t *testing.T) {
 	if err.Error() != sqle.ErrNoAutoIncrementCol.Error() {
 		t.Fatalf("Error() = %q, want %q", err.Error(), sqle.ErrNoAutoIncrementCol.Error())
 	}
+}
+
+func TestProviderErrorMessages(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ReservedDatabaseName", &ReservedDatabaseNameError{Name: "qrdb"},
+			"provider: database name is reserved: qrdb"},
+		{"RelationalMVCCUnavailable", &RelationalMVCCUnavailableError{Table: "t1"},
+			"provider: mvcc service unavailable for relational table: t1"},
+		{"RewriteChunkConflict", &RewriteChunkConflictError{Database: "db", Name: "t1"},
+			"provider: table db.t1: rewrite write-back chunk lost its compare-and-swap for an unexplained reason"},
+		{"ForeignKeySchemaUnsupported", &ForeignKeySchemaUnsupportedError{Name: "fk1"},
+			"provider: foreign key fk1: schema-qualified foreign keys are not supported"},
+		{"ForeignKeyCrossDatabaseUnsupported", &ForeignKeyCrossDatabaseUnsupportedError{Name: "fk1", Database: "a", ParentDatabase: "b"},
+			"provider: foreign key fk1: cross-database references are not supported (a -> b)"},
+		{"ForeignKeyTableMismatch", &ForeignKeyTableMismatchError{Name: "fk1", Declared: "child", Table: "other"},
+			"provider: foreign key fk1 declares table child but is being stored on other"},
+		{"ForeignKeyActionUnsupported", &ForeignKeyActionUnsupportedError{Action: "SET DEFAULT"},
+			"provider: unsupported foreign key referential action: SET DEFAULT"},
+		{"TransactionServiceUnavailable", &TransactionServiceUnavailableError{Table: "t1"},
+			"provider: transaction service unavailable for relational table: t1"},
+		{"MixedTransactionalWrite", &MixedTransactionalWriteError{Relational: "r", NonTransactional: "n"},
+			"provider: a statement cannot write both relational table r and non-transactional table n; write them in separate statements"},
+		{"SequenceServiceUnavailable", &SequenceServiceUnavailableError{Table: "t1"},
+			"provider: sequence service unavailable for relational table: t1"},
+		{"RowKeyTooLarge", &RowKeyTooLargeError{Table: "t1", Size: 10, Max: 5},
+			"provider: table t1: encoded key size 10 exceeds maximum 5"},
+		{"RowValueTooLarge", &RowValueTooLargeError{Table: "t1", Size: 10, Max: 5},
+			"provider: table t1: encoded row size 10 exceeds maximum 5"},
+		{"RowTransactionTooLarge", &RowTransactionTooLargeError{Table: "t1", Size: 10, Max: 5},
+			"provider: table t1: transaction size 10 exceeds maximum 5"},
+		{"TransactionConflictRetriesExhausted", &TransactionConflictRetriesExhaustedError{Table: "t1"},
+			"provider: table t1: exhausted retries resolving a transaction conflict"},
+		{"NonTransactionalTable", &NonTransactionalTableError{Table: "t1"},
+			"provider: table t1 does not support interactive transactions (autocommit only); issue this statement outside BEGIN/COMMIT"},
+		{"TransactionSnapshotExpired", &TransactionSnapshotExpiredError{Requested: 3, Compacted: 7},
+			"provider: transaction snapshot revision 3 has been compacted (earliest available: 7); rollback and retry"},
+		{"WriteSetLimit", &WriteSetLimitError{Reason: "bytes", Size: 10, Max: 5},
+			"provider: transaction write-set bytes 10 exceeds maximum 5"},
+		{"SavepointNotFound", &SavepointNotFoundError{Name: "sp1"},
+			"provider: savepoint not found: sp1"},
+		{"CrossDatabaseTransaction", &CrossDatabaseTransactionError{Bound: "a", Requested: "b"},
+			"provider: transaction already bound to database a; cannot also write to b"},
+		{"ReadOnlyTransaction", &ReadOnlyTransactionError{},
+			"provider: cannot write in a READ ONLY transaction"},
+		{"SequencesUnavailable", &SequencesUnavailableError{Database: "db"},
+			"provider: database db does not support sequences"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.err.Error())
+		})
+	}
+}
+
+func TestTransactionConflictError_Unwrap(t *testing.T) {
+	inner := &service.TransactionConflictError{Key: "k1"}
+	err := &TransactionConflictError{Err: inner}
+	assert.Same(t, inner, err.Unwrap())
+	assert.Nil(t, (&TransactionConflictError{}).Unwrap())
 }
