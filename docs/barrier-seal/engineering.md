@@ -1266,8 +1266,11 @@ bytes and no error is broken, and the read fails with `io.ErrNoProgress`, as
 Key material in this repository is held through `pkg/secure`, a facade over a
 process-wide mlocking allocator. Three rules protect that boundary, and they
 are enforced by a `go vet` plugin under `pkg/secure/analyzer/` that `make
-secure-analyzer` runs in CI's `image` job over **every Go module in the tree**
-under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
+secure-analyzer` runs over **every Go module in the tree** under **every
+combination in the Makefile's `SUPPORTED_TAG_SETS`**: in CI's `image` job on a
+push to `main` and on `workflow_dispatch` (`make lint-sweeps`), and in
+`release.yml` before every tag. A pull request runs its self-test,
+`make test-secure-analyzer`, but not the sweep.
 
 | # | Rule | Scope |
 |---|---|---|

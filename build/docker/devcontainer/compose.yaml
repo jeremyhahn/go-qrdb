@@ -1,7 +1,7 @@
 # go-qrdb CI image: one service per shipped stage of the Dockerfile
 # beside this file (handbook devcontainer.md §3, §6).
 #
-#   integration  `make integration-test`: the integration suites under -race in
+#   integration  `make integration-test`: the integration suites, without -race, in
 #                the integration image, which carries the source. The Makefile
 #                builds that image (with the forge credentials as a BuildKit
 #                secret), names it in QRDB_IT_IMAGE and runs this file
@@ -34,7 +34,7 @@
 #     modules are baked into the image with GOPROXY=off.
 #   init: a real PID 1 reaps children and forwards signals.
 #   pids_limit / mem_limit: bounds, so a runaway test cannot starve a shared
-#     runner host. No cpus cap: -race clusters are CPU-bound and their
+#     runner host. No cpus cap: the clusters are CPU-bound and their
 #     election timeouts are tuned for an unthrottled host.
 #
 # ULIMITS:

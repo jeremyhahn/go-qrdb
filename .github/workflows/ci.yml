@@ -343,7 +343,6 @@ jobs:
       # caches main's build reads; every other event, pull requests included,
       # gets the `pr` set (ci-standard.md §6).
       CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
-      IT_IMAGE: ${{ github.event.repository.name }}-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-image
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -361,8 +360,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # CUSTOMIZE (go-qrdb, #813): the integration image is qrdb-ci-it:<content
+      # hash> on every job, so this job also reaps under qrdb-ci-: a runner
+      # that only ever runs the PR tier still drops old integration images.
       - name: Reap stale CI stacks
-        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX"
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
       # CUSTOMIZE: host tuning a test needs (e.g. QUIC UDP buffers:
       # sudo sysctl -w net.core.rmem_max=7340032 net.core.wmem_max=7340032)
@@ -374,9 +376,10 @@ jobs:
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
             done )
-          make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" IT_IMAGE="$IT_IMAGE"
+          make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
           rm -f "$RUNNER_TEMP/gomodauth.env"
           echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$(make -s it-image)" >> "$GITHUB_ENV"
 
       # v1.22: bound this repo's cache volumes on the host before the stages
       # add to them (ci-standard.md §6). It never fails the job.
@@ -393,14 +396,27 @@ jobs:
 
       # CUSTOMIZE (go-qrdb): the repository gates the Lint job ran beside
       # `make lint` (Makefile LINT_GATES): the script, workflow, generated-code
-      # and module gates, vet and vet-tags, the secure analyzer and the sdk/go
-      # linters. -k reports every failing gate in one pass. A network for
-      # vet-tags' nested benchmark modules, which the image's cache may lack.
+      # and module gates, `make vet` over the default tag set, the secure
+      # analyzer's self-test and the sdk/go linters. -k reports every failing
+      # gate in one pass. The network is as it was when this step also ran
+      # vet-tags (make lint-sweeps, below).
       - name: make lint-gates
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
+      # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), over an hour of
+      # this job, so they run on a push to main and on the daily full-tier
+      # workflow_dispatch, never on a pull request, which must finish within
+      # one hour. release.yml runs both again before a tag. A network for
+      # vet-tags' nested benchmark modules, as above.
+      - name: make lint-sweeps
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # v1.9.2, now in the image: the declared tag set must select code. Each
       # tag is checked by removal: if dropping it changes no selected file
@@ -483,11 +499,12 @@ jobs:
           scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" \
             make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
 
+      # The integration image stays: it is named by its content, so the
+      # integration legs on this daemon reuse it, and the reap step removes it
+      # once it is older than any run (#813).
       - name: Tear down
         if: always()
-        run: |
-          rm -f "$RUNNER_TEMP/gomodauth.env" it-image.tar
-          docker image rm "$IT_IMAGE" || true
+        run: rm -f "$RUNNER_TEMP/gomodauth.env" it-image.tar
 
   # Integration tests run in the integration image (ci-standard.md §2), as a
   # compose stack on the runner host started by `make integration-test`. The
@@ -518,8 +535,12 @@ jobs:
   # step that narrows the target. fail-fast is off so one red leg does not
   # cancel the others' results; CI Gate reads the aggregate result.
   #
-  # The names are under qrdb-ci- (the gate pins the prefix) and carry the
-  # feature, so legs sharing a daemon never share an image tag or a stack.
+  # The project names are under qrdb-ci- (the gate pins the prefix) and carry
+  # the run, the attempt and the feature, so legs sharing a daemon never share
+  # a stack. The image is the Makefile's content-addressed qrdb-ci-it:<hash>
+  # (`make -s it-image`, #813): every leg of a run on one runner names the
+  # same one, the first leg there builds it and the rest reuse it, and the
+  # reap step, not the teardown, removes it once no run can still need it.
   # The teardown is `make docker-down-it`, not a bare `docker compose down`:
   # test/buildgates/integration_image_tag_test.go keeps every compose call
   # behind a make target. Credentials come from the job environment, which
@@ -534,7 +555,6 @@ jobs:
     timeout-minutes: 45
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
-      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
     strategy:
       fail-fast: false
       matrix:
@@ -560,13 +580,13 @@ jobs:
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
       - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
+        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
 
-      # integration-test downs its own stack; this covers a cancelled leg and
-      # removes the image, pass, fail or cancel.
+      # integration-test downs its own stack; this covers a cancelled leg,
+      # pass, fail or cancel, and keeps the image the other legs reuse.
       - name: Tear down (${{ matrix.feature }})
         if: always()
-        run: make docker-down-it IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
+        run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 
   # CUSTOMIZE (go-qrdb): the multi-protocol CLI suites against two real qrdbd
   # servers in the Docker stack under test/integration/api. The image bakes

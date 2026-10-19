@@ -38,9 +38,13 @@ package buildgates
 //   - a leg that runs something other than the per-feature target, or a job
 //     that leaves the full tier or stops running on push;
 //   - a leg with no always() teardown, so a cancelled leg leaves its compose
-//     project and image on the runner;
-//   - a leg whose project or image name another leg or run shares, or that
-//     the reap step's prefix does not cover.
+//     project on the runner;
+//   - a leg whose project name another leg or run shares, or that the reap
+//     step's prefix does not cover;
+//   - a leg that names its own integration image (#813): every leg of a run
+//     on one runner must reuse the Makefile's content-addressed one, `make -s
+//     it-image`, or each leg rebuilds it, and that name must sit under the
+//     reap step's prefix, which is what removes it.
 //
 // That the gate goes red when one leg fails is ci_tiers_test.go's
 // TestCIGateScriptHonoursTheTiers: a matrix is one needs entry, and its
@@ -80,13 +84,20 @@ const (
 	featureReap = "scripts/reap-stale-ci-stacks.sh " + featureReapPrefix
 
 	// featureStep is the one test command each leg runs: the feature's
-	// features.mk selection, in the integration image, under the leg's names.
-	featureStep = `make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"`
+	// features.mk selection, in the integration image, under the leg's
+	// project. It passes no IT_IMAGE: the Makefile's content-addressed name
+	// is the one every leg shares.
+	featureStep = `make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"`
 
 	// featureTeardown is the leg's last step, run under always(): it removes
-	// the compose project and image featureStep ran under, so a cancelled leg
-	// leaves nothing on the runner.
-	featureTeardown = `make docker-down-it IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"`
+	// the compose project featureStep ran under, so a cancelled leg leaves no
+	// stack on the runner. The image stays for the other legs; the reap step
+	// removes it once no run can need it.
+	featureTeardown = `make docker-down-it IT_PROJECT="$IT_PROJECT"`
+
+	// featureImageRepo is the repository of `make -s it-image`: under
+	// featureReapPrefix, so the reap step removes old integration images.
+	featureImageRepo = featureReapPrefix + "it"
 
 	// featureLegFloor is a discovery floor: 40 features map files today, and
 	// a parse that finds fewer than this has found too little to check.
@@ -173,20 +184,24 @@ func featureJobProblems(body []byte, want []string) []string {
 			"; want the reap and the tests unconditional and the teardown under always(), "+
 			"so a failed or cancelled leg still removes its stack")
 	}
-	// The names the steps pass must be this leg's alone: legs of one run, and
-	// runs sharing a daemon, would otherwise share a stack or an image tag.
-	for _, name := range []string{"IT_PROJECT", "IT_IMAGE"} {
-		v := job.Env[name]
-		if !strings.HasPrefix(v, featureReapPrefix) {
-			problems = append(problems, featureJob+"'s "+name+" is "+strconv.Quote(v)+
-				"; want it under "+strconv.Quote(featureReapPrefix)+", the prefix the reap step removes")
+	// The project the steps pass must be this leg's alone: legs of one run,
+	// and runs sharing a daemon, would otherwise share a stack.
+	v := job.Env["IT_PROJECT"]
+	if !strings.HasPrefix(v, featureReapPrefix) {
+		problems = append(problems, featureJob+"'s IT_PROJECT is "+strconv.Quote(v)+
+			"; want it under "+strconv.Quote(featureReapPrefix)+", the prefix the reap step removes")
+	}
+	for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix.feature }}"} {
+		if !strings.Contains(v, part) {
+			problems = append(problems, featureJob+"'s IT_PROJECT is "+strconv.Quote(v)+
+				"; want it to carry "+part+", so no other leg or run shares it")
 		}
-		for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix.feature }}"} {
-			if !strings.Contains(v, part) {
-				problems = append(problems, featureJob+"'s "+name+" is "+strconv.Quote(v)+
-					"; want it to carry "+part+", so no other leg or run shares it")
-			}
-		}
+	}
+	// The image is the opposite: one name for every leg of the run (#813).
+	if img, ok := job.Env["IT_IMAGE"]; ok {
+		problems = append(problems, featureJob+" sets IT_IMAGE "+strconv.Quote(img)+
+			"; want none: a leg-chosen tag rebuilds the image on every leg, where the "+
+			"Makefile's content-addressed `make -s it-image` lets the legs on one runner build it once")
 	}
 	return problems
 }
@@ -270,6 +285,123 @@ func TestIntegrationFeatureCoverage_OneJobPerFeature(t *testing.T) {
 	}
 }
 
+// makeOutput runs `make -s args...` at root and returns its trimmed stdout.
+func makeOutput(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("make", append([]string{"-s"}, args...)...) // #nosec G204 -- args are this file's own make target and variable names
+	cmd.Dir = root
+	var out, errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("make -s %s: %v\n%s", strings.Join(args, " "), err, errOut.String())
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// The legs name no image, so the Makefile's name is the one they share: it
+// must be content-addressed (the same on every call for one tree) and sit
+// under the prefix the reap step removes images under (#813).
+func TestIntegrationFeatureCoverage_ImageIsContentAddressed(t *testing.T) {
+	root := repoRoot(t)
+	first := makeOutput(t, root, "it-image")
+	tag, ok := strings.CutPrefix(first, featureImageRepo+":")
+	if !ok {
+		t.Fatalf("make -s it-image = %q; want %s:<hash>, under the reap step's prefix", first, featureImageRepo)
+	}
+	if len(tag) != 16 || strings.Trim(tag, "0123456789abcdef") != "" {
+		t.Fatalf("make -s it-image tag = %q; want the 16-hex content hash", tag)
+	}
+	if again := makeOutput(t, root, "it-image"); again != first {
+		t.Fatalf("make -s it-image printed %q, then %q: legs of one run would name different images", first, again)
+	}
+	if got := makeOutput(t, root, "it-image", "IT_IMAGE=qrdb-ci-it:override"); got != "qrdb-ci-it:override" {
+		t.Fatalf("make -s it-image IT_IMAGE=... = %q; want the caller's name", got)
+	}
+}
+
+// docker-down-it removes a leg's stack and never the shared image: a leg that
+// removed it would make every later leg on the runner rebuild it.
+func TestIntegrationFeatureCoverage_DownKeepsTheImage(t *testing.T) {
+	root := repoRoot(t)
+	recipe := makeOutput(t, root, "-n", "docker-down-it", "IT_PROJECT=qrdb-ci-x")
+	if !strings.Contains(recipe, "-p 'qrdb-ci-x'") || !strings.Contains(recipe, "down --volumes") {
+		t.Fatalf("make -n docker-down-it = %q; want the leg's compose project downed", recipe)
+	}
+	if strings.Contains(recipe, "image rm") || strings.Contains(recipe, "rmi") {
+		t.Fatalf("make -n docker-down-it = %q; want no image removal: the legs share the image", recipe)
+	}
+}
+
+// buildRaceDocker is a stub docker for docker-build-it: `buildx version`
+// succeeds, `buildx build` records that it ran and fails with status 17 the
+// way the second of two concurrent --load builds of one tag does, and `image
+// inspect` finds the image only once a build has run and STUB_LOADED is 1.
+const buildRaceDocker = `#!/bin/sh
+case "$1 $2" in
+"buildx version") exit 0 ;;
+"buildx build")
+	: > "$STUB_DIR/built"
+	echo 'ERROR: failed to build: failed to solve: image "docker.io/library/qrdb-ci-it:test": already exists' >&2
+	exit 17 ;;
+"image inspect")
+	[ -f "$STUB_DIR/built" ] && [ "$STUB_LOADED" = 1 ] && exit 0
+	exit 1 ;;
+esac
+echo "stub docker: unexpected $*" >&2
+exit 99
+`
+
+// Two legs that miss the image together on one daemon both build it, and the
+// second --load fails because the first already tagged it (run 57133). The
+// loser must succeed when the daemon then holds the content-tagged image, and
+// any other failed build must still fail with the build's own status.
+func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
+	root := repoRoot(t)
+	for _, tc := range []struct {
+		name    string
+		loaded  string
+		wantErr bool
+	}{
+		{name: "a concurrent leg loaded the image", loaded: "1", wantErr: false},
+		{name: "the build failed and no image is held", loaded: "0", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := t.TempDir()
+			if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(buildRaceDocker), 0o700); err != nil { // #nosec G306 -- the stub must be executable
+				t.Fatalf("write stub docker: %v", err)
+			}
+			envFile := filepath.Join(stub, "module.env")
+			if err := os.WriteFile(envFile, []byte("GIT_CONFIG_KEY_0=stub\n"), 0o600); err != nil {
+				t.Fatalf("write module env: %v", err)
+			}
+			cmd := exec.Command("make", "-s", "docker-build-it", "IT_IMAGE=qrdb-ci-it:test", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"STUB_DIR="+stub, "STUB_LOADED="+tc.loaded)
+			var out bytes.Buffer
+			cmd.Stdout = &out
+			cmd.Stderr = &out
+			err := cmd.Run()
+			if _, statErr := os.Stat(filepath.Join(stub, "built")); statErr != nil {
+				t.Fatalf("make docker-build-it never ran the build:\n%s", out.String())
+			}
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("make docker-build-it: %v; want success once a concurrent leg loaded the image:\n%s", err, out.String())
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("make docker-build-it succeeded with no image held; want the build's failure:\n%s", out.String())
+			}
+			if !strings.Contains(out.String(), "Error 17") {
+				t.Fatalf("make docker-build-it failed without the build's status 17:\n%s", out.String())
+			}
+		})
+	}
+}
+
 const featureJobFixture = `on:
   push:
     branches: [main]
@@ -283,7 +415,6 @@ jobs:
     timeout-minutes: 45
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
-      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
     strategy:
       fail-fast: false
       matrix:
@@ -295,10 +426,10 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
       - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
+        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
       - name: Tear down (${{ matrix.feature }})
         if: always()
-        run: make docker-down-it IT_PROJECT="$IT_PROJECT" IT_IMAGE="$IT_IMAGE"
+        run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 `
 
 var featureFixtureWant = []string{"audit", "key-value", "sql"}
@@ -335,20 +466,21 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "left the full tier", old: "    if: github.event_name == 'push' || ", new: "    if: "},
 		{name: "a fixed target", old: "IT_FEATURE=${{ matrix.feature }}", new: "IT_FEATURE=cluster"},
 		{name: "the whole suite", old: " IT_FEATURE=${{ matrix.feature }}", new: ""},
-		{name: "on the host", old: "run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"", new: "run: make integration-test-${{ matrix.feature }}"},
-		{name: "a second run step", old: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n", new: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n      - run: make integration-test-auth\n"},
+		{name: "on the host", old: "run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"", new: "run: make integration-test-${{ matrix.feature }}"},
+		{name: "a second run step", old: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"\n", new: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"\n      - run: make integration-test-auth\n"},
 		{name: "a make run named as the mask", old: "run: echo \"::add-mask::$GIT_CONFIG_VALUE_0\"", new: "run: make integration-test-auth"},
 		{name: "no reap", old: "      - name: Reap stale CI stacks\n        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-\n", new: ""},
 		{name: "reap of another prefix", old: "reap-stale-ci-stacks.sh qrdb-ci-", new: "reap-stale-ci-stacks.sh qrdb-"},
-		{name: "no teardown", old: "      - name: Tear down (${{ matrix.feature }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"\n", new: ""},
+		{name: "no teardown", old: "      - name: Tear down (${{ matrix.feature }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"\n", new: ""},
 		{name: "teardown not always", old: "        if: always()\n", new: ""},
 		{name: "teardown on success only", old: "if: always()", new: "if: success()"},
-		{name: "teardown of the default names", old: "run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\" IT_IMAGE=\"$IT_IMAGE\"", new: "run: make docker-down-it"},
+		{name: "teardown of the default names", old: "run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"", new: "run: make docker-down-it"},
 		{name: "tests made conditional", old: "      - name: Integration tests (${{ matrix.feature }})\n", new: "      - name: Integration tests (${{ matrix.feature }})\n        if: always()\n"},
 		{name: "project shared by every leg", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
-		{name: "image shared by every attempt", old: "qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-", new: "qrdb-ci-it:${{ github.run_id }}-"},
+		{name: "a per-leg image tag", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.feature }}\n"},
+		{name: "project shared by every attempt", old: "qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-", new: "qrdb-ci-${{ github.run_id }}-"},
 		{name: "project outside the reaped prefix", old: "      IT_PROJECT: qrdb-ci-", new: "      IT_PROJECT: qrdb-it-"},
-		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: ""},
+		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
 		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},

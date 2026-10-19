@@ -60,7 +60,10 @@ limitations under the License.
   jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
   `make lint`, `go build ./...`, `make build-server`, `make coverage`,
   `make test-tags`) against the exact tagged tree, not a re-run of every
-  ci.yml step — see architecture.md for why the rest is skipped.
+  ci.yml step — see architecture.md for why the rest is skipped. The two
+  sweeps, `make vet-tags` and `make secure-analyzer`, run here on every tag
+  although ci.yml runs them (`make lint-sweeps`) only on a push to `main` and
+  on `workflow_dispatch`, never on a pull request.
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
   the pinned `ACTIONLINT_VERSION` (`scripts/tool-pins.sh`, the only copy of
@@ -103,7 +106,7 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` and `IT_IMAGE` that start `qrdb-ci-` and carry the run, the attempt and the feature; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and no `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
@@ -188,7 +191,8 @@ writable copy of the image's module cache instead.
 
 Last, `make trivy-image TRIVY_IMAGE_INPUT=it-image.tar` scans the
 integration image, saved to `it-image.tar`, and fails on a fixable HIGH or
-CRITICAL finding; the job removes the tarball and the image under `always()`.
+CRITICAL finding; the job removes the tarball under `always()` and keeps the
+image, which the integration legs on the same daemon reuse (below).
 It takes the two image-only flags of handbook `devops.md` §8:
 `--ignore-unfixed`, because a base image carries advisories with no fixed
 package, and `--skip-dirs` over the image's Go module cache, `/gomodcache`
@@ -245,25 +249,53 @@ same one `make integration-test-<feature>` runs on a host, inside the hardened
 `integration` service of `build/docker/devcontainer/compose.yaml`: read-only
 root filesystem, every capability dropped, `no-new-privileges`, `/tmp` (also
 `HOME`) an anonymous volume on the daemon's disk, removed with the container,
-no network, and `GOMAXPROCS=8`. The legs run in parallel, each under its own
+no network, and `GOMAXPROCS=8`. The suites run without `-race` (the
+Makefile's `INT_GOTEST`): race detection is the unit suites' job, which keep
+it, and under `-race` the multi-node clusters cost several times the CPU and
+wall time. The legs run in parallel, each under its own
 `timeout-minutes: 45`; the 45-minute limit is not raised. A feature whose
 `features.mk` entry is empty is not a leg: it would run zero tests and pass.
 `fail-fast` is `false`, so one red leg does not cancel the others.
 
-Each leg names its own compose project and image, `IT_PROJECT` and `IT_IMAGE`,
-from the run, the attempt and the feature, under the `qrdb-ci-` prefix, so legs
-running at once on one runner never share a stack or a tag. Each leg runs four
+Each leg names its own compose project, `IT_PROJECT`, from the run, the attempt
+and the feature, under the `qrdb-ci-` prefix, so legs running at once on one
+runner never share a stack. The image is the opposite: every leg uses the
+Makefile's content-addressed `IT_IMAGE`, `qrdb-ci-it:<hash>` (`make -s
+it-image`), a hash of the build arguments that change the image and of the
+build context (the commit's tree, plus, on a dirty checkout, the diff and the
+untracked files `.gitignore` does not exclude). Every leg of a run on one
+runner names the same image, `make docker-build-it` builds it only when
+`docker image inspect` misses it, and the rest reuse it; when each of the 41 legs
+built and deleted its own image, the build was most of a slow runner's leg
+time. Two
+legs that miss together both build, and only the first `--load` can tag the
+result: the second fails with `image ... already exists`. That build's leg
+then finds the image held, and because the tag is the content it carries on
+with it; any other failed build fails the leg with the build's own status
+(`feature_jobs_gate_test.go` runs the recipe against a stub `docker` for both
+cases). A `flock` would not serialize them, because the job containers
+share the runner's Docker daemon, not a filesystem. Each leg runs four
 steps. The first after the checkout is "Mask the forge credentials", which
 registers every `GIT_CONFIG_*` value, and the token inside any URL among them,
 with `::add-mask::` before any step can print one. It then runs
 `scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
-projects and images older than the longest job can live (about three hours),
-and so never touches a live leg's; it ends with a teardown step under
-`if: always()`, `make docker-down-it`, which removes that leg's project and
-image on a pass, a failure or a cancellation. Removing names nobody created is
-not an error. No workflow runs `docker compose` itself
-(`integration_image_tag_test.go`); `feature_jobs_gate_test.go` requires the
-four steps, the mask first, the names and the `always()`.
+projects older than the longest job can live (about three hours), and
+`qrdb-ci-it` images created more than two hours ago (`REAP_IMAGE_MIN_AGE`,
+7200 s: the longest full-tier run, 86 minutes, plus headroom), and so never
+touches a live leg's; an image a container uses is never removed. It ends with
+a teardown step under `if: always()`, `make docker-down-it`, which removes that
+leg's project, and never the image, on a pass, a failure or a cancellation.
+Removing names nobody created is not an error. No workflow runs `docker
+compose` itself (`integration_image_tag_test.go`); `feature_jobs_gate_test.go`
+requires the four steps, the mask first, the project name, no `IT_IMAGE`, and
+the `always()`. The image job reaps under `qrdb-ci-` too, so a runner that
+only runs the PR tier still drops old integration images.
+
+Sharing one image between runners would take a registry: `--cache-from` and
+`--cache-to type=registry` in `DEVCONTAINER_BUILD`, or a push by the image job
+and a pull by each leg. ci.yml holds no registry credential, so that needs a
+repository secret with push and pull rights on the forge's container registry
+for a `qrdb-ci-it` package, which only the owner can add.
 
 A feature that selects nothing says so and passes, before any image is built,
 as `integration-test-<feature>` does. On a host, `make integration-test-<feature>`

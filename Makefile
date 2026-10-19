@@ -72,6 +72,11 @@ GO            := go
 # the push path should surface in 30m.
 GOTEST_TIMEOUT ?= 30m
 GOTEST        := $(GO) test -race -count=1 -v -timeout=$(GOTEST_TIMEOUT)
+# INT_GOTEST is GOTEST without -race, for the integration suites alone. Race
+# detection is the unit suites' job, which keep GOTEST; under -race the
+# multi-node cluster suites cost several times the CPU and wall time, and the
+# pull-request pipeline has one hour.
+INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT)
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt
@@ -1311,7 +1316,7 @@ integration-image:
 # it starts, so each sizes its scheduler to 8 Ps rather than the host's
 # threads. The compose service sets it.
 IT_FEATURE ?=
-IT_CMD     ?= $(if $(IT_FEATURE),$(call int_cmd,$(IT_FEATURE)),$(GO) test -race -count=1 -v -timeout=$(INTEGRATION_GO_TIMEOUT) -p 1 -parallel $(CLUSTER_PARALLEL) -tags "$(INT_FEATURE_TAGS)" $(INT_TEST_DIR))
+IT_CMD     ?= $(if $(IT_FEATURE),$(call int_cmd,$(IT_FEATURE)),$(GO) test -count=1 -v -timeout=$(INTEGRATION_GO_TIMEOUT) -p 1 -parallel $(CLUSTER_PARALLEL) -tags "$(INT_FEATURE_TAGS)" $(INT_TEST_DIR))
 
 .PHONY: integration-test
 integration-test:
@@ -1591,7 +1596,7 @@ int_dirs  = $(sort $(patsubst %/,%,$(dir $(call int_files,$(1)))))
 INT_TEST_NAME_SED := s/^func \(Test[A-Za-z0-9_]*\)[(].*/\1/p
 int_names = $(if $(call int_files,$(1)),$(shell sed -n '$(INT_TEST_NAME_SED)' $(call int_files,$(1)) | paste -sd '|' -))
 int_tags  = $(INT_FEATURE_TAGS)$(if $(strip $(INTTAGS_$(call int_var,$(1)))),$(comma)$(strip $(INTTAGS_$(call int_var,$(1)))))
-int_cmd   = $(GOTEST) -tags "$(call int_tags,$(1))" -run '^($(call int_names,$(1)))$$' $(call int_dirs,$(1))
+int_cmd   = $(INT_GOTEST) -tags "$(call int_tags,$(1))" -run '^($(call int_names,$(1)))$$' $(call int_dirs,$(1))
 
 .PHONY: integration-test-feature
 integration-test-feature:
@@ -2265,11 +2270,18 @@ vet-sdk:
 	cd $(SDK_DIR) && $(GOVET) $(TAG_FLAG) ./...
 
 # lint-gates is every repository gate CI's image job runs beside `make lint`
-# (ci-template v1.21, one image job): the gates over the scripts, the
-# workflows, the generated code and the module files, the vet sweeps, the
-# secure analyzer and the sdk/go linters. Run with `make -k lint-gates` it
-# reports every failing gate in one pass. check-public-releasable is not here:
-# it reads an untracked pattern file, which CI writes on the runner.
+# on every run (ci-template v1.21, one image job): the gates over the scripts,
+# the workflows, the generated code and the module files, `make vet` over the
+# default tag set, the secure analyzer's self-test and the sdk/go linters. Run
+# with `make -k lint-gates` it reports every failing gate in one pass.
+# check-public-releasable is not here: it reads an untracked pattern file,
+# which CI writes on the runner.
+#
+# lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
+# combination, vet-tags and the secure analyzer. Together they took over an
+# hour of the image job, so CI runs them on a push to main and on the daily
+# full-tier dispatch, not on a pull request; release.yml still runs both
+# before a tag. `make lint-gates lint-sweeps` is the whole set.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
 	test-cluster-cpus check-action-pins check-integration-feature-coverage \
@@ -2278,11 +2290,14 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-publication-bound test-publication-bound test-public-releasable \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-vet-modules \
-	test-release-alpha fmt vet vet-tags secure-analyzer test-secure-analyzer \
-	vet-sdk lint-sdk
+	test-release-alpha fmt vet test-secure-analyzer vet-sdk lint-sdk
+LINT_SWEEPS := vet-tags secure-analyzer
 
 .PHONY: lint-gates
 lint-gates: $(LINT_GATES)
+
+.PHONY: lint-sweeps
+lint-sweeps: $(LINT_SWEEPS)
 
 # scripts/require-tool.sh is what stands between this repository and a lint or
 # scan performed by an unknown analyser version (#179, #195). The pins in
@@ -3734,9 +3749,22 @@ DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
-# The integration image and its compose project. CI passes a per-run IT_IMAGE
-# and IT_PROJECT so legs sharing a daemon never share a tag or a stack.
-IT_IMAGE   ?= qrdb-it:$(DOCKER_TAG)
+# The integration image and its compose project (#813). The image tag is
+# content-addressed, as the toolchain tag is: a hash of the build arguments
+# that change the image and of every byte of the build context -- the
+# commit's tree, plus, on a dirty checkout, the diff against it and every
+# untracked file .gitignore does not exclude -- so every leg of one run on
+# one runner names the same image, builds it once and reuses it, and a
+# changed tree never runs a stale one. Nothing in it depends on the
+# checkout's path. Outside a git checkout there is no tree to hash, and the
+# tag falls back to DOCKER_TAG. `make -s it-image` prints the name. CI passes
+# only a per-leg IT_PROJECT, so legs sharing a daemon never share a stack;
+# scripts/reap-stale-ci-stacks.sh removes old qrdb-ci-it images.
+IT_TAG     = $(shell if git rev-parse -q --verify 'HEAD^{tree}' >/dev/null 2>&1; then \
+	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
+	  git ls-files -z -o --exclude-standard | xargs -0r sha256sum --; } | sha256sum | cut -c1-16; \
+	else echo $(DOCKER_TAG); fi)
+IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
 IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
 
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
@@ -3761,23 +3789,44 @@ docker-build-toolchain:
 	@$(stage-gomodauth) \
 	$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .
 
+# docker-build-it builds the integration image only when the daemon does not
+# already hold IT_IMAGE: the tag is the content, so a held image is this
+# tree's. Two legs that miss together on one daemon both build, and only the
+# first --load can tag the result: the second fails with "image ... already
+# exists" (run 57133). That loser finds the image held once its build fails,
+# and the tag is the content, so it succeeds; any other failed build fails
+# with the build's status. A flock cannot serialize the legs, because CI's job
+# containers share the runner's daemon, not a filesystem.
 docker-build-it:
 	$(REQUIRE_BUILDX)
-	@$(stage-gomodauth) \
-	$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) .
+	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
+		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+	else \
+		$(stage-gomodauth) \
+		$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) . || { \
+			status=$$?; \
+			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
+			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
+		}; \
+	fi
 
-# docker-down-it removes an integration-test run: its compose project and its
-# image. integration-test downs its own stack and keeps the image for the next
-# run; CI's legs run this under always(), so a cancelled leg leaves nothing on
-# the runner. A name nobody created is not an error.
+# docker-down-it removes an integration-test run's compose project, never its
+# image: every leg of a run on one runner reuses that image (#813), and
+# scripts/reap-stale-ci-stacks.sh removes it once no run can still need it.
+# integration-test downs its own stack; CI's legs run this under always(), so
+# a cancelled leg leaves no stack on the runner. A name nobody created is not
+# an error.
 .PHONY: docker-down-it
 docker-down-it:
 	@QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
 		down --volumes --remove-orphans >/dev/null 2>&1 || true
-	@docker image rm '$(IT_IMAGE)' >/dev/null 2>&1 || true
 
 toolchain-image:
 	@echo $(TOOLCHAIN_IMAGE)
+
+.PHONY: it-image
+it-image:
+	@echo $(IT_IMAGE)
 
 # docker-run runs CMD in the toolchain compose service: the checkout
 # bind-mounted, the invoking uid, no network, the integration service's
@@ -4273,7 +4322,8 @@ help:
 	@echo "  docker-run CMD=...           Run CMD in the toolchain compose service (checkout bind-mounted)"
 	@echo "  toolchain-image              Print the content-hashed toolchain image tag"
 	@echo "  trivy-image                  Scan the integration image (IT_IMAGE) with trivy"
-	@echo "  docker-down-it               Remove an integration-test run's stack and image (IT_PROJECT, IT_IMAGE)"
+	@echo "  docker-down-it               Remove an integration-test run's stack, keeping its image (IT_PROJECT)"
+	@echo "  it-image                     Print the integration image's content-addressed name (IT_IMAGE)"
 	@echo "  docker-build-release         Build production image"
 	@echo "  docker-run-release           Run production container"
 	@echo "  docker-run-devcontainer      Run devcontainer shell"

@@ -28,6 +28,15 @@
 # gives its compose project, without the run id. Never a prefix another repo's
 # projects could start with.
 #
+# CUSTOMIZE (go-qrdb, #813): images too. The integration image is named by its
+# content, <prefix>it:<hash> (`make -s it-image`), and every leg of a run on a
+# runner reuses it, so no leg removes it. This removes a <prefix>it image
+# created at least REAP_IMAGE_MIN_AGE seconds ago, default 7200 (2 h): the
+# longest full-tier run, 86 min, plus headroom, so an image a run still
+# needs is not old enough. `docker image rm` without force refuses an image a
+# container (running or stopped) uses, so a live stack's image is never
+# removed. Each removal frees the disk a build took.
+#
 # A failed removal is reported and skipped: the reaper never fails the job.
 # REAP_DRY_RUN=1 prints what would be removed and removes nothing.
 set -u
@@ -99,6 +108,24 @@ docker ps -a --filter "name=^$prefix" \
     fi
   done
 
+# Content-addressed integration images (CUSTOMIZE, above).
+image_min_age=${REAP_IMAGE_MIN_AGE:-7200}
+case $image_min_age in
+  '' | *[!0-9]*) echo "REAP_IMAGE_MIN_AGE must be a number: $image_min_age" >&2; exit 2 ;;
+esac
+images=0
+for ref in $(docker images --filter "reference=${prefix}it" --format '{{.Repository}}:{{.Tag}}'); do
+  case $ref in "${prefix}it:"*) ;; *) continue ;; esac
+  created=$(docker image inspect -f '{{.Created}}' "$ref" 2>/dev/null) || continue
+  t=$(date -d "$created" +%s 2>/dev/null) || continue
+  if [ $((now - t)) -lt "$image_min_age" ]; then
+    echo "keep  image $ref (created within ${image_min_age}s)"
+    continue
+  fi
+  echo "reap  image $ref"
+  if run docker image rm "$ref"; then images=$((images + 1)); else echo "warn  image $ref not removed (in use?)"; fi
+done
+
 if [ "${REAP_DRY_RUN:-0}" = 1 ]; then done_as="would be removed"; else done_as=removed; fi
-echo "reaper: $reaped compose project(s) $done_as for prefix '$prefix'"
+echo "reaper: $reaped compose project(s) and $images image(s) $done_as for prefix '$prefix'"
 exit 0

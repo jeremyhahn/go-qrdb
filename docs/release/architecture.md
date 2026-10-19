@@ -204,6 +204,16 @@ a pull request that fails lint or a unit suite never holds the shared runners
 for the long legs. A full-tier run on a tree whose PR tier is red therefore
 reports those jobs `skipped`, which `ci-gate` fails.
 
+Within the `image` job, one step depends on the trigger. `make lint-gates`
+runs on every run and holds `make vet` over the default tag set and the
+secure analyzer's self-test (`test-secure-analyzer`). `make lint-sweeps`,
+`make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
+combination, took over an hour of that job, so it runs only on a push to
+`main` and on `workflow_dispatch` (the daily full-tier dispatch included),
+never on a pull request, whose pipeline is held to one hour. `release.yml`
+runs both sweeps again before a tag. The integration legs run without
+`-race`; the unit suites keep it.
+
 The `ci:full` label goes on a pull request once, when it is green on the PR
 tier and ready to merge, never earlier and never twice; a `workflow_dispatch`
 of the full tier on the PR branch is the accepted alternative.
