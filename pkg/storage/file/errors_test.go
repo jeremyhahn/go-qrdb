@@ -74,6 +74,26 @@ func TestFormatVersionMismatchError_Error(t *testing.T) {
 	}
 }
 
+func TestAtRestMismatchError_Error(t *testing.T) {
+	cases := map[string]AtRestMismatchError{
+		"plaintext-opened-encrypted": {Dir: "/data/a", Found: "plaintext", Want: "encrypted"},
+		"encrypted-opened-plaintext": {Dir: "/data/b", Found: "encrypted", Want: "plaintext"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			msg := tc.Error()
+			for _, part := range []string{tc.Dir, tc.Found, tc.Want} {
+				if !strings.Contains(msg, part) {
+					t.Errorf("Error() = %q, want it to name %q", msg, part)
+				}
+			}
+			if strings.Index(msg, tc.Found) > strings.Index(msg, tc.Want) {
+				t.Errorf("Error() = %q, want the found posture before the wanted one", msg)
+			}
+		})
+	}
+}
+
 func TestRecordCorruptError_Error(t *testing.T) {
 	err := &RecordCorruptError{Path: "/data/ab/cd/deadbeef", Reason: "shorter than the key-length header"}
 	msg := err.Error()
