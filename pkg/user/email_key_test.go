@@ -2413,11 +2413,18 @@ func TestCreateUser_ACleanRollbackDoesNotReportCompensationFailure(t *testing.T)
 // winner is done. The interleaving that matters here is the other one — the
 // loser retires the legacy key first, and the winner commits before the loser's
 // compensation runs.
+//
+// swapErr makes that armed swap AMBIGUOUS instead: it commits nothing and
+// replies with swapErr, so the caller cannot tell whether it landed and must
+// read back to decide. getErr fails every Get once the swap has fired, which
+// is the read-back failing too. Both zero leave the behaviour above unchanged.
 type atSwapKV struct {
 	*memKVStore
 	primary string
 	onSwap  func()
 	fired   bool
+	swapErr error
+	getErr  error
 }
 
 func (a *atSwapKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
@@ -2426,8 +2433,18 @@ func (a *atSwapKV) CompareAndSwap(ctx context.Context, key string, expected, nex
 		if a.onSwap != nil {
 			a.onSwap()
 		}
+		if a.swapErr != nil {
+			return false, a.swapErr
+		}
 	}
 	return a.memKVStore.CompareAndSwap(ctx, key, expected, next)
+}
+
+func (a *atSwapKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if a.fired && a.getErr != nil {
+		return nil, a.getErr
+	}
+	return a.memKVStore.Get(ctx, key)
 }
 
 // seedCertUser creates a user carrying one cert binding and returns it.
