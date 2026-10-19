@@ -141,6 +141,48 @@ func TestWatch_StartRevision_NoHistory_Unsupported(t *testing.T) {
 	}
 }
 
+func TestSetHistory_NilDetachesReplayer(t *testing.T) {
+	h := NewHub()
+	h.SetHistory(&fakeHistory{current: 1, changes: []fakeChange{{1, "k", false, "v1"}}})
+	h.SetHistory(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := h.Watch(ctx, "k", WithStartRevision(1)); !errors.Is(err, ErrStartRevisionUnsupported) {
+		t.Fatalf("Watch with start revision after SetHistory(nil) = %v, want ErrStartRevisionUnsupported", err)
+	}
+	if h.WatchCount() != 0 {
+		t.Errorf("a rejected watch left %d watchers registered", h.WatchCount())
+	}
+}
+
+func TestWatch_StartRevision_DropsLateNotifyAfterSync(t *testing.T) {
+	h := NewHub()
+	h.SetHistory(&fakeHistory{
+		current: 2,
+		changes: []fakeChange{{1, "k", false, "v1"}, {2, "k", false, "v2"}},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := h.Watch(ctx, "k", WithStartRevision(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectN(t, w, 3) // Created, rev1, rev2: the replay is complete.
+	if got[2].Revision != 2 {
+		t.Fatalf("last replayed revision = %d, want 2", got[2].Revision)
+	}
+
+	// A delayed live delivery of a replayed revision arrives after the watcher
+	// synced; it must be dropped, and the next new revision delivered.
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v2"), ModRevision: 2}, nil)
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v3"), ModRevision: 3}, nil)
+	next := collectN(t, w, 1)
+	if next[0].Revision != 3 {
+		t.Fatalf("revision after the late notify = %d, want 3 (revision 2 delivered twice)", next[0].Revision)
+	}
+}
+
 func TestWatch_StartRevision_Compacted(t *testing.T) {
 	h := NewHub()
 	h.SetHistory(&fakeHistory{current: 10, compacted: 5})
