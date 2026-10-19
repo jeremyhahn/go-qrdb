@@ -274,6 +274,15 @@ func TestStartFeatureGate_AdvertisementOutlivesTheAttempt(t *testing.T) {
 		"the advertisement stopped refreshing when its start attempt ended")
 }
 
+// TestStartFeatureGate_RefusesANodeWithoutServices: a gate on a node whose
+// services are not wired fails at the embedded client rather than start an
+// advertisement it cannot write.
+func TestStartFeatureGate_RefusesANodeWithoutServices(t *testing.T) {
+	closer, err := startFeatureGate(context.Background(), soloGate(t), &lifecycle.Node{}, nil)
+	require.Error(t, err)
+	assert.Nil(t, closer)
+}
+
 // TestClientStartFeatureGate_FailsWhenItsContextEndsMidStart: a start whose
 // context ends while the advertisement registers fails, and withdraws the
 // advertisement rather than leave one running that its caller never holds.

@@ -24,9 +24,13 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -276,7 +280,12 @@ func TestHandleSystemMigration_Recycle(t *testing.T) {
 			// holds; empty ones close cleanly and leave the recode to decide.
 			raftReg := server.NewRaftBackendFactory(nil, 1, "", nil, nil, slog.Default())
 			tenantReg := server.NewTenantHostRegistry(nil, nil, slog.Default())
-			reboot, err := handleSystemMigration(req, f, nil, &lifecycle.Node{}, nil, raftReg, tenantReg,
+			// A started server is stopped before the stores are recoded.
+			srv := server.New(&qrdbconfig.Config{}, fakeAuthFactorKV{}, nil)
+			if err := srv.Start(); err != nil {
+				t.Fatalf("server Start: %v", err)
+			}
+			reboot, err := handleSystemMigration(req, f, srv, &lifecycle.Node{}, nil, raftReg, tenantReg,
 				member, bootCancel, &sealSubsystem{SealBarrier: source})
 
 			if reboot != tt.wantReboot {
@@ -381,6 +390,106 @@ func TestRecodeSystemBarrier_EmptyWALCommits(t *testing.T) {
 	}
 	if got := source.ActiveStrategy(); got != seal.StrategyPassphrase {
 		t.Fatalf("active strategy = %q, want %q", got, seal.StrategyPassphrase)
+	}
+}
+
+// writeRecodeWALSnapshot records, in the WAL at walDir, a snapshot of
+// (shardID, replica 1) whose framed snapshot.dat under b lives in snapDir.
+func writeRecodeWALSnapshot(t *testing.T, walDir, snapDir string, b *seal.StorageBarrier, shardID uint64, plain []byte) {
+	t.Helper()
+	const replicaID, snapshotIndex = uint64(1), uint64(5)
+	if err := os.MkdirAll(snapDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	plainPath := filepath.Join(t.TempDir(), "plain.bin")
+	if err := os.WriteFile(plainPath, plain, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	snapDat := filepath.Join(snapDir, database.SnapshotDataFile)
+	if _, err := quicraft.ReencryptSnapshotFile(plainPath, snapDat,
+		shardID, replicaID, snapshotIndex, nil, b.EpochBarrier()); err != nil {
+		t.Fatalf("seed snapshot.dat: %v", err)
+	}
+	fi, err := os.Stat(snapDat)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	db, err := waldb.Open(walDir, waldb.WithBarrier(b.EpochBarrier()))
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.SaveBootstrap(shardID, replicaID, logdb.Bootstrap{
+		Addresses: map[uint64]string{replicaID: "127.0.0.1:1"}, Type: 7,
+	}); err != nil {
+		t.Fatalf("SaveBootstrap: %v", err)
+	}
+	if err := db.SaveSnapshot(shardID, replicaID, logdb.Snapshot{
+		Index: snapshotIndex, Term: 1, Filepath: snapDir, FileSize: uint64(fi.Size()),
+	}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := db.SaveState([]logdb.Update{{
+		ShardID: shardID, ReplicaID: replicaID,
+		State:   logdb.State{Term: 1, Vote: replicaID, Commit: snapshotIndex},
+		Entries: []logdb.Entry{{Index: snapshotIndex + 1, Term: 1, Cmd: []byte("x")}},
+	}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+}
+
+// A WAL snapshot outside every recoded store is staged as a keyed sibling and
+// committed after the swaps; the sibling does not survive the commit.
+func TestRecodeSystemBarrier_CommitsWALSnapshotOutsideStores(t *testing.T) {
+	ctx := context.Background()
+	source := newRecodeSourceBarrier(t)
+	root := t.TempDir()
+	pebbleDir := filepath.Join(root, "vector")
+	walDir := filepath.Join(root, "wal")
+	snapDir := filepath.Join(root, "snapshots", "shard-3", "snapshot-1")
+	writeRecodePebbleStore(t, pebbleDir, atrest.New(source), map[string]string{"k": "v"})
+	writeRecodeWALSnapshot(t, walDir, snapDir, source, 3, []byte("serialized-state-machine-bytes"))
+
+	stores := service.MigrationStores{Pebble: []string{pebbleDir}}
+	if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts()); err != nil {
+		t.Fatalf("recodeSystemBarrier: %v", err)
+	}
+	snapDat := filepath.Join(snapDir, database.SnapshotDataFile)
+	if _, err := os.Stat(snapDat); err != nil {
+		t.Fatalf("committed snapshot.dat: %v", err)
+	}
+	if _, err := os.Stat(snapDat + database.SnapshotKeyedSuffix); !os.IsNotExist(err) {
+		t.Fatalf("keyed snapshot sibling left behind: %v", err)
+	}
+	if got := source.ActiveStrategy(); got != seal.StrategyPassphrase {
+		t.Fatalf("active strategy = %q, want %q", got, seal.StrategyPassphrase)
+	}
+}
+
+// A WAL snapshot under a recoded store is re-encrypted into that store's keyed
+// staging dir and goes live with the store's swap; no sibling is staged.
+func TestRecodeSystemBarrier_SwapsWALSnapshotInsideStore(t *testing.T) {
+	ctx := context.Background()
+	source := newRecodeSourceBarrier(t)
+	root := t.TempDir()
+	storeDir := filepath.Join(root, "nodehost", "snapshots", "shard-1")
+	walDir := filepath.Join(root, "wal")
+	snapDir := filepath.Join(storeDir, "snapshot-1")
+	fileDir := filepath.Join(root, "sm")
+	writeRecodeFileStore(t, fileDir, atrest.New(source), map[string]string{"k": "v"})
+	writeRecodePebbleStore(t, storeDir, atrest.New(source), map[string]string{"k": "v"})
+	writeRecodeWALSnapshot(t, walDir, snapDir, source, 1, []byte("serialized-state-machine-bytes"))
+
+	stores := service.MigrationStores{File: []string{fileDir}, Pebble: []string{storeDir}}
+	if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts()); err != nil {
+		t.Fatalf("recodeSystemBarrier: %v", err)
+	}
+	snapDat := filepath.Join(snapDir, database.SnapshotDataFile)
+	if _, err := os.Stat(snapDat); err != nil {
+		t.Fatalf("swapped snapshot.dat: %v", err)
+	}
+	if _, err := os.Stat(snapDat + database.SnapshotKeyedSuffix); !os.IsNotExist(err) {
+		t.Fatalf("snapshot under a store staged a sibling: %v", err)
 	}
 }
 

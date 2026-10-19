@@ -90,6 +90,17 @@ func TestReplicaForwardingOption_ComposesOnARaftNode(t *testing.T) {
 	}
 }
 
+// TestReplicaForwardingOption_RefusesUnwiredServices: forwarding asked for on
+// a raft node whose services are not wired fails at the embedded client
+// rather than start a locator it cannot read through.
+func TestReplicaForwardingOption_RefusesUnwiredServices(t *testing.T) {
+	f := &startFlags{replicaForwarding: true, replicaForwardingTimeout: "3s"}
+	opt, err := replicaForwardingOption(context.Background(), f, false, newForwardingPlacements(t), nil, nil, nil, nil, nil)
+	if err == nil || opt != nil {
+		t.Fatalf("replicaForwardingOption = %v, %v; want the embedded client's error", opt, err)
+	}
+}
+
 // TestReplicaForwardingOption_NotComposedWhereNothingForwards: off, a
 // standalone node, or no placement table compose nothing; a bad timeout is
 // the config's validation error.

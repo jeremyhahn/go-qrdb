@@ -73,6 +73,26 @@ func TestRestoreShardFromBackup_MissingBackupFailsVerify(t *testing.T) {
 	}
 }
 
+// TestRestoreShardFromBackup_UnopenableBackupDir: a --backup-dir naming a
+// regular file cannot hold a backup repository, and the restore fails at
+// opening it, before any verify or shard work.
+func TestRestoreShardFromBackup_UnopenableBackupDir(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+	f := &startFlags{backupDir: notADir, restoreBackupID: "some-backup-id"}
+
+	err := restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: 1}, nil, audit.FailClosed)
+	var restoreErr *RestoreBackupError
+	if !errors.As(err, &restoreErr) {
+		t.Fatalf("restoreShardFromBackup: err = %v (%T), want *RestoreBackupError", err, err)
+	}
+	if restoreErr.Phase != "open-backup-store" {
+		t.Fatalf("restoreShardFromBackup: Phase = %q, want %q", restoreErr.Phase, "open-backup-store")
+	}
+}
+
 // fixtureSnapshotProvider is a minimal service.ShardSnapshotProvider used
 // only to seed a real, encrypted backup into a file-backed sink for
 // TestRestoreShardFromBackup_DecryptFailureIsNotMisreportedAsShardMissing.

@@ -269,7 +269,8 @@ func TestClusterCoordinatorMigrator(t *testing.T) {
 }
 
 // TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds proves the accepting
-// node holds nothing for a scope it does not own, nor for a Shamir target.
+// node holds nothing for a scope it does not own, nor for a Shamir target,
+// nor for a request that carries no credential to hold.
 func TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]struct {
@@ -277,6 +278,11 @@ func TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds(t *testing.T) {
 		opts   seal.MigrationOptions
 	}{
 		"not an owner": {[]string{"n2"}, validMigOpts()},
+		"no credential": {[]string{"n1"}, func() seal.MigrationOptions {
+			o := validMigOpts()
+			o.Credentials = seal.Credentials{}
+			return o
+		}()},
 		"shamir target": {[]string{"n1"}, seal.MigrationOptions{
 			TargetStrategy: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
 			Availability: seal.AvailabilityQuiesced, ShamirThreshold: 2, ShamirTotal: 3,

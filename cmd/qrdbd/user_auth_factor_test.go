@@ -205,6 +205,16 @@ func TestBuildUserAuthFactorServiceOption_NoResolver(t *testing.T) {
 	assert.Nil(t, opt)
 }
 
+// TestBuildUserAuthFactorServiceOption_NilLoggerDefaults: a caller that
+// passes no logger still gets the routed service, logging through the
+// process default rather than refused.
+func TestBuildUserAuthFactorServiceOption_NilLoggerDefaults(t *testing.T) {
+	resolver, store := newDaemonStoreResolver(t, "acme")
+	opt, err := buildUserAuthFactorServiceOption(context.Background(), resolver, store, nil, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, opt)
+}
+
 // ListAll mirrors List on this double: it applies no internal-key guard, so
 // the filtered and unfiltered enumerations are the same call.
 func (f fakeAuthFactorKV) ListAll(ctx context.Context, prefix string) ([]string, error) {

@@ -744,6 +744,31 @@ func TestLoadTLSFromFilesWithExtra_AdditionalCASymlinkLoopError(t *testing.T) {
 		"symlink-loop in additionalCAs must cause loadTLSFromFilesWithExtra to return an error")
 }
 
+// TestLoadTLSFromFilesWithExtra_ClientCASymlinkLoopError is the client-auth
+// half: a symlink-cycle path in clientCAFiles fails the load too, rather than
+// leave the client pool holding the primary CA alone.
+func TestLoadTLSFromFilesWithExtra_ClientCASymlinkLoopError(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	caPath := filepath.Join(dir, "ca.pem")
+	certPath := filepath.Join(dir, "node-cert.pem")
+	keyPath := filepath.Join(dir, "node-key.pem")
+	require.NoError(t, os.WriteFile(caPath, bundle.CACertPEM, 0o600))
+	require.NoError(t, os.WriteFile(certPath, bundle.CertPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyPath, bundle.KeyPEM, 0o600))
+
+	loopA := filepath.Join(dir, "client-a.pem")
+	loopB := filepath.Join(dir, "client-b.pem")
+	require.NoError(t, os.Symlink(loopB, loopA))
+	require.NoError(t, os.Symlink(loopA, loopB))
+
+	_, err = loadTLSFromFilesWithExtra(caPath, certPath, keyPath, nil, []string{loopA})
+	require.Error(t, err,
+		"symlink-loop in clientCAFiles must cause loadTLSFromFilesWithExtra to return an error")
+}
+
 // ---------------------------------------------------------------------------
 // bootstrap.go: startBootstrapServers — WriteFile failure on key path (line 349-351)
 // ---------------------------------------------------------------------------

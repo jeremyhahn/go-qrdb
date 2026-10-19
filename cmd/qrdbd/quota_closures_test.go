@@ -112,3 +112,51 @@ func TestBuildQuotaReconciler_RunOnceDrivesClosures(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildQuotaReconciler_RunOnceWalksVolumeDataRoot passes the barrier
+// registry, so the Tenants closure resolves the volume tenant's local data
+// root and the cycle writes the walked size back through the SetUsage closure.
+// Without the registry the reconciler never learns a data root and skips the
+// tenant, so SetUsage would never run.
+func TestBuildQuotaReconciler_RunOnceWalksVolumeDataRoot(t *testing.T) {
+	svc, reg := newReattachFixture(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "qvol", "Quota Volume", tenant.IsolationVolume); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := reg.LocalTenantDataRoot(ctx, "qvol"); err != nil {
+		t.Fatalf("LocalTenantDataRoot: %v", err)
+	}
+
+	acct := buildQuotaAccountant(svc)
+	if acct == nil {
+		t.Fatal("expected non-nil accountant")
+	}
+	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{}, reg)
+	if rec == nil {
+		t.Fatal("expected non-nil reconciler")
+	}
+	if _, err := svc.IncrementQuotaUsage(ctx, "qvol", quota.ResourceStorageBytes, 1<<40); err != nil {
+		t.Fatalf("IncrementQuotaUsage: %v", err)
+	}
+
+	rec.RunOnce(ctx)
+
+	info, err := svc.GetTenant(ctx, "qvol")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if info.Quotas == nil {
+		t.Fatal("tenant has no quota state after a reconcile")
+	}
+	used, err := info.Quotas.CurrentUsage(quota.ResourceStorageBytes)
+	if err != nil {
+		t.Fatalf("CurrentUsage: %v", err)
+	}
+	// The seeded usage is far beyond anything the fresh data root holds: the
+	// reconciler replaced it with the walked size.
+	if used < 0 || used >= 1<<40 {
+		t.Fatalf("reconciled usage = %d, want the walked data-root size", used)
+	}
+}
