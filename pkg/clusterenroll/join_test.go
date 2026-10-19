@@ -445,56 +445,12 @@ func TestJoin_TokenlessApprovalQueue_PollsUntilApproved(t *testing.T) {
 // Join directly -- only through cmd/qrdbd's own operator-wiring test, whose
 // coverage is attributed to cmd/qrdbd's profile, not this package's.
 func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
-	provider := newTestClusterCAProvider(t)
-	caCert, err := provider.Certificate(context.Background())
-	if err != nil {
-		t.Fatalf("Certificate: %v", err)
-	}
-	caCertPEM, err := clusterca.CACertPEM(context.Background(), provider)
-	if err != nil {
-		t.Fatalf("CACertPEM: %v", err)
-	}
-
-	store := kvstore.NewMemoryKVStore()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/ca/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/pem-certificate-chain")
-		_, _ = w.Write(caCertPEM)
-	})
-	mux.HandleFunc(JoinHTTPPath, func(w http.ResponseWriter, r *http.Request) {
-		var req JoinRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req, nil)
-		respBody, err := json.Marshal(resp)
-		if err != nil {
-			http.Error(w, "marshal failed", http.StatusInternalServerError)
-			return
-		}
-		if resp.Error != "" {
-			w.WriteHeader(http.StatusForbidden)
-		}
-		_, _ = w.Write(respBody)
-	})
-	srv := httptest.NewTLSServer(mux)
-	defer srv.Close()
-	sum := sha256.Sum256(srv.Certificate().RawSubjectPublicKeyInfo)
-	pin := hex.EncodeToString(sum[:])
-	serverAddr := strings.TrimPrefix(srv.URL, "https://")
-	token := mintTestJoinToken(t, store, "127.0.0.1:63098")
-
+	caCert, bootstrap := startSPKIJoinFixture(t, "127.0.0.1:63098")
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63098",
 		TrustDomain: "test.cluster",
 		DataDir:     t.TempDir(),
-		Bootstrap: BootstrapOptions{
-			SPKIPin:     pin,
-			ServerAddr:  serverAddr,
-			JoinHTTPURL: srv.URL,
-			JoinToken:   token,
-		},
+		Bootstrap:   bootstrap,
 	}
 	mat, err := Join(context.Background(), opts, discardLogger())
 	if err != nil {
