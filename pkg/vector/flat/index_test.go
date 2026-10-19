@@ -850,6 +850,95 @@ func TestFlatIndex_Close_Idempotent(t *testing.T) {
 	}
 }
 
+// storeForeignEntries plants map entries Insert never writes, so the type
+// guards in Search and Marshal are exercised.
+func storeForeignEntries(idx *Index) {
+	idx.vectors.Store("not-a-uint64", []float32{1, 2})
+	idx.vectors.Store(uint64(99), "not-a-vector")
+}
+
+func TestFlatIndex_Search_SkipsForeignEntries(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	if err := idx.Insert(1, []float32{1, 0}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	storeForeignEntries(idx)
+
+	results, err := idx.Search([]float32{1, 0}, 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != 1 {
+		t.Fatalf("Search results = %+v, want only ID 1", results)
+	}
+}
+
+func TestFlatIndex_Search_OnlyForeignEntriesIsEmpty(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	if err := idx.Insert(1, []float32{1, 0}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	idx.vectors.Delete(uint64(1))
+	storeForeignEntries(idx)
+
+	if _, err := idx.Search([]float32{1, 0}, 1); !errors.Is(err, ErrEmptyIndex) {
+		t.Fatalf("Search error = %v, want ErrEmptyIndex", err)
+	}
+}
+
+func TestFlatIndex_Search_DistanceBatchError(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	if err := idx.Insert(1, []float32{1, 0}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	// A stored vector of the wrong width makes the batch computation fail.
+	idx.vectors.Store(uint64(2), []float32{1, 0, 0})
+
+	_, err := idx.Search([]float32{1, 0}, 1)
+	var mismatch *hnsw.DimensionMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("Search error = %v, want *hnsw.DimensionMismatchError", err)
+	}
+}
+
+func TestFlatIndex_Marshal_SkipsForeignEntries(t *testing.T) {
+	idx := NewIndex(hnsw.CosineDistance)
+	if err := idx.Insert(7, []float32{0.5, 0.5}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	storeForeignEntries(idx)
+
+	data, err := idx.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	restored := NewIndex(hnsw.L2Distance)
+	if err := restored.Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got := restored.Count(); got != 1 {
+		t.Fatalf("restored Count() = %d, want 1", got)
+	}
+}
+
+func TestFlatIndex_Marshal_NaNFails(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	if err := idx.Insert(1, []float32{float32(math.NaN()), 1}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := idx.Marshal(); err == nil {
+		t.Fatal("Marshal(NaN vector) = nil error, want one")
+	}
+}
+
+func TestFlatIndex_Unmarshal_InvalidVectorFails(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	err := idx.Unmarshal([]byte(`{"DistMetric":0,"Dimensions":2,"Vectors":{"1":[]}}`))
+	if !errors.Is(err, ErrInvalidVector) {
+		t.Fatalf("Unmarshal error = %v, want ErrInvalidVector", err)
+	}
+}
+
 // BenchmarkFlatIndex_Search_1K benchmarks search performance on 1K vectors.
 func BenchmarkFlatIndex_Search_1K(b *testing.B) {
 	benchmarkFlatSearch(b, 1000, 32, 10)
