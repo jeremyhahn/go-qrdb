@@ -146,6 +146,11 @@ func registerAdminGrants() {
 		// owns the full lifecycle of the SSH keys, known hosts, and authorized
 		// keys the deployment manages.
 		SSHRead, SSHWrite, SSHDelete,
+		// Device onboarding and OTA update activation and confirmation, in
+		// the Admin's own tenant only (ScopeSelf). A tenant Admin does
+		// everything in its tenant except key custody, and onboarding a
+		// device or rolling out an update is neither.
+		DevicesOnboard, OTAActivate, OTAConfirm,
 		// Seal management (operational subset: no bootstrap, rotate, rekey)
 		SealUnseal, SealSeal, SealStatus,
 		// Share-holder enrolment and revocation. An Admin and a Security

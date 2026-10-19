@@ -166,6 +166,12 @@ func selfScopedPermissions() []Permission {
 		// another tenant; the keyring service closes that by acting on the
 		// caller's own tenant only.
 		DEKEncrypt, DEKDecrypt, DEKRewrap, DEKRotate, DEKRetire, DEKStatus,
+
+		// devices. Each tenant onboards its own devices: the grant acts in
+		// the holder's own tenant and in no other, the system tenant's
+		// included.
+		DevicesOnboard,
+
 		// embedding
 		EmbeddingEmbed,
 		EmbeddingListModels,
@@ -225,6 +231,11 @@ func selfScopedPermissions() []Permission {
 
 		// orchestrator
 		OrchestratorHealth,
+
+		// ota. Each tenant activates and confirms updates for its own
+		// devices only, as with devices:onboard.
+		OTAActivate,
+		OTAConfirm,
 
 		// passwords
 		PasswordsDelete,

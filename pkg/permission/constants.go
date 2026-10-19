@@ -461,6 +461,33 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// Device onboarding and over-the-air (OTA) update permissions
+//
+// Onboarding a device and activating or confirming an OTA update are
+// permissions, not roles: a role carries them, and a tenant's custom role may
+// carry them alone. go-qrdb holds no device or update records itself; it owns
+// the vocabulary so every layer that onboards devices or ships updates asks
+// the one policy decision point. All three are ScopeSelf (self_scope.go): a
+// grant held in one tenant acts on that tenant's devices and no other's.
+// ---------------------------------------------------------------------------
+
+const (
+	// DevicesOnboard grants access to onboard a device into the caller's own
+	// tenant: admitting it and binding its identity to that tenant.
+	DevicesOnboard Permission = "devices:onboard"
+)
+
+const (
+	// OTAActivate grants access to activate an over-the-air update for the
+	// caller's own tenant's devices: switching a device to the staged image.
+	OTAActivate Permission = "ota:activate"
+	// OTAConfirm grants access to confirm an activated over-the-air update
+	// for the caller's own tenant's devices: committing the image so the
+	// device no longer rolls back to the previous one.
+	OTAConfirm Permission = "ota:confirm"
+)
+
+// ---------------------------------------------------------------------------
 // Seal management permissions
 // ---------------------------------------------------------------------------
 
@@ -1106,6 +1133,20 @@ var categories = []Category{
 		Group: "Security Services",
 		Permissions: []Permission{
 			SSHRead, SSHWrite, SSHDelete,
+		},
+	},
+	{
+		Name:  "Device Onboarding",
+		Group: "Device Services",
+		Permissions: []Permission{
+			DevicesOnboard,
+		},
+	},
+	{
+		Name:  "OTA Updates",
+		Group: "Device Services",
+		Permissions: []Permission{
+			OTAActivate, OTAConfirm,
 		},
 	},
 	{

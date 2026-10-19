@@ -563,6 +563,31 @@ the build no longer defines. It is never persisted — one marshal seam clears i
 — so it can only ever report the current disagreement, and it is the field an
 operator reads on a listing to see which tenants need converging.
 
+### Device onboarding and OTA updates
+
+Device onboarding and over-the-air update control are **permissions, not
+roles**, in the one RBAC model every layer above inherits. qrdb holds no device
+or update records; it owns the vocabulary, so the layer that admits devices and
+ships updates gates on these exact strings through the same PDP:
+
+| Permission | Grants |
+|---|---|
+| `devices:onboard` | Admit a device into the caller's own tenant and bind its identity there. |
+| `ota:activate` | Activate a staged update image on the tenant's own devices. |
+| `ota:confirm` | Confirm an activated image, so the device no longer rolls back. |
+
+All three are `ScopeSelf`: each tenant onboards and updates its own devices,
+and a grant held in one tenant reaches no other — the system tenant's included,
+since `ScopeSelf` carries no system-tenant lift. The confinement is checked
+against the target tenant the handler names (`AuthorizeTenant`), never against
+the caller's own.
+
+Of the default roles, the tenant **Admin** carries all three: it does
+everything in its tenant except key custody, and onboarding a device or rolling
+out an update is neither. **User** (a crypto consumer) and **Auditor**
+(read-only) carry none. A tenant provisioned before these grants existed gains
+them through `ReconcileBuiltInRoles`; a custom role may grant any of them.
+
 ## The canonical login key
 
 Identity in qrdb has two handles, and they answer different questions.
