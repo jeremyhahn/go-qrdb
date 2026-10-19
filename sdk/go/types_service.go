@@ -15,6 +15,7 @@
 package sdk
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -28,6 +29,31 @@ type KVServicer = service.KVServicer
 
 // AdminServicer is the service-layer interface for admin/cluster operations.
 type AdminServicer = service.AdminServicer
+
+// CompactionPolicy is the scheduled-compaction policy AdminServicer's
+// NodeCompaction returns and SetNodeCompaction takes. A nil policy, or one
+// whose mode is CompactionOff, compacts nothing.
+type CompactionPolicy = compaction.Policy
+
+// CompactionMode selects a CompactionPolicy: CompactionOff, CompactionRevision
+// or CompactionPeriod.
+type CompactionMode = compaction.Mode
+
+// The CompactionMode values. An empty mode means CompactionOff.
+const (
+	CompactionOff      = compaction.Off
+	CompactionRevision = compaction.Revision
+	CompactionPeriod   = compaction.Period
+)
+
+// CompactionMinRetainPeriod is the shortest RetainPeriod a period policy
+// accepts.
+const CompactionMinRetainPeriod = compaction.MinRetainPeriod
+
+// CompactionInvalidPolicyError is returned by CompactionPolicy.Validate, and by
+// SetNodeCompaction, for a policy with an unknown mode, a field that does not
+// belong to its mode, or an out-of-range retention.
+type CompactionInvalidPolicyError = compaction.InvalidPolicyError
 
 // ServiceBatchServicer is the service-layer interface for atomic batch
 // operations. A consumer passes a value of this type to
