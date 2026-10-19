@@ -145,3 +145,48 @@ func TestFormatTypeWithChildrenRebuilds(t *testing.T) {
 	_, err = call.WithChildren(ctx, expression.NewLiteral(uint32(16), types.Uint32))
 	require.Error(t, err, "the arity is part of the contract")
 }
+
+// failingExpression is a resolved literal whose evaluation fails with err.
+type failingExpression struct {
+	sqle.Expression
+	err error
+}
+
+func (f failingExpression) Eval(*sqle.Context, sqle.Row) (interface{}, error) {
+	return nil, f.err
+}
+
+// TestFormatTypeEvalPropagatesAnArgumentFailure covers both arguments: a
+// failure evaluating either one is returned, never a type name.
+func TestFormatTypeEvalPropagatesAnArgumentFailure(t *testing.T) {
+	ctx := sqle.NewEmptyContext()
+	want := &unreadableDatabaseError{Name: "format_type"}
+	oid := expression.NewLiteral(uint32(20), types.Uint32)
+	typmod := expression.NewLiteral(int32(-1), types.Int32)
+
+	cases := []struct {
+		name        string
+		oid, typmod sqle.Expression
+	}{
+		{"oid", failingExpression{Expression: oid, err: want}, typmod},
+		{"typmod", oid, failingExpression{Expression: typmod, err: want}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			two := NewFormatType().(sqle.Function2) //nolint:errcheck // constructed directly above
+			value, err := two.Fn(ctx, tc.oid, tc.typmod).Eval(ctx, nil)
+			assert.Nil(t, value)
+			require.ErrorIs(t, err, want)
+		})
+	}
+}
+
+// TestFormatTypeStringNamesTheCall covers the expression's rendering in
+// plans and error messages.
+func TestFormatTypeStringNamesTheCall(t *testing.T) {
+	two := NewFormatType().(sqle.Function2) //nolint:errcheck // constructed directly above
+	call := two.Fn(sqle.NewEmptyContext(),
+		expression.NewLiteral(uint32(20), types.Uint32),
+		expression.NewLiteral(int32(-1), types.Int32))
+	assert.Equal(t, FormatTypeFunction+"(20, -1)", call.String())
+}
