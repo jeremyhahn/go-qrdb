@@ -33,6 +33,7 @@ import (
 )
 
 func TestCoordinator_SameOnEveryTransport(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

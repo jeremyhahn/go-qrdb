@@ -82,6 +82,7 @@ type caListCertsCLIJSON struct {
 // issue, list, info, bundle, revoke, export-bundle -- through the CLI binary
 // against every transport sharing one multiProtoNode.
 func TestCA_CLI_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

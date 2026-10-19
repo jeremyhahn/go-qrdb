@@ -102,6 +102,7 @@ type vectorSearchMetadataResponseJSON struct {
 // namespace management, CRUD, search, and index/compaction maintenance --
 // through the CLI binary against every transport sharing one multiProtoNode.
 func TestVector_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

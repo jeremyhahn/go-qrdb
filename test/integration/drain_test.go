@@ -50,6 +50,7 @@ type drainProtocol struct {
 // Because the nodes are fully isolated, every drain operates on a pristine node
 // and succeeds, and the test drains no shared resource.
 func TestAdminDrain_PerProtocol(t *testing.T) {
+	t.Parallel()
 	protocols := []drainProtocol{
 		{name: "rest", scheme: "https", tls: true},
 		{name: "grpc", scheme: "grpcs", tls: true},
@@ -60,6 +61,7 @@ func TestAdminDrain_PerProtocol(t *testing.T) {
 
 	for _, proto := range protocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startDrainNode(t)
 
 			var serverURL string

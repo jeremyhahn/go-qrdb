@@ -1155,9 +1155,11 @@ func (n *sealNodeAllTransports) endpointFor(proto multiProtocol) endpoint {
 	return endpoint{serverURL: n.serverURLFor(proto), caFile: n.caFile}
 }
 func TestBarrierCLI_OfficerRevoke(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			testBarrierOfficerRevokeOverProtocol(t, proto)
 		})
 	}
@@ -1236,9 +1238,11 @@ func testBarrierOfficerRevokeOverProtocol(t *testing.T, proto multiProtocol) {
 }
 
 func TestBarrierCLI_QuorumBegin(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			testBarrierQuorumBeginOverProtocol(t, proto)
 		})
 	}
@@ -1396,9 +1400,11 @@ func claimEnvelopeTwoStep(t *testing.T, cli, dir string, ep endpoint, off *offic
 // each proving the passphrase domain's commands gate the data plane
 // identically regardless of transport.
 func TestBarrierCLI_PassphraseLifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			testBarrierPassphraseLifecycleOverProtocol(t, proto)
 		})
 	}
@@ -1505,9 +1511,11 @@ func testBarrierPassphraseLifecycleOverProtocol(t *testing.T, proto multiProtoco
 // revoked), and the independent recovery domain
 // (generate/claim/recover/delete/status) with its own holders.
 func TestBarrierCLI_ShamirLifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			testBarrierShamirLifecycleOverProtocol(t, proto)
 		})
 	}

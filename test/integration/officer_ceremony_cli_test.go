@@ -1162,9 +1162,11 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 // officer/quorum, so there is no architectural reason to restrict it to
 // REST the way TestCLI_Ceremony_StatusAndSubcommands above does.
 func TestCeremony_SignCSR_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range ceremonyInitProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			testCeremonySignCSROverProtocol(t, proto)
 		})
 	}
@@ -1231,9 +1233,11 @@ func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 // are reachable
 // from a cold, uninitialized barrier.
 func TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range coldSealedWindowProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			const threshold, total = 2, 3
 			node := startFreshSealedNode(t, "shamir", threshold, total)
 			noAuth := node.noAuthFlagsFor(proto)
@@ -1273,9 +1277,11 @@ func TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol(t *testing.T) {
 // TestBarrierPermutations_ShamirLifecycle_PerProtocol uses for the system
 // barrier's unseal domain -- scoped here to transport.DomainRecovery.
 func TestCLI_RecoveryOfficerFlow_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			workDir := t.TempDir()
 			node := startFreshSealedNode(t, "none", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)

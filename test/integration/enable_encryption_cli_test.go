@@ -1027,9 +1027,11 @@ func startMultiProtocolNoneSealNode(t *testing.T) *multiProtoNode {
 // identical, already-proven reason, and nothing about enable-encryption's
 // resealed window changes that constraint.
 func TestCLI_BarrierEnableEncryption_SystemScope_Lifecycle_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startMultiProtocolNoneSealNode(t)
 			restArgs := node.cliArgsFor(multiProtocols[0]) // rest
 			args := node.cliArgsFor(proto)

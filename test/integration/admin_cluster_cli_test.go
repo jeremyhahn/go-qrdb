@@ -343,6 +343,7 @@ type adminPeersDisplay struct {
 // response is a pure compile-time feature set, so every field is expected
 // to be true given buildBinary/buildCLIBinary's `qrdb_ts qrdb_vector` tags.
 func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

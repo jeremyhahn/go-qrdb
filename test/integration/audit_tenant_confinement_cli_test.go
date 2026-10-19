@@ -30,6 +30,7 @@ import (
 )
 
 func TestAudit_CLI_TenantConfinement_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	const tenantID = "audit-acme"

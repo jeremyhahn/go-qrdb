@@ -81,6 +81,7 @@ func randomCredentialHex(t *testing.T) string {
 }
 
 func TestAuthFactorAdd_Conditional_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	mp := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

@@ -287,6 +287,7 @@ var dataPlanePermissions = []string{
 // TestTenantIsolation_KVAndIAM_PerProtocol proves properties (1)-(4) from
 // the file doc comment, against every transport sharing one multiProtoNode.
 func TestTenantIsolation_KVAndIAM_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -470,6 +471,7 @@ var iamPermissions = []string{
 // assertions below therefore also confirm no tenant-B record name leaks into
 // the refused output, for every caller including the system admin.
 func TestTenantIsolation_CrossTenantIAM_FailsClosed_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -597,6 +599,7 @@ func assertCrossTenantIAMForbidden(t *testing.T, node *multiProtoNode, proto mul
 // operation, so only the barrier distinguishes the two outcomes. System-tenant
 // IAM (no --tenant-id, always the shared prefix store) is proven live too.
 func TestTenantIsolation_SealedBarrierTenantIAM_FailsClosed_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementNode(t)
 
 	for _, proto := range multiProtocols {
@@ -624,6 +627,7 @@ func TestTenantIsolation_SealedBarrierTenantIAM_FailsClosed_PerProtocol(t *testi
 // and a system-managed (UNSEALED) one must succeed with the identical command
 // and caller -- so the seal state, not RBAC, is what distinguishes the outcomes.
 func TestTenantIsolation_SealedVolumeRaftTenantIAM_FailsClosed_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementNode(t)
 
 	for _, isolationType := range []string{"volume", "raft"} {
@@ -752,6 +756,7 @@ func assertSealedIAMRefused(t *testing.T, node *multiProtoNode, proto multiProto
 // so it uses its OWN dedicated multiProtoNode rather than sharing one with
 // any other test.
 func TestTenantIsolation_SystemSealed_BlocksTenantData_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	const tenantID = "iso-seal-victim"
@@ -828,6 +833,7 @@ var dbBarrierControlPermissions = []string{
 // learns whether the database or its barrier exists, while the owner/system
 // caller passes the ownership gate and reaches the barrier layer.
 func TestTenantIsolation_CrossTenantDatabaseBarrier_FailsClosed_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -940,6 +946,7 @@ var mvccCompactPermissions = append(append([]string{}, dataPlanePermissions...),
 // revisions still reads back -- the compaction never lifted onto a keyspace
 // the tenant does not own -- while the tenant's own old revision is gone.
 func TestTenantIsolation_MVCCCompact_OwnDatabaseOnly_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

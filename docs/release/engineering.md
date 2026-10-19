@@ -252,7 +252,12 @@ root filesystem, every capability dropped, `no-new-privileges`, `/tmp` (also
 no network, and `GOMAXPROCS=8`. The suites run without `-race` (the
 Makefile's `INT_GOTEST`): race detection is the unit suites' job, which keep
 it, and under `-race` the multi-node clusters cost several times the CPU and
-wall time. The legs run in parallel, each under its own
+wall time. Within a leg, `-parallel` is the Makefile's `INT_PARALLEL`, 5,
+one per transport: a single-node test whose daemon shares no port or path
+with another calls `t.Parallel()`, and a per-protocol test whose subtests
+each need a fresh daemon (an init, seal or drain is one-shot) runs those
+subtests in parallel, while a per-protocol test whose subtests are
+independent shares one daemon across every transport. The legs run in parallel, each under its own
 `timeout-minutes: 45`; the 45-minute limit is not raised. A feature whose
 `features.mk` entry is empty is not a leg: it would run zero tests and pass.
 `fail-fast` is `false`, so one red leg does not cancel the others.

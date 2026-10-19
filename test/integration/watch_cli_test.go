@@ -267,6 +267,7 @@ func putUntilObserved(t *testing.T, node *multiProtoNode, proto multiProtocol, w
 // before any event is observed -- through the CLI binary against every
 // transport sharing one multiProtoNode.
 func TestWatch_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -450,6 +451,7 @@ func assertWatchReplayIdentical(t *testing.T, label string, got map[string]strin
 // transports for each variant -- proving the durable revision-index replay
 // behind --start-revision is transport-agnostic.
 func TestWatchReplay_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	plainOut := map[string]string{}
@@ -709,6 +711,7 @@ func TestWatchReplay_CLI_RestartSurvival(t *testing.T) {
 // ..." and exits 0 -- both are asserted, per transport, to actually surface
 // the compacted condition rather than masking it.
 func TestWatchReplay_CLI_Compacted(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -788,6 +791,7 @@ func testWatchReplayCompactedOverProtocol(t *testing.T, node *multiProtoNode, pr
 // shot with NO retry: if the cursor fix regresses and the old poll-gap loss
 // reappears, this test must fail rather than quietly retrying past it.
 func TestWatchReplay_CLI_MCP_NoLoss(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	proto := multiProtocol{name: "mcp", scheme: "mcp"}
 

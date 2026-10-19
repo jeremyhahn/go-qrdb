@@ -80,6 +80,7 @@ type userListCLIJSON struct {
 // -- through the CLI binary against every transport sharing one
 // multiProtoNode.
 func TestUsers_CLI_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -240,6 +241,7 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 // proves the lifecycle is checked on every request, not only when a
 // credential is issued.
 func TestUsers_CLI_SuspendUnsuspend_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -405,6 +407,7 @@ func requireRefusedPromptly(t *testing.T, proto multiProtocol, step string, requ
 // embedded transport has no CLI, so it drives the login ceremony directly and
 // reads the Subject of the identity each login returns.
 func TestUsers_CLI_SubjectIsUserID_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

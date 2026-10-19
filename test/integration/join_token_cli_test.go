@@ -158,6 +158,7 @@ func leafURISANs(t *testing.T, certPEM []byte) []string {
 // one), then redeem the SAME token again and confirm it is refused --
 // single-use, consumed atomically on first use, per docs/clustering/cli.md.
 func TestAdminJoinTokenMint_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startSelfIssuedCAMultiProtocolNode(t)
 
 	// redeemableToken/redeemableNodeID carry the one token minted below
@@ -261,6 +262,7 @@ func TestAdminJoinTokenMint_CLI_PerProtocol(t *testing.T) {
 // is simply no join-token store to mint into, confirmed directly from that
 // source rather than assumed.
 func TestAdminJoinTokenMint_CLI_BYOTLSRefusal(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -284,6 +286,7 @@ func TestAdminJoinTokenMint_CLI_BYOTLSRefusal(t *testing.T) {
 // refused with the typed *clusterenroll.RetiredJoinIdentityError -- not
 // merely that the retire call itself returned success.
 func TestAdminJoinTokenRetire_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startSelfIssuedCAMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -326,6 +329,7 @@ func TestAdminJoinTokenRetire_CLI_PerProtocol(t *testing.T) {
 // pkg/service.AdminService's shared joinToken state), so a BYO-TLS node --
 // no join-token store configured at all -- refuses it identically.
 func TestAdminJoinTokenRetire_CLI_BYOTLSRefusal(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

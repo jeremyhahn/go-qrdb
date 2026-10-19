@@ -47,6 +47,7 @@ import (
 // multiProtoNode. Each protocol subtest operates on its own uniquely-named
 // database(s) so protocols never contend over the same resource.
 func TestDatabaseLifecycle_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -255,6 +256,7 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 // (pebble, shared-store) path is already proven by
 // TestDatabaseLifecycle_CLI_PerProtocol.
 func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	proto := multiProtocols[0] // rest
 
@@ -309,6 +311,7 @@ func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
 // database (a fresh --data-dir) so protocols never contend over the same
 // barrier.
 func TestDatabaseBarrier_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

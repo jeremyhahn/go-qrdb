@@ -162,6 +162,7 @@ func byShard(resp *transport.StateHashesResponse) map[replicaKey]transport.Repli
 // TestAdminStateHash_CLI_PerProtocol drives `qrdb admin state-hash` through
 // the CLI binary against every transport sharing one multiProtoNode.
 func TestAdminStateHash_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

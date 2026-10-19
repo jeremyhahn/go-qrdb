@@ -140,6 +140,7 @@ func startStandaloneModeNode(t *testing.T, backend string) *multiProtoNode {
 //     docs/run-modes.md),
 //  3. the coordination families (MVCC revision, lease grant) are served.
 func TestStandaloneMode_StandardOpsAndRefusals_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startStandaloneModeNode(t, "pebble")
 
 	for _, proto := range multiProtocols {

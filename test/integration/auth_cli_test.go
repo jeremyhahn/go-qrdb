@@ -90,6 +90,7 @@ type authLoginCLIJSON struct {
 // factor credential (no hardware dependency, exercising the qrdb-native
 // lookup-key resolution path end-to-end).
 func TestAuth_CLI_Login_And_Factor_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -261,6 +262,7 @@ func testAuthLoginAndFactorLifecycleOverProtocol(t *testing.T, node *multiProtoN
 // binds to the same user again, while a revoked factor refuses deletion and
 // keeps its certificate claimed.
 func TestAuthFactorDelete_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

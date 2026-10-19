@@ -270,8 +270,10 @@ func (n *permNode) waitForFullBoot(t *testing.T) {
 // immediately-unsealed, fully operational state identically on every
 // transport.
 func TestBarrierPermutations_None_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range coldSealedWindowProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startFreshSealedNode(t, "none", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)
 
@@ -315,9 +317,12 @@ func TestBarrierPermutations_None_PerProtocol(t *testing.T) {
 // protocol, naming `qrdb init` -- the only system bootstrap -- and leaves
 // the barrier sealed.
 func TestBarrierPermutations_SystemBarrierInitRefused_PerProtocol(t *testing.T) {
+	t.Parallel()
+	// One fresh node serves every transport: a refused init changes no
+	// state, and each subtest asserts exactly that before the next runs.
+	node := startFreshSealedNode(t, "none", 0, 0)
 	for _, proto := range coldSealedWindowProtocols {
 		t.Run(proto.name, func(t *testing.T) {
-			node := startFreshSealedNode(t, "none", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)
 			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
 
@@ -347,8 +352,10 @@ func TestBarrierPermutations_SystemBarrierInitRefused_PerProtocol(t *testing.T) 
 // wrong/right, seal, data-plane proof) but loops the full canonical
 // multiProtocols table instead of exercising REST alone.
 func TestBarrierPermutations_PassphraseLifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range coldSealedWindowProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startFreshSealedNode(t, "passphrase", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)
 			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
@@ -428,8 +435,10 @@ func TestBarrierPermutations_PassphraseLifecycle_PerProtocol(t *testing.T) {
 // loop to bound the number of daemons this file boots; see the file-level
 // comment.
 func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range coldSealedWindowProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			workDir := t.TempDir()
 			const threshold, total = 2, 3
 			node := startFreshSealedNode(t, "shamir", threshold, total)
@@ -538,8 +547,10 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 //     Sealed. A genuinely unreachable daemon (nothing listening,
 //     TLS/handshake failure, etc.) still fails Connect().
 func TestBarrierPermutations_SealedWindowConnectivity_AllProtocols(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startFreshSealedNode(t, "passphrase", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)
 
@@ -593,8 +604,10 @@ func TestBarrierPermutations_SealedWindowConnectivity_AllProtocols(t *testing.T)
 // answer, gets the typed sealed refusal. Both the JSON and the text output
 // are asserted, because the text is what an operator reads.
 func TestBarrierPermutations_PreInitStatus_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range coldSealedWindowProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startFreshSealedNode(t, "passphrase", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)
 			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)

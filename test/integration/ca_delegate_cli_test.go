@@ -505,6 +505,7 @@ const expiringDelegationTTL = "10s"
 // cannot issue one for a built-in role, beyond the maximum lifetime, or for a
 // permission the node does not know.
 func TestCADelegate_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node, adminB, keyB := startDelegationNode(t)
 	protocols := multiProtocols
 	waitForDelegationNode(t, node, protocols)

@@ -65,6 +65,7 @@ var permissionDeniedStatus = map[string]int{
 }
 
 func TestKVReadPermission_DeniedWithoutGetOrRange_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

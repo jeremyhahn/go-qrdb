@@ -70,6 +70,7 @@ type credentialRotateCLIJSON struct {
 // retrieve-version, gc, delete -- through the CLI binary against every
 // transport sharing one multiProtoNode.
 func TestCredential_CLI_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

@@ -159,6 +159,7 @@ func createTrustAnchorTenantAdmin(t *testing.T, node *multiProtoNode, proto mult
 // cap is provable in two CLI calls (32 fresh anchors in one bundle, then
 // one more) rather than 33.
 func TestTrustAnchors_CLI_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -251,6 +252,7 @@ func TestTrustAnchors_CLI_Lifecycle_PerProtocol(t *testing.T) {
 // it names a foreign --tenant-id, on every transport, while its own tenant
 // remains reachable.
 func TestTrustAnchors_CLI_CrossTenantDenied_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	const tenantID = "ta-acme"
@@ -313,6 +315,7 @@ func assertBYOCCertRefused(t *testing.T, cli string, conn []string, proto multiP
 // anchor, the SAME certificate is refused -- not merely until some cache
 // expires.
 func TestTrustAnchors_CLI_BYOCAdmitsThenRefused_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

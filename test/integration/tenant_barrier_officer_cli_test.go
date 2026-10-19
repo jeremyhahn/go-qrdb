@@ -149,6 +149,7 @@ func tenantQuorumSubmit(t *testing.T, node *multiProtoNode, proto multiProtocol,
 // CLI binary against every transport, proving the happy path the
 // package-level comment above describes.
 func TestTenantBarrierOfficer_ShamirLifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementSelfManagedCANode(t)
 
 	for _, proto := range multiProtocols {
@@ -421,6 +422,7 @@ func startTenantEntitlementSelfManagedCANode(t *testing.T) *multiProtoNode {
 // (seal.ErrAlreadyInitialized) with nothing from the attempted roster
 // persisted -- the original holder set, unchanged.
 func TestTenantBarrierInitShamirRoster_CLI_NegativePaths_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementSelfManagedCANode(t)
 
 	for _, proto := range multiProtocols {

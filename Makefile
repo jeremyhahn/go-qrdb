@@ -76,7 +76,16 @@ GOTEST        := $(GO) test -race -count=1 -v -timeout=$(GOTEST_TIMEOUT)
 # detection is the unit suites' job, which keep GOTEST; under -race the
 # multi-node cluster suites cost several times the CPU and wall time, and the
 # pull-request pipeline has one hour.
-INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT)
+#
+# INT_PARALLEL is the per-feature run's -parallel: how many t.Parallel tests
+# and subtests run at once. Each one is a single-node qrdbd (or one cluster)
+# on its own reserved ports, data directories and socket directory, so they
+# share nothing but CPU. 5 is one per transport, so a per-protocol test whose
+# subtests each boot their own daemon runs them in one wave, and it keeps the
+# qrdbd count a CI leg starts (GOMAXPROCS=8, go test's default otherwise)
+# within the leg's CPU budget.
+INT_PARALLEL  ?= 5
+INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -parallel $(INT_PARALLEL)
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt

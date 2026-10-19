@@ -66,6 +66,7 @@ type cliListVolumePoolTenantsJSON struct {
 // transport (docs/volume-pools/api.md: Tier 1, every capability on all six
 // transports).
 func TestVolumePool_CLI_CRUD_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

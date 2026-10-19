@@ -42,6 +42,7 @@ type restartTenant struct {
 // through the barrier before the restart, then authorise the same identity
 // through RBAC again -- the barrier opens the data it sealed.
 func TestTenantBarrier_ProviderBackedSurvivesRestart_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementNode(t)
 
 	tenants := make(map[string]restartTenant, len(multiProtocols))

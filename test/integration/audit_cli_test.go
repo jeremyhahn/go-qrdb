@@ -83,6 +83,7 @@ type auditPageCLIJSON struct {
 // this file's header describes and the sdk/go/transport/*/transport_audit.go
 // files fix).
 func TestAudit_CLI_Query_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -181,6 +182,7 @@ func testAuditQueryOverProtocol(t *testing.T, node *multiProtoNode, proto multiP
 // that proves IAM mutations now emit compliance AuditEvents end-to-end
 // (pkg/role/pkg/user/pkg/credentials Emit + daemon wiring in start.go).
 func TestAudit_CLI_RealFlow_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -289,6 +291,7 @@ func auditTotalValid(total, numEvents int) bool {
 // chain-verification call (go-qrdb#453) is wired symmetrically across REST,
 // gRPC, QUIC, MCP and Unix, not merely reachable on one of them.
 func TestAudit_CLI_Verify_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

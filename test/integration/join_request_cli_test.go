@@ -132,6 +132,7 @@ func pollTokenlessCSR(t *testing.T, node *selfIssuedCANode, csrDER []byte, nodeU
 // for why redemption traffic against the join listener is proven once,
 // globally, rather than once per transport.
 func TestAdminJoinRequest_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startSelfIssuedCAMultiProtocolNode(t)
 
 	selfReportedURIA := spiffe.NodeURI(clusterTestTrustDomain, "self-reported-a")

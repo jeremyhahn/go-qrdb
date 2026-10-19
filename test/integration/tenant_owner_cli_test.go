@@ -44,6 +44,7 @@ import (
 // TestTenantOwner_CLI_DemotionTakesEffectOnTheNextRequest_PerProtocol runs
 // the tenant Admin lifecycle over every transport.
 func TestTenantOwner_CLI_DemotionTakesEffectOnTheNextRequest_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

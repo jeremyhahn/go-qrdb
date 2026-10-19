@@ -50,6 +50,7 @@ type leaseInfoDisplay struct {
 // validation errors -- through the CLI binary against every transport
 // sharing one multiProtoNode.
 func TestLease_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -304,6 +305,7 @@ func (w *renewalWindow) guaranteed() bool { return time.Now().Before(w.until) }
 // deletes the key, after which `lease ttl` reports the lease not found and
 // `lease keep-alive` cannot revive it.
 func TestLease_CLI_KeepAliveAndExpiry_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

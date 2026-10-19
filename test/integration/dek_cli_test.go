@@ -63,6 +63,7 @@ type dekStatusCLIJSON struct {
 // naming another tenant) -- through the CLI binary against every transport
 // sharing one multiProtoNode.
 func TestDEK_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

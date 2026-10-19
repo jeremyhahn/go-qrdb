@@ -66,6 +66,7 @@ import (
 // "service not configured" contract each protocol enforces when no
 // embedding.providers are configured.
 func TestEmbedding_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

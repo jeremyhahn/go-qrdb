@@ -48,6 +48,7 @@ import (
 //  3. the real CLI, `qrdb tenant barrier-init` with the first admin's own
 //     --cert-file/--key-file, proves possession and initializes the barrier.
 func TestTenantBarrierInitProof_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementNode(t)
 
 	for _, proto := range multiProtocols {

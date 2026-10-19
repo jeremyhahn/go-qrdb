@@ -46,6 +46,7 @@ type ownPermissionsCLIJSON struct {
 // exercises; every entry is concrete, carries its scope, and the answer is
 // the same over every transport.
 func TestRolesOwnPermissions_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	var first []string
@@ -97,6 +98,7 @@ func TestRolesOwnPermissions_CLI_PerProtocol(t *testing.T) {
 // TestRolesOwnPermissions_CLI_RejectsArguments shows the command takes no
 // positional argument: it answers for the caller only.
 func TestRolesOwnPermissions_CLI_RejectsArguments(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	proto := multiProtocols[0]
 	if out, err := runCLIProto(t, node, proto, "roles", "own-permissions", "someone-else"); err == nil {

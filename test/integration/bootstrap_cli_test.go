@@ -53,6 +53,7 @@ var bootstrapModes = []string{"auto", "dane", "noise", "spki", "direct"}
 // redirect message, proving the stub contract is identical regardless of
 // which transport carried the (otherwise unused) connection.
 func TestBootstrap_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -83,6 +84,7 @@ func TestBootstrap_CLI_PerProtocol(t *testing.T) {
 // tolerance is parsed entirely client-side by cobra before RunE and is
 // therefore transport-independent.
 func TestBootstrap_CLI_ArbitraryPositionalArgs(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	protocols := []multiProtocol{
 		{name: "unix", scheme: "unix"},
@@ -115,6 +117,7 @@ func TestBootstrap_CLI_ArbitraryPositionalArgs(t *testing.T) {
 // stub (a flag with no consumer would be premature), so this test pins the
 // OBSERVED behavior rather than treating it as a defect to fix.
 func TestBootstrap_CLI_UndocumentedFlagsRejected(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	proto := multiProtocol{name: "rest", scheme: "https"}
 

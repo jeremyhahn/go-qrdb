@@ -51,6 +51,7 @@ import (
 // for a sealed tenant's identity or the unseal flow could never start on
 // those transports.
 func TestTenantBarrier_SealedWindowLifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementNode(t)
 
 	for _, proto := range multiProtocols {

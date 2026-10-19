@@ -75,6 +75,7 @@ func decodeKeyWrapInfo(t *testing.T, proto multiProtocol, out string) keyWrapInf
 // naming the right key still decrypts, and that one naming a different key is
 // refused as a decryption failure rather than restoring garbage.
 func TestKeyWrapping_CLI_BackupEnvelopeRoundTrip_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -171,6 +172,7 @@ func decodeRestoreOrFail(t *testing.T, proto multiProtocol, out string, err erro
 // client-supplied path), a key file that does not exist, and a key file of the
 // wrong length -- each refused before a backup is recorded.
 func TestKeyWrapping_CLI_Refusals_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

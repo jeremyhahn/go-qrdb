@@ -330,6 +330,7 @@ func TestCLI_DatabaseBarrier_ShamirHolderLifecycle_AllTransports(t *testing.T) {
 // transport, extending database_barrier_cli_test.go's REST-only coverage
 // of the same lifecycle to gRPC, QUIC, MCP and Unix.
 func TestCLI_DatabaseBarrier_PassphraseLifecycle_AllTransports(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	const passphrase = "db-barrier-perm-passphrase-1"
 

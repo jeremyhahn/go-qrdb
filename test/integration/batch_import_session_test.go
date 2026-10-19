@@ -153,6 +153,7 @@ func kvFound(t *testing.T, client *http.Client, node *multiProtoNode, key string
 // session lifecycle over REST: Begin, two Append calls, Commit, and proves
 // the imported keys are readable afterward.
 func TestBatchImportSession_REST_RoundTrip(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	client := mtlsHTTPClientFromFiles(t, node.ca, node.clientCert, node.clientKey, 20*time.Second)
 
@@ -191,6 +192,7 @@ func TestBatchImportSession_REST_RoundTrip(t *testing.T) {
 // ImportAppend of the same sequence with identical bytes succeeds as a
 // no-op, the behavior a client retries after a dropped response relies on.
 func TestBatchImportSession_REST_IdempotentReplay(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	client := mtlsHTTPClientFromFiles(t, node.ca, node.clientCert, node.clientKey, 20*time.Second)
 
@@ -216,6 +218,7 @@ func TestBatchImportSession_REST_IdempotentReplay(t *testing.T) {
 // TestBatchImportSession_REST_SequenceGapRefused proves a gapped sequence
 // is refused before authentication's worth of work is wasted staging it.
 func TestBatchImportSession_REST_SequenceGapRefused(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	client := mtlsHTTPClientFromFiles(t, node.ca, node.clientCert, node.clientKey, 20*time.Second)
 
@@ -232,6 +235,7 @@ func TestBatchImportSession_REST_SequenceGapRefused(t *testing.T) {
 // subsequent commit reports the session gone, and nothing it staged was
 // ever imported.
 func TestBatchImportSession_REST_Abort(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	client := mtlsHTTPClientFromFiles(t, node.ca, node.clientCert, node.clientKey, 20*time.Second)
 

@@ -85,6 +85,7 @@ func unauthenticatedArgsFor(node *multiProtoNode, proto multiProtocol) []string 
 // TestInvitation_CLI_InviteAndEnroll_PerProtocol drives the full invite ->
 // enroll round trip through the CLI binary against every transport.
 func TestInvitation_CLI_InviteAndEnroll_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNodeWithConfig(t, "mvcc", invitationRedeemLimitYAML)
 
 	for _, proto := range invitationProtocols {

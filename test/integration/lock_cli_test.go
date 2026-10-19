@@ -42,6 +42,7 @@ import (
 // validation errors -- through the CLI binary against every transport
 // sharing one multiProtoNode.
 func TestLock_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

@@ -75,6 +75,7 @@ type resolvePermissionsCLIJSON struct {
 // resolve-permissions, delete -- through the CLI binary against every
 // transport sharing one multiProtoNode.
 func TestRoles_CLI_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -270,6 +271,7 @@ func testRolesLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 // account still names the deleted role afterwards while every other role it
 // held survives.
 func TestRoles_CLI_DeleteStripsHolders_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -406,6 +408,7 @@ type rolesReconcileCLIJSON struct {
 // like reconcile never converged. It does; the test now decodes each
 // response into its own fresh variable.
 func TestRoles_CLI_Reconcile_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

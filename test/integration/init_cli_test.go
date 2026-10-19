@@ -88,6 +88,7 @@ import (
 // TestCLI_Init_LocalFlagValidation already proves (shamir without --shares,
 // --shares without shamir, missing --so-pin, invalid --barrier-strategy).
 func TestInit_CLI_LocalFlagValidation_Permutations(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 	proto := multiProtocols[0] // rest; purely local validation is transport-independent.
 	flags := node.cliArgsFor(proto)
@@ -230,8 +231,10 @@ var ceremonyInitProtocols = multiProtocols
 // CeremonyCA (SPKI pin, issued CA/TLS certificates) is used on every
 // transport -- not just that the RPC no longer panics.
 func TestInit_CLI_SingleAdmin_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range ceremonyInitProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startFreshSealedNode(t, "none", 0, 0)
 			noAuth := node.noAuthFlagsFor(proto)
 			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
@@ -363,8 +366,10 @@ func TestInit_CLI_HostnameSANs(t *testing.T) {
 // barrier left uninitialized: `qrdb init` runs against the sealed window and
 // the ceremony initializes the barrier over the named holders.
 func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range ceremonyInitProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
 			node := startFreshSealedNode(t, "shamir", 2, 2)
 			noAuth := node.noAuthFlagsFor(proto)
 			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)

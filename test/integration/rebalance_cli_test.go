@@ -118,6 +118,7 @@ type rebalanceReportDisplay struct {
 // report` -- all flag permutations -- through the CLI binary against every
 // transport sharing one multiProtoNode (single shard, shard-id 1).
 func TestRebalance_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

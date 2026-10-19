@@ -59,6 +59,7 @@ import (
 // not configured" contract each protocol enforces when no embedding
 // provider (and therefore no RAG service) is configured.
 func TestRAG_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

@@ -96,6 +96,7 @@ import (
 // message on every transport, rather than succeeding with silently wrong
 // data or failing with an unhelpful generic error.
 func TestKVRestore_DefaultStateMachine_ActionableRefusal_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNodeWithSM(t, "")
 
 	for _, proto := range multiProtocols {
@@ -170,6 +171,7 @@ func testMVCCRefusalOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 // signal -- a classic lost update, and a materially worse outcome than an
 // explicit refusal.
 func TestTx_DefaultStateMachine_RevisionCompareRefusal_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNodeWithSM(t, "")
 
 	for _, proto := range multiProtocols {

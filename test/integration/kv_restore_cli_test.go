@@ -170,6 +170,7 @@ func kvModRevision(t *testing.T, node *multiProtoNode, proto multiProtocol, key 
 // --force / exit-code contract -- through the CLI binary against every
 // transport sharing one multiProtoNode.
 func TestKVRestore_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -758,6 +759,7 @@ var kvRestoreTenantPermissions = append(append([]string{}, dataPlanePermissions.
 // database, and a tenant cannot restore another tenant's database at all --
 // against every transport sharing one multiProtoNode.
 func TestKVRestore_CLI_TenantIsolation_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

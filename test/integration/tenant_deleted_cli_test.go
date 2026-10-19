@@ -94,6 +94,7 @@ func findDeletedTenant(tenants []transport.DeletedTenant, id string) (transport.
 // reconcile-deleted's own Inspected count actually grew by the two ids this
 // subtest retired.
 func TestTenantDeleted_CLI_ListAndReconcile_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

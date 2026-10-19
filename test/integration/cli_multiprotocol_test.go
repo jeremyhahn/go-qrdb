@@ -182,6 +182,7 @@ func TestCLIServerFlagFormats(t *testing.T) {
 // routes table), so the embedded subtest deliberately calls it with no
 // identity bound to ctx.
 func TestCLIMultiProtocolHealth(t *testing.T) {
+	t.Parallel()
 	mp := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -214,6 +215,7 @@ func TestCLIMultiProtocolHealth(t *testing.T) {
 // admin:status permission, granted to startEmbeddedAdminNode's seeded
 // identity).
 func TestCLIMultiProtocolAdminStatus(t *testing.T) {
+	t.Parallel()
 	mp := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -249,6 +251,7 @@ func TestCLIMultiProtocolAdminStatus(t *testing.T) {
 // TestCLIMultiProtocolAdminPeers tests `admin peers` across every CLI
 // transport, plus the embedded transport's direct equivalent.
 func TestCLIMultiProtocolAdminPeers(t *testing.T) {
+	t.Parallel()
 	mp := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -289,6 +292,7 @@ func TestCLIMultiProtocolAdminPeers(t *testing.T) {
 // TestCLIMultiProtocolAdminStatus) is the thing --output json/yaml is
 // rendering on every other transport.
 func TestCLIMultiProtocolOutputFormatAdminStatus(t *testing.T) {
+	t.Parallel()
 	mp := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -325,6 +329,7 @@ func TestCLIMultiProtocolOutputFormatAdminStatus(t *testing.T) {
 // TestCLIMultiProtocolOutputFormatAdminStatus's doc comment for why embedded
 // has no subtest here.
 func TestCLIMultiProtocolOutputFormatAdminPeers(t *testing.T) {
+	t.Parallel()
 	mp := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

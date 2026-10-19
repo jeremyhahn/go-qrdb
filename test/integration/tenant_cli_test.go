@@ -102,6 +102,7 @@ type tenantCreateCLIJSON struct {
 // -- create, get, list, update, update-quotas, set-entitlement, delete --
 // through the CLI binary against every transport sharing one multiProtoNode.
 func TestTenant_CLI_Lifecycle_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -268,6 +269,7 @@ func testTenantLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto m
 // SUCCESS path on a node provisioned with a volume pool and permissive
 // entitlements.
 func TestTenant_CLI_IsolationTypeGating_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
@@ -517,6 +519,7 @@ func startTenantEntitlementNode(t *testing.T) *multiProtoNode {
 // set (prefix/barrier/volume/raft) x --barrier-auto-unseal x all 5
 // protocols x both the permit and deny outcomes.
 func TestTenant_CLI_IsolationTypeSuccess_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startTenantEntitlementNode(t)
 
 	for _, proto := range multiProtocols {

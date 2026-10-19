@@ -179,6 +179,7 @@ func TestCLI_SqlQuery_MissingQueryFails(t *testing.T) {
 // --database (both the implicit default database and an explicitly created
 // named one), plus the not-found error for an unknown --database.
 func TestSQLQuery_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {

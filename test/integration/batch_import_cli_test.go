@@ -244,6 +244,7 @@ func TestCLI_BatchImportFormats_ListsSupportedFormats(t *testing.T) {
 // gRPC/QUIC/MCP unverified for `import`, and REST alone for
 // `import-formats`.
 func TestBatchImport_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
