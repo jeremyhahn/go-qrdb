@@ -452,6 +452,34 @@ func TestBuildAuthMiddleware_SPIFFETrustDomain(t *testing.T) {
 	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 }
 
+func TestBuildAuthMiddleware_AuthorizerErrorPropagates(t *testing.T) {
+	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:       true,
+		RoleService:   adminRoleService(),
+		UserService:   &fakeUserService{},
+		ABACEnabled:   true,
+		ABACPolicyDir: filepath.Join(t.TempDir(), "does-not-exist"),
+	})
+	require.Error(t, err)
+	assert.Nil(t, mw)
+	var dirErr *abac.PolicyDirError
+	assert.True(t, errors.As(err, &dirErr))
+}
+
+func TestBuildAuthMiddleware_DelegatedPrincipal(t *testing.T) {
+	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:            true,
+		RoleService:        adminRoleService(),
+		UserService:        &fakeUserService{},
+		DelegatedPrincipal: "qrdb-cluster",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, mw)
+
+	ctx := auth.WithIdentity(context.Background(), adminIdentity())
+	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
+}
+
 // ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
 func (f *fakeRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil
