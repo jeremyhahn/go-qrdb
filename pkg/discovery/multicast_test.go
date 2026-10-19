@@ -40,6 +40,9 @@ type fakeTransport struct {
 	readIdx  int
 	readErr  error
 	writeErr error
+	// announce, when set, encodes a live peer's next announcement; see
+	// AnnounceAs.
+	announce func() []byte
 }
 
 func newFakeTransport() *fakeTransport {
@@ -70,11 +73,42 @@ func (f *fakeTransport) ReadFrom(buf []byte) (int, error) {
 		n := copy(buf, data)
 		return n, nil
 	}
+	announce := f.announce
 	f.mu.Unlock()
 
-	// Simulate blocking briefly then returning a timeout-like error.
+	// Simulate blocking briefly, as a socket read waits for the next datagram.
 	<-time.After(10 * time.Millisecond)
+	if announce != nil {
+		// Encoded at delivery, as the peer stamps each datagram at send time.
+		return copy(buf, announce()), nil
+	}
 	return 0, errors.New("timeout")
+}
+
+// AnnounceAs puts a live peer on the fake group: once the inbox is drained,
+// every read that would otherwise time out delivers a freshly encoded
+// announcement from that peer instead, the way a real peer's announceLoop puts
+// a new datagram, with a new timestamp, on the wire every interval.
+//
+// Enqueue cannot model that. An enqueued message keeps the timestamp of the
+// moment it was encoded and is delivered exactly once, so a read that comes
+// later than the listener's replay window (2x AnnounceInterval) rejects it as
+// a replay, at Debug level, and every read after it times out: on a loaded
+// host the peer is lost for good, which no real peer ever is.
+//
+// The error is the encoder's, from a trial encode: encoding depends only on
+// the arguments, so once they are valid every later announcement encodes too.
+func (f *fakeTransport) AnnounceAs(deploymentID, nodeID uint64, addr string, secret []byte) error {
+	if _, err := EncodeMulticastMessage(deploymentID, nodeID, addr, secret); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.announce = func() []byte {
+		msg, _ := EncodeMulticastMessage(deploymentID, nodeID, addr, secret)
+		return msg
+	}
+	return nil
 }
 
 func (f *fakeTransport) WriteTo(data []byte) error {
@@ -1310,7 +1344,11 @@ type panicTransport struct {
 //
 // The discriminator is whether the listener read AT ALL after panicking was
 // switched off. No reads means the goroutine never ran; reads without a peer
-// means it ran and the path is wrong.
+// means it ran and the path is wrong. That second claim holds only because the
+// peer announces through fakeTransport.AnnounceAs, so every one of those reads
+// delivered a fresh announcement. With a single enqueued datagram it did not
+// hold: a late read dropped the datagram as a replay and the rest timed out,
+// and this said "real defect" about a listener working correctly.
 //
 // It is a function rather than an inline branch so both verdicts can be
 // asserted directly, on constructed observations, without needing a starved
@@ -1385,13 +1423,6 @@ func TestMulticastDiscovery_ListenPanicRecovery(t *testing.T) {
 	}
 	pt.panicOnRead.Store(true)
 
-	// Enqueue a message that will be found after the panic.
-	peerMsg, err := EncodeMulticastMessage(100, 2, "10.0.0.2:5000", secret)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
-	pt.Enqueue(peerMsg)
-
 	md, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:           1,
 		Address:          "10.0.0.1:5000",
@@ -1413,19 +1444,25 @@ func TestMulticastDiscovery_ListenPanicRecovery(t *testing.T) {
 			"the recovery path never restarted the loop", pt.readCallCount.Load())
 	}
 
-	// Stop panicking and enqueue a discoverable peer.
+	// Stop panicking and put a live peer on the group. It announces the way a
+	// real one does, freshly stamped on every read, not as one enqueued
+	// datagram: that one carries its encode-time timestamp, and a read later
+	// than the 100ms replay window (2x AnnounceInterval) drops it as a replay,
+	// which is the listener working, not the recovery path failing.
 	pt.panicOnRead.Store(false)
 	readsWhenCleared := pt.readCallCount.Load()
-	peerMsg2, _ := EncodeMulticastMessage(100, 3, "10.0.0.3:5000", secret)
-	pt.Enqueue(peerMsg2)
+	if err := pt.AnnounceAs(100, 3, "10.0.0.3:5000", secret); err != nil {
+		t.Fatalf("AnnounceAs error: %v", err)
+	}
 
-	// The listener should recover and discover the second peer.
+	// The restarted listener must discover exactly that peer.
 	peers, discoverErr := md.Discover(context.Background())
 	if discoverErr != nil {
 		t.Fatal(discoverVerdict(discoverErr, readsWhenCleared, pt.readCallCount.Load(), 2*time.Second))
 	}
-	if len(peers) == 0 {
-		t.Fatal("expected at least 1 peer after panic recovery")
+	want := Peer{NodeID: 3, Address: "10.0.0.3:5000"}
+	if len(peers) != 1 || peers[0] != want {
+		t.Fatalf("Discover after panic recovery = %+v, want [%+v]", peers, want)
 	}
 
 	_ = md.Stop()
