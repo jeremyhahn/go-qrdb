@@ -191,6 +191,62 @@ func TestBindServerSockets_HTTP3BindFailureReleasesTCP(t *testing.T) {
 	requireBindable(t, netport.NetworkTCP, addr)
 }
 
+func TestBindServerSockets_QUICAndMCPBindFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		network  string
+		protocol string
+		config   func(port int) *qrdbconfig.Config
+	}{
+		{name: "quic", network: netport.NetworkUDP, protocol: "quic", config: func(port int) *qrdbconfig.Config {
+			return &qrdbconfig.Config{
+				Server:    qrdbconfig.ServerConfig{Host: testBindHost, QUICPort: port},
+				Protocols: qrdbconfig.ProtocolsConfig{QUIC: true},
+			}
+		}},
+		{name: "mcp", network: netport.NetworkTCP, protocol: "mcp", config: func(port int) *qrdbconfig.Config {
+			return &qrdbconfig.Config{
+				Server:    qrdbconfig.ServerConfig{Host: testBindHost},
+				Protocols: qrdbconfig.ProtocolsConfig{MCP: true},
+				MCP:       qrdbconfig.MCPConfig{Port: port},
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			port, err := netport.FreePortOn(testBindHost, tt.network)
+			if err != nil {
+				t.Fatalf("free port: %v", err)
+			}
+			addr := net.JoinHostPort(testBindHost, strconv.Itoa(port))
+			var busy interface{ Close() error }
+			if tt.network == netport.NetworkUDP {
+				busy, err = net.ListenPacket(tt.network, addr)
+			} else {
+				busy, err = net.Listen(tt.network, addr)
+			}
+			if err != nil {
+				t.Fatalf("occupy %s %s: %v", tt.network, addr, err)
+			}
+			defer func() { _ = busy.Close() }()
+
+			opts, err := bindServerSockets(tt.config(port))
+			if err == nil {
+				closeServerSockets(opts)
+				t.Fatalf("bindServerSockets succeeded with %s %s occupied", tt.network, addr)
+			}
+			var bindErr *ServerSocketBindError
+			if !errors.As(err, &bindErr) {
+				t.Fatalf("error %T (%v), want *ServerSocketBindError", err, err)
+			}
+			if bindErr.Protocol != tt.protocol || bindErr.Network != tt.network || bindErr.Addr != addr {
+				t.Fatalf("failure attributed to %s %s %s, want %s %s %s",
+					bindErr.Protocol, bindErr.Network, bindErr.Addr, tt.protocol, tt.network, addr)
+			}
+		})
+	}
+}
+
 func TestServerSockets_OptionsBindOnceAndCloseReleases(t *testing.T) {
 	var sockets serverSockets
 	cfg := socketsConfig(0, 0, true, true)

@@ -25,8 +25,10 @@ import (
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/backupsink"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
 
@@ -92,6 +94,56 @@ func (p *fixtureSnapshotProvider) SnapshotShard(_ context.Context, shardID uint6
 
 func (p *fixtureSnapshotProvider) RestoreShard(context.Context, uint64, []byte) error {
 	return nil
+}
+
+// seedPlaintextBackup writes a plaintext backup with the given ID into a
+// file-backed sink at dir, holding data as shardID's payload.
+func seedPlaintextBackup(t *testing.T, dir, backupID string, shardID uint64, data []byte) {
+	t.Helper()
+	store, err := file.New(dir)
+	if err != nil {
+		t.Fatalf("file.New: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	svc, err := service.NewBackupService(&fixtureSnapshotProvider{shardID: shardID, data: data},
+		service.WithBackupSink(backupsink.New(store)),
+		service.WithIDGenerator(func() string { return backupID }),
+	)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
+	if _, err := svc.CreateBackup(context.Background(), service.BackupOptions{
+		Destination: "test-fixture-plaintext",
+		Encryption:  service.EncryptionNone,
+		ShardIDs:    []uint64{shardID},
+	}); err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+}
+
+// TestRunStart_OfflineRestoreRefusesANonSnapshotArtifact drives the boot-time
+// restore against a real host: the system shard is bootstrapped and stopped,
+// and an artifact whose payload is not a snapshot fails the import, ending
+// the boot before anything serves.
+func TestRunStart_OfflineRestoreRefusesANonSnapshotArtifact(t *testing.T) {
+	p, err := drawDaemonPorts()
+	if err != nil {
+		t.Fatalf("draw ports: %v", err)
+	}
+	f := fullStartFlags(t.TempDir(), p)
+	f.backupDir = t.TempDir()
+	f.restoreBackupID = "fixture-backup"
+	f.allowPlaintextRestore = true
+	seedPlaintextBackup(t, f.backupDir, f.restoreBackupID, shard.ShardKV, []byte("not-a-snapshot"))
+
+	err = runStartUntilExit(t, f)
+	var restoreErr *RestoreBackupError
+	if !errors.As(err, &restoreErr) {
+		t.Fatalf("runStart = %v (%T), want *RestoreBackupError", err, err)
+	}
+	if restoreErr.Phase != "import" || restoreErr.ShardID != shard.ShardKV {
+		t.Fatalf("RestoreBackupError = phase %q shard %d, want phase %q shard %d", restoreErr.Phase, restoreErr.ShardID, "import", shard.ShardKV)
+	}
 }
 
 // TestRestoreShardFromBackup_DecryptFailureIsNotMisreportedAsShardMissing
@@ -426,5 +478,55 @@ func TestRestoreShardFromBackup_UsesInjectedKeyWrapProvider(t *testing.T) {
 	}
 	if restoreErr.Phase == "decrypt" {
 		t.Fatalf("restoreShardFromBackup failed at the decrypt phase (%v): the injected fake provider was not used", restoreErr.Err)
+	}
+}
+
+// TestRestoreShardFromBackup_UsesInjectedKeyWrapRegistry is the registry half
+// of TestRestoreShardFromBackup_UsesInjectedKeyWrapProvider: an embedder that
+// injects a keywrap.Registry, rather than a single provider, has the offline
+// restore resolve the backup's KeyProviderID through that registry too.
+func TestRestoreShardFromBackup_UsesInjectedKeyWrapRegistry(t *testing.T) {
+	fake := &fakeInjectedProvider{id: "fake-hw"}
+	reg := keywrap.NewRegistry()
+	if err := reg.Register("fake-hw", func() (keywrap.Provider, error) { return fake, nil }); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	prev := keyWrapInjection
+	keyWrapInjection.registry = reg
+	t.Cleanup(func() { keyWrapInjection = prev })
+
+	backupDir := t.TempDir()
+	backupStore, err := file.New(backupDir)
+	if err != nil {
+		t.Fatalf("file.New: %v", err)
+	}
+	defer func() { _ = backupStore.Close() }()
+
+	const shardID = uint64(1)
+	seedSvc, err := service.NewBackupService(&fixtureSnapshotProvider{shardID: shardID, data: []byte("shard-plaintext-via-injected-registry")},
+		service.WithBackupSink(backupsink.New(backupStore)),
+		service.WithKeyWrapRegistry(reg),
+		service.WithIDGenerator(func() string { return "fixture-backup" }),
+	)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
+	if _, err := seedSvc.CreateBackup(context.Background(), service.BackupOptions{
+		Destination:   "test-fixture-injected-registry",
+		KeyProviderID: "fake-hw",
+		KeyRef:        "irrelevant-to-the-fake",
+		ShardIDs:      []uint64{shardID},
+	}); err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	f := &startFlags{backupDir: backupDir, restoreBackupID: "fixture-backup"}
+	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID}, nil, audit.FailClosed)
+	var restoreErr *RestoreBackupError
+	if !errors.As(err, &restoreErr) {
+		t.Fatalf("restoreShardFromBackup: err = %v (%T), want *RestoreBackupError from the nil host", err, err)
+	}
+	if restoreErr.Phase == "decrypt" {
+		t.Fatalf("restoreShardFromBackup failed at the decrypt phase (%v): the injected registry was not used", restoreErr.Err)
 	}
 }

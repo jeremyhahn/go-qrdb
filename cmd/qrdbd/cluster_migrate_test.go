@@ -303,6 +303,64 @@ func TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds(t *testing.T) {
 	}
 }
 
+// errModeDenied is the entitlement refusal modeCheckFunc returns.
+var errModeDenied = errors.New("barrier mode not entitled")
+
+// modeCheckFunc adapts a function to the barrierModeChecker seam.
+type modeCheckFunc func(ctx context.Context, tenantID string, mode seal.StrategyID) error
+
+func (f modeCheckFunc) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
+	return f(ctx, tenantID, mode)
+}
+
+// TestClusterCoordinatorMigrator_TenantGates proves a tenant-scope request is
+// refused at request time, before any intent is written, when the tenant has
+// no dedicated barrier, names no tenant, or is not entitled to the target.
+func TestClusterCoordinatorMigrator_TenantGates(t *testing.T) {
+	ctx := context.Background()
+	reg, err := seal.NewBarrierRegistry(slog.New(slog.DiscardHandler), newRecodeSourceBarrier(t))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	cases := map[string]struct {
+		tenantID  string
+		reg       *seal.BarrierRegistry
+		modeCheck barrierModeChecker
+		want      error
+	}{
+		"shared barrier":  {tenantID: "acme", reg: reg, want: service.ErrSharedBarrierImmutable},
+		"empty tenant id": {tenantID: "", reg: reg, want: seal.ErrEmptyTenantID},
+		"not entitled": {
+			tenantID: "acme",
+			modeCheck: modeCheckFunc(func(_ context.Context, tenantID string, mode seal.StrategyID) error {
+				if tenantID != "acme" || mode != seal.StrategyPassphrase {
+					t.Errorf("CheckBarrierMode(%q, %q), want (acme, passphrase)", tenantID, mode)
+				}
+				return errModeDenied
+			}),
+			want: errModeDenied,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := clustermig.NewStore(newCMMemKV())
+			coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1"}},
+				func() bool { return true }, func() int64 { return 1 })
+			m := &clusterCoordinatorMigrator{
+				coord: coord, credentials: clustermig.NewLocalCredentials(""), self: "n1",
+				barrierReg: tc.reg, modeCheck: tc.modeCheck,
+			}
+			err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeTenant, TenantID: tc.tenantID}, validMigOpts())
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("EnableEncryption = %v, want %v", err, tc.want)
+			}
+			if rec, _ := store.GetMigration(ctx, tc.tenantID, ""); rec != nil {
+				t.Fatal("a refused request wrote a migration intent")
+			}
+		})
+	}
+}
+
 // TestCoordinateMigrations_ReapsCompleted proves the leader reaps a completed migration and
 // leaves an incomplete one in place.
 func TestCoordinateMigrations_ReapsCompleted(t *testing.T) {

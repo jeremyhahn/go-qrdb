@@ -146,6 +146,39 @@ func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
 	assert.True(t, db.ProtocolConfig().PostgreSQL, "configured postgresql: true was dropped")
 }
 
+// sqlUpdateFailingManager is a real manager whose SQL-settings update fails.
+type sqlUpdateFailingManager struct {
+	*database.Manager
+	err error
+}
+
+func (m sqlUpdateFailingManager) UpdateSQL(string, *database.SQLConfig) error { return m.err }
+
+var _ databaseProvisioner = sqlUpdateFailingManager{}
+
+// A databases[] entry's sql settings are applied on every boot, an existing
+// database included, and a failure to apply them fails provisioning.
+func TestProvisionDatabases_ConfiguredEntryAppliesItsSQLSettings(t *testing.T) {
+	mgr := database.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	f := &startFlags{
+		databases: []qrdbconfig.DatabaseConfig{{
+			Name: "orders", Backend: "memory",
+			SQL: &qrdbconfig.DatabaseSQLConfig{Concurrency: string(database.ConcurrencyPessimistic)},
+		}},
+		smType: "memory",
+	}
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	db, err := mgr.Get("orders")
+	require.NoError(t, err)
+	require.NotNil(t, db.SQLConfig())
+	assert.Equal(t, database.ConcurrencyPessimistic, db.SQLConfig().Concurrency)
+
+	boom := errors.New("sql settings refused")
+	err = provisionDatabases(context.Background(), f, sqlUpdateFailingManager{Manager: mgr, err: boom}, electedLeader{})
+	assert.ErrorIs(t, err, boom)
+}
+
 // A databases[] entry enabling etcd on a binary without qrdb_etcd is
 // refused by validateConfiguredDatabases -- which start.go always calls
 // before provisionDatabases, so this is where "every entry refuses before
