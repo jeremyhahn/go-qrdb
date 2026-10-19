@@ -461,8 +461,8 @@ func TestDecorator_UserAttrsConditionNamespace(t *testing.T) {
 		expr   string
 		wantOK bool
 	}{
-		{name: "user_attrs resolves", expr: "subject.user_attrs.region == 'us-east'", wantOK: true},
-		{name: "attrs does not see user attributes", expr: "subject.attrs.region == 'us-east'", wantOK: false},
+		{name: "user_attrs resolves", expr: "subject.user_attrs.region == \"us-east\"", wantOK: true},
+		{name: "attrs does not see user attributes", expr: "subject.attrs.region == \"us-east\"", wantOK: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -513,10 +513,10 @@ func TestDecorator_SubjectIDIsUserIDAndNameIsAccount(t *testing.T) {
 		expr   string
 		wantOK bool
 	}{
-		{name: "id is the user id", id: resolved, expr: "subject.id == '77'", wantOK: true},
-		{name: "id is not the name", id: resolved, expr: "subject.id == 'alice'", wantOK: false},
-		{name: "name is the account name", id: resolved, expr: "subject.name == 'alice'", wantOK: true},
-		{name: "unresolved name is the subject", id: testIdentity("svc", "tenant-a"), expr: "subject.name == 'svc'", wantOK: true},
+		{name: "id is the user id", id: resolved, expr: "subject.id == \"77\"", wantOK: true},
+		{name: "id is not the name", id: resolved, expr: "subject.id == \"alice\"", wantOK: false},
+		{name: "name is the account name", id: resolved, expr: "subject.name == \"alice\"", wantOK: true},
+		{name: "unresolved name is the subject", id: testIdentity("svc", "tenant-a"), expr: "subject.name == \"svc\"", wantOK: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

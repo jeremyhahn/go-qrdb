@@ -92,7 +92,9 @@ func (e *CompilationFailedError) Error() string {
 func (e *CompilationFailedError) Unwrap() error { return e.Err }
 
 // ConditionParseError is returned when a condition expression cannot be
-// parsed.
+// parsed, including when a quoted value is unterminated, holds an escape
+// RFC 8259 does not define or an unescaped control character, or is quoted
+// with single quotes (the reason names the JSON double-quoted form).
 type ConditionParseError struct {
 	// Expression is the condition expression that failed to parse.
 	Expression string

@@ -100,7 +100,7 @@ func TestConditionParser_Parse(t *testing.T) {
 		},
 		{
 			name:    "matches regex",
-			expr:    "subject.email matches \"^[a-z]+@example\\.com$\"",
+			expr:    "subject.email matches \"^[a-z]+@example\\\\.com$\"",
 			wantErr: false,
 		},
 		{
@@ -423,7 +423,7 @@ func TestConditionParser_StringOperators(t *testing.T) {
 		},
 		{
 			name: "matches - regex match",
-			expr: "subject.email matches \"^[a-z]+@.*\\.com$\"",
+			expr: "subject.email matches \"^[a-z]+@.*\\\\.com$\"",
 			ctx: &EvalContext{
 				Subject: &Subject{Email: "admin@example.com"},
 			},
@@ -431,7 +431,7 @@ func TestConditionParser_StringOperators(t *testing.T) {
 		},
 		{
 			name: "matches - regex no match",
-			expr: "subject.email matches \"^[0-9]+@.*\\.com$\"",
+			expr: "subject.email matches \"^[0-9]+@.*\\\\.com$\"",
 			ctx: &EvalContext{
 				Subject: &Subject{Email: "admin@example.com"},
 			},
@@ -869,14 +869,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 			wantTrue: true,
 		},
 		{
-			name: "quoted string with single quotes",
-			expr: "subject.id == 'user-123'",
-			ctx: &EvalContext{
-				Subject: &Subject{ID: "user-123"},
-			},
-			wantTrue: true,
-		},
-		{
 			name:     "literal integer",
 			expr:     "42 == 42",
 			ctx:      &EvalContext{},
@@ -1268,7 +1260,7 @@ func TestConditionParser_EdgeCases(t *testing.T) {
 		},
 		{
 			name:     "matches - non-string operands",
-			expr:     "42 matches \"\\d+\"",
+			expr:     "42 matches \"\\\\d+\"",
 			ctx:      &EvalContext{},
 			wantTrue: false,
 		},

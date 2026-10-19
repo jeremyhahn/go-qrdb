@@ -35,170 +35,177 @@ func NewConditionParser(variables map[string]interface{}) *ConditionParser {
 	}
 }
 
+// logicalOperators are the binary logical operators in the order the parser
+// splits on them.
+var logicalOperators = []struct {
+	token   string
+	combine func([]CompiledCondition) CompiledCondition
+}{
+	{" and ", func(c []CompiledCondition) CompiledCondition { return &andCondition{conditions: c} }},
+	{" or ", func(c []CompiledCondition) CompiledCondition { return &orCondition{conditions: c} }},
+}
+
+// comparisonOperators are the comparison operators in the order the parser
+// searches for them: an operator is matched before any operator it contains.
+var comparisonOperators = []struct {
+	token string
+	op    operatorType
+}{
+	// Equality operators
+	{"==", opEqual},
+	{"!=", opNotEqual},
+	{" eq ", opEqual},
+	{" neq ", opNotEqual},
+
+	// Numeric comparison
+	{">=", opGreaterThanOrEqual},
+	{"<=", opLessThanOrEqual},
+	{">", opGreaterThan},
+	{"<", opLessThan},
+	{" between ", opBetween},
+
+	// String operators
+	{" endswith ", opEndsWith},
+	{" startswith ", opStartsWith},
+	{" contains ", opContains},
+	{" matches ", opMatches},
+	{" like ", opLike},
+
+	// Set operators
+	{" in ", opIn},
+	{" notin ", opNotIn},
+	{" containsall ", opContainsAll},
+	{" containsany ", opContainsAny},
+	{" notcontains ", opNotContains},
+	{" overlaps ", opOverlaps},
+	{" disjoint ", opDisjoint},
+}
+
+// existenceOperators are the postfix existence operators.
+var existenceOperators = []struct {
+	token       string
+	checkExists bool
+}{
+	{" exists", true},
+	{" notexists", false},
+}
+
 // Parse parses a condition expression and returns a CompiledCondition.
+// A value may be quoted as an RFC 8259 JSON string; quoted text never
+// splits the expression (see quoting.go).
 func (p *ConditionParser) Parse(expr string) (CompiledCondition, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return nil, &ConditionParseError{Expression: expr, Reason: "empty expression"}
 	}
+	mask := maskQuoted(expr)
+
+	// An expression enclosed in parentheses is a group.
+	if enclosed(mask) {
+		return p.Parse(expr[1 : len(expr)-1])
+	}
 
 	// Handle logical operators
-	if cond, err := p.parseLogical(expr); err == nil {
-		return cond, nil
+	if cond, ok, err := p.parseLogical(expr, mask); ok {
+		return cond, err
 	}
 
 	// Handle comparison operators
-	return p.parseComparison(expr)
+	return p.parseComparison(expr, mask)
 }
 
-// parseLogical handles logical operators: and, or, not.
-func (p *ConditionParser) parseLogical(expr string) (CompiledCondition, error) {
-	expr = strings.TrimSpace(expr)
-
+// parseLogical handles logical operators: and, or, not. ok is false when
+// expr is not a logical expression.
+func (p *ConditionParser) parseLogical(expr, mask string) (cond CompiledCondition, ok bool, err error) {
 	// Handle NOT
-	if strings.HasPrefix(expr, "not ") {
-		inner := strings.TrimSpace(expr[4:])
-		innerCond, err := p.Parse(inner)
+	if strings.HasPrefix(mask, "not ") {
+		inner, err := p.Parse(expr[4:])
+		if err != nil {
+			return nil, true, err
+		}
+		return &notCondition{condition: inner}, true, nil
+	}
+
+	// Handle AND, then OR, outside parentheses
+	for _, logical := range logicalOperators {
+		if !strings.Contains(mask, logical.token) {
+			continue
+		}
+		parts := splitByOperator(expr, logical.token)
+		if len(parts) < 2 {
+			continue
+		}
+		conditions := make([]CompiledCondition, 0, len(parts))
+		for _, part := range parts {
+			cond, err := p.Parse(part)
+			if err != nil {
+				return nil, true, err
+			}
+			conditions = append(conditions, cond)
+		}
+		return logical.combine(conditions), true, nil
+	}
+
+	return nil, false, nil
+}
+
+// parseComparison handles comparison and existence operators, and otherwise
+// parses expr as a boolean field reference.
+func (p *ConditionParser) parseComparison(expr, mask string) (CompiledCondition, error) {
+	for _, comparison := range comparisonOperators {
+		idx := strings.Index(mask, comparison.token)
+		if idx == -1 {
+			continue
+		}
+		left, err := parseOperand(expr, expr[:idx])
 		if err != nil {
 			return nil, err
 		}
-		return &notCondition{condition: innerCond}, nil
-	}
-
-	// Handle AND (both inline and block form)
-	if strings.Contains(expr, " and ") {
-		parts := splitByOperator(expr, " and ")
-		conditions := make([]CompiledCondition, 0, len(parts))
-		for _, part := range parts {
-			cond, err := p.Parse(strings.TrimSpace(part))
-			if err != nil {
-				return nil, err
-			}
-			conditions = append(conditions, cond)
+		right, err := parseOperand(expr, expr[idx+len(comparison.token):])
+		if err != nil {
+			return nil, err
 		}
-		return &andCondition{conditions: conditions}, nil
+		return &comparisonCondition{left: left, right: right, operator: comparison.op}, nil
 	}
 
-	// Handle OR (both inline and block form)
-	if strings.Contains(expr, " or ") {
-		parts := splitByOperator(expr, " or ")
-		conditions := make([]CompiledCondition, 0, len(parts))
-		for _, part := range parts {
-			cond, err := p.Parse(strings.TrimSpace(part))
-			if err != nil {
-				return nil, err
-			}
-			conditions = append(conditions, cond)
+	for _, existence := range existenceOperators {
+		if !strings.HasSuffix(mask, existence.token) {
+			continue
 		}
-		return &orCondition{conditions: conditions}, nil
-	}
-
-	return nil, &ConditionParseError{Expression: expr, Reason: "not a logical expression"}
-}
-
-// parseComparison handles comparison operators.
-func (p *ConditionParser) parseComparison(expr string) (CompiledCondition, error) {
-	expr = strings.TrimSpace(expr)
-
-	// Equality operators
-	if cond, err := p.tryParseOperator(expr, "==", opEqual); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, "!=", opNotEqual); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " eq ", opEqual); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " neq ", opNotEqual); err == nil {
-		return cond, nil
-	}
-
-	// Numeric comparison
-	if cond, err := p.tryParseOperator(expr, ">=", opGreaterThanOrEqual); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, "<=", opLessThanOrEqual); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, ">", opGreaterThan); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, "<", opLessThan); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " between ", opBetween); err == nil {
-		return cond, nil
-	}
-
-	// String operators
-	if cond, err := p.tryParseOperator(expr, " endswith ", opEndsWith); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " startswith ", opStartsWith); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " contains ", opContains); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " matches ", opMatches); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " like ", opLike); err == nil {
-		return cond, nil
-	}
-
-	// Set operators
-	if cond, err := p.tryParseOperator(expr, " in ", opIn); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " notin ", opNotIn); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " containsall ", opContainsAll); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " containsany ", opContainsAny); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " notcontains ", opNotContains); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " overlaps ", opOverlaps); err == nil {
-		return cond, nil
-	}
-	if cond, err := p.tryParseOperator(expr, " disjoint ", opDisjoint); err == nil {
-		return cond, nil
-	}
-
-	// Existence operators
-	if strings.HasSuffix(expr, " exists") {
-		field := strings.TrimSpace(strings.TrimSuffix(expr, " exists"))
-		return &existsCondition{field: field, checkExists: true}, nil
-	}
-	if strings.HasSuffix(expr, " notexists") {
-		field := strings.TrimSpace(strings.TrimSuffix(expr, " notexists"))
-		return &existsCondition{field: field, checkExists: false}, nil
+		field, err := parseOperand(expr, strings.TrimSuffix(expr, existence.token))
+		if err != nil {
+			return nil, err
+		}
+		return &existsCondition{field: field, checkExists: existence.checkExists}, nil
 	}
 
 	// Simple field reference (for boolean fields)
-	return &fieldCondition{field: expr}, nil
+	field, err := parseOperand(expr, expr)
+	if err != nil {
+		return nil, err
+	}
+	return &fieldCondition{field: field}, nil
 }
 
-func (p *ConditionParser) tryParseOperator(expr, op string, opType operatorType) (CompiledCondition, error) {
-	idx := strings.Index(expr, op)
-	if idx == -1 {
-		return nil, &ConditionParseError{Expression: expr, Reason: "operator not found"}
+// enclosed reports whether mask opens with a parenthesis whose match is its
+// last byte.
+func enclosed(mask string) bool {
+	if len(mask) < 2 || mask[0] != '(' || mask[len(mask)-1] != ')' {
+		return false
 	}
-
-	left := strings.TrimSpace(expr[:idx])
-	right := strings.TrimSpace(expr[idx+len(op):])
-
-	return &comparisonCondition{
-		left:     left,
-		right:    right,
-		operator: opType,
-	}, nil
+	depth := 0
+	for i := 0; i < len(mask); i++ {
+		switch mask[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i == len(mask)-1
+			}
+		}
+	}
+	return false
 }
 
 // operatorType represents the type of comparison operator.
@@ -263,14 +270,14 @@ func (c *notCondition) Evaluate(ctx *EvalContext) bool {
 }
 
 type comparisonCondition struct {
-	left     string
-	right    string
+	left     operand
+	right    operand
 	operator operatorType
 }
 
 func (c *comparisonCondition) Evaluate(ctx *EvalContext) bool {
-	leftVal := resolveValue(c.left, ctx)
-	rightVal := resolveValue(c.right, ctx)
+	leftVal := c.left.resolve(ctx)
+	rightVal := c.right.resolve(ctx)
 
 	switch c.operator {
 	case opEqual:
@@ -316,22 +323,22 @@ func (c *comparisonCondition) Evaluate(ctx *EvalContext) bool {
 }
 
 type existsCondition struct {
-	field       string
+	field       operand
 	checkExists bool
 }
 
 func (c *existsCondition) Evaluate(ctx *EvalContext) bool {
-	val := resolveValue(c.field, ctx)
+	val := c.field.resolve(ctx)
 	exists := val != nil
 	return exists == c.checkExists
 }
 
 type fieldCondition struct {
-	field string
+	field operand
 }
 
 func (c *fieldCondition) Evaluate(ctx *EvalContext) bool {
-	val := resolveValue(c.field, ctx)
+	val := c.field.resolve(ctx)
 	if b, ok := val.(bool); ok {
 		return b
 	}
@@ -342,12 +349,6 @@ func (c *fieldCondition) Evaluate(ctx *EvalContext) bool {
 
 func resolveValue(expr string, ctx *EvalContext) interface{} {
 	expr = strings.TrimSpace(expr)
-
-	// Remove quotes if present
-	if (strings.HasPrefix(expr, "\"") && strings.HasSuffix(expr, "\"")) ||
-		(strings.HasPrefix(expr, "'") && strings.HasSuffix(expr, "'")) {
-		return expr[1 : len(expr)-1]
-	}
 
 	// Handle variable substitution
 	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
@@ -701,40 +702,30 @@ func inCIDR(ip net.IP, cidr string) bool {
 	return ipNet.Contains(ip)
 }
 
-// splitByOperator splits an expression by an operator, respecting parentheses.
+// splitByOperator splits an expression by an operator, respecting parentheses
+// and quoted values.
 func splitByOperator(expr, op string) []string {
+	mask := maskQuoted(expr)
 	var parts []string
-	var current strings.Builder
-	depth := 0
+	depth, start := 0, 0
 
-	i := 0
-	for i < len(expr) {
-		if expr[i] == '(' {
+	for i := 0; i < len(mask); {
+		switch {
+		case mask[i] == '(':
 			depth++
-			current.WriteByte(expr[i])
-			i++
-			continue
-		}
-		if expr[i] == ')' {
+		case mask[i] == ')':
 			depth--
-			current.WriteByte(expr[i])
-			i++
-			continue
-		}
-
-		if depth == 0 && i+len(op) <= len(expr) && expr[i:i+len(op)] == op {
-			parts = append(parts, current.String())
-			current.Reset()
+		case depth == 0 && strings.HasPrefix(mask[i:], op):
+			parts = append(parts, expr[start:i])
 			i += len(op)
+			start = i
 			continue
 		}
-
-		current.WriteByte(expr[i])
 		i++
 	}
 
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
+	if start < len(expr) {
+		parts = append(parts, expr[start:])
 	}
 
 	return parts

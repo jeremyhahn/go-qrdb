@@ -105,7 +105,12 @@ var LoadABACPolicyFile = abac.LoadFile
 
 // ABACConditionParser parses ABAC condition expressions into compiled
 // conditions. It is the parser the server evaluates policy conditions with,
-// so a consumer validating an expression gets the server's verdict.
+// so a consumer validating an expression gets the server's verdict. A
+// condition value may be quoted as an RFC 8259 JSON string (double quotes,
+// backslash escapes, \uXXXX); a quoted value is one token whatever it
+// contains, including an operator, " and ", " or ", a parenthesis or a comma.
+// An unquoted value is read as written. JSON double quotes are the only
+// quoting form.
 type ABACConditionParser = abac.ConditionParser
 
 // ABACCompiledCondition is a parsed condition expression, evaluated against
@@ -113,7 +118,9 @@ type ABACConditionParser = abac.ConditionParser
 type ABACCompiledCondition = abac.CompiledCondition
 
 // ABACConditionParseError is returned when a condition expression cannot be
-// parsed.
+// parsed, including when a quoted value is unterminated, holds an escape
+// RFC 8259 does not define or an unescaped control character, or is quoted
+// with single quotes (the error names the JSON double-quoted form).
 type ABACConditionParseError = abac.ConditionParseError
 
 // NewABACConditionParser creates a condition parser holding the given policy

@@ -194,4 +194,25 @@ Condition expressions support comparison (`==`, `!=`, `>`, `>=`, `<`,
 `like`), set (`in` — including CIDR for IPs — `notin`, `containsall`,
 `containsany`, `overlaps`, `disjoint`), existence (`exists`, `notexists`),
 and logical (`and`, `or`, `not`) operators over `subject.*`, `request.*`,
-`resource`, and `time.*` fields.
+`resource`, and `time.*` fields. Parentheses group a sub-expression.
+
+### Quoted condition values
+
+A condition value may be written as an RFC 8259 (section 7) JSON string:
+double quotes, backslash escapes and `\uXXXX`. The parser tokenizes before it
+splits, so a quoted value is one token whatever it contains, including an
+operator, ` and `, ` or `, a parenthesis or a comma:
+
+```yaml
+when:
+  - expression: subject.attrs.team == "research and development" and request.tenant != "system"
+  - expression: subject.attrs.label in ["a,b", "c"]
+  - expression: subject.email matches "^[a-z]+@example\\.com$"
+```
+
+An unquoted value keeps its meaning and is read as written. A quoted value is
+a whole operand or list element; JSON double quotes are the only quoting form.
+`Parse` returns `ConditionParseError` for an unterminated quote, an escape
+RFC 8259 does not define (a regular expression writes `\.` as `\\.`), an
+unescaped control character, text that is not UTF-8, text joined to a quoted
+value, and a single-quoted value, whose error names the double-quoted form.

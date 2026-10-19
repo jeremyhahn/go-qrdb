@@ -23,6 +23,7 @@ has no copy in this directory, for the reason given under the table.
 | [rfc5705.txt](rfc5705.txt) | Keying Material Exporters for Transport Layer Security (TLS) | RFC 5705 | `pkg/initproof` | https://www.rfc-editor.org/rfc/rfc5705.txt |
 | [rfc6698.txt](rfc6698.txt) | The DNS-Based Authentication of Named Entities (DANE) Transport Layer Security (TLS) Protocol: TLSA | RFC 6698 | `cmd/qrdb` (bootstrap `dane` pinning mode) | https://www.rfc-editor.org/rfc/rfc6698.txt |
 | [rfc7292.txt](rfc7292.txt) | PKCS #12: Personal Information Exchange Syntax v1.1 | RFC 7292 | `pkg/cert` | https://www.rfc-editor.org/rfc/rfc7292.txt |
+| [rfc8259.txt](rfc8259.txt) | The JavaScript Object Notation (JSON) Data Interchange Format | RFC 8259 | `pkg/auth/abac` (quoted condition values, section 7) | https://www.rfc-editor.org/rfc/rfc8259.txt |
 | [rfc8446.txt](rfc8446.txt) | The Transport Layer Security (TLS) Protocol Version 1.3 | RFC 8446 | `pkg/initproof` (exporter, section 7.5); every TLS listener | https://www.rfc-editor.org/rfc/rfc8446.txt |
 | [rfc8555.txt](rfc8555.txt) | Automatic Certificate Management Environment (ACME) | RFC 8555 | `pkg/permission`, `sdk/go` (ACME administration scope names only; the ACME server lives in go-xkms) | https://www.rfc-editor.org/rfc/rfc8555.txt |
 | [rfc9000.txt](rfc9000.txt) | QUIC: A UDP-Based Multiplexed and Secure Transport | RFC 9000 | `pkg/api/quic`, `sdk/go/transport/quic`, `pkg/api/rest` (via quic-go) | https://www.rfc-editor.org/rfc/rfc9000.txt |
