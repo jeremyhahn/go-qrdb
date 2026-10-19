@@ -442,3 +442,90 @@ func TestErrorMessageFormatting(t *testing.T) {
 		assert.Contains(t, configErr.Error(), "negative")
 	})
 }
+
+func TestAtomicWriteUnsupportedErrorUnwrap(t *testing.T) {
+	t.Run("WrapsRefusal", func(t *testing.T) {
+		cause := errors.New("proposal refused")
+		err := &AtomicWriteUnsupportedError{EntityType: "users", Err: cause}
+
+		assert.Same(t, cause, errors.Unwrap(err))
+		assert.ErrorIs(t, err, cause)
+	})
+
+	t.Run("NilWhenStoreHasNoAtomicWrite", func(t *testing.T) {
+		err := &AtomicWriteUnsupportedError{EntityType: "users"}
+
+		assert.Nil(t, err.Unwrap())
+	})
+}
+
+func TestAtomicBatchUnsupportedError(t *testing.T) {
+	t.Run("ErrorMessageWithoutCause", func(t *testing.T) {
+		err := &AtomicBatchUnsupportedError{}
+
+		expected := "dao: unit of work: underlying store does not support atomic multi-key batches"
+		assert.Equal(t, expected, err.Error())
+		assert.Nil(t, err.Unwrap())
+	})
+
+	t.Run("ErrorMessageWithCause", func(t *testing.T) {
+		cause := errors.New("guarded batch refused")
+		err := &AtomicBatchUnsupportedError{Err: cause}
+
+		expected := "dao: unit of work: underlying store does not support atomic multi-key batches: guarded batch refused"
+		assert.Equal(t, expected, err.Error())
+		assert.Same(t, cause, errors.Unwrap(err))
+		assert.ErrorIs(t, err, cause)
+	})
+}
+
+func TestIDCollisionError(t *testing.T) {
+	t.Run("ErrorMessage", func(t *testing.T) {
+		err := &IDCollisionError{EntityType: "users", ID: 42}
+
+		expected := "dao: users: ID 42 is already in use by a different entity (hash-derived ID collision)"
+		assert.Equal(t, expected, err.Error())
+	})
+
+	t.Run("ErrorsAs", func(t *testing.T) {
+		var err error = &IDCollisionError{EntityType: "orders", ID: 7}
+
+		var collision *IDCollisionError
+		assert.True(t, errors.As(err, &collision))
+		assert.Equal(t, uint64(7), collision.ID)
+	})
+}
+
+func TestSaveContentionExhaustedError(t *testing.T) {
+	t.Run("ErrorMessage", func(t *testing.T) {
+		err := &SaveContentionExhaustedError{EntityType: "users", ID: 42, Attempts: 5}
+
+		expected := "dao: users: ID 42: update contended by concurrent writers across 5 attempts"
+		assert.Equal(t, expected, err.Error())
+	})
+
+	t.Run("ErrorsAs", func(t *testing.T) {
+		var err error = &SaveContentionExhaustedError{EntityType: "orders", ID: 9, Attempts: 3}
+
+		var contention *SaveContentionExhaustedError
+		assert.True(t, errors.As(err, &contention))
+		assert.Equal(t, 3, contention.Attempts)
+	})
+}
+
+func TestUnsupportedIDGeneratorError(t *testing.T) {
+	t.Run("ErrorMessage", func(t *testing.T) {
+		err := &UnsupportedIDGeneratorError{EntityType: "users"}
+
+		expected := "dao: users: configured IDGenerator does not support lookup by natural key"
+		assert.Equal(t, expected, err.Error())
+	})
+
+	t.Run("ErrorsAs", func(t *testing.T) {
+		var err error = &UnsupportedIDGeneratorError{EntityType: "orders"}
+
+		var unsupported *UnsupportedIDGeneratorError
+		assert.True(t, errors.As(err, &unsupported))
+		assert.Equal(t, "orders", unsupported.EntityType)
+	})
+}
