@@ -339,6 +339,11 @@ jobs:
     timeout-minutes: 90       # CUSTOMIZE: give the stages honest headroom
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
+      # image (Makefile IT_HOLD), from `make docker-build` to the teardown,
+      # so another job's reaper cannot remove the image before the trivy
+      # step saves it. Under qrdb-ci-, so a dead job's hold is reaped.
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
       # v1.22: the cache volumes' trust class. Only a push to main writes the
       # caches main's build reads; every other event, pull requests included,
       # gets the `pr` set (ci-standard.md §6).
@@ -501,10 +506,12 @@ jobs:
 
       # The integration image stays: it is named by its content, so the
       # integration legs on this daemon reuse it, and the reap step removes it
-      # once it is older than any run (#813).
+      # once no job holds it (#813). This releases this job's hold.
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env" it-image.tar
+        run: |
+          rm -f "$RUNNER_TEMP/gomodauth.env" it-image.tar
+          make docker-release-it
 
   # Integration tests run in the integration image (ci-standard.md §2), as a
   # compose stack on the runner host started by `make integration-test`. The
@@ -555,6 +562,7 @@ jobs:
     timeout-minutes: 45
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
     strategy:
       fail-fast: false
       matrix:

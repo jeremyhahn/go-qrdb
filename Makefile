@@ -3769,12 +3769,22 @@ TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 # tag falls back to DOCKER_TAG. `make -s it-image` prints the name. CI passes
 # only a per-leg IT_PROJECT, so legs sharing a daemon never share a stack;
 # scripts/reap-stale-ci-stacks.sh removes old qrdb-ci-it images.
+#
+# IT_HOLD names the job's hold on the image: a container created from it and
+# never started, which docker-build-it creates and docker-release-it removes.
+# `docker image rm` without force refuses an image any container uses, so
+# while the hold exists the reaper cannot remove the image under the job, no
+# matter how old the image's .Created is (a cache hit keeps the first build's,
+# run 57540). CI names one per job under qrdb-ci-, so the reaper removes the
+# hold of a job that died before its teardown, as it does any stale
+# container. Empty, the default off CI, takes no hold.
 IT_TAG     = $(shell if git rev-parse -q --verify 'HEAD^{tree}' >/dev/null 2>&1; then \
 	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
 	  git ls-files -z -o --exclude-standard | xargs -0r sha256sum --; } | sha256sum | cut -c1-16; \
 	else echo $(DOCKER_TAG); fi)
 IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
 IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
+IT_HOLD    ?=
 
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
 
@@ -3806,27 +3816,52 @@ docker-build-toolchain:
 # and the tag is the content, so it succeeds; any other failed build fails
 # with the build's status. A flock cannot serialize the legs, because CI's job
 # containers share the runner's daemon, not a filesystem.
+#
+# With IT_HOLD set it then holds the image (above) before it returns, so no
+# step of the job uses an image it does not hold. The reaper can remove the
+# image between the check and the hold; `docker create --pull never` then
+# fails, and the loop builds it once more and holds that.
 docker-build-it:
 	$(REQUIRE_BUILDX)
-	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
-		echo "==> $(IT_IMAGE) is already built on this daemon"; \
-	else \
-		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) . || { \
-			status=$$?; \
-			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
-			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-		}; \
-	fi
+	@for attempt in 1 2; do \
+		if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
+			echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		else \
+			$(stage-gomodauth) \
+			$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) . || { \
+				status=$$?; \
+				docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
+				echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
+			}; \
+		fi; \
+		[ -n '$(IT_HOLD)' ] || exit 0; \
+		[ "$$(docker container inspect -f '{{.Config.Image}}' '$(IT_HOLD)' 2>/dev/null)" != '$(IT_IMAGE)' ] || exit 0; \
+		docker rm -f '$(IT_HOLD)' >/dev/null 2>&1 || true; \
+		if docker create --pull never --name '$(IT_HOLD)' '$(IT_IMAGE)' >/dev/null; then \
+			echo "==> $(IT_HOLD) holds $(IT_IMAGE) until docker-release-it"; \
+			exit 0; \
+		fi; \
+		echo "==> $(IT_IMAGE) was removed before $(IT_HOLD) could hold it"; \
+	done; \
+	echo "ERROR: $(IT_HOLD) could not hold $(IT_IMAGE)" >&2; \
+	exit 1
+
+# docker-release-it removes the job's hold on the integration image (IT_HOLD,
+# above), so the reaper may remove the image once no other job holds it. A
+# hold nobody created is not an error.
+.PHONY: docker-release-it
+docker-release-it:
+	@[ -z '$(IT_HOLD)' ] || docker rm -f '$(IT_HOLD)' >/dev/null 2>&1 || true
 
 # docker-down-it removes an integration-test run's compose project, never its
 # image: every leg of a run on one runner reuses that image (#813), and
-# scripts/reap-stale-ci-stacks.sh removes it once no run can still need it.
+# scripts/reap-stale-ci-stacks.sh removes it once no job holds it; this
+# releases the job's hold (docker-release-it).
 # integration-test downs its own stack; CI's legs run this under always(), so
 # a cancelled leg leaves no stack on the runner. A name nobody created is not
 # an error.
 .PHONY: docker-down-it
-docker-down-it:
+docker-down-it: docker-release-it
 	@QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
 		down --volumes --remove-orphans >/dev/null 2>&1 || true
 
@@ -4331,7 +4366,8 @@ help:
 	@echo "  docker-run CMD=...           Run CMD in the toolchain compose service (checkout bind-mounted)"
 	@echo "  toolchain-image              Print the content-hashed toolchain image tag"
 	@echo "  trivy-image                  Scan the integration image (IT_IMAGE) with trivy"
-	@echo "  docker-down-it               Remove an integration-test run's stack, keeping its image (IT_PROJECT)"
+	@echo "  docker-down-it               Remove an integration-test run's stack and hold, keeping its image (IT_PROJECT, IT_HOLD)"
+	@echo "  docker-release-it            Remove the job's hold on the integration image (IT_HOLD)"
 	@echo "  it-image                     Print the integration image's content-addressed name (IT_IMAGE)"
 	@echo "  docker-build-release         Build production image"
 	@echo "  docker-run-release           Run production container"

@@ -106,7 +106,7 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and no `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and no `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that refuses to remove an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
@@ -191,8 +191,9 @@ writable copy of the image's module cache instead.
 
 Last, `make trivy-image TRIVY_IMAGE_INPUT=it-image.tar` scans the
 integration image, saved to `it-image.tar`, and fails on a fixable HIGH or
-CRITICAL finding; the job removes the tarball under `always()` and keeps the
-image, which the integration legs on the same daemon reuse (below).
+CRITICAL finding; the job removes the tarball and releases its hold on the
+image (`make docker-release-it`) under `always()`, and keeps the image, which
+the integration legs on the same daemon reuse (below).
 It takes the two image-only flags of handbook `devops.md` §8:
 `--ignore-unfixed`, because a base image carries advisories with no fixed
 package, and `--skip-dirs` over the image's Go module cache, `/gomodcache`
@@ -285,16 +286,34 @@ registers every `GIT_CONFIG_*` value, and the token inside any URL among them,
 with `::add-mask::` before any step can print one. It then runs
 `scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
 projects older than the longest job can live (about three hours), and
-`qrdb-ci-it` images created more than two hours ago (`REAP_IMAGE_MIN_AGE`,
-7200 s: the longest full-tier run, 86 minutes, plus headroom), and so never
-touches a live leg's; an image a container uses is never removed. It ends with
-a teardown step under `if: always()`, `make docker-down-it`, which removes that
-leg's project, and never the image, on a pass, a failure or a cancellation.
+`qrdb-ci-it` images no job holds that were created more than two hours ago
+(`REAP_IMAGE_MIN_AGE`, 7200 s). It ends with a teardown step under
+`if: always()`, `make docker-down-it`, which removes that leg's project and
+its hold, and never the image, on a pass, a failure or a cancellation.
 Removing names nobody created is not an error. No workflow runs `docker
 compose` itself (`integration_image_tag_test.go`); `feature_jobs_gate_test.go`
 requires the four steps, the mask first, the project name, no `IT_IMAGE`, and
 the `always()`. The image job reaps under `qrdb-ci-` too, so a runner that
 only runs the PR tier still drops old integration images.
+
+The image's age does not protect a live job's image: a cache hit on an
+unchanged tree builds nothing, so the image a job has just resolved keeps its
+first build's `.Created` and can be any age. Run 57540's image job lost
+`qrdb-ci-it:<hash>` to another job's reaper between its build and the trivy
+step's `docker save`. What protects it is a hold: every job that uses the
+image (the image job and each leg) names one in its `IT_HOLD` environment,
+`qrdb-ci-hold-<run>-<attempt>-<job or feature>`, and `make docker-build-it`
+creates a container of that name from the image, never started, before it
+returns; `make docker-release-it` (the image job's teardown, and
+`make docker-down-it`) removes it. `docker image rm` without force refuses an
+image any container uses, so the reaper cannot remove a held image. If the
+reaper removes the image between `docker-build-it`'s check and its hold,
+`docker create --pull never` fails and the recipe builds and holds it once
+more. A job that dies before its teardown leaves a `qrdb-ci-` container in
+the created state, which the reaper removes once it is stale, and the image
+in the same pass. `feature_jobs_gate_test.go` runs the build recipe and the
+reaper against a stub `docker` that refuses to remove an image a container
+uses, and fails if the reaper removes a held image.
 
 Sharing one image between runners would take a registry: `--cache-from` and
 `--cache-to type=registry` in `DEVCONTAINER_BUILD`, or a push by the image job

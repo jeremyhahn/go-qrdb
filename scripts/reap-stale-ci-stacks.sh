@@ -31,11 +31,23 @@
 # CUSTOMIZE (go-qrdb, #813): images too. The integration image is named by its
 # content, <prefix>it:<hash> (`make -s it-image`), and every leg of a run on a
 # runner reuses it, so no leg removes it. This removes a <prefix>it image
-# created at least REAP_IMAGE_MIN_AGE seconds ago, default 7200 (2 h): the
-# longest full-tier run, 86 min, plus headroom, so an image a run still
-# needs is not old enough. `docker image rm` without force refuses an image a
-# container (running or stopped) uses, so a live stack's image is never
-# removed. Each removal frees the disk a build took.
+# no job holds, created at least REAP_IMAGE_MIN_AGE seconds ago (default
+# 7200). Each removal frees the disk a build took.
+#
+# The age is not what keeps a live job's image: a cache hit on an unchanged
+# tree builds nothing, so an image a job resolved a minute ago carries the
+# .Created of its first build and can be any age (run 57540 lost its image
+# between the build and the trivy step's `docker save`). The hold is: every
+# CI job that uses the image creates a container from it, never started,
+# named by IT_HOLD (`make docker-build-it`), before it uses it, and removes
+# that container in its teardown (`make docker-release-it`). `docker image
+# rm` without force refuses an image any container uses, running, stopped or
+# never started, so a held image cannot be removed, whatever its age. A job
+# that dies before its teardown leaves its hold, a <prefix> container in the
+# created state, which the container loop above removes once it is stale --
+# before this loop runs, so the image goes in the same pass. Holding by a
+# container needs no clock, no label rewrite and no state outside the
+# daemon; the age only spares a just-built image the churn of a rebuild.
 #
 # A failed removal is reported and skipped: the reaper never fails the job.
 # REAP_DRY_RUN=1 prints what would be removed and removes nothing.
@@ -123,7 +135,7 @@ for ref in $(docker images --filter "reference=${prefix}it" --format '{{.Reposit
     continue
   fi
   echo "reap  image $ref"
-  if run docker image rm "$ref"; then images=$((images + 1)); else echo "warn  image $ref not removed (in use?)"; fi
+  if run docker image rm "$ref"; then images=$((images + 1)); else echo "keep  image $ref (held or in use by a container)"; fi
 done
 
 if [ "${REAP_DRY_RUN:-0}" = 1 ]; then done_as="would be removed"; else done_as=removed; fi

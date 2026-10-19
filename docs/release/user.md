@@ -72,7 +72,7 @@ is available; nothing is installed on the host.
 | `make -s toolchain-image` | prints the toolchain image's tag |
 | `make docker-run CMD='make test'` | runs one command in the toolchain image, this checkout bind-mounted, as your uid, with no network |
 | `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them |
-| `make docker-down-it` | removes an integration run's stack (`IT_PROJECT`) and keeps its image, which later runs of the same tree reuse |
+| `make docker-down-it` | removes an integration run's stack (`IT_PROJECT`) and its hold on the image (`IT_HOLD`, empty off CI), and keeps the image, which later runs of the same tree reuse |
 | `make -s it-image` | prints the integration image's content-addressed name, `qrdb-ci-it:<hash>` (`IT_IMAGE`) |
 | `make deps-check` | fails when a direct requirement is behind its latest release with no reason in its `go.mod` |
 

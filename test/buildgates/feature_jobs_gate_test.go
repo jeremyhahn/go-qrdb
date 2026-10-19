@@ -60,6 +60,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -375,7 +376,7 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 			if err := os.WriteFile(envFile, []byte("GIT_CONFIG_KEY_0=stub\n"), 0o600); err != nil {
 				t.Fatalf("write module env: %v", err)
 			}
-			cmd := exec.Command("make", "-s", "docker-build-it", "IT_IMAGE=qrdb-ci-it:test", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
+			cmd := exec.Command("make", "-s", "docker-build-it", "IT_IMAGE=qrdb-ci-it:test", "IT_HOLD=", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"STUB_DIR="+stub, "STUB_LOADED="+tc.loaded)
@@ -397,6 +398,174 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), "Error 17") {
 				t.Fatalf("make docker-build-it failed without the build's status 17:\n%s", out.String())
+			}
+		})
+	}
+}
+
+// holdDocker is a stub docker that keeps its images and containers as files
+// under $STUB_DIR (an image file holds its .Created; a container file its
+// image, then its .Created) and, as dockerd does, refuses `image rm` of an
+// image any container uses, in any state. buildx builds $STUB_IMAGE. A
+// $STUB_DIR/vanish file makes the next `create` find the image gone, as a
+// reaper running between docker-build-it's check and its hold would.
+const holdDocker = `#!/bin/sh
+img=$STUB_DIR/images ctr=$STUB_DIR/containers
+mkdir -p "$img" "$ctr"
+case "$1 $2" in
+"buildx version") exit 0 ;;
+"buildx build") : > "$STUB_DIR/built"; date -u +%Y-%m-%dT%H:%M:%SZ > "$img/$STUB_IMAGE"; exit 0 ;;
+"image inspect")
+	eval ref=\${$#}
+	[ -f "$img/$ref" ] || exit 1
+	[ "$3" = -f ] && cat "$img/$ref"
+	exit 0 ;;
+"image rm")
+	[ -f "$img/$3" ] || exit 1
+	for c in "$ctr"/*; do
+		[ -f "$c" ] || continue
+		{ read -r used; } < "$c"
+		[ "$used" = "$3" ] && { echo "conflict: unable to remove $3: image is being used by a container" >&2; exit 1; }
+	done
+	rm -f "$img/$3"; exit 0 ;;
+"images --filter") for i in "$img"/*; do [ -f "$i" ] && basename "$i"; done; exit 0 ;;
+"container inspect")
+	eval name=\${$#}
+	[ -f "$ctr/$name" ] || exit 1
+	{ read -r used; } < "$ctr/$name"; echo "$used"; exit 0 ;;
+"create --pull")
+	name= ref=
+	while [ $# -gt 0 ]; do case $1 in --name) name=$2; shift ;; *) ref=$1 ;; esac; shift; done
+	[ -f "$STUB_DIR/vanish" ] && rm -f "$STUB_DIR/vanish" "$img/$ref"
+	[ -f "$img/$ref" ] || { echo "No such image: $ref" >&2; exit 1; }
+	printf '%s\n%s\n' "$ref" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ctr/$name"; exit 0 ;;
+"rm -f" | "rm -v")
+	shift 2
+	for name; do [ -f "$ctr/$name" ] || exit 1; rm -f "$ctr/$name"; done; exit 0 ;;
+"ps -a")
+	case $4 in name=*) for c in "$ctr"/*; do [ -f "$c" ] && echo "${c##*/} ${c##*/} "; done ;; esac
+	exit 0 ;;
+"inspect -f")
+	[ -f "$ctr/$4" ] || exit 1
+	{ read -r used; read -r created; } < "$ctr/$4"
+	echo "created 0001-01-01T00:00:00Z $created"; exit 0 ;;
+"network ls" | "volume ls") exit 0 ;;
+esac
+echo "stub docker: unexpected $*" >&2
+exit 99
+`
+
+// holdStub writes holdDocker to a new directory holding image, created at
+// created, and returns the directory.
+func holdStub(t *testing.T, image, created string) string {
+	t.Helper()
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(holdDocker), 0o700); err != nil { // #nosec G306 -- the stub must be executable
+		t.Fatalf("write stub docker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(stub, "images"), 0o700); err != nil {
+		t.Fatalf("mkdir stub images: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stub, "images", image), []byte(created+"\n"), 0o600); err != nil {
+		t.Fatalf("seed stub image: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stub, "module.env"), []byte("GIT_CONFIG_KEY_0=stub\n"), 0o600); err != nil {
+		t.Fatalf("write module env: %v", err)
+	}
+	return stub
+}
+
+// runHoldStub runs name with args in root against the stub docker in stub,
+// with the reaper's image age at zero so that only a hold keeps an image, and
+// returns the combined output.
+func runHoldStub(t *testing.T, root, stub, image, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...) // #nosec G204 -- this file's own make targets and script
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"STUB_DIR="+stub, "STUB_IMAGE="+image, "REAP_IMAGE_MIN_AGE=0")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out.String())
+	}
+	return out.String()
+}
+
+// TestIntegrationFeatureCoverage_HeldImageSurvivesTheReaper is run 57540: the
+// image job resolved a cached qrdb-ci-it image whose .Created was hours old,
+// and another job's reaper removed it before the job's `docker save`. The
+// hold docker-build-it takes must keep the image from every reaper, whatever
+// its age, and releasing the hold must let the reaper remove it again.
+func TestIntegrationFeatureCoverage_HeldImageSurvivesTheReaper(t *testing.T) {
+	root := repoRoot(t)
+	const image, hold = "qrdb-ci-it:test", "qrdb-ci-hold-1-1-image"
+	for _, tc := range []struct {
+		name      string
+		vanish    bool
+		wantBuild bool
+	}{
+		{name: "a cached image older than any run", vanish: false, wantBuild: false},
+		{name: "the image reaped between the check and the hold", vanish: true, wantBuild: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := holdStub(t, image, "2000-01-01T00:00:00Z")
+			if tc.vanish {
+				if err := os.WriteFile(filepath.Join(stub, "vanish"), nil, 0o600); err != nil {
+					t.Fatalf("write vanish: %v", err)
+				}
+			}
+			imageFile := filepath.Join(stub, "images", image)
+			runHoldStub(t, root, stub, image, "make", "-s", "docker-build-it",
+				"IT_IMAGE="+image, "IT_HOLD="+hold, "MODULE_ENV_FILE="+filepath.Join(stub, "module.env"))
+			if _, err := os.Stat(filepath.Join(stub, "built")); (err == nil) != tc.wantBuild {
+				t.Fatalf("make docker-build-it built the image: %v; want %v", err == nil, tc.wantBuild)
+			}
+			reaped := runHoldStub(t, root, stub, image, "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+			if _, err := os.Stat(imageFile); err != nil {
+				t.Fatalf("the reaper removed %s while %s held it:\n%s", image, hold, reaped)
+			}
+			runHoldStub(t, root, stub, image, "make", "-s", "docker-release-it", "IT_HOLD="+hold)
+			if _, err := os.Stat(filepath.Join(stub, "containers", hold)); err == nil {
+				t.Fatalf("make docker-release-it left %s", hold)
+			}
+			reaped = runHoldStub(t, root, stub, image, "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+			if _, err := os.Stat(imageFile); err == nil {
+				t.Fatalf("the reaper kept %s after its hold was released:\n%s", image, reaped)
+			}
+		})
+	}
+}
+
+// TestIntegrationFeatureCoverage_DeadJobsHoldIsReaped: a job that died before
+// its teardown leaves its hold behind; the reaper removes the stale hold and
+// then, in the same pass, the image, so the disk stays bounded. A live job's
+// hold, just created, keeps both.
+func TestIntegrationFeatureCoverage_DeadJobsHoldIsReaped(t *testing.T) {
+	root := repoRoot(t)
+	const image, hold = "qrdb-ci-it:test", "qrdb-ci-hold-1-1-auth"
+	for _, tc := range []struct {
+		name     string
+		created  string
+		wantKept bool
+	}{
+		{name: "dead job", created: "2000-01-01T00:00:00Z", wantKept: false},
+		{name: "live job", created: time.Now().UTC().Format(time.RFC3339), wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := holdStub(t, image, "2000-01-01T00:00:00Z")
+			if err := os.MkdirAll(filepath.Join(stub, "containers"), 0o700); err != nil {
+				t.Fatalf("mkdir stub containers: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(stub, "containers", hold), []byte(image+"\n"+tc.created+"\n"), 0o600); err != nil {
+				t.Fatalf("seed hold: %v", err)
+			}
+			reaped := runHoldStub(t, root, stub, image, "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+			for _, f := range []string{filepath.Join(stub, "containers", hold), filepath.Join(stub, "images", image)} {
+				if _, err := os.Stat(f); (err == nil) != tc.wantKept {
+					t.Fatalf("%s kept: %v; want %v:\n%s", filepath.Base(f), err == nil, tc.wantKept, reaped)
+				}
 			}
 		})
 	}
