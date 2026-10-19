@@ -452,6 +452,10 @@ type mockBatchService struct {
 	executeFn       func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
 	executeEntityFn func(ctx context.Context, req *service.BatchEntityRequest) (*service.BatchEntityResponse, error)
 	revision        int64 // the batch revision Execute reports
+	importBeginFn   func(ctx context.Context, opts service.ImportOptions) (string, error)
+	importAppendFn  func(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
+	importCommitFn  func(ctx context.Context, sessionID string) (*service.ImportResult, error)
+	importAbortFn   func(ctx context.Context, sessionID string) error
 }
 
 func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
@@ -480,19 +484,31 @@ func (m *mockBatchService) Import(_ context.Context, _ io.Reader, _ service.Impo
 	return nil, nil
 }
 
-func (m *mockBatchService) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+func (m *mockBatchService) ImportBegin(ctx context.Context, opts service.ImportOptions) (string, error) {
+	if m.importBeginFn != nil {
+		return m.importBeginFn(ctx, opts)
+	}
 	return "", nil
 }
 
-func (m *mockBatchService) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+func (m *mockBatchService) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if m.importAppendFn != nil {
+		return m.importAppendFn(ctx, sessionID, seq, chunk)
+	}
 	return nil
 }
 
-func (m *mockBatchService) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
-	return nil, nil
+func (m *mockBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	if m.importCommitFn != nil {
+		return m.importCommitFn(ctx, sessionID)
+	}
+	return &service.ImportResult{}, nil
 }
 
-func (m *mockBatchService) ImportAbort(_ context.Context, _ string) error {
+func (m *mockBatchService) ImportAbort(ctx context.Context, sessionID string) error {
+	if m.importAbortFn != nil {
+		return m.importAbortFn(ctx, sessionID)
+	}
 	return nil
 }
 
