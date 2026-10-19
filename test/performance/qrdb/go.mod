@@ -16,7 +16,7 @@ require (
 	// go-quicraft/test/performance: the newest tag, in lockstep with the root
 	// module's go-quicraft (#659).
 	github.com/jeremyhahn/go-quicraft/test/performance v0.22.0-alpha
-	github.com/quic-go/quic-go v0.64.0
+	github.com/quic-go/quic-go v0.64.1
 	google.golang.org/grpc v1.84.0
 )
 

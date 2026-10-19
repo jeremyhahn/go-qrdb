@@ -18,7 +18,7 @@ require (
 	// go-quicraft: the newest tag, in lockstep with the root module (#659).
 	github.com/jeremyhahn/go-quicraft v0.22.0-alpha
 	github.com/mark3labs/mcp-go v1.3.0
-	github.com/quic-go/quic-go v0.64.0
+	github.com/quic-go/quic-go v0.64.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/tools v0.52.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941
