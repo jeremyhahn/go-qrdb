@@ -56,29 +56,38 @@ func (w *rollingWriter) run(ctx context.Context, t *testing.T, ca *testCA, ports
 	next := 0
 	for n := 0; ctx.Err() == nil; n++ {
 		key := fmt.Sprintf("rolling-%05d", n)
-		deadline := time.Now().Add(90 * time.Second)
-		for {
+		var (
+			status int
+			body   string
+			err    error
+		)
+		pollUntil(90*time.Second, 200*time.Millisecond, func() bool {
 			if ctx.Err() != nil {
-				return
+				return true
 			}
-			status, body, err := rollingPut(client, ports[next%len(ports)], key)
-			if err == nil && status == http.StatusNoContent {
-				w.mu.Lock()
-				w.acked = append(w.acked, time.Now())
-				w.keys = append(w.keys, key)
-				w.mu.Unlock()
-				break
-			}
+			status, body, err = rollingPut(client, ports[next%len(ports)], key)
+			// A write acknowledged, or refused outside the retryable class,
+			// ends the retries; the switch below tells the two apart.
 			if err == nil && status != http.StatusServiceUnavailable {
-				t.Errorf("write %s on port %d: status %d outside the retryable class, body: %s", key, ports[next%len(ports)], status, body)
-				return
-			}
-			if !time.Now().Before(deadline) {
-				t.Errorf("write %s not acknowledged within 90s of retries: quorum lost (last: status %d, err %v, body %s)", key, status, err, body)
-				return
+				return true
 			}
 			next++
-			time.Sleep(200 * time.Millisecond)
+			return false
+		})
+		switch {
+		case err == nil && status == http.StatusNoContent:
+			w.mu.Lock()
+			w.acked = append(w.acked, time.Now())
+			w.keys = append(w.keys, key)
+			w.mu.Unlock()
+		case ctx.Err() != nil:
+			return
+		case err == nil && status != http.StatusServiceUnavailable:
+			t.Errorf("write %s on port %d: status %d outside the retryable class, body: %s", key, ports[next%len(ports)], status, body)
+			return
+		default:
+			t.Errorf("write %s not acknowledged within 90s of retries: quorum lost (last: status %d, err %v, body %s)", key, status, err, body)
+			return
 		}
 	}
 }
@@ -119,29 +128,36 @@ func rollingPut(client *http.Client, port int, key string) (int, string, error) 
 // rollingGet reads key through whichever node answers, retrying the same
 // class rollingWriter retries, for up to 30 s.
 func rollingGet(client *http.Client, ports []int, key string) (string, error) {
-	deadline := time.Now().Add(30 * time.Second)
-	for n := 0; ; n++ {
+	var (
+		value string
+		err   error
+	)
+	n := 0
+	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 		port := ports[n%len(ports)]
-		resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key))
-		if err == nil {
-			raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			resp.Body.Close()
-			switch {
-			case rerr == nil && resp.StatusCode == http.StatusOK:
-				return string(raw), nil
-			case rerr == nil && resp.StatusCode != http.StatusServiceUnavailable:
-				return string(raw), fmt.Errorf("port %d: status %d", port, resp.StatusCode)
-			}
-			if rerr == nil {
-				rerr = fmt.Errorf("port %d: status %d", port, resp.StatusCode)
-			}
-			err = rerr
+		n++
+		resp, gerr := client.Get(fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key))
+		if gerr != nil {
+			value, err = "", gerr
+			return false
 		}
-		if !time.Now().Before(deadline) {
-			return "", err
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		resp.Body.Close()
+		switch {
+		case rerr == nil && resp.StatusCode == http.StatusOK:
+			value, err = string(raw), nil
+			return true
+		case rerr == nil && resp.StatusCode != http.StatusServiceUnavailable:
+			value, err = string(raw), fmt.Errorf("port %d: status %d", port, resp.StatusCode)
+			return true
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		if rerr == nil {
+			rerr = fmt.Errorf("port %d: status %d", port, resp.StatusCode)
+		}
+		value, err = "", rerr
+		return false
+	})
+	return value, err
 }
 
 // rollingAway reports whether a node is out of service for the migration:
@@ -202,6 +218,10 @@ func TestClusterEnableEncryption_Rolling_RF3(t *testing.T) {
 	var violationMu sync.Mutex
 	go func() {
 		defer bg.Done()
+		// The sampler runs until the migration is over (cancel), so it
+		// ticks rather than polling toward a condition.
+		tick := time.NewTicker(250 * time.Millisecond)
+		defer tick.Stop()
 		for ctx.Err() == nil {
 			var away []string
 			for i, port := range adminPorts {
@@ -216,7 +236,10 @@ func TestClusterEnableEncryption_Rolling_RF3(t *testing.T) {
 				}
 				violationMu.Unlock()
 			}
-			time.Sleep(250 * time.Millisecond)
+			select {
+			case <-tick.C:
+			case <-ctx.Done():
+			}
 		}
 	}()
 
@@ -399,18 +422,18 @@ func cliClusterMigration(t *testing.T, cli string, c *noneSealRF3, node gatedClu
 // the test fails with the last answer and nil is returned.
 func waitForCLIMigration(t *testing.T, cli string, c *noneSealRF3, node gatedClusterNode, proto multiProtocol, timeout time.Duration, want string, ok func(*transport.ClusterMigration) bool) *transport.ClusterMigration {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		m, err := cliClusterMigration(t, cli, c, node, proto)
-		if err == nil && m != nil && !m.Unconfirmed && ok(m) {
-			return m
-		}
-		if !time.Now().Before(deadline) {
-			t.Errorf("[%s] admin port %d: barrier status migration never %s within %v (last: %+v, err: %v)", proto.name, node.admin, want, timeout, m, err)
-			return nil
-		}
-		time.Sleep(250 * time.Millisecond)
+	var (
+		m   *transport.ClusterMigration
+		err error
+	)
+	if pollUntil(timeout, 250*time.Millisecond, func() bool {
+		m, err = cliClusterMigration(t, cli, c, node, proto)
+		return err == nil && m != nil && !m.Unconfirmed && ok(m)
+	}) {
+		return m
 	}
+	t.Errorf("[%s] admin port %d: barrier status migration never %s within %v (last: %+v, err: %v)", proto.name, node.admin, want, timeout, m, err)
+	return nil
 }
 
 // waitForCLIMigrationReaped polls `qrdb barrier status` on one node over one
@@ -418,17 +441,15 @@ func waitForCLIMigration(t *testing.T, cli string, c *noneSealRF3, node gatedClu
 // succeeded and carries no record. An unconfirmed read is not an answer.
 func waitForCLIMigrationReaped(t *testing.T, cli string, c *noneSealRF3, node gatedClusterNode, proto multiProtocol, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		m, err := cliClusterMigration(t, cli, c, node, proto)
-		if err == nil && m == nil {
-			return
-		}
-		if !time.Now().Before(deadline) {
-			t.Errorf("[%s] admin port %d: barrier status migration never reaped within %v (last: %+v, err: %v)", proto.name, node.admin, timeout, m, err)
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	var (
+		m   *transport.ClusterMigration
+		err error
+	)
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+		m, err = cliClusterMigration(t, cli, c, node, proto)
+		return err == nil && m == nil
+	}) {
+		t.Errorf("[%s] admin port %d: barrier status migration never reaped within %v (last: %+v, err: %v)", proto.name, node.admin, timeout, m, err)
 	}
 }
 
@@ -438,11 +459,10 @@ func waitForFeatureActive(t *testing.T, logs []*nodeLog, f featuregate.Feature, 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for i, l := range logs {
-		for !featureActiveIn(l.String(), f) {
-			if !time.Now().Before(deadline) {
-				t.Fatalf("node %d never logged the activation of %s within %v", i+1, f, timeout)
-			}
-			time.Sleep(200 * time.Millisecond)
+		if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
+			return featureActiveIn(l.String(), f)
+		}) {
+			t.Fatalf("node %d never logged the activation of %s within %v", i+1, f, timeout)
 		}
 	}
 }
@@ -521,26 +541,24 @@ func waitForHandOns(t *testing.T, logs []*nodeLog, want int, timeout time.Durati
 // waitForSealed polls port until its barrier reports sealed, and returns when.
 func waitForSealed(t *testing.T, ca *testCA, port int, timeout time.Duration) (time.Time, bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if r := readBarrierStatus(t, ca, port); r.Sealed {
-			return time.Now(), true
+	var at time.Time
+	sealed := pollUntil(timeout, 250*time.Millisecond, func() bool {
+		if readBarrierStatus(t, ca, port).Sealed {
+			at = time.Now()
+			return true
 		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return time.Time{}, false
+		return false
+	})
+	return at, sealed
 }
 
 // waitForAcked waits until want writes have been acknowledged since since.
 func waitForAcked(t *testing.T, w *rollingWriter, since time.Time, want int, timeout time.Duration, when string) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for w.ackedSince(since) < want {
-		if !time.Now().Before(deadline) {
-			t.Errorf("only %d of %d writes committed %s within %v: quorum not held", w.ackedSince(since), want, when, timeout)
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+		return w.ackedSince(since) >= want
+	}) {
+		t.Errorf("only %d of %d writes committed %s within %v: quorum not held", w.ackedSince(since), want, when, timeout)
 	}
 }
 
@@ -553,22 +571,23 @@ func unsealRolling(t *testing.T, client *http.Client, port int, passphrase strin
 		t.Errorf("unseal payload: %v", err)
 		return
 	}
-	deadline := time.Now().Add(90 * time.Second)
-	for {
-		status, body := 0, ""
-		resp, err := client.Post(fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", port), "application/json", bytes.NewReader(payload))
+	var (
+		status int
+		body   string
+	)
+	pollUntil(90*time.Second, time.Second, func() bool {
+		status, body = 0, ""
+		var resp *http.Response
+		resp, err = client.Post(fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", port), "application/json", bytes.NewReader(payload))
 		if err == nil {
 			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			status, body = resp.StatusCode, string(raw)
 		}
-		if status == http.StatusNoContent || status == http.StatusConflict {
-			return
-		}
-		if (err == nil && status != http.StatusServiceUnavailable) || !time.Now().Before(deadline) {
-			t.Errorf("unseal on port %d: status %d, err %v, body: %s", port, status, err, body)
-			return
-		}
-		time.Sleep(time.Second)
+		return err == nil && status != http.StatusServiceUnavailable
+	})
+	if status == http.StatusNoContent || status == http.StatusConflict {
+		return
 	}
+	t.Errorf("unseal on port %d: status %d, err %v, body: %s", port, status, err, body)
 }

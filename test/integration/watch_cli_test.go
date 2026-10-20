@@ -815,7 +815,8 @@ func TestWatchReplay_CLI_MCP_NoLoss(t *testing.T) {
 		// Stagger successive puts so they land at different phases of the
 		// poll cycle (pollInterval 500ms + ~1s collection window), covering
 		// what used to be the loss window rather than always hitting the
-		// same lucky phase.
+		// same lucky phase. The offset is the point, not a wait for
+		// anything, so there is no condition to poll for in its place.
 		time.Sleep(150 * time.Millisecond)
 	}
 

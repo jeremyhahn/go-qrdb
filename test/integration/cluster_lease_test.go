@@ -17,10 +17,13 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -96,13 +99,31 @@ func TestClusterFault_LeaseReadAfterLeaderChange(t *testing.T) {
 			if tc.pause {
 				// The readers dial while the old leader is stopped, so their
 				// requests are waiting for it the moment it resumes.
+				// A stopped process's kernel still accepts the connection,
+				// so a reader that has dialed is waiting on the old leader's
+				// TLS handshake.
 				probe = c.startLeaseProbe(t, old, key)
-				time.Sleep(faultPollInterval)
+				if !pollUntil(faultWriteTimeout, faultPollInterval, func() bool {
+					return probe.dialed.Load() >= leaseReaders
+				}) {
+					t.Fatalf("%d of %d readers dialed stopped node %d within %v", probe.dialed.Load(), leaseReaders, c.nodes[old].replicaID, faultWriteTimeout)
+				}
 				c.signal(t, old, syscall.SIGCONT)
 			}
-			// Long enough for the old leader to step down on its own
-			// (CheckQuorum) or on hearing the new term.
-			time.Sleep(2 * faultMaxElectionTimeout)
+			// The old leader steps down on its own (CheckQuorum) or on
+			// hearing the new term, within two maximal election timeouts.
+			var lastOld string
+			if !pollUntil(2*faultMaxElectionTimeout, faultPollInterval, func() bool {
+				s, err := c.dataShard(old)
+				if err != nil {
+					lastOld = err.Error()
+					return false
+				}
+				lastOld = fmt.Sprintf("leader %d term %d is_leader %v", s.LeaderID, s.Term, s.IsLeader)
+				return !s.IsLeader || s.Term > term
+			}) {
+				t.Errorf("node %d still leads term %d %v after the cut (last: %s)", c.nodes[old].replicaID, term, 2*faultMaxElectionTimeout, lastOld)
+			}
 			reads := probe.stop()
 
 			c.heal()
@@ -201,6 +222,9 @@ type leaseProbe struct {
 	wg    sync.WaitGroup
 	mu    sync.Mutex
 	reads []leaseRead
+
+	// dialed counts the readers' established TCP connections.
+	dialed atomic.Int32
 }
 
 // startLeaseProbe starts leaseReaders clients, each on its own connection,
@@ -211,6 +235,18 @@ func (c *faultCluster) startLeaseProbe(t *testing.T, i int, key string) *leasePr
 	p := &leaseProbe{done: make(chan struct{})}
 	for range leaseReaders {
 		client := mtlsHTTPClient(t, c.ca, faultWriteTimeout)
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("lease probe client transport is %T, want *http.Transport", client.Transport)
+		}
+		var dialer net.Dialer
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err == nil {
+				p.dialed.Add(1)
+			}
+			return conn, err
+		}
 		p.wg.Go(func() {
 			for {
 				select {

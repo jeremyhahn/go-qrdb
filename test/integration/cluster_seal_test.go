@@ -443,6 +443,9 @@ func TestClusterSeal_NodeUnsealedAheadOfItsPeersWaits_RF3(t *testing.T) {
 	h.unsealOwn(0)
 	// The operator's pace, not a condition to poll for: the peers stay sealed
 	// for longer than a boot that gave up on its leader would have waited.
+	// What is checked is an absence -- the node did not give up and exit --
+	// and no event marks the moment an absence is proven, so this one wait
+	// stays fixed (#813).
 	time.Sleep(20 * time.Second)
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", h.nodes[0].adminPort), 5*time.Second)
 	if err != nil {
