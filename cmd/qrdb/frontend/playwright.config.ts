@@ -32,9 +32,20 @@ export default defineConfig({
     },
   ],
   webServer: {
+    // The tier runs against the production bundle, the one the desktop app
+    // embeds, served by `vite preview` (which proxies the API prefixes exactly
+    // as the dev server does). The dev server compiled and served the app as
+    // ~140 separate modules, with Svelte's dev-mode runtime checks, on every
+    // test's fresh browser context; the bundle is 8 requests of static files.
+    // On a loaded CI runner that per-test boot was where specs ran out of
+    // time, and every spec pays it.
+    //
     // --strictPort: if another process takes the port first, fail rather than
     // let Vite pick a different one that baseURL does not point at.
-    command: `npx vite --host ${HOST} --port ${port} --strictPort`,
+    command: `npx vite build --logLevel warn && npx vite preview --host ${HOST} --port ${port} --strictPort`,
+    // Budgets the production build above, which runs before the server
+    // listens; Playwright's 60 s default is for a server alone.
+    timeout: 300_000,
     url: origin,
     reuseExistingServer: !process.env.CI,
     env: { QRDB_PROXY_TARGET: `https://${HOST}:${proxyPort}` },

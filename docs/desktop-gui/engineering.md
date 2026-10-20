@@ -248,12 +248,28 @@ host networking, so two jobs on one runner host share a loopback interface and a
 fixed port made the second fail with "already used". `playwright.port.ts` picks
 two distinct free loopback ports when the config loads (or honours
 `PLAYWRIGHT_PORT` and `PLAYWRIGHT_PROXY_PORT`) and exports them so worker
-processes agree. The first goes to Vite with `--strictPort` and to
-`use.baseURL`. The second is the dev server's API proxy target
+processes agree. The first goes to `vite preview` with `--strictPort` and to
+`use.baseURL`. The second is the preview server's API proxy target
 (`QRDB_PROXY_TARGET`), on which nothing listens: the tier has no backend, so a
 request a spec leaves unmocked is refused rather than proxied to whatever
 another job's `qrdbd` serves on the conventional admin port. `reuseExistingServer`
 stays off in CI, so a run never tests against another job's server.
+
+The mocked tier runs against the **production bundle**, the one `build-client`
+embeds: the config's web server runs `vite build`, then serves `dist/` with
+`vite preview`, which proxies the same API prefixes the dev server does. Every
+test opens a fresh browser context, so every test pays the app's boot. Under the
+dev server that boot was about 140 module requests compiled on demand, with
+Svelte's dev-mode runtime checks; the bundle is 8 requests of static files. On a
+runner host shared with other jobs, the dev-server boot was where specs ran out
+of time: dozens of specs passed only on retry, and a different few failed all
+three attempts on each run.
+
+The shared fixtures answer every endpoint the app calls on its own, at start-up
+or on navigation, with a response shaped like the real API: the Wails mock
+(`e2e/fixtures/wails-mock.ts`) for the desktop bindings, `injectWebRestMock`
+(`e2e/fixtures/web-mode-mock.ts`) for web mode. A spec routes only what it
+asserts on; its route, registered later, takes precedence over the fixture's.
 
 ## Test strategy
 

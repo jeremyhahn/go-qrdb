@@ -192,6 +192,25 @@ export async function injectWebRestMock(
       }),
     });
   });
+
+  // Intercept the tenant list (loaded by the admin views' tenant selectors).
+  // A spec that asserts on tenants routes its own list, which takes precedence.
+  await page.route("**/v1/tenants/list**", (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ tenants: [] }),
+    });
+  });
+
+  // Intercept the role list (loaded by the user forms' role pickers).
+  await page.route("**/roles/list**", (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ roles: [], total: 0, hasMore: false }),
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

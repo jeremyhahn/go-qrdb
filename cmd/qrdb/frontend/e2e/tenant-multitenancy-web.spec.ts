@@ -30,7 +30,7 @@
  *       (prefix / barrier / volume / raft).
  */
 
-import { webTest as test, expect, injectWebRestMock } from "./fixtures/web-mode-mock.ts";
+import { webTest as test, expect } from "./fixtures/web-mode-mock.ts";
 import type { Page, Route } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
@@ -118,6 +118,15 @@ async function installTenantRoutes(
     });
   });
 
+  // The tenant detail view loads the tenant's trust anchors.
+  await page.route(`**/v1/tenants/${TENANT_ID}/trust-anchors`, (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ anchors: [] }),
+    });
+  });
+
   // GET /v1/tenants/{id} (bare tenant) — must be registered AFTER the more
   // specific /quotas and /entitlements routes so those win.
   await page.route(`**/v1/tenants/${TENANT_ID}`, (route) => {
@@ -153,14 +162,19 @@ async function openTenantDetail(page: Page): Promise<void> {
 }
 
 test.describe("Multi-tenancy admin (web mode / REST payloads)", () => {
+  // The fixture injects the base REST mock first; each test's tenant routes,
+  // registered after it, take precedence over the fixture's defaults.
+  test.use({
+    webMockState: {
+      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
+      databases: [],
+    },
+  });
+
   test("(a) quota form POSTs the new quota fields in snake_case", async ({
     page,
   }) => {
     const captured = await installTenantRoutes(page);
-    await injectWebRestMock(page, {
-      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
-      databases: [],
-    });
 
     await openTenantDetail(page);
     const main = page.locator("main");
@@ -190,10 +204,6 @@ test.describe("Multi-tenancy admin (web mode / REST payloads)", () => {
     page,
   }) => {
     const captured = await installTenantRoutes(page);
-    await injectWebRestMock(page, {
-      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
-      databases: [],
-    });
 
     await openTenantDetail(page);
     const main = page.locator("main");
@@ -220,10 +230,6 @@ test.describe("Multi-tenancy admin (web mode / REST payloads)", () => {
 
   test("(c) isolation selector offers all four modes", async ({ page }) => {
     await installTenantRoutes(page);
-    await injectWebRestMock(page, {
-      sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
-      databases: [],
-    });
 
     await openTenantDetail(page);
     const select = page.locator("main").getByTestId("tenant-isolation-select");
