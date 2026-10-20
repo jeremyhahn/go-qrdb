@@ -117,3 +117,40 @@ func TestManager_ForgetDrop_RemoveFailureIsAMetaWriteError(t *testing.T) {
 	var writeErr *MetaWriteError
 	require.ErrorAs(t, err, &writeErr)
 }
+
+// Two creates of different names share the databases root. When the first
+// one creates that root, the second one then creates its own directory
+// under it, and the first one fails and undoes, the undo must not take the
+// second create's directory with it: that removal is what failed concurrent
+// creates' meta.json writes while the shard ID claimer was being attached.
+func TestCreateUndo_DoesNotRemoveASiblingCreatesDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "databases")
+	first := &createUndo{m: NewManager(nil, t.TempDir()), name: "a"}
+	second := &createUndo{m: first.m, name: "b"}
+
+	require.NoError(t, first.mkdirAll(filepath.Join(root, "a")))
+	require.NoError(t, second.mkdirAll(filepath.Join(root, "b")))
+	first.run()
+
+	_, err := os.Stat(filepath.Join(root, "a"))
+	assert.True(t, os.IsNotExist(err), "the failed create left its own directory behind")
+	info, err := os.Stat(filepath.Join(root, "b"))
+	require.NoError(t, err, "the failed create removed a concurrent create's directory")
+	assert.True(t, info.IsDir())
+}
+
+// A directory that existed before the create belongs to someone else: the
+// undo leaves it, and everything in it, alone.
+func TestCreateUndo_LeavesAPreExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "existing")
+	require.NoError(t, os.Mkdir(dir, 0o750))
+	keep := filepath.Join(dir, "keep")
+	require.NoError(t, os.WriteFile(keep, nil, 0o600))
+	u := &createUndo{m: NewManager(nil, t.TempDir()), name: "x"}
+
+	require.NoError(t, u.mkdirAll(dir))
+	u.run()
+
+	_, err := os.Stat(keep)
+	assert.NoError(t, err, "the undo removed a directory the create did not make")
+}
