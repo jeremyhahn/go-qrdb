@@ -272,12 +272,14 @@ on:
 
 # v1.23 concurrency (Company Agent m701, from ci-template v1.23): a literal
 # cancel-in-progress and a main-specific group. A PR ref is one group, so its
-# newer run cancels the older. On main the group carries the event and the
-# commit, so each main commit and event has its own group and no main run
-# cancels or waits for another. No expression reaches cancel-in-progress:
-# Gitea 1.27.1 never released go-qrdb main runs 57063 and 57200 while it was one.
+# newer run cancels the older. On main the group carries the event only
+# (Company Agent m772, m774 option (i)), so a newer push on main cancels the
+# main run of the same event in flight, started jobs included. This
+# deliberately reverses m636 (2), which gave each main commit its own group.
+# cancel-in-progress is a literal because Gitea 1.27.1 never released go-qrdb
+# main runs 57063 and 57200 while it was an expression.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
   cancel-in-progress: true
 
 permissions:

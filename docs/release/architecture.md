@@ -221,9 +221,10 @@ of the full tier on the PR branch is the accepted alternative.
 `ci.yml` takes ci-template v1.23's concurrency block (Company Agent m701): a
 literal `cancel-in-progress: true` and a `main`-specific group. A pull
 request's ref is one group, so a newer push to it cancels that ref's older
-run. On `main` the group carries the event and the commit, so each `main`
-commit and event has its own group, and no `main` run cancels or waits for
-another: every commit on `main` keeps its run and every merge is validated.
+run. On `main` the group carries the event only, so a newer push to `main`
+cancels the `main` run of the same event in flight, started jobs included,
+and the newer commit's run validates the tree that contains the cancelled one.
+This reverses v1.22.1's rule, which gave each `main` commit its own group.
 No expression reaches `cancel-in-progress`; Gitea 1.27.1 never released two
 `main` runs while it was one. The other workflows on pull requests keep
 v1.22.1's one group per ref (handbook `devops.md` §9), whose
