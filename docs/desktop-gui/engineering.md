@@ -256,14 +256,19 @@ another job's `qrdbd` serves on the conventional admin port. `reuseExistingServe
 stays off in CI, so a run never tests against another job's server.
 
 The mocked tier runs against the **production bundle**, the one `build-client`
-embeds: the config's web server runs `vite build`, then serves `dist/` with
-`vite preview`, which proxies the same API prefixes the dev server does. Every
-test opens a fresh browser context, so every test pays the app's boot. Under the
-dev server that boot was about 140 module requests compiled on demand, with
-Svelte's dev-mode runtime checks; the bundle is 8 requests of static files. On a
-runner host shared with other jobs, the dev-server boot was where specs ran out
-of time: dozens of specs passed only on retry, and a different few failed all
-three attempts on each run.
+embeds. `make test-typescript` builds it (`npm run build`) as its own step
+before Playwright starts, and the config's web server only serves `dist/` with
+`vite preview`, which proxies the same API prefixes the dev server does, under
+Playwright's default start-up timeout. `playwright.bundle.ts` refuses to start
+a run whose `dist/` is missing or older than any of the bundle's inputs (the
+sources, the build configuration, the lockfile and the built SDK), so
+`npx playwright test` run by hand fails with the command to run rather than
+testing a stale bundle. Every test opens a fresh browser context, so every test
+pays the app's boot. Under the dev server that boot was about 140 module
+requests compiled on demand, with Svelte's dev-mode runtime checks; the bundle
+is 8 requests of static files. On a runner host shared with other jobs, the
+dev-server boot was where specs ran out of time: dozens of specs passed only on
+retry, and a different few failed all three attempts on each run.
 
 The shared fixtures answer every endpoint the app calls on its own, at start-up
 or on navigation, with a response shaped like the real API: the Wails mock

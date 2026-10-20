@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { defineConfig, devices } from "@playwright/test";
+import { assertFreshBundle } from "./playwright.bundle.ts";
 import { HOST, PORT_ENV, PROXY_PORT_ENV, resolvePorts } from "./playwright.port.ts";
+
+assertFreshBundle();
 
 // Both ports are per-run, never fixed: concurrent CI jobs on one host share its
 // loopback interface (see playwright.port.ts). The proxy port has no listener —
@@ -38,14 +41,14 @@ export default defineConfig({
     // ~140 separate modules, with Svelte's dev-mode runtime checks, on every
     // test's fresh browser context; the bundle is 8 requests of static files.
     // On a loaded CI runner that per-test boot was where specs ran out of
-    // time, and every spec pays it.
+    // time, and every spec pays it. `make test-typescript` builds the bundle
+    // as its own step and the config refuses a missing or stale one
+    // (playwright.bundle.ts), so the server only serves and Playwright's
+    // default start-up timeout holds.
     //
     // --strictPort: if another process takes the port first, fail rather than
     // let Vite pick a different one that baseURL does not point at.
-    command: `npx vite build --logLevel warn && npx vite preview --host ${HOST} --port ${port} --strictPort`,
-    // Budgets the production build above, which runs before the server
-    // listens; Playwright's 60 s default is for a server alone.
-    timeout: 300_000,
+    command: `npx vite preview --host ${HOST} --port ${port} --strictPort`,
     url: origin,
     reuseExistingServer: !process.env.CI,
     env: { QRDB_PROXY_TARGET: `https://${HOST}:${proxyPort}` },
