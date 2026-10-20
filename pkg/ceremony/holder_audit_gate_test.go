@@ -137,7 +137,7 @@ func TestHolderAudit_FactorErrorTextNeverReachesTheTrail(t *testing.T) {
 	reg := authfactors.NewFactorRegistry()
 	require.NoError(t, reg.Register(canaryFactor{Factor: factortest.New(testFactorName, 0), canary: canary}))
 	barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 2)
-	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{CA: testCA(t), Factors: reg, Audit: ring}, testLogger())
+	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t), Factors: reg, Audit: ring}, testLogger())
 	require.NoError(t, err)
 	barrier.SetCeremonyDistributor(svc)
 	barrier.SetHolderVerifier(svc)

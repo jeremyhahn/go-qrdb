@@ -53,6 +53,21 @@ func TestAdminCertRejectedError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
+// TestAdminCertTenantError_Error pins the message's wording, quoting both
+// tenants so an empty or odd name stays visible.
+func TestAdminCertTenantError_Error(t *testing.T) {
+	err := &AdminCertTenantError{CertTenant: "acme", AdminTenant: "system"}
+	want := `firstboot: certificate names tenant "acme", not the admin's tenant "system"`
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	empty := &AdminCertTenantError{AdminTenant: "system"}
+	want = `firstboot: certificate names tenant "", not the admin's tenant "system"`
+	if got := empty.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
 // TestAdminCredentialAlreadyPendingError_Error pins the message's wording.
 func TestAdminCredentialAlreadyPendingError_Error(t *testing.T) {
 	err := &AdminCredentialAlreadyPendingError{}

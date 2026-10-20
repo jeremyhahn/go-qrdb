@@ -25,6 +25,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -594,13 +596,26 @@ func TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair(t *testing.T) {
 // Self-signed so the SAME bytes can stand in for both the presented
 // certificate and the trust anchor it chains to (clientCACertPEM) --
 // adoptPresentedAdminCert's chain check is satisfied without a second CA.
+// It names the system tenant in its first OU and in a SPIFFE ID SAN under
+// the default cluster trust domain, the identity the mTLS authenticator's
+// tenant rule requires of a presented admin certificate (go-qrdb#777).
 func selfSignedAdminCertPEM(t *testing.T) (certPEM []byte, thumbprint string) {
+	t.Helper()
+	uris, err := auth.TenantPrincipalURIs(qrdbconfig.DefaultClusterTrustDomain, tenantid.System, spiffe.KindUser, "admin")
+	require.NoError(t, err)
+	return selfSignedCertPEM(t, pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenantid.System, "administrator"}}, uris)
+}
+
+// selfSignedCertPEM self-signs a client certificate naming subject and the
+// URI SANs uris, and returns its PEM and SPKI thumbprint.
+func selfSignedCertPEM(t *testing.T, subject pkix.Name, uris []*url.URL) (certPEM []byte, thumbprint string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenantid.System, "administrator"}},
+		Subject:      subject,
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -775,6 +790,46 @@ func TestRunFirstBoot_SecondBoot_Required_BindsThenFastPathsCleanly(t *testing.T
 	err = runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{},
 		false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM)
 	require.NoError(t, err)
+}
+
+// TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused presents a trusted
+// OU=system certificate carrying no SPIFFE ID SAN, a credential the mTLS
+// authenticator's tenant rule refuses at every login. First boot must refuse
+// it with the typed rejection wrapping the authenticator's own error, and
+// must bind nothing (go-qrdb#777).
+func TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused(t *testing.T) {
+	certPEM, _ := selfSignedCertPEM(t, pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenantid.System, "administrator"}}, nil)
+
+	var admin *user.User
+	bound := false
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			if admin == nil {
+				return nil, &user.UserNotFoundError{}
+			}
+			return admin, nil
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			admin = &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, System: true, Lifecycle: user.LifecycleActive}
+			return admin, nil
+		},
+		addCertBindingFn: func(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+			bound = true
+			return admin, nil
+		},
+	}
+	pendingStore := newMockKVStore(make(map[string][]byte))
+	require.NoError(t, firstboot.WritePendingAdminCert(context.Background(), pendingStore, certPEM))
+
+	err := runFirstBoot(context.Background(), &mockRaftNode{}, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{},
+		false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM)
+
+	var rejected *firstboot.AdminCertRejectedError
+	require.ErrorAs(t, err, &rejected)
+	var tenantErr *auth.CertificateTenantError
+	require.ErrorAs(t, err, &tenantErr)
+	require.ErrorIs(t, err, spiffe.ErrNoTenantSPIFFEID)
+	require.False(t, bound, "a refused certificate must never be bound")
 }
 
 // TestRunFirstBoot_Required_ExpiredAdminNoPendingCredential_BootsAwaiting is

@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net/url"
 	"testing"
@@ -72,82 +73,89 @@ func spiffeCertURIs(t *testing.T, cn string, ou []string, uris ...string) *x509.
 // Scenario (b): TenantFromCert extracts the tenant from the SPIFFE SAN.
 func TestTenantFromCert_SPIFFE(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
-	cert := spiffeCert(t, "alice", nil, "spiffe://example.com/tenant/tenant-acme/user/alice")
+	cert := spiffeCert(t, "alice", []string{"tenant-acme"}, "spiffe://tenant-acme/user/alice")
 
-	tenantID, fromSPIFFE, err := a.TenantFromCert(cert)
+	tenantID, err := a.TenantFromCert(cert)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !fromSPIFFE {
-		t.Fatal("expected tenant derived from SPIFFE SAN")
 	}
 	if tenantID != "tenant-acme" {
 		t.Fatalf("tenant = %q, want tenant-acme", tenantID)
 	}
 }
 
-// Scenario (b): a SPIFFE SAN under a foreign trust domain is REJECTED.
+// TestTenantFromCert_WrongTrustDomain_Rejected: a SPIFFE SAN under a foreign
+// trust domain fails closed, even with an agreeing OU.
 func TestTenantFromCert_WrongTrustDomain_Rejected(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
-	cert := spiffeCert(t, "mallory", nil, "spiffe://evil.example/tenant/tenant-acme/user/mallory")
+	cert := spiffeCert(t, "mallory", []string{"tenant-acme"}, "spiffe://evil.example/user/mallory")
 
-	_, _, err := a.TenantFromCert(cert)
-	if err == nil {
-		t.Fatal("expected rejection of foreign trust domain (fail-closed)")
+	var mismatch *TenantNameMismatchError
+	if _, err := a.TenantFromCert(cert); !errors.As(err, &mismatch) || mismatch.SPIFFETenant != "evil.example" {
+		t.Fatalf("err = %v, want *TenantNameMismatchError naming evil.example (fail-closed)", err)
 	}
 }
 
-// A SPIFFE-less certificate with no OU yields an empty tenant (no fabrication),
-// leaving the higher layer to run HRD or fail closed.
+// TestTenantFromCert_NoSPIFFE_NoOU: a certificate naming no tenant at all is
+// refused; it is not folded onto the system tenant.
 func TestTenantFromCert_NoSPIFFE_NoOU(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
 	cert := spiffeCert(t, "browser-user", nil, "")
 
-	tenantID, fromSPIFFE, err := a.TenantFromCert(cert)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fromSPIFFE || tenantID != "" {
-		t.Fatalf("expected empty tenant, got %q (spiffe=%v)", tenantID, fromSPIFFE)
+	tenantID, err := a.TenantFromCert(cert)
+	if !errors.Is(err, ErrInvalidCertificate) || !errors.Is(err, spiffe.ErrNoTenantSPIFFEID) || tenantID != "" {
+		t.Fatalf("got (%q, %v), want a refusal carrying spiffe.ErrNoTenantSPIFFEID", tenantID, err)
 	}
 }
 
-// Legacy OU fallback still works for SPIFFE-less certs.
-func TestTenantFromCert_OUFallback(t *testing.T) {
+// TestTenantFromCert_OUOnlyRefused: the OU alone names no tenant; there is no
+// OU fallback.
+func TestTenantFromCert_OUOnlyRefused(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
 	cert := spiffeCert(t, "legacy", []string{"legacy-tenant"}, "")
 
-	tenantID, fromSPIFFE, err := a.TenantFromCert(cert)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fromSPIFFE {
-		t.Fatal("OU fallback must not report fromSPIFFE")
-	}
-	if tenantID != "legacy-tenant" {
-		t.Fatalf("tenant = %q, want legacy-tenant", tenantID)
+	tenantID, err := a.TenantFromCert(cert)
+	if !errors.Is(err, ErrInvalidCertificate) || !errors.Is(err, spiffe.ErrNoTenantSPIFFEID) || tenantID != "" {
+		t.Fatalf("got (%q, %v), want a refusal carrying spiffe.ErrNoTenantSPIFFEID", tenantID, err)
 	}
 }
 
-// The system bootstrap cert carries tenant/system and resolves to the system
-// tenant so the control plane works before tenant barriers unseal.
+// TestTenantFromCert_SPIFFEOnlyRefused: the SPIFFE ID alone names no tenant;
+// there is no SAN-only path.
+func TestTenantFromCert_SPIFFEOnlyRefused(t *testing.T) {
+	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
+	cert := spiffeCert(t, "alice", nil, "spiffe://example.com/user/alice")
+
+	tenantID, err := a.TenantFromCert(cert)
+	if !errors.Is(err, ErrInvalidCertificate) || !errors.Is(err, ErrNoTenantOU) || tenantID != "" {
+		t.Fatalf("got (%q, %v), want a refusal carrying ErrNoTenantOU", tenantID, err)
+	}
+
+	// Naming no tenant, it must be under the cluster trust domain.
+	cert = spiffeCert(t, "alice", nil, "spiffe://tenant-acme/user/alice")
+	tenantID, err = a.TenantFromCert(cert)
+	if !errors.Is(err, ErrInvalidCertificate) || !errors.Is(err, spiffe.ErrTrustDomainMismatch) || tenantID != "" {
+		t.Fatalf("got (%q, %v), want a refusal carrying spiffe.ErrTrustDomainMismatch", tenantID, err)
+	}
+}
+
+// TestTenantFromCert_SystemBootstrap: the system tenant is named in both
+// fields like any other.
 func TestTenantFromCert_SystemBootstrap(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
-	cert := spiffeCert(t, "security-officer", nil, "spiffe://example.com/tenant/system/user/security-officer")
+	cert := spiffeCert(t, "security-officer", []string{"system"}, "spiffe://system/user/security-officer")
 
-	tenantID, fromSPIFFE, err := a.TenantFromCert(cert)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !fromSPIFFE || tenantID != "system" {
-		t.Fatalf("system bootstrap cert: tenant=%q spiffe=%v", tenantID, fromSPIFFE)
+	tenantID, err := a.TenantFromCert(cert)
+	if err != nil || tenantID != "system" {
+		t.Fatalf("system bootstrap cert: tenant=%q err=%v", tenantID, err)
 	}
 }
 
-// Authenticate end-to-end derives the SPIFFE tenant onto the Identity.
+// TestAuthenticate_SPIFFETenant: Authenticate binds the tenant both fields
+// name.
 func TestAuthenticate_SPIFFETenant(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
-	cert := spiffeCert(t, "alice", nil, "spiffe://example.com/tenant/tenant-acme/user/alice")
+	cert := spiffeCert(t, "alice", []string{"tenant-acme"}, "spiffe://tenant-acme/user/alice")
 	ctx := WithTLSState(t.Context(), &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{cert}},
 	})
@@ -159,15 +167,12 @@ func TestAuthenticate_SPIFFETenant(t *testing.T) {
 	if id.TenantID != "tenant-acme" {
 		t.Fatalf("tenant = %q", id.TenantID)
 	}
-	if id.Metadata["tenant_source"] != "spiffe" {
-		t.Fatalf("tenant_source = %q", id.Metadata["tenant_source"])
-	}
 }
 
 // Authenticate fails closed when the peer cert carries a foreign trust domain.
 func TestAuthenticate_ForeignTrustDomain_FailsClosed(t *testing.T) {
 	a := NewMTLSAuthenticatorWithTrustDomain("example.com")
-	cert := spiffeCert(t, "mallory", nil, "spiffe://evil.example/tenant/tenant-acme/user/mallory")
+	cert := spiffeCert(t, "mallory", []string{"tenant-acme"}, "spiffe://evil.example/user/mallory")
 	ctx := WithTLSState(t.Context(), &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{cert}},
 	})
@@ -179,8 +184,8 @@ func TestAuthenticate_ForeignTrustDomain_FailsClosed(t *testing.T) {
 
 // Sanity check that the verifier package agrees on the canonical string form.
 func TestSPIFFEStringRoundTrip(t *testing.T) {
-	id := spiffe.ID{TrustDomain: "example.com", TenantID: "t1", Kind: spiffe.KindUser, Name: "bob"}
-	if got, want := id.String(), "spiffe://example.com/tenant/t1/user/bob"; got != want {
+	id := spiffe.ID{TrustDomain: "t1", Kind: spiffe.KindUser, Name: "bob"}
+	if got, want := id.String(), "spiffe://t1/user/bob"; got != want {
 		t.Fatalf("String() = %q, want %q", got, want)
 	}
 }

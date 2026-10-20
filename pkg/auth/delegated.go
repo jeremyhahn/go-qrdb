@@ -17,7 +17,6 @@ package auth
 import (
 	"context"
 	"crypto/x509"
-	"errors"
 	"slices"
 	"time"
 
@@ -164,9 +163,9 @@ func (a *MTLSAuthenticator) VerifyDelegation(ctx context.Context, der []byte) (*
 //   - revocation is consulted and must answer. Unlike a user login, a
 //     delegation is not admitted when revocation state is unreadable: a
 //     sealed node has no tenant for it to act in anyway;
-//   - the certificate's tenant -- its service SPIFFE SAN, or its Subject OU
-//     when it has none -- is the grant's tenant, and the SAN names the
-//     principal as a service;
+//   - the certificate's service SPIFFE SAN names the grant's principal in
+//     the grant's tenant, and its first Subject OU agrees with that tenant;
+//     both are required;
 //   - the tenant is not the system tenant: the platform cannot be delegated
 //     to, and no platform CA can mint a delegation;
 //   - the leaf's direct issuer is that tenant's own registered login CA.
@@ -188,8 +187,7 @@ func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []
 	if revoked {
 		return nil, ErrCertificateRevoked
 	}
-	source, err := delegationTenantSource(leaf, a.pinnedTrustDomain, g)
-	if err != nil {
+	if err := checkDelegationTenant(leaf, a.pinnedTrustDomain, g); err != nil {
 		return nil, err
 	}
 	if tenantid.IsSystem(g.Tenant) {
@@ -215,7 +213,7 @@ func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []
 		Metadata: map[string]string{
 			ServicePrincipalMetadataKey: g.Principal,
 			DelegationSerialMetadataKey: serial,
-			"tenant_source":             source,
+			"tenant_source":             "spiffe",
 		},
 		delegation: &Delegation{
 			Principal:   g.Principal,
@@ -227,24 +225,18 @@ func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []
 	}, nil
 }
 
-// delegationTenantSource checks that leaf names g's tenant, and returns
-// where it names it: "spiffe" for a tenant SPIFFE SAN, which must also name
-// g's principal as a service, or "ou" for the Subject OU of a certificate
-// with no SPIFFE SAN.
-func delegationTenantSource(leaf *x509.Certificate, pinnedTrustDomain string, g delegation.Grant) (string, error) {
-	id, err := spiffe.TenantFromCert(leaf, pinnedTrustDomain)
-	switch {
-	case err == nil:
-		if id.TenantID != g.Tenant || id.Kind != spiffe.KindService || id.Name != g.Principal {
-			return "", &DelegationRefusedError{Reason: "SPIFFE SAN does not name the delegated service in the delegated tenant"}
-		}
-		return "spiffe", nil
-	case errors.Is(err, spiffe.ErrNoTenantSPIFFEID):
-		if len(leaf.Subject.OrganizationalUnit) == 0 || leaf.Subject.OrganizationalUnit[0] != g.Tenant {
-			return "", &DelegationRefusedError{Reason: "certificate does not name the delegated tenant"}
-		}
-		return "ou", nil
-	default:
-		return "", &CertificateTenantError{Err: err}
+// checkDelegationTenant checks that leaf names g's tenant the way every
+// tenant-principal certificate must (TenantFromClientCert): a first Subject OU
+// and a workload SPIFFE ID SAN under the tenant's trust domain that agree,
+// the SAN naming g's principal as a service, spiffe://<tenant>/svc/<principal>.
+// Either field alone is refused.
+func checkDelegationTenant(leaf *x509.Certificate, clusterTrustDomain string, g delegation.Grant) error {
+	id, err := clientWorkload(leaf, clusterTrustDomain)
+	if err != nil {
+		return err
 	}
+	if id.TrustDomain != g.Tenant || id.Kind != spiffe.KindService || id.Name != g.Principal {
+		return &DelegationRefusedError{Reason: "SPIFFE SAN does not name the delegated service in the delegated tenant"}
+	}
+	return nil
 }

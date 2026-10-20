@@ -21,12 +21,16 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -960,6 +964,55 @@ func TestStartEmbedded_FailedBarrierInit_DoesNotLogSealDisabled(t *testing.T) {
 	}
 	if strings.Contains(out, "qrdb/seal: seal disabled") {
 		t.Errorf("a failed barrier construction must not be reported as seal.enabled: false: %s", out)
+	}
+}
+
+func TestEmbeddedSPIFFETrustDomain_IsTheClusterDefault(t *testing.T) {
+	if got := embeddedSPIFFETrustDomain(); got != qrdbconfig.DefaultClusterTrustDomain {
+		t.Fatalf("embeddedSPIFFETrustDomain = %q, want the cluster default %q", got, qrdbconfig.DefaultClusterTrustDomain)
+	}
+}
+
+// TestStartEmbedded_CertProviderIssuesTheAgreeingSAN proves the default
+// reaches the provider the embedded node serves certificates from: an issued
+// tenant certificate carries the SPIFFE ID SAN agreeing with its OU, where an
+// unset trust domain made the provider refuse to issue at all.
+func TestStartEmbedded_CertProviderIssuesTheAgreeingSAN(t *testing.T) {
+	esb, _ := startEmbeddedLocal(t, "pebble")
+	defer func() {
+		if err := esb.StopEmbedded(); err != nil {
+			t.Fatalf("StopEmbedded: %v", err)
+		}
+	}()
+
+	esb.mu.Lock()
+	var prov cert.CertProvider
+	if esb.svcNode != nil {
+		prov = esb.svcNode.CertProv
+	}
+	esb.mu.Unlock()
+	if prov == nil {
+		t.Fatal("embedded node has no certificate provider")
+	}
+
+	bundle, err := certtest.Generate(context.Background(), prov, &certtest.Request{Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("certtest.Generate: %v", err)
+	}
+	block, _ := pem.Decode(bundle.CertPEM)
+	if block == nil {
+		t.Fatal("certificate PEM did not decode")
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	want := "spiffe://acme/user/alice"
+	if len(c.URIs) != 1 || c.URIs[0].String() != want {
+		t.Fatalf("issued certificate URIs = %v, want [%s]", c.URIs, want)
+	}
+	if len(c.Subject.OrganizationalUnit) == 0 || c.Subject.OrganizationalUnit[0] != "acme" {
+		t.Fatalf("issued certificate OU = %v, want acme first", c.Subject.OrganizationalUnit)
 	}
 }
 

@@ -78,7 +78,7 @@ func newAuditedHolderDatabaseService(t *testing.T, trail audit.AuditLogger) (*Da
 	t.Helper()
 	svc, mgr := newTestDatabaseServiceWithBarrier(t)
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	svc.barrierMgr.SetHolderDeps(ceremony.HolderDeps{CA: ca, Audit: trail})
+	svc.barrierMgr.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: ceremonyTrustDomain, Audit: trail})
 	// Created through the manager: a tenant-scoped create discards a
 	// caller-supplied data directory and only a volume or raft tenant gets a
 	// dedicated store, which this test does not need to provision.

@@ -123,7 +123,7 @@ func TestBarrierReadyHook_CalledAfterInit_Passphrase(t *testing.T) {
 // after a Shamir init -- which, like the software strategies, leaves the
 // barrier unsealed until it is explicitly sealed again.
 func TestBarrierReadyHook_CalledAfterInit_Shamir(t *testing.T) {
-	svc, _, hook := newHookService(t, WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}))
+	svc, _, hook := newHookService(t, WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}))
 	const tenantID = "hook-init-shamir"
 
 	if _, err := svc.CreateTenant(context.Background(), tenantID, "Hook Init Shamir", ""); err != nil {
@@ -211,7 +211,7 @@ func TestBarrierReadyHook_NotCalledWhileSealed(t *testing.T) {
 // hook calls its init made.
 func newHookQuorumTenant(t *testing.T, tenantID string, extra ...TenantServiceOption) (*TenantService, *seal.BarrierRegistry, *hookCapture, []*tenantHolder) {
 	t.Helper()
-	opts := append([]TenantServiceOption{WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)})}, extra...)
+	opts := append([]TenantServiceOption{WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain})}, extra...)
 	svc, reg, hook := newHookService(t, opts...)
 	if _, err := svc.CreateTenant(context.Background(), tenantID, "Hook Quorum", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)

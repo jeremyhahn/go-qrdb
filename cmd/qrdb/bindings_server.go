@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -279,6 +280,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		AuditLogger:            trail,
 		CertKeyProviderFactory: b.certKeyProviderFactory,
 		TrustAnchors:           b.trustAnchors,
+		SPIFFETrustDomain:      embeddedSPIFFETrustDomain(),
 		Logger:                 slog.Default(),
 	})
 	if svcErr != nil {
@@ -398,6 +400,17 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	started = true
 	b.logger.Debug("StartEmbedded completed")
 	return nil
+}
+
+// embeddedSPIFFETrustDomain is the trust domain the embedded node issues
+// tenant principals under and its mTLS authenticator pins. The embedded
+// composer carries no auth configuration, so it takes the default an unset
+// one takes in the daemon: the cluster's own trust domain
+// (config.AuthConfig.EffectiveSPIFFETrustDomain). Without it every issuer
+// would refuse, since a tenant certificate needs a SPIFFE ID SAN agreeing
+// with its OU.
+func embeddedSPIFFETrustDomain() string {
+	return qrdbconfig.AuthConfig{}.EffectiveSPIFFETrustDomain()
 }
 
 // openEmbeddedAudit opens the compliance trail cfg.Audit enables, under the

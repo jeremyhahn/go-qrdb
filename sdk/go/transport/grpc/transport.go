@@ -129,14 +129,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 	// grpc.NewClient connects lazily, so the first Health RPC drives the
 	// handshake; each attempt is bounded by the unary timeout interceptor and
 	// the whole loop by ctx.
-	if !t.connectHealthy(ctx) {
-		return &transport.ConnectionError{
-			Address: t.config.Address,
-			Err:     &dialError{Err: status.Error(codes.Unavailable, "health check failed")},
-		}
-	}
-
-	return nil
+	return t.connectHealthy(ctx)
 }
 
 // connectWaitBudget bounds how long Connect waits for the gRPC connection to
@@ -154,14 +147,26 @@ const connectWaitBudget = 15 * time.Second
 // "TLS handshake error: EOF"). The wait is bounded to connectWaitBudget so a
 // genuinely-down server still fails in reasonable time, leaving the rest of
 // the caller's deadline for the actual RPC.
-func (t *Transport) connectHealthy(ctx context.Context) bool {
+//
+// A server that refuses the caller's credential (codes.Unauthenticated) has
+// answered: its typed refusal is the result, as on every other transport, not
+// a connectivity failure. Any other failure is a *transport.ConnectionError.
+func (t *Transport) connectHealthy(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, connectWaitBudget)
 	defer cancel()
 	resp, err := t.client.Health(cctx, &emptypb.Empty{}, grpc.WaitForReady(true))
-	if err == nil {
-		return resp.GetStatus() != ""
+	switch {
+	case err == nil && resp.GetStatus() != "":
+		return nil
+	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
+		return nil
+	case status.Code(err) == codes.Unauthenticated:
+		return mapGRPCError("Health", err)
 	}
-	return reachableButUnauthorized(err) || reachableButSealed(err)
+	return &transport.ConnectionError{
+		Address: t.config.Address,
+		Err:     &dialError{Err: status.Error(codes.Unavailable, "health check failed")},
+	}
 }
 
 // reachableButUnauthorized reports whether err is a gRPC status error

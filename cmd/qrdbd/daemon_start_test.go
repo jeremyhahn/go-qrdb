@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 // lostPortAttempts bounds how many fresh port draws startDaemon makes for one
@@ -69,24 +70,26 @@ func drawDaemonPorts() (daemonPorts, error) {
 // fullStartFlags is the single-node static start every full-startup test in
 // this package begins from: pebble, auth off, REST and gRPC on, every listener
 // on a port of p and bound at testBindHost. Tests set what they are about on
-// top of it, and reserve the Noise port once they have.
+// top of it, and reserve the Noise port once they have. The tenant trust
+// domain is the one resolveStartFlags yields when nothing configures it.
 func fullStartFlags(dir string, p daemonPorts) *startFlags {
 	raftAddr := net.JoinHostPort(raftAdvertiseHost, strconv.Itoa(p.raft))
 	return &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{"1=" + raftAddr},
-		listen:          net.JoinHostPort(raftListenHost, strconv.Itoa(p.raft)),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       p.admin,
-		grpcPort:        p.grpc,
-		enableREST:      true,
-		enableGRPC:      true,
-		host:            testBindHost,
+		dataDir:           dir,
+		smType:            "pebble",
+		discoveryMethod:   "static",
+		peers:             []string{"1=" + raftAddr},
+		listen:            net.JoinHostPort(raftListenHost, strconv.Itoa(p.raft)),
+		raftAddress:       raftAddr,
+		shardID:           1,
+		replicaID:         1,
+		deploymentID:      1,
+		adminPort:         p.admin,
+		grpcPort:          p.grpc,
+		enableREST:        true,
+		enableGRPC:        true,
+		host:              testBindHost,
+		spiffeTrustDomain: qrdbconfig.DefaultClusterTrustDomain,
 	}
 }
 

@@ -221,6 +221,7 @@ func TestLocalCA_SignCSR_AssignsTheIdentity(t *testing.T) {
 		ValidityDays: 365,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		TrustDomain:  testTrustDomain,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, cert)
@@ -228,6 +229,8 @@ func TestLocalCA_SignCSR_AssignsTheIdentity(t *testing.T) {
 	assert.Equal(t, "so-1", cert.Subject.CommonName)
 	assert.Equal(t, []string{"acme", "custodian"}, cert.Subject.OrganizationalUnit)
 	assert.Empty(t, cert.DNSNames, "the CSR's DNS SAN must not be signed")
+	assert.Equal(t, []string{"spiffe://acme/user/so-1"}, uriStrings(cert),
+		"the one SAN is the agreeing tenant SPIFFE ID")
 	assert.Equal(t, x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment, cert.KeyUsage)
 	assert.Contains(t, cert.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
 	assert.WithinDuration(t, time.Now().AddDate(0, 0, 365), cert.NotAfter, time.Hour)
@@ -248,6 +251,7 @@ func TestLocalCA_SignCSR_EmptyProfileIsTenantOnly(t *testing.T) {
 		Username:     "so-2",
 		ValidityDays: 30,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
+		TrustDomain:  testTrustDomain,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"acme"}, cert.Subject.OrganizationalUnit)
@@ -255,7 +259,7 @@ func TestLocalCA_SignCSR_EmptyProfileIsTenantOnly(t *testing.T) {
 
 func TestLocalCA_SignCSR_InvalidInputs(t *testing.T) {
 	ca := newTestLocalCA(t)
-	validOpts := &SignCSROptions{TenantID: "acme", Username: "so", ValidityDays: 1}
+	validOpts := &SignCSROptions{TenantID: "acme", Username: "so", ValidityDays: 1, TrustDomain: testTrustDomain}
 
 	// CSR whose embedded signature has been corrupted: re-encode a valid
 	// CSR DER with flipped bytes near the end (the signature field).
@@ -427,11 +431,11 @@ func TestCAKeyParseError(t *testing.T) {
 // TestLocalCA_SignCSR_DropsRequestedURISANs pins that a URI SAN the CSR asks
 // for never reaches the certificate: a tenant-scoped SPIFFE ID the requester
 // chose would otherwise be a tenant claim this CA vouches for (go-qrdb#519).
-// The certificate carries no SAN at all.
+// The certificate's one SAN is the agreeing tenant SPIFFE ID the options name.
 func TestLocalCA_SignCSR_DropsRequestedURISANs(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	requested, err := url.Parse("spiffe://db.example.com/tenant/other/user/alice")
+	requested, err := url.Parse("spiffe://other/user/alice")
 	require.NoError(t, err)
 	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
 		Subject: pkix.Name{CommonName: "alice", OrganizationalUnit: []string{"acme"}},
@@ -445,7 +449,9 @@ func TestLocalCA_SignCSR_DropsRequestedURISANs(t *testing.T) {
 		Username:     "alice",
 		ValidityDays: 30,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
+		TrustDomain:  testTrustDomain,
 	})
 	require.NoError(t, err)
-	assert.Empty(t, cert.URIs, "the CSR's URI SAN is dropped: a ceremony certificate carries no SAN")
+	assert.Equal(t, []string{"spiffe://acme/user/alice"}, uriStrings(cert),
+		"the CSR's URI SAN is dropped: the one SAN is the options' agreeing tenant SPIFFE ID")
 }

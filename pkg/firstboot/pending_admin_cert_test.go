@@ -163,7 +163,8 @@ func TestWriteIssuedAdminCertIfAny_TheRaceLoserIsNotAnError(t *testing.T) {
 
 // testCeremonyCore builds a minimal, real *ceremony.CeremonyService over an
 // in-memory barrier -- the concrete type WriteIssuedAdminCertIfAny reads
-// LastIssuedAdminCertPEM from, so a test double cannot stand in for it.
+// LastIssuedAdminCertPEM from, so a test double cannot stand in for it. Its
+// trust domain is a literal: authtest imports this package.
 func testCeremonyCore(t *testing.T) *ceremony.CeremonyService {
 	t.Helper()
 	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
@@ -173,6 +174,7 @@ func testCeremonyCore(t *testing.T) *ceremony.CeremonyService {
 	require.NoError(t, err)
 	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
+	core.SetTrustDomain("example.com")
 	return core
 }
 

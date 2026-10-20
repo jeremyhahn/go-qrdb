@@ -429,6 +429,7 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		CredentialCoreSvc:         sub.CredCoreSvc,
 		CeremonyDataDir:           sub.SealDataDir,
 		CeremonyCA:                ceremonyCA,
+		SPIFFETrustDomain:         f.spiffeTrustDomain, // the first-boot ceremony issues holder and admin certificates in this window
 		PINBackend:                sub.PINBackend,
 		ServerCertPEM:             bundle.CertPEM,
 		ClientCACertPEM:           bundle.CACertPEM,

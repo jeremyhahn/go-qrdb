@@ -47,6 +47,12 @@ import (
 // not a boot refusal.
 func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*firstboot.Result, error) {
 	users := n.UserService()
+	// A presented admin certificate is read under the trust domain this
+	// node's authenticator pins, so first boot adopts only one a login here
+	// can use (go-qrdb#777).
+	if td := n.spiffeTrustDomain.Load(); td != nil {
+		deps.TrustDomain = *td
+	}
 	result, err := firstBootUnderPolicy(ctx, deps, auth.MTLSBindingPolicy(n.bindingPolicy.Load()), users)
 	if err != nil {
 		return nil, err

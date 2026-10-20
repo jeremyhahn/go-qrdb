@@ -280,10 +280,14 @@ type AuthMiddlewareConfig struct {
 - **CN is the username, OU is the tenant.** That mapping is what every
   transport's authentication depends on; changing it changes who every existing
   certificate is.
-- **The SPIFFE tenant SAN is emitted only under a configured trust domain**
-  (`cert.WithTrustDomain`, fed from `auth.spiffe_trust_domain` through
-  `lifecycle.Infra.SPIFFETrustDomain`), with kind `user` and the CN as its name.
-  With no trust domain the certificate carries no SubjectAltName extension.
+- **Every client certificate carries the tenant's SPIFFE ID SAN**,
+  `spiffe://<tenant>/user/<CN>` (a delegation, `spiffe://<tenant>/svc/<principal>`):
+  the tenant is the trust domain. `cert.WithTrustDomain` names the cluster
+  trust domain (fed from the effective `auth.spiffe_trust_domain`, which
+  defaults to `auth.cluster_trust_domain`, through
+  `lifecycle.Infra.SPIFFETrustDomain`), and no tenant may be it
+  (`auth.TenantPrincipalURIs`). A provider with no valid cluster trust domain
+  refuses to issue (`*SPIFFEIdentityError`) before the CA key is touched.
 - **No server-side client key generation.** `IssueClientCert` certifies the
   public key it is handed and never sees a private key. The removed
   `GenerateClientCert` (`GenerateRequest`, `CertBundle`) generated one and
@@ -309,9 +313,10 @@ type AuthMiddlewareConfig struct {
   always critical, so a verifier that does not understand it rejects the
   certificate rather than treating it as a plain login.
 - **`IssueClientCert` never mints a SAN that disagrees with the OU.**
-  `clientSPIFFEURIs` round-trips the ID through `spiffe.ParseID` and requires
-  field-for-field equality before signing; anything else is
-  `*SPIFFEIdentityError` and no certificate or record exists.
+  `clientSPIFFEURIs` builds the SAN from the same tenant and name as the
+  Subject with `auth.TenantPrincipalURIs`, which validates the ID
+  (`spiffe.ID.URI`) before signing; anything else is `*SPIFFEIdentityError`
+  and no certificate or record exists.
 - **The ceremony CA sets the Subject and signs no SAN.** `SignCSROptions`
   carries `TenantID` and `Username`; `SignCSROptions.Subject` and `RawSubject`
   are the contract every `CeremonyCA` implements (`CN=Username`,
@@ -528,13 +533,15 @@ key patterns are the on-disk contract for this feature.
   (signature, each accepted and refused key type) and the enrolment service
   (missing account, refused CSR, binding failure revoking the serial).
 - **The SPIFFE SAN is tested against the real authenticator over a real
-  verified chain** (`pkg/cert/spiffe_san_test.go`): a certificate minted under a
-  trust domain resolves with `tenant_source=spiffe` on a node pinned to that
-  domain and is refused on a node pinned to another; one minted with no trust
-  domain carries no SubjectAltName and resolves through the OU; a SAN that
-  would not parse back to the Subject's tenant and name is refused with nothing
-  persisted; and a key enrolled without the SAN still matches its binding after
-  re-issue with it.
+  verified chain** (`pkg/cert/spiffe_san_test.go`). A tenant certificate
+  names its tenant twice — the first subject OU and the SPIFFE ID SAN — and the
+  authenticator accepts it only when both are present and agree. A certificate
+  minted for a tenant carries both and resolves to that tenant; one whose OU
+  names the cluster trust domain is refused; issuing with no cluster trust
+  domain is refused before signing, with nothing persisted; a SAN
+  that would not parse back to the Subject's tenant and name is refused with
+  nothing persisted; and a key enrolled under one certificate still matches its
+  binding after re-issue under the same CN and tenant.
 - **`CACertPEM()` while sealed is its own test** — it must still work.
 - **Memory tests**: CA key wiping is
   `pkg/cakey/software_test.go`'s responsibility now that the key lives there;

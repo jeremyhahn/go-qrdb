@@ -51,7 +51,8 @@ func delegGrant() delegation.Grant {
 
 // delegLeafSpec describes a delegation certificate. The zero value, after
 // defaults, is a well-formed delegation for delegGrant whose Subject OU names
-// the grant's tenant.
+// the grant's tenant and whose service SPIFFE ID SAN agrees with it. A
+// non-nil empty ou or uris leaves that field out.
 type delegLeafSpec struct {
 	grant     delegation.Grant
 	ou        []string
@@ -70,6 +71,9 @@ func delegLeaf(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, s de
 	}
 	if s.ou == nil {
 		s.ou = []string{s.grant.Tenant}
+	}
+	if s.uris == nil {
+		s.uris = []*url.URL{delegSPIFFE(t, s.grant.Tenant, spiffe.KindService, s.grant.Principal)}
 	}
 	if s.notBefore.IsZero() {
 		s.notBefore = time.Now().Add(-time.Minute)
@@ -189,9 +193,9 @@ func delegAuthenticator(ca *x509.Certificate, opts ...MTLSOption) *MTLSAuthentic
 	return NewMTLSAuthenticatorWithTrustDomain(delegTrustDomain, append(base, opts...)...)
 }
 
-func delegSPIFFE(t *testing.T, trustDomain, tenant, kind, name string) *url.URL {
+func delegSPIFFE(t *testing.T, tenant, kind, name string) *url.URL {
 	t.Helper()
-	u, err := spiffe.ID{TrustDomain: trustDomain, TenantID: tenant, Kind: kind, Name: name}.URI()
+	u, err := spiffe.ID{TrustDomain: tenant, Kind: kind, Name: name}.URI()
 	if err != nil {
 		t.Fatalf("SPIFFE URI: %v", err)
 	}
@@ -232,7 +236,7 @@ func TestVerifyDelegation_AdmitsServicePrincipal(t *testing.T) {
 	for key, want := range map[string]string{
 		ServicePrincipalMetadataKey: delegPrincipal,
 		DelegationSerialMetadataKey: "d1",
-		"tenant_source":             "ou",
+		"tenant_source":             "spiffe",
 	} {
 		if got := id.Metadata[key]; got != want {
 			t.Errorf("Metadata[%q] = %q, want %q", key, got, want)
@@ -254,19 +258,43 @@ func TestVerifyDelegation_AdmitsServicePrincipal(t *testing.T) {
 	}
 }
 
-func TestVerifyDelegation_SPIFFESourcedTenant(t *testing.T) {
+func TestVerifyDelegation_RequiresAgreeingOUAndSPIFFE(t *testing.T) {
+	// A delegation names its tenant the way every tenant-principal
+	// certificate does: the service SPIFFE ID SAN and the first Subject OU
+	// are both required and must agree. Neither alone is accepted.
 	ca, caKey := testCA(t, "acme-login-ca")
-	leaf := delegLeaf(t, ca, caKey, delegLeafSpec{
-		ou:   []string{},
-		uris: []*url.URL{delegSPIFFE(t, delegTrustDomain, delegTenant, spiffe.KindService, delegPrincipal)},
-	})
-
-	id, err := delegAuthenticator(ca).VerifyDelegation(context.Background(), leaf.Raw)
-	if err != nil {
-		t.Fatalf("VerifyDelegation: %v", err)
+	cases := []struct {
+		name  string
+		spec  delegLeafSpec
+		cause error
+	}{
+		{"SPIFFE SAN without an OU", delegLeafSpec{ou: []string{}}, spiffe.ErrTrustDomainMismatch},
+		{"OU without a SPIFFE SAN", delegLeafSpec{uris: []*url.URL{}}, spiffe.ErrNoTenantSPIFFEID},
+		{"neither", delegLeafSpec{ou: []string{}, uris: []*url.URL{}}, spiffe.ErrNoTenantSPIFFEID},
+		{"OU names another tenant", delegLeafSpec{ou: []string{"globex"}}, &TenantNameMismatchError{OU: "globex", SPIFFETenant: delegTenant}},
 	}
-	if id.TenantID != delegTenant || id.Metadata["tenant_source"] != "spiffe" {
-		t.Errorf("TenantID = %q, tenant_source = %q; want %q from spiffe", id.TenantID, id.Metadata["tenant_source"], delegTenant)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			leaf := delegLeaf(t, ca, caKey, tc.spec)
+			id, err := delegAuthenticator(ca).VerifyDelegation(context.Background(), leaf.Raw)
+			if id != nil {
+				t.Fatalf("identity = %+v, want nil", id)
+			}
+			var cte *CertificateTenantError
+			if !errors.As(err, &cte) || !errors.Is(err, ErrInvalidCertificate) {
+				t.Fatalf("err = %T (%v), want *CertificateTenantError matching ErrInvalidCertificate", err, err)
+			}
+			if mismatch, ok := tc.cause.(*TenantNameMismatchError); ok {
+				var got *TenantNameMismatchError
+				if !errors.As(err, &got) || *got != *mismatch {
+					t.Fatalf("err = %v, want cause %+v", err, mismatch)
+				}
+				return
+			}
+			if !errors.Is(err, tc.cause) {
+				t.Fatalf("err = %v, want cause %v", err, tc.cause)
+			}
+		})
 	}
 }
 
@@ -360,13 +388,15 @@ func TestVerifyDelegation_RefusesEachAdmissionCheck(t *testing.T) {
 		{"another principal", delegLeafSpec{}, []MTLSOption{WithDelegatedPrincipal("payroll")}, "names principal billing"},
 		{"lifetime over the maximum", delegLeafSpec{notBefore: now, notAfter: now.Add(delegation.MaxLifetime + time.Hour)}, nil, "lifetime"},
 		{"no revocation checker", delegLeafSpec{}, []MTLSOption{WithRevocationChecker(nil)}, "no revocation checker"},
-		{"OU names another tenant", delegLeafSpec{ou: []string{"globex"}}, nil, "does not name the delegated tenant"},
-		{"no OU and no SPIFFE SAN", delegLeafSpec{ou: []string{}}, nil, "does not name the delegated tenant"},
 		{"SPIFFE SAN names another service", delegLeafSpec{
-			uris: []*url.URL{delegSPIFFE(t, delegTrustDomain, delegTenant, spiffe.KindService, "payroll")},
+			uris: []*url.URL{delegSPIFFE(t, delegTenant, spiffe.KindService, "payroll")},
+		}, nil, "SPIFFE SAN does not name"},
+		{"OU and SPIFFE SAN name another tenant", delegLeafSpec{
+			ou:   []string{"globex"},
+			uris: []*url.URL{delegSPIFFE(t, "globex", spiffe.KindService, delegPrincipal)},
 		}, nil, "SPIFFE SAN does not name"},
 		{"SPIFFE SAN names a user", delegLeafSpec{
-			uris: []*url.URL{delegSPIFFE(t, delegTrustDomain, delegTenant, spiffe.KindUser, delegPrincipal)},
+			uris: []*url.URL{delegSPIFFE(t, delegTenant, spiffe.KindUser, delegPrincipal)},
 		}, nil, "SPIFFE SAN does not name"},
 		{"system tenant", delegLeafSpec{grant: systemGrant}, nil, "system tenant cannot delegate"},
 		{"pool cannot bind issuer to tenant", delegLeafSpec{}, []MTLSOption{WithIssuerVerifier(&delegChainVerifier{ca: ca})}, "issuer cannot be bound"},
@@ -444,13 +474,14 @@ func TestVerifyDelegation_Revocation(t *testing.T) {
 func TestVerifyDelegation_SPIFFEInForeignTrustDomain(t *testing.T) {
 	ca, caKey := testCA(t, "acme-login-ca")
 	leaf := delegLeaf(t, ca, caKey, delegLeafSpec{
-		uris: []*url.URL{delegSPIFFE(t, "other.example.com", delegTenant, spiffe.KindService, delegPrincipal)},
+		uris: []*url.URL{delegSPIFFE(t, "other.example.com", spiffe.KindService, delegPrincipal)},
 	})
 
 	_, err := delegAuthenticator(ca).VerifyDelegation(context.Background(), leaf.Raw)
 	var cte *CertificateTenantError
-	if !errors.As(err, &cte) || !errors.Is(err, spiffe.ErrTrustDomainMismatch) {
-		t.Fatalf("err = %T (%v), want *CertificateTenantError wrapping ErrTrustDomainMismatch", err, err)
+	var mismatch *TenantNameMismatchError
+	if !errors.As(err, &cte) || !errors.As(err, &mismatch) || mismatch.SPIFFETenant != "other.example.com" {
+		t.Fatalf("err = %T (%v), want *CertificateTenantError wrapping a *TenantNameMismatchError naming other.example.com", err, err)
 	}
 }
 

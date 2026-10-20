@@ -171,25 +171,34 @@ type InvalidMTLSBindingPolicyError = auth.InvalidMTLSBindingPolicyError
 // resolves a verified client certificate's user before any tenant is bound
 // (a public route, where the middleware authenticates nothing).
 //
-//   - The SPIFFE tenant SAN wins. Every URI SAN is examined, never just the
-//     first: SANs naming more than one distinct tenant are refused
-//     (SpiffeAmbiguousTenantError), and under a pin ANY SPIFFE SAN from
-//     another trust domain is refused (ErrSpiffeTrustDomainMismatch), as is a
-//     malformed one. A refusal is never overridden by the OU.
-//   - With no SPIFFE tenant SAN, the first Subject OU is the tenant; with
-//     neither, the tenant is "".
+// A tenant is a SPIFFE trust domain: a tenant's principal is
+// spiffe://<tenant>/<kind>/<name>, kind user or svc.
+//
+//   - A certificate names a tenant only when its first Subject OU and the
+//     trust domain of its workload SPIFFE ID SAN are both present and agree.
+//     There is no fallback in either direction: an OU alone
+//     (ErrSpiffeNoTenantID) or a SPIFFE ID alone names no tenant, and an OU
+//     naming a different tenant from the trust domain, which is how a foreign
+//     trust domain presents, is refused
+//     (ClientCertificateTenantNameMismatchError).
+//   - clusterTrustDomain is the cluster's own trust domain. A certificate
+//     with no OU must be under it (ErrNoClientCertificateTenantOU) or is
+//     foreign (ErrSpiffeTrustDomainMismatch), and no tenant may be it
+//     (ErrClientCertificateTenantIsClusterTrustDomain).
+//   - Every URI SAN is examined, never just the first: SANs under more than
+//     one trust domain are refused (SpiffeAmbiguousTenantError), as is a
+//     malformed one.
 //   - Every refusal is a *ClientCertificateTenantError, which matches
 //     ErrInvalidClientCertificate under errors.Is and carries the cause.
 //
-// pinnedTrustDomain == "" ACCEPTS A SPIFFE SAN FROM ANY TRUST DOMAIN. That is
-// for tests only. A composer MUST pass the trust domain its CA issues under
-// (the same value it configures qrdb with); an unpinned call lets a
-// certificate from any SPIFFE issuer the CA pool trusts choose its tenant.
+// clusterTrustDomain == "" skips the two cluster checks. That is for tests
+// only: a composer MUST pass the trust domain its CA issues under (the same
+// value it configures qrdb with).
 //
 // Bind the result exactly as the middleware does, then look the thumbprint up
 // within that tenant only:
 //
-//	tenantID, _, err := sdk.TenantFromClientCert(cert, trustDomain) // never ""
+//	tenantID, err := sdk.TenantFromClientCert(cert, trustDomain) // never "" on success
 //	if err != nil { /* refuse */ }
 //	ctx = sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(tenantID))
 //	u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(cert))
@@ -198,15 +207,38 @@ type InvalidMTLSBindingPolicyError = auth.InvalidMTLSBindingPolicyError
 var TenantFromClientCert = auth.TenantFromClientCert
 
 // ErrInvalidClientCertificate is what every TenantFromClientCert refusal
-// matches under errors.Is: a nil certificate, a SPIFFE SAN outside the pinned
-// trust domain, a malformed SPIFFE SAN, or SANs naming more than one tenant.
+// matches under errors.Is: a nil certificate, no tenant SPIFFE ID SAN, no
+// Subject OU, an OU and SPIFFE ID naming different tenants, a SPIFFE SAN
+// outside the pinned trust domain, a malformed SPIFFE SAN, or SANs naming
+// more than one tenant.
 // (Aliases pkg/auth.ErrInvalidCertificate.)
 var ErrInvalidClientCertificate = auth.ErrInvalidCertificate
 
 // ClientCertificateTenantError is TenantFromClientCert's refusal: it matches
-// ErrInvalidClientCertificate and wraps the SPIFFE cause.
+// ErrInvalidClientCertificate and wraps the cause -- a SPIFFE error,
+// ErrNoClientCertificateTenantOU or a
+// *ClientCertificateTenantNameMismatchError.
 // (Aliases pkg/auth.CertificateTenantError.)
 type ClientCertificateTenantError = auth.CertificateTenantError
+
+// ErrNoClientCertificateTenantOU is the cause a *ClientCertificateTenantError
+// carries when the certificate has a tenant SPIFFE ID SAN but no Subject OU:
+// the OU is one of the two fields that must both name the tenant.
+// (Aliases pkg/auth.ErrNoTenantOU.)
+var ErrNoClientCertificateTenantOU = auth.ErrNoTenantOU
+
+// ErrClientCertificateTenantIsClusterTrustDomain is the cause a
+// *ClientCertificateTenantError carries when the certificate's tenant is the
+// cluster trust domain, which names no tenant. An issuer refuses the same
+// identity before it signs. (Aliases pkg/auth.ErrTenantIsClusterTrustDomain.)
+var ErrClientCertificateTenantIsClusterTrustDomain = auth.ErrTenantIsClusterTrustDomain
+
+// ClientCertificateTenantNameMismatchError is the cause a
+// *ClientCertificateTenantError carries when the certificate's first Subject
+// OU and its SPIFFE ID SAN name different tenants. Neither is preferred: the
+// certificate names no tenant.
+// (Aliases pkg/auth.TenantNameMismatchError.)
+type ClientCertificateTenantNameMismatchError = auth.TenantNameMismatchError
 
 // MethodPIV is the permitted-method token for a PIV smart-card login. A layer
 // that runs the PIV ceremony enforces the account's policy with

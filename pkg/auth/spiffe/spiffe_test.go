@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -31,55 +32,131 @@ func mustURL(t *testing.T, s string) *url.URL {
 }
 
 func TestParseID_RoundTrip(t *testing.T) {
-	id, ok, err := ParseID(mustURL(t, "spiffe://example.com/tenant/acme/user/alice"))
+	id, ok, err := ParseID(mustURL(t, "spiffe://acme/user/alice"))
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if id.TrustDomain != "example.com" || id.TenantID != "acme" || id.Kind != KindUser || id.Name != "alice" {
+	if id != (ID{TrustDomain: "acme", Kind: KindUser, Name: "alice"}) {
 		t.Fatalf("parsed = %+v", id)
+	}
+	id, ok, err = ParseID(mustURL(t, "spiffe://acme-corp.example_1/svc/Billing-API.v2"))
+	if err != nil || !ok || id.Kind != KindService || id.Name != "Billing-API.v2" {
+		t.Fatalf("svc: id=%+v ok=%v err=%v", id, ok, err)
 	}
 }
 
 func TestParseID_Skips(t *testing.T) {
-	for _, u := range []string{"https://example.com/x", "spiffe://example.com/ns/default/sa/web"} {
-		_, ok, err := ParseID(mustURL(t, u))
-		if ok || err != nil {
+	for _, u := range []string{
+		"https://acme/user/alice",       // not a SPIFFE ID
+		"spiffe://qrdb.cluster/node/n1", // a node identity, ParseNodeID's
+		"spiffe://qrdb.cluster/node/127.0.0.1:7000",
+	} {
+		if _, ok, err := ParseID(mustURL(t, u)); ok || err != nil {
 			t.Fatalf("%q should be skipped: ok=%v err=%v", u, ok, err)
 		}
 	}
+	if _, ok, err := ParseID(nil); ok || err != nil {
+		t.Fatalf("nil url: ok=%v err=%v", ok, err)
+	}
 }
 
-func TestTenantFromCert_PinAndFailClosed(t *testing.T) {
-	good := &x509.Certificate{URIs: []*url.URL{mustURL(t, "spiffe://example.com/tenant/acme/user/alice")}}
+// TestParseID_RefusesNonStandard pins every SPIFFE ID rule (docs/reference/
+// spiffe-id.md) ParseID enforces: a spiffe URI that is not a SPIFFE ID, or not
+// of the workload form, fails closed rather than being skipped.
+func TestParseID_RefusesNonStandard(t *testing.T) {
+	long := strings.Repeat("a", maxIDLen)
+	tests := []struct {
+		name string
+		uri  string
+		want error
+	}{
+		{"empty-trust-domain", "spiffe:///user/alice", ErrTrustDomainEmpty},
+		{"uppercase-trust-domain", "spiffe://Acme/user/alice", ErrTrustDomainInvalid},
+		{"port", "spiffe://acme:8443/user/alice", ErrTrustDomainInvalid},
+		{"userinfo", "spiffe://bob@acme/user/alice", ErrURIInvalid},
+		{"query", "spiffe://acme/user/alice?x=1", ErrURIInvalid},
+		{"empty-query", "spiffe://acme/user/alice?", ErrURIInvalid},
+		{"fragment", "spiffe://acme/user/alice#f", ErrURIInvalid},
+		{"too-long", "spiffe://acme/user/" + long, ErrURIInvalid},
+		{"percent-encoded-path", "spiffe://acme/user/al%69ce", ErrPathInvalid},
+		{"percent-encoded-trust-domain", "spiffe://ac%C3%A9/user/alice", ErrTrustDomainInvalid},
+		{"trailing-slash", "spiffe://acme/user/alice/", ErrPathInvalid},
+		{"empty-segment", "spiffe://acme/user//alice", ErrPathInvalid},
+		{"dot-segment", "spiffe://acme/user/.", ErrPathInvalid},
+		{"dotdot-segment", "spiffe://acme/user/..", ErrPathInvalid},
+		{"bad-char", "spiffe://acme/user/al@ce", ErrPathInvalid},
+		{"no-path", "spiffe://acme", ErrPathInvalid},
+		{"one-segment", "spiffe://acme/user", ErrPathInvalid},
+		{"three-segments", "spiffe://acme/user/a/b", ErrPathInvalid},
+		{"old-tenant-grammar", "spiffe://qrdb.cluster/tenant/acme/user/alice", ErrPathInvalid},
+		{"foreign-form", "spiffe://acme/ns/default", ErrKindInvalid},
+		{"unknown-kind", "spiffe://acme/robot/alice", ErrKindInvalid},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.uri)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.uri, err)
+			}
+			if _, ok, err := ParseID(u); ok || !errors.Is(err, tc.want) {
+				t.Fatalf("ParseID(%q) ok=%v err=%v, want %v", tc.uri, ok, err, tc.want)
+			}
+		})
+	}
+	if _, ok, err := ParseID(&url.URL{Scheme: scheme, Opaque: "acme/user/alice"}); ok || !errors.Is(err, ErrURIInvalid) {
+		t.Fatalf("opaque: ok=%v err=%v", ok, err)
+	}
+}
 
-	id, err := TenantFromCert(good, "example.com")
-	if err != nil || id.TenantID != "acme" {
-		t.Fatalf("expected acme, got %+v err=%v", id, err)
+func TestWorkloadFromCert_Reads(t *testing.T) {
+	good := &x509.Certificate{URIs: []*url.URL{mustURL(t, "spiffe://acme/user/alice")}}
+	id, err := WorkloadFromCert(good)
+	if err != nil || id != (ID{TrustDomain: "acme", Kind: KindUser, Name: "alice"}) {
+		t.Fatalf("expected acme/user/alice, got %+v err=%v", id, err)
 	}
 
-	if _, err := TenantFromCert(good, "evil.example"); !errors.Is(err, ErrTrustDomainMismatch) {
-		t.Fatalf("expected mismatch, got %v", err)
+	// Non-workload SANs (other schemes, node identities) are skipped.
+	mixed := &x509.Certificate{URIs: []*url.URL{
+		mustURL(t, "https://acme/healthz"),
+		mustURL(t, "spiffe://qrdb.cluster/node/n1"),
+		mustURL(t, "spiffe://acme/svc/api"),
+	}}
+	id, err = WorkloadFromCert(mixed)
+	if err != nil || id.TrustDomain != "acme" || id.Kind != KindService {
+		t.Fatalf("mixed SANs: id=%+v err=%v", id, err)
 	}
+}
 
-	none := &x509.Certificate{}
-	if _, err := TenantFromCert(none, "example.com"); !errors.Is(err, ErrNoTenantSPIFFEID) {
-		t.Fatalf("expected no-id, got %v", err)
-	}
-
-	if _, err := TenantFromCert(nil, "example.com"); !errors.Is(err, ErrNoTenantSPIFFEID) {
+func TestWorkloadFromCert_FailClosed(t *testing.T) {
+	if _, err := WorkloadFromCert(nil); !errors.Is(err, ErrNoTenantSPIFFEID) {
 		t.Fatalf("nil cert: expected no-id, got %v", err)
+	}
+	if _, err := WorkloadFromCert(&x509.Certificate{}); !errors.Is(err, ErrNoTenantSPIFFEID) {
+		t.Fatalf("no SANs: expected no-id, got %v", err)
+	}
+	node := &x509.Certificate{URIs: []*url.URL{mustURL(t, "spiffe://qrdb.cluster/node/n1")}}
+	if _, err := WorkloadFromCert(node); !errors.Is(err, ErrNoTenantSPIFFEID) {
+		t.Fatalf("node cert: expected no-id, got %v", err)
+	}
+	// A malformed SPIFFE SAN fails closed even beside a valid one.
+	bad := &x509.Certificate{URIs: []*url.URL{
+		mustURL(t, "spiffe://acme/user/alice"),
+		mustURL(t, "spiffe://acme/robot/alice"),
+	}}
+	if _, err := WorkloadFromCert(bad); !errors.Is(err, ErrKindInvalid) {
+		t.Fatalf("malformed SAN: expected kind-invalid, got %v", err)
 	}
 }
 
 func TestID_StringAndValidate(t *testing.T) {
-	id := ID{TrustDomain: "td", TenantID: "t", Kind: KindService, Name: "svc1"}
-	if got := id.String(); got != "spiffe://td/tenant/t/svc/svc1" {
+	id := ID{TrustDomain: "acme", Kind: KindService, Name: "svc1"}
+	if got := id.String(); got != "spiffe://acme/svc/svc1" {
 		t.Fatalf("String = %q", got)
 	}
 	if (ID{}).String() != "" {
 		t.Fatal("invalid ID should stringify empty")
 	}
-	if err := (ID{Kind: KindUser, TenantID: "t", Name: "n"}).Validate(); !errors.Is(err, ErrTrustDomainEmpty) {
+	if err := (ID{Kind: KindUser, Name: "n"}).Validate(); !errors.Is(err, ErrTrustDomainEmpty) {
 		t.Fatalf("expected trust-domain-empty, got %v", err)
 	}
 }
@@ -90,15 +167,20 @@ func TestID_Validate_AllBranches(t *testing.T) {
 		id   ID
 		want error // nil = valid
 	}{
-		{"valid-user", ID{TrustDomain: "td", TenantID: "t", Kind: KindUser, Name: "n"}, nil},
-		{"valid-svc", ID{TrustDomain: "td", TenantID: "t", Kind: KindService, Name: "n"}, nil},
-		{"blank-trust-domain", ID{TrustDomain: "  ", TenantID: "t", Kind: KindUser, Name: "n"}, ErrTrustDomainEmpty},
-		{"empty-tenant", ID{TrustDomain: "td", TenantID: "", Kind: KindUser, Name: "n"}, ErrTenantEmpty},
-		{"blank-tenant", ID{TrustDomain: "td", TenantID: "\t", Kind: KindUser, Name: "n"}, ErrTenantEmpty},
-		{"invalid-kind", ID{TrustDomain: "td", TenantID: "t", Kind: "robot", Name: "n"}, ErrKindInvalid},
-		{"empty-kind", ID{TrustDomain: "td", TenantID: "t", Kind: "", Name: "n"}, ErrKindInvalid},
-		{"empty-name", ID{TrustDomain: "td", TenantID: "t", Kind: KindUser, Name: ""}, ErrNameEmpty},
-		{"blank-name", ID{TrustDomain: "td", TenantID: "t", Kind: KindUser, Name: " "}, ErrNameEmpty},
+		{"valid-user", ID{TrustDomain: "acme", Kind: KindUser, Name: "n"}, nil},
+		{"valid-svc", ID{TrustDomain: "acme.example", Kind: KindService, Name: "Web_1.v-2"}, nil},
+		{"empty-trust-domain", ID{TrustDomain: "", Kind: KindUser, Name: "n"}, ErrTrustDomainEmpty},
+		{"blank-trust-domain", ID{TrustDomain: "  ", Kind: KindUser, Name: "n"}, ErrTrustDomainInvalid},
+		{"uppercase-trust-domain", ID{TrustDomain: "Acme", Kind: KindUser, Name: "n"}, ErrTrustDomainInvalid},
+		{"long-trust-domain", ID{TrustDomain: strings.Repeat("a", maxTrustDomainLen+1), Kind: KindUser, Name: "n"}, ErrTrustDomainInvalid},
+		{"invalid-kind", ID{TrustDomain: "acme", Kind: "robot", Name: "n"}, ErrKindInvalid},
+		{"empty-kind", ID{TrustDomain: "acme", Kind: "", Name: "n"}, ErrKindInvalid},
+		{"empty-name", ID{TrustDomain: "acme", Kind: KindUser, Name: ""}, ErrNameEmpty},
+		{"blank-name", ID{TrustDomain: "acme", Kind: KindUser, Name: " "}, ErrPathInvalid},
+		{"slash-name", ID{TrustDomain: "acme", Kind: KindUser, Name: "a/b"}, ErrPathInvalid},
+		{"email-name", ID{TrustDomain: "acme", Kind: KindUser, Name: "a@b.example"}, ErrPathInvalid},
+		{"dot-name", ID{TrustDomain: "acme", Kind: KindUser, Name: ".."}, ErrPathInvalid},
+		{"too-long", ID{TrustDomain: "acme", Kind: KindUser, Name: strings.Repeat("n", maxIDLen)}, ErrURIInvalid},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,51 +195,5 @@ func TestID_Validate_AllBranches(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tc.want, err)
 			}
 		})
-	}
-}
-
-func TestParseID_ErrorBranches(t *testing.T) {
-	// Nil URL is skipped, not an error.
-	if _, ok, err := ParseID(nil); ok || err != nil {
-		t.Fatalf("nil url: ok=%v err=%v", ok, err)
-	}
-
-	// SPIFFE scheme with empty host fails closed on the trust domain.
-	if _, ok, err := ParseID(mustURL(t, "spiffe:///tenant/acme/user/alice")); ok || !errors.Is(err, ErrTrustDomainEmpty) {
-		t.Fatalf("empty host: ok=%v err=%v", ok, err)
-	}
-
-	// Well-formed tenant path but an invalid kind surfaces the Validate error.
-	if _, ok, err := ParseID(mustURL(t, "spiffe://example.com/tenant/acme/robot/alice")); ok || !errors.Is(err, ErrKindInvalid) {
-		t.Fatalf("invalid kind: ok=%v err=%v", ok, err)
-	}
-
-	// Wrong segment count / non-tenant prefix is skipped (not an error).
-	for _, u := range []string{
-		"spiffe://example.com/tenant/acme/user",      // too few segments
-		"spiffe://example.com/tenant/acme/user/a/b",  // too many segments
-		"spiffe://example.com/other/acme/user/alice", // not a tenant path
-	} {
-		if _, ok, err := ParseID(mustURL(t, u)); ok || err != nil {
-			t.Fatalf("%q should be skipped: ok=%v err=%v", u, ok, err)
-		}
-	}
-}
-
-func TestTenantFromCert_MalformedAndSkip(t *testing.T) {
-	// A malformed tenant SPIFFE SAN fails closed with the parse error.
-	bad := &x509.Certificate{URIs: []*url.URL{mustURL(t, "spiffe://example.com/tenant/acme/robot/alice")}}
-	if _, err := TenantFromCert(bad, "example.com"); !errors.Is(err, ErrKindInvalid) {
-		t.Fatalf("malformed SAN: expected kind-invalid, got %v", err)
-	}
-
-	// A non-tenant SAN is skipped before the valid tenant SAN is matched.
-	mixed := &x509.Certificate{URIs: []*url.URL{
-		mustURL(t, "https://example.com/healthz"),
-		mustURL(t, "spiffe://example.com/tenant/acme/svc/api"),
-	}}
-	id, err := TenantFromCert(mixed, "")
-	if err != nil || id.TenantID != "acme" || id.Kind != KindService {
-		t.Fatalf("mixed SANs: id=%+v err=%v", id, err)
 	}
 }

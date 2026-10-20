@@ -106,7 +106,7 @@ func TestCapacityProbe(t *testing.T) {
 func databaseUnenrol(t *testing.T, ring audit.AuditLogger) (*auditScope, func(context.Context, string) error) {
 	t.Helper()
 	barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 3)
-	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{CA: testCA(t), Factors: testFactors(t), Audit: ring}, testLogger())
+	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t), Factors: testFactors(t), Audit: ring}, testLogger())
 	require.NoError(t, err)
 	barrier.SetCeremonyDistributor(svc)
 	barrier.SetHolderVerifier(svc)

@@ -20,6 +20,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"net/url"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 )
 
 // SignCSROptions controls how a CSR is signed by the ceremony CA.
@@ -29,7 +33,9 @@ import (
 // client logins, so a CSR's Subject and SANs would otherwise be a login claim
 // the registering caller chose. A CeremonyCA MUST sign with RawSubject() as
 // the certificate's raw Subject -- CN=Username, OU=[TenantID, Profile], one
-// RDN per attribute -- carry NO Subject Alternative Name, use the CSR only for
+// RDN per attribute -- carry exactly the Subject Alternative Names URIs()
+// names (the agreeing tenant SPIFFE ID auth.TenantFromClientCert requires)
+// and no other, use the CSR only for
 // its public key and proof of possession, and issue a leaf: not a CA, no
 // certificate-signing key usage, key usage exactly KeyUsage, and extended key
 // usages exactly the set ExtKeyUsage names (order aside, no duplicates).
@@ -46,6 +52,12 @@ type SignCSROptions struct {
 	// Username is the certificate's Common Name: the officer, holder or user
 	// the ceremony registered. Required.
 	Username string
+
+	// TrustDomain is the cluster's SPIFFE trust domain
+	// (auth.spiffe_trust_domain, which defaults to the cluster trust domain).
+	// The certificate's SPIFFE ID SAN is under TenantID's own trust domain;
+	// TrustDomain is the one no tenant may name. Required.
+	TrustDomain string
 
 	// Profile is the certificate profile name (e.g., "security-officer"),
 	// the second Subject OU.
@@ -105,6 +117,20 @@ func (o *SignCSROptions) RawSubject() ([]byte, error) {
 		return nil, &CertEncodeError{Err: err}
 	}
 	return der, nil
+}
+
+// URIs is the URI SAN set a CeremonyCA must give the certificate: the one
+// tenant SPIFFE ID, spiffe://TenantID/user/Username, that agrees with the
+// first Subject OU as auth.TenantFromClientCert requires; TrustDomain is the
+// cluster trust domain, which no tenant may name. An
+// identity the SPIFFE grammar cannot carry is a *CertSubjectError, and nothing
+// may be signed.
+func (o *SignCSROptions) URIs() ([]*url.URL, error) {
+	uris, err := auth.TenantPrincipalURIs(o.TrustDomain, o.TenantID, spiffe.KindUser, o.Username)
+	if err != nil {
+		return nil, &CertSubjectError{Field: "SubjectAltName", Err: err}
+	}
+	return uris, nil
 }
 
 // The X.520 attribute types RawSubject writes.

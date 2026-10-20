@@ -40,7 +40,7 @@ func newClusterQuorumTenant(t *testing.T, sealer *clustersealtest.Sealer) *clust
 	t.Helper()
 	reg := newTestBarrierRegistry(t)
 	svc, err := NewTenantService(seal.NewMemoryBackend(), reg, testLogger(),
-		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}), WithClusterSealer(sealer))
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}), WithClusterSealer(sealer))
 	if err != nil {
 		t.Fatal(err)
 	}

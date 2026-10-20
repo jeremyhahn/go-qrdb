@@ -44,6 +44,7 @@ func newTestCeremonyService(t *testing.T, cfg *CeremonyConfig, barrier *seal.Sto
 	svc, err := NewCeremonyService(cfg, barrier, testLogger())
 	require.NoError(t, err)
 	svc.SetPINBackend(pintest.NewBackend(t))
+	svc.SetTrustDomain(testTrustDomain)
 	return svc
 }
 
@@ -115,9 +116,16 @@ func (m *mockCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions)
 	if err != nil {
 		return nil, err
 	}
+	// The SignCSROptions contract every CeremonyCA honours: the subject, and
+	// the agreeing tenant SPIFFE ID as the one SAN.
+	uris, err := opts.URIs()
+	if err != nil {
+		return nil, err
+	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		RawSubject:   rawSubject,
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Duration(opts.ValidityDays) * 24 * time.Hour),
 		KeyUsage:     opts.KeyUsage,

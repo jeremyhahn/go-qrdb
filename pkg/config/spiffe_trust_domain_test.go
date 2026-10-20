@@ -54,3 +54,99 @@ auth:
 		})
 	}
 }
+
+// An empty auth.spiffe_trust_domain takes auth.cluster_trust_domain (owner
+// ruling on go-qrdb#777), so no deployment issues a tenant certificate
+// without the SPIFFE ID SAN the authenticator requires.
+
+func TestLoad_EmptySPIFFETrustDomainTakesTheClusterTrustDomain(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+  cluster_trust_domain: "cluster.example.com"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.SPIFFETrustDomain != "" {
+		t.Fatalf("SPIFFETrustDomain = %q, want the configured empty value kept", cfg.Auth.SPIFFETrustDomain)
+	}
+	if got := cfg.Auth.EffectiveSPIFFETrustDomain(); got != "cluster.example.com" {
+		t.Fatalf("EffectiveSPIFFETrustDomain = %q, want cluster.example.com", got)
+	}
+}
+
+func TestLoad_NeitherTrustDomainTakesTheClusterDefault(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Auth.EffectiveClusterTrustDomain(); got != DefaultClusterTrustDomain {
+		t.Fatalf("EffectiveClusterTrustDomain = %q, want %q", got, DefaultClusterTrustDomain)
+	}
+	if got := cfg.Auth.EffectiveSPIFFETrustDomain(); got != DefaultClusterTrustDomain {
+		t.Fatalf("EffectiveSPIFFETrustDomain = %q, want %q", got, DefaultClusterTrustDomain)
+	}
+}
+
+func TestLoad_ExplicitSPIFFETrustDomainIsKept(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+  cluster_trust_domain: "cluster.example.com"
+  spiffe_trust_domain: "tenants.example.com"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Auth.EffectiveSPIFFETrustDomain(); got != "tenants.example.com" {
+		t.Fatalf("EffectiveSPIFFETrustDomain = %q, want tenants.example.com", got)
+	}
+	if got := cfg.Auth.EffectiveClusterTrustDomain(); got != "cluster.example.com" {
+		t.Fatalf("EffectiveClusterTrustDomain = %q, want cluster.example.com", got)
+	}
+}
+
+func TestLoad_ClusterTrustDomainThatDoesNotRoundTripRefused(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+  cluster_trust_domain: "cluster.example.com/tenant/other"
+`)
+	_, err := Load(path)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Field != "auth.cluster_trust_domain" {
+		t.Fatalf("Load = %v, want a ValidationError on auth.cluster_trust_domain", err)
+	}
+}
+
+func TestLoad_ClusterTrustDomainIsValidatedBesideAnExplicitSPIFFEOne(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+  cluster_trust_domain: "user@cluster.example.com"
+  spiffe_trust_domain: "tenants.example.com"
+`)
+	_, err := Load(path)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Field != "auth.cluster_trust_domain" {
+		t.Fatalf("Load = %v, want a ValidationError on auth.cluster_trust_domain", err)
+	}
+}
+
+func TestAuthConfig_EffectiveTrustDomainsWithoutLoad(t *testing.T) {
+	var zero AuthConfig
+	if got := zero.EffectiveSPIFFETrustDomain(); got != DefaultClusterTrustDomain {
+		t.Fatalf("zero EffectiveSPIFFETrustDomain = %q, want %q", got, DefaultClusterTrustDomain)
+	}
+	a := AuthConfig{ClusterTrustDomain: "cluster.example.com"}
+	if got := a.EffectiveSPIFFETrustDomain(); got != "cluster.example.com" {
+		t.Fatalf("EffectiveSPIFFETrustDomain = %q, want cluster.example.com", got)
+	}
+}

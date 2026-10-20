@@ -473,48 +473,48 @@ The certificate **is** the identity:
 
 - **CN** → the username.
 - **OU** → the tenant ID.
-- **SPIFFE tenant SAN** → the tenant ID again, under the configured trust
-  domain — present only when `auth.spiffe_trust_domain` is set.
+- **SPIFFE ID SAN** → the tenant ID again, as its trust domain:
+  `spiffe://<tenant>/user/<username>`. Every certificate carries it.
 - The **SPKI thumbprint** is what a user record binds to.
 
-### Which derivation an issued certificate uses
+### How an issued certificate names its tenant
 
-The mTLS authenticator derives a tenant from the tenant-scoped SPIFFE URI SAN
-(`spiffe://<trust-domain>/tenant/<tenant>/<kind>/<name>`) when one is present,
-with the configured trust domain **pinned**, and from the first Subject OU
-otherwise. What `IssueClientCert` emits decides which of the two resolves
-the certificates this CA issues:
+A tenant is a SPIFFE trust domain. The mTLS authenticator requires two names
+and requires them to agree: the first Subject OU, and the trust domain of the
+workload SPIFFE URI SAN (`spiffe://<tenant>/<kind>/<name>`, kind `user` or
+`svc`). There is no fallback in either direction. The node's own trust domain,
+`auth.spiffe_trust_domain` (which defaults to `auth.cluster_trust_domain`,
+itself `qrdb.cluster` when unset), is the cluster's: a certificate that names
+no tenant is under it, and no tenant may be it. A certificate with the SAN but
+no OU under any other trust domain, with an OU but no SAN, whose OU names the
+cluster trust domain, or whose OU and trust domain name different tenants
+(which is how a foreign trust domain presents) is refused, fail-closed
+(`*auth.CertificateTenantError`, which matches `auth.ErrInvalidCertificate`).
 
-| `auth.spiffe_trust_domain` | Certificate carries | Tenant resolves through |
-|---|---|---|
-| unset (the default) | CN and OU only — no SubjectAltName extension at all | the OU fallback |
-| set | CN, OU, and `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` | the pinned SAN |
-
-The first row is byte-for-byte the certificate this CA issued before the SAN
-existed, so a deployment that never configured a trust domain is unaffected.
-The second row is what makes the pin a live control for this CA's own
-certificates: the same certificate presented to a node pinned to a different
-trust domain is refused, fail-closed, and does not fall back to its OU.
+Every certificate either of qrdb's CAs issues therefore carries
+`CN=<username>`, `OU=<tenant>` and `spiffe://<tenant>/user/<username>`. The
+issuer still needs the cluster trust domain, to refuse a tenant equal to it:
+an issuer handed an empty or invalid one refuses before the CA key is touched
+(`*cert.SPIFFEIdentityError`, wrapping `spiffe.ErrTrustDomainEmpty` or
+`spiffe.ErrTrustDomainInvalid`), and one asked to issue for a tenant equal to
+it refuses with `auth.ErrTenantIsClusterTrustDomain`.
 
 **The kind is `user` and the name is the CN.** Every certificate this CA issues
 authenticates as a user-store account named by its CN; node certificates are a
-separate shape (`spiffe://<trust-domain>/node/<id>`) minted by the daemon's
-node-certificate path and never by this one.
+separate shape (`spiffe://<trust-domain>/node/<id>`, no OU) minted by the
+daemon's node-certificate path and never by this one.
 
-**Neither of qrdb's CAs mints a certificate whose SAN and OU disagree.** The
-built-in CA's `IssueClientCert` refuses one, and the ceremony CA's `SignCSR`
-signs no SAN at all; a certificate issued by a CA outside qrdb is outside this
-guarantee, and
-the authenticator's trust-domain pin is what bounds those. For
-`IssueClientCert` the SAN is built,
-then parsed back with the same parser the authenticator applies to a presented
-certificate, and it must return exactly the tenant, kind and name that were
-asked for — before the CA key is touched. A path separator in the tenant or the
-username, or a trust domain that is not a bare host, fails that and is refused
-with `*SPIFFEIdentityError`; nothing is signed and nothing is recorded. The
-reason is not tidiness: a certificate whose SAN named one tenant and whose OU
-named another would authenticate as different tenants depending on whether the
-node it reached had a pin set.
+**Neither of qrdb's CAs mints a certificate whose SAN and OU disagree.** Both
+the built-in CA's `IssueClientCert` and the ceremony CA's `SignCSR` build the
+SAN from the same tenant and username that fill the OU and CN; a certificate
+issued by a CA outside qrdb is outside this guarantee, and the authenticator's
+agreement check and cluster trust-domain checks are what bound those. For
+`IssueClientCert` the SAN is built only from a tenant that is a SPIFFE trust
+domain name and a username that is one SPIFFE path segment, the same rules the
+authenticator's parser applies to a presented certificate — before the CA key
+is touched. A tenant that is not a trust domain name, or a path separator in
+the username, is refused with `*SPIFFEIdentityError`; nothing is signed and
+nothing is recorded.
 
 **The ceremony CA takes nothing from a CSR but its key.** The ceremony CA is
 the node's cluster CA — the CA the mTLS listener trusts for client logins — so
@@ -523,11 +523,15 @@ therefore never taken from the CSR. Every signing path (system, tenant and
 recovery officer registration, `ceremony sign-csr`, and the initial M-of-N
 ceremony) names the registered holder and the registering scope's tenant in
 `ceremony.SignCSROptions`, and the CA issues `CN=<username>`,
-`OU=[<scope tenant>, <profile>]` with **no Subject Alternative Name** — the
-CSR's URI, DNS, IP and e-mail SANs are dropped. Each OU is its own RDN, so the
-tenant stays the first OU whatever its length. The ceremony then re-checks
-every certificate a `CeremonyCA` returns — Subject, absence of SANs, and that
-it certifies the CSR's own key — and refuses one that differs
+`OU=[<scope tenant>, <profile>]` and exactly one Subject Alternative Name,
+`spiffe://<scope tenant>/user/<username>` — the CSR's own
+URI, DNS, IP and e-mail SANs are dropped. Each OU is its own RDN, so the
+tenant stays the first OU whatever its length. A trust domain or name that does
+not make a valid SPIFFE ID is refused before signing
+(`*ceremony.CertSubjectError`, field `SubjectAltName`). The ceremony then
+re-checks every certificate a `CeremonyCA` returns — Subject, that its SANs are
+exactly that one URI, and that it certifies the CSR's own key — and refuses one
+that differs
 (`*ceremony.CertSubjectError`), so a CA composed in from outside qrdb is held
 to the same contract.
 
@@ -562,11 +566,14 @@ whitespace) fails the load with a validation error on `auth.spiffe_trust_domain`
 rather than making the CA refuse every certificate at issue time.
 
 **Rotation is unaffected.** A user's binding is over the SubjectPublicKeyInfo,
-which the SAN is not part of, so a key enrolled under a SAN-less certificate
-keeps authenticating when it is re-issued with the SAN added.
+which the SAN is not part of, so a key re-issued under the same CN and tenant
+keeps authenticating. A certificate issued without the SAN no longer
+authenticates on its own: it must be re-issued, and the re-issued certificate
+binds the same key.
 
 **The provider and the authenticator must read the same value.** Both come from
-`auth.spiffe_trust_domain`; a node whose CA minted under one domain while its
+`auth.spiffe_trust_domain`, through the same default to
+`auth.cluster_trust_domain`; a node whose CA minted under one domain while its
 authenticator pinned another would refuse every certificate it issued.
 
 The OU line is why issuance acts only on the caller's own tenant: minting a

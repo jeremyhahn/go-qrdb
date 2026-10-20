@@ -118,7 +118,7 @@ func issueDelegation(t *testing.T, ca signingCA, g delegation.Grant, mutate func
 	if err != nil {
 		t.Fatalf("Extension: %v", err)
 	}
-	san, err := spiffe.ID{TrustDomain: delegationTD, TenantID: g.Tenant, Kind: spiffe.KindService, Name: g.Principal}.URI()
+	san, err := spiffe.ID{TrustDomain: g.Tenant, Kind: spiffe.KindService, Name: g.Principal}.URI()
 	if err != nil {
 		t.Fatalf("SPIFFE URI: %v", err)
 	}
@@ -204,21 +204,37 @@ func TestDelegation_AdmittedFromTheTenantsOwnCA(t *testing.T) {
 	}
 }
 
-func TestDelegation_SubjectOUNamesTheTenantWithoutASPIFFESAN(t *testing.T) {
+// TestDelegation_RefusedWithoutAnAgreeingOUAndSPIFFESAN: a delegation names
+// its tenant in both its Subject OU and its service SPIFFE ID SAN, and they
+// agree; the OU alone, or an OU naming another tenant, names none.
+func TestDelegation_RefusedWithoutAnAgreeingOUAndSPIFFESAN(t *testing.T) {
 	f := newDelegationFixture(t)
-	leaf := issueDelegation(t, f.acme, acmeGrant(), func(c *x509.Certificate) { c.URIs = nil })
-
-	id, err := f.authenticator().Authenticate(presented(leaf))
-	if err != nil || id.TenantID != "acme" || id.Metadata["tenant_source"] != "ou" {
-		t.Fatalf("Authenticate = (%+v, %v), want acme from the Subject OU", id, err)
+	for name, tc := range map[string]struct {
+		mutate func(*x509.Certificate)
+		cause  error
+	}{
+		"Subject OU without a SPIFFE SAN": {func(c *x509.Certificate) { c.URIs = nil }, spiffe.ErrNoTenantSPIFFEID},
+		"SPIFFE SAN without a Subject OU": {func(c *x509.Certificate) { c.Subject.OrganizationalUnit = nil }, auth.ErrNoTenantOU},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id, err := f.authenticator().Authenticate(presented(issueDelegation(t, f.acme, acmeGrant(), tc.mutate)))
+			var cte *auth.CertificateTenantError
+			if id != nil || !errors.As(err, &cte) || !errors.Is(err, tc.cause) || !errors.Is(err, auth.ErrInvalidCertificate) {
+				t.Fatalf("Authenticate = (%+v, %v), want a *auth.CertificateTenantError wrapping %v", id, err, tc.cause)
+			}
+		})
 	}
 
-	other := issueDelegation(t, f.acme, acmeGrant(), func(c *x509.Certificate) {
-		c.URIs = nil
-		c.Subject.OrganizationalUnit = []string{"globex"}
+	t.Run("Subject OU names another tenant", func(t *testing.T) {
+		other := issueDelegation(t, f.acme, acmeGrant(), func(c *x509.Certificate) {
+			c.Subject.OrganizationalUnit = []string{"globex"}
+		})
+		id, err := f.authenticator().Authenticate(presented(other))
+		var mismatch *auth.TenantNameMismatchError
+		if id != nil || !errors.As(err, &mismatch) || mismatch.OU != "globex" || mismatch.SPIFFETenant != "acme" {
+			t.Fatalf("Authenticate = (%+v, %v), want a *auth.TenantNameMismatchError of OU globex against acme", id, err)
+		}
 	})
-	id, err = f.authenticator().Authenticate(presented(other))
-	assertDelegationRefused(t, id, err)
 }
 
 // TestDelegation_RefusedWhenSignedByAnotherTenantsCA: every tenant's login
@@ -262,7 +278,7 @@ func TestDelegation_TheSystemTenantCannotDelegate(t *testing.T) {
 	f := newDelegationFixture(t)
 	g := acmeGrant()
 	g.Tenant = tenantid.System
-	leaf := issueDelegation(t, f.acme, g, func(c *x509.Certificate) { c.URIs = nil })
+	leaf := issueDelegation(t, f.acme, g, nil)
 	id, err := f.authenticator().Authenticate(presented(leaf))
 	refused := assertDelegationRefused(t, id, err)
 	if refused.Reason != "the system tenant cannot delegate" {
@@ -378,9 +394,8 @@ func TestDelegation_NamingADifferentPrincipal(t *testing.T) {
 // the grant on tenant, kind and name, or the certificate is refused.
 func TestDelegation_SPIFFESANMustNameTheDelegatedService(t *testing.T) {
 	for name, id := range map[string]spiffe.ID{
-		"user kind":    {TrustDomain: delegationTD, TenantID: "acme", Kind: spiffe.KindUser, Name: delegatedPrincipal},
-		"other name":   {TrustDomain: delegationTD, TenantID: "acme", Kind: spiffe.KindService, Name: "quicbaas"},
-		"other tenant": {TrustDomain: delegationTD, TenantID: "globex", Kind: spiffe.KindService, Name: delegatedPrincipal},
+		"user kind":  {TrustDomain: "acme", Kind: spiffe.KindUser, Name: delegatedPrincipal},
+		"other name": {TrustDomain: "acme", Kind: spiffe.KindService, Name: "quicbaas"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newDelegationFixture(t)
@@ -392,6 +407,24 @@ func TestDelegation_SPIFFESANMustNameTheDelegatedService(t *testing.T) {
 			got, err := f.authenticator().Authenticate(presented(leaf))
 			assertDelegationRefused(t, got, err)
 		})
+	}
+}
+
+// TestDelegation_SPIFFESANInAnotherTenantIsATenantDisagreement: a delegated
+// leaf whose SAN names another tenant's trust domain disagrees with its own
+// OU, so it is refused as a certificate naming two tenants before the grant is
+// compared at all.
+func TestDelegation_SPIFFESANInAnotherTenantIsATenantDisagreement(t *testing.T) {
+	f := newDelegationFixture(t)
+	san, err := spiffe.ID{TrustDomain: "globex", Kind: spiffe.KindService, Name: delegatedPrincipal}.URI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := issueDelegation(t, f.acme, acmeGrant(), func(c *x509.Certificate) { c.URIs = []*url.URL{san} })
+	got, err := f.authenticator().Authenticate(presented(leaf))
+	var mismatch *auth.TenantNameMismatchError
+	if got != nil || !errors.As(err, &mismatch) || mismatch.SPIFFETenant != "globex" {
+		t.Fatalf("Authenticate = (%v, %v), want a *auth.TenantNameMismatchError naming globex", got, err)
 	}
 }
 

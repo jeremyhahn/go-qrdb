@@ -110,6 +110,9 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 	svc, err := ceremony.NewCeremonyService(cfg, ceremonyHandoffBarrier(t), ceremonyHandoffLogger())
 	require.NoError(t, err)
 	svc.SetPINBackend(pintest.NewBackend(t))
+	// The ceremony names the admin's tenant under the trust domain the
+	// node below pins, as the lifecycle wires it from the same config.
+	svc.SetTrustDomain(qrdbconfig.DefaultConfig().Auth.EffectiveSPIFFETrustDomain())
 	initResult, err := svc.Initialize(ctx, ca, &ceremony.InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin",
 		Hostname: "localhost", SANs: []string{"localhost"}, AdminGenerate: true,

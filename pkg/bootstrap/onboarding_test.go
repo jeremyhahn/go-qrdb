@@ -31,6 +31,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
@@ -100,9 +102,14 @@ func (b *onboardingFakeBarrier) IsSealed() bool { return false }
 
 // newRealCertProvider returns a real, initialized DefaultCertProvider over a
 // fresh in-memory store -- what KeyBSigner wraps in production.
+// onboardingTrustDomain is the SPIFFE trust domain the onboarding tests issue
+// and verify under; a provider refuses to issue a tenant credential without one.
+const onboardingTrustDomain = "db.example.com"
+
 func newRealCertProvider(t *testing.T) cert.CertProvider {
 	t.Helper()
-	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newOnboardingFakeBarrier(t))
+	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newOnboardingFakeBarrier(t),
+		cert.WithTrustDomain(onboardingTrustDomain))
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -158,9 +165,14 @@ func newOnboardingRoot(t *testing.T, cn string) *onboardingTestCA {
 func (ca *onboardingTestCA) clientLeaf(t *testing.T, cn, ou string) *x509.Certificate {
 	t.Helper()
 	key := newOnboardingKey(t)
+	uris, err := auth.TenantPrincipalURIs(onboardingTrustDomain, ou, spiffe.KindUser, cn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: nextOnboardingSerial(),
 		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{ou}},
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(12 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -300,7 +312,7 @@ func TestPlanAdmin_RefusesACSRThatDoesNotParse(t *testing.T) {
 	_, err := planAdmin(TenantProvisionConfig{
 		TenantID:    "acme",
 		AdminCSRPEM: []byte("not a csr"),
-	}, Dependencies{Signer: &fakeSigner{}}, AdminEnrollCert, "admin")
+	}, Dependencies{Signer: &fakeSigner{}, TrustDomain: onboardingTrustDomain}, AdminEnrollCert, "admin")
 	var want *AdminCredentialRejectedError
 	if !errors.As(err, &want) || want.Unwrap() == nil {
 		t.Fatalf("planAdmin with an undecodable CSR = %v, want *AdminCredentialRejectedError", err)
@@ -315,7 +327,8 @@ func TestProvisionTenant_RefusesACSRThatDoesNotParse(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *AdminCredentialRejectedError
 	if !errors.As(err, &want) {
@@ -336,8 +349,9 @@ func TestProvisionTenant_UsesTheConfiguredClockForAnchorValidity(t *testing.T) {
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		TrustAnchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
 		Signer:       &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Now:    func() time.Time { return future },
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Now:         func() time.Time { return future },
+		Logger:      discardLogger(),
 	})
 	var want *InvalidTrustAnchorsError
 	if !errors.As(err, &want) {
@@ -353,6 +367,7 @@ func TestProvisionPendingAdmin_IssueErrorWrapped(t *testing.T) {
 
 	_, err := provisionPendingAdmin(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Signer:        &fakeSignerErr{err: signerErr},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
 		Logger:        discardLogger(),
 	}, plan, "admin", &undo, fail)
@@ -378,6 +393,7 @@ func TestProvisionPendingAdmin_RefusesAnInvalidUsernameBeforeSigning(t *testing.
 	for _, bad := range []string{"", "has a space", strings.Repeat("a", 65)} {
 		_, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 			Signer:        signer,
+			TrustDomain:   onboardingTrustDomain,
 			PendingAdmins: pending,
 			Logger:        discardLogger(),
 		}, plan, bad, &undo, fail)
@@ -403,6 +419,7 @@ func TestProvisionPendingAdmin_UndoRemovesTheStoredRecord(t *testing.T) {
 
 	result, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Signer:        &fakeSigner{cert: realCertPEM(t)},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending,
 		Logger:        discardLogger(),
 	}, plan, "admin", &undo, fail)
@@ -513,6 +530,7 @@ func TestProvisionTenant_BYOCPath_VerifiesAgainstRequestAnchorsAndRegistersThem(
 		TrustAnchorsPEM: onboardingPEM(root.cert),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		TrustDomain:  onboardingTrustDomain,
 		TrustAnchors: anchors, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	if err != nil {
@@ -544,6 +562,7 @@ func TestProvisionTenant_BYOCPath_NotChainingRefusedBeforeCreatingTheTenant(t *t
 		TrustAnchorsPEM: onboardingPEM(root.cert),
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		TrustDomain:  onboardingTrustDomain,
 		TrustAnchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
 		Binder:       &fakeBinder{}, Logger: discardLogger(),
 	})
@@ -569,6 +588,7 @@ func TestProvisionTenant_BYOCPath_WrongIdentityRefusedBeforeCreatingTheTenant(t 
 		TrustAnchorsPEM: onboardingPEM(root.cert),
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		TrustDomain:  onboardingTrustDomain,
 		TrustAnchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
 		Binder:       &fakeBinder{}, Logger: discardLogger(),
 	})
@@ -592,11 +612,40 @@ func TestProvisionTenant_MissingSignerForCSRRejected(t *testing.T) {
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
 	if !errors.As(err, &want) || !strings.Contains(want.Seam, "Signer") {
 		t.Fatalf("err = %v, want *MissingProvisioningSeamError naming Signer", err)
+	}
+}
+
+// A certificate-enrolled admin is named by a SPIFFE ID under the node's trust
+// domain, so provisioning one without a trust domain is a missing seam, refused
+// before the tenant exists -- whether the admin brings a CSR or a certificate.
+func TestProvisionTenant_MissingTrustDomainRejectedBeforeCreatingTheTenant(t *testing.T) {
+	cases := map[string]TenantProvisionConfig{
+		"csr":  {TenantID: "acme", AdminCSRPEM: validAdminCSR(t)},
+		"byoc": {TenantID: "acme", AdminCertPEM: realCertPEM(t)},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			tenants := &fakeTenants{}
+			_, err := ProvisionTenant(context.Background(), cfg, Dependencies{
+				Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+				TrustAnchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
+				Signer:       &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+				Logger: discardLogger(),
+			})
+			var want *MissingProvisioningSeamError
+			if !errors.As(err, &want) || !strings.Contains(want.Seam, "TrustDomain") {
+				t.Fatalf("err = %v, want *MissingProvisioningSeamError naming TrustDomain", err)
+			}
+			if len(tenants.createCalls) != 0 {
+				t.Fatal("the tenant was created before the missing trust domain was refused")
+			}
+		})
 	}
 }
 
@@ -609,7 +658,8 @@ func TestProvisionTenant_MissingTrustAnchorsRegistryRejected(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
 	if !errors.As(err, &want) || !strings.Contains(want.Seam, "TrustAnchors") {
@@ -624,8 +674,9 @@ func TestProvisionTenant_MissingBinderRejected(t *testing.T) {
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)},
-		Logger: discardLogger(),
+		Signer:      &fakeSigner{cert: realCertPEM(t)},
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
 	if !errors.As(err, &want) || !strings.Contains(want.Seam, "binder") {
@@ -641,7 +692,8 @@ func TestProvisionTenant_MissingPendingAdminsForBarrierIsolationRejected(t *test
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
 	if !errors.As(err, &want) || !strings.Contains(want.Seam, "PendingAdmins") {
@@ -658,7 +710,8 @@ func TestProvisionTenant_ExclusiveWithoutUndoCreateTenantSeamRejected(t *testing
 	}, Dependencies{
 		Tenants: &tenantCreatorOnly{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
 	if !errors.As(err, &want) || !strings.Contains(want.Seam, "UndoCreateTenant") {
@@ -675,7 +728,8 @@ func TestProvisionTenant_ExclusiveWithoutDeleteUserSeamRejected(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &userCreatorOnly{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
 	if !errors.As(err, &want) || !strings.Contains(want.Seam, "DeleteUser") {
@@ -697,7 +751,8 @@ func TestProvisionTenant_ExclusiveRefusesAnExistingTenantWithNothingUndone(t *te
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	// Nothing was created yet, so fail() returns the bare cause -- not a
 	// ProvisioningUndoneError -- and TenantRecordCreationError unwraps to
@@ -726,6 +781,7 @@ func TestProvisionTenant_ExclusiveCompensatesOnBindingFailure(t *testing.T) {
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: &fakeRoles{},
 		Signer: signer, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var undone *ProvisioningUndoneError
 	if !errors.As(err, &undone) || !errors.Is(undone, bindErr) {
@@ -759,6 +815,7 @@ func TestProvisionTenant_ExclusiveCompensatesOnSignerFailureAfterUserCreation(t 
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: &fakeRoles{},
 		Signer: signer, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var undone *ProvisioningUndoneError
 	if !errors.As(err, &undone) || !errors.Is(undone, signerErr) {
@@ -789,6 +846,7 @@ func TestProvisionTenant_ExclusiveRevokesASignedCertificateOnBindingFailure(t *t
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: &fakeRoles{},
 		Signer: signer, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var undone *ProvisioningUndoneError
 	if !errors.As(err, &undone) {
@@ -818,6 +876,7 @@ func TestProvisionTenant_ExclusiveReportsAFailedUndoStep(t *testing.T) {
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: &fakeRoles{},
 		Signer: signer, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var undone *ProvisioningUndoneError
 	if !errors.As(err, &undone) {
@@ -866,6 +925,7 @@ func TestProvisionTenant_ExclusiveCompensatesOnAnchorRegistrationFailure(t *test
 		Exclusive:       true,
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		TrustDomain:  onboardingTrustDomain,
 		TrustAnchors: anchors, Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		Logger: discardLogger(),
 	})
@@ -894,6 +954,7 @@ func TestProvisionTenant_ExclusiveUndoesRegisteredAnchorsOnALaterFailure(t *test
 		Exclusive:       true,
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		TrustDomain:  onboardingTrustDomain,
 		TrustAnchors: anchors, Signer: &fakeSignerErr{err: signerErr}, Binder: &fakeBinder{},
 		Logger: discardLogger(),
 	})
@@ -928,6 +989,7 @@ func TestProvisionTenant_BarrierIsolation_StoresAPendingRecordAndCreatesNoUser(t
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: users, Roles: roles,
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	})
 	if err != nil {
@@ -961,6 +1023,7 @@ func TestProvisionTenant_BarrierIsolation_NonExclusiveReRunKeepsTheRecordedCrede
 	deps := Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	}
 	cfg := TenantProvisionConfig{TenantID: "acme", AdminCSRPEM: validAdminCSR(t)}
@@ -997,6 +1060,7 @@ func provisionAutoUnsealTenant(t *testing.T, users firstboot.UserCreator) (*Tena
 	deps := Dependencies{
 		Tenants: &fakeTenants{autoUnseal: true}, Users: users, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	}
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
@@ -1055,6 +1119,7 @@ func TestProvisionTenant_BarrierIsolation_SelfManaged_NoAdminCompletionDue(t *te
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
 	})
 	if err != nil {
@@ -1340,6 +1405,7 @@ func TestProvisionTenant_BarrierIsolation_PendingAdminsReadErrorWrapped(t *testi
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	})
 	var want *PendingTenantAdminError
@@ -1358,6 +1424,7 @@ func TestProvisionTenant_BarrierIsolation_PendingAdminsPutErrorWrapped(t *testin
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	})
 	var want *PendingTenantAdminError

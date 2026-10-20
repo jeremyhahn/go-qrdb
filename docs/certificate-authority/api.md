@@ -133,8 +133,8 @@ certificate is verified, and what authority it confers, is in
 | `ttl` | a Go duration; absent means 1 hour, more than `24h` is refused |
 
 The certificate's CN is `qrdb-service:<principal>`, its OU is the caller's
-tenant, and, when the node has a trust domain, its URI SAN is
-`spiffe://<trust-domain>/tenant/<tenant>/service/<principal>`. The grant rides
+tenant, and its URI SAN is `spiffe://<tenant>/svc/<principal>`, under the
+tenant's own trust domain. The grant rides
 in a **critical** extension, so a verifier that does not understand it refuses
 the certificate rather than reading it as a user login. EKU is ClientAuth only.
 

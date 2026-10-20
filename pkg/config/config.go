@@ -1237,19 +1237,19 @@ type AuthConfig struct {
 	// installed. Default: false.
 	SODualFactor bool `yaml:"so_dual_factor"`
 
-	// SPIFFETrustDomain is the operator-configured SPIFFE trust domain. When
-	// set, the mTLS authenticator derives the tenant from a peer certificate's
-	// tenant-scoped SPIFFE URI SAN
-	// (spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>) and PINS this
-	// trust domain: a SPIFFE SAN under a different trust domain is rejected
-	// (fail-closed). When empty, only the legacy OU-based tenant derivation is
-	// used.
+	// SPIFFETrustDomain is the cluster's SPIFFE trust domain, the one a
+	// certificate naming no tenant is under. A tenant is its own trust
+	// domain: a client certificate names a tenant only when its first subject
+	// OU and the trust domain of its SPIFFE ID URI SAN
+	// (spiffe://<tenantID>/<kind>/<name>) agree, and the mTLS authenticator
+	// refuses a tenant equal to this trust domain (fail-closed).
 	//
 	// The same value reaches the built-in certificate authority
-	// (cert.WithTrustDomain): when set, every client certificate it mints
-	// carries spiffe://<trust-domain>/tenant/<tenantID>/user/<username>, so the
-	// pin is exercised by this deployment's own certificates rather than only
-	// by externally issued ones (go-qrdb#519). Default: "".
+	// (cert.WithTrustDomain): every client certificate it mints carries
+	// spiffe://<tenantID>/user/<username> beside the agreeing OU, and it
+	// refuses to mint one for a tenant named like this trust domain.
+	// Default: empty, which means ClusterTrustDomain (see
+	// EffectiveSPIFFETrustDomain).
 	SPIFFETrustDomain string `yaml:"spiffe_trust_domain"`
 
 	// ClusterTrustDomain is the operator-pinned trust domain used for
@@ -1258,8 +1258,9 @@ type AuthConfig struct {
 	// (spiffe://<trust-domain>/node/<raftAddress>) and is pinned by both the
 	// clusterkeys.Receiver (checking incoming peer certs) and the
 	// clusterkeys.Sender (verifying recipient delivery certs). A single value
-	// must be consistent across all nodes in the cluster. Default:
-	// "qrdb.cluster".
+	// must be consistent across all nodes in the cluster. It is also the
+	// tenant principals' trust domain when SPIFFETrustDomain is empty.
+	// Default: "qrdb.cluster" (see EffectiveClusterTrustDomain).
 	ClusterTrustDomain string `yaml:"cluster_trust_domain"`
 
 	// PeerAdminURLs is an optional list of peer Raft address → admin HTTPS
@@ -1389,6 +1390,28 @@ func BoolPtr(b bool) *bool { return &b }
 // DefaultClusterTrustDomain is the cluster trust domain when none is
 // configured.
 const DefaultClusterTrustDomain = "qrdb.cluster"
+
+// EffectiveClusterTrustDomain is ClusterTrustDomain, or
+// DefaultClusterTrustDomain when it is empty.
+func (c AuthConfig) EffectiveClusterTrustDomain() string {
+	if c.ClusterTrustDomain != "" {
+		return c.ClusterTrustDomain
+	}
+	return DefaultClusterTrustDomain
+}
+
+// EffectiveSPIFFETrustDomain is the trust domain tenant principals are issued
+// under and the mTLS authenticator pins: SPIFFETrustDomain, or
+// EffectiveClusterTrustDomain when it is empty. It is never empty, so no
+// deployment issues a tenant certificate without the SPIFFE ID SAN the
+// authenticator requires, or runs an authenticator that accepts any trust
+// domain.
+func (c AuthConfig) EffectiveSPIFFETrustDomain() string {
+	if c.SPIFFETrustDomain != "" {
+		return c.SPIFFETrustDomain
+	}
+	return c.EffectiveClusterTrustDomain()
+}
 
 // AuthABACConfig configures the ABAC authorization decorator.
 type AuthABACConfig struct {
@@ -2426,7 +2449,12 @@ func (c *Config) Validate() error {
 	// The trust domain is minted into certificate SANs and pinned by the
 	// authenticator, so it must survive the SPIFFE round trip both apply
 	// (go-qrdb#519). A value that does not would make the CA refuse every
-	// certificate at issue time; refuse it at load instead.
+	// certificate at issue time; refuse it at load instead. The cluster trust
+	// domain is minted into every node certificate, and is the tenant one
+	// when spiffe_trust_domain is empty, so it is held to the same rule.
+	if err := spiffe.ValidateTrustDomain(c.Auth.EffectiveClusterTrustDomain()); err != nil {
+		return &ValidationError{Field: "auth.cluster_trust_domain", Reason: "must be a bare host name that round-trips through a SPIFFE ID (" + err.Error() + ")"}
+	}
 	if c.Auth.SPIFFETrustDomain != "" {
 		if err := spiffe.ValidateTrustDomain(c.Auth.SPIFFETrustDomain); err != nil {
 			return &ValidationError{Field: "auth.spiffe_trust_domain", Reason: "must be a bare host name that round-trips through a SPIFFE ID (" + err.Error() + ")"}

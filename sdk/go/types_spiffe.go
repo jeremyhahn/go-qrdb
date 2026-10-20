@@ -24,16 +24,17 @@ import "github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 // sdk/go module exclusively without reaching into go-qrdb/pkg/auth/spiffe.
 // ---------------------------------------------------------------------------
 
-// SpiffeID describes a tenant-scoped SPIFFE identity extracted from a
-// certificate. The canonical URI form is:
+// SpiffeID describes a workload SPIFFE identity extracted from a certificate.
+// A tenant is a SPIFFE trust domain, so a tenant's principal has the
+// canonical URI form:
 //
-//	spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>
+//	spiffe://<tenantID>/<kind>/<name>
 //
 // where Kind is SpiffeKindUser or SpiffeKindService. SpiffeID.URI builds the
 // URI SAN a certificate authority issues for a tenant's user or service; it
-// returns the URI only when TenantFromCert would read it back as exactly the
-// same identity, and refuses with *SpiffeIDError otherwise. (Aliases
-// pkg/auth/spiffe.ID.)
+// returns the URI only when every field makes a SPIFFE ID that
+// WorkloadFromCert reads back as exactly the same identity, and refuses with
+// *SpiffeIDError otherwise. (Aliases pkg/auth/spiffe.ID.)
 type SpiffeID = spiffe.ID
 
 // SpiffeKindUser identifies a human user (PIV/CAC/WebAuthn/federated subject).
@@ -46,52 +47,45 @@ const SpiffeKindService = spiffe.KindService
 // SPIFFE sentinel errors
 // ---------------------------------------------------------------------------
 
-// ErrSpiffeNoTenantID is returned when no tenant-scoped SPIFFE SAN is found
-// on the certificate. (Aliases pkg/auth/spiffe.ErrNoTenantSPIFFEID.)
+// ErrSpiffeNoTenantID is returned when no workload SPIFFE SAN is found on the
+// certificate. (Aliases pkg/auth/spiffe.ErrNoTenantSPIFFEID.)
 var ErrSpiffeNoTenantID = spiffe.ErrNoTenantSPIFFEID
 
-// ErrSpiffeTrustDomainMismatch is returned when the certificate's SPIFFE trust
-// domain does not match the operator-pinned trust domain. Fail-closed: the
-// certificate must be rejected. (Aliases
-// pkg/auth/spiffe.ErrTrustDomainMismatch.)
+// ErrSpiffeTrustDomainMismatch is returned when a certificate naming no tenant
+// is not under the cluster trust domain. Fail-closed: the certificate must be
+// rejected. (Aliases pkg/auth/spiffe.ErrTrustDomainMismatch.)
 var ErrSpiffeTrustDomainMismatch = spiffe.ErrTrustDomainMismatch
 
-// SpiffeAmbiguousTenantError is returned when a certificate's tenant SPIFFE
-// SANs name more than one distinct tenant; such a certificate names no
+// SpiffeAmbiguousTenantError is returned when a certificate's workload SPIFFE
+// SANs are under more than one trust domain; such a certificate names no
 // tenant. (Aliases pkg/auth/spiffe.AmbiguousTenantError.)
 type SpiffeAmbiguousTenantError = spiffe.AmbiguousTenantError
 
 // SpiffeIDError is SpiffeID.URI's refusal. It unwraps to one of the
-// ErrSpiffe* field sentinels below or to ErrSpiffeIDNotRoundTrip. (Aliases
-// pkg/auth/spiffe.IDError.)
+// ErrSpiffe* field sentinels below. (Aliases pkg/auth/spiffe.IDError.)
 type SpiffeIDError = spiffe.IDError
 
-// SPIFFE ID field sentinels, returned by SpiffeID.Validate and reachable
-// through *SpiffeIDError. (Alias the pkg/auth/spiffe sentinels of the same
-// meaning.)
+// SPIFFE ID sentinels, returned by SpiffeID.Validate and WorkloadFromCert and
+// reachable through *SpiffeIDError. (Alias the pkg/auth/spiffe sentinels of
+// the same meaning.)
 var (
-	ErrSpiffeTrustDomainEmpty = spiffe.ErrTrustDomainEmpty
-	ErrSpiffeTenantEmpty      = spiffe.ErrTenantEmpty
-	ErrSpiffeKindInvalid      = spiffe.ErrKindInvalid
-	ErrSpiffeNameEmpty        = spiffe.ErrNameEmpty
+	ErrSpiffeTrustDomainEmpty   = spiffe.ErrTrustDomainEmpty
+	ErrSpiffeTrustDomainInvalid = spiffe.ErrTrustDomainInvalid
+	ErrSpiffeURIInvalid         = spiffe.ErrURIInvalid
+	ErrSpiffePathInvalid        = spiffe.ErrPathInvalid
+	ErrSpiffeKindInvalid        = spiffe.ErrKindInvalid
+	ErrSpiffeNameEmpty          = spiffe.ErrNameEmpty
 )
-
-// ErrSpiffeIDNotRoundTrip is the *SpiffeIDError cause for an identity whose
-// URI does not parse back to it -- a tenant or name carrying a path
-// separator, for one. (Aliases pkg/auth/spiffe.ErrIDNotRoundTrip.)
-var ErrSpiffeIDNotRoundTrip = spiffe.ErrIDNotRoundTrip
 
 // ---------------------------------------------------------------------------
 // SPIFFE functions
 // ---------------------------------------------------------------------------
 
-// TenantFromCert scans every URI SAN of a certificate for a tenant-scoped
-// SPIFFE identity, enforcing the pinned trust domain (fail-closed). When
-// pinnedTrustDomain is non-empty, ANY SPIFFE SAN whose trust domain differs
-// returns ErrSpiffeTrustDomainMismatch. Tenant SANs naming more than one
-// distinct tenant return *SpiffeAmbiguousTenantError. When no tenant SPIFFE
-// SAN is present, returns ErrSpiffeNoTenantID. pinnedTrustDomain == ""
-// accepts any trust domain and is for tests only; composers must pin. Most
-// callers want TenantFromClientCert, the full rule with the OU fallback.
-// (Aliases pkg/auth/spiffe.TenantFromCert.)
-var TenantFromCert = spiffe.TenantFromCert
+// WorkloadFromCert scans every URI SAN of a certificate for its workload
+// SPIFFE identity. A spiffe SAN that is not a SPIFFE ID fails closed with its
+// sentinel; workload SANs under more than one trust domain return
+// *SpiffeAmbiguousTenantError; no workload SAN returns ErrSpiffeNoTenantID.
+// Most callers want TenantFromClientCert, the full rule, which also requires
+// the first Subject OU to name the same tenant as the trust domain.
+// (Aliases pkg/auth/spiffe.WorkloadFromCert.)
+var WorkloadFromCert = spiffe.WorkloadFromCert

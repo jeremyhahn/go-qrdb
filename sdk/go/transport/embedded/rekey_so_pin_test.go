@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -66,6 +67,7 @@ func newRekeyTransport(t *testing.T, pins pin.PINBackend) *Transport {
 	}
 	ca, _ := ceremonytest.NewCA(t, "Rekey SO PIN CA")
 	core.SetCA(ca)
+	core.SetTrustDomain(authtest.ClientTrustDomain)
 	core.SetPINBackend(pins)
 	svc := service.NewBarrierServiceWithCeremony(barrier, core)
 	for _, name := range []string{"alice", "bob"} {

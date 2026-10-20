@@ -145,9 +145,10 @@ func LedgerDAOs(f *sdk.DAOFactory, database string) (sdk.GenericDAO[*Ledger], sd
 	return plain, tx, nil
 }
 
-// TenantUserSAN builds the SPIFFE URI SAN for a tenant user.
-func TenantUserSAN(trustDomain, tenantID, user string) (*url.URL, error) {
-	return sdk.SpiffeID{TrustDomain: trustDomain, TenantID: tenantID, Kind: sdk.SpiffeKindUser, Name: user}.URI()
+// TenantUserSAN builds the SPIFFE URI SAN for a tenant user: the tenant is
+// the trust domain.
+func TenantUserSAN(tenantID, user string) (*url.URL, error) {
+	return sdk.SpiffeID{TrustDomain: tenantID, Kind: sdk.SpiffeKindUser, Name: user}.URI()
 }
 
 // DelegatedScope reads the scope a tenant delegated to principal out of the

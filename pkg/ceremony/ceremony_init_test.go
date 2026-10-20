@@ -160,6 +160,7 @@ func TestInitialize_RestoresStateAcrossRestart(t *testing.T) {
 func TestInitialize_FailsClosedWithoutAPINBackend(t *testing.T) {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, shamirBarrier(t, seal.NewMemoryBackend(), 2, 2), testLogger())
 	require.NoError(t, err)
+	svc.SetTrustDomain(testTrustDomain)
 	_, err = svc.Initialize(context.Background(), testCA(t), initOpts(0))
 	assert.ErrorIs(t, err, pin.ErrBackendNotConfigured)
 	assert.Equal(t, StateAwaitingInit, svc.State())
@@ -220,18 +221,12 @@ func TestInitialize_ValidationRefusals(t *testing.T) {
 	// validation before ever reaching the server-certificate check this
 	// case is about (go-qrdb#548 review: B3 validates admin-credential
 	// inputs first).
-	adminLeaf, ierr := ca.IssueCertificate(ctx, &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, ierr)
+	adminLeaf := adminLeafPEM(t, ca, testTrustDomain)
 	caBundle, berr := ca.CABundle()
 	require.NoError(t, berr)
 	_, err := svc.Initialize(ctx, nil, &InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin",
-		AdminCertPEM:     adminLeaf.CertPEM,
+		AdminCertPEM:     adminLeaf,
 		AdminCertPoolPEM: caBundle,
 	})
 	var noCert *NoServerCertificateError
@@ -506,6 +501,7 @@ func TestInitialize_InitializeShamirFailureRollsBackEveryOfficerAndPIN(t *testin
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: dataDir}, barrier, testLogger())
 	require.NoError(t, err)
 	svc.SetCA(e.ca)
+	svc.SetTrustDomain(testTrustDomain)
 	svc.SetFactorRegistry(e.factors)
 	svc.SetPINBackend(e.pins)
 	e.svc = svc
@@ -554,6 +550,7 @@ func TestInitialize_InitializeShamirFailureRollsBackEveryOfficerAndPIN(t *testin
 	restartedSvc, err := NewCeremonyService(&CeremonyConfig{DataDir: dataDir}, restartedBarrier, testLogger())
 	require.NoError(t, err)
 	restartedSvc.SetCA(e.ca)
+	restartedSvc.SetTrustDomain(testTrustDomain)
 	restartedSvc.SetFactorRegistry(e.factors)
 	restartedSvc.SetPINBackend(restartedPins)
 
@@ -601,6 +598,7 @@ func TestInitialize_RollbackNeverWipesAPINThatPredatesThisCall(t *testing.T) {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: dataDir}, barrier, testLogger())
 	require.NoError(t, err)
 	svc.SetCA(e.ca)
+	svc.SetTrustDomain(testTrustDomain)
 	svc.SetFactorRegistry(e.factors)
 	svc.SetPINBackend(e.pins)
 	e.svc = svc
@@ -653,7 +651,8 @@ func TestSignCSRInit_CAAssignsTheHolderIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "operator-1", cert.Subject.CommonName)
 	assert.Equal(t, []string{tenantid.System, holderprofile.SecurityOfficer}, cert.Subject.OrganizationalUnit)
-	assert.Empty(t, cert.URIs, "a ceremony certificate carries no SAN")
+	assert.Equal(t, []string{"spiffe://system/user/operator-1"}, uriStrings(cert),
+		"a ceremony certificate's one SAN is its agreeing tenant SPIFFE ID")
 	_, isHolder := auth.HolderProfile(cert)
 	assert.True(t, isHolder, "sign-csr issues HOLDER certificates only")
 

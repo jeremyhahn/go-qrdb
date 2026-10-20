@@ -189,20 +189,20 @@ func WithAuditLogger(logger audit.AuditLogger) ProviderOption {
 	}
 }
 
-// WithTrustDomain makes every client certificate the provider issues carry a
-// tenant-scoped SPIFFE URI SAN under trustDomain
-// (spiffe://<trust-domain>/tenant/<tenantID>/user/<username>), so the
-// authenticator's pinned-trust-domain derivation is the one that resolves the
-// certificate's tenant (go-qrdb#519).
+// WithTrustDomain names the cluster trust domain. Every client certificate the
+// provider issues carries the tenant's SPIFFE URI SAN
+// (spiffe://<tenantID>/user/<username>), under the tenant's own trust domain,
+// and the provider refuses a tenant equal to trustDomain, which names no
+// tenant (auth.TenantPrincipalURIs).
 //
 // It must be the same value the node's mTLS authenticator pins
-// (auth.spiffe_trust_domain): a certificate minted under one trust domain and
-// presented to a node pinned to another is refused, which is the control the
-// pin exists to provide.
+// (auth.spiffe_trust_domain), which refuses a certificate whose tenant is that
+// trust domain.
 //
-// An empty trustDomain is the default and emits no SAN at all, so a deployment
-// that has not configured a trust domain issues certificates byte-for-byte as
-// it did before; their tenant resolves through the Subject OU fallback.
+// It is required to issue a client certificate: without it there is no SAN,
+// a certificate without one names no tenant (auth.TenantFromClientCert), and
+// IssueClientCert refuses with *SPIFFEIdentityError rather than mint one. A
+// node passes auth.EffectiveSPIFFETrustDomain, which is never empty.
 func WithTrustDomain(trustDomain string) ProviderOption {
 	return func(o *providerOptions) {
 		o.trustDomain = trustDomain
@@ -521,14 +521,15 @@ func (p *DefaultCertProvider) Seal() error {
 // req.TenantID, and is valid only for client authentication. It never
 // generates or sees the client's private key.
 //
-// When the provider was built WithTrustDomain, the certificate also carries
-// the tenant-scoped SPIFFE URI SAN for the same tenant and username, so the
-// authenticator derives its tenant from the pinned SAN rather than the OU.
-// The SAN is checked before anything is signed: a SAN that would not parse
+// The certificate also carries the tenant-scoped SPIFFE URI SAN for the same
+// tenant and username under the provider's trust domain (WithTrustDomain),
+// built by auth.TenantPrincipalURIs, because the authenticator requires the
+// OU and the SAN to agree (auth.TenantFromClientCert). The SAN is checked
+// before anything is signed: no trust domain, or a SAN that would not parse
 // back to exactly req.TenantID and req.Username — a path separator in either,
 // or a trust domain that is not a bare host — is refused with
-// *SPIFFEIdentityError, because a certificate whose SAN and OU disagree
-// authenticates as different tenants depending on which node's pin is set.
+// *SPIFFEIdentityError, because the authenticator would refuse the
+// certificate.
 //
 // With req.Delegation set the certificate is a delegation (pkg/auth/delegation):
 // the grant rides in a critical extension, so a verifier that does not know it
@@ -641,8 +642,7 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 }
 
 // clientSPIFFEURIs returns the URI SANs a client certificate for req carries:
-// none when no trust domain is configured, otherwise exactly one tenant-scoped
-// SPIFFE ID -- of kind user named for the certificate's CN, or for a
+// exactly one tenant-scoped SPIFFE ID -- of kind user named for the certificate's CN, or for a
 // delegation of kind svc named for the delegated principal, the SAN the
 // authenticator requires a delegation's to be.
 //
@@ -666,32 +666,24 @@ func (p *DefaultCertProvider) clientSPIFFEURIs(req *IssueRequest) ([]*url.URL, e
 // provider would refuse to sign it. A caller that is about to write state on
 // the strength of a later signature (tenant onboarding) asks it first, so a
 // name that can never be certified is refused before anything is written.
-// An empty trustDomain admits every name and returns none.
+// An empty trustDomain is refused: no certificate is issued without the SAN.
 func ClientSPIFFEURIs(trustDomain, tenantID, username string) ([]*url.URL, error) {
 	return tenantSPIFFEURIs(trustDomain, tenantID, spiffe.KindUser, username)
 }
 
-// tenantSPIFFEURIs is ClientSPIFFEURIs for an identity of any kind.
+// tenantSPIFFEURIs is ClientSPIFFEURIs for an identity of any kind: the one
+// SAN auth.TenantPrincipalURIs builds, its refusal typed as this package's.
 func tenantSPIFFEURIs(trustDomain, tenantID, kind, name string) ([]*url.URL, error) {
-	if trustDomain == "" {
-		return nil, nil
-	}
-	want := spiffe.ID{
-		TrustDomain: trustDomain,
-		TenantID:    tenantID,
-		Kind:        kind,
-		Name:        name,
-	}
-	u, err := want.URI()
+	uris, err := auth.TenantPrincipalURIs(trustDomain, tenantID, kind, name)
 	if err != nil {
 		return nil, &SPIFFEIdentityError{
 			TrustDomain: trustDomain,
 			TenantID:    tenantID,
 			Username:    name,
-			Reason:      err.Error(),
+			Err:         err,
 		}
 	}
-	return []*url.URL{u}, nil
+	return uris, nil
 }
 
 // RevokeCert marks a certificate serial as revoked by writing a revocation

@@ -245,6 +245,17 @@ func (s *CeremonyService) SetCA(ca CeremonyCA) {
 	}
 }
 
+// SetTrustDomain installs the SPIFFE trust domain every certificate the
+// ceremony issues names in its tenant SPIFFE ID SAN (HolderDeps.TrustDomain).
+// It is carried to every tenant and database holder authority built from
+// HolderDeps. The composer passes auth.spiffe_trust_domain, which defaults to
+// the cluster trust domain; until one is set every issuance is refused.
+func (s *CeremonyService) SetTrustDomain(trustDomain string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.TrustDomain = trustDomain
+}
+
 // SetFactorRegistry installs the authentication factors holders may enrol
 // and authenticate with (hardware factors come from go-xkms).
 func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry) {
@@ -409,7 +420,8 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 
 	// Resolve the CA bundle BYOC validates against, and validate every
 	// admin-credential input against it -- selection conflicts,
-	// none-selected, the BYOC chain, and requires-a-CA -- BEFORE this call
+	// none-selected, the BYOC chain and tenant rule, requires-a-CA, and the
+	// admin's SPIFFE ID under the trust domain (go-qrdb#777) -- BEFORE this call
 	// provisions the PINs, brings the system barrier up, or issues the TLS
 	// certificate (go-qrdb#548 review: B3, "init is atomic"). Both calls are
 	// read-only/pure: ca.CABundle() reads the CA's own bundle with no side
@@ -420,7 +432,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err != nil {
 		return nil, err
 	}
-	if err := validateAdminCredentialInputs(ca, opts, caBundle); err != nil {
+	if err := validateAdminCredentialInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
 
@@ -589,7 +601,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// ReissueAdminCredential) until an admin binding exists, so that gap is
 	// recoverable rather than a permanent loss. The key, when generated, is
 	// NEVER written anywhere by this package.
-	adminCertPEM, adminKeyPEM, adminSource, err := issueAdminCredential(ctx, ca, opts, caBundle)
+	adminCertPEM, adminKeyPEM, adminSource, err := issueAdminCredential(ctx, ca, s.deps.TrustDomain, opts, caBundle)
 	if err != nil {
 		s.mu.Unlock()
 		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
@@ -920,6 +932,7 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	cert, _, err := signHolderCSR(ctx, deps.CA, csrPEM, &SignCSROptions{
 		TenantID:     tenantid.System,
 		Username:     username,
+		TrustDomain:  deps.TrustDomain,
 		Profile:      profile.profile,
 		ValidityDays: profile.validityDays,
 		KeyUsage:     profile.keyUsage,

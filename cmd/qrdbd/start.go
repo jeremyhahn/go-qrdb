@@ -494,9 +494,18 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 	}
 	validateCfg := qrdbconfig.DefaultConfig()
 	validateCfg.Auth.Enabled = qrdbconfig.BoolPtr(f.authEnabled)
+	validateCfg.Auth.SPIFFETrustDomain = f.spiffeTrustDomain
+	validateCfg.Auth.ClusterTrustDomain = f.clusterTrustDomain
 	validateCfg.Seal = f.sealConfig
 	validateCfg.Databases = f.databases
-	return validateCfg.Validate()
+	if err := validateCfg.Validate(); err != nil {
+		return err
+	}
+	// Resolve the tenant trust domain only once both inputs are final:
+	// --cluster-trust-domain overrides the YAML, and an empty
+	// spiffe_trust_domain takes the cluster one.
+	f.spiffeTrustDomain = validateCfg.Auth.EffectiveSPIFFETrustDomain()
+	return nil
 }
 
 // configureObservability sets the process-wide signals start resolves

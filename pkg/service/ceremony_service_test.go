@@ -114,9 +114,9 @@ func (ca *testCeremonyCA) IssueCertificate(_ context.Context, req *ceremony.Issu
 
 // SignCSR signs a PEM-encoded CSR with the test CA.
 func (ca *testCeremonyCA) SignCSR(_ context.Context, csrPEM []byte, opts *ceremony.SignCSROptions) (*x509.Certificate, error) {
-	// Faithful to the CeremonyCA contract: the subject comes from opts
-	// (RawSubject, which refuses a missing tenant or username) and the CSR
-	// contributes only its public key.
+	// Faithful to the CeremonyCA contract: the subject and the SPIFFE ID SAN
+	// come from opts (RawSubject and URIs, which refuse a missing tenant,
+	// username or trust domain) and the CSR contributes only its public key.
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return nil, ceremony.ErrInvalidCSR
@@ -133,9 +133,14 @@ func (ca *testCeremonyCA) SignCSR(_ context.Context, csrPEM []byte, opts *ceremo
 	if err != nil {
 		return nil, err
 	}
+	uris, err := opts.URIs()
+	if err != nil {
+		return nil, err
+	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		RawSubject:   rawSubject,
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Duration(opts.ValidityDays) * 24 * time.Hour),
 		KeyUsage:     opts.KeyUsage,
@@ -163,6 +168,11 @@ func newTestOfficerCSR(t *testing.T, commonName string) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 }
 
+// ceremonyTrustDomain is the SPIFFE trust domain the ceremony services in
+// this package's tests issue certificates under. authtest.ClientTrustDomain
+// cannot be imported here: authtest imports this package.
+const ceremonyTrustDomain = "example.com"
+
 // newTestCeremonyService builds a fresh, single-admin CeremonyServicer over
 // an unsealed software barrier, with a testCeremonyCA wired in via SetCA, for
 // tests that only need a working ceremony/CA pair to drive CeremonyInitialize
@@ -173,6 +183,7 @@ func newTestCeremonyService(t *testing.T) (CeremonyServicer, ceremony.CeremonyCA
 	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 	require.NoError(t, err)
 	core.SetPINBackend(pintest.NewBackend(t))
+	core.SetTrustDomain(ceremonyTrustDomain)
 	ca := newTestCeremonyCA(t)
 	return NewCeremonyService(core), ca
 }

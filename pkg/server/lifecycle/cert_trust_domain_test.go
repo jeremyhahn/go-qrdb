@@ -18,18 +18,22 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
-// issuedCertURIs builds the service graph with the given trust domain, mints a
-// client certificate through the provider BuildServices wired, and returns the
-// certificate's URI SANs. It proves the infra field reaches the provider the
-// node actually serves certificates from, not a provider built beside it.
-func issuedCertURIs(t *testing.T, trustDomain string) []string {
+// issueThroughBuiltProvider builds the service graph with the given trust
+// domain and mints a client certificate through the provider BuildServices
+// wired. It proves the infra field reaches the provider the node actually
+// serves certificates from, not a provider built beside it.
+func issueThroughBuiltProvider(t *testing.T, trustDomain string) (*certtest.Bundle, error) {
 	t.Helper()
 	host := newLocalHost()
 	t.Cleanup(func() { _ = host.Close() })
@@ -51,7 +55,14 @@ func issuedCertURIs(t *testing.T, trustDomain string) []string {
 	}
 	t.Cleanup(func() { _ = node.Stop(context.Background()) })
 
-	bundle, err := certtest.Generate(context.Background(), node.CertProv, &certtest.Request{Username: "alice", TenantID: "acme"})
+	return certtest.Generate(context.Background(), node.CertProv, &certtest.Request{Username: "alice", TenantID: "acme"})
+}
+
+// issuedCertURIs mints a certificate through issueThroughBuiltProvider and
+// returns its URI SANs.
+func issuedCertURIs(t *testing.T, trustDomain string) []string {
+	t.Helper()
+	bundle, err := issueThroughBuiltProvider(t, trustDomain)
 	if err != nil {
 		t.Fatalf("certtest.Generate: %v", err)
 	}
@@ -72,14 +83,28 @@ func issuedCertURIs(t *testing.T, trustDomain string) []string {
 
 func TestBuildServices_SPIFFETrustDomain_ReachesCertProvider(t *testing.T) {
 	got := issuedCertURIs(t, "db.example.com")
-	want := "spiffe://db.example.com/tenant/acme/user/alice"
+	want := "spiffe://acme/user/alice"
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("issued certificate URIs = %v, want [%s]", got, want)
 	}
 }
 
-func TestBuildServices_NoSPIFFETrustDomain_CertProviderEmitsNoSAN(t *testing.T) {
-	if got := issuedCertURIs(t, ""); len(got) != 0 {
-		t.Fatalf("issued certificate URIs = %v, want none", got)
+func TestBuildServices_SPIFFETrustDomain_IsNoTenant(t *testing.T) {
+	// The tenant's SAN is under the tenant's own trust domain, so what shows
+	// the configured one reached the provider is that it names no tenant.
+	bundle, err := issueThroughBuiltProvider(t, "acme")
+	if !errors.Is(err, auth.ErrTenantIsClusterTrustDomain) {
+		t.Fatalf("certtest.Generate = %v, %v; want it to wrap auth.ErrTenantIsClusterTrustDomain", bundle, err)
+	}
+}
+
+func TestBuildServices_NoSPIFFETrustDomain_CertProviderRefusesToIssue(t *testing.T) {
+	bundle, err := issueThroughBuiltProvider(t, "")
+	var se *cert.SPIFFEIdentityError
+	if !errors.As(err, &se) {
+		t.Fatalf("certtest.Generate = %v, %v; want a *cert.SPIFFEIdentityError", bundle, err)
+	}
+	if !errors.Is(err, spiffe.ErrTrustDomainEmpty) {
+		t.Fatalf("certtest.Generate error = %v, want it to wrap spiffe.ErrTrustDomainEmpty", err)
 	}
 }

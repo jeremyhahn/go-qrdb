@@ -167,7 +167,10 @@ type Dependencies struct {
 
 	// TrustDomain is the SPIFFE trust domain the node's mTLS authenticator
 	// pins, so a bring-your-own admin certificate's identity is read exactly
-	// as a login will read it. Empty accepts any, as the authenticator does.
+	// as a login will read it, and a signed one names the admin's SPIFFE ID
+	// under it. ProvisionTenant refuses a certificate-enrolled admin without
+	// one; BootstrapSystem passes it to first boot as
+	// firstboot.Dependencies.TrustDomain.
 	TrustDomain string
 
 	// Now is ProvisionTenant's clock for certificate and anchor validity.
@@ -350,6 +353,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		AdminCSRPEM:        cfg.AdminCSRPEM,
 		AdminCertPEM:       cfg.AdminCertPEM,
 		AdminCertPool:      cfg.AdminCertPool,
+		TrustDomain:        deps.TrustDomain,
 		Binder:             deps.Binder,
 		Logger:             deps.Logger,
 		SeparationOfDuties: cfg.SeparationOfDuties,

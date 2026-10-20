@@ -44,9 +44,8 @@ import (
 // tenant through a SPIFFE SAN, plus DNS, IP and e-mail SANs. Whatever the CSR
 // says, the certificate must authenticate as the registered holder, in the
 // registering scope's tenant -- under both the OU rule and a pinned SPIFFE
-// trust domain -- and carry no SAN the CSR supplied.
-
-const holderTrustDomain = "qrdb.example"
+// trust domain -- and carry no SAN the CSR supplied: its one SAN is the
+// holder's own tenant SPIFFE ID, agreeing with its OU.
 
 type hostileCSR struct {
 	name   string
@@ -57,7 +56,7 @@ type hostileCSR struct {
 var hostileCSRs = []hostileCSR{
 	{name: "system admin", ou: []string{"system"}},
 	{name: "foreign tenant", ou: []string{"globex"}},
-	{name: "foreign SPIFFE", ou: []string{"globex"}, spiffe: "spiffe://" + holderTrustDomain + "/tenant/globex/user/admin"},
+	{name: "foreign SPIFFE", ou: []string{"globex"}, spiffe: "spiffe://globex/user/admin"},
 	{name: "no OU", ou: nil},
 }
 
@@ -112,7 +111,7 @@ func (b *holderCATestbed) assertAuthenticatesAs(t *testing.T, certPEM []byte, us
 	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: chains}
 	for name, authn := range map[string]*auth.MTLSAuthenticator{
 		"OU rule":             auth.NewMTLSAuthenticator(),
-		"pinned trust domain": auth.NewMTLSAuthenticatorWithTrustDomain(holderTrustDomain),
+		"pinned trust domain": auth.NewMTLSAuthenticatorWithTrustDomain(testTrustDomain),
 	} {
 		id, err := authn.Authenticate(auth.WithTLSState(context.Background(), state))
 		require.NoError(t, err, name)
@@ -120,7 +119,8 @@ func (b *holderCATestbed) assertAuthenticatesAs(t *testing.T, certPEM []byte, us
 		require.Equal(t, tenantID, id.TenantID, "%s: the certificate authenticates outside the registering scope's tenant", name)
 	}
 
-	require.Empty(t, leaf.URIs, "a URI SAN from the CSR was signed")
+	require.Equal(t, []string{"spiffe://" + tenantID + "/user/" + username}, uriStrings(leaf),
+		"the certificate's only URI SAN must be the holder's agreeing tenant SPIFFE ID, never one from the CSR")
 	require.Empty(t, leaf.DNSNames, "a DNS SAN from the CSR was signed")
 	require.Empty(t, leaf.IPAddresses, "an IP SAN from the CSR was signed")
 	require.Empty(t, leaf.EmailAddresses, "an e-mail SAN from the CSR was signed")
@@ -137,7 +137,7 @@ func hostileRequest(t *testing.T, c hostileCSR, username string, role seal.Holde
 // ca.
 func newTenantHolders(t *testing.T, tenantID string, ca CeremonyCA) *ScopedCeremonyService {
 	t.Helper()
-	svc, err := NewTenantCeremonyService(tenantID, seal.NewMemoryBackend(), HolderDeps{CA: ca, Factors: testFactors(t)}, testLogger())
+	svc, err := NewTenantCeremonyService(tenantID, seal.NewMemoryBackend(), HolderDeps{TrustDomain: testTrustDomain, CA: ca, Factors: testFactors(t)}, testLogger())
 	require.NoError(t, err)
 	return svc
 }
@@ -170,7 +170,7 @@ func TestHolderCert_DatabaseHolderRegistration(t *testing.T) {
 	for _, c := range hostileCSRs {
 		t.Run(c.name, func(t *testing.T) {
 			b := newHolderCATestbed(t)
-			svc, err := NewDatabaseCeremonyService("acme", "vault", seal.NewMemoryBackend(), HolderDeps{CA: b.ca, Factors: testFactors(t)}, testLogger())
+			svc, err := NewDatabaseCeremonyService("acme", "vault", seal.NewMemoryBackend(), HolderDeps{TrustDomain: testTrustDomain, CA: b.ca, Factors: testFactors(t)}, testLogger())
 			require.NoError(t, err)
 			res, err := svc.RegisterOfficer(context.Background(), hostileRequest(t, c, "vault-officer", seal.RoleSecurityOfficer))
 			require.NoError(t, err)

@@ -21,16 +21,19 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // mintHolderCert issues a self-signed leaf CN=cn with the given OUs, each in
-// its own RDN so their order survives encoding.
+// its own RDN so their order survives encoding, and the SPIFFE ID SAN agreeing
+// with the first, the tenant OU (authtest.ClientSPIFFEURI).
 func mintHolderCert(t *testing.T, cn string, ous ...string) certKey {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -46,6 +49,9 @@ func mintHolderCert(t *testing.T, cn string, ous ...string) certKey {
 		Subject:      name,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
+	}
+	if len(ous) > 0 {
+		tmpl.URIs = []*url.URL{authtest.ClientSPIFFEURI(t, ous[0], cn)}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {

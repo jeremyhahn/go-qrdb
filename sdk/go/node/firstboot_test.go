@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -224,4 +225,45 @@ func TestNodeFirstBoot_UsesTheWiredPolicy(t *testing.T) {
 	var refusal *firstboot.AdminCertBindingRequiredError
 	require.True(t, errors.As(err, &refusal), "err = %v", err)
 	assert.Equal(t, firstboot.AdminBindingUnverifiable, refusal.Reason)
+}
+
+// go-qrdb#777: Node.FirstBoot holds a presented admin certificate to the
+// trust domain the node's mTLS authenticator pins, so it never binds a
+// certificate whose SPIFFE ID no login on this node would accept.
+func TestNodeFirstBoot_PinsTheWiredTrustDomain(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	// The SPIFFE ID names the system tenant as its trust domain; the cluster
+	// trust domain is not in it, so the wired domain is observable only where
+	// the tenant rule compares the two.
+	uris, err := auth.TenantPrincipalURIs("example.com", tenantid.System, spiffe.KindUser, "admin")
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7),
+		Subject: pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenantid.System}}, URIs: uris,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+
+	boot := func(trustDomain string) error {
+		n := &Node{}
+		n.bindingPolicy.Store(int32(auth.MTLSBindingEnrolled))
+		n.spiffeTrustDomain.Store(&trustDomain)
+		users, roles := realStores(t)
+		deps := fbDeps(users, roles)
+		deps.AdminCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+		deps.AdminCertPool = pool
+		_, bootErr := n.FirstBoot(context.Background(), deps)
+		return bootErr
+	}
+
+	var tenantErr *auth.CertificateTenantError
+	err = boot(tenantid.System)
+	require.True(t, errors.As(err, &tenantErr), "a cluster trust domain that is the tenant's name must be refused: err = %v", err)
+	require.ErrorIs(t, err, auth.ErrTenantIsClusterTrustDomain)
+	err = boot("example.com")
+	assert.False(t, errors.As(err, &tenantErr), "the pinned domain must pass the tenant rule: err = %v", err)
 }

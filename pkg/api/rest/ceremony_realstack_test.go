@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -128,6 +129,7 @@ func newRealReissueStack(t *testing.T, soPIN string) (service.CeremonyServicer, 
 		t.Fatal(err)
 	}
 	core.SetPINBackend(pintest.NewBackend(t))
+	core.SetTrustDomain(authtest.ClientTrustDomain)
 	ca := newRealCeremonyCA(t)
 
 	if _, err := core.Initialize(context.Background(), ca, &ceremony.InitializeOptions{

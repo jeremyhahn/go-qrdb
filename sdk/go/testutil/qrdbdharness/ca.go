@@ -52,7 +52,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 const (
@@ -311,6 +314,8 @@ type certConfig struct {
 	serverAuth         bool
 	spiffeTrustDomain  string
 	spiffePath         string
+	uriSAN             string
+	clusterTrustDomain string
 }
 
 // CertOption customizes a leaf certificate issued by CA.Issue.
@@ -321,7 +326,11 @@ type CertOption func(*certConfig)
 // this is the option that decides which identity a client authenticates as —
 // CN=admin, OU=system is the identity firstboot provisions with platform-wide
 // authority, while anything else is an ordinary tenant-scoped identity.
-// An empty organizationalUnit omits the attribute entirely.
+// An empty organizationalUnit omits the attribute entirely. A client
+// certificate with an OU also names its tenant in the agreeing SPIFFE ID SAN
+// spiffe://<OU>/user/<CN>, under the tenant's own trust domain, which the
+// authenticator requires (auth.TenantFromClientCert); see
+// WithClusterTrustDomain.
 func WithSubject(commonName, organizationalUnit string) CertOption {
 	return func(c *certConfig) {
 		c.commonName = commonName
@@ -358,6 +367,28 @@ func WithSPIFFEID(trustDomain, path string) CertOption {
 	}
 }
 
+// WithURISAN makes uri, verbatim, the certificate's only URI SAN, replacing
+// the SPIFFE ID WithSPIFFEID or the subject OU would give it. It is how a test
+// presents a URI SAN that is not a SPIFFE ID at all, which no production
+// issuer mints and the daemon refuses.
+func WithURISAN(uri string) CertOption {
+	return func(c *certConfig) { c.uriSAN = uri }
+}
+
+// WithClusterTrustDomain sets the cluster trust domain the derived tenant
+// SPIFFE ID SAN is checked against: the daemon's auth.spiffe_trust_domain,
+// which defaults to its cluster trust domain, and which no tenant may be.
+// Unset, it is config.DefaultClusterTrustDomain, the domain of a daemon that
+// configures neither. WithSPIFFEID replaces the derived SAN outright, which is
+// how a test presents a certificate whose SAN and OU disagree.
+func WithClusterTrustDomain(trustDomain string) CertOption {
+	return func(c *certConfig) {
+		if trustDomain != "" {
+			c.clusterTrustDomain = trustDomain
+		}
+	}
+}
+
 // WithServerAuth marks the certificate as a node (server) certificate: it adds
 // the ServerAuth extended key usage on top of ClientAuth and SANs for
 // localhost, this host's name, the loopback and unspecified addresses, and
@@ -373,8 +404,9 @@ func WithServerAuth() CertOption {
 // distinct subjects.
 func (ca *CA) Issue(dir string, opts ...CertOption) (*KeyPair, error) {
 	cfg := certConfig{
-		organization: DefaultOrganization,
-		validity:     DefaultValidity,
+		organization:       DefaultOrganization,
+		validity:           DefaultValidity,
+		clusterTrustDomain: config.DefaultClusterTrustDomain,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -424,13 +456,27 @@ func (ca *CA) Issue(dir string, opts ...CertOption) (*KeyPair, error) {
 	}
 
 	var uris []*url.URL
-	if cfg.spiffeTrustDomain != "" {
+	switch {
+	case cfg.uriSAN != "":
+		uri, err := url.Parse(cfg.uriSAN)
+		if err != nil {
+			return nil, &CertError{CommonName: cfg.commonName, Op: "parse uri san " + cfg.uriSAN, Err: err}
+		}
+		uris = append(uris, uri)
+	case cfg.spiffeTrustDomain != "":
 		spiffeID := "spiffe://" + cfg.spiffeTrustDomain + "/" + strings.TrimPrefix(cfg.spiffePath, "/")
 		uri, err := url.Parse(spiffeID)
 		if err != nil {
 			return nil, &CertError{CommonName: cfg.commonName, Op: "parse spiffe id " + spiffeID, Err: err}
 		}
 		uris = append(uris, uri)
+	case cfg.organizationalUnit != "" && !cfg.serverAuth:
+		// A tenant principal: its SAN agrees with its OU, the way every
+		// production issuer mints one. A node leaf keeps its node rule.
+		uris, err = auth.TenantPrincipalURIs(cfg.clusterTrustDomain, cfg.organizationalUnit, spiffe.KindUser, cfg.commonName)
+		if err != nil {
+			return nil, &CertError{CommonName: cfg.commonName, Op: "tenant spiffe id", Err: err}
+		}
 	}
 
 	now := time.Now()

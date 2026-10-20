@@ -38,7 +38,7 @@ func TestParseNodeID_Skips(t *testing.T) {
 	// Non-spiffe, tenant-form, and wrong-segment URIs are skipped, not errors.
 	for _, u := range []string{
 		"https://qrdb.cluster/node/x",
-		"spiffe://qrdb.cluster/tenant/acme/user/alice",
+		"spiffe://acme/user/alice",
 		"spiffe://qrdb.cluster/node/a/b",
 		"spiffe://qrdb.cluster/other/a",
 	} {

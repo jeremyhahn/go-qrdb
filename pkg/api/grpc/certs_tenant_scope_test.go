@@ -152,7 +152,8 @@ type certScopeGRPCFixture struct {
 func newCertScopeGRPCFixture(t *testing.T) *certScopeGRPCFixture {
 	t.Helper()
 
-	prov := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newCertScopeBarrier(t))
+	prov := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newCertScopeBarrier(t),
+		cert.WithTrustDomain("db.example.com"))
 	if err := prov.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize CA: %v", err)
 	}

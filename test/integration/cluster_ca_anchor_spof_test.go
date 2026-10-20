@@ -69,7 +69,10 @@ import (
 
 	"github.com/jeremyhahn/go-truststrap/pkg/spkipin"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 // clusterCAAnchorNode is one running qrdbd process in the self-issued
@@ -212,7 +215,12 @@ func nodeLeafTemplate(cn string) *x509.Certificate {
 // adminCertTemplate builds the bootstrap admin credential's template: CN
 // must be exactly "admin" (the bootstrap admin's username is fixed) and OU
 // must carry the system tenant first, both required by firstboot's own
-// validation of a presented admin certificate. Signed with Key A (see
+// validation of a presented admin certificate. Its SPIFFE ID SAN names the
+// same tenant and user under the default cluster trust domain these nodes
+// run with: the ceremony refuses a presented admin certificate the daemon's
+// authenticator would refuse (auth.TenantFromClientCert, go-qrdb#777), and
+// the SAN is built by auth.TenantPrincipalURIs, the one builder every
+// production issuer uses. Signed with Key A (see
 // signCertWithCA) rather than an unrelated throwaway CA, this chains to
 // the one CA every node in the cluster already trusts by construction, so
 // it passes firstboot's stricter check too -- not only the ceremony's own
@@ -221,10 +229,16 @@ func nodeLeafTemplate(cn string) *x509.Certificate {
 // credential is only safe for a node that is guaranteed to LOSE that race,
 // because the tenant it would create already exists by the time it calls
 // in; a founder racing for the win has no such guarantee).
-func adminCertTemplate() *x509.Certificate {
+func adminCertTemplate(t *testing.T) *x509.Certificate {
+	t.Helper()
+	uris, err := auth.TenantPrincipalURIs(config.DefaultClusterTrustDomain, "system", spiffe.KindUser, "admin")
+	if err != nil {
+		t.Fatalf("adminCertTemplate: admin SPIFFE ID: %v", err)
+	}
 	return &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano() + 1),
 		Subject:      pkix.Name{CommonName: "admin", OrganizationalUnit: []string{"system"}},
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -302,7 +316,11 @@ func waitForReachable(t *testing.T, client *http.Client, adminPort int, timeout 
 // bare self-signed leaf is refused ("certificate signed by unknown
 // authority"): the ceremony verifies the chain against the pool the
 // request supplies, so the pool has to be supplied, not merely a cert that
-// signed itself.
+// signed itself. The leaf names cn in the system tenant in a SPIFFE ID SAN
+// under the default cluster trust domain, agreeing with its OU: the ceremony
+// holds every presented admin certificate to the authenticator's tenant rule
+// before it brings the barrier up (go-qrdb#777), even on a node whose admin
+// already exists cluster-wide.
 func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM []byte) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -331,9 +349,14 @@ func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM []byte
 	if err != nil {
 		t.Fatalf("throwawayAdminCertAndPool: generate leaf key: %v", err)
 	}
+	uris, err := auth.TenantPrincipalURIs(config.DefaultClusterTrustDomain, "system", spiffe.KindUser, cn)
+	if err != nil {
+		t.Fatalf("throwawayAdminCertAndPool: admin SPIFFE ID: %v", err)
+	}
 	leafTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano() + 1),
 		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{"system"}},
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -969,7 +992,7 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	node1CAKeyPath := filepath.Join(node1.dataDir, "ca-key.pem")
 	node2LeafPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, nodeLeafTemplate("node2"), &node2Key.PublicKey)
 	node2AdminKey, _, _ := generateNodeKeypairAndIdentity(t)
-	node2AdminCertPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, adminCertTemplate(), &node2AdminKey.PublicKey)
+	node2AdminCertPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, adminCertTemplate(t), &node2AdminKey.PublicKey)
 	node2 := startSecondFounderExplicitTLS(t, raftPorts[1], adminPorts[1], grpcPorts[1],
 		peers12, fmt.Sprintf("1=%s", node1.identity), node1.caPath, node2LeafPEM, node2KeyPEM, peerAdminURLs)
 	if node2.identity != node2Identity {

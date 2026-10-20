@@ -22,14 +22,18 @@ import (
 )
 
 func TestValidateTrustDomain(t *testing.T) {
-	for _, ok := range []string{"db.example.com", "example.org", "qrdb.cluster", "a-b.example"} {
+	for _, ok := range []string{"db.example.com", "example.org", "qrdb.cluster", "a-b.example", "acme_1", strings.Repeat("a", maxTrustDomainLen)} {
 		if err := ValidateTrustDomain(ok); err != nil {
 			t.Errorf("ValidateTrustDomain(%q) = %v, want nil", ok, err)
 		}
 	}
 	cases := map[string]error{
 		"":                            ErrTrustDomainEmpty,
-		"   ":                         ErrTrustDomainEmpty,
+		"   ":                         ErrTrustDomainInvalid,
+		"DB.example.com":              ErrTrustDomainInvalid,
+		"db.example.com:8443":         ErrTrustDomainInvalid,
+		"db%2Eexample.com":            ErrTrustDomainInvalid,
+		strings.Repeat("a", 256):      ErrTrustDomainInvalid,
 		"db.example.com/tenant/other": ErrTrustDomainInvalid,
 		"db.example.com?x=1":          ErrTrustDomainInvalid,
 		"db.example.com#frag":         ErrTrustDomainInvalid,

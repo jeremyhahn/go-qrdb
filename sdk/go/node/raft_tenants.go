@@ -55,7 +55,7 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 			Peers:         lifecycle.PeerAdminURLMap(cfg.Auth.PeerAdminURLs),
 			Logger:        n.logger,
 		}),
-		TrustDomain: clusterTrustDomain(cfg),
+		TrustDomain: cfg.Auth.EffectiveClusterTrustDomain(),
 		Decrypter:   n.keyDecrypter,
 		Logger:      n.logger,
 		Clock:       n.clock,
@@ -115,14 +115,6 @@ func identityCertPEM(id *RaftMTLSConfig) []byte {
 	}
 }
 
-// clusterTrustDomain is the configured cluster trust domain, or the default.
-func clusterTrustDomain(cfg *qrdbconfig.Config) string {
-	if cfg.Auth.ClusterTrustDomain != "" {
-		return cfg.Auth.ClusterTrustDomain
-	}
-	return qrdbconfig.DefaultClusterTrustDomain
-}
-
 // startClusterJoin composes the node's member-side CSR join through
 // lifecycle.StartClusterJoin, once, on a clustered node.
 func (n *Node) startClusterJoin(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, standalone bool) error {
@@ -135,7 +127,7 @@ func (n *Node) startClusterJoin(ctx context.Context, svcNode *lifecycle.Node, cf
 		ListenHost:  cfg.ClusterJoin.ListenHost,
 		ListenPort:  cfg.ClusterJoin.ListenPort,
 		AdminPort:   cfg.Server.AdminPort,
-		TrustDomain: clusterTrustDomain(cfg),
+		TrustDomain: cfg.Auth.EffectiveClusterTrustDomain(),
 		DataDir:     cfg.Raft.DataDir,
 		NodeCertPEM: certPEM,
 		Logger:      n.logger,

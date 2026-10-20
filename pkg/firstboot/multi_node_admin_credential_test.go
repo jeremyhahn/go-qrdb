@@ -24,6 +24,7 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"math/big"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -77,13 +78,21 @@ func newTestLeafCA(t *testing.T) *testLeafCAForMultiNode {
 // cluster node would produce.
 func (ca *testLeafCAForMultiNode) issueLeaf(t *testing.T, serial int64) []byte {
 	t.Helper()
+	subject, uris := presentedIdentity(t, tenantid.System, tenantid.System, presentedTrustDomain)
+	return ca.issueLeafAs(t, serial, subject, uris)
+}
+
+// issueLeafAs issues a leaf naming subject and the URI SANs uris.
+func (ca *testLeafCAForMultiNode) issueLeafAs(t *testing.T, serial int64, subject pkix.Name, uris []*url.URL) []byte {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey (leaf): %v", err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
-		Subject:      pkix.Name{CommonName: adminUsername},
+		Subject:      subject,
+		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 	}

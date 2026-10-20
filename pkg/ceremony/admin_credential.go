@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -67,7 +68,8 @@ var adminCertProfile = &roleProfile{
 //     signed; keyPEM is always nil; no CeremonyCA is needed at all -- the
 //     ONLY admin-credential path available when ca is nil (a BYO-TLS node).
 //   - AdminCSRPEM set (CSR-sign): the ceremony CA signs it as
-//     CN=admin, OU=[system, administrator], using only the CSR's key.
+//     CN=admin, OU=[system, administrator], with the agreeing SPIFFE ID SAN
+//     under trustDomain, using only the CSR's key.
 //     keyPEM is always nil -- the admin's key never leaves their machine.
 //     Refused with *AdminCredentialRequiresCAError when ca is nil.
 //   - AdminGenerate set: a key pair and CSR are generated in-process and
@@ -75,7 +77,7 @@ var adminCertProfile = &roleProfile{
 //     to the caller exactly once. NOT suitable for production; see
 //     docs/firstboot/user.md. Refused with *AdminCredentialRequiresCAError
 //     when ca is nil, for the same reason as CSR-sign.
-func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOptions, caBundlePEM []byte) (certPEM, keyPEM []byte, source AdminCredentialSource, err error) {
+func issueAdminCredential(ctx context.Context, ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM []byte) (certPEM, keyPEM []byte, source AdminCredentialSource, err error) {
 	csrPEM, certInPEM, poolPEM, _, selected := adminCredentialSelection(opts)
 
 	switch {
@@ -86,7 +88,7 @@ func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOp
 		return nil, nil, AdminCredentialNone, &NoAdminCredentialSelectedError{}
 
 	case len(certInPEM) > 0:
-		adopted, aerr := adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM)
+		adopted, aerr := adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM, trustDomain)
 		if aerr != nil {
 			return nil, nil, AdminCredentialNone, aerr
 		}
@@ -96,7 +98,7 @@ func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOp
 		if ca == nil {
 			return nil, nil, AdminCredentialNone, &AdminCredentialRequiresCAError{Path: "csr-sign"}
 		}
-		signed, serr := signAdminCSR(ctx, ca, csrPEM)
+		signed, serr := signAdminCSR(ctx, ca, trustDomain, csrPEM)
 		if serr != nil {
 			return nil, nil, AdminCredentialNone, serr
 		}
@@ -110,7 +112,7 @@ func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOp
 		if gerr != nil {
 			return nil, nil, AdminCredentialNone, gerr
 		}
-		signed, serr := signAdminCSR(ctx, ca, genCSR)
+		signed, serr := signAdminCSR(ctx, ca, trustDomain, genCSR)
 		if serr != nil {
 			secure.Wipe(genKey)
 			return nil, nil, AdminCredentialNone, serr
@@ -148,8 +150,9 @@ func adminCredentialSelection(opts *InitializeOptions) (csrPEM, certInPEM, poolP
 // run the IDENTICAL check: adoptAdminCert is pure (parsing and chain
 // verification only, no CA interaction), so calling it ahead of time to
 // validate costs nothing and cannot drift from the value issueAdminCredential
-// goes on to use.
-func adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM []byte) ([]byte, error) {
+// goes on to use. trustDomain is the domain the admin's SPIFFE ID SAN must
+// name, the one the daemon's authenticator pins.
+func adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM []byte, trustDomain string) ([]byte, error) {
 	if len(poolPEM) == 0 {
 		poolPEM = caBundlePEM
 	}
@@ -159,15 +162,17 @@ func adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM []byte) ([]byte, er
 			Cause: errors.New("trust pool contains no usable certificates"),
 		}
 	}
-	return adoptAdminCert(certInPEM, pool)
+	return adoptAdminCert(certInPEM, pool, trustDomain)
 }
 
 // validateAdminCredentialInputs performs every admin-credential input check
 // that does not require actually signing or generating anything: the
 // selection-conflict/none-selected count (adminCredentialSelection, shared
 // with issueAdminCredential), the BYOC chain validation
-// (adoptPresentedAdminCert, pure), and the requires-a-CA refusal for
-// CSR-sign/generate. Initialize calls it BEFORE provisioning the PINs,
+// (adoptPresentedAdminCert, pure, including the tenant rule under
+// trustDomain), the requires-a-CA refusal for CSR-sign/generate, and the
+// admin's SPIFFE ID SAN under trustDomain those two paths would sign
+// (requireAdminSPIFFEIdentity). Initialize calls it BEFORE provisioning the PINs,
 // bringing the system barrier up, or issuing the TLS certificate (go-qrdb#548
 // review: B3, "init is atomic" -- a malformed admin-credential request must
 // be refused before any of those side effects, not after them). A caller
@@ -175,7 +180,7 @@ func adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM []byte) ([]byte, er
 // will not fail on input shape -- only on a signing/generation failure
 // specific to the CSR-sign or generate path, which has no cheaper way to
 // detect ahead of time.
-func validateAdminCredentialInputs(ca CeremonyCA, opts *InitializeOptions, caBundlePEM []byte) error {
+func validateAdminCredentialInputs(ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM []byte) error {
 	csrPEM, certInPEM, poolPEM, generate, selected := adminCredentialSelection(opts)
 
 	switch {
@@ -186,7 +191,7 @@ func validateAdminCredentialInputs(ca CeremonyCA, opts *InitializeOptions, caBun
 		return &NoAdminCredentialSelectedError{}
 
 	case len(certInPEM) > 0:
-		if _, err := adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM); err != nil {
+		if _, err := adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM, trustDomain); err != nil {
 			return err
 		}
 		return nil
@@ -198,7 +203,7 @@ func validateAdminCredentialInputs(ca CeremonyCA, opts *InitializeOptions, caBun
 		if _, err := parseAndVerifyCSR(csrPEM); err != nil {
 			return err
 		}
-		return nil
+		return requireAdminSPIFFEIdentity(trustDomain)
 
 	default: // generate -- the only remaining case once selected == 1
 		if !generate {
@@ -211,23 +216,45 @@ func validateAdminCredentialInputs(ca CeremonyCA, opts *InitializeOptions, caBun
 		if ca == nil {
 			return &AdminCredentialRequiresCAError{Path: "generate"}
 		}
-		return nil
+		return requireAdminSPIFFEIdentity(trustDomain)
 	}
+}
+
+// adminSignCSROptions is the identity every bootstrap admin certificate the
+// ceremony signs carries: CN=admin in the system tenant, under the admin
+// role profile, with the admin's SPIFFE ID SAN under trustDomain.
+func adminSignCSROptions(trustDomain string) *SignCSROptions {
+	return &SignCSROptions{
+		TenantID:     tenantid.System,
+		Username:     adminUsername,
+		TrustDomain:  trustDomain,
+		Profile:      adminCertProfile.profile,
+		ValidityDays: adminCertProfile.validityDays,
+		KeyUsage:     adminCertProfile.keyUsage,
+		ExtKeyUsage:  adminCertProfile.extKeyUsage,
+	}
+}
+
+// requireAdminSPIFFEIdentity refuses, as a *AdminCredentialIssuanceError
+// wrapping the *CertSubjectError signing would return, a trust domain the
+// admin's SPIFFE ID SAN cannot be written under -- an empty one above all.
+// It builds the SAN through the same SignCSROptions.URIs signAdminCSR's CA
+// call does, without signing anything, so the CSR-sign and generate paths
+// refuse before Initialize has a side effect rather than after.
+func requireAdminSPIFFEIdentity(trustDomain string) error {
+	if _, err := adminSignCSROptions(trustDomain).URIs(); err != nil {
+		return &AdminCredentialIssuanceError{Cause: err}
+	}
+	return nil
 }
 
 // signAdminCSR signs csrPEM as the bootstrap admin's certificate, through the
 // same signHolderCSR/checkIssuedSubject rule sign-csr applies to every holder
 // certificate: the Subject comes from opts, never the CSR, and the CSR
-// contributes only its key.
-func signAdminCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte) ([]byte, error) {
-	cert, _, err := signHolderCSR(ctx, ca, csrPEM, &SignCSROptions{
-		TenantID:     tenantid.System,
-		Username:     adminUsername,
-		Profile:      adminCertProfile.profile,
-		ValidityDays: adminCertProfile.validityDays,
-		KeyUsage:     adminCertProfile.keyUsage,
-		ExtKeyUsage:  adminCertProfile.extKeyUsage,
-	})
+// contributes only its key. The certificate names the admin's SPIFFE ID under
+// trustDomain, agreeing with its system-tenant OU.
+func signAdminCSR(ctx context.Context, ca CeremonyCA, trustDomain string, csrPEM []byte) ([]byte, error) {
+	cert, _, err := signHolderCSR(ctx, ca, csrPEM, adminSignCSROptions(trustDomain))
 	if err != nil {
 		return nil, &AdminCredentialIssuanceError{Cause: err}
 	}
@@ -279,8 +306,15 @@ func generateAdminCSR() (csrPEM, keyPEM []byte, err error) {
 // adoptPresentedAdminCert, which defers EKU to login-time authorization),
 // this one check IS the authorization: adopting it grants system-tenant
 // Admin outright, with no later gate, so the checklist is enforced here,
-// before binding, not deferred. Nothing is signed and no key is generated
-// -- the private key never exists outside the operator's own token.
+// before binding, not deferred. The certificate must also pass the
+// authenticator's own tenant rule, auth.TenantFromClientCert pinned to
+// trustDomain (go-qrdb#777): a SPIFFE ID SAN under that domain naming the
+// tenant its first OU names. A certificate the rule refuses could never log
+// in, and adopting it would leave the deployment with no administrator. An
+// empty trustDomain is refused, as the CSR-sign and generate paths refuse it:
+// with no pin the rule would accept any domain the daemon then refuses.
+// Nothing is signed and no key is generated -- the private key never exists
+// outside the operator's own token.
 //
 // This duplicates pkg/firstboot's adoptPresentedAdminCert's parse/validity/
 // chain checks in spirit rather than calling it: pkg/firstboot cannot be
@@ -288,7 +322,7 @@ func generateAdminCSR() (csrPEM, keyPEM []byte, err error) {
 // pkg/ceremony for CeremonyCA and pkg/firstboot imports pkg/tenant. The
 // admin-profile checklist below has no counterpart there at all -- it is
 // specific to this path.
-func adoptAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error) {
+func adoptAdminCert(certPEM []byte, pool *x509.CertPool, trustDomain string) ([]byte, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return nil, &AdminCredentialRejectedError{Cause: errors.New("no CERTIFICATE block in PEM input")}
@@ -312,6 +346,12 @@ func adoptAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error) {
 
 	if err := validateAdminCertProfile(cert); err != nil {
 		return nil, err
+	}
+	if _, err := adminSignCSROptions(trustDomain).URIs(); err != nil {
+		return nil, &AdminCredentialRejectedError{Cause: err}
+	}
+	if _, err := auth.TenantFromClientCert(cert, trustDomain); err != nil {
+		return nil, &AdminCredentialRejectedError{Cause: err}
 	}
 
 	adopted := make([]byte, len(certPEM))
@@ -466,7 +506,7 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 		return nil, err
 	}
 
-	certPEM, keyPEM, source, aerr := issueAdminCredential(ctx, s.deps.CA, opts, caBundle)
+	certPEM, keyPEM, source, aerr := issueAdminCredential(ctx, s.deps.CA, s.deps.TrustDomain, opts, caBundle)
 	if aerr != nil {
 		s.logger.Error("bootstrap admin credential reissuance failed", slog.String("error", aerr.Error()))
 		return nil, aerr

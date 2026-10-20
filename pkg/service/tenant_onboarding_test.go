@@ -78,12 +78,13 @@ func newOnboardingRoleStore(t *testing.T) role.RoleServicer {
 func newOnboardingDeps(t *testing.T) TenantOnboardingDeps {
 	t.Helper()
 	return TenantOnboardingDeps{
-		Tenants: newOnboardingTenantService(t),
-		Users:   newCertEnrollmentUserStore(t),
-		Roles:   newOnboardingRoleStore(t),
-		Certs:   newCertEnrollmentProvider(t),
-		Anchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
-		Logger:  slog.New(slog.DiscardHandler),
+		Tenants:     newOnboardingTenantService(t),
+		Users:       newCertEnrollmentUserStore(t),
+		Roles:       newOnboardingRoleStore(t),
+		Certs:       newCertEnrollmentProvider(t),
+		Anchors:     trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
+		TrustDomain: enrollmentTrustDomain,
+		Logger:      slog.New(slog.DiscardHandler),
 	}
 }
 

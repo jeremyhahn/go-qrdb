@@ -237,6 +237,14 @@ type Dependencies struct {
 	// about to create would reject every legitimate input.
 	AdminCertPool *x509.CertPool
 
+	// TrustDomain is the SPIFFE trust domain the node's mTLS authenticator
+	// pins. A presented AdminCertPEM is held to the authenticator's own
+	// tenant rule, auth.TenantFromClientCert under this domain, and must name
+	// the system tenant, so first boot never binds a certificate no login can
+	// use. Empty pins no domain, exactly as an authenticator built without
+	// one; a composer pins its domain (Node.FirstBoot pins the node's).
+	TrustDomain string
+
 	// Binder pins the issued admin certificate's SPKI thumbprint to the admin
 	// user so mTLS handshakes authenticate as the admin. Optional: when nil, the
 	// cert is issued but not bound (caller binds separately).
@@ -825,7 +833,7 @@ func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (ce
 	// identity the admin authenticates as, so falling through to a CA that
 	// happens to be configured would mint a second, unrelated credential.
 	case len(deps.AdminCertPEM) > 0:
-		adopted, adoptErr := adoptPresentedAdminCert(deps.AdminCertPEM, deps.AdminCertPool)
+		adopted, adoptErr := adoptPresentedAdminCert(deps.AdminCertPEM, deps.AdminCertPool, deps.TrustDomain, tenantID)
 		if adoptErr != nil {
 			return nil, nil, adoptErr
 		}
@@ -859,9 +867,17 @@ func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (ce
 // operator who can bring their own credential to one role can bring it to the
 // other.
 //
+// It must also pass the mTLS authenticator's own tenant rule,
+// auth.TenantFromClientCert under trustDomain (go-qrdb#777) -- a SPIFFE ID SAN
+// naming the tenant its first OU names -- and that tenant must be tenantID, the
+// one the admin is bound in. A certificate the rule refuses, or one naming
+// another tenant, could never log in as this admin, so adopting it would leave
+// the deployment with an administrator nobody can be. Each refusal is an
+// *AdminCertRejectedError, returned before anything is bound.
+//
 // A nil pool is refused rather than treated as "trust anything"; see
 // MissingAdminCertPoolError.
-func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error) {
+func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool, trustDomain, tenantID string) ([]byte, error) {
 	if pool == nil {
 		return nil, &MissingAdminCertPoolError{}
 	}
@@ -890,6 +906,14 @@ func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	}); verifyErr != nil {
 		return nil, &AdminCertRejectedError{Cause: verifyErr}
+	}
+
+	certTenant, tenantErr := auth.TenantFromClientCert(cert, trustDomain)
+	if tenantErr != nil {
+		return nil, &AdminCertRejectedError{Cause: tenantErr}
+	}
+	if certTenant != tenantID {
+		return nil, &AdminCertRejectedError{Cause: &AdminCertTenantError{CertTenant: certTenant, AdminTenant: tenantID}}
 	}
 
 	adopted := make([]byte, len(certPEM))

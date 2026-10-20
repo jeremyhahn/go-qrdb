@@ -14,6 +14,8 @@
 
 package firstboot
 
+import "strconv"
+
 // MissingTenantsError is returned when Initialize is called without a
 // TenantServicer in Dependencies.
 type MissingTenantsError struct{}
@@ -165,8 +167,10 @@ func (e *MissingAdminCertPoolError) Error() string {
 }
 
 // AdminCertRejectedError wraps the reason a presented admin certificate was
-// not adopted: unparseable, outside its validity window, or not chaining to
-// AdminCertPool.
+// not adopted: unparseable, outside its validity window, not chaining to
+// AdminCertPool, refused by the mTLS authenticator's tenant rule (Cause is
+// then the *auth.CertificateTenantError auth.TenantFromClientCert returned),
+// or naming a tenant other than the admin's (*AdminCertTenantError).
 type AdminCertRejectedError struct {
 	Cause error
 }
@@ -179,6 +183,23 @@ func (e *AdminCertRejectedError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *AdminCertRejectedError) Unwrap() error {
 	return e.Cause
+}
+
+// AdminCertTenantError is the cause of an *AdminCertRejectedError when a
+// presented certificate passes the authenticator's tenant rule but names a
+// tenant other than the one the admin is bound in: every login with it would
+// resolve to CertTenant, where this admin does not exist.
+type AdminCertTenantError struct {
+	// CertTenant is the tenant the certificate's agreeing OU and SPIFFE ID name.
+	CertTenant string
+	// AdminTenant is the tenant the bootstrap admin is bound in.
+	AdminTenant string
+}
+
+// Error implements error.
+func (e *AdminCertTenantError) Error() string {
+	return "firstboot: certificate names tenant " + strconv.Quote(e.CertTenant) +
+		", not the admin's tenant " + strconv.Quote(e.AdminTenant)
 }
 
 // AdminCertBindingReason says why the bootstrap admin could not log in under

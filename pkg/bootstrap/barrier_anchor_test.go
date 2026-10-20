@@ -69,6 +69,7 @@ func TestProvisionPendingAdmin_PinsTheFirstAdminAsTheBarrierAnchor(t *testing.T)
 
 	result, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Signer:         &fakeSigner{cert: realCertPEM(t)},
+		TrustDomain:    onboardingTrustDomain,
 		PendingAdmins:  tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
 		BarrierAnchors: pins,
 		Logger:         discardLogger(),
@@ -91,6 +92,7 @@ func TestProvisionPendingAdmin_ARerunPinsTheRecordedAdmin(t *testing.T) {
 	plan := &adminPlan{csrPEM: validAdminCSR(t)}
 	first, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Signer:        &fakeSigner{cert: realCertPEM(t)},
+		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending,
 		Logger:        discardLogger(),
 	}, plan, "admin", &undo, fail)
@@ -101,6 +103,7 @@ func TestProvisionPendingAdmin_ARerunPinsTheRecordedAdmin(t *testing.T) {
 	pins := &pinDouble{}
 	again, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Signer:         &fakeSigner{cert: realCertPEM(t)},
+		TrustDomain:    onboardingTrustDomain,
 		PendingAdmins:  pending,
 		BarrierAnchors: pins,
 		Logger:         discardLogger(),
@@ -137,6 +140,7 @@ func TestProvisionPendingAdmin_APinFailureUndoesThePendingAdmin(t *testing.T) {
 			plan := &adminPlan{csrPEM: validAdminCSR(t)}
 			_, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme", Exclusive: true}, Dependencies{
 				Signer:         &fakeSigner{cert: realCertPEM(t)},
+				TrustDomain:    onboardingTrustDomain,
 				PendingAdmins:  pending,
 				BarrierAnchors: &pinDouble{err: pinErr},
 				Logger:         discardLogger(),

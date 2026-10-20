@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
@@ -78,7 +79,7 @@ func NewShamirDatabaseOwnedBy(t testing.TB, tenantID, name string, m, n int) *Sh
 		t.Fatal(err)
 	}
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
+	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: authtest.ClientTrustDomain})
 	mgr.SetBarrierManager(bm)
 	cfg := database.DatabaseConfig{
 		TenantID: tenantID, Name: name, Backend: database.BackendMemory, DataDir: t.TempDir(),

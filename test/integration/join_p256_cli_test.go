@@ -220,7 +220,7 @@ func runJoinSuiteRow(t *testing.T, fips bool, flags func(noiseAddr, joinAddr str
 	node1CAKeyPath := filepath.Join(node1.dataDir, "ca-key.pem")
 	node2LeafPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, nodeLeafTemplate("node2"), &node2Key.PublicKey)
 	node2AdminKey, _, _ := generateNodeKeypairAndIdentity(t)
-	node2AdminCertPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, adminCertTemplate(), &node2AdminKey.PublicKey)
+	node2AdminCertPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, adminCertTemplate(t), &node2AdminKey.PublicKey)
 	node2 := startSecondFounderExplicitTLS(t, raftPorts[1], adminPorts[1], grpcPorts[1],
 		peers12, fmt.Sprintf("1=%s", node1.identity), node1.caPath, node2LeafPEM, node2KeyPEM, peerAdminURLs)
 

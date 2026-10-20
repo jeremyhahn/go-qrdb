@@ -26,10 +26,13 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
@@ -95,10 +98,12 @@ func (b *certEnrollmentFakeBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 func (b *certEnrollmentFakeBarrier) IsSealed() bool { return false }
 
 // newCertEnrollmentProvider returns a real, initialized DefaultCertProvider
-// over a fresh in-memory store.
+// over a fresh in-memory store, issuing under the SPIFFE trust domain a node
+// always gives its CA.
 func newCertEnrollmentProvider(t *testing.T) cert.CertProvider {
 	t.Helper()
-	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newCertEnrollmentFakeBarrier(t))
+	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newCertEnrollmentFakeBarrier(t),
+		cert.WithTrustDomain(enrollmentTrustDomain))
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -204,12 +209,28 @@ func newTestRoot(t *testing.T, cn string) *testCA {
 	return &testCA{cert: c, key: key}
 }
 
+// enrollmentTrustDomain is the SPIFFE trust domain these tests' CAs issue
+// under; the provider refuses to issue a tenant credential without one.
+const enrollmentTrustDomain = "qrdb.example.com"
+
+// enrollmentLeafURIs is the SPIFFE ID SAN that agrees with a leaf naming cn in
+// ou, which auth.TenantFromClientCert requires beside the OU.
+func enrollmentLeafURIs(t *testing.T, cn, ou string) []*url.URL {
+	t.Helper()
+	uris, err := auth.TenantPrincipalURIs(enrollmentTrustDomain, ou, spiffe.KindUser, cn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return uris
+}
+
 func (ca *testCA) clientLeaf(t *testing.T, cn, ou string) *x509.Certificate {
 	t.Helper()
 	key := newTestCAKey(t)
 	tmpl := &x509.Certificate{
 		SerialNumber: nextCertEnrollmentSerial(),
 		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{ou}},
+		URIs:         enrollmentLeafURIs(t, cn, ou),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(12 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

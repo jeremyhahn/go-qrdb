@@ -425,7 +425,7 @@ func TestGenerateClientCert_ClientAuthOnly(t *testing.T) {
 		t.Fatalf("GenerateCA: %v", err)
 	}
 
-	certPEM, keyPEM, err := clustertls.GenerateClientCert(caCert, caKey, "admin", "tenant-1", time.Hour)
+	certPEM, keyPEM, err := clustertls.GenerateClientCert(caCert, caKey, "db.example.com", "tenant-1", "admin", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -448,6 +448,9 @@ func TestGenerateClientCert_ClientAuthOnly(t *testing.T) {
 	if len(cert.Subject.OrganizationalUnit) == 0 || cert.Subject.OrganizationalUnit[0] != "tenant-1" {
 		t.Errorf("OU = %v, want [tenant-1]", cert.Subject.OrganizationalUnit)
 	}
+	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://tenant-1/user/admin" {
+		t.Errorf("URIs = %v, want the one agreeing tenant SPIFFE ID", cert.URIs)
+	}
 
 	for _, eku := range cert.ExtKeyUsage {
 		if eku == x509.ExtKeyUsageServerAuth {
@@ -462,6 +465,24 @@ func TestGenerateClientCert_ClientAuthOnly(t *testing.T) {
 	}
 	if !hasClientAuth {
 		t.Error("client cert missing ExtKeyUsageClientAuth")
+	}
+}
+
+// TestGenerateClientCert_RefusesAnIdentityWithoutASPIFFEID verifies that a
+// client certificate whose tenant SPIFFE ID cannot be formed is never signed.
+func TestGenerateClientCert_RefusesAnIdentityWithoutASPIFFEID(t *testing.T) {
+	t.Parallel()
+
+	_, _, caCert, caKey, err := clustertls.GenerateCA(time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	for name, td := range map[string]string{"empty trust domain": "", "malformed trust domain": "Not A Domain"} {
+		certPEM, _, err := clustertls.GenerateClientCert(caCert, caKey, td, "tenant-1", "admin", time.Hour)
+		var genErr *clustertls.GenerateError
+		if !errors.As(err, &genErr) || certPEM != nil {
+			t.Errorf("%s: GenerateClientCert = (%d bytes, %v), want *GenerateError and no certificate", name, len(certPEM), err)
+		}
 	}
 }
 

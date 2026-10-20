@@ -120,7 +120,11 @@ func planAdmin(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmen
 	// The admin's name ends up in a certificate's Subject and, under a trust
 	// domain, its SPIFFE SAN. A name the CA would refuse to certify must be
 	// refused here, before the tenant is created -- a refusal after it would
-	// be undone by deleting the tenant, which retires its id.
+	// be undone by deleting the tenant, which retires its id. The trust domain
+	// is a dependency, not a credential, so its absence is a missing seam.
+	if deps.TrustDomain == "" {
+		return nil, &MissingProvisioningSeamError{Seam: "Dependencies.TrustDomain to name the admin's SPIFFE ID"}
+	}
 	if _, err := cert.ClientSPIFFEURIs(deps.TrustDomain, cfg.TenantID, adminUsername); err != nil {
 		return nil, &AdminCredentialRejectedError{Cause: err}
 	}

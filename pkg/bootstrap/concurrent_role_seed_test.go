@@ -247,6 +247,7 @@ func TestProvisionTenant_ConcurrentCallersConverge(t *testing.T) {
 				}, bootstrap.Dependencies{
 					Tenants: tenants, Users: users, Roles: roleSvcs[i],
 					Signer: signer, Binder: binder, Logger: discardLogger(),
+					TrustDomain: "db.example.com",
 				})
 			})
 			errs[i] = err

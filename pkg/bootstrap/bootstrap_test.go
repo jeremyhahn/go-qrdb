@@ -649,6 +649,7 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Signer: signer, Binder: binder, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
@@ -731,6 +732,7 @@ func TestProvisionTenant_ReportsTheCommittedTenantRecord(t *testing.T) {
 			}, Dependencies{
 				Tenants: &fakeTenants{createAlreadyErr: tc.existing}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 				Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+				TrustDomain:   onboardingTrustDomain,
 				PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
 				Logger:        discardLogger(),
 			})
@@ -767,7 +769,8 @@ func TestProvisionTenant_DoesNotInitTenantBarrier(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: &fakeBinder{}, PendingAdmins: pending,
-		Barriers: reg, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Barriers:    reg, Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
@@ -792,6 +795,7 @@ func TestProvisionTenant_CSRSignPathKeepsAdminKey(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: binder, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
@@ -827,6 +831,7 @@ func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Signer: signer, Binder: binder,
+		TrustDomain:  onboardingTrustDomain,
 		AdminFactors: &fakeFactorChecker{}, Logger: discardLogger(),
 	})
 	if err != nil {
@@ -891,6 +896,7 @@ func TestProvisionTenant_CertModeUnchanged(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{},
 		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
@@ -1295,7 +1301,8 @@ func TestProvisionTenant_NoCredentialRejected(t *testing.T) {
 	tenants := &fakeTenants{}
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *MissingAdminCredentialError
 	if !errors.As(err, &want) {
@@ -1317,7 +1324,8 @@ func TestProvisionTenant_ConflictingCredentialRejected(t *testing.T) {
 		AdminCertPEM: realCertPEM(t),
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *ConflictingAdminCredentialError
 	if !errors.As(err, &want) {
@@ -1348,7 +1356,8 @@ func TestProvisionTenant_TenantCreateErrorWrapped(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{createErr: sentinel}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *TenantRecordCreationError
 	if !errors.As(err, &want) {
@@ -1375,6 +1384,7 @@ func TestProvisionTenant_IdempotentReRun(t *testing.T) {
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant (idempotent): %v", err)
@@ -1413,6 +1423,7 @@ func TestProvisionTenant_RoleIDCollisionVerifiedIdempotent(t *testing.T) {
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	}); err != nil {
 		t.Fatalf("ProvisionTenant (id-collision, verified identical): %v", err)
 	}
@@ -1439,6 +1450,7 @@ func TestProvisionTenant_RoleCollisionMismatchFails(t *testing.T) {
 			}, Dependencies{
 				Tenants: &fakeTenants{createAlreadyErr: true}, Users: &fakeUsers{exists: true}, Roles: tc.roles,
 				Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{}, Logger: discardLogger(),
+				TrustDomain: onboardingTrustDomain,
 			})
 			var want *TenantAdminRoleCreationError
 			if !errors.As(err, &want) {
@@ -1819,6 +1831,7 @@ func TestEnrollAdminCert_SignerError(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -1842,6 +1855,7 @@ func TestEnrollAdminCert_SignerReturnsEmptyCert(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -1863,6 +1877,7 @@ func TestEnrollAdminCert_BinderError(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: binder, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -1891,6 +1906,7 @@ func TestSPKIThumbprintFromCertPEM_BadDER(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {

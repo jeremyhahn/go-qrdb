@@ -40,6 +40,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
@@ -92,6 +93,7 @@ func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
 		t.Fatal(err)
 	}
 	core.SetCA(ca)
+	core.SetTrustDomain(authtest.ClientTrustDomain)
 	core.SetFactorRegistry(factors)
 	pins := pintest.NewBackend(t)
 	if err := pins.SetSOPIN("", cliSOPIN); err != nil {

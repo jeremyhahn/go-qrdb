@@ -67,10 +67,10 @@ func initRaceScopes(t *testing.T) map[string]func(dist *hookedDistributor) (*Sco
 	}
 	return map[string]func(dist *hookedDistributor) (*ScopedCeremonyService, *seal.StorageBarrier){
 		"database": build(func(b *seal.StorageBarrier) (*ScopedCeremonyService, error) {
-			return NewDatabaseCeremonyService("acme", "orders", b, HolderDeps{CA: testCA(t)}, testLogger())
+			return NewDatabaseCeremonyService("acme", "orders", b, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t)}, testLogger())
 		}),
 		"tenant": build(func(b *seal.StorageBarrier) (*ScopedCeremonyService, error) {
-			return NewTenantCeremonyService("acme", b, HolderDeps{CA: testCA(t)}, testLogger())
+			return NewTenantCeremonyService("acme", b, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t)}, testLogger())
 		}),
 	}
 }
@@ -190,7 +190,7 @@ func TestRegister_RefusedWhileInitializing(t *testing.T) {
 func TestUnenrol_RefusedWhileInitializing(t *testing.T) {
 	ctx := context.Background()
 	barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 2)
-	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{CA: testCA(t)}, testLogger())
+	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t)}, testLogger())
 	require.NoError(t, err)
 	var unenrolErr, secondInitErr error
 	dist := &hookedDistributor{CeremonyDistributor: svc}
@@ -227,7 +227,7 @@ func TestUnenrol_FollowsTheAuditPosture(t *testing.T) {
 		t.Run(policy.String(), func(t *testing.T) {
 			trail := &switchableTrail{ring: audit.NewRingBuffer(32)}
 			barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 2)
-			svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{CA: testCA(t), Audit: trail, AuditPolicy: policy}, testLogger())
+			svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t), Audit: trail, AuditPolicy: policy}, testLogger())
 			require.NoError(t, err)
 			_, err = svc.RegisterOfficer(ctx, newHolder(t, "alice", "").request("admin-1"))
 			require.NoError(t, err)

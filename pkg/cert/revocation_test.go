@@ -256,7 +256,7 @@ func TestRevokeCert_NoAuditLogger_DoesNotPanic(t *testing.T) {
 
 func TestRevokeCert_ScanFailureLeavesNoMarker(t *testing.T) {
 	kv := &scanErrorKVStore{mockKVStore: newMockKVStore()}
-	p := NewDefaultProvider(kv, newMockBarrier())
+	p := NewDefaultProvider(kv, newMockBarrier(), WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if _, err := p.RevokeCert(ctx, "some-serial"); err == nil {
@@ -389,7 +389,7 @@ func TestReapExpiredRevocations_WhenSealed(t *testing.T) {
 
 func TestReapExpiredRevocations_ScanError(t *testing.T) {
 	kv := &scanErrorKVStore{mockKVStore: newMockKVStore()}
-	p := NewDefaultProvider(kv, newMockBarrier())
+	p := NewDefaultProvider(kv, newMockBarrier(), WithTrustDomain(sanTestDomain))
 
 	if _, err := p.ReapExpiredRevocations(context.Background()); err == nil {
 		t.Fatal("ReapExpiredRevocations with a failing scan returned nil")

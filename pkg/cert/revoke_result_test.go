@@ -182,7 +182,7 @@ func TestDefaultCertProvider_RevokeCert_WhenSealed_ReturnsResultNil(t *testing.T
 func TestDefaultCertProvider_RevokeCert_ScanError_ReturnsResultNil(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {

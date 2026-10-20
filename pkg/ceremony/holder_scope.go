@@ -48,6 +48,14 @@ type HolderDeps struct {
 	// CA issues holder certificates.
 	CA CeremonyCA
 
+	// TrustDomain is the cluster's SPIFFE trust domain
+	// (auth.spiffe_trust_domain, which defaults to the cluster trust
+	// domain): every certificate CA issues names its tenant as the trust
+	// domain of its SPIFFE ID SAN, and no tenant may name this one. Empty
+	// refuses every certificate, before CA is asked, with a
+	// *CertSubjectError.
+	TrustDomain string
+
 	// Factors resolves factor names. "mtls" is always available: when the
 	// registry does not carry it, the built-in pkg/authfactors/mtls factor
 	// is used.
@@ -558,13 +566,14 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	if err := admit(); err != nil {
 		return nil, err
 	}
-	// The certificate names the registered holder in the scope's tenant and
-	// carries no SAN, whatever the CSR asked for (signHolderCSR); the holder
-	// profile OU makes it a holder certificate, which authenticates with no
-	// roles (auth.HolderProfile).
+	// The certificate names the registered holder in the scope's tenant, in
+	// its OU and its agreeing SPIFFE ID SAN, whatever the CSR asked for
+	// (signHolderCSR); the holder profile OU makes it a holder certificate,
+	// which authenticates with no roles (auth.HolderProfile).
 	cert, _, err := signHolderCSR(ctx, d.CA, req.CSRPEM, &SignCSROptions{
 		TenantID:     tenantid.Normalize(h.tenantID),
 		Username:     req.Username,
+		TrustDomain:  d.TrustDomain,
 		Profile:      profile,
 		ValidityDays: 365,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyAgreement | x509.KeyUsageKeyEncipherment,

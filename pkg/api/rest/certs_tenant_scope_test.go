@@ -218,7 +218,7 @@ func newCertScopeFixture(t *testing.T) *certScopeFixture {
 	t.Helper()
 
 	store := kvstoretest.NewGuardedMemoryStore()
-	prov := cert.NewDefaultProvider(store, newCertScopeBarrier(t))
+	prov := cert.NewDefaultProvider(store, newCertScopeBarrier(t), cert.WithTrustDomain("db.example.com"))
 	if err := prov.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize CA: %v", err)
 	}

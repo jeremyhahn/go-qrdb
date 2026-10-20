@@ -53,13 +53,14 @@ var (
 )
 
 // CertificateTenantError reports that a client certificate names no usable
-// tenant and must be refused: a SPIFFE SAN outside the pinned trust domain, a
-// malformed SPIFFE SAN, or SANs naming more than one tenant. It matches
-// ErrInvalidCertificate under errors.Is and errors.As (so every transport
-// classifies it exactly as before) and carries the spiffe cause for callers
-// that need to tell the three apart.
+// tenant and must be refused: no Subject OU (ErrNoTenantOU), no tenant SPIFFE
+// ID SAN, an OU and SPIFFE ID that disagree (*TenantNameMismatchError), a
+// SPIFFE SAN outside the pinned trust domain, a malformed SPIFFE SAN, or SANs
+// naming more than one tenant. It matches ErrInvalidCertificate under
+// errors.Is and errors.As (so every transport classifies it exactly as before)
+// and carries the cause for callers that need to tell them apart.
 type CertificateTenantError struct {
-	// Err is the spiffe cause.
+	// Err is the cause.
 	Err error
 }
 
@@ -71,6 +72,32 @@ func (e *CertificateTenantError) Error() string {
 // Unwrap exposes both ErrInvalidCertificate and the cause.
 func (e *CertificateTenantError) Unwrap() []error {
 	return []error{ErrInvalidCertificate, e.Err}
+}
+
+// ErrNoTenantOU is the cause carried by a *CertificateTenantError when a
+// client certificate has no Subject OU: the OU is one of the two fields that
+// must both name the certificate's tenant (TenantFromClientCert).
+var ErrNoTenantOU = &AuthError{Code: "no_tenant_ou", Message: "client certificate has no subject OU naming its tenant"}
+
+// ErrTenantIsClusterTrustDomain is the refusal when a tenant would be the
+// cluster's own trust domain: the cluster trust domain names no tenant, so a
+// certificate whose OU names it is refused (TenantFromClientCert) and none is
+// issued for it (TenantPrincipalURIs).
+var ErrTenantIsClusterTrustDomain = &AuthError{Code: "tenant_is_cluster_trust_domain", Message: "tenant names the cluster trust domain"}
+
+// TenantNameMismatchError is the cause carried by a *CertificateTenantError
+// when a client certificate's Subject OU and its SPIFFE ID SAN name different
+// tenants. Neither field is preferred: the certificate names no tenant.
+type TenantNameMismatchError struct {
+	// OU is the tenant the first Subject OU names.
+	OU string
+	// SPIFFETenant is the tenant the SPIFFE ID SAN names.
+	SPIFFETenant string
+}
+
+// Error names both values.
+func (e *TenantNameMismatchError) Error() string {
+	return "subject OU " + strconv.Quote(e.OU) + " and SPIFFE ID tenant " + strconv.Quote(e.SPIFFETenant) + " disagree"
 }
 
 // IssuerTenantMismatchError reports that a verified client certificate's

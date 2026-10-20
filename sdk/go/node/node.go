@@ -891,6 +891,12 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 		}
 		infra.AuditFailurePolicy = policy
 		infra.InvitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
+		// The CA and the ceremony mint their client certificates under the
+		// same trust domain the mTLS authenticator pins, so the pin is
+		// exercised by the certificates this node issues (go-qrdb#519) --
+		// in the sealed window's graph too, where the first-boot ceremony
+		// issues the holder and admin certificates.
+		infra.SPIFFETrustDomain = cfg.Auth.EffectiveSPIFFETrustDomain()
 	}
 	return infra, nil
 }
@@ -1052,6 +1058,11 @@ type Node struct {
 	// enforces, recorded when it is wired so Node.FirstBoot holds first-boot
 	// to the same posture.
 	bindingPolicy atomic.Int32
+
+	// spiffeTrustDomain is the SPIFFE trust domain the node's mTLS
+	// authenticator pins, recorded when it is wired so Node.FirstBoot reads a
+	// presented admin certificate exactly as a login will.
+	spiffeTrustDomain atomic.Pointer[string]
 
 	// awaitingAdminCredentialProbe is the "awaiting admin credential" gate
 	// wireClientAndServer constructs, stored here so FirstBootWithCeremony
@@ -1639,10 +1650,6 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		ClusterCAKeyProvider: n.clusterCAKeyProvider,
 		ClusterCACertPEM:     n.clusterCACertPEM,
 		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
-		// The CA mints its client certificates under the same trust domain
-		// the mTLS authenticator pins, so the pin is exercised by the
-		// certificates this node issues (go-qrdb#519).
-		SPIFFETrustDomain: pending.cfg.Auth.SPIFFETrustDomain,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
@@ -2240,10 +2247,6 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// qrdbd with --tls-ca-file/--tls-cert-file/--tls-key-file. See
 		// byoTLS.
 		NoClusterCAKey: n.byoTLS(),
-		// The CA mints its client certificates under the same trust domain
-		// the mTLS authenticator pins, so the pin is exercised by the
-		// certificates this node issues (go-qrdb#519).
-		SPIFFETrustDomain: pending.cfg.Auth.SPIFFETrustDomain,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
@@ -3776,6 +3779,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
+	trustDomain := cfg.Auth.EffectiveSPIFFETrustDomain()
+	n.spiffeTrustDomain.Store(&trustDomain)
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
 		// First decision: at this point no embedder has called FirstBoot or
 		// FirstBootWithCeremony yet, so a FRESH node's admin does not exist
@@ -3891,7 +3896,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		RoleService:         svcNode.Role,
 		UserService:         svcNode.User,
 		StrictSeparation:    strictSoD,
-		SPIFFETrustDomain:   cfg.Auth.SPIFFETrustDomain,
+		SPIFFETrustDomain:   cfg.Auth.EffectiveSPIFFETrustDomain(),
 		AuditLogger:         decisionAudit,
 		AuditFailurePolicy:  auditFailure,
 		ExtraAuthenticators: n.extraAuthenticators,

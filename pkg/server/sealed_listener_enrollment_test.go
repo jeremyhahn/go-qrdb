@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -81,6 +82,7 @@ func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare f
 		t.Fatalf("NewCeremonyService: %v", err)
 	}
 	core.SetCA(testServerCA)
+	core.SetTrustDomain(authtest.ClientTrustDomain)
 
 	cfg := testConfig(t, true, false)
 	tlsCfg := selfSignedTLSConfig(t)

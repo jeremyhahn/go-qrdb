@@ -24,18 +24,18 @@ import (
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
-func TestSDK_SpiffeIDURIRoundTripsThroughTenantFromCert(t *testing.T) {
+func TestSDK_SpiffeIDURIRoundTripsThroughWorkloadFromCert(t *testing.T) {
 	for _, id := range []sdk.SpiffeID{
-		{TrustDomain: "db.example.com", TenantID: "acme", Kind: sdk.SpiffeKindUser, Name: "alice"},
-		{TrustDomain: "db.example.com", TenantID: "acme", Kind: sdk.SpiffeKindService, Name: "billing"},
+		{TrustDomain: "acme", Kind: sdk.SpiffeKindUser, Name: "alice"},
+		{TrustDomain: "acme.example", Kind: sdk.SpiffeKindService, Name: "billing"},
 	} {
 		u, err := id.URI()
 		if err != nil {
 			t.Fatalf("URI(%+v): %v", id, err)
 		}
-		got, err := sdk.TenantFromCert(&x509.Certificate{URIs: []*url.URL{u}}, "db.example.com")
+		got, err := sdk.WorkloadFromCert(&x509.Certificate{URIs: []*url.URL{u}})
 		if err != nil || got != id {
-			t.Fatalf("TenantFromCert = %+v, %v; want %+v", got, err, id)
+			t.Fatalf("WorkloadFromCert = %+v, %v; want %+v", got, err, id)
 		}
 	}
 }
@@ -46,11 +46,11 @@ func TestSDK_SpiffeIDURIRefusals(t *testing.T) {
 		id   sdk.SpiffeID
 		want error
 	}{
-		{"empty trust domain", sdk.SpiffeID{TenantID: "acme", Kind: sdk.SpiffeKindUser, Name: "alice"}, sdk.ErrSpiffeTrustDomainEmpty},
-		{"empty tenant", sdk.SpiffeID{TrustDomain: "db.example.com", Kind: sdk.SpiffeKindUser, Name: "alice"}, sdk.ErrSpiffeTenantEmpty},
-		{"unknown kind", sdk.SpiffeID{TrustDomain: "db.example.com", TenantID: "acme", Kind: "robot", Name: "r2"}, sdk.ErrSpiffeKindInvalid},
-		{"empty name", sdk.SpiffeID{TrustDomain: "db.example.com", TenantID: "acme", Kind: sdk.SpiffeKindUser}, sdk.ErrSpiffeNameEmpty},
-		{"tenant with a separator", sdk.SpiffeID{TrustDomain: "db.example.com", TenantID: "acme/evil", Kind: sdk.SpiffeKindUser, Name: "alice"}, sdk.ErrSpiffeIDNotRoundTrip},
+		{"empty trust domain", sdk.SpiffeID{Kind: sdk.SpiffeKindUser, Name: "alice"}, sdk.ErrSpiffeTrustDomainEmpty},
+		{"trust domain not a name", sdk.SpiffeID{TrustDomain: "Acme", Kind: sdk.SpiffeKindUser, Name: "alice"}, sdk.ErrSpiffeTrustDomainInvalid},
+		{"unknown kind", sdk.SpiffeID{TrustDomain: "acme", Kind: "robot", Name: "r2"}, sdk.ErrSpiffeKindInvalid},
+		{"empty name", sdk.SpiffeID{TrustDomain: "acme", Kind: sdk.SpiffeKindUser}, sdk.ErrSpiffeNameEmpty},
+		{"name with a separator", sdk.SpiffeID{TrustDomain: "acme", Kind: sdk.SpiffeKindUser, Name: "alice/evil"}, sdk.ErrSpiffePathInvalid},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,10 +63,35 @@ func TestSDK_SpiffeIDURIRefusals(t *testing.T) {
 	}
 }
 
+func TestSDK_WorkloadFromCertRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw  []string
+		want error
+	}{
+		"no SAN":          {nil, sdk.ErrSpiffeNoTenantID},
+		"query":           {[]string{"spiffe://acme/user/alice?x=1"}, sdk.ErrSpiffeURIInvalid},
+		"old tenant path": {[]string{"spiffe://db.example.com/tenant/acme/user/alice"}, sdk.ErrSpiffePathInvalid},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &x509.Certificate{}
+			for _, raw := range tc.raw {
+				u, err := url.Parse(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.URIs = append(c.URIs, u)
+			}
+			if _, err := sdk.WorkloadFromCert(c); !errors.Is(err, tc.want) {
+				t.Fatalf("WorkloadFromCert = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 // ExampleSpiffeID_URI builds the URI SAN for a tenant user and reads it back
 // off a certificate the way the server authenticates it.
 func ExampleSpiffeID_URI() {
-	id := sdk.SpiffeID{TrustDomain: "db.example.com", TenantID: "acme", Kind: sdk.SpiffeKindUser, Name: "alice"}
+	id := sdk.SpiffeID{TrustDomain: "acme", Kind: sdk.SpiffeKindUser, Name: "alice"}
 	san, err := id.URI()
 	if err != nil {
 		fmt.Println(err)
@@ -74,13 +99,13 @@ func ExampleSpiffeID_URI() {
 	}
 	fmt.Println(san)
 
-	got, err := sdk.TenantFromCert(&x509.Certificate{URIs: []*url.URL{san}}, "db.example.com")
-	fmt.Println(got.TenantID, got.Kind, got.Name, err)
+	got, err := sdk.WorkloadFromCert(&x509.Certificate{URIs: []*url.URL{san}})
+	fmt.Println(got.TrustDomain, got.Kind, got.Name, err)
 
-	_, err = sdk.SpiffeID{TrustDomain: "db.example.com", TenantID: "acme/evil", Kind: sdk.SpiffeKindUser, Name: "alice"}.URI()
-	fmt.Println(errors.Is(err, sdk.ErrSpiffeIDNotRoundTrip))
+	_, err = sdk.SpiffeID{TrustDomain: "acme", Kind: sdk.SpiffeKindUser, Name: "alice/evil"}.URI()
+	fmt.Println(errors.Is(err, sdk.ErrSpiffePathInvalid))
 	// Output:
-	// spiffe://db.example.com/tenant/acme/user/alice
+	// spiffe://acme/user/alice
 	// acme user alice <nil>
 	// true
 }

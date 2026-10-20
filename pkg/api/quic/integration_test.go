@@ -1034,15 +1034,13 @@ func generateMutualTLS(t *testing.T) *mutualTLSBundle {
 	}
 	clientTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(3),
-		Subject: pkix.Name{
-			CommonName:         "test-client",
-			OrganizationalUnit: []string{"tenant-test"},
-		},
-		NotBefore:   time.Now().Add(-time.Hour),
-		NotAfter:    time.Now().Add(time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Subject:      pkix.Name{CommonName: "test-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
+	authtest.SetClientTenant(t, clientTemplate, "tenant-test", "test-client")
 	clientDER, err := x509.CreateCertificate(crand.Reader, clientTemplate, caCert, &clientKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create client cert: %v", err)

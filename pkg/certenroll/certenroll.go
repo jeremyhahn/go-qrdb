@@ -150,7 +150,7 @@ func accept(leaf *x509.Certificate, tenantID, username, trustDomain string) (*BY
 // pinned SPIFFE trust domain), is tenantID. A certificate that would log in
 // as anyone else is refused with *IdentityMismatchError, however it chains.
 func CheckIdentity(c *x509.Certificate, tenantID, username, trustDomain string) error {
-	got, _, err := auth.TenantFromClientCert(c, trustDomain)
+	got, err := auth.TenantFromClientCert(c, trustDomain)
 	if err != nil {
 		return &IdentityMismatchError{TenantID: tenantID, Username: username, Err: err}
 	}

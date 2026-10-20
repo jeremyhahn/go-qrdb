@@ -39,6 +39,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -117,7 +118,10 @@ type revocationFixture struct {
 func newRevocationFixture(t *testing.T, username, tenantID string) *revocationFixture {
 	t.Helper()
 	barrier := newTestBarrier(t)
-	provider := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), barrier)
+	// The trust domain makes the provider issue the SPIFFE ID SAN agreeing
+	// with the OU, which TenantFromClientCert requires of every client cert.
+	provider := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), barrier,
+		cert.WithTrustDomain(authtest.ClientTrustDomain))
 	ctx := context.Background()
 	require.NoError(t, provider.Initialize(ctx))
 

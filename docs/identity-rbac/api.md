@@ -127,7 +127,8 @@ takes a password, and no password field anywhere in the user model.
 | Certificate field | Maps to |
 |---|---|
 | Subject CN | `Username` |
-| Subject OU | `TenantID` |
+| Subject OU (the first) | `TenantID`, which must agree with the SAN |
+| SPIFFE ID URI SAN `spiffe://<tenant>/<kind>/<name>`: its trust domain | `TenantID`, which must agree with the OU |
 | base64url SHA-256 of `SubjectPublicKeyInfo` | `CertBindings[].Thumbprint` |
 
 **The tenant comes from the certificate, never from a request field.** That is
@@ -151,33 +152,51 @@ nothing) derives the tenant with the same rule the mTLS authenticator uses,
 binds it, and looks the thumbprint up within it:
 
 ```go
-tenantID, _, err := sdk.TenantFromClientCert(cert, trustDomain)
+tenantID, err := sdk.TenantFromClientCert(cert, clusterTrustDomain)
 if err != nil {
-	// foreign trust domain, malformed SPIFFE SAN, nil certificate: refuse
+	// no OU, no SPIFFE ID, the two disagreeing, foreign trust domain,
+	// tenant equal to the cluster trust domain, malformed SPIFFE SAN,
+	// nil certificate: refuse
 }
 ctx = sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(tenantID))
 u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(cert))
 ```
 
 `sdk.TenantFromClientCert` is `auth.TenantFromClientCert`, the one
-implementation `MTLSAuthenticator.TenantFromCert` delegates to: the SPIFFE
-tenant SAN under the pinned trust domain, else the first Subject OU, else no
-tenant (which `NormalizeTenantID` folds onto the system tenant, as the
-middleware does). Every URI SAN is examined, not only the first. The
-certificate is refused, and never falls back to the OU, when:
+implementation `MTLSAuthenticator.TenantFromCert` delegates to. A tenant is a
+SPIFFE trust domain: a tenant's principal is `spiffe://<tenant>/<kind>/<name>`,
+where the kind is `user` or `svc`. A certificate names a tenant only when two
+independent fields carry it and agree: the first Subject OU, and the trust
+domain of its SPIFFE ID SAN. There is no fallback in either direction. Every
+URI SAN is examined, not only the first; a URI that is not a SPIFFE ID names
+nothing. The certificate is refused when:
 
-- any SPIFFE SAN is under a trust domain other than the pinned one;
-- a SPIFFE SAN is malformed;
-- its tenant SANs name more than one distinct tenant
+- it has no workload SPIFFE ID SAN (`sdk.ErrSpiffeNoTenantID`);
+- it has no Subject OU: `sdk.ErrNoClientCertificateTenantOU` when its SAN is
+  under the cluster trust domain, which names no tenant, and
+  `sdk.ErrSpiffeTrustDomainMismatch` when it is under any other;
+- the OU names the cluster trust domain
+  (`sdk.ErrClientCertificateTenantIsClusterTrustDomain`): no tenant is the
+  cluster's own trust domain;
+- the OU names a different tenant from the SAN's trust domain, which is how a
+  foreign trust domain presents
+  (`*sdk.ClientCertificateTenantNameMismatchError`, carrying both names);
+- a SPIFFE SAN is malformed (`sdk.ErrSpiffeURIInvalid`,
+  `sdk.ErrSpiffePathInvalid`, `sdk.ErrSpiffeKindInvalid`,
+  `sdk.ErrSpiffeTrustDomainInvalid`);
+- its SPIFFE SANs are under more than one trust domain
   (`sdk.SpiffeAmbiguousTenantError`).
 
 Every refusal is a `*sdk.ClientCertificateTenantError` that matches
 `sdk.ErrInvalidClientCertificate` and carries the cause. The mTLS
 authenticator applies the same rule, so such a certificate cannot log in
-either.
+either. Every transport reports that refusal to the client the same way: REST,
+QUIC, MCP, and the gRPC and unix-socket `Connect`, which return the server's
+refusal as a typed `*transport.RequestError` of class `Unauthenticated` rather
+than a failed health check.
 
-**Pin the trust domain.** `trustDomain == ""` accepts a SPIFFE SAN from any
-trust domain and exists for tests. A composer passes the trust domain its CA
+**Pass the cluster trust domain.** `clusterTrustDomain == ""` skips the two
+cluster checks and exists for tests. A composer passes the trust domain its CA
 issues under, the same value it configures the node with.
 
 A composer whose own CA issues tenant certificates builds the SAN with
@@ -186,23 +205,21 @@ than formatting the string itself:
 
 ```go
 san, err := sdk.SpiffeID{
-	TrustDomain: "db.example.com",
-	TenantID:    "acme",
+	TrustDomain: "acme", // the tenant ID
 	Kind:        sdk.SpiffeKindUser, // or sdk.SpiffeKindService
 	Name:        "alice",
 }.URI()
-// san == spiffe://db.example.com/tenant/acme/user/alice
+// san == spiffe://acme/user/alice
 template.URIs = []*url.URL{san}
 ```
 
-It returns the URI only when `sdk.TenantFromCert` reads it back as exactly the
-identity it was built from. Otherwise it refuses with a `*sdk.SpiffeIDError`
-that matches one of the following:
-
-- a field sentinel (`sdk.ErrSpiffeTrustDomainEmpty`, `ErrSpiffeTenantEmpty`,
-  `ErrSpiffeKindInvalid`, `ErrSpiffeNameEmpty`);
-- `sdk.ErrSpiffeIDNotRoundTrip`, for a tenant or name carrying a path
-  separator, which would otherwise authenticate as a different identity.
+It returns the URI only when `sdk.WorkloadFromCert` reads it back as exactly
+the identity it was built from. Otherwise it refuses with a
+`*sdk.SpiffeIDError` that matches one of the field sentinels:
+`sdk.ErrSpiffeTrustDomainEmpty`, `sdk.ErrSpiffeTrustDomainInvalid`,
+`sdk.ErrSpiffeKindInvalid`, `sdk.ErrSpiffeNameEmpty`, or
+`sdk.ErrSpiffePathInvalid` for a name carrying a path separator, which would
+otherwise authenticate as a different identity.
 
 **Once an account has at least one binding, only a certificate matching one of
 them authenticates as it** — the CN and OU select the account, the thumbprint
@@ -308,7 +325,8 @@ It never falls back to reading a delegation certificate as a user login.
 | Lifetime | `NotAfter - NotBefore` exceeds 24 hours, whatever the issuer wrote | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
 | Revocation | its serial is revoked | 401 | `UNAUTHENTICATED` — `auth.ErrCertificateRevoked` |
 | Revocation | revocation state cannot be read: a delegation is never admitted unchecked | 503 | `UNAVAILABLE` — `*auth.RevocationCheckError` |
-| Tenant | the SPIFFE SAN (or, with none, the first Subject OU) does not name the grant's tenant, or the SAN does not name the principal as a service | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Tenant | the SPIFFE SAN does not name the grant's tenant, or does not name the principal as a service | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Tenant | the SPIFFE SAN is missing or malformed, the first Subject OU is missing and the SAN is not under the cluster trust domain, or names a different tenant from the SAN's trust domain, or names the cluster trust domain | 401 | `UNAUTHENTICATED` — `*auth.CertificateTenantError` |
 | Not the platform | the grant's tenant is the system tenant | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
 | Issuer | the leaf's direct issuer is not that tenant's own registered login CA | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
 

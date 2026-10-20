@@ -24,12 +24,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 )
@@ -40,7 +42,7 @@ import (
 func TestSignHolderCSR_RefusesBeforeAndAfterSigning(t *testing.T) {
 	ctx := context.Background()
 	ca := newTestLocalCA(t)
-	opts := &SignCSROptions{TenantID: "acme", Username: "carol", ValidityDays: 1}
+	opts := &SignCSROptions{TenantID: "acme", Username: "carol", ValidityDays: 1, TrustDomain: testTrustDomain}
 	var parseErr *CSRParseError
 	_, _, err := signHolderCSR(ctx, ca, []byte("not pem"), opts)
 	assert.True(t, errors.As(err, &parseErr), err)
@@ -58,6 +60,17 @@ func TestSignHolderCSR_RefusesBeforeAndAfterSigning(t *testing.T) {
 	_, _, err = signHolderCSR(ctx, failingCA{}, good, opts)
 	assert.True(t, errors.As(err, &encErr), err)
 
+	// No trust domain: the SAN cannot be named, so the request is refused
+	// before the CA is asked -- failingCA would have answered *CertEncodeError.
+	var subjErr *CertSubjectError
+	noDomain := *opts
+	noDomain.TrustDomain = ""
+	_, _, err = signHolderCSR(ctx, failingCA{}, good, &noDomain)
+	require.True(t, errors.As(err, &subjErr), err)
+	assert.Equal(t, "SubjectAltName", subjErr.Field)
+	assert.ErrorIs(t, err, spiffe.ErrTrustDomainEmpty)
+	assert.False(t, errors.As(err, &encErr), "the CA was asked to sign an identity the SAN cannot name")
+
 	cert, csr, err := signHolderCSR(ctx, ca, good, opts)
 	require.NoError(t, err)
 	assert.Equal(t, "carol", cert.Subject.CommonName)
@@ -74,13 +87,20 @@ func TestCheckIssuedSubject_EachField(t *testing.T) {
 	require.NoError(t, err)
 	csr, err := x509.ParseCertificateRequest(der)
 	require.NoError(t, err)
-	opts := &SignCSROptions{TenantID: "acme", Username: "carol", Profile: "custodian"}
+	opts := &SignCSROptions{TenantID: "acme", Username: "carol", Profile: "custodian", TrustDomain: testTrustDomain}
 
-	issue := func(subject pkix.Name, ips []net.IP, pub any) *x509.Certificate {
+	spiffeURI := func(raw string) []*url.URL {
+		t.Helper()
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return []*url.URL{u}
+	}
+	agreeing := spiffeURI("spiffe://acme/user/carol")
+	issue := func(subject pkix.Name, uris []*url.URL, ips []net.IP, pub any) *x509.Certificate {
 		t.Helper()
 		serial, err := randomSerial()
 		require.NoError(t, err)
-		tmpl := &x509.Certificate{SerialNumber: serial, Subject: subject, IPAddresses: ips, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour)}
+		tmpl := &x509.Certificate{SerialNumber: serial, Subject: subject, URIs: uris, IPAddresses: ips, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour)}
 		out, err := x509.CreateCertificate(rand.Reader, tmpl, ca.caCert, pub, ca.caKey)
 		require.NoError(t, err)
 		cert, err := x509.ParseCertificate(out)
@@ -94,10 +114,14 @@ func TestCheckIssuedSubject_EachField(t *testing.T) {
 		cert *x509.Certificate
 		want string
 	}{
-		"common name": {issue(pkix.Name{CommonName: "admin", OrganizationalUnit: []string{"acme", "custodian"}}, nil, &key.PublicKey), "CommonName"},
-		"tenant OU":   {issue(pkix.Name{CommonName: "carol", OrganizationalUnit: []string{"system", "custodian"}}, nil, &key.PublicKey), "OrganizationalUnit"},
-		"SAN":         {issue(right, []net.IP{net.ParseIP("192.0.2.1")}, &key.PublicKey), "SubjectAltName"},
-		"public key":  {issue(right, nil, &other.PublicKey), "PublicKey"},
+		"common name":          {issue(pkix.Name{CommonName: "admin", OrganizationalUnit: []string{"acme", "custodian"}}, agreeing, nil, &key.PublicKey), "CommonName"},
+		"tenant OU":            {issue(pkix.Name{CommonName: "carol", OrganizationalUnit: []string{"system", "custodian"}}, agreeing, nil, &key.PublicKey), "OrganizationalUnit"},
+		"SAN":                  {issue(right, agreeing, []net.IP{net.ParseIP("192.0.2.1")}, &key.PublicKey), "SubjectAltName"},
+		"no SPIFFE ID":         {issue(right, nil, nil, &key.PublicKey), "SubjectAltName"},
+		"foreign tenant ID":    {issue(right, spiffeURI("spiffe://globex/user/carol"), nil, &key.PublicKey), "SubjectAltName"},
+		"foreign trust domain": {issue(right, spiffeURI("spiffe://other.example/user/carol"), nil, &key.PublicKey), "SubjectAltName"},
+		"extra URI SAN":        {issue(right, append(spiffeURI("spiffe://acme/user/carol"), agreeing...), nil, &key.PublicKey), "SubjectAltName"},
+		"public key":           {issue(right, agreeing, nil, &other.PublicKey), "PublicKey"},
 	}
 	for name, tc := range cases {
 		var subjErr *CertSubjectError
@@ -107,9 +131,13 @@ func TestCheckIssuedSubject_EachField(t *testing.T) {
 			assert.NotEmpty(t, subjErr.Error())
 		}
 	}
-	assert.NoError(t, checkIssuedSubject(issue(right, nil, &key.PublicKey), csr, opts))
+	assert.NoError(t, checkIssuedSubject(issue(right, agreeing, nil, &key.PublicKey), csr, opts))
 	var missing *CertSubjectError
-	assert.True(t, errors.As(checkIssuedSubject(issue(right, nil, &key.PublicKey), csr, &SignCSROptions{Username: "carol"}), &missing))
+	assert.True(t, errors.As(checkIssuedSubject(issue(right, agreeing, nil, &key.PublicKey), csr, &SignCSROptions{Username: "carol", TrustDomain: testTrustDomain}), &missing))
+	noDomain := *opts
+	noDomain.TrustDomain = ""
+	assert.ErrorIs(t, checkIssuedSubject(issue(right, agreeing, nil, &key.PublicKey), csr, &noDomain), spiffe.ErrTrustDomainEmpty,
+		"without a trust domain no certificate's SAN can be the agreeing one")
 }
 
 // TestHolderErrors_Messages: every holder error names its subject.

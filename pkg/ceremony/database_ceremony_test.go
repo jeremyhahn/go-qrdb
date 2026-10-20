@@ -35,7 +35,7 @@ func TestDatabaseCeremony_HolderLifecycle(t *testing.T) {
 	ctx := context.Background()
 	backend := seal.NewMemoryBackend()
 	barrier := shamirBarrier(t, backend, 2, 2)
-	svc, err := NewDatabaseCeremonyService("acme", "orders", backend, HolderDeps{CA: testCA(t), Factors: testFactors(t)}, testLogger())
+	svc, err := NewDatabaseCeremonyService("acme", "orders", backend, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t), Factors: testFactors(t)}, testLogger())
 	require.NoError(t, err)
 	barrier.SetCeremonyDistributor(svc)
 	barrier.SetHolderVerifier(svc)
@@ -50,7 +50,8 @@ func TestDatabaseCeremony_HolderLifecycle(t *testing.T) {
 		assert.Equal(t, "acme", cert.Subject.OrganizationalUnit[0], "a database holder's identity is in the database's tenant")
 		_, isHolder := auth.HolderProfile(cert)
 		assert.True(t, isHolder, "a database holder's certificate is a holder certificate")
-		assert.Empty(t, cert.URIs, "a holder certificate carries no SAN")
+		assert.Equal(t, []string{"spiffe://acme/user/" + h.username}, uriStrings(cert),
+			"a holder certificate's one SAN is its agreeing tenant SPIFFE ID")
 	}
 	_, err = barrier.InitializeShamir(ctx, seal.FactorPolicyDesignated)
 	require.NoError(t, err)
@@ -99,7 +100,7 @@ func TestDatabaseCeremony_HolderLifecycle(t *testing.T) {
 func TestDatabaseCeremony_ScopesAreDistinct(t *testing.T) {
 	ctx := context.Background()
 	backend := seal.NewMemoryBackend()
-	deps := HolderDeps{CA: testCA(t)}
+	deps := HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t)}
 	orders, err := NewDatabaseCeremonyService("acme", "orders", backend, deps, testLogger())
 	require.NoError(t, err)
 	billing, err := NewDatabaseCeremonyService("acme", "billing", backend, deps, testLogger())
@@ -123,7 +124,7 @@ func TestDatabaseCeremony_ScopesAreDistinct(t *testing.T) {
 
 // TestDatabaseCeremony_ConstructorRefusals covers the constructor checks.
 func TestDatabaseCeremony_ConstructorRefusals(t *testing.T) {
-	deps := HolderDeps{CA: testCA(t)}
+	deps := HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t)}
 	backend := seal.NewMemoryBackend()
 	_, err := NewDatabaseCeremonyService("", "orders", backend, deps, testLogger())
 	assert.ErrorIs(t, err, ErrEmptyTenantID)

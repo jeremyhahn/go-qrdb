@@ -170,7 +170,7 @@ func TestIssueClientCert_CertifiesTheRequestersKeyAsTheNamedAccount(t *testing.T
 func TestIssueClientCert_TenantWithoutKeyB(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.signErr = &cakey.NotInitializedError{}
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("no-key-b", hsm)))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("no-key-b", hsm)))
 
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	_, err := p.IssueClientCert(context.Background(), &IssueRequest{

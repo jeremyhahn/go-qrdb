@@ -60,7 +60,7 @@ func userCert(t *testing.T) (*x509.Certificate, *ecdsa.PrivateKey) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	uri := &url.URL{Scheme: "spiffe", Host: "qrdb.cluster", Path: "/tenant/acme/user/alice"}
+	uri := &url.URL{Scheme: "spiffe", Host: "acme", Path: "/user/alice"}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: "alice"},

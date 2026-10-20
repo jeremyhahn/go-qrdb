@@ -354,6 +354,7 @@ func TestCeremonyServiceWithAdminRebind_RestartThenAwaitingRetry(t *testing.T) {
 
 	core1, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 	require.NoError(t, err)
+	core1.SetTrustDomain(ceremonyTrustDomain)
 	core1.SetPINBackend(pins)
 	_, err = NewCeremonyService(core1).CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
@@ -365,6 +366,7 @@ func TestCeremonyServiceWithAdminRebind_RestartThenAwaitingRetry(t *testing.T) {
 	// value carries over, only what the barrier and PIN backend persisted.
 	core2, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 	require.NoError(t, err)
+	core2.SetTrustDomain(ceremonyTrustDomain)
 	core2.SetPINBackend(pins)
 	core2.SetCA(ca) // the composer's boot sequence re-wires the CA on every boot
 	require.Equal(t, ceremony.StateOperational, core2.State(),
@@ -427,6 +429,7 @@ func TestCeremonyServiceWithAdminRebind_RefusesWhenRestoreFailed(t *testing.T) {
 
 	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 	require.NoError(t, err)
+	core.SetTrustDomain(ceremonyTrustDomain)
 	core.SetPINBackend(pintest.NewBackend(t))
 	require.Equal(t, ceremony.StateRestoreFailed, core.State())
 

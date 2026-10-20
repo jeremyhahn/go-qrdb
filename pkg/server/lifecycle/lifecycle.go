@@ -216,13 +216,14 @@ type Infra struct {
 	// it. When nil a fresh ceremony service is constructed.
 	CeremonyCoreSvc *ceremony.CeremonyService
 
-	// SPIFFETrustDomain is the operator-configured SPIFFE trust domain
-	// (auth.spiffe_trust_domain). When non-empty, the certificate provider
-	// mints every client certificate with a tenant-scoped SPIFFE URI SAN under
-	// it (cert.WithTrustDomain), so the mTLS authenticator's pinned
-	// derivation resolves the certificates this node's CA issues. It must be
-	// the value the authenticator pins. Empty issues certificates exactly as
-	// before, with no SAN.
+	// SPIFFETrustDomain is the node's effective SPIFFE trust domain
+	// (auth.spiffe_trust_domain, defaulting to cluster_trust_domain). The
+	// certificate provider (cert.WithTrustDomain), certificate enrollment,
+	// the bootstrap admin and the ceremony (SetTrustDomain) mint every
+	// tenant-principal certificate with the SPIFFE ID SAN under it that
+	// agrees with its OU, so the mTLS authenticator's pinned derivation
+	// resolves the certificates this node issues. It must be the value the
+	// authenticator pins. Empty mints none: every issuer refuses instead.
 	SPIFFETrustDomain string
 
 	// CertKeyProviderFactory, when non-nil, replaces Key B's built-in
@@ -1656,6 +1657,9 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 		svc = created
 	}
 	svc.SetCA(infra.CeremonyCA)
+	// Every certificate the ceremony issues names its tenant SPIFFE ID under
+	// this domain, agreeing with its OU (auth.TenantFromClientCert).
+	svc.SetTrustDomain(infra.SPIFFETrustDomain)
 	svc.SetFactorRegistry(infra.FactorRegistry)
 	// The SO PIN lockout is installed where the composer chose the backend
 	// (NewSealStorePINBackend, server.WithPINBackend); NewLockoutBackend is

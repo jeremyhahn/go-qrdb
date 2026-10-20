@@ -83,16 +83,24 @@ place, rather than qrdb running a second, conjunctive chain beside the first.
 | Certificate field | User field | Role |
 |---|---|---|
 | Subject CN | `Username` | unique identity within a tenant |
-| SPIFFE tenant SAN, trust domain pinned | `TenantID` | tenant isolation boundary, when present |
-| Subject OU | `TenantID` | tenant isolation boundary, when no SAN is present |
+| Subject OU (the first) | `TenantID` | tenant isolation boundary; must agree with the SAN |
+| SPIFFE ID SAN's trust domain | `TenantID` | tenant isolation boundary; must agree with the OU |
 | SHA-256(SubjectPublicKeyInfo), base64url | `CertBindings[].Thumbprint` | **the authoritative mTLS identity** — `User.MatchesCert(cert)` |
 
-**Which tenant derivation a certificate from the built-in CA uses** depends on
-`auth.spiffe_trust_domain`: with a trust domain configured the CA emits the
-tenant-scoped SPIFFE SAN and the pinned derivation resolves it; without one it
-emits no SAN and the OU does. The CA refuses to mint a certificate whose SAN
-would disagree with its OU. See
-[../certificate-authority/](../certificate-authority/architecture.md#which-derivation-a-generated-certificate-uses).
+**A tenant is a SPIFFE trust domain, and a certificate names it twice.** A
+tenant's principal is `spiffe://<tenant>/<kind>/<name>`, kind `user` or `svc`:
+the trust domain is the tenant ID verbatim. The first Subject OU and that trust
+domain must both be present and must agree; there is no fallback from one to
+the other. A certificate that names no tenant is under the cluster trust
+domain (`auth.spiffe_trust_domain`, which defaults to
+`auth.cluster_trust_domain`), and no tenant may be the cluster trust domain, so
+no tenant shares the cluster's trust bundle. A certificate missing either name,
+whose two names disagree (which is how a foreign trust domain presents), whose
+OU names the cluster trust domain, or with no OU and a SAN under a foreign
+trust domain is refused (`*auth.CertificateTenantError`). Both of qrdb's CAs
+always issue the pair and refuse to mint one whose SAN would disagree with its
+OU. See
+[../certificate-authority/](../certificate-authority/architecture.md#how-an-issued-certificate-names-its-tenant).
 
 **The thumbprint is computed over the public key, not the certificate.** A
 renewed certificate for the same key produces the same thumbprint, so bindings
@@ -190,9 +198,9 @@ load-bearing:
   matched against the account's bindings with `User.MatchesCert`, which is
   SPKI-based and expiry-checked. A certificate whose CN and OU name that
   account but whose key it never enrolled is refused — even when the
-  certificate is validly signed by the cluster CA, and even when its tenant
-  came from a SPIFFE SAN rather than the OU fallback. **The SAN carries no
-  extra weight: it is issued by the same CA as the OU.**
+  certificate is validly signed by the cluster CA, and even when its OU and
+  SPIFFE SAN agree. **The SAN carries no extra weight: it is issued by the
+  same CA as the OU.**
 - **An unenrolled account authenticates by the CA's assertion alone**, exactly
   as every deployment did before enrolment was enforced. An empty binding set
   states no restriction, the same statement an empty `AuthMethods` makes.

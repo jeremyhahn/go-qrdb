@@ -54,11 +54,16 @@ func newDBHolder(t *testing.T, name string) *dbHolder {
 	return &dbHolder{name: name, key: key, csr: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})}
 }
 
+// holderTrustDomain is the SPIFFE trust domain holder certificates are issued
+// under. authtest.ClientTrustDomain cannot be imported here: authtest imports
+// this package.
+const holderTrustDomain = "example.com"
+
 // holderBarrierManager is a barrier manager with share-holder custody wired.
 func holderBarrierManager(t *testing.T, ca *ceremony.LocalCA) *DatabaseBarrierManager {
 	t.Helper()
 	bm := newTestBarrierManager(t)
-	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
+	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: holderTrustDomain})
 	return bm
 }
 

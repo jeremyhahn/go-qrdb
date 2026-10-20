@@ -1952,9 +1952,11 @@ func issueCertFromCA(t *testing.T, notBefore, notAfter time.Time) ([]byte, *x509
 	if err != nil {
 		t.Fatalf("leaf GenerateKey: %v", err)
 	}
+	subject, uris := presentedIdentity(t, tenantid.System, tenantid.System, presentedTrustDomain)
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(101),
-		Subject:      pkix.Name{CommonName: "admin-on-a-piv-card"},
+		Subject:      subject,
+		URIs:         uris,
 		NotBefore:    notBefore,
 		NotAfter:     notAfter,
 	}

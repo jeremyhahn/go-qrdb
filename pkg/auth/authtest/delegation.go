@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 )
 
 // Delegation is a tenant's login CA, a delegation certificate it issued, and
@@ -51,7 +52,8 @@ type Delegation struct {
 }
 
 // NewDelegation mints a login CA for g.Tenant and a delegation certificate
-// carrying g, signed by it.
+// carrying g, signed by it, naming g's tenant in its Subject OU and in the
+// agreeing service SPIFFE ID SAN spiffe://<tenant>/svc/<principal>.
 func NewDelegation(t testing.TB, g delegation.Grant) *Delegation {
 	t.Helper()
 	ext, err := g.Extension()
@@ -70,10 +72,15 @@ func NewDelegation(t testing.TB, g delegation.Grant) *Delegation {
 		IsCA:                  true,
 	}
 	ca := createCertificate(t, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	uris, err := auth.TenantPrincipalURIs(ClientTrustDomain, g.Tenant, spiffe.KindService, g.Principal)
+	if err != nil {
+		t.Fatalf("authtest: delegation SPIFFE ID: %v", err)
+	}
 	leafKey := generateKey(t)
 	leaf := createCertificate(t, &x509.Certificate{
 		SerialNumber:    big.NewInt(0xd1),
 		Subject:         pkix.Name{CommonName: auth.ServicePrincipalSubjectPrefix + g.Principal, OrganizationalUnit: []string{g.Tenant}},
+		URIs:            uris,
 		NotBefore:       now.Add(-time.Minute),
 		NotAfter:        now.Add(delegation.DefaultLifetime),
 		KeyUsage:        x509.KeyUsageDigitalSignature,
@@ -85,8 +92,8 @@ func NewDelegation(t testing.TB, g delegation.Grant) *Delegation {
 	return d
 }
 
-// NewAuthenticator returns an mTLS authenticator that trusts the delegation's
-// CA as its tenant's login CA, accepts delegations for its principal and
+// NewAuthenticator returns an mTLS authenticator pinned to ClientTrustDomain
+// that trusts the delegation's CA as its tenant's login CA, accepts delegations for its principal and
 // finds nothing revoked, with opts applied last so a test can replace any of
 // those.
 func (d *Delegation) NewAuthenticator(opts ...auth.MTLSOption) *auth.MTLSAuthenticator {
@@ -95,7 +102,7 @@ func (d *Delegation) NewAuthenticator(opts ...auth.MTLSOption) *auth.MTLSAuthent
 		auth.WithRevocationChecker(unrevoked{}),
 		auth.WithDelegatedPrincipal(d.grant.Principal),
 	}
-	return auth.NewMTLSAuthenticator(append(base, opts...)...)
+	return auth.NewMTLSAuthenticatorWithTrustDomain(ClientTrustDomain, append(base, opts...)...)
 }
 
 // Context returns ctx carrying the TLS state of a connection that presented

@@ -48,6 +48,7 @@ func TestHolderAudit_ClusterSealQuorumOneEmitterPerEvent(t *testing.T) {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 	require.NoError(t, err)
 	svc.SetCA(testCA(t))
+	svc.SetTrustDomain(testTrustDomain)
 	svc.SetAuditLogger(ring)
 	holders := []*testHolder{newHolder(t, "alice", ""), newHolder(t, "bob", "")}
 	for _, h := range holders {

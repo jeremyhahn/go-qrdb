@@ -129,7 +129,7 @@ func TestIssuance_MismatchedCAKeyReturnsGenerateError(t *testing.T) {
 			return err
 		}},
 		{"GenerateClientCert", func() error {
-			_, _, err := clustertls.GenerateClientCert(caCert, otherKey, "client", "tenant-a", time.Hour)
+			_, _, err := clustertls.GenerateClientCert(caCert, otherKey, "db.example.com", "tenant-a", "client", time.Hour)
 			return err
 		}},
 	}

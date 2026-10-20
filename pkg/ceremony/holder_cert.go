@@ -19,6 +19,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
+	"net/url"
 	"slices"
 )
 
@@ -37,6 +38,11 @@ import (
 func signHolderCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, *x509.CertificateRequest, error) {
 	csr, err := parseAndVerifyCSR(csrPEM)
 	if err != nil {
+		return nil, nil, err
+	}
+	// An identity the SAN cannot name -- no trust domain above all -- is
+	// refused before any CA is asked, not after one has signed.
+	if _, err := opts.URIs(); err != nil {
 		return nil, nil, err
 	}
 
@@ -72,8 +78,9 @@ func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
 }
 
 // checkIssuedSubject refuses a certificate a CeremonyCA returned unless its
-// Subject is CN=opts.Username, OU=[opts.TenantID, opts.Profile], it carries no
-// Subject Alternative Name, it certifies the CSR's own key, and it is a leaf
+// Subject is CN=opts.Username, OU=[opts.TenantID, opts.Profile], its only
+// Subject Alternative Name is the agreeing tenant SPIFFE ID opts.URIs names,
+// it certifies the CSR's own key, and it is a leaf
 // with exactly the requested usages: not a CA, no certificate-signing key
 // usage, key usage exactly opts.KeyUsage, and extended key usages exactly the
 // set opts.ExtKeyUsage names (order aside, no duplicates, nothing unknown). It
@@ -91,7 +98,11 @@ func checkIssuedSubject(cert *x509.Certificate, csr *x509.CertificateRequest, op
 	if !slices.Equal(cert.Subject.OrganizationalUnit, want.OrganizationalUnit) {
 		return &CertSubjectError{Field: "OrganizationalUnit"}
 	}
-	if len(cert.URIs) != 0 || len(cert.DNSNames) != 0 || len(cert.IPAddresses) != 0 || len(cert.EmailAddresses) != 0 {
+	wantURIs, err := opts.URIs()
+	if err != nil {
+		return err
+	}
+	if !sameURIs(cert.URIs, wantURIs) || len(cert.DNSNames) != 0 || len(cert.IPAddresses) != 0 || len(cert.EmailAddresses) != 0 {
 		return &CertSubjectError{Field: "SubjectAltName"}
 	}
 	pub, ok := cert.PublicKey.(interface{ Equal(crypto.PublicKey) bool })
@@ -126,4 +137,10 @@ func sameExtKeyUsages(got, want []x509.ExtKeyUsage) bool {
 		}
 	}
 	return slices.Equal(g, w)
+}
+
+// sameURIs reports whether got is exactly want, in order, compared by their
+// string form: a parsed SPIFFE ID round-trips to the form it was issued with.
+func sameURIs(got, want []*url.URL) bool {
+	return slices.EqualFunc(got, want, func(g, w *url.URL) bool { return g.String() == w.String() })
 }

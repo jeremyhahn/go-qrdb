@@ -119,6 +119,10 @@ func signCSRWith(caCert *x509.Certificate, caKey crypto.Signer, csrPEM []byte, o
 	if err != nil {
 		return nil, err
 	}
+	uris, err := opts.URIs()
+	if err != nil {
+		return nil, err
+	}
 
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
@@ -140,6 +144,7 @@ func signCSRWith(caCert *x509.Certificate, caKey crypto.Signer, csrPEM []byte, o
 	template := &x509.Certificate{
 		SerialNumber:          serial,
 		RawSubject:            rawSubject,
+		URIs:                  uris,
 		NotBefore:             time.Now().Add(-1 * time.Minute),
 		NotAfter:              time.Now().AddDate(0, 0, opts.ValidityDays),
 		KeyUsage:              opts.KeyUsage,

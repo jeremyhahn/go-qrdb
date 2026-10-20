@@ -21,6 +21,7 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"math/big"
+	"net/url"
 	"testing"
 )
 
@@ -57,6 +58,7 @@ func revocationTestState() *tls.ConnectionState {
 			CommonName:         "alice",
 			OrganizationalUnit: []string{"acme"},
 		},
+		URIs: []*url.URL{{Scheme: "spiffe", Host: "acme", Path: "/user/alice"}},
 	}
 	return &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},

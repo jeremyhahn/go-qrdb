@@ -45,6 +45,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -86,6 +87,13 @@ type testCA struct {
 	adminCertPath string
 	adminKeyPath  string
 	adminErr      error
+
+	// clusterTrustDomain is the --cluster-trust-domain of the cluster whose
+	// node certificates this CA minted, recorded by useClusterTrustDomain
+	// during setup. issue names it in every tenant certificate's SPIFFE ID
+	// SAN, because the daemon's authenticator refuses a client certificate
+	// under any other domain (go-qrdb#777). Empty means the default domain.
+	clusterTrustDomain string
 }
 
 // generateTestCA creates an ephemeral ECDSA P-256 CA certificate for
@@ -106,12 +114,35 @@ func generateTestCA(t *testing.T) *testCA {
 // issue mints a certificate into dir or fails the test.
 func (ca *testCA) issue(t *testing.T, dir string, opts ...qrdbdharness.CertOption) *qrdbdharness.KeyPair {
 	t.Helper()
-	opts = append([]qrdbdharness.CertOption{qrdbdharness.WithCertOrganization(testOrganization)}, opts...)
+	opts = append([]qrdbdharness.CertOption{
+		qrdbdharness.WithCertOrganization(testOrganization),
+		qrdbdharness.WithClusterTrustDomain(ca.clusterTrustDomain),
+	}, opts...)
 	kp, err := ca.Issue(dir, opts...)
 	if err != nil {
 		t.Fatalf("issue certificate: %v", err)
 	}
 	return kp
+}
+
+// useClusterTrustDomain records trustDomain as the domain of the cluster this
+// CA mints for, so every tenant certificate issued afterwards names it. It is
+// called wherever a node certificate gets its SPIFFE ID, the one point a
+// suite hands the CA its cluster's domain. It fails the test when the CA
+// already serves another domain or already minted the shared admin identity
+// under the default, either of which would leave a client the daemon refuses.
+func (ca *testCA) useClusterTrustDomain(t *testing.T, trustDomain string) {
+	t.Helper()
+	if ca.clusterTrustDomain == trustDomain {
+		return
+	}
+	if ca.clusterTrustDomain != "" {
+		t.Fatalf("test CA serves cluster trust domain %q, not %q", ca.clusterTrustDomain, trustDomain)
+	}
+	if ca.adminCertPath != "" && trustDomain != qrdbconfig.DefaultClusterTrustDomain {
+		t.Fatalf("test CA minted its admin identity before learning cluster trust domain %q", trustDomain)
+	}
+	ca.clusterTrustDomain = trustDomain
 }
 
 // generateNodeCert creates a leaf certificate signed by this CA with
@@ -614,6 +645,7 @@ func (ca *testCA) clusterNodeTLS(t *testing.T, n int) ([][]string, string) {
 // a node-scoped peer. The returned flags include --cluster-trust-domain.
 func (ca *testCA) clusterNodeSPIFFETLS(t *testing.T, raftAddrs []string, trustDomain string) ([][]string, string) {
 	t.Helper()
+	ca.useClusterTrustDomain(t, trustDomain)
 	flags := make([][]string, len(raftAddrs))
 	certPaths := make([]string, len(raftAddrs))
 	for i, raftAddr := range raftAddrs {
@@ -2342,6 +2374,7 @@ func httpVectorListNS(t *testing.T, ca *testCA, port int) []string {
 // rejects the transfer when it is absent (ErrRecipientUntrusted).
 func (ca *testCA) generateNodeCertWithSPIFFE(t *testing.T, raftAddr, trustDomain string) (certPath, keyPath string) {
 	t.Helper()
+	ca.useClusterTrustDomain(t, trustDomain)
 	kp := ca.issue(t, t.TempDir(),
 		qrdbdharness.WithSubject("test-node", ""),
 		qrdbdharness.WithServerAuth(),

@@ -239,16 +239,29 @@ func (e *ShamirSplitError) Unwrap() error {
 
 // CertSubjectError is returned when a ceremony certificate cannot be given
 // the identity the ceremony registered: SignCSROptions omits the TenantID or
-// Username, or a CeremonyCA returned a certificate whose Subject or SANs
-// differ from what it was told to sign (Field names what differs). Nothing
-// is issued.
+// Username, names an identity the tenant SPIFFE ID SAN cannot carry (Field
+// "SubjectAltName", Err the *spiffe.IDError, or the *spiffe.TrustDomainError
+// of an empty or invalid TrustDomain), or a CeremonyCA returned a certificate whose Subject or SANs differ
+// from what it was told to sign (Field names what differs). Nothing is
+// issued.
 type CertSubjectError struct {
 	Field string
+	// Err is the refusal behind it, when there is one.
+	Err error
 }
 
-// Error names the field.
+// Error names the field, and the refusal behind it when there is one.
 func (e *CertSubjectError) Error() string {
-	return "ceremony: certificate subject " + e.Field + " is missing or not the registered identity"
+	msg := "ceremony: certificate subject " + e.Field + " is missing or not the registered identity"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the refusal behind the error, or nil.
+func (e *CertSubjectError) Unwrap() error {
+	return e.Err
 }
 
 // IssuedCertCapabilityError is returned when a CeremonyCA returned a
@@ -555,8 +568,10 @@ func (e *NoAdminCredentialSelectedError) Error() string {
 // requested credential (a CSR, a presented certificate, or the generated
 // key/CSR pair) could not be turned into a bound-ready certificate: an
 // unparseable trust pool, a certificate outside its validity window, a
-// certificate that does not chain to the given (or default cluster) CA, or a
-// CSR the ceremony CA refused.
+// certificate that does not chain to the given (or default cluster) CA, a
+// presented certificate the authenticator's tenant rule refuses
+// (auth.TenantFromClientCert under the ceremony's trust domain, or no trust
+// domain at all), or a CSR the ceremony CA refused.
 type AdminCredentialRejectedError struct {
 	Cause error
 }

@@ -174,7 +174,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignsThroughInjectedProvider(t *tes
 	hsm := newHSMDouble(t)
 	kv := newMockKVStore()
 	barrier := newMockBarrier()
-	p := NewDefaultProvider(kv, barrier, WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
+	p := NewDefaultProvider(kv, barrier, WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 	ctx := context.Background()
 
 	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
@@ -207,7 +207,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignsThroughInjectedProvider(t *tes
 
 func TestDefaultCertProvider_WithKeyProvider_InitializeAndUnseal(t *testing.T) {
 	hsm := newHSMDouble(t)
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("system", hsm)))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("system", hsm)))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -228,7 +228,7 @@ func TestDefaultCertProvider_WithKeyProvider_InitializeAndUnseal(t *testing.T) {
 func TestDefaultCertProvider_WithKeyProvider_SignerError(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.signErr = errors.New("device unavailable")
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	_, err := generateForTest(context.Background(), p, &testRequest{Username: "bob", TenantID: "acme"})
 	if err == nil {
@@ -243,7 +243,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignerError(t *testing.T) {
 func TestDefaultCertProvider_WithKeyProvider_CertificateError(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.certErr = errors.New("device unavailable")
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	_, err := generateForTest(context.Background(), p, &testRequest{Username: "bob", TenantID: "acme"})
 	if err == nil {
@@ -335,7 +335,7 @@ func TestDefaultCertProvider_CACertPEMs_Empty(t *testing.T) {
 }
 
 func TestDefaultCertProvider_CACertPEMs_ScanError(t *testing.T) {
-	p := NewDefaultProvider(&errorKVStore{err: errors.New("disk read failed")}, newMockBarrier())
+	p := NewDefaultProvider(&errorKVStore{err: errors.New("disk read failed")}, newMockBarrier(), WithTrustDomain(sanTestDomain))
 	_, err := p.CACertPEMs(context.Background())
 	if err == nil {
 		t.Fatal("expected error when the KVStore scan fails")
@@ -372,7 +372,7 @@ func TestDefaultCertProvider_CACertPEMs_BarrierSealed(t *testing.T) {
 
 func TestDefaultCertProvider_CACertPEMs_InjectedProvider(t *testing.T) {
 	hsm := newHSMDouble(t)
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	pems, err := p.CACertPEMs(context.Background())
 	if err != nil {
@@ -395,7 +395,7 @@ func TestDefaultCertProvider_CACertPEMs_InjectedProvider(t *testing.T) {
 func TestDefaultCertProvider_CACertPEMs_InjectedProviderError(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.certErr = errors.New("device unavailable")
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	pems, err := p.CACertPEMs(context.Background())
 	if err != nil {
@@ -415,7 +415,7 @@ func TestDefaultCertProvider_CACertPEMs_InjectedProviderError(t *testing.T) {
 // tenant prefix -- rather than mis-parsing it as a tenant ID.
 func TestDefaultCertProvider_CACertPEMs_SkipsNonMaterialKeys(t *testing.T) {
 	kv := newMockKVStore()
-	p := NewDefaultProvider(kv, newMockBarrier())
+	p := NewDefaultProvider(kv, newMockBarrier(), WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"}); err != nil {
@@ -443,7 +443,7 @@ func TestDefaultCertProvider_CACertPEMs_SkipsNonMaterialKeys(t *testing.T) {
 // provider for "".
 func TestDefaultCertProvider_CACertPEMs_SkipsEmptyTenantIDKey(t *testing.T) {
 	kv := newMockKVStore()
-	p := NewDefaultProvider(kv, newMockBarrier())
+	p := NewDefaultProvider(kv, newMockBarrier(), WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := kv.Put(ctx, prefixCertCA+materialRecordSuffix, []byte("irrelevant")); err != nil {
@@ -482,7 +482,7 @@ func TestDefaultCertProvider_CACertPEMs_SkipsEmptyTenantIDKey(t *testing.T) {
 // broken tenant at all.
 func TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails(t *testing.T) {
 	kv := newMockKVStore()
-	p := NewDefaultProvider(kv, newMockBarrier())
+	p := NewDefaultProvider(kv, newMockBarrier(), WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	// Any non-empty value makes "ghost" discoverable -- discovery only
@@ -579,7 +579,7 @@ func TestDefaultCertProvider_IsTenantIssuer_InjectedFactory_ForeignTenantDoesNot
 		"tenant-x": hsmX,
 		"tenant-y": hsmY,
 	}}
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(factory))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain), WithKeyProviderFactory(factory))
 	ctx := context.Background()
 
 	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "tenant-x"}); err != nil {
@@ -674,7 +674,7 @@ func TestDefaultCertProvider_IsTenantIssuer_EmptyTenantFoldsToSystem(t *testing.
 // place.
 func TestDefaultCertProvider_IsTenantIssuer_LoadFailurePropagates(t *testing.T) {
 	kv := newMockKVStore()
-	p := NewDefaultProvider(kv, newMockBarrier())
+	p := NewDefaultProvider(kv, newMockBarrier(), WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := kv.Put(ctx, prefixCertCA+"ghost2/certificate", []byte("not-der-data")); err != nil {

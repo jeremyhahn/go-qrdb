@@ -163,7 +163,7 @@ func TestTenantBarrierInit_NoClaimForARequestRefusedEarlier(t *testing.T) {
 func newShamirClaimService(t *testing.T, book *bookDouble, tenantID string) (*TenantService, context.Context) {
 	t.Helper()
 	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t), testLogger(),
-		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}), WithBarrierInitBook(book))
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}), WithBarrierInitBook(book))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

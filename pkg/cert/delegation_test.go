@@ -129,7 +129,7 @@ func TestIssueClientCert_Delegation_CarriesTheGrant(t *testing.T) {
 	if err != nil || !ok || g.Tenant != dlgCertGrant.Tenant || g.Principal != dlgCertGrant.Principal || !slices.Equal(g.Scope, dlgCertGrant.Scope) {
 		t.Fatalf("FromCertificate = %+v, %v, %v; want %+v", g, ok, err, dlgCertGrant)
 	}
-	want := "spiffe://" + sanTestDomain + "/tenant/" + sanTestTenant + "/svc/billing"
+	want := "spiffe://" + sanTestTenant + "/svc/billing"
 	if len(leaf.URIs) != 1 || leaf.URIs[0].String() != want {
 		t.Fatalf("URIs = %v, want [%s]", leaf.URIs, want)
 	}

@@ -83,6 +83,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — open
 - **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — open
 - **rolling-enable-encryption** — `cluster enable-encryption` recycles one node at a time from a replicated per-node step record, behind a cluster feature gate — [#775](../../issues/775) — in progress
+- **identity-ou-spiffe-agree** — tenant identity requires both a subject OU and a SPIFFE ID SAN that agree; no fallbacks; every issuer sets both — [#777](../../issues/777) — in progress
 - **optional-auth-route** — a `HandleOptional` route mode on `ModuleHTTPRegistrar`: a presented credential runs the auth chain, none admits an anonymous caller, an invalid one is rejected; consumer go-quicbaas #1457 — [docs/api-server/](docs/api-server/) — done
 - **tenant-undo-id-reuse** — an undone tenant create leaves an undone tombstone; the ID is reusable once every serving node has acknowledged its cleanup — [#774](../../issues/774) — in progress
 

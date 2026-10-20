@@ -251,14 +251,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 	}
 
 	// Verify connectivity with a health check.
-	if !t.Healthy(ctx) {
-		return &transport.ConnectionError{
-			Address: t.config.Address,
-			Err:     &dialError{Err: status.Error(codes.Unavailable, "health check failed")},
-		}
-	}
-
-	return nil
+	return t.probeHealth(ctx)
 }
 
 // Close shuts down the gRPC connection and releases all resources.
@@ -284,12 +277,27 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 	if t.closed.Load() || t.client == nil {
 		return false
 	}
+	return t.probeHealth(ctx) == nil
+}
 
+// probeHealth is Healthy's health check, returning why it failed. A server
+// that refuses the caller's credential (codes.Unauthenticated) has answered:
+// its typed refusal is the result, as on every other transport, not a
+// connectivity failure. Any other failure is a *transport.ConnectionError.
+func (t *Transport) probeHealth(ctx context.Context) error {
 	resp, err := t.client.Health(ctx, &emptypb.Empty{})
-	if err == nil {
-		return resp.GetStatus() != ""
+	switch {
+	case err == nil && resp.GetStatus() != "":
+		return nil
+	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
+		return nil
+	case status.Code(err) == codes.Unauthenticated:
+		return mapGRPCError("Health", err)
 	}
-	return reachableButUnauthorized(err) || reachableButSealed(err)
+	return &transport.ConnectionError{
+		Address: t.config.Address,
+		Err:     &dialError{Err: status.Error(codes.Unavailable, "health check failed")},
+	}
 }
 
 // reachableButUnauthorized reports whether err is a gRPC status error

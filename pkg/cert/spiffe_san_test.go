@@ -110,79 +110,78 @@ func TestGenerateClientCert_TrustDomain_EmitsTenantSANThePinnedAuthenticatorReso
 	if len(leaf.URIs) != 1 {
 		t.Fatalf("URIs = %v, want exactly one tenant SPIFFE SAN", leaf.URIs)
 	}
-	want := "spiffe://" + sanTestDomain + "/tenant/" + sanTestTenant + "/user/" + sanTestSubject
+	want := "spiffe://" + sanTestTenant + "/user/" + sanTestSubject
 	if got := leaf.URIs[0].String(); got != want {
 		t.Fatalf("SAN = %q, want %q", got, want)
 	}
-	// The OU is still written, so a node with no pin resolves the same tenant.
+	// The OU is written too, agreeing with the SAN, as the authenticator requires.
 	if ou := leaf.Subject.OrganizationalUnit; len(ou) != 1 || ou[0] != sanTestTenant {
 		t.Fatalf("OU = %v, want [%q]", ou, sanTestTenant)
 	}
 
 	pinned := auth.NewMTLSAuthenticatorWithTrustDomain(sanTestDomain)
-	tenantID, fromSPIFFE, err := pinned.TenantFromCert(leaf)
-	if err != nil || !fromSPIFFE || tenantID != sanTestTenant {
-		t.Fatalf("TenantFromCert = (%q, %v, %v), want (%q, true, nil)", tenantID, fromSPIFFE, err, sanTestTenant)
+	tenantID, err := pinned.TenantFromCert(leaf)
+	if err != nil || tenantID != sanTestTenant {
+		t.Fatalf("TenantFromCert = (%q, %v), want (%q, nil)", tenantID, err, sanTestTenant)
 	}
 
 	id, err := authenticate(t, pinned, verifiedState(t, p, leaf))
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if id.Subject != sanTestSubject || id.TenantID != sanTestTenant || id.Metadata["tenant_source"] != "spiffe" {
-		t.Fatalf("identity = {Subject:%q TenantID:%q source:%q}, want {%q %q spiffe}",
-			id.Subject, id.TenantID, id.Metadata["tenant_source"], sanTestSubject, sanTestTenant)
+	if id.Subject != sanTestSubject || id.TenantID != sanTestTenant {
+		t.Fatalf("identity = {Subject:%q TenantID:%q}, want {%q %q}",
+			id.Subject, id.TenantID, sanTestSubject, sanTestTenant)
 	}
 }
 
-func TestGenerateClientCert_TrustDomain_ForeignPinRefusesFailClosed(t *testing.T) {
+func TestGenerateClientCert_TrustDomain_TenantNamingTheClusterRefusesFailClosed(t *testing.T) {
 	p, _, _ := initializeProvider(t, WithTrustDomain(sanTestDomain))
 	leaf := issueParsed(t, p, sanTestTenant, sanTestSubject)
 	state := verifiedState(t, p, leaf)
 
-	foreign := auth.NewMTLSAuthenticatorWithTrustDomain("other.example.com")
-	id, err := authenticate(t, foreign, state)
+	// An authenticator whose cluster trust domain is the tenant's own name
+	// cannot tell that tenant apart from the cluster, so it refuses the leaf.
+	clash := auth.NewMTLSAuthenticatorWithTrustDomain(sanTestTenant)
+	id, err := authenticate(t, clash, state)
 	if !errors.Is(err, auth.ErrInvalidCertificate) {
-		t.Fatalf("Authenticate under a foreign pin = (%v, %v), want ErrInvalidCertificate", id, err)
+		t.Fatalf("Authenticate under a clashing pin = (%v, %v), want ErrInvalidCertificate", id, err)
 	}
-	// And it does not fall back to the OU, which names the right tenant: the
+	// And it does not fall back to the OU, which names the same tenant: the
 	// control fires on the SAN it cannot accept rather than routing around it.
-	if _, _, terr := foreign.TenantFromCert(leaf); !errors.Is(terr, auth.ErrInvalidCertificate) {
-		t.Fatalf("TenantFromCert under a foreign pin err = %v, want ErrInvalidCertificate", terr)
+	if _, terr := clash.TenantFromCert(leaf); !errors.Is(terr, auth.ErrTenantIsClusterTrustDomain) {
+		t.Fatalf("TenantFromCert under a clashing pin err = %v, want ErrTenantIsClusterTrustDomain", terr)
 	}
 }
 
-func TestGenerateClientCert_NoTrustDomain_EmitsNoSANAndResolvesThroughOU(t *testing.T) {
+// TestGenerateClientCert_NoTrustDomain_IsRefusedBeforeSigning pins that a
+// provider with no trust domain mints nothing: the certificate would carry
+// only the OU, and the authenticator, which requires an agreeing SPIFFE ID
+// SAN beside it, would refuse it on every node, pinned or not. The refusal
+// names the identity, unwraps to spiffe.ErrTrustDomainEmpty, and leaves no
+// record behind.
+func TestGenerateClientCert_NoTrustDomain_IsRefusedBeforeSigning(t *testing.T) {
 	for name, opts := range map[string][]ProviderOption{
 		"no option":          nil,
 		"empty trust domain": {WithTrustDomain("")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			p, _, _ := initializeProvider(t, opts...)
-			leaf := issueParsed(t, p, sanTestTenant, sanTestSubject)
-
-			if len(leaf.URIs) != 0 || len(leaf.DNSNames) != 0 {
-				t.Fatalf("SANs = URIs %v DNS %v, want none", leaf.URIs, leaf.DNSNames)
+			kv := newMockKVStore()
+			p := NewDefaultProvider(kv, newMockBarrier(), opts...)
+			if err := p.Initialize(context.Background()); err != nil {
+				t.Fatalf("Initialize: %v", err)
 			}
-			// No SubjectAltName extension at all: the certificate is shaped
-			// exactly as it was before the option existed.
-			for _, ext := range leaf.Extensions {
-				if ext.Id.Equal(oidSubjectAltName) {
-					t.Fatal("certificate carries a SubjectAltName extension with no trust domain configured")
-				}
+			bundle, err := generateForTest(context.Background(), p, &testRequest{Username: sanTestSubject, TenantID: sanTestTenant})
+			var sidErr *SPIFFEIdentityError
+			if !errors.As(err, &sidErr) || !errors.Is(err, spiffe.ErrTrustDomainEmpty) {
+				t.Fatalf("GenerateClientCert = (%v, %v), want *SPIFFEIdentityError wrapping spiffe.ErrTrustDomainEmpty", bundle, err)
 			}
-
-			for _, a := range []*auth.MTLSAuthenticator{
-				auth.NewMTLSAuthenticator(),
-				auth.NewMTLSAuthenticatorWithTrustDomain(sanTestDomain),
-			} {
-				id, err := authenticate(t, a, verifiedState(t, p, leaf))
-				if err != nil {
-					t.Fatalf("Authenticate: %v", err)
-				}
-				if id.TenantID != sanTestTenant || id.Metadata["tenant_source"] != "ou" {
-					t.Fatalf("identity tenant = %q via %q, want %q via ou", id.TenantID, id.Metadata["tenant_source"], sanTestTenant)
-				}
+			if sidErr.TenantID != sanTestTenant || sidErr.Username != sanTestSubject || sidErr.TrustDomain != "" {
+				t.Fatalf("error names %+v, want the refused identity", sidErr)
+			}
+			keys, _ := kv.List(context.Background(), prefixCerts)
+			if len(keys) != 0 {
+				t.Fatalf("a refused certificate left records behind: %v", keys)
 			}
 		})
 	}
@@ -222,19 +221,6 @@ func TestGenerateClientCert_TrustDomain_RefusesSANThatWouldDisagreeWithOU(t *tes
 	}
 }
 
-// TestGenerateClientCert_TrustDomain_SameInputsWithoutDomainStillMint shows
-// the refusal is caused by the SAN, not by the request: the identical request
-// mints under a provider with no trust domain, whose certificate carries only
-// the OU. (A separator in the OU is a legacy-path concern this issue does not
-// change.)
-func TestGenerateClientCert_TrustDomain_SameInputsWithoutDomainStillMint(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	leaf := issueParsed(t, p, "acme/evil", sanTestSubject)
-	if len(leaf.URIs) != 0 {
-		t.Fatalf("URIs = %v, want none", leaf.URIs)
-	}
-}
-
 // TestGenerateClientCert_TrustDomain_ReissueWithSANKeepsSPKIBinding confirms,
 // rather than assumes, #519's rotation claim: an account enrolled on a key
 // whose certificate had no SAN keeps authenticating when the same key is
@@ -248,7 +234,7 @@ func TestGenerateClientCert_TrustDomain_ReissueWithSANKeepsSPKIBinding(t *testin
 	if err != nil {
 		t.Fatalf("getCAMaterial: %v", err)
 	}
-	san, err := url.Parse(spiffe.ID{TrustDomain: sanTestDomain, TenantID: sanTestTenant, Kind: spiffe.KindUser, Name: sanTestSubject}.String())
+	san, err := url.Parse(spiffe.ID{TrustDomain: sanTestTenant, Kind: spiffe.KindUser, Name: sanTestSubject}.String())
 	if err != nil {
 		t.Fatalf("url.Parse: %v", err)
 	}
@@ -285,7 +271,7 @@ func TestGenerateClientCert_TrustDomain_ReissueWithSANKeepsSPKIBinding(t *testin
 	}
 	// And the re-issued certificate now resolves through the pin.
 	id, err := authenticate(t, auth.NewMTLSAuthenticatorWithTrustDomain(sanTestDomain), verifiedState(t, p, reissued))
-	if err != nil || id.Metadata["tenant_source"] != "spiffe" {
-		t.Fatalf("re-issued certificate = (%+v, %v), want a SPIFFE-derived identity", id, err)
+	if err != nil || id.TenantID != sanTestTenant {
+		t.Fatalf("re-issued certificate = (%+v, %v), want an identity in tenant %q", id, err, sanTestTenant)
 	}
 }

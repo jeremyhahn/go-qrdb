@@ -216,6 +216,7 @@ func TestAwaitUnseal_UnsealQuorumIsAudited(t *testing.T) {
 	svc, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: sub.SealDataDir}, sub.SealBarrier, slog.Default())
 	require.NoError(t, err)
 	svc.SetCA(ca)
+	svc.SetTrustDomain(qrdbconfig.DefaultClusterTrustDomain)
 	holders := []*daemonHolder{newDaemonHolder(t, "alice"), newDaemonHolder(t, "bob"), newDaemonHolder(t, "carol")}
 	for _, h := range holders {
 		res, err := svc.RegisterOfficer(ctx, seal.DomainUnseal, ceremony.RegisterOfficerRequest{Username: h.name, CSRPEM: h.csr})

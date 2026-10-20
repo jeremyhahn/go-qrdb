@@ -32,11 +32,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 )
 
-// TrustDomain is the SPIFFE trust domain of the node certificates CA issues.
+// TrustDomain is the SPIFFE trust domain of the certificates CA issues.
 const TrustDomain = "qrdb.cluster"
+
+// CallerTenant is the tenant a caller's certificate names, in its first
+// subject OU and in the agreeing SPIFFE ID SAN auth.TenantFromClientCert
+// requires.
+const CallerTenant = "acme"
 
 // CA is a test cluster CA.
 type CA struct {
@@ -93,6 +100,13 @@ func (ca *CA) TLS(t testing.TB, nodeID string) *tls.Config {
 	}
 	if nodeID != "" {
 		tmpl.URIs = []*url.URL{{Scheme: "spiffe", Host: TrustDomain, Path: "/node/" + nodeID}}
+	} else {
+		uris, err := auth.TenantPrincipalURIs(TrustDomain, CallerTenant, spiffe.KindUser, tmpl.Subject.CommonName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpl.Subject.OrganizationalUnit = []string{CallerTenant}
+		tmpl.URIs = uris
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
 	if err != nil {

@@ -95,13 +95,13 @@ func TestLedgerDAOsLandInTheNamedDatabase(t *testing.T) {
 }
 
 func TestTenantUserSANRoundTrips(t *testing.T) {
-	san, err := TenantUserSAN("db.example.com", "acme", "alice")
+	san, err := TenantUserSAN("acme", "alice")
 	if err != nil {
 		t.Fatalf("TenantUserSAN: %v", err)
 	}
-	id, err := sdk.TenantFromCert(&x509.Certificate{URIs: []*url.URL{san}}, "db.example.com")
-	if err != nil || id.TenantID != "acme" || id.Kind != sdk.SpiffeKindUser || id.Name != "alice" {
-		t.Fatalf("TenantFromCert = %+v, %v", id, err)
+	id, err := sdk.WorkloadFromCert(&x509.Certificate{URIs: []*url.URL{san}})
+	if err != nil || id.TrustDomain != "acme" || id.Kind != sdk.SpiffeKindUser || id.Name != "alice" {
+		t.Fatalf("WorkloadFromCert = %+v, %v", id, err)
 	}
 }
 

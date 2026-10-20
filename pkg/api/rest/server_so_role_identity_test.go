@@ -134,10 +134,11 @@ func (f *soRESTFixture) user(t *testing.T, username, roleName string) *x509.Cert
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject:      pkix.Name{CommonName: username, OrganizationalUnit: []string{soRESTTenant}},
+		Subject:      pkix.Name{CommonName: username},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 	}
+	authtest.SetClientTenant(t, tmpl, soRESTTenant, username)
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		t.Fatalf("CreateCertificate: %v", err)

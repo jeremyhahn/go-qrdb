@@ -279,8 +279,11 @@ func startWireServer(tgt target) (*wireServer, error) {
 	}
 	srv.ca = ca
 
+	// The node leaf names no tenant, as a production node leaf does not: a
+	// tenant is named by an OU together with an agreeing SPIFFE ID SAN, and
+	// an OU alone is refused.
 	node, err := ca.Issue(workDir,
-		qrdbdharness.WithSubject(nodeCommonName, systemTenant),
+		qrdbdharness.WithSubject(nodeCommonName, ""),
 		qrdbdharness.WithServerAuth())
 	if err != nil {
 		srv.stop()

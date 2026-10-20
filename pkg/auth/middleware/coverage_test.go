@@ -36,6 +36,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -765,12 +766,8 @@ func TestRESTMiddleware_StoreUnavailable(t *testing.T) {
 func TestRESTMiddleware_TLSInjection(t *testing.T) {
 	// When r.TLS is set, the middleware should inject TLS state into the
 	// context so the mTLS authenticator can use it.
-	cert := &x509.Certificate{
-		Subject: pkix.Name{
-			CommonName:         "test-client",
-			OrganizationalUnit: []string{"t1"},
-		},
-	}
+	cert := &x509.Certificate{Subject: pkix.Name{CommonName: "test-client"}}
+	authtest.SetClientTenant(t, cert, "t1", "test-client")
 	tlsState := &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 		VerifiedChains:   [][]*x509.Certificate{{cert}},

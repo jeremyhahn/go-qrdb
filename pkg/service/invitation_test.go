@@ -203,6 +203,7 @@ func (ca *testCA) leafFor(t *testing.T, key *ecdsa.PrivateKey, cn, ou string) *x
 	tmpl := &x509.Certificate{
 		SerialNumber: nextCertEnrollmentSerial(),
 		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{ou}},
+		URIs:         enrollmentLeafURIs(t, cn, ou),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(12 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

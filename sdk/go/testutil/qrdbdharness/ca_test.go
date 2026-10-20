@@ -376,6 +376,95 @@ func TestIssueSPIFFEID(t *testing.T) {
 	})
 }
 
+func TestIssueURISAN(t *testing.T) {
+	ca := newTestCA(t)
+	tests := []struct {
+		name string
+		opts []CertOption
+	}{
+		{name: "replaces the OU-derived SAN", opts: []CertOption{WithSubject("alice", "acme")}},
+		{name: "replaces WithSPIFFEID", opts: []CertOption{WithSubject("alice", "acme"), WithSPIFFEID("acme", "user/alice")}},
+	}
+	const want = "https://db.example.com/user/alice"
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kp, err := ca.Issue(t.TempDir(), append(tc.opts, WithURISAN(want))...)
+			if err != nil {
+				t.Fatalf("Issue: %v", err)
+			}
+			cert := parseLeaf(t, kp.CertPEM)
+			if len(cert.URIs) != 1 || cert.URIs[0].String() != want {
+				t.Fatalf("URIs = %v, want exactly %q", cert.URIs, want)
+			}
+		})
+	}
+
+	t.Run("unparseable", func(t *testing.T) {
+		_, err := ca.Issue(t.TempDir(), WithSubject("alice", "acme"), WithURISAN("https://bad host\x7f%zz/"))
+		var certErr *CertError
+		if !errors.As(err, &certErr) {
+			t.Fatalf("err = %v, want *CertError", err)
+		}
+		if !strings.Contains(certErr.Op, "parse uri san") {
+			t.Errorf("Op = %q, want a uri san parse failure", certErr.Op)
+		}
+	})
+}
+
+// TestIssueTenantPrincipalSAN: a client certificate with an OU names the same
+// tenant as the trust domain of its SPIFFE ID SAN, refused when the tenant is
+// the cluster trust domain (WithClusterTrustDomain); WithSPIFFEID replaces it;
+// a node leaf and a certificate with no OU carry none.
+func TestIssueTenantPrincipalSAN(t *testing.T) {
+	ca := newTestCA(t)
+	tests := []struct {
+		name string
+		opts []CertOption
+		want []string
+	}{
+		{name: "default trust domain", opts: []CertOption{WithSubject("alice", "acme")},
+			want: []string{"spiffe://acme/user/alice"}},
+		{name: "configured trust domain", opts: []CertOption{WithSubject("admin", "system"), WithClusterTrustDomain("db.example.com")},
+			want: []string{"spiffe://system/user/admin"}},
+		{name: "explicit SPIFFE ID replaces it", opts: []CertOption{WithSubject("alice", "acme"), WithSPIFFEID("globex", "user/alice")},
+			want: []string{"spiffe://globex/user/alice"}},
+		{name: "no OU", opts: []CertOption{WithSubject("alice", "")}},
+		{name: "node leaf", opts: []CertOption{WithSubject("node-1", "raft"), WithServerAuth()}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kp, err := ca.Issue(t.TempDir(), tc.opts...)
+			if err != nil {
+				t.Fatalf("Issue: %v", err)
+			}
+			var got []string
+			for _, u := range parseLeaf(t, kp.CertPEM).URIs {
+				got = append(got, u.String())
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("URIs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	for name, ou := range map[string]string{
+		"unrepresentable tenant":         "ac/me",
+		"tenant not a trust domain name": "Acme",
+		"tenant is cluster trust domain": "qrdb.cluster",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ca.Issue(t.TempDir(), WithSubject("alice", ou))
+			var certErr *CertError
+			if !errors.As(err, &certErr) {
+				t.Fatalf("err = %v, want *CertError", err)
+			}
+			if certErr.Op != "tenant spiffe id" {
+				t.Errorf("Op = %q, want the tenant SPIFFE ID failure", certErr.Op)
+			}
+		})
+	}
+}
+
 // nodeSubject is shorthand for the node subject used throughout this file.
 func nodeSubject(commonName string) CertOption {
 	return WithSubject(commonName, "")

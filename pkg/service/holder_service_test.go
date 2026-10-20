@@ -93,6 +93,7 @@ func (e *holderSvcEnv) wire(barrier *seal.StorageBarrier) {
 	e.t.Helper()
 	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: e.t.TempDir()}, barrier, testLogger())
 	require.NoError(e.t, err)
+	core.SetTrustDomain(ceremonyTrustDomain)
 	core.SetCA(e.ca)
 	// A composer installs the node's SO PIN lockout around the backend it
 	// hands the ceremony (lifecycle, server.WithPINBackend); so does this one.

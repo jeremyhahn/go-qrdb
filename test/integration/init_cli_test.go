@@ -68,6 +68,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -293,6 +294,53 @@ func TestInit_CLI_SingleAdmin_PerProtocol(t *testing.T) {
 			}
 			if !strings.Contains(stdout, "init-value") {
 				t.Errorf("[%s] kv get after init: expected 'init-value', got: %s", proto.name, stdout)
+			}
+		})
+	}
+}
+
+// TestInit_CLI_BYOCForeignTenantSPIFFEID_RefusedBeforeInit_PerProtocol
+// proves, over every protocol, that `qrdb init --admin-cert` refuses a
+// bootstrap admin certificate the daemon's authenticator would refuse at every
+// login -- here one whose OU names the system tenant while its SPIFFE ID names
+// another tenant as its trust domain (go-qrdb#777, #804) -- and that the
+// refusal commits nothing: an init with a conforming certificate on the same
+// node then succeeds as a first init, PINs and all.
+func TestInit_CLI_BYOCForeignTenantSPIFFEID_RefusedBeforeInit_PerProtocol(t *testing.T) {
+	for _, proto := range ceremonyInitProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			node := startFreshSealedNode(t, "none", 0, 0)
+			noAuth := node.noAuthFlagsFor(proto)
+			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
+
+			foreign := node.ca.issue(t, t.TempDir(),
+				qrdbdharness.WithSubject(adminUser, adminTenant),
+				qrdbdharness.WithSPIFFEID("acme", "user/"+adminUser))
+			initArgs := func(adminCert string) []string {
+				return append(append([]string{}, noAuth...),
+					"--output", "json",
+					"init", "--so-pin", "SOPIN-"+proto.name, "--user-pin", "USERPIN-"+proto.name,
+					"--barrier-strategy", "none", "--admin-cert", adminCert)
+			}
+
+			stdout, stderr, err := runCLISplit(t, node.cli, initArgs(foreign.CertPath)...)
+			if err == nil {
+				t.Fatalf("[%s] qrdb init with a foreign-tenant admin certificate succeeded: %s", proto.name, stdout)
+			}
+			if !strings.Contains(stdout+stderr, `and SPIFFE ID tenant "acme" disagree`) {
+				t.Errorf("[%s] expected the OU/SPIFFE tenant refusal, got stdout: %s\nstderr: %s", proto.name, stdout, stderr)
+			}
+
+			stdout, stderr, err = runCLISplit(t, node.cli, initArgs(node.adminCert)...)
+			if err != nil {
+				t.Fatalf("[%s] qrdb init after the refusal: %v\nstderr: %s", proto.name, err, stderr)
+			}
+			var resp transport.CeremonyInitializeResponse
+			if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+				t.Fatalf("[%s] qrdb init: decode JSON: %v\noutput: %s", proto.name, err, stdout)
+			}
+			if resp.State != "operational" {
+				t.Errorf("[%s] expected State 'operational' after the refused attempt, got %q", proto.name, resp.State)
 			}
 		})
 	}

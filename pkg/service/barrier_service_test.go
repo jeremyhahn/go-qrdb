@@ -118,6 +118,7 @@ func TestBarrierService_BarrierInitialize_RefusedWithCeremony(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ceremony.NewCeremonyService: %v", err)
 	}
+	core.SetTrustDomain(ceremonyTrustDomain)
 	svc := NewBarrierServiceWithCeremony(barrier, core)
 	ctx := context.Background()
 
@@ -164,6 +165,7 @@ func TestBarrierService_BarrierInitializeShamir_RefusedWithCeremony(t *testing.T
 	if err != nil {
 		t.Fatalf("ceremony.NewCeremonyService: %v", err)
 	}
+	core.SetTrustDomain(ceremonyTrustDomain)
 	svc := NewBarrierServiceWithCeremony(barrier, core)
 	ctx := context.Background()
 

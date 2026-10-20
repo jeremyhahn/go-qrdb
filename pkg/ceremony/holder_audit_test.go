@@ -123,7 +123,7 @@ func auditScopesWithPolicy(t *testing.T, ring audit.AuditLogger, policy audit.Fa
 	scoped := func(tenantID, scope string, build func(*seal.StorageBarrier, HolderDeps) (*ScopedCeremonyService, error)) func(t *testing.T) *auditScope {
 		return func(t *testing.T) *auditScope {
 			barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 3)
-			svc, err := build(barrier, HolderDeps{CA: testCA(t), Factors: testFactors(t), Audit: ring, AuditPolicy: policy})
+			svc, err := build(barrier, HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t), Factors: testFactors(t), Audit: ring, AuditPolicy: policy})
 			require.NoError(t, err)
 			barrier.SetCeremonyDistributor(svc)
 			barrier.SetHolderVerifier(svc)
@@ -628,6 +628,7 @@ func TestHolderAudit_OneEmitterPerEvent(t *testing.T) {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 	require.NoError(t, err)
 	svc.SetCA(testCA(t))
+	svc.SetTrustDomain(testTrustDomain)
 	svc.SetAuditLogger(ring)
 
 	holders := []*testHolder{newHolder(t, "alice", ""), newHolder(t, "bob", "")}

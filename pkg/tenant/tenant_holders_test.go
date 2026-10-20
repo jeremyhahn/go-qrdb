@@ -57,6 +57,11 @@ func newTenantHolder(t *testing.T, name string) *tenantHolder {
 	return &tenantHolder{name: name, key: key, csr: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})}
 }
 
+// holderTrustDomain is the SPIFFE trust domain tenant holder certificates are
+// issued under. authtest.ClientTrustDomain cannot be imported here: authtest
+// imports this package.
+const holderTrustDomain = "example.com"
+
 // newTenantHolderCA builds a LocalCA over a fresh self-signed CA.
 func newTenantHolderCA(t *testing.T) *ceremony.LocalCA {
 	t.Helper()
@@ -81,7 +86,7 @@ func newHolderTenantService(t *testing.T) *TenantService {
 func newAuditedHolderTenantService(t *testing.T, trail audit.AuditLogger) *TenantService {
 	t.Helper()
 	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t), testLogger(),
-		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), Audit: trail}))
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain, Audit: trail}))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -361,7 +366,7 @@ func TestTenantBarrierHolders_RegisterRefusedWhileInitializing(t *testing.T) {
 	const tenantID = "acme"
 	trail := &initHookTrail{RingBuffer: audit.NewRingBuffer(64), tenantID: tenantID}
 	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t, seal.WithAuditTrail(trail)), testLogger(),
-		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}))
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

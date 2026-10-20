@@ -22,9 +22,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
+	"net/url"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 )
 
 // testCert generates a self-signed test certificate with the given CN and OUs.
@@ -47,6 +51,7 @@ func testCert(t *testing.T, cn string, ou []string, org []string, dnsNames []str
 		NotBefore: time.Now().Add(-time.Hour),
 		NotAfter:  time.Now().Add(time.Hour),
 	}
+	template.URIs = agreeingSPIFFEURIs(t, ou, cn)
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
@@ -59,6 +64,22 @@ func testCert(t *testing.T, cn string, ou []string, org []string, dnsNames []str
 	}
 
 	return cert
+}
+
+// agreeingSPIFFEURIs returns the SPIFFE ID SAN that agrees with a fixture's
+// first OU: a tenant certificate names its tenant in both fields
+// (TenantFromClientCert). An absent or empty OU gets no SAN, so a fixture
+// naming no tenant stays one.
+func agreeingSPIFFEURIs(t *testing.T, ou []string, cn string) []*url.URL {
+	t.Helper()
+	if len(ou) == 0 || ou[0] == "" {
+		return nil
+	}
+	u, err := spiffe.ID{TrustDomain: ou[0], Kind: spiffe.KindUser, Name: cn}.URI()
+	if err != nil {
+		t.Fatalf("spiffe id: %v", err)
+	}
+	return []*url.URL{u}
 }
 
 func TestMTLSAuthenticator_Name(t *testing.T) {
@@ -147,17 +168,8 @@ func TestMTLSAuthenticator_Authenticate_NoOU(t *testing.T) {
 	authn := NewMTLSAuthenticator()
 
 	id, err := authn.Authenticate(ctx)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if id.TenantID != "" {
-		t.Fatalf("expected empty TenantID for cert without OU, got %q", id.TenantID)
-	}
-	if id.Subject != "plain-node" {
-		t.Fatalf("expected Subject 'plain-node', got %q", id.Subject)
-	}
-	if id.Metadata["organization"] != "PlainOrg" {
-		t.Fatalf("expected organization 'PlainOrg', got %q", id.Metadata["organization"])
+	if !errors.Is(err, ErrInvalidCertificate) || id != nil {
+		t.Fatalf("Authenticate = (%v, %v), want a refusal for a cert naming no tenant", id, err)
 	}
 }
 

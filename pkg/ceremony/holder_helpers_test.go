@@ -46,6 +46,19 @@ import (
 // testFactorName is the name the assertion-factor double is registered under.
 const testFactorName = "fido2"
 
+// testTrustDomain is the SPIFFE trust domain the tests' ceremonies name their
+// certificates' tenant SPIFFE IDs under.
+const testTrustDomain = "example.com"
+
+// uriStrings is cert's URI SANs as strings, for exact comparison.
+func uriStrings(cert *x509.Certificate) []string {
+	uris := make([]string, 0, len(cert.URIs))
+	for _, u := range cert.URIs {
+		uris = append(uris, u.String())
+	}
+	return uris
+}
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
@@ -265,6 +278,7 @@ func (e *holderEnv) newService(barrier *seal.StorageBarrier) *CeremonyService {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: e.t.TempDir()}, barrier, testLogger())
 	require.NoError(e.t, err)
 	svc.SetCA(e.ca)
+	svc.SetTrustDomain(testTrustDomain)
 	svc.SetFactorRegistry(e.factors)
 	svc.SetPINBackend(e.pins)
 	return svc

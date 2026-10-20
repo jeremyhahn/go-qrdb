@@ -30,7 +30,7 @@ import (
 // in-memory store and a real AES-GCM barrier.
 func newTenantSerialProvider(t *testing.T) *DefaultCertProvider {
 	t.Helper()
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier())
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithTrustDomain(sanTestDomain))
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestTenantForSerial_EmptySerialIsRejected(t *testing.T) {
 // deny-by-serial branch.
 func TestTenantForSerial_SealedBarrierRefuses(t *testing.T) {
 	barrier := newMockBarrier()
-	p := NewDefaultProvider(newMockKVStore(), barrier)
+	p := NewDefaultProvider(newMockKVStore(), barrier, WithTrustDomain(sanTestDomain))
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestTenantForSerial_SealedBarrierRefuses(t *testing.T) {
 // could not run must not be reported as an absent owner.
 func TestTenantForSerial_StoreFailureIsReported(t *testing.T) {
 	sentinel := errors.New("store is down")
-	p := NewDefaultProvider(&errorKVStore{err: sentinel}, newMockBarrier())
+	p := NewDefaultProvider(&errorKVStore{err: sentinel}, newMockBarrier(), WithTrustDomain(sanTestDomain))
 
 	_, found, err := p.TenantForSerial(context.Background(), "abc")
 	var serr *StoreError

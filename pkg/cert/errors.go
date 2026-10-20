@@ -141,26 +141,32 @@ func (e *StoreError) Unwrap() error {
 	return e.Err
 }
 
-// SPIFFEIdentityError is returned by IssueClientCert when the provider has
-// a trust domain configured and the tenant-scoped SPIFFE SAN it would emit
-// does not parse back to the same trust domain, tenant and username the
-// certificate's Subject names (go-qrdb#519).
+// SPIFFEIdentityError is returned by IssueClientCert when the tenant-scoped
+// SPIFFE SAN the certificate must carry cannot be built: the provider has no
+// trust domain, or the SAN would not parse back to the same trust domain,
+// tenant and username the certificate's Subject names (go-qrdb#519). Err is
+// the *spiffe.IDError auth.TenantPrincipalURIs refused it with.
 //
-// No certificate is minted. One that were would authenticate as the SAN's
-// tenant on a node with a trust-domain pin and as the OU's tenant on a node
-// without one, which is worse than carrying no SAN at all.
+// No certificate is minted. Without the SAN the certificate names no tenant
+// (auth.TenantFromClientCert), and one whose SAN and OU disagreed would be a
+// certificate the authenticator refuses.
 type SPIFFEIdentityError struct {
 	TrustDomain string
 	TenantID    string
 	Username    string
-	Reason      string
+	Err         error
 }
 
 // Error returns a human-readable description naming the refused identity.
 func (e *SPIFFEIdentityError) Error() string {
 	return "qrdb/cert: refusing to mint a client certificate for " + strconv.Quote(e.Username) +
 		" in tenant " + strconv.Quote(e.TenantID) + " under SPIFFE trust domain " +
-		strconv.Quote(e.TrustDomain) + ": " + e.Reason
+		strconv.Quote(e.TrustDomain) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the SPIFFE identity refusal.
+func (e *SPIFFEIdentityError) Unwrap() error {
+	return e.Err
 }
 
 // ValidationError is returned when a request field fails validation.

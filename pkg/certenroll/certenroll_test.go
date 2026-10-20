@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
@@ -92,10 +93,10 @@ func (b *fakeBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 func (b *fakeBarrier) IsSealed() bool { return false }
 
 // newCertProvider returns a real DefaultCertProvider, initialized and ready
-// to issue, over a fresh in-memory store and barrier.
-func newCertProvider(t *testing.T, opts ...cert.ProviderOption) cert.CertProvider {
+// to issue under leafTrustDomain, over a fresh in-memory store and barrier.
+func newCertProvider(t *testing.T) cert.CertProvider {
 	t.Helper()
-	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newFakeBarrier(t), opts...)
+	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newFakeBarrier(t), cert.WithTrustDomain(leafTrustDomain))
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -188,23 +189,30 @@ func (ca *testCA) intermediate(t *testing.T, cn string) *testCA {
 	return &testCA{cert: c, key: key}
 }
 
-// clientLeaf issues a client-auth leaf naming cn/ou, optionally carrying a
-// SPIFFE tenant SAN when spiffeTenant is non-empty.
-func (ca *testCA) clientLeaf(t *testing.T, cn, ou, trustDomain, spiffeTenant string) *x509.Certificate {
+// leafTrustDomain is the cluster trust domain the test provider issues under;
+// no tenant names it.
+const leafTrustDomain = "example.com"
+
+// clientLeaf issues a client-auth leaf naming cn/ou and carrying the SPIFFE
+// ID SAN spiffe://<spiffeTenant>/user/<cn>. An empty spiffeTenant names ou --
+// the agreeing SAN every tenant certificate must carry
+// (auth.TenantFromClientCert).
+func (ca *testCA) clientLeaf(t *testing.T, cn, ou, spiffeTenant string) *x509.Certificate {
 	t.Helper()
 	tmpl := &x509.Certificate{
 		Subject:     pkix.Name{CommonName: cn, OrganizationalUnit: []string{ou}},
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
-	if spiffeTenant != "" {
-		id := spiffe.ID{TrustDomain: trustDomain, TenantID: spiffeTenant, Kind: spiffe.KindUser, Name: cn}
-		u, err := url.Parse(id.String())
-		if err != nil {
-			t.Fatal(err)
-		}
-		tmpl.URIs = []*url.URL{u}
+	if spiffeTenant == "" {
+		spiffeTenant = ou
 	}
+	id := spiffe.ID{TrustDomain: spiffeTenant, Kind: spiffe.KindUser, Name: cn}
+	u, err := url.Parse(id.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl.URIs = []*url.URL{u}
 	return ca.issue(t, tmpl)
 }
 
@@ -242,6 +250,9 @@ func TestIssueFromCSR_BindsTheAccountNotTheCSRSubject(t *testing.T) {
 	}
 	if len(certs[0].Subject.OrganizationalUnit) == 0 || certs[0].Subject.OrganizationalUnit[0] != "acme" {
 		t.Fatalf("OU = %v, want [acme]", certs[0].Subject.OrganizationalUnit)
+	}
+	if want := "spiffe://acme/user/alice"; len(certs[0].URIs) != 1 || certs[0].URIs[0].String() != want {
+		t.Fatalf("URIs = %v, want [%s] (agreeing with the OU)", certs[0].URIs, want)
 	}
 }
 
@@ -321,7 +332,7 @@ func TestIssueFromCSR_PropagatesAnIssuerFailure(t *testing.T) {
 func TestParseBYOC_SplitsLeafFromIntermediatesAcrossBothInputs(t *testing.T) {
 	root := newRoot(t, "root")
 	issuing := root.intermediate(t, "issuing")
-	leaf := issuing.clientLeaf(t, "alice", "acme", "", "")
+	leaf := issuing.clientLeaf(t, "alice", "acme", "")
 
 	gotLeaf, inter, err := ParseBYOC(pemOf(leaf), append(pemOf(issuing.cert), pemOf(root.cert)...))
 	if err != nil {
@@ -365,7 +376,7 @@ func TestVerifyBYOC_AcceptsAChainingCertificateForTheRightAccount(t *testing.T) 
 	registry := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 	root := newRoot(t, "root")
 	issuing := root.intermediate(t, "issuing")
-	leaf := issuing.clientLeaf(t, "alice", "acme", "", "")
+	leaf := issuing.clientLeaf(t, "alice", "acme", "")
 	if _, err := registry.Add(ctx, "acme", pemOf(root.cert)); err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +407,7 @@ func TestVerifyBYOC_RefusesAnotherTenantsAnchor(t *testing.T) {
 	ctx := context.Background()
 	registry := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 	acmeRoot, globexRoot := newRoot(t, "acme-root"), newRoot(t, "globex-root")
-	leaf := acmeRoot.clientLeaf(t, "alice", "acme", "", "")
+	leaf := acmeRoot.clientLeaf(t, "alice", "acme", "")
 	if _, err := registry.Add(ctx, "acme", pemOf(acmeRoot.cert)); err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +425,7 @@ func TestVerifyBYOC_RefusesWhenTheTenantHasNoAnchors(t *testing.T) {
 	ctx := context.Background()
 	registry := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 	root := newRoot(t, "root")
-	leaf := root.clientLeaf(t, "alice", "acme", "", "")
+	leaf := root.clientLeaf(t, "alice", "acme", "")
 
 	var none *trustanchor.NoAnchorsError
 	if _, err := VerifyBYOC(ctx, registry, "acme", "alice", pemOf(leaf), nil, "", time.Now()); !errors.As(err, &none) {
@@ -426,7 +437,7 @@ func TestVerifyBYOC_RefusesAMismatchedCommonName(t *testing.T) {
 	ctx := context.Background()
 	registry := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 	root := newRoot(t, "root")
-	leaf := root.clientLeaf(t, "mallory", "acme", "", "")
+	leaf := root.clientLeaf(t, "mallory", "acme", "")
 	if _, err := registry.Add(ctx, "acme", pemOf(root.cert)); err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +452,7 @@ func TestVerifyBYOC_RefusesAMismatchedOrganizationalUnit(t *testing.T) {
 	ctx := context.Background()
 	registry := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 	root := newRoot(t, "root")
-	leaf := root.clientLeaf(t, "alice", "globex", "", "")
+	leaf := root.clientLeaf(t, "alice", "globex", "")
 	if _, err := registry.Add(ctx, "acme", pemOf(root.cert)); err != nil {
 		t.Fatal(err)
 	}
@@ -463,9 +474,10 @@ func TestVerifyBYOC_RefusesAMismatchedSPIFFETenant(t *testing.T) {
 	const trustDomain = "qrdb.example.com"
 	registry := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
 	root := newRoot(t, "root")
-	// OU says acme but the pinned SPIFFE SAN says globex; SPIFFE wins the
-	// tenant derivation, so this must mismatch against acme.
-	leaf := root.clientLeaf(t, "alice", "acme", trustDomain, "globex")
+	// OU says acme but the pinned SPIFFE SAN says globex. The two must agree,
+	// so the certificate names no tenant at all and is refused, whichever
+	// tenant it is enrolled under.
+	leaf := root.clientLeaf(t, "alice", "acme", "globex")
 	if _, err := registry.Add(ctx, "acme", pemOf(root.cert)); err != nil {
 		t.Fatal(err)
 	}
@@ -475,8 +487,12 @@ func TestVerifyBYOC_RefusesAMismatchedSPIFFETenant(t *testing.T) {
 	if !errors.As(err, &mismatch) {
 		t.Fatalf("a SPIFFE SAN naming globex enrolled under acme = %v, want *IdentityMismatchError", err)
 	}
-	if mismatch.CertTenantID != "globex" {
-		t.Fatalf("CertTenantID = %q, want globex (derived from the SPIFFE SAN, not the OU)", mismatch.CertTenantID)
+	var disagree *auth.TenantNameMismatchError
+	if !errors.As(err, &disagree) {
+		t.Fatalf("err = %v, want it to wrap *auth.TenantNameMismatchError", err)
+	}
+	if disagree.OU != "acme" || disagree.SPIFFETenant != "globex" {
+		t.Fatalf("TenantNameMismatchError = %+v, want OU acme and SPIFFE tenant globex", disagree)
 	}
 }
 
@@ -490,7 +506,7 @@ func TestVerifyBYOCAgainst_PropagatesAParseFailureBeforeVerifying(t *testing.T) 
 
 func TestVerifyBYOCAgainst_VerifiesAgainstAnExplicitAnchorSetBeforeAnyWrite(t *testing.T) {
 	root := newRoot(t, "root")
-	leaf := root.clientLeaf(t, "alice", "acme", "", "")
+	leaf := root.clientLeaf(t, "alice", "acme", "")
 
 	byoc, err := VerifyBYOCAgainst([]*x509.Certificate{root.cert}, "acme", "alice", pemOf(leaf), nil, "", time.Now())
 	if err != nil {
@@ -513,7 +529,7 @@ func TestVerifyBYOCAgainst_VerifiesAgainstAnExplicitAnchorSetBeforeAnyWrite(t *t
 
 func TestCheckIdentity_AcceptsAMatchingCertificate(t *testing.T) {
 	root := newRoot(t, "root")
-	leaf := root.clientLeaf(t, "alice", "acme", "", "")
+	leaf := root.clientLeaf(t, "alice", "acme", "")
 	if err := CheckIdentity(leaf, "acme", "alice", ""); err != nil {
 		t.Fatalf("CheckIdentity: %v", err)
 	}
@@ -521,7 +537,7 @@ func TestCheckIdentity_AcceptsAMatchingCertificate(t *testing.T) {
 
 func TestCheckIdentity_RefusesAMismatchedUsernameOrTenant(t *testing.T) {
 	root := newRoot(t, "root")
-	leaf := root.clientLeaf(t, "alice", "acme", "", "")
+	leaf := root.clientLeaf(t, "alice", "acme", "")
 
 	var mismatch *IdentityMismatchError
 	if err := CheckIdentity(leaf, "acme", "bob", ""); !errors.As(err, &mismatch) {

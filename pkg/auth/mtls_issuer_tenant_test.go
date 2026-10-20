@@ -85,6 +85,7 @@ func testLeafSignedBy(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKe
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: ou},
+		URIs:         agreeingSPIFFEURIs(t, ou, cn),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -175,9 +176,9 @@ func (f *fakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, 
 
 func TestMTLSAuthenticator_IssuerTenantBinding_OwnTenantCAAccepted(t *testing.T) {
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
-	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"A"})
+	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"a"})
 
-	verifier := &fakeIssuerVerifier{registry: map[string]*x509.Certificate{"A": keyBCA_A}}
+	verifier := &fakeIssuerVerifier{registry: map[string]*x509.Certificate{"a": keyBCA_A}}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 
 	state := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, keyBCA_A}}}
@@ -187,8 +188,8 @@ func TestMTLSAuthenticator_IssuerTenantBinding_OwnTenantCAAccepted(t *testing.T)
 	if err != nil {
 		t.Fatalf("expected a leaf with OU=A signed by tenant A's own Key B CA to be accepted, got: %v", err)
 	}
-	if id.TenantID != "A" {
-		t.Errorf("TenantID = %q, want %q", id.TenantID, "A")
+	if id.TenantID != "a" {
+		t.Errorf("TenantID = %q, want %q", id.TenantID, "a")
 	}
 }
 
@@ -197,11 +198,11 @@ func TestMTLSAuthenticator_IssuerTenantBinding_ForeignTenantCARefused(t *testing
 	// cross-tenant case the review flagged by name.
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
 	keyBCA_B, _ := testCA(t, "tenant-B-key-b")
-	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "mallory", []string{"B"})
+	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "mallory", []string{"b"})
 
 	verifier := &fakeIssuerVerifier{registry: map[string]*x509.Certificate{
-		"A": keyBCA_A,
-		"B": keyBCA_B,
+		"a": keyBCA_A,
+		"b": keyBCA_B,
 	}}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 
@@ -219,8 +220,8 @@ func TestMTLSAuthenticator_IssuerTenantBinding_ForeignTenantCARefused(t *testing
 	if !errors.Is(err, ErrInvalidCertificate) {
 		t.Error("expected IssuerTenantMismatchError to match ErrInvalidCertificate")
 	}
-	if mismatch.TenantID != "B" {
-		t.Errorf("TenantID = %q, want %q", mismatch.TenantID, "B")
+	if mismatch.TenantID != "b" {
+		t.Errorf("TenantID = %q, want %q", mismatch.TenantID, "b")
 	}
 }
 
@@ -231,7 +232,7 @@ func TestMTLSAuthenticator_IssuerTenantBinding_SystemOUFromTenantCARefused(t *te
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
 	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "faux-admin", []string{"system"})
 
-	verifier := &fakeIssuerVerifier{registry: map[string]*x509.Certificate{"A": keyBCA_A}}
+	verifier := &fakeIssuerVerifier{registry: map[string]*x509.Certificate{"a": keyBCA_A}}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 
 	state := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, keyBCA_A}}}
@@ -253,11 +254,11 @@ func TestMTLSAuthenticator_IssuerTenantBinding_ClusterCAExempt(t *testing.T) {
 	// A holder/node leaf signed by the CLUSTER CA, naming tenant B's profile
 	// in its OU (the holder-profile convention) -- must authenticate
 	// regardless of what tenant B's own registered Key B CA is.
-	leaf := testLeafSignedBy(t, clusterCA, clusterKey, "officer", []string{"B"})
+	leaf := testLeafSignedBy(t, clusterCA, clusterKey, "officer", []string{"b"})
 
 	verifier := &fakeIssuerVerifier{
 		clusterCA: clusterCA,
-		registry:  map[string]*x509.Certificate{"B": keyBCA_B},
+		registry:  map[string]*x509.Certificate{"b": keyBCA_B},
 	}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 
@@ -278,11 +279,11 @@ func TestMTLSAuthenticator_IssuerTenantBinding_ClusterCAExempt(t *testing.T) {
 func TestMTLSAuthenticator_IssuerTenantBinding_StaticallyTrustedCAAccepted(t *testing.T) {
 	staticCA, staticKey := testCA(t, "operator-static-ca")
 	keyBCA_B, _ := testCA(t, "tenant-B-key-b")
-	leaf := testLeafSignedBy(t, staticCA, staticKey, "officer", []string{"B"})
+	leaf := testLeafSignedBy(t, staticCA, staticKey, "officer", []string{"b"})
 
 	verifier := &fakeIssuerVerifier{
 		staticallyTrusted: staticCA,
-		registry:          map[string]*x509.Certificate{"B": keyBCA_B},
+		registry:          map[string]*x509.Certificate{"b": keyBCA_B},
 	}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 
@@ -296,7 +297,7 @@ func TestMTLSAuthenticator_IssuerTenantBinding_StaticallyTrustedCAAccepted(t *te
 
 func TestMTLSAuthenticator_IssuerTenantBinding_CheckerErrorRefuses(t *testing.T) {
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
-	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"A"})
+	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"a"})
 
 	verifier := &fakeIssuerVerifier{err: errors.New("barrier is sealed")}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
@@ -318,7 +319,7 @@ func TestMTLSAuthenticator_IssuerTenantBinding_NilVerifierUnenforced(t *testing.
 	// No WithIssuerVerifier: behavior must be identical to before the check
 	// existed, even with a chain whose issuer names no tenant at all.
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
-	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"B"}) // mismatched OU, no verifier configured
+	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"b"}) // mismatched OU, no verifier configured
 	authn := NewMTLSAuthenticator()
 
 	state := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, keyBCA_A}}}
@@ -336,11 +337,11 @@ func TestMTLSAuthenticator_IssuerTenantBinding_AnySatisfyingChainAccepted(t *tes
 	// not only the first.
 	clusterCA, _ := testCA(t, "cluster-ca")
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
-	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"A"})
+	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"a"})
 
 	verifier := &fakeIssuerVerifier{
 		clusterCA: clusterCA,
-		registry:  map[string]*x509.Certificate{"A": keyBCA_A},
+		registry:  map[string]*x509.Certificate{"a": keyBCA_A},
 	}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 
@@ -366,11 +367,11 @@ func TestMTLSAuthenticator_IssuerTenantBinding_AnySatisfyingChainAccepted(t *tes
 func TestMTLSAuthenticator_IssuerTenantBinding_ShortChainSkipped(t *testing.T) {
 	clusterCA, _ := testCA(t, "cluster-ca")
 	keyBCA, keyBKey := testCA(t, "tenant-a-key-b")
-	leaf := testLeafSignedBy(t, keyBCA, keyBKey, "alice", []string{"A"})
+	leaf := testLeafSignedBy(t, keyBCA, keyBKey, "alice", []string{"a"})
 
 	verifier := &fakeIssuerVerifier{
 		clusterCA: clusterCA,
-		registry:  map[string]*x509.Certificate{"A": keyBCA},
+		registry:  map[string]*x509.Certificate{"a": keyBCA},
 	}
 	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
 

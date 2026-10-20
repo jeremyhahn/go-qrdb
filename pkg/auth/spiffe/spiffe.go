@@ -12,19 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package spiffe verifies tenant-scoped SPIFFE identities carried as URI SANs
-// on mTLS client certificates. The canonical string form is:
+// Package spiffe parses and builds the workload SPIFFE IDs carried as URI SANs
+// on mTLS client certificates, to the SPIFFE ID standard
+// (docs/reference/spiffe-id.md). The canonical string form is:
 //
-//	spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>
+//	spiffe://<trust-domain>/<kind>/<name>
 //
-// where kind is "user" (human identity), "svc" (service identity) or
-// "holder" (a Shamir share holder: a Security Officer or key custodian whose
-// certificate the ceremony CA issued for share custody only). go-qrdb
-// is the bottom layer and owns mTLS authentication, so it carries its own
-// SPIFFE verifier rather than importing the issuer-side helper from go-xkms
-// (which depends on go-qrdb). The format is kept identical on both sides; this
-// package is the verification source of truth and pins the operator-configured
-// trust domain (fail-closed on mismatch).
+// where kind is "user" (human identity) or "svc" (service identity). The
+// trust domain of a tenant's workload is the tenant ID, verbatim: each tenant
+// is its own trust domain. A certificate that names no tenant -- a node's --
+// is under the cluster's trust domain. go-qrdb is the bottom layer and owns
+// mTLS authentication, so it carries its own SPIFFE verifier rather than
+// importing the issuer-side helper from go-xkms (which depends on go-qrdb).
+// The format is kept identical on both sides; this package is the
+// verification source of truth, and refuses any URI the standard does not
+// allow as a SPIFFE ID (fail-closed).
 package spiffe
 
 import (
@@ -41,8 +43,21 @@ var (
 	// ErrTrustDomainEmpty indicates an empty trust domain was parsed.
 	ErrTrustDomainEmpty = errors.New("spiffe: trust domain must not be empty")
 
-	// ErrTenantEmpty indicates an empty tenant ID was parsed.
-	ErrTenantEmpty = errors.New("spiffe: tenant id must not be empty")
+	// ErrTrustDomainInvalid indicates a trust domain that is not a SPIFFE
+	// trust domain name: anything but lowercase letters, digits, dots, dashes
+	// and underscores, or longer than 255 bytes (SPIFFE ID §2.1, §2.3).
+	ErrTrustDomainInvalid = errors.New("spiffe: trust domain is not a valid spiffe trust domain name")
+
+	// ErrURIInvalid indicates a spiffe URI the standard does not allow as a
+	// SPIFFE ID: one with userinfo, a query, a fragment or an opaque part, or
+	// one longer than 2048 bytes (SPIFFE ID §2, §2.1, §2.3).
+	ErrURIInvalid = errors.New("spiffe: uri is not a valid spiffe id")
+
+	// ErrPathInvalid indicates a SPIFFE ID path the standard forbids -- an
+	// empty, "." or ".." segment, a trailing "/", a percent-encoded character,
+	// or a character outside letters, digits, dots, dashes and underscores
+	// (SPIFFE ID §2.2) -- or one that is not the workload form /<kind>/<name>.
+	ErrPathInvalid = errors.New("spiffe: path is not a valid workload spiffe id path")
 
 	// ErrKindInvalid indicates an unsupported workload kind was parsed.
 	ErrKindInvalid = errors.New("spiffe: kind must be user or svc")
@@ -50,36 +65,35 @@ var (
 	// ErrNameEmpty indicates an empty workload name was parsed.
 	ErrNameEmpty = errors.New("spiffe: name must not be empty")
 
-	// ErrTrustDomainMismatch indicates the certificate's SPIFFE trust domain
-	// does not match the operator-pinned trust domain. Fail-closed: the
-	// certificate must be rejected.
-	ErrTrustDomainMismatch = errors.New("spiffe: trust domain does not match pinned trust domain")
+	// ErrTrustDomainMismatch indicates a SPIFFE ID under a trust domain other
+	// than the one the certificate must name: a node's outside the pinned
+	// cluster trust domain, or a certificate with no tenant outside it.
+	// Fail-closed: the certificate must be rejected.
+	ErrTrustDomainMismatch = errors.New("spiffe: trust domain does not match the expected trust domain")
 
-	// ErrNoTenantSPIFFEID indicates no tenant-scoped SPIFFE SAN was found.
-	ErrNoTenantSPIFFEID = errors.New("spiffe: no tenant spiffe identity present")
-
-	// ErrTrustDomainInvalid indicates a trust domain that does not survive
-	// being written into a SPIFFE ID and parsed back -- a path separator, a
-	// port, or anything else url.URL will not carry as a bare host.
-	ErrTrustDomainInvalid = errors.New("spiffe: trust domain does not round-trip through a spiffe id")
-
-	// ErrIDNotRoundTrip indicates an ID whose URI does not parse back to the
-	// same ID -- a name or tenant carrying a path separator, for one.
-	ErrIDNotRoundTrip = errors.New("spiffe: id does not round-trip through its uri")
+	// ErrNoTenantSPIFFEID indicates no workload SPIFFE ID SAN was found.
+	ErrNoTenantSPIFFEID = errors.New("spiffe: no workload spiffe id present")
 )
 
-// AmbiguousTenantError is returned by TenantFromCert when a certificate
-// carries tenant-scoped SPIFFE SANs naming more than one distinct tenant. Such
-// a certificate names no tenant: answering with the first SAN would let the
-// issuer's SAN order choose the tenant, so it is refused (fail-closed).
+// SPIFFE ID length bounds (SPIFFE ID §2.3).
+const (
+	maxTrustDomainLen = 255
+	maxIDLen          = 2048
+)
+
+// AmbiguousTenantError is returned by WorkloadFromCert when a certificate
+// carries workload SPIFFE IDs under more than one distinct trust domain. A
+// trust domain is a tenant, so such a certificate names no tenant: answering
+// with the first SAN would let the issuer's SAN order choose the tenant, so it
+// is refused (fail-closed).
 type AmbiguousTenantError struct {
-	// TenantIDs are the distinct tenants the SANs name, in SAN order.
-	TenantIDs []string
+	// TrustDomains are the distinct trust domains the SANs name, in SAN order.
+	TrustDomains []string
 }
 
-// Error returns a human-readable description naming every tenant.
+// Error returns a human-readable description naming every trust domain.
 func (e *AmbiguousTenantError) Error() string {
-	return "spiffe: certificate names more than one tenant: " + strings.Join(e.TenantIDs, ", ")
+	return "spiffe: certificate names more than one trust domain: " + strings.Join(e.TrustDomains, ", ")
 }
 
 // Workload kinds.
@@ -93,169 +107,194 @@ const (
 	scheme = "spiffe"
 )
 
-// ID describes a tenant-scoped SPIFFE identity extracted from a certificate.
+// ID describes a workload SPIFFE identity, spiffe://<TrustDomain>/<Kind>/<Name>.
+// For a tenant's workload TrustDomain is the tenant ID.
 type ID struct {
 	TrustDomain string
-	TenantID    string
 	Kind        string
 	Name        string
 }
 
-// Validate verifies all fields are present and well-formed.
+// Validate verifies every field is present and makes a SPIFFE ID: the trust
+// domain is a SPIFFE trust domain name, the kind is KindUser or KindService,
+// the name is one SPIFFE ID path segment, and the whole ID is within the
+// standard's length bound.
 func (id ID) Validate() error {
-	if strings.TrimSpace(id.TrustDomain) == "" {
-		return ErrTrustDomainEmpty
-	}
-	if strings.TrimSpace(id.TenantID) == "" {
-		return ErrTenantEmpty
+	if err := checkTrustDomain(id.TrustDomain); err != nil {
+		return err
 	}
 	if id.Kind != KindUser && id.Kind != KindService {
 		return ErrKindInvalid
 	}
-	if strings.TrimSpace(id.Name) == "" {
+	if id.Name == "" {
 		return ErrNameEmpty
+	}
+	if !validSegment(id.Name) {
+		return ErrPathInvalid
+	}
+	if len(id.url().String()) > maxIDLen {
+		return ErrURIInvalid
 	}
 	return nil
 }
 
-// String renders the canonical SPIFFE string form.
+// String renders the canonical SPIFFE string form, or "" for an ID that does
+// not validate.
 func (id ID) String() string {
 	if id.Validate() != nil {
 		return ""
 	}
-	u := &url.URL{
-		Scheme: scheme,
-		Host:   id.TrustDomain,
-		Path:   "/tenant/" + id.TenantID + "/" + id.Kind + "/" + id.Name,
-	}
-	return u.String()
+	return id.url().String()
 }
 
 // URI builds the URI SAN a certificate authority issues for id. It is the
-// builder TenantFromCert is the parser of: the URI is returned only when
-// ParseID reads it back as exactly id, so a SAN built here is one the
-// authenticator accepts as naming id. A refusal is an *IDError that unwraps
-// to the Validate sentinel for a missing or invalid field, or to
-// ErrIDNotRoundTrip.
+// builder WorkloadFromCert is the parser of: Validate admits only characters
+// a SPIFFE ID carries unescaped, so ParseID reads the URI back as exactly id.
+// A refusal is an *IDError that unwraps to the Validate sentinel.
 func (id ID) URI() (*url.URL, error) {
 	if err := id.Validate(); err != nil {
 		return nil, &IDError{ID: id, Err: err}
 	}
-	u, err := url.Parse(id.String())
-	if err != nil {
-		return nil, &IDError{ID: id, Err: ErrIDNotRoundTrip}
-	}
-	if got, ok, err := ParseID(u); err != nil || !ok || got != id {
-		return nil, &IDError{ID: id, Err: ErrIDNotRoundTrip}
-	}
-	return u, nil
+	return id.url(), nil
 }
 
-// ParseID extracts a tenant SPIFFE identity from a URI. It returns false (not
-// an error) when the URI is not a SPIFFE tenant path so callers can skip
-// non-SPIFFE SANs. A malformed tenant SPIFFE path returns an error.
+func (id ID) url() *url.URL {
+	return &url.URL{Scheme: scheme, Host: id.TrustDomain, Path: "/" + id.Kind + "/" + id.Name}
+}
+
+// ParseID extracts a workload SPIFFE identity from a URI. It returns false
+// (not an error) when the URI is not a SPIFFE ID, or is a node identity
+// (ParseNodeID's), so callers can skip those SANs. Any other spiffe URI must be
+// a SPIFFE ID to the standard and of the workload form /<kind>/<name>;
+// otherwise it returns the sentinel naming what is wrong (fail-closed).
 func ParseID(u *url.URL) (ID, bool, error) {
 	if u == nil || u.Scheme != scheme {
 		return ID{}, false, nil
 	}
-	if u.Host == "" {
-		return ID{}, false, ErrTrustDomainEmpty
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) != 4 || parts[0] != "tenant" {
+	if strings.HasPrefix(u.Path, "/"+nodePathSegment+"/") {
 		return ID{}, false, nil
 	}
-	id := ID{
-		TrustDomain: u.Host,
-		TenantID:    parts[1],
-		Kind:        parts[2],
-		Name:        parts[3],
+	if u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
+		u.Fragment != "" || u.RawFragment != "" || len(u.String()) > maxIDLen {
+		return ID{}, false, ErrURIInvalid
 	}
-	if err := id.Validate(); err != nil {
+	if err := checkTrustDomain(u.Host); err != nil {
 		return ID{}, false, err
+	}
+	// A percent-encoded path leaves RawPath set: the decoded Path is not
+	// what the certificate carries.
+	if u.RawPath != "" || !strings.HasPrefix(u.Path, "/") {
+		return ID{}, false, ErrPathInvalid
+	}
+	parts := strings.Split(u.Path[1:], "/")
+	for _, seg := range parts {
+		if !validSegment(seg) {
+			return ID{}, false, ErrPathInvalid
+		}
+	}
+	if len(parts) != 2 {
+		return ID{}, false, ErrPathInvalid
+	}
+	id := ID{TrustDomain: u.Host, Kind: parts[0], Name: parts[1]}
+	if id.Kind != KindUser && id.Kind != KindService {
+		return ID{}, false, ErrKindInvalid
 	}
 	return id, true, nil
 }
 
-// TenantFromCert scans a certificate's URI SANs for a tenant-scoped SPIFFE
-// identity, enforcing the pinned trust domain (fail-closed). Every URI SAN is
-// examined; the answer never depends on SAN order.
-//   - When pinnedTrustDomain is non-empty, ANY SPIFFE SAN whose trust domain
-//     differs -- a tenant path or not, first or last -- returns
-//     ErrTrustDomainMismatch (reject foreign certs).
-//   - Tenant SANs naming more than one distinct tenant return
+// WorkloadFromCert scans a certificate's URI SANs for its workload SPIFFE
+// identity. Every URI SAN is examined; the answer never depends on SAN order.
+//   - A malformed SPIFFE SAN returns the parse error (fail-closed).
+//   - Workload SANs under more than one distinct trust domain return
 //     *AmbiguousTenantError: the certificate names no tenant.
-//   - A malformed tenant SPIFFE SAN returns the parse error (fail-closed).
-//   - When no tenant SPIFFE SAN is present, returns ErrNoTenantSPIFFEID so the
-//     caller can fall back to home-realm discovery or fail closed.
+//   - When no workload SPIFFE SAN is present, returns ErrNoTenantSPIFFEID.
 //
-// With pinnedTrustDomain empty any trust domain is accepted. Production
-// composers must pin.
-func TenantFromCert(cert *x509.Certificate, pinnedTrustDomain string) (ID, error) {
+// It reads names and does not decide which trust domain the certificate must
+// be under: that depends on the tenant its Subject names, which is the mTLS
+// authenticator's rule (auth.TenantFromClientCert).
+func WorkloadFromCert(cert *x509.Certificate) (ID, error) {
 	if cert == nil {
 		return ID{}, ErrNoTenantSPIFFEID
 	}
 	var (
 		found   ID
-		tenants []string
+		domains []string
 	)
 	for _, u := range cert.URIs {
 		id, ok, err := ParseID(u)
 		if err != nil {
 			return ID{}, err
 		}
-		if u == nil || u.Scheme != scheme {
-			continue
-		}
-		if pinnedTrustDomain != "" && u.Host != pinnedTrustDomain {
-			return ID{}, ErrTrustDomainMismatch
-		}
 		if !ok {
 			continue
 		}
-		if len(tenants) == 0 {
+		if len(domains) == 0 {
 			found = id
 		}
-		if !slices.Contains(tenants, id.TenantID) {
-			tenants = append(tenants, id.TenantID)
+		if !slices.Contains(domains, id.TrustDomain) {
+			domains = append(domains, id.TrustDomain)
 		}
 	}
-	switch len(tenants) {
+	switch len(domains) {
 	case 0:
 		return ID{}, ErrNoTenantSPIFFEID
 	case 1:
 		return found, nil
 	default:
-		return ID{}, &AmbiguousTenantError{TenantIDs: tenants}
+		return ID{}, &AmbiguousTenantError{TrustDomains: domains}
 	}
 }
 
+// checkTrustDomain returns nil when td is a SPIFFE trust domain name (SPIFFE
+// ID §2.1, §2.3), and ErrTrustDomainEmpty or ErrTrustDomainInvalid otherwise.
+func checkTrustDomain(td string) error {
+	if td == "" {
+		return ErrTrustDomainEmpty
+	}
+	if len(td) > maxTrustDomainLen {
+		return ErrTrustDomainInvalid
+	}
+	for i := 0; i < len(td); i++ {
+		if c := td[i]; !isLowerAlnum(c) && !isPunct(c) {
+			return ErrTrustDomainInvalid
+		}
+	}
+	return nil
+}
+
+// validSegment reports whether seg is a SPIFFE ID path segment (SPIFFE ID
+// §2.2): non-empty, not a relative path modifier, and only letters, digits,
+// dots, dashes and underscores.
+func validSegment(seg string) bool {
+	if seg == "" || seg == "." || seg == ".." {
+		return false
+	}
+	for i := 0; i < len(seg); i++ {
+		if c := seg[i]; !isLowerAlnum(c) && !isPunct(c) && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+func isLowerAlnum(c byte) bool { return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' }
+
+func isPunct(c byte) bool { return c == '.' || c == '-' || c == '_' }
+
 // ValidateTrustDomain reports whether trustDomain can be pinned and minted
-// under: it must be non-empty and survive being written into a tenant SPIFFE ID
-// and parsed back unchanged by ParseID -- the same round trip the certificate
-// authority applies before it mints a SAN, and the one the authenticator
-// applies to a presented certificate. A trust domain that fails it would make
-// the CA refuse every certificate, so configuration validates it at load.
+// under: it must be a SPIFFE trust domain name (SPIFFE ID §2.1) -- the same
+// check the authenticator applies to a presented certificate and the
+// certificate authority applies before it mints a SAN. A trust domain that
+// fails it would make the CA refuse every certificate, so configuration
+// validates it at load.
 //
 // A refusal is a *TrustDomainError carrying the rejected value; it unwraps to
 // ErrTrustDomainEmpty or ErrTrustDomainInvalid.
 func ValidateTrustDomain(trustDomain string) error {
-	if strings.TrimSpace(trustDomain) == "" {
-		return &TrustDomainError{Value: trustDomain, Err: ErrTrustDomainEmpty}
+	if err := checkTrustDomain(trustDomain); err != nil {
+		return &TrustDomainError{Value: trustDomain, Err: err}
 	}
-	// The probe is valid by construction once the trust domain is non-blank,
-	// so String cannot come back empty here.
-	probe := ID{TrustDomain: trustDomain, TenantID: "tenant", Kind: KindUser, Name: "name"}
-	// Both halves of the round trip must hold: the URI parses, and it parses
-	// back to exactly the probe. url.URL either reproduces a host verbatim or
-	// refuses to parse it, so in practice the first half is the one that
-	// fails; the second is kept because it is the property that matters.
-	if u, err := url.Parse(probe.String()); err == nil {
-		if got, ok, err := ParseID(u); err == nil && ok && got == probe {
-			return nil
-		}
-	}
-	return &TrustDomainError{Value: trustDomain, Err: ErrTrustDomainInvalid}
+	return nil
 }
 
 // TrustDomainError reports a trust domain ValidateTrustDomain refused, and
@@ -284,14 +323,13 @@ type IDError struct {
 	// ID is the identity as given.
 	ID ID
 
-	// Err is a Validate sentinel or ErrIDNotRoundTrip.
+	// Err is the Validate sentinel, or the issuer's own refusal.
 	Err error
 }
 
 // Error names the refused identity's fields and why.
 func (e *IDError) Error() string {
 	return "spiffe: id (trust domain " + strconv.Quote(e.ID.TrustDomain) +
-		", tenant " + strconv.Quote(e.ID.TenantID) +
 		", kind " + strconv.Quote(e.ID.Kind) +
 		", name " + strconv.Quote(e.ID.Name) + ") refused: " + e.Err.Error()
 }

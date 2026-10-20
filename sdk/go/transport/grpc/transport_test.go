@@ -36,6 +36,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	grpcserver "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
@@ -629,6 +630,65 @@ func TestConnect_UnreachableServer(t *testing.T) {
 	var connErr *transport.ConnectionError
 	if !errors.As(err, &connErr) {
 		t.Fatalf("expected *transport.ConnectionError, got %T: %v", err, err)
+	}
+}
+
+// TestConnect_UnauthenticatedIsTheTypedRefusal: a server that refuses the
+// caller's credential has answered. Connect returns that refusal, with its
+// message, as the RequestError every other RPC returns -- not a connection
+// failure that hides why.
+// refusedCredentialError is a service error the server answers with
+// codes.Unauthenticated, as the auth chain answers a refused certificate.
+type refusedCredentialError struct{}
+
+func (refusedCredentialError) Error() string {
+	return "client certificate is invalid or unverified"
+}
+
+func (refusedCredentialError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
+
+func TestConnect_UnauthenticatedIsTheTypedRefusal(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.healthErr = refusedCredentialError{}
+	addr, stopSrv := startGRPCTestServer(t, newMockKVService(), adminSvc)
+	defer stopSrv()
+	tr, err := New(transport.WithAddress(addr), sharedGRPCClientTLSOption())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	err = tr.Connect(context.Background())
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(codes.Unauthenticated) {
+		t.Fatalf("Connect error = %T %v, want a RequestError carrying Unauthenticated", err, err)
+	}
+	if !strings.Contains(err.Error(), "client certificate is invalid or unverified") {
+		t.Errorf("Connect error = %v, want the server's refusal message", err)
+	}
+	var connErr *transport.ConnectionError
+	if errors.As(err, &connErr) {
+		t.Errorf("Connect error = %v, want the server's refusal, not a connection failure", err)
+	}
+}
+
+// TestConnect_HealthFailureIsAConnectionError: a Health failure that says
+// nothing about the caller stays a connection failure.
+func TestConnect_HealthFailureIsAConnectionError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.healthErr = errors.New("starting")
+	addr, stopSrv := startGRPCTestServer(t, newMockKVService(), adminSvc)
+	defer stopSrv()
+	tr, err := New(transport.WithAddress(addr), sharedGRPCClientTLSOption())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	err = tr.Connect(context.Background())
+	var connErr *transport.ConnectionError
+	if !errors.As(err, &connErr) {
+		t.Fatalf("Connect error = %T %v, want a ConnectionError", err, err)
 	}
 }
 

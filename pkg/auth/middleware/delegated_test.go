@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -122,8 +123,12 @@ func dlgPresented(t *testing.T) (context.Context, *auth.MTLSAuthenticator) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	uris, err := auth.TenantPrincipalURIs(authtest.ClientTrustDomain, "acme", spiffe.KindService, dlgPrincipal)
+	if err != nil {
+		t.Fatal(err)
+	}
 	leafTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(0xabc), Subject: pkix.Name{CommonName: "delegation", OrganizationalUnit: []string{"acme"}},
+		SerialNumber: big.NewInt(0xabc), Subject: pkix.Name{CommonName: "delegation", OrganizationalUnit: []string{"acme"}}, URIs: uris,
 		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(delegation.DefaultLifetime),
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, ExtraExtensions: []pkix.Extension{ext},
 	}
@@ -136,7 +141,7 @@ func dlgPresented(t *testing.T) (context.Context, *auth.MTLSAuthenticator) {
 		t.Fatal(err)
 	}
 	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf, ca}}}
-	a := auth.NewMTLSAuthenticator(auth.WithIssuerVerifier(&dlgIssuer{acme: ca}),
+	a := auth.NewMTLSAuthenticatorWithTrustDomain(authtest.ClientTrustDomain, auth.WithIssuerVerifier(&dlgIssuer{acme: ca}),
 		auth.WithRevocationChecker(dlgUnrevoked{}), auth.WithDelegatedPrincipal(dlgPrincipal))
 	return auth.WithTLSState(context.Background(), state), a
 }

@@ -48,6 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -441,10 +442,17 @@ func (f *delegationCA) sign(t *testing.T, g delegation.Grant, life time.Duration
 	if err != nil {
 		t.Fatalf("serial: %v", err)
 	}
+	// The tenant is named twice, agreeing: the Subject OU and the service
+	// SPIFFE ID SAN under the node's (default) trust domain.
+	uris, err := auth.TenantPrincipalURIs(qrdbconfig.DefaultClusterTrustDomain, g.Tenant, spiffe.KindService, g.Principal)
+	if err != nil {
+		t.Fatalf("delegation SPIFFE ID: %v", err)
+	}
 	notBefore := time.Now().Add(-time.Minute)
 	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
 		SerialNumber:    serial,
 		Subject:         pkix.Name{CommonName: auth.ServicePrincipalSubjectPrefix + g.Principal, OrganizationalUnit: []string{g.Tenant}},
+		URIs:            uris,
 		NotBefore:       notBefore,
 		NotAfter:        notBefore.Add(life),
 		KeyUsage:        x509.KeyUsageDigitalSignature,

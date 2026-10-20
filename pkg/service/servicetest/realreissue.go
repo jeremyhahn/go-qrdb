@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
@@ -96,6 +97,7 @@ func NewRealReissueStack(t testing.TB, soPIN string) (service.CeremonyServicer, 
 		t.Fatalf("NewRealReissueStack: NewCeremonyService: %v", err)
 	}
 	core.SetPINBackend(pintest.NewBackend(t))
+	core.SetTrustDomain(authtest.ClientTrustDomain)
 
 	ca, _ := ceremonytest.NewCA(t, "Test Ceremony CA")
 

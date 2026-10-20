@@ -69,11 +69,13 @@ func TestProviderCA_SignCSR(t *testing.T) {
 		ValidityDays: 1,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		TrustDomain:  testTrustDomain,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "officer1", cert.Subject.CommonName)
 	require.Equal(t, []string{"system"}, cert.Subject.OrganizationalUnit)
-	require.Empty(t, cert.URIs, "ProviderCA must carry over no SAN from the CSR")
+	require.Equal(t, []string{"spiffe://system/user/officer1"}, uriStrings(cert),
+		"ProviderCA carries over no SAN from the CSR; its one SAN is the agreeing tenant SPIFFE ID")
 }
 
 func TestProviderCA_SignCSR_InvalidOptions(t *testing.T) {

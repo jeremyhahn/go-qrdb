@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -56,7 +57,10 @@ type certKey struct {
 
 // mintCert issues a self-signed leaf naming cn/ou. A nil key generates a
 // fresh one; passing an existing key reissues for the same public key, which
-// is what makes the SPKI thumbprint stable across renewal.
+// is what makes the SPKI thumbprint stable across renewal. With no spiffeURI
+// the leaf carries the SPIFFE ID SAN agreeing with ou
+// (authtest.SetClientTenant), the shape every tenant certificate must have;
+// a spiffeURI replaces it verbatim.
 func mintCert(t *testing.T, cn, ou string, key *ecdsa.PrivateKey, spiffeURI string) certKey {
 	t.Helper()
 	if key == nil {
@@ -72,7 +76,10 @@ func mintCert(t *testing.T, cn, ou string, key *ecdsa.PrivateKey, spiffeURI stri
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 	}
-	if ou != "" {
+	switch {
+	case ou != "" && spiffeURI == "":
+		authtest.SetClientTenant(t, tmpl, ou, cn)
+	case ou != "":
 		tmpl.Subject.OrganizationalUnit = []string{ou}
 	}
 	if spiffeURI != "" {
@@ -331,16 +338,16 @@ func TestAuthenticate_ExpiredBindingDoesNotAdmit(t *testing.T) {
 // The SPIFFE SAN path is NOT exempt
 // ---------------------------------------------------------------------------
 
-// TestAuthenticate_SPIFFETenantSANIsNotExempt asserts the check applies to
-// the SPIFFE path as well as the OU fallback. The SAN is issued by the SAME
-// CA as the OU, so a certificate that derives its tenant from a SPIFFE SAN
-// carries no stronger claim to the identity it names.
+// TestAuthenticate_SPIFFETenantSANIsNotExempt asserts the check applies to a
+// certificate whose tenant the SPIFFE SAN names, agreeing with its OU as every
+// tenant certificate must. The SAN is issued by the SAME CA as the OU, so it
+// carries no stronger claim to the identity it names than the OU does.
 func TestAuthenticate_SPIFFETenantSANIsNotExempt(t *testing.T) {
 	svc := newRealUserStore(t)
 	dave := createUser(t, svc, "acme", "dave", []string{"admin"})
 	enroll(t, svc, dave.ID, mintCert(t, "dave", "acme", nil, ""))
 
-	forged := mintCert(t, "dave", "", nil, "spiffe://example.com/tenant/acme/user/dave")
+	forged := mintCert(t, "dave", "acme", nil, "spiffe://acme/user/dave")
 
 	m := newTestMiddleware(&mockAuthorizer{},
 		WithAuthenticator(auth.NewMTLSAuthenticatorWithTrustDomain("example.com")),
@@ -349,6 +356,9 @@ func TestAuthenticate_SPIFFETenantSANIsNotExempt(t *testing.T) {
 	_, identity, err := m.authenticate(mtlsContext(forged))
 	if err == nil {
 		t.Fatalf("a SPIFFE-SAN certificate bound to no user authenticated as %+v", identity)
+	}
+	if cte := (*auth.CertificateTenantError)(nil); errors.As(err, &cte) {
+		t.Fatalf("refused for its tenant fields (%v), not by the binding check this test is about", err)
 	}
 }
 

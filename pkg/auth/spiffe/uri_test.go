@@ -22,13 +22,13 @@ import (
 	"testing"
 )
 
-// TestURIRoundTripsThroughTenantFromCert is the builder's contract: a SAN it
+// TestURIRoundTripsThroughWorkloadFromCert is the builder's contract: a SAN it
 // builds, placed on a certificate, is read back by the parser as exactly the
-// identity it was built from, under the pinned trust domain.
-func TestURIRoundTripsThroughTenantFromCert(t *testing.T) {
+// identity it was built from.
+func TestURIRoundTripsThroughWorkloadFromCert(t *testing.T) {
 	for _, id := range []ID{
-		{TrustDomain: "db.example.com", TenantID: "acme", Kind: KindUser, Name: "alice"},
-		{TrustDomain: "db.example.com", TenantID: "acme", Kind: KindService, Name: "billing"},
+		{TrustDomain: "acme", Kind: KindUser, Name: "alice"},
+		{TrustDomain: "acme.example", Kind: KindService, Name: "Billing_v2.1-x"},
 	} {
 		u, err := id.URI()
 		if err != nil {
@@ -37,24 +37,30 @@ func TestURIRoundTripsThroughTenantFromCert(t *testing.T) {
 		if u.String() != id.String() {
 			t.Fatalf("URI = %q, want the canonical form %q", u, id.String())
 		}
-		got, err := TenantFromCert(&x509.Certificate{URIs: []*url.URL{u}}, id.TrustDomain)
+		got, err := WorkloadFromCert(&x509.Certificate{URIs: []*url.URL{u}})
 		if err != nil || got != id {
-			t.Fatalf("TenantFromCert = %+v, %v; want %+v", got, err, id)
+			t.Fatalf("WorkloadFromCert = %+v, %v; want %+v", got, err, id)
 		}
 	}
 }
 
+// TestURIRefusesAnInvalidField covers every field the builder refuses,
+// including those that would name a different identity or none: a slash in a
+// field, a trust domain with a path, an e-mail style name.
 func TestURIRefusesAnInvalidField(t *testing.T) {
-	valid := ID{TrustDomain: "db.example.com", TenantID: "acme", Kind: KindUser, Name: "alice"}
+	valid := ID{TrustDomain: "acme", Kind: KindUser, Name: "alice"}
 	tests := []struct {
 		name   string
 		mutate func(*ID)
 		want   error
 	}{
 		{"empty trust domain", func(id *ID) { id.TrustDomain = "" }, ErrTrustDomainEmpty},
-		{"empty tenant", func(id *ID) { id.TenantID = " " }, ErrTenantEmpty},
+		{"trust domain with a path", func(id *ID) { id.TrustDomain = "acme/evil" }, ErrTrustDomainInvalid},
+		{"uppercase trust domain", func(id *ID) { id.TrustDomain = "ACME" }, ErrTrustDomainInvalid},
 		{"unknown kind", func(id *ID) { id.Kind = "robot" }, ErrKindInvalid},
 		{"empty name", func(id *ID) { id.Name = "" }, ErrNameEmpty},
+		{"name with a slash", func(id *ID) { id.Name = "alice/extra" }, ErrPathInvalid},
+		{"e-mail name", func(id *ID) { id.Name = "alice@acme.example" }, ErrPathInvalid},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,25 +78,9 @@ func TestURIRefusesAnInvalidField(t *testing.T) {
 	}
 }
 
-// TestURIRefusesAnIdentityThatDoesNotRoundTrip covers the case Validate does
-// not: every field present, but the URI would name a different identity or
-// none, so a certificate carrying it would authenticate as someone else.
-func TestURIRefusesAnIdentityThatDoesNotRoundTrip(t *testing.T) {
-	for _, id := range []ID{
-		{TrustDomain: "db.example.com", TenantID: "acme/evil", Kind: KindUser, Name: "alice"},
-		{TrustDomain: "db.example.com", TenantID: "acme", Kind: KindUser, Name: "alice/extra"},
-		{TrustDomain: "db.example.com/path", TenantID: "acme", Kind: KindUser, Name: "alice"},
-	} {
-		u, err := id.URI()
-		if !errors.Is(err, ErrIDNotRoundTrip) || u != nil {
-			t.Fatalf("URI(%+v) = %v, %v; want ErrIDNotRoundTrip", id, u, err)
-		}
-	}
-}
-
 func TestIDErrorNamesTheIdentity(t *testing.T) {
-	err := &IDError{ID: ID{TrustDomain: "db.example.com", TenantID: "acme", Kind: "robot", Name: "r2"}, Err: ErrKindInvalid}
-	for _, want := range []string{`"db.example.com"`, `"acme"`, `"robot"`, `"r2"`, ErrKindInvalid.Error()} {
+	err := &IDError{ID: ID{TrustDomain: "acme", Kind: "robot", Name: "r2"}, Err: ErrKindInvalid}
+	for _, want := range []string{`"acme"`, `"robot"`, `"r2"`, ErrKindInvalid.Error()} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message %q does not mention %s", err.Error(), want)
 		}

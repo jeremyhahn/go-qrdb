@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -87,6 +88,11 @@ func (ca *parityCA) issue(t *testing.T, serial int64, subject pkix.Name, usage x
 	if usage == x509.ExtKeyUsageServerAuth {
 		tmpl.DNSNames = []string{"localhost"}
 		tmpl.IPAddresses = []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	}
+	if usage == x509.ExtKeyUsageClientAuth && len(subject.OrganizationalUnit) > 0 {
+		// A client certificate names its tenant twice, as the first OU and as
+		// the trust domain of its SPIFFE ID, and the two must agree.
+		tmpl.URIs = []*url.URL{authtest.ClientSPIFFEURI(t, subject.OrganizationalUnit[0], subject.CommonName)}
 	}
 	der, err := x509.CreateCertificate(crand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
 	if err != nil {

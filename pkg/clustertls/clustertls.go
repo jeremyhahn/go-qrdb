@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
@@ -450,10 +451,21 @@ func IssueLeafForKey(caCertPEM, caKeyPEM []byte, pub crypto.PublicKey, nodeURI .
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCertDER}), nil
 }
 
-// GenerateClientCert creates an ECDSA P-256 client certificate signed by the
-// given CA. CN is set to cn and OU to ou. The certificate carries only
-// ExtKeyUsageClientAuth so it cannot be used for server authentication.
-func GenerateClientCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn, ou string, validity time.Duration) (certPEM, keyPEM []byte, err error) {
+// GenerateClientCert creates an ECDSA P-256 client certificate for user cn
+// in tenantID, signed by the given CA. CN is cn, the Subject OU is tenantID,
+// and the one URI SAN is the SPIFFE ID spiffe://tenantID/user/cn under the
+// tenant's trust domain that agrees with it, as auth.TenantFromClientCert
+// requires of every tenant-principal certificate (auth.TenantPrincipalURIs).
+// trustDomain is the cluster trust domain, which no tenant may be; an
+// identity the SPIFFE grammar cannot carry is a *GenerateError. The
+// certificate carries only ExtKeyUsageClientAuth so it cannot be used for
+// server authentication.
+func GenerateClientCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, trustDomain, tenantID, cn string, validity time.Duration) (certPEM, keyPEM []byte, err error) {
+	sans, err := auth.TenantPrincipalURIs(trustDomain, tenantID, spiffe.KindUser, cn)
+	if err != nil {
+		return nil, nil, &GenerateError{Err: err}
+	}
+
 	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, &GenerateError{Err: err}
@@ -469,8 +481,9 @@ func GenerateClientCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn, o
 		Subject: pkix.Name{
 			Organization:       []string{"go-quicraft"},
 			CommonName:         cn,
-			OrganizationalUnit: []string{ou},
+			OrganizationalUnit: []string{tenantID},
 		},
+		URIs:      sans,
 		NotBefore: time.Now().Add(-1 * time.Minute),
 		NotAfter:  time.Now().Add(validity),
 		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

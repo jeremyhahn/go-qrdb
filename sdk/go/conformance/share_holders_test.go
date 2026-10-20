@@ -517,12 +517,23 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		if err != nil {
 			e.t.Fatal(err)
 		}
-		issued, err := e.ca.IssueCertificate(ctx, &ceremony.IssueCertRequest{
-			PublicKey:    adminKey.Public(),
-			CommonName:   "holder-admin",
+		// Signed the way the ceremony signs a tenant principal, so the
+		// certificate carries the system-tenant OU and the tenant SPIFFE ID
+		// SAN agreeing with it under the node's pinned trust domain.
+		csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+			Subject: pkix.Name{CommonName: "holder-admin"},
+		}, adminKey)
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		leaf, err := e.ca.SignCSR(ctx, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}), &ceremony.SignCSROptions{
+			TrustDomain:  e.cfg.Auth.EffectiveSPIFFETrustDomain(),
+			TenantID:     tenantid.System,
+			Username:     "holder-admin",
+			Profile:      "administrator",
+			ValidityDays: 1,
 			KeyUsage:     x509.KeyUsageDigitalSignature,
 			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-			ValidityDays: 1,
 		})
 		if err != nil {
 			e.t.Fatal(err)
@@ -531,10 +542,10 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		// identity is a real RBAC account (SealOfficerRevoke etc.), not a
 		// holder, so it needs an enrolled binding to authenticate at all --
 		// the same convention enrollMatrixCert uses for "matrix".
-		if _, err := svc.User.AddCertBinding(ctx, adminUser.ID, user.ComputeSPKIThumbprint(issued.Certificate), 0); err != nil {
+		if _, err := svc.User.AddCertBinding(ctx, adminUser.ID, user.ComputeSPKIThumbprint(leaf), 0); err != nil {
 			e.t.Fatalf("enrol holder-admin cert binding: %v", err)
 		}
-		cert := tls.Certificate{Certificate: [][]byte{issued.Certificate.Raw}, PrivateKey: adminKey, Leaf: issued.Certificate}
+		cert := tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: adminKey, Leaf: leaf}
 		e.adminTLS = &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: e.pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS13}
 	}
 	return e.dial(e.adminTLS).Barrier()
@@ -933,6 +944,7 @@ func TestShareHolders_UnregisteredHolderCertRefusedByRoster(t *testing.T) {
 		t.Fatal("mallory's own CSR did not encode")
 	}
 	cert, err := e.ca.SignCSR(boundedCtx(t), []byte(mallory.csrPEM), &ceremony.SignCSROptions{
+		TrustDomain:  e.cfg.Auth.EffectiveSPIFFETrustDomain(),
 		TenantID:     tenantid.System,
 		Username:     mallory.name,
 		Profile:      "security-officer",

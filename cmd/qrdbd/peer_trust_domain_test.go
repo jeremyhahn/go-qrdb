@@ -92,7 +92,7 @@ func TestPeerTransport_TrustsClusterCAOnly_KeyBLeafRefused(t *testing.T) {
 	// Key B: a tenant's login CA, standing in for the real
 	// cakey.SoftwareProvider-backed one. It signs a leaf the way
 	// cert.DefaultCertProvider.GenerateClientCert does, with the tenant in
-	// the Subject OU -- a credential that legitimately authenticates on the
+	// the Subject OU and the agreeing SPIFFE ID SAN -- a credential that legitimately authenticates on the
 	// client-facing listeners and must NOT also authenticate as a cluster
 	// node. TLSBundle carries no field this material could ever leak in
 	// through; it is generated independently here only to prove the
@@ -101,7 +101,7 @@ func TestPeerTransport_TrustsClusterCAOnly_KeyBLeafRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateCA (Key B): %v", err)
 	}
-	leafCertPEM, leafKeyPEM, err := clustertls.GenerateClientCert(keyBCert, keyBKey, "alice", "acme", clustertls.ClientValidity)
+	leafCertPEM, leafKeyPEM, err := clustertls.GenerateClientCert(keyBCert, keyBKey, "db.example.com", "acme", "alice", clustertls.ClientValidity)
 	if err != nil {
 		t.Fatalf("GenerateClientCert (Key B leaf): %v", err)
 	}

@@ -31,8 +31,9 @@ import (
 // TestRegisterOfficer_CAAssignsTheIdentity pins the §6 fix: the CSR asks to
 // be "admin" in the system security-officer profile, and the certificate the
 // CA issues names the holder it was registered as, in the scope's tenant with
-// the holder's profile, carries no Subject Alternative Name, and has nothing
-// the CSR asked for (the v0.28.1 SignCSROptions contract).
+// the holder's profile, carries exactly the agreeing tenant SPIFFE ID as its
+// Subject Alternative Name, and has nothing the CSR asked for (the
+// SignCSROptions contract).
 func TestRegisterOfficer_CAAssignsTheIdentity(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
 	h := newHolder(t, "carol", seal.RoleCustodian)
@@ -43,7 +44,8 @@ func TestRegisterOfficer_CAAssignsTheIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "carol", cert.Subject.CommonName)
 	assert.Equal(t, []string{tenantid.System, "custodian"}, cert.Subject.OrganizationalUnit)
-	assert.Empty(t, cert.URIs, "a holder certificate carries no SAN")
+	assert.Equal(t, []string{"spiffe://system/user/carol"}, uriStrings(cert),
+		"a holder certificate's one SAN is its agreeing tenant SPIFFE ID")
 	assert.Equal(t, seal.RoleCustodian, res.Role)
 	assert.Equal(t, mtls.Name, res.Designated)
 	assert.Equal(t, keydelivery.KEMP256, res.EncryptionKEM)

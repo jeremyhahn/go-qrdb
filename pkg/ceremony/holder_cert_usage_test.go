@@ -29,7 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// usageCA signs exactly the subject SignCSROptions asks for, over the CSR's
+// usageCA signs exactly the subject and SAN SignCSROptions asks for, over the CSR's
 // own key, but lets a test change what the certificate may DO: be a CA, sign
 // certificates, or carry different extended key usages. A holder certificate
 // that can sign certificates is a sub-CA under the cluster CA -- it could
@@ -53,12 +53,16 @@ func (c usageCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions)
 	if err != nil {
 		return nil, err
 	}
+	uris, err := opts.URIs()
+	if err != nil {
+		return nil, err
+	}
 	serial, err := randomSerial()
 	if err != nil {
 		return nil, err
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial, RawSubject: raw,
+		SerialNumber: serial, RawSubject: raw, URIs: uris,
 		NotBefore: c.caCert.NotBefore, NotAfter: c.caCert.NotAfter,
 		KeyUsage: opts.KeyUsage | c.keyUsage, ExtKeyUsage: opts.ExtKeyUsage,
 		BasicConstraintsValid: true, IsCA: c.isCA,
@@ -153,7 +157,7 @@ func (c reorderingCA) SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSRO
 func TestCheckIssuedSubject_ReorderedExtKeyUsagesAreAccepted(t *testing.T) {
 	csrPEM := newHostileCSRPEM(t, hostileCSRs[3])
 	opts := &SignCSROptions{
-		TenantID: "acme", Username: "officer", ValidityDays: 1,
+		TenantID: "acme", Username: "officer", ValidityDays: 1, TrustDomain: testTrustDomain,
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
@@ -170,6 +174,7 @@ func systemHoldersWith(t *testing.T, ca CeremonyCA) *CeremonyService {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, shamirBarrier(t, seal.NewMemoryBackend(), 2, 2), testLogger())
 	require.NoError(t, err)
 	svc.SetCA(ca)
+	svc.SetTrustDomain(testTrustDomain)
 	svc.SetFactorRegistry(testFactors(t))
 	svc.SetPINBackend(pintest.NewBackend(t))
 	return svc
@@ -207,7 +212,7 @@ func TestHolderCert_EveryEntryPointRefusesASubCA(t *testing.T) {
 			return err
 		},
 		"database holder registration": func(t *testing.T, ca CeremonyCA) error {
-			svc, err := NewDatabaseCeremonyService("acme", "vault", seal.NewMemoryBackend(), HolderDeps{CA: ca, Factors: testFactors(t)}, testLogger())
+			svc, err := NewDatabaseCeremonyService("acme", "vault", seal.NewMemoryBackend(), HolderDeps{TrustDomain: testTrustDomain, CA: ca, Factors: testFactors(t)}, testLogger())
 			require.NoError(t, err)
 			_, err = svc.RegisterOfficer(ctx, req(t))
 			officers, lerr := svc.ListOfficers(ctx)

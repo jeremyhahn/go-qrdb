@@ -57,15 +57,7 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	require.NoError(t, err)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
-	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:          newDeviceSigner(t).Public(),
-		CommonName:         "admin",
-		OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage:           x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays:       30,
-	})
-	require.NoError(t, err)
+	adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	cfg := byoTLSConfig(serverLeaf.CertPEM, clientCACertPEM)
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
@@ -73,7 +65,7 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	result, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		AdminCertPEM: adminLeaf.CertPEM,
+		AdminCertPEM: adminLeaf,
 	})
 	require.NoError(t, err)
 
@@ -86,7 +78,7 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	assert.Equal(t, clientCACertPEM, result.CACertPEM,
 		"CACertPEM must be the node's configured client-CA trust anchor")
 	assert.Equal(t, AdminCredentialBYOC, result.AdminCredentialSource)
-	assert.Equal(t, adminLeaf.CertPEM, result.AdminCertPEM)
+	assert.Equal(t, adminLeaf, result.AdminCertPEM)
 }
 
 // TestInitialize_BYOTLS_NoServerCertRefuses covers the failure half: a
@@ -102,21 +94,15 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
-	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, err)
+	adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	cfg := byoTLSConfig(nil, clientCACertPEM)
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
 
-	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
+	_, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		AdminCertPEM: adminLeaf.CertPEM,
+		AdminCertPEM: adminLeaf,
 	})
 	var noCert *NoServerCertificateError
 	require.ErrorAs(t, err, &noCert)
@@ -136,13 +122,7 @@ func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
 func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
-	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, err)
+	adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	cfg := byoTLSConfig(nil, clientCACertPEM)
 	barrier := testBarrier(t)
@@ -154,7 +134,7 @@ func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) 
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
 		Secret:       secretBuf,
-		AdminCertPEM: adminLeaf.CertPEM,
+		AdminCertPEM: adminLeaf,
 	})
 	var noCert *NoServerCertificateError
 	require.ErrorAs(t, err, &noCert)
@@ -175,13 +155,7 @@ func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) 
 func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
-	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, err)
+	adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	// A well-formed PEM CERTIFICATE block whose DER payload is garbage:
 	// pem.Decode succeeds (block != nil) but x509.ParseCertificate fails,
@@ -190,10 +164,10 @@ func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
 	cfg := byoTLSConfig(malformed, clientCACertPEM)
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
 
-	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
+	_, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		AdminCertPEM: adminLeaf.CertPEM,
+		AdminCertPEM: adminLeaf,
 	})
 	var noCert *NoServerCertificateError
 	require.ErrorAs(t, err, &noCert)
@@ -266,13 +240,7 @@ func TestInitialize_BYOTLS_BYOCDefaultsToClientCACertPEM(t *testing.T) {
 	require.NoError(t, err)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
-	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, err)
+	adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	cfg := byoTLSConfig(serverLeaf.CertPEM, clientCACertPEM)
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
@@ -280,11 +248,11 @@ func TestInitialize_BYOTLS_BYOCDefaultsToClientCACertPEM(t *testing.T) {
 	result, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		AdminCertPEM: adminLeaf.CertPEM,
+		AdminCertPEM: adminLeaf,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, AdminCredentialBYOC, result.AdminCredentialSource)
-	assert.Equal(t, adminLeaf.CertPEM, result.AdminCertPEM)
+	assert.Equal(t, adminLeaf, result.AdminCertPEM)
 }
 
 // TestInitialize_BYOTLS_BYOCUntrustedRefused proves the pool fallback is

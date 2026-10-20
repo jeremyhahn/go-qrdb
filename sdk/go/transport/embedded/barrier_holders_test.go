@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
@@ -57,6 +58,7 @@ func newSystemHolderTransport(t *testing.T) (*Transport, service.BarrierServicer
 	}
 	ca, _ := ceremonytest.NewCA(t, "Embedded Holder CA")
 	core.SetCA(ca)
+	core.SetTrustDomain(authtest.ClientTrustDomain)
 	svc := service.NewBarrierServiceWithCeremony(barrier, core)
 	return newExtTransport(t, WithBarrierService(svc)), svc, barrier, core
 }
@@ -293,7 +295,7 @@ func newTenantHolderTransport(t *testing.T) (*Transport, *tenant.TenantService) 
 	// Pebble, both under t-scoped temporary directories.
 	reg, _, _ := sealtest.PooledRegistry(t, sealtest.UnsealedBarrier(t))
 	ca, _ := ceremonytest.NewCA(t, "Embedded Tenant Holder CA")
-	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, logger, tenant.WithTenantHolderDeps(ceremony.HolderDeps{CA: ca}))
+	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, logger, tenant.WithTenantHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: authtest.ClientTrustDomain}))
 	if err != nil {
 		t.Fatal(err)
 	}

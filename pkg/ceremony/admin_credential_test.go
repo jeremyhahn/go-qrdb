@@ -16,15 +16,23 @@ package ceremony
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"math/big"
+	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // TestInitialize_AdminCredential_Generate covers the default path (go-qrdb#548):
@@ -74,6 +82,47 @@ func TestInitialize_AdminCredential_CSR(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "admin", cert.Subject.CommonName)
 	assert.Equal(t, []string{"system", "administrator"}, cert.Subject.OrganizationalUnit)
+	assert.Equal(t, []string{"spiffe://system/user/admin"}, uriStrings(cert),
+		"the admin credential's one SAN is its agreeing tenant SPIFFE ID")
+	tenantID, err := auth.TenantFromClientCert(cert, testTrustDomain)
+	require.NoError(t, err, "the admin credential must satisfy the OU/SPIFFE agreement rule")
+	assert.Equal(t, "system", tenantID)
+}
+
+// TestInitialize_AdminCredential_NoTrustDomainRefuses: a ceremony with no
+// trust domain cannot name the admin's SPIFFE ID, so Initialize issues no
+// admin credential rather than one the agreement rule would refuse.
+func TestInitialize_AdminCredential_NoTrustDomainRefuses(t *testing.T) {
+	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), testLogger())
+	require.NoError(t, err)
+	svc.SetPINBackend(pintest.NewBackend(t))
+
+	result, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
+	})
+	require.Error(t, err)
+	assert.Nil(t, result)
+	var subjErr *CertSubjectError
+	require.ErrorAs(t, err, &subjErr)
+	assert.Equal(t, "SubjectAltName", subjErr.Field)
+	assert.ErrorIs(t, err, spiffe.ErrTrustDomainEmpty)
+	last, _ := svc.LastIssuedAdminCertPEM()
+	assert.Empty(t, last, "no admin credential is issued without a trust domain")
+}
+
+// TestCeremonyService_SetTrustDomain: the trust domain set on the ceremony
+// reaches the holder dependencies it shares with tenant ceremonies, and a
+// later call replaces it.
+func TestCeremonyService_SetTrustDomain(t *testing.T) {
+	svc := newBareTestService(t)
+	assert.Empty(t, svc.HolderDeps().TrustDomain)
+
+	svc.SetTrustDomain("a.example")
+	assert.Equal(t, "a.example", svc.HolderDeps().TrustDomain)
+	svc.SetTrustDomain(testTrustDomain)
+	assert.Equal(t, testTrustDomain, svc.HolderDeps().TrustDomain)
 }
 
 // TestInitialize_AdminCredential_BYOC covers bring-your-own-certificate: a
@@ -81,15 +130,7 @@ func TestInitialize_AdminCredential_CSR(t *testing.T) {
 // and adopted unchanged -- nothing is signed, no key is generated.
 func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 	ca := newMockCA(t)
-	presented, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:          newDeviceSigner(t).Public(),
-		CommonName:         "admin",
-		OrganizationalUnit: []string{"system", "administrator"},
-		ValidityDays:       30,
-		KeyUsage:           x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
-	require.NoError(t, err)
+	presented := adminLeafPEM(t, ca, testTrustDomain)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.cert)
@@ -100,13 +141,23 @@ func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 	result, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
 		SOPin:            "test-so-pin",
 		UserPin:          "test-user-pin",
-		AdminCertPEM:     presented.CertPEM,
+		AdminCertPEM:     presented,
 		AdminCertPoolPEM: poolPEM,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, presented.CertPEM, result.AdminCertPEM)
+	assert.Equal(t, presented, result.AdminCertPEM)
 	assert.Empty(t, result.AdminKeyPEM)
 	assert.Equal(t, AdminCredentialBYOC, result.AdminCredentialSource)
+
+	// The adopted certificate is one the authenticator's own rule, pinned
+	// to the ceremony's trust domain, accepts as the system tenant.
+	block, _ := pem.Decode(result.AdminCertPEM)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	tenant, err := auth.TenantFromClientCert(cert, testTrustDomain)
+	require.NoError(t, err)
+	assert.Equal(t, "system", tenant)
 }
 
 // TestInitialize_AdminCredential_BYOC_DefaultsToClusterCA covers BYOC with no
@@ -114,25 +165,17 @@ func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 // bundle instead (docs/firstboot/user.md).
 func TestInitialize_AdminCredential_BYOC_DefaultsToClusterCA(t *testing.T) {
 	ca := newMockCA(t)
-	presented, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:          newDeviceSigner(t).Public(),
-		CommonName:         "admin",
-		OrganizationalUnit: []string{"system", "administrator"},
-		ValidityDays:       30,
-		KeyUsage:           x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
-	require.NoError(t, err)
+	presented := adminLeafPEM(t, ca, testTrustDomain)
 
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 
 	result, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		AdminCertPEM: presented.CertPEM,
+		AdminCertPEM: presented,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, presented.CertPEM, result.AdminCertPEM)
+	assert.Equal(t, presented, result.AdminCertPEM)
 	assert.Equal(t, AdminCredentialBYOC, result.AdminCredentialSource)
 }
 
@@ -244,6 +287,135 @@ func TestInitialize_AdminCredential_BYOC_ProfileChecklist(t *testing.T) {
 	}
 }
 
+// adminLeafPEM signs a bootstrap admin certificate through ca exactly as the
+// ceremony's CSR-sign path does -- CN=admin, OU=[system, administrator], the
+// admin's SPIFFE ID SAN under trustDomain -- for a test to present on the
+// BYOC path. The generated key is wiped: BYOC never sees it.
+func adminLeafPEM(t *testing.T, ca CeremonyCA, trustDomain string) []byte {
+	t.Helper()
+	csrPEM, keyPEM, err := generateAdminCSR()
+	require.NoError(t, err)
+	secure.Wipe(keyPEM)
+	certPEM, err := signAdminCSR(context.Background(), ca, trustDomain, csrPEM)
+	require.NoError(t, err)
+	return certPEM
+}
+
+// adminLeafNamingTenantPEM issues, from ca, a certificate that meets every
+// part of the bootstrap-admin profile (CommonName admin, the system tenant as
+// its first OU, client auth) except that its SPIFFE ID SAN names tenant as
+// its trust domain, so the OU and the SPIFFE ID disagree on the tenant.
+func adminLeafNamingTenantPEM(t *testing.T, ca *mockCA, tenant string) []byte {
+	t.Helper()
+	u, err := spiffe.ID{TrustDomain: tenant, Kind: spiffe.KindUser, Name: adminUsername}.URI()
+	require.NoError(t, err)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: adminUsername, OrganizationalUnit: []string{"system", "administrator"}},
+		URIs:         []*url.URL{u},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, newDeviceSigner(t).Public(), ca.key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestInitialize_AdminCredential_SPIFFEIdentityRefusedWithoutSideEffects
+// (go-qrdb#777): the bootstrap admin must name the system tenant in an
+// agreeing first OU and SPIFFE ID SAN under the trust domain the daemon's
+// authenticator pins (auth.TenantFromClientCert), or no login can ever use it.
+// A presented certificate that does not, or a ceremony with no trust domain to
+// sign under, is refused before Initialize provisions the PINs, brings the
+// system barrier up or issues anything.
+func TestInitialize_AdminCredential_SPIFFEIdentityRefusedWithoutSideEffects(t *testing.T) {
+	ca := newMockCA(t)
+	poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
+	noSAN, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:          newDeviceSigner(t).Public(),
+		CommonName:         "admin",
+		OrganizationalUnit: []string{"system", "administrator"},
+		ValidityDays:       30,
+		KeyUsage:           x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	require.NoError(t, err)
+	csrPEM, keyPEM, err := generateAdminCSR()
+	require.NoError(t, err)
+	secure.Wipe(keyPEM)
+
+	cases := map[string]struct {
+		trustDomain  string
+		opts         InitializeOptions
+		wantType     any
+		wantCause    error
+		wantMismatch *auth.TenantNameMismatchError
+	}{
+		"byoc without a SPIFFE ID SAN": {
+			trustDomain: testTrustDomain,
+			opts:        InitializeOptions{AdminCertPEM: noSAN.CertPEM, AdminCertPoolPEM: poolPEM},
+			wantType:    &AdminCredentialRejectedError{},
+			wantCause:   spiffe.ErrNoTenantSPIFFEID,
+		},
+		"byoc whose SPIFFE ID names another tenant as its trust domain": {
+			trustDomain:  testTrustDomain,
+			opts:         InitializeOptions{AdminCertPEM: adminLeafNamingTenantPEM(t, ca, "acme"), AdminCertPoolPEM: poolPEM},
+			wantType:     &AdminCredentialRejectedError{},
+			wantMismatch: &auth.TenantNameMismatchError{OU: "system", SPIFFETenant: "acme"},
+		},
+		"byoc with no trust domain": {
+			opts:      InitializeOptions{AdminCertPEM: adminLeafPEM(t, ca, testTrustDomain), AdminCertPoolPEM: poolPEM},
+			wantType:  &AdminCredentialRejectedError{},
+			wantCause: spiffe.ErrTrustDomainEmpty,
+		},
+		"csr-sign with no trust domain": {
+			opts:      InitializeOptions{AdminCSRPEM: csrPEM},
+			wantType:  &AdminCredentialIssuanceError{},
+			wantCause: spiffe.ErrTrustDomainEmpty,
+		},
+		"generate with no trust domain": {
+			opts:      InitializeOptions{AdminGenerate: true},
+			wantType:  &AdminCredentialIssuanceError{},
+			wantCause: spiffe.ErrTrustDomainEmpty,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			barrier := testBarrier(t)
+			svc := newTestCeremonyService(t, defaultConfig(), barrier)
+			svc.SetTrustDomain(tc.trustDomain)
+			opts := tc.opts
+			opts.SOPin, opts.UserPin = "test-so-pin", "test-user-pin"
+
+			result, err := svc.Initialize(context.Background(), ca, &opts)
+			require.Error(t, err)
+			assert.Nil(t, result)
+			assert.IsType(t, tc.wantType, err)
+			if tc.wantMismatch != nil {
+				var mismatch *auth.TenantNameMismatchError
+				require.ErrorAs(t, err, &mismatch)
+				assert.Equal(t, tc.wantMismatch, mismatch)
+			} else {
+				assert.ErrorIs(t, err, tc.wantCause)
+			}
+			assert.True(t, barrier.IsSealed(), "a refused admin identity must not bring the system barrier up")
+			assert.False(t, svc.pins.SOPINSet(), "a refused admin identity must not provision the SO PIN")
+			assert.False(t, svc.pins.UserPINSet(), "a refused admin identity must not provision the user PIN")
+			assert.Equal(t, StateAwaitingInit, svc.State())
+			last, _ := svc.LastIssuedAdminCertPEM()
+			assert.Empty(t, last)
+		})
+	}
+}
+
+// TestInitialize_AdminCredential_BYOC_AgreeingSPIFFEIDAccepted: a presented
+// certificate naming the system tenant in its first OU and in a SPIFFE ID SAN
+// under the ceremony's trust domain is adopted, and the authenticator's own
+// rule accepts it as the system tenant.
 // TestInitialize_AdminCredential_ConflictingInputs covers both AdminCSRPEM
 // and AdminCertPEM supplied together: refused, neither path is guessed.
 func TestInitialize_AdminCredential_ConflictingInputs(t *testing.T) {
@@ -333,13 +505,7 @@ func TestReissueAdminCredential_BYOTLSBYOCBinds(t *testing.T) {
 	require.NoError(t, err)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
-	firstAdminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, err)
+	firstAdminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	cfg := byoTLSConfig(serverLeaf.CertPEM, clientCACertPEM)
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
@@ -348,7 +514,7 @@ func TestReissueAdminCredential_BYOTLSBYOCBinds(t *testing.T) {
 	// BYO-TLS composition calls Initialize.
 	first, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin",
-		AdminCertPEM: firstAdminLeaf.CertPEM,
+		AdminCertPEM: firstAdminLeaf,
 	})
 	require.NoError(t, err)
 	require.Equal(t, AdminCredentialBYOC, first.AdminCredentialSource)
@@ -357,21 +523,15 @@ func TestReissueAdminCredential_BYOTLSBYOCBinds(t *testing.T) {
 	// admin account's binding before a restart); a second BYOC certificate
 	// is presented to the SO-PIN-gated reissue path instead of re-running
 	// the whole ceremony.
-	secondAdminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		PublicKey:  newDeviceSigner(t).Public(),
-		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
-	})
-	require.NoError(t, err)
+	secondAdminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 	second, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{
 		SOPin:        "test-so-pin",
-		AdminCertPEM: secondAdminLeaf.CertPEM,
+		AdminCertPEM: secondAdminLeaf,
 	})
 	require.NoError(t, err, "BYOC reissue on a BYO-TLS node (deps.CA == nil) must not refuse or panic")
 	assert.Equal(t, AdminCredentialBYOC, second.AdminCredentialSource)
-	assert.Equal(t, secondAdminLeaf.CertPEM, second.AdminCertPEM)
+	assert.Equal(t, secondAdminLeaf, second.AdminCertPEM)
 	assert.NotEqual(t, first.AdminCertPEM, second.AdminCertPEM, "reissue must bind the SECOND certificate, not replay the first")
 
 	last, source := svc.LastIssuedAdminCertPEM()
@@ -491,24 +651,18 @@ func TestReissueAdminCredential_WrongPINRefusedBeforeAnyCredentialWork(t *testin
 		})
 		require.NoError(t, err)
 		clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
-		adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-			PublicKey:  newDeviceSigner(t).Public(),
-			CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
-			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-			ValidityDays: 30,
-		})
-		require.NoError(t, err)
+		adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
 
 		svc := newTestCeremonyService(t, byoTLSConfig(serverLeaf.CertPEM, clientCACertPEM), testBarrier(t))
 		first, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
 			SOPin: "test-so-pin", UserPin: "test-user-pin",
-			AdminCertPEM: adminLeaf.CertPEM,
+			AdminCertPEM: adminLeaf,
 		})
 		require.NoError(t, err)
 
 		_, err = svc.ReissueAdminCredential(context.Background(), &InitializeOptions{
 			SOPin:        "definitely-the-wrong-pin",
-			AdminCertPEM: adminLeaf.CertPEM,
+			AdminCertPEM: adminLeaf,
 		})
 		require.ErrorIs(t, err, pin.ErrPINInvalid)
 

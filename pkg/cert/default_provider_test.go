@@ -319,11 +319,11 @@ func (e *errorKVStore) PutAllIfAllUnchanged(_ context.Context, _ []kvstore.Guard
 var _ kvstore.MultiGuardedBatchKVStore = (*errorKVStore)(nil)
 
 // newTestProvider creates a DefaultCertProvider with mocks, ready for
-// Initialize.
+// Initialize. It issues under sanTestDomain unless opts set another.
 func newTestProvider(opts ...ProviderOption) (*DefaultCertProvider, *mockKVStore, *mockBarrier) {
 	kv := newMockKVStore()
 	barrier := newMockBarrier()
-	return NewDefaultProvider(kv, barrier, opts...), kv, barrier
+	return NewDefaultProvider(kv, barrier, append([]ProviderOption{WithTrustDomain(sanTestDomain)}, opts...)...), kv, barrier
 }
 
 // initializeProvider creates and initializes a provider for tests.
@@ -454,7 +454,7 @@ func TestDefaultCertProvider_Initialize_StoreError(t *testing.T) {
 	barrier := newMockBarrier()
 	storeErr := errors.New("disk full")
 	ekv := &errorKVStore{err: storeErr}
-	p := NewDefaultProvider(ekv, barrier)
+	p := NewDefaultProvider(ekv, barrier, WithTrustDomain(sanTestDomain))
 
 	err := p.Initialize(context.Background())
 	if err == nil {
@@ -1402,7 +1402,7 @@ func TestDefaultCertProvider_Initialize_PutMaterialError(t *testing.T) {
 		mockKVStore:         newMockKVStore(),
 		failPutAllUnchanged: true,
 	}
-	p := NewDefaultProvider(pkv, barrier)
+	p := NewDefaultProvider(pkv, barrier, WithTrustDomain(sanTestDomain))
 
 	err := p.Initialize(context.Background())
 	if err == nil {
@@ -1421,7 +1421,7 @@ func TestDefaultCertProvider_RevokeCert_ScanError(t *testing.T) {
 		mockKVStore: inner,
 		failScan:    true,
 	}
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1492,7 +1492,7 @@ func TestDefaultCertProvider_RevokeCert_CorruptRecord(t *testing.T) {
 func TestDefaultCertProvider_IsRevoked_StoreError(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1515,7 +1515,7 @@ func TestDefaultCertProvider_IsRevoked_StoreError(t *testing.T) {
 func TestDefaultCertProvider_ListCerts_ScanError(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1554,7 +1554,7 @@ func TestDefaultCertProvider_ListCerts_CorruptRecord(t *testing.T) {
 func TestDefaultCertProvider_Unseal_LoadCA_CertificateMissing(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1580,7 +1580,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_CertificateMissing(t *testing.T) {
 func TestDefaultCertProvider_Unseal_LoadCA_MaterialCorrupt(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1607,7 +1607,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_MaterialCorrupt(t *testing.T) {
 func TestDefaultCertProvider_Unseal_LoadCA_CertificateNotDER(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1634,7 +1634,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_CertificateNotDER(t *testing.T) {
 func TestDefaultCertProvider_GenerateClientCert_RecordPutError(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -1658,7 +1658,7 @@ func TestDefaultCertProvider_GenerateClientCert_RecordPutError(t *testing.T) {
 func TestDefaultCertProvider_RevokeCert_PutRevokedKeyError(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
+	p := NewDefaultProvider(inner, barrier, WithTrustDomain(sanTestDomain))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {

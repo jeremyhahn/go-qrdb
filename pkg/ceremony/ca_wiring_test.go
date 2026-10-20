@@ -204,8 +204,9 @@ func TestReplaceCA_PostOperationalSigningSurvivesRestart(t *testing.T) {
 
 	csrPEM := generateTestCSRPEM(t, "post-restart-officer")
 	cert, err := restarted.CA().SignCSR(context.Background(), csrPEM, &SignCSROptions{
-		Username: "officer1",
-		TenantID: tenantid.System,
+		Username:    "officer1",
+		TenantID:    tenantid.System,
+		TrustDomain: testTrustDomain,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, cert)

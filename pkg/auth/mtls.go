@@ -18,7 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
+	"net/url"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -43,18 +43,14 @@ func TLSStateFromContext(ctx context.Context) *tls.ConnectionState {
 
 // MTLSAuthenticator extracts identity from mTLS peer certificates.
 //
-// The Subject CN becomes the identity Subject. The TenantID is derived, in
-// priority order:
+// The Subject CN becomes the identity Subject. The TenantID is the tenant
+// TenantFromClientCert reads: the trust domain of the workload SPIFFE URI SAN
+// (spiffe://<tenantID>/<kind>/<name>), which the first Subject OU must name
+// too. The configured trust domain is the cluster's: a certificate naming no
+// tenant must be under it, and no tenant may be it.
 //
-//  1. The tenant-scoped SPIFFE URI SAN
-//     (spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>). When a
-//     trust domain is configured it is PINNED: a SPIFFE SAN under a foreign
-//     trust domain is rejected (fail-closed) rather than silently ignored.
-//  2. The first Subject OU, as a legacy fallback for certificates issued
-//     before SPIFFE-SAN tenant binding (and for internal/system paths).
-//
-// This authenticator never invents a tenant: a SPIFFE SAN with a mismatched
-// trust domain is a hard rejection.
+// This authenticator never invents a tenant: a SPIFFE SAN whose trust domain
+// is not the OU's tenant is a hard rejection.
 type MTLSAuthenticator struct {
 	// pinnedTrustDomain, when non-empty, is the operator-configured SPIFFE
 	// trust domain. Any SPIFFE tenant SAN under a different trust domain is
@@ -193,58 +189,109 @@ func (a *MTLSAuthenticator) Name() string {
 
 // TenantFromCert derives the tenant from a verified client certificate with
 // TenantFromClientCert under this authenticator's pinned trust domain.
-func (a *MTLSAuthenticator) TenantFromCert(cert *x509.Certificate) (tenantID string, fromSPIFFE bool, err error) {
+func (a *MTLSAuthenticator) TenantFromCert(cert *x509.Certificate) (string, error) {
 	return TenantFromClientCert(cert, a.pinnedTrustDomain)
 }
 
 // TenantFromClientCert is qrdb's certificate-to-tenant rule, the one the mTLS
-// authenticator applies to every login. It returns the tenant a verified
-// client certificate names and reports whether it came from a SPIFFE SAN:
+// authenticator applies to every login. A tenant is a SPIFFE trust domain, so
+// a tenant's principal is spiffe://<tenant>/<kind>/<name>, and a verified
+// client certificate names a tenant only when two independent fields carry it
+// and agree:
 //
-//   - a tenant-scoped SPIFFE URI SAN wins. When pinnedTrustDomain is
-//     non-empty, ANY SPIFFE SAN under another trust domain fails closed and
-//     is never overridden by the OU;
-//   - SANs naming more than one distinct tenant fail closed
-//     (spiffe.AmbiguousTenantError), as does a malformed SPIFFE SAN;
-//   - every fail-closed answer is a *CertificateTenantError, which matches
-//     ErrInvalidCertificate under errors.Is and carries the spiffe cause;
-//   - with pinnedTrustDomain empty, any trust domain is accepted. That is
-//     for tests and single-domain labs: a composer must pin its domain;
-//   - with no SPIFFE tenant SAN, the first Subject OU is the tenant;
-//   - with neither, the tenant is "" and err is nil.
+//   - the first Subject OU, and
+//   - the trust domain of its workload SPIFFE ID URI SAN.
 //
-// "" is not an error: the authentication middleware folds it onto the system
-// tenant (tenant.Normalize) before anything reads it. A composing host that
-// resolves a certificate's user outside the middleware -- before any tenant
-// is bound, on a public route -- applies this rule, normalizes the result the
-// same way, binds that tenant into the context, and looks the thumbprint up
-// within it. It never searches other tenants for the thumbprint.
+// clusterTrustDomain is the cluster's own trust domain, the one a certificate
+// naming no tenant is under. It is never a tenant: a certificate whose OU
+// names it is refused, so no tenant shares the cluster's trust bundle.
+//
+// Every refusal is a *CertificateTenantError, which matches
+// ErrInvalidCertificate under errors.Is and carries the cause:
+//
+//   - no workload SPIFFE ID SAN: spiffe.ErrNoTenantSPIFFEID;
+//   - a SPIFFE SAN that is not a SPIFFE ID, or SANs under more than one trust
+//     domain (spiffe.AmbiguousTenantError): the spiffe cause;
+//   - no Subject OU: ErrNoTenantOU under the cluster trust domain, and
+//     spiffe.ErrTrustDomainMismatch under any other;
+//   - an OU naming the cluster trust domain: ErrTenantIsClusterTrustDomain;
+//   - an OU naming a different tenant from the trust domain, which is how a
+//     foreign trust domain presents: a *TenantNameMismatchError.
+//
+// There is no fallback in either direction: an OU alone, or a SPIFFE ID
+// alone, names no tenant. With clusterTrustDomain empty the two cluster
+// checks are skipped; that is for tests, and a composer must pin its domain.
+//
+// The system tenant is named like any other ("system" in both fields). A
+// composing host that resolves a certificate's user outside the middleware --
+// before any tenant is bound, on a public route -- applies this rule, binds
+// that tenant into the context, and looks the thumbprint up within it. It
+// never searches other tenants for the thumbprint.
 //
 // cert must already be verified against the CA; this reads names, it does
 // not check signatures.
-func TenantFromClientCert(cert *x509.Certificate, pinnedTrustDomain string) (tenantID string, fromSPIFFE bool, err error) {
-	if cert == nil {
-		return "", false, ErrInvalidCertificate
+func TenantFromClientCert(cert *x509.Certificate, clusterTrustDomain string) (string, error) {
+	id, err := clientWorkload(cert, clusterTrustDomain)
+	if err != nil {
+		return "", err
 	}
+	return id.TrustDomain, nil
+}
 
-	id, serr := spiffe.TenantFromCert(cert, pinnedTrustDomain)
-	switch {
-	case serr == nil:
-		return id.TenantID, true, nil
-	case errors.Is(serr, spiffe.ErrTrustDomainMismatch):
-		// Foreign trust domain: fail closed, do not fall back.
-		return "", false, &CertificateTenantError{Err: serr}
-	case errors.Is(serr, spiffe.ErrNoTenantSPIFFEID):
-		// No SPIFFE SAN: legacy OU fallback.
-		if len(cert.Subject.OrganizationalUnit) > 0 {
-			return cert.Subject.OrganizationalUnit[0], false, nil
-		}
-		return "", false, nil
-	default:
-		// Malformed SPIFFE SAN, or SANs naming more than one tenant: fail
-		// closed.
-		return "", false, &CertificateTenantError{Err: serr}
+// clientWorkload applies TenantFromClientCert's rule and returns the whole
+// workload identity, whose TrustDomain is the tenant.
+func clientWorkload(cert *x509.Certificate, clusterTrustDomain string) (spiffe.ID, error) {
+	if cert == nil {
+		return spiffe.ID{}, ErrInvalidCertificate
 	}
+	id, err := spiffe.WorkloadFromCert(cert)
+	if err != nil {
+		return spiffe.ID{}, &CertificateTenantError{Err: err}
+	}
+	if len(cert.Subject.OrganizationalUnit) == 0 {
+		if clusterTrustDomain != "" && id.TrustDomain != clusterTrustDomain {
+			return spiffe.ID{}, &CertificateTenantError{Err: spiffe.ErrTrustDomainMismatch}
+		}
+		return spiffe.ID{}, &CertificateTenantError{Err: ErrNoTenantOU}
+	}
+	ou := cert.Subject.OrganizationalUnit[0]
+	if clusterTrustDomain != "" && ou == clusterTrustDomain {
+		return spiffe.ID{}, &CertificateTenantError{Err: ErrTenantIsClusterTrustDomain}
+	}
+	if ou != id.TrustDomain {
+		return spiffe.ID{}, &CertificateTenantError{Err: &TenantNameMismatchError{OU: ou, SPIFFETenant: id.TrustDomain}}
+	}
+	return id, nil
+}
+
+// TenantPrincipalURIs is the URI SAN of a certificate issued to a tenant
+// principal: exactly one SPIFFE ID, spiffe://<tenantID>/<kind>/<name>, under
+// the tenant's own trust domain. The issuer pairs it with tenantID as the
+// Subject's first OU, and TenantFromClientCert then accepts the certificate as
+// naming tenantID. Every go-qrdb issuer builds the SAN here, so the half of
+// the rule an issuer writes is the half it reads.
+//
+// kind is spiffe.KindUser for an account named by the certificate's CN and
+// spiffe.KindService for a delegated service principal. A refusal is a
+// *spiffe.IDError: a tenant that is not a SPIFFE trust domain name, a name
+// that is not one SPIFFE ID path segment, an unknown kind, or a tenant equal
+// to clusterTrustDomain (ErrTenantIsClusterTrustDomain), which the rule would
+// refuse. A clusterTrustDomain that is not a trust domain name is a
+// *spiffe.TrustDomainError: without it the issuer cannot tell a tenant from
+// the cluster. No certificate is signed without the SAN.
+func TenantPrincipalURIs(clusterTrustDomain, tenantID, kind, name string) ([]*url.URL, error) {
+	if err := spiffe.ValidateTrustDomain(clusterTrustDomain); err != nil {
+		return nil, err
+	}
+	id := spiffe.ID{TrustDomain: tenantID, Kind: kind, Name: name}
+	if tenantID == clusterTrustDomain {
+		return nil, &spiffe.IDError{ID: id, Err: ErrTenantIsClusterTrustDomain}
+	}
+	u, err := id.URI()
+	if err != nil {
+		return nil, err
+	}
+	return []*url.URL{u}, nil
 }
 
 // ResolveVerifiedChains returns every candidate verified chain for the TLS
@@ -340,18 +387,14 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 		Metadata: make(map[string]string),
 	}
 
-	// Derive the tenant from the SPIFFE SAN (pinned) with an OU fallback. A
-	// trust-domain mismatch or malformed SPIFFE SAN fails closed.
-	tenantID, fromSPIFFE, err := a.TenantFromCert(cert)
+	// The tenant is named by the Subject OU and the (pinned) SPIFFE ID SAN
+	// together; a certificate lacking either, or whose two disagree, is
+	// refused.
+	tenantID, err := a.TenantFromCert(cert)
 	if err != nil {
 		return nil, err
 	}
 	id.TenantID = tenantID
-	if fromSPIFFE {
-		id.Metadata["tenant_source"] = "spiffe"
-	} else if tenantID != "" {
-		id.Metadata["tenant_source"] = "ou"
-	}
 
 	// The issuer-tenant binding: the CA that DIRECTLY signed this leaf must
 	// be either the cluster CA (Key A, which legitimately signs holder and

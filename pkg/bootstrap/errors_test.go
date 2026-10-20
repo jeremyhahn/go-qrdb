@@ -95,7 +95,8 @@ func TestProvisionTenant_RoleSeedErrorWrapped(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{createErr: sentinel},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *TenantAdminRoleCreationError
 	if !errors.As(err, &want) {
@@ -117,7 +118,8 @@ func TestProvisionTenant_AdminUserErrorWrapped(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{createErr: sentinel}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-		Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
 	})
 	var want *TenantAdminUserCreationError
 	if !errors.As(err, &want) {
@@ -139,6 +141,7 @@ func TestProvisionTenant_CertErrorWrapped(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSignerErr{err: sentinel}, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -159,6 +162,7 @@ func TestProvisionTenant_InvalidCertPEMWrapped(t *testing.T) {
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer: &fakeSigner{cert: []byte("not a pem")}, Binder: &fakeBinder{}, Logger: discardLogger(),
+		TrustDomain: onboardingTrustDomain,
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
