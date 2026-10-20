@@ -150,6 +150,14 @@ func (m *AuthMiddleware) finalizeDelegated(ctx context.Context, identity *auth.I
 	identity.Roles = nil
 	identity.RoleBindings = nil
 	identity.Attributes = nil
+	// TenantOwner has one source on this path too, decideTenantOwner: the
+	// verifier's claim is cleared, and an identity with no roles is decided
+	// not owner (and refused when no role store is configured, as every
+	// other authenticated identity is).
+	identity.TenantOwner = false
+	if err := m.decideTenantOwner(ctx, identity); err != nil {
+		return ctx, nil, err
+	}
 	identity.ScopePermissions = delegatedPermissions(d)
 	ctx = auth.WithIdentity(ctx, identity)
 	return tenant.WithTenantID(ctx, identity.TenantID), identity, nil

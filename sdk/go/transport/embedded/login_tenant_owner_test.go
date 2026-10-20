@@ -66,18 +66,18 @@ type ownerLogin struct {
 	cred   []byte
 }
 
-func newOwnerLogin(t *testing.T, roles role.RoleServicer, principal *auth.Principal) *ownerLogin {
+func newOwnerLogin(t *testing.T, roles role.RoleServicer, principal *auth.Principal, opts ...Option) *ownerLogin {
 	t.Helper()
 	svc := newMemUserAuthFactorService()
 	cred := []byte("owner-cred")
 	enrolledFactor(t, svc, 1, auth.AuthFactorFIDO2, cred)
 	lookup := &memUserLookup{principals: map[uint64]*auth.Principal{1: principal}}
-	tr, err := New(newMockKVService(), &mockAdminService{},
+	tr, err := New(newMockKVService(), &mockAdminService{}, append([]Option{
 		WithUserAuthFactorService(svc),
 		WithLoginResolver(auth.NewLoginResolver(svc, lookup)),
 		WithSessionIssuer(newMemSessionIssuer()),
 		WithRoleService(roles),
-	)
+	}, opts...)...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -86,20 +86,26 @@ func newOwnerLogin(t *testing.T, roles role.RoleServicer, principal *auth.Princi
 
 func (o *ownerLogin) login(tenantID string) *transport.FinishLoginResponse {
 	o.t.Helper()
+	finish, err := o.tryLogin(tenantID)
+	if err != nil {
+		o.t.Fatalf("FinishLogin: %v", err)
+	}
+	return finish
+}
+
+// tryLogin runs one ceremony and returns FinishLogin's result as is.
+func (o *ownerLogin) tryLogin(tenantID string) (*transport.FinishLoginResponse, error) {
+	o.t.Helper()
 	lc := o.tr.LoginClient()
 	begin, err := lc.BeginLogin(context.Background(), transport.BeginLoginRequest{Type: transport.FactorTypeFIDO2, TenantID: tenantID})
 	if err != nil {
 		o.t.Fatalf("BeginLogin: %v", err)
 	}
-	finish, err := lc.FinishLogin(context.Background(), transport.FinishLoginRequest{
+	return lc.FinishLogin(context.Background(), transport.FinishLoginRequest{
 		SessionID: begin.SessionID,
 		Type:      transport.FactorTypeFIDO2,
 		LookupKey: o.cred,
 	})
-	if err != nil {
-		o.t.Fatalf("FinishLogin: %v", err)
-	}
-	return finish
 }
 
 func TestDefaultIdentityHydrator_TenantAdminIsOwner(t *testing.T) {
@@ -250,5 +256,86 @@ func TestIdentityToDomain_DoesNotTrustCallerTenantOwner(t *testing.T) {
 	}
 	if got.Subject != "1" || got.TenantID != "acme" {
 		t.Fatalf("identityToDomain dropped other fields: %+v", got)
+	}
+}
+
+// contractHydrator is a WithIdentityHydrator implementation that keeps the
+// IdentityHydrator contract: it decides TenantOwner through
+// role.IsTenantOwner once its role set and TenantID are final.
+type contractHydrator struct{ roles role.NameResolver }
+
+func (h contractHydrator) Hydrate(ctx context.Context, p *auth.Principal, _ *auth.AuthFactor) (*auth.Identity, error) {
+	id := &auth.Identity{TenantID: p.TenantID, Roles: append([]string(nil), p.Roles...)}
+	owner, err := role.IsTenantOwner(ctx, h.roles, id)
+	if err != nil {
+		return nil, err
+	}
+	id.TenantOwner = owner
+	return id, nil
+}
+
+// fixedOwnerHydrator breaks the contract: it sets TenantOwner to owner
+// whatever the role store says.
+type fixedOwnerHydrator struct{ owner bool }
+
+func (h fixedOwnerHydrator) Hydrate(_ context.Context, p *auth.Principal, _ *auth.AuthFactor) (*auth.Identity, error) {
+	return &auth.Identity{TenantID: p.TenantID, Roles: append([]string(nil), p.Roles...), TenantOwner: h.owner}, nil
+}
+
+func TestLoginClient_FinishLogin_HydratorTenantOwnerIsEnforced(t *testing.T) {
+	cases := map[string]struct {
+		roleName  string
+		hydrator  func(role.NameResolver) IdentityHydrator
+		wantOwner bool
+		wantErr   bool
+	}{
+		"contract hydrator, admin":      {role.RoleNameAdmin, func(r role.NameResolver) IdentityHydrator { return contractHydrator{roles: r} }, true, false},
+		"contract hydrator, operator":   {role.RoleNameOperator, func(r role.NameResolver) IdentityHydrator { return contractHydrator{roles: r} }, false, false},
+		"claims owner for an operator":  {role.RoleNameOperator, func(role.NameResolver) IdentityHydrator { return fixedOwnerHydrator{owner: true} }, false, true},
+		"withholds owner from an admin": {role.RoleNameAdmin, func(role.NameResolver) IdentityHydrator { return fixedOwnerHydrator{owner: false} }, false, true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			roles := newLoginRoleStore(t)
+			o := newOwnerLogin(t, roles, &auth.Principal{
+				ID: 1, Username: "alice", TenantID: "acme", Active: true,
+				Roles: []string{roleID(t, roles, "acme", tc.roleName)},
+			}, WithIdentityHydrator(tc.hydrator(roles)))
+			finish, err := o.tryLogin("acme")
+			if tc.wantErr {
+				var mismatch *HydratorTenantOwnerMismatchError
+				if !errors.As(err, &mismatch) || mismatch.TenantID != "acme" {
+					t.Fatalf("want *HydratorTenantOwnerMismatchError for acme, got resp=%+v err=%v", finish, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FinishLogin: %v", err)
+			}
+			if finish.Identity.TenantOwner != tc.wantOwner {
+				t.Fatalf("TenantOwner = %v, want %v", finish.Identity.TenantOwner, tc.wantOwner)
+			}
+		})
+	}
+}
+
+func TestLoginClient_FinishLogin_HydratorWithoutRoleServiceRefused(t *testing.T) {
+	o := newOwnerLogin(t, nil, &auth.Principal{ID: 1, Username: "alice", TenantID: "acme", Active: true},
+		WithIdentityHydrator(fixedOwnerHydrator{}))
+	_, err := o.tryLogin("acme")
+	var required *role.ResolverRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("want *role.ResolverRequiredError, got %v", err)
+	}
+}
+
+func TestHydratorTenantOwnerMismatchError_Message(t *testing.T) {
+	for owner, want := range map[bool]string{
+		true:  `embedded: identity hydrator set TenantOwner true for tenant "acme"; the role store decides false`,
+		false: `embedded: identity hydrator set TenantOwner false for tenant "acme"; the role store decides true`,
+	} {
+		if got := (&HydratorTenantOwnerMismatchError{TenantID: "acme", Hydrated: owner}).Error(); got != want {
+			t.Errorf("Error() = %q, want %q", got, want)
+		}
 	}
 }

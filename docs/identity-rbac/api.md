@@ -367,16 +367,24 @@ type IdentityHydrator interface {
 }
 ```
 
-`principal.ID` is the account's immutable user id; a hydrator that sets
-`Subject` to it gives every session a subject that survives a rename. The
-parameter and result types are aliased as `sdk.Principal`, `sdk.AuthFactor`
-and `sdk.Identity`, so an implementation imports no `pkg/` package. A hydrator
-error aborts the login: no session is issued and `FinishLogin` returns the
-error.
+`principal.ID` is the account's immutable user id. The hydrator does not name
+the account: once it returns, `FinishLogin` sets the identity's `Subject` to
+that id whatever the hydrator set, so every session's subject survives a
+rename. The parameter and result types are aliased as `sdk.Principal`,
+`sdk.AuthFactor` and `sdk.Identity`, so the signature needs no `pkg/` import.
+A hydrator error aborts the login: no session is issued and `FinishLogin`
+returns the error.
 
-Without the option the identity's `Subject` is the account's username, its
-`TenantID` and `Roles` are the account's, and its metadata names the factor.
-`nil` is ignored and leaves an earlier hydrator in place.
+A hydrator sets `TenantOwner` only from `role.IsTenantOwner` over the identity
+it returns, after its `Roles` and `TenantID` are final, and returns that
+function's error rather than guess. `FinishLogin` holds it to that: it decides
+`role.IsTenantOwner` again over the node's role service and refuses the login,
+issuing no session, when the role store cannot decide or when the two values
+differ (`*embedded.HydratorTenantOwnerMismatchError`).
+
+Without the option the identity's `TenantID` and `Roles` are the account's,
+`TenantOwner` is decided by `role.IsTenantOwner`, and its metadata names the
+factor. `nil` is ignored and leaves an earlier hydrator in place.
 
 The ceremony is served by the embedded transport, so this is the one place a
 node mints a login identity. A request on REST, gRPC, QUIC, MCP or Unix runs no

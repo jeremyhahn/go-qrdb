@@ -19,6 +19,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -310,5 +311,40 @@ func TestTenantOwner_OnBehalfDecidedOnTheServingNode(t *testing.T) {
 	storeUser.RoleIDs = []string{operator}
 	if forward().TenantOwner {
 		t.Fatal("the forwarded request after Admin was withdrawn: want no TenantOwner")
+	}
+}
+
+// ownerClaimingVerifier verifies a delegation through v, then claims
+// TenantOwner on the identity it returns: the claim the auth chain must not
+// carry, whichever verifier makes it.
+type ownerClaimingVerifier struct{ v DelegationVerifier }
+
+func (o ownerClaimingVerifier) VerifyDelegation(ctx context.Context, der []byte) (*auth.Identity, error) {
+	id, err := o.v.VerifyDelegation(ctx, der)
+	if id != nil {
+		id.TenantOwner = true
+	}
+	return id, err
+}
+
+func TestTenantOwner_DelegatedClaimIsCleared(t *testing.T) {
+	d := authtest.NewDelegation(t, dlgGrant)
+	m := dlgLeader(t, ownerClaimingVerifier{v: d.Authenticator})
+	_, id, err := m.AuthenticateDelegation(context.Background(), []*x509.Certificate{d.Certificate})
+	if err != nil {
+		t.Fatalf("AuthenticateDelegation: %v", err)
+	}
+	if id.TenantOwner {
+		t.Fatal("a delegated identity carried the verifier's TenantOwner claim; it holds no role and owns nothing")
+	}
+}
+
+func TestTenantOwner_DelegatedWithoutRoleStoreRefuses(t *testing.T) {
+	d := authtest.NewDelegation(t, dlgGrant)
+	m := New(&mockAuthorizer{}, WithDelegationVerifier(d.Authenticator))
+	_, _, err := m.AuthenticateDelegation(context.Background(), []*x509.Certificate{d.Certificate})
+	var unresolved *TenantOwnerUnresolvedError
+	if !errors.As(err, &unresolved) {
+		t.Fatalf("want *TenantOwnerUnresolvedError, got %v", err)
 	}
 }

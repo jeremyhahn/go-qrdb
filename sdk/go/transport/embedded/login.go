@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"crypto/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -45,6 +46,22 @@ type MissingSessionIssuerError struct{}
 // Error returns a human-readable description.
 func (e *MissingSessionIssuerError) Error() string {
 	return "embedded: session issuer is not configured"
+}
+
+// HydratorTenantOwnerMismatchError refuses a login whose configured
+// IdentityHydrator set auth.Identity.TenantOwner to a value role.IsTenantOwner
+// does not decide for the identity it returned. Either the hydrator breaks the
+// IdentityHydrator contract, or the principal's roles changed between its read
+// and FinishLogin's; a new login is decided afresh.
+type HydratorTenantOwnerMismatchError struct {
+	TenantID string
+	Hydrated bool
+}
+
+// Error returns a human-readable description.
+func (e *HydratorTenantOwnerMismatchError) Error() string {
+	return "embedded: identity hydrator set TenantOwner " + strconv.FormatBool(e.Hydrated) +
+		" for tenant " + strconv.Quote(e.TenantID) + "; the role store decides " + strconv.FormatBool(!e.Hydrated)
 }
 
 // SessionIssuer mints, resolves, and revokes opaque bearer tokens. The
@@ -82,9 +99,13 @@ type SessionIssuer interface {
 // Every implementation sets auth.Identity.TenantOwner, and sets it only
 // from role.IsTenantOwner over the identity it returns, after its role set
 // and TenantID are final; it returns IsTenantOwner's error rather than
-// guess. FinishLogin issues TenantOwner as the hydrator left it, and it
-// reaches the caller as transport.Identity.TenantOwner. It must never be
-// derived from Metadata, a role name, or anything the caller supplied.
+// guess. FinishLogin enforces this for a hydrator given by
+// WithIdentityHydrator: it decides role.IsTenantOwner again over the
+// transport's role service (WithRoleService) and refuses the login, with
+// that call's error or a *HydratorTenantOwnerMismatchError, unless the two
+// agree. The value reaches the caller as transport.Identity.TenantOwner. It
+// must never be derived from Metadata, a role name, or anything the caller
+// supplied.
 type IdentityHydrator interface {
 	// Hydrate produces an *auth.Identity ready to be wrapped in a
 	// bearer. Implementations may return a typed error to abort login
@@ -132,6 +153,23 @@ func (d *defaultIdentityHydrator) Hydrate(ctx context.Context, principal *auth.P
 // validate the SessionID + Nonce pair. The store is process-local and
 // in-memory — login sessions are short-lived (default 5 min) and don't
 // need cross-process replication.
+// checkHydratedTenantOwner enforces the IdentityHydrator contract on the
+// identity a configured hydrator returned: its TenantOwner must be what
+// role.IsTenantOwner decides over the transport's role service. A role-store
+// error, a missing role service included, is returned as is; a mismatch is a
+// *HydratorTenantOwnerMismatchError. Either refuses the login, so no bearer
+// carries an ownership the role store does not grant, or lacks one it does.
+func checkHydratedTenantOwner(ctx context.Context, roles role.NameResolver, identity *auth.Identity) error {
+	owner, err := role.IsTenantOwner(ctx, roles, identity)
+	if err != nil {
+		return err
+	}
+	if owner != identity.TenantOwner {
+		return &HydratorTenantOwnerMismatchError{TenantID: identity.TenantID, Hydrated: identity.TenantOwner}
+	}
+	return nil
+}
+
 type loginSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*loginSessionEntry
@@ -455,6 +493,13 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 		return nil, &auth.InvalidFactorError{Reason: "identity hydrator returned no identity"}
 	}
 	identity.BindUser(principal.ID, principal.Username)
+	// A configured hydrator is held to the IdentityHydrator contract here,
+	// before a bearer exists; the default hydrator decides TenantOwner itself.
+	if c.transport.identityHydrator != nil {
+		if err := checkHydratedTenantOwner(ctx, c.transport.roleSvc, identity); err != nil {
+			return nil, err
+		}
+	}
 
 	bearer, expiresAt, err := c.transport.sessionIssuer.Issue(ctx, identity)
 	if err != nil {

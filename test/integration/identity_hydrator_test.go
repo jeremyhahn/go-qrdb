@@ -27,6 +27,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,6 +110,19 @@ func (h *namingHydrator) Hydrate(_ context.Context, principal *sdk.Principal, _ 
 // returns the user, the ceremony's response and the client.
 func hydratorLogin(t *testing.T, opts ...node.NodeOption) (*user.User, *transport.FinishLoginResponse, *sdk.Client) {
 	t.Helper()
+	alice, fin, client, err := tryHydratorLogin(t, opts...)
+	if err != nil {
+		t.Fatalf("FinishLogin: %v", err)
+	}
+	if fin.Identity == nil || fin.Bearer == "" {
+		t.Fatalf("FinishLogin returned no identity or bearer: %+v", fin)
+	}
+	return alice, fin, client
+}
+
+// tryHydratorLogin is hydratorLogin returning FinishLogin's error as is.
+func tryHydratorLogin(t *testing.T, opts ...node.NodeOption) (*user.User, *transport.FinishLoginResponse, *sdk.Client, error) {
+	t.Helper()
 	ctx := context.Background()
 
 	cfg := qrdbconfig.DefaultConfig()
@@ -180,13 +194,7 @@ func hydratorLogin(t *testing.T, opts ...node.NodeOption) (*user.User, *transpor
 		Type:      transport.FactorTypePIV,
 		LookupKey: credential,
 	})
-	if err != nil {
-		t.Fatalf("FinishLogin: %v", err)
-	}
-	if fin.Identity == nil || fin.Bearer == "" {
-		t.Fatalf("FinishLogin returned no identity or bearer: %+v", fin)
-	}
-	return alice, fin, client
+	return alice, fin, client, err
 }
 
 // TestIdentityHydrator_Embedded_HydratorCannotNameTheAccount proves a hydrator
@@ -201,6 +209,33 @@ func TestIdentityHydrator_Embedded_HydratorCannotNameTheAccount(t *testing.T) {
 		t.Fatalf("hydrator ran %d times, want once: the node's hydrator is not the one the ceremony runs", got)
 	}
 	assertLoginSubjectIsUserID(t, alice, fin, client)
+}
+
+// ownerClaimingHydrator breaks the IdentityHydrator contract: it claims the
+// tenant Admin system role's TenantOwner for an account that holds no role.
+type ownerClaimingHydrator struct{}
+
+func (ownerClaimingHydrator) Hydrate(_ context.Context, principal *sdk.Principal, _ *sdk.AuthFactor) (*sdk.Identity, error) {
+	return &sdk.Identity{
+		Subject:     principal.Username,
+		TenantID:    principal.TenantID,
+		Roles:       append([]string(nil), principal.Roles...),
+		TenantOwner: true,
+	}, nil
+}
+
+// TestIdentityHydrator_Embedded_TenantOwnerClaimRefused proves a node's
+// custom hydrator cannot grant TenantOwner: the login's role store decides,
+// and a hydrator that disagrees fails the login instead of minting a session.
+func TestIdentityHydrator_Embedded_TenantOwnerClaimRefused(t *testing.T) {
+	_, fin, _, err := tryHydratorLogin(t, node.WithIdentityHydrator(ownerClaimingHydrator{}))
+	var mismatch *embedded.HydratorTenantOwnerMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("FinishLogin = (%+v, %v), want *embedded.HydratorTenantOwnerMismatchError", fin, err)
+	}
+	if !mismatch.Hydrated {
+		t.Fatalf("mismatch.Hydrated = false, want the hydrator's true claim reported")
+	}
 }
 
 // TestIdentityHydrator_Embedded_DefaultSubjectIsUserID pins the default a node

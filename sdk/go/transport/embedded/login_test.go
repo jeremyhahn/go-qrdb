@@ -501,6 +501,7 @@ func TestLoginClient_FinishLogin_WithCustomHydrator(t *testing.T) {
 		WithUserAuthFactorService(svc),
 		WithLoginResolver(resolver),
 		WithSessionIssuer(newMemSessionIssuer()),
+		WithRoleService(newLoginRoleStore(t)),
 		WithIdentityHydrator(hyd),
 	)
 	if err != nil {
