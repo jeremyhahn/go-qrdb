@@ -21,6 +21,14 @@ declared in Go by implementing `index.CompoundIndexRegisterer` and are
 registered when the DAO is constructed. They appear in `IndexList`. Recorded
 here so the absence is not read as a missing endpoint.
 
+The Embedded column needs an `IndexServicer` on the transport. A node's own
+`Node.Client()` has one already. An embedder that builds its own transport with
+`embedded.New` supplies it from the SDK alone, over the same host and shard it
+gives `sdk.NewKVService`:
+`embedded.WithIndexService(sdk.NewIndexService(host, shardID))`
+(`sdk.IndexServicer` is the interface type). Without it, every embedded index
+call returns `embedded.NilServiceError` naming `IndexServicer`.
+
 ## Schemas
 
 `IndexCreate` request: index `name`, `field_name`, and `IndexConfig`:

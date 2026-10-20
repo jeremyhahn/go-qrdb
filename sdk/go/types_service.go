@@ -61,6 +61,13 @@ type CompactionInvalidPolicyError = compaction.InvalidPolicyError
 // MVCC revision every op in the batch committed at.
 type ServiceBatchServicer = service.BatchServicer
 
+// IndexServicer is the service-layer interface for secondary-index
+// operations. A consumer passes a value of this type, built with
+// NewIndexService, to embedded.WithIndexService; without it every index call
+// on the embedded transport fails with a NilServiceError naming
+// IndexServicer.
+type IndexServicer = service.IndexServicer
+
 // Host is the interface for the backend host that services operate on.
 type Host = service.Host
 
@@ -120,6 +127,14 @@ var NewAdminService = service.NewAdminService
 // which defeats the point of the SDK surface. Reported by go-xkms, whose CA key
 // store reaches PutIfAbsent and CompareAndSwap through this service.
 var NewTransactionService = service.NewTransactionService
+
+// NewIndexService creates a new IndexServicer over the given Host and shard.
+//
+// Re-exported for the same reason as NewTransactionService: a consumer that
+// builds its own embedded transport wires embedded.WithIndexService with it,
+// over the Host and shard it already passes to NewKVService, without
+// importing go-qrdb/pkg/service.
+var NewIndexService = service.NewIndexService
 
 // NewBackendKVService creates a new BackendKVService.
 var NewBackendKVService = service.NewBackendKVService
