@@ -17,6 +17,7 @@ package auth
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"slices"
 	"time"
 

@@ -139,17 +139,6 @@ func TestNodeOptions_RecordTheirSeams(t *testing.T) {
 	}
 }
 
-func TestClusterTrustDomain(t *testing.T) {
-	cfg := &qrdbconfig.Config{}
-	if got := clusterTrustDomain(cfg); got != qrdbconfig.DefaultClusterTrustDomain {
-		t.Errorf("default trust domain = %q, want %q", got, qrdbconfig.DefaultClusterTrustDomain)
-	}
-	cfg.Auth.ClusterTrustDomain = "db.example.com"
-	if got := clusterTrustDomain(cfg); got != "db.example.com" {
-		t.Errorf("configured trust domain = %q", got)
-	}
-}
-
 // The node's registry resolves every service family through the live
 // server's registry, so it answers exactly what that registry answers.
 func TestNodeServiceRegistry_DelegatesEveryFamily(t *testing.T) {

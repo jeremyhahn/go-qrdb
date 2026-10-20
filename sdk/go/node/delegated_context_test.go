@@ -31,8 +31,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -124,9 +126,16 @@ func (ca *loginCA) sign(t *testing.T, g delegation.Grant, notBefore time.Time, l
 	if err != nil {
 		t.Fatalf("serial: %v", err)
 	}
+	// The tenant is named twice and the two must agree: the Subject OU and
+	// the service SPIFFE ID SAN under the trust domain the node pins.
+	uris, err := auth.TenantPrincipalURIs(qrdbconfig.DefaultConfig().Auth.EffectiveSPIFFETrustDomain(), g.Tenant, spiffe.KindService, g.Principal)
+	if err != nil {
+		t.Fatalf("delegation SPIFFE ID: %v", err)
+	}
 	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
 		SerialNumber:    serial,
 		Subject:         pkix.Name{CommonName: auth.ServicePrincipalSubjectPrefix + g.Principal, OrganizationalUnit: []string{g.Tenant}},
+		URIs:            uris,
 		NotBefore:       notBefore,
 		NotAfter:        notBefore.Add(life),
 		KeyUsage:        x509.KeyUsageDigitalSignature,
@@ -312,7 +321,11 @@ func TestDelegatedContext_Refused(t *testing.T) {
 		"another principal": {leaf: cas[delegatingTenant].sign(t, foreign, time.Now().Add(-time.Minute), time.Hour),
 			check: func(err error) bool { return errors.Is(err, auth.ErrForeignDelegationPrincipal) }},
 		"another tenant's login CA": {leaf: cas[otherTenant].sign(t, grant, time.Now().Add(-time.Minute), time.Hour),
-			check: func(err error) bool { var e *auth.DelegationRefusedError; return errors.As(err, &e) }},
+			check: func(err error) bool {
+				var refused *auth.DelegationRefusedError
+				var untrusted *clienttrust.IssuerNotTrustedError
+				return errors.As(err, &refused) && errors.As(err, &untrusted) && untrusted.TenantID == delegatingTenant
+			}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx, err := n.DelegatedContext(context.Background(), []*x509.Certificate{tc.leaf})
