@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -35,6 +36,9 @@ import (
 // ahead of its fsync.
 type slowSyncSM struct {
 	syncDelay time.Duration
+	// gate, when set, holds every Update until it is closed, so a test can
+	// keep the first sync in flight while it queues the rest.
+	gate chan struct{}
 
 	mu        sync.Mutex
 	failWith  error
@@ -59,6 +63,9 @@ func (s *slowSyncSM) Update(ctx context.Context, entries []sm.Entry, results []s
 	defer s.inUpdate.Add(-1)
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if s.gate != nil {
+		<-s.gate
 	}
 	time.Sleep(s.syncDelay)
 
@@ -113,7 +120,7 @@ type proposeOutcome struct {
 
 // proposeConcurrently releases n proposers at once against lb and returns
 // what each saw and how long the whole set took.
-func proposeConcurrently(t *testing.T, lb *LocalBackend, s *slowSyncSM, n int) ([]proposeOutcome, time.Duration) {
+func proposeConcurrently(t *testing.T, lb *LocalBackend, s *slowSyncSM, n int) []proposeOutcome {
 	t.Helper()
 	outcomes := make([]proposeOutcome, n)
 	start := make(chan struct{})
@@ -128,47 +135,66 @@ func proposeConcurrently(t *testing.T, lb *LocalBackend, s *slowSyncSM, n int) (
 			o.syncedAtAck = s.isSynced(o.cmd)
 		})
 	}
-	began := time.Now()
 	close(start)
 	wg.Wait()
-	return outcomes, time.Since(began)
+	return outcomes
 }
 
 func TestLocalBackend_GroupCommit_ConcurrentProposalsShareOneSync(t *testing.T) {
-	const n, delay = 32, 100 * time.Millisecond
-	s := newSlowSyncSM(delay)
-	lb := NewLocalBackend(s)
-	defer func() { _ = lb.Close() }()
+	synctest.Test(t, func(t *testing.T) {
+		const n = 32
+		s := newSlowSyncSM(100 * time.Millisecond)
+		s.gate = make(chan struct{})
+		lb := NewLocalBackend(s)
+		defer func() { _ = lb.Close() }()
 
-	outcomes, elapsed := proposeConcurrently(t, lb, s, n)
+		var outcomes []proposeOutcome
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			outcomes = proposeConcurrently(t, lb, s, n)
+		}()
+		// Every proposer is now durably blocked: the token holder inside the
+		// gated Update, everyone else queued behind it waiting for the token
+		// or for its group to finish.
+		synctest.Wait()
+		close(s.gate)
+		<-done
 
-	// One proposal per fsync would take n*delay. Group commit takes the
-	// first proposer's own commit plus one more for everyone queued behind
-	// it; the bound leaves room for a slow scheduler, nowhere near n.
-	if limit := 5 * delay; elapsed > limit {
-		t.Fatalf("%d concurrent proposals took %s, want under %s (serial is %s)", n, elapsed, limit, n*delay)
-	}
-	if got := s.groupCount(); got >= n {
-		t.Fatalf("%d proposals went through %d Updates: nothing was grouped", n, got)
-	}
-	if s.overlapped.Load() {
-		t.Fatal("two Updates ran at once: applies must stay sequential")
-	}
-	seen := make(map[uint64]bool, n)
-	for _, o := range outcomes {
-		if o.err != nil || o.panicked != nil {
-			t.Fatalf("proposal %s: err=%v panic=%v", o.cmd, o.err, o.panicked)
+		// One proposal per sync would take n Updates. Group commit takes the
+		// first token holder's group plus one more for everyone queued while
+		// it was in flight, whatever the scheduler did.
+		groups, applied := s.groupCount(), 0
+		s.mu.Lock()
+		for _, g := range s.groups {
+			applied += len(g)
 		}
-		if !bytes.Equal(o.result.Data, o.cmd) {
-			t.Fatalf("proposal %s was handed the result of %s", o.cmd, o.result.Data)
+		s.mu.Unlock()
+		if groups < 1 || groups > 2 {
+			t.Fatalf("%d proposals queued behind one in-flight sync went through %d Updates, want 1 or 2", n, groups)
 		}
-		seen[o.result.Value] = true
-	}
-	for idx := uint64(1); idx <= n; idx++ {
-		if !seen[idx] {
-			t.Fatalf("index %d was never assigned; indices must be consecutive from 1", idx)
+		if applied != n {
+			t.Fatalf("Updates applied %d entries, want each of the %d proposals exactly once", applied, n)
 		}
-	}
+		if s.overlapped.Load() {
+			t.Fatal("two Updates ran at once: applies must stay sequential")
+		}
+		seen := make(map[uint64]bool, n)
+		for _, o := range outcomes {
+			if o.err != nil || o.panicked != nil {
+				t.Fatalf("proposal %s: err=%v panic=%v", o.cmd, o.err, o.panicked)
+			}
+			if !bytes.Equal(o.result.Data, o.cmd) {
+				t.Fatalf("proposal %s was handed the result of %s", o.cmd, o.result.Data)
+			}
+			seen[o.result.Value] = true
+		}
+		for idx := uint64(1); idx <= n; idx++ {
+			if !seen[idx] {
+				t.Fatalf("index %d was never assigned; indices must be consecutive from 1", idx)
+			}
+		}
+	})
 }
 
 func TestLocalBackend_GroupCommit_NoAckBeforeItsSync(t *testing.T) {
@@ -176,7 +202,7 @@ func TestLocalBackend_GroupCommit_NoAckBeforeItsSync(t *testing.T) {
 	lb := NewLocalBackend(s)
 	defer func() { _ = lb.Close() }()
 
-	outcomes, _ := proposeConcurrently(t, lb, s, 16)
+	outcomes := proposeConcurrently(t, lb, s, 16)
 	for _, o := range outcomes {
 		if o.err != nil || o.panicked != nil {
 			t.Fatalf("proposal %s: err=%v panic=%v", o.cmd, o.err, o.panicked)
@@ -214,7 +240,7 @@ func TestLocalBackend_GroupCommit_UpdateErrorFailsTheWholeGroup(t *testing.T) {
 	lb := NewLocalBackend(s)
 	defer func() { _ = lb.Close() }()
 
-	outcomes, _ := proposeConcurrently(t, lb, s, 16)
+	outcomes := proposeConcurrently(t, lb, s, 16)
 	for _, o := range outcomes {
 		if !stderrors.Is(o.err, failure) {
 			t.Fatalf("proposal %s: err = %v, want the failed commit's error", o.cmd, o.err)
@@ -231,7 +257,7 @@ func TestLocalBackend_GroupCommit_PanicCompletesTheGroupAndReleasesTheToken(t *t
 	lb := NewLocalBackend(s)
 	defer func() { _ = lb.Close() }()
 
-	outcomes, _ := proposeConcurrently(t, lb, s, 16)
+	outcomes := proposeConcurrently(t, lb, s, 16)
 	for _, o := range outcomes {
 		var aborted *ApplyAbortedError
 		if o.panicked == nil && !stderrors.As(o.err, &aborted) {
