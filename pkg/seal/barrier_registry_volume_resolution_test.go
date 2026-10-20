@@ -157,6 +157,50 @@ func TestBarrierRegistry_RequireInsideLocalPool_NotConfigured(t *testing.T) {
 	}
 }
 
+// TestBarrierRegistry_PlacementDataRoot_ResolvesWithoutAnAssignment proves a
+// placement the catalog no longer holds still resolves to this node's
+// directory, under the same containment checks RequireInsideLocalPool makes.
+func TestBarrierRegistry_PlacementDataRoot_ResolvesWithoutAnAssignment(t *testing.T) {
+	resolver := newFakeVolumeResolver()
+	resolver.roots["fast"] = t.TempDir()
+	r, err := NewBarrierRegistry(testLogger(), newSystemBarrier(t),
+		WithVolumeAllocator(newFakeAllocator()), WithVolumeResolver(resolver))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	ctx := context.Background()
+
+	got, err := r.PlacementDataRoot(ctx, "acme", "fast", "acme")
+	if err != nil {
+		t.Fatalf("PlacementDataRoot: %v", err)
+	}
+	if want := resolver.roots["fast"] + "/acme"; got != want {
+		t.Fatalf("PlacementDataRoot = %q, want %q", got, want)
+	}
+	if _, err := r.PlacementDataRoot(ctx, "acme", "fast", "../escape"); !errors.Is(err, ErrTenantPathEscapesPool) {
+		t.Fatalf("PlacementDataRoot(traversal) error = %v, want ErrTenantPathEscapesPool", err)
+	}
+	if _, err := r.PlacementDataRoot(ctx, "acme", "missing", "acme"); err == nil {
+		t.Fatal("PlacementDataRoot(unknown pool) succeeded")
+	}
+}
+
+// TestBarrierRegistry_PlacementDataRoot_Refusals covers the empty id and a
+// node with no volume pools.
+func TestBarrierRegistry_PlacementDataRoot_Refusals(t *testing.T) {
+	r, err := NewBarrierRegistry(testLogger(), newSystemBarrier(t))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := r.PlacementDataRoot(ctx, "", "fast", "acme"); !errors.Is(err, ErrEmptyTenantID) {
+		t.Fatalf("PlacementDataRoot(empty id) error = %v, want ErrEmptyTenantID", err)
+	}
+	if _, err := r.PlacementDataRoot(ctx, "acme", "fast", "acme"); !errors.Is(err, ErrPoolNotConfigured) {
+		t.Fatalf("PlacementDataRoot(unconfigured) error = %v, want ErrPoolNotConfigured", err)
+	}
+}
+
 // TestBarrierRegistry_RequireInsideLocalPool_RefusesTraversal is the
 // read-time defense invariant 2 asks for: even though volume.Reserve
 // validates a Path at write time (ValidateAssignmentPath, tested in

@@ -180,6 +180,15 @@ type TenantTombstone = tenant.Tombstone
 // (Aliases pkg/tenant.TenantDeletedError.)
 type TenantDeletedError = tenant.TenantDeletedError
 
+// TenantUndoPendingError is returned by CreateTenant when the requested id
+// was freed by an undone create that a serving node has not yet cleaned up
+// and acknowledged. It is retryable: RetryAfter is how long to wait before
+// trying the same create again. A composing service should map it to 503
+// Service Unavailable with Retry-After on REST and codes.Unavailable with
+// RetryInfo on gRPC, matching qrdb's own transport canon.
+// (Aliases pkg/tenant.TenantUndoPendingError.)
+type TenantUndoPendingError = tenant.TenantUndoPendingError
+
 // TenantHasDatabasesError is returned by DeleteTenant while the tenant still
 // owns databases, and names them. Teardown is bottom-up: each database's own
 // drop reclaims the keyspace that database owns, so the tenant's is refused

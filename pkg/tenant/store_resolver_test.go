@@ -20,6 +20,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -191,6 +194,49 @@ func TestStoreResolver_BarrierTenantUsesOwnBarrier(t *testing.T) {
 	if sv != nil {
 		t.Fatal("barrier tenant record leaked into the shared store")
 	}
+}
+
+// TestStoreResolver_ReusedIDResolvesItsNewBarrier pins that the wrapper cache
+// is matched on the barrier instance: once an undone id is created again, its
+// identity store is the one over the new barrier, never the cached wrapper
+// over the barrier the undo closed.
+func TestStoreResolver_ReusedIDResolvesItsNewBarrier(t *testing.T) {
+	shared, svc, reg, resolver := newResolverFixture(t)
+	WithTenantUndoGate(undoActive)(svc)
+	WithNodeID("node-a")(svc)
+	WithUndoCleanupRoster(rosterOf("node-a"))(svc)
+	ctx := context.Background()
+	create := func() *seal.TenantBarrier {
+		t.Helper()
+		_, err := svc.CreateTenant(ctx, "secure", "Secure", IsolationBarrier)
+		require.NoError(t, err)
+		require.NoError(t, reg.InitializeTenant(ctx, "secure", seal.Credentials{}))
+		tb, err := reg.GetTenant("secure")
+		require.NoError(t, err)
+		return tb
+	}
+
+	closed := create()
+	first, err := resolver.Resolve(ctx, "secure")
+	require.NoError(t, err)
+	require.NoError(t, svc.UndoCreateTenant(ctx, "secure"))
+
+	reused := create()
+	require.NotSame(t, closed, reused)
+	second, err := resolver.Resolve(ctx, "secure")
+	require.NoError(t, err)
+	assert.NotSame(t, first, second, "the reused id resolved the closed barrier's cached wrapper")
+
+	const key = "__sys:users/id/reused"
+	require.NoError(t, second.Put(ctx, key, []byte("next tenant")))
+	direct, err := seal.NewTenantSharedKVStore(reused, shared)
+	require.NoError(t, err)
+	got, err := direct.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, "next tenant", string(got), "the resolved store does not encrypt under the new barrier")
+	again, err := resolver.Resolve(ctx, "secure")
+	require.NoError(t, err)
+	assert.Same(t, second, again, "the new barrier's wrapper is not cached")
 }
 
 // (c) Two barrier tenants are isolated: tenant A's record is not resolvable

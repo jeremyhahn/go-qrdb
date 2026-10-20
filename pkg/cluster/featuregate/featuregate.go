@@ -193,9 +193,19 @@ const VerifiableLog Feature = "verifiable-log"
 // reconciler, so it is judged by ACTIVATION.
 const RollingMigration Feature = "rolling-migration"
 
+// TenantUndo is the undone tenant tombstone and its per-node cleanup
+// acknowledgements: an undone tenant create leaves a tombstone in an undone
+// state, every serving node records under "__sys:tenants-undone-ack/" that it
+// has cleaned up its own leftovers, and a create reuses the undone ID only
+// once every serving node has. A node that predates it never writes an
+// acknowledgement, so a reuse would wait on it forever; it is judged by
+// ACTIVATION, and until then an undone create retires its ID as a deletion
+// does (docs/multi-tenancy/architecture.md).
+const TenantUndo Feature = "tenant-undo"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

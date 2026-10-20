@@ -615,6 +615,9 @@ func (foreignTenantServicer) ReconcileDeletedTenants(context.Context) (*Reconcil
 }
 func (foreignTenantServicer) ListTenants(context.Context) ([]TenantInfo, error) { return nil, nil }
 func (foreignTenantServicer) DeleteTenant(context.Context, string) error        { return ErrTenantNotFound }
+func (foreignTenantServicer) UndoCreateTenant(context.Context, string) error {
+	return ErrTenantNotFound
+}
 func (foreignTenantServicer) UpdateQuotas(context.Context, string, *quota.Quotas) (*TenantInfo, error) {
 	return nil, ErrTenantNotFound
 }

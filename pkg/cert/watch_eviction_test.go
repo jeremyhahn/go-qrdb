@@ -16,6 +16,7 @@ package cert
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -307,6 +308,38 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneEvictsAndInvalidates(t *
 		got := invalidated
 		mu.Unlock()
 		return !stillCached && got == 1
+	})
+}
+
+// An undone create writes its tombstone under the same key a deletion does,
+// so the tenant's cached material goes the same way: the eviction reads the
+// key, never the tombstone's state, and a reuse of the id starts from nothing.
+func TestDefaultCertProvider_WatchForDeletions_UndoneTombstoneEvicts(t *testing.T) {
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx := context.Background()
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
+
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "bob", TenantID: "initech"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	undone, err := json.Marshal(&tenant.Tombstone{State: tenant.TombstoneUndone, Undo: "nonce"})
+	if err != nil {
+		t.Fatalf("marshal undone tombstone: %v", err)
+	}
+	tombstoneWatcher.deliverBatch(t, []*watch.Event{{
+		Type: watch.EventPut,
+		Kv:   &kv.KeyValue{Key: []byte(tenant.TombstonePrefix + "initech"), Value: undone},
+	}})
+
+	pollUntil(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		_, stillCached := p.perTenant["initech"]
+		return !stillCached
 	})
 }
 

@@ -538,22 +538,13 @@ func testTenantIsolationTypeSuccessOverProtocol(t *testing.T, node *multiProtoNo
 	cases := []struct {
 		isolationType string
 		autoUnseal    bool
-		// wantVolumePool reports whether CreateTenant's response is
-		// expected to carry a named VolumePool: true for volume/raft (the
-		// wire-facing field docs/volume-pools/api.md defines), false for
-		// barrier -- TenantInfo.VolumePool's own doc comment: "Empty for
-		// prefix/barrier tenants." A barrier tenant's underlying store is
-		// still placed through a pool internally (registerDedicatedBarrier
-		// always resolves through the pooled registration path), but that
-		// is not exposed on this field.
-		wantVolumePool bool
 	}{
-		{isolationType: "barrier", autoUnseal: false, wantVolumePool: false},
-		{isolationType: "barrier", autoUnseal: true, wantVolumePool: false},
-		{isolationType: "volume", autoUnseal: false, wantVolumePool: true},
-		{isolationType: "volume", autoUnseal: true, wantVolumePool: true},
-		{isolationType: "raft", autoUnseal: false, wantVolumePool: true},
-		{isolationType: "raft", autoUnseal: true, wantVolumePool: true},
+		{isolationType: "barrier", autoUnseal: false},
+		{isolationType: "barrier", autoUnseal: true},
+		{isolationType: "volume", autoUnseal: false},
+		{isolationType: "volume", autoUnseal: true},
+		{isolationType: "raft", autoUnseal: false},
+		{isolationType: "raft", autoUnseal: true},
 	}
 
 	for _, tc := range cases {
@@ -578,11 +569,12 @@ func testTenantIsolationTypeSuccessOverProtocol(t *testing.T, node *multiProtoNo
 		if created.IsolationType != tc.isolationType {
 			t.Fatalf("[%s] tenant create (isolation=%s) IsolationType = %q, want %s", proto.name, tc.isolationType, created.IsolationType, tc.isolationType)
 		}
-		if tc.wantVolumePool && created.VolumePool == "" {
+		// Every isolation type here has a dedicated directory, and the
+		// response names its pool: a barrier tenant's is the one the
+		// registry placed its barrier on, which its tombstone keeps so a
+		// node that missed an undo can still find the directory.
+		if created.VolumePool == "" {
 			t.Fatalf("[%s] tenant create (isolation=%s) VolumePool is empty, want a named pool", proto.name, tc.isolationType)
-		}
-		if !tc.wantVolumePool && created.VolumePool != "" {
-			t.Fatalf("[%s] tenant create (isolation=%s) VolumePool = %q, want empty (prefix/barrier isolation never exposes it)", proto.name, tc.isolationType, created.VolumePool)
 		}
 	}
 }

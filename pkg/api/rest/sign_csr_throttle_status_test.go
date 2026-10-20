@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // A throttled ceremony-sign-csr is a PIN lockout the caller can wait out:
@@ -53,6 +54,20 @@ func TestWriteErrorJSON_SignCSRThrottledSetsRetryAfter(t *testing.T) {
 		if got := rec.Header().Get("Retry-After"); got != c.want {
 			t.Errorf("wait %v: Retry-After = %q, want %q", c.wait, got, c.want)
 		}
+	}
+}
+
+// A create of an undone id that a serving node has not yet released is 503
+// with Retry-After (RFC 9110 §15.6.4, §10.2.3), not a throttle.
+func TestWriteErrorJSON_UndoPendingIs503WithRetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	err := &tenant.TenantUndoPendingError{TenantID: "acme", Pending: []string{"n2:7000"}, RetryAfter: tenant.UndoPendingRetryAfter}
+	writeErrorJSON(rec, mapHTTPError(err), err)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After = %q, want %q", got, "5")
 	}
 }
 

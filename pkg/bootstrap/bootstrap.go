@@ -637,8 +637,8 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	}
 	var undo undoStack
 	if cfg.Exclusive {
-		if _, ok := deps.Tenants.(tenantDeleter); !ok {
-			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Tenants with DeleteTenant, to undo an exclusive provisioning"}
+		if _, ok := deps.Tenants.(tenantUndoer); !ok {
+			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Tenants with UndoCreateTenant, to undo an exclusive provisioning"}
 		}
 		if _, ok := deps.Users.(userDeleter); !ok {
 			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Users with DeleteUser, to undo an exclusive provisioning"}
@@ -669,14 +669,14 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		deps.Logger.Info("bootstrap: tenant record created",
 			slog.String("tenant", cfg.TenantID),
 			slog.String("isolation", string(isolation)))
-		undo.push("delete tenant", func(ctx context.Context) error {
+		undo.push("undo tenant create", func(ctx context.Context) error {
 			// planAdmin refused the request up front when Exclusive and
 			// the seam was missing; this is the same check, not a new one.
-			d, ok := deps.Tenants.(tenantDeleter)
+			u, ok := deps.Tenants.(tenantUndoer)
 			if !ok {
-				return &MissingProvisioningSeamError{Seam: "Tenants.DeleteTenant"}
+				return &MissingProvisioningSeamError{Seam: "Tenants.UndoCreateTenant"}
 			}
-			return d.DeleteTenant(ctx, cfg.TenantID)
+			return u.UndoCreateTenant(ctx, cfg.TenantID)
 		})
 	}
 

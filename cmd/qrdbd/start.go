@@ -2037,18 +2037,16 @@ func runStart(f *startFlags) (err error) {
 					}
 				}
 			}
-			// Key B cache eviction (go-qrdb#591's review): watches for a
-			// deleted tenant's CA material/certificate, or the tenant's own
-			// tombstone, so a retired tenant's CA stops being cached and
-			// trusted on this node promptly rather than aging out by TTL
-			// alone. Unconditional -- Key B's eviction has nothing to do
-			// with whether this node's OWN cluster CA (Key A) is
-			// self-issued or BYO-TLS, unlike the block below. Bound to
-			// sigCtx, the process-lifetime context, since the watchers this
-			// starts are meant to run for the life of the node, not only
-			// until this boot sequence finishes.
-			if err := lifecycle.WatchCertProviderEvictions(sigCtx, svcNode); err != nil {
-				slog.Warn("Key B cache eviction watch failed to start", slog.Any("error", err))
+			// The node's long-lived watchers (Key B cache eviction, undone
+			// tenant acknowledgement), composed in one place shared with
+			// sdk/go/node; see lifecycle.StartNodeWatchers. Unconditional --
+			// neither has anything to do with whether this node's OWN
+			// cluster CA (Key A) is self-issued or BYO-TLS, unlike the block
+			// below. Bound to sigCtx, the process-lifetime context, since
+			// the watchers are meant to run for the life of the node, not
+			// only until this boot sequence finishes.
+			if err := lifecycle.StartNodeWatchers(sigCtx, svcNode); err != nil {
+				slog.Warn("node watchers failed to start", slog.Any("error", err))
 			}
 			if svcNode.ClusterCAProv != nil {
 				// A leader must be known before this read-through-Raft check

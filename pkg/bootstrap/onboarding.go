@@ -79,10 +79,11 @@ type certBindingAdder interface {
 	AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 }
 
-// tenantDeleter and userDeleter are the undo capabilities an exclusive
-// ProvisionTenant requires of deps.Tenants and deps.Users.
-type tenantDeleter interface {
-	DeleteTenant(ctx context.Context, tenantID string) error
+// tenantUndoer and userDeleter are the undo capabilities an exclusive
+// ProvisionTenant requires of deps.Tenants and deps.Users. An undone tenant
+// create is not a deletion: see tenant.CreateUndoer.
+type tenantUndoer interface {
+	UndoCreateTenant(ctx context.Context, tenantID string) error
 }
 
 type userDeleter interface {

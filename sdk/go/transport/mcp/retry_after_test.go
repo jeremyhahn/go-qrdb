@@ -37,3 +37,13 @@ func TestMapToolError_CarriesTheRetryDelay(t *testing.T) {
 		t.Fatalf("mapped = %v, want RetryAfter 0 for an envelope naming no delay", got)
 	}
 }
+
+// The unavailable envelope a create of a not-yet-released undone id answers
+// keeps its delay.
+func TestMapToolError_UndoPendingIsRetryableUnavailable(t *testing.T) {
+	var reqErr *transport.RequestError
+	got := mapToolError("qrdb_tenant_create", &wire.ErrorPayload{Code: wire.CodeUnavailable, Message: "tenant: id acme is pending the undo cleanup", RetryAfterSeconds: 5})
+	if !errors.As(got, &reqErr) || reqErr.RetryAfter != 5*time.Second {
+		t.Fatalf("mapped = %v, want a RequestError with RetryAfter 5s", got)
+	}
+}

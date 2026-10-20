@@ -21087,7 +21087,8 @@ type TenantResponse struct {
 	UpdatedAt     string                 `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	Entitlements  *TenantEntitlements    `protobuf:"bytes,7,opt,name=entitlements,proto3" json:"entitlements,omitempty"`
 	// volume_pool is the named volume pool an IsolationVolume/IsolationRaft
-	// tenant is placed on. Empty for prefix/barrier tenants.
+	// tenant is placed on, or the pool the registry placed an IsolationBarrier
+	// tenant's barrier on. Empty for prefix tenants.
 	VolumePool string `protobuf:"bytes,9,opt,name=volume_pool,json=volumePool,proto3" json:"volume_pool,omitempty"`
 	// refusal is set when the answering node will not serve this tenant's
 	// data; absent otherwise.
@@ -21202,7 +21203,7 @@ type TenantCreateRequest struct {
 	// volume_pool names the pool a volume/raft tenant is placed on. Empty
 	// (the default) uses the tenant's default pool, the first entry of its
 	// allowed_volume_pools; with none entitled, creation is refused
-	// (PERMISSION_DENIED, volume_pool:<none>). Ignored for prefix/barrier.
+	// (PERMISSION_DENIED, volume_pool:<none>). Refused for prefix/barrier.
 	VolumePool string `protobuf:"bytes,6,opt,name=volume_pool,json=volumePool,proto3" json:"volume_pool,omitempty"`
 	// admin_username is the tenant's first admin. Required: a tenant is
 	// created with its first admin's login credential, or not at all.
@@ -21620,7 +21621,7 @@ type DeletedTenant struct {
 	CreatedAt     string                 `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	DeletedAt     string                 `protobuf:"bytes,6,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
 	// volume_pool is the named volume pool the deleted tenant was placed
-	// on; empty for prefix/barrier tenants.
+	// on; empty for prefix tenants.
 	VolumePool    string `protobuf:"bytes,7,opt,name=volume_pool,json=volumePool,proto3" json:"volume_pool,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

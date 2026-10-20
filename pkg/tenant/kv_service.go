@@ -58,6 +58,18 @@ type kvTenantService struct {
 	// isolation_change.go.
 	isolationChangeGuard
 
+	// tenantUndoGate decides whether an undone create may release its id;
+	// see SetTenantUndoGate.
+	tenantUndoGate
+
+	// undoNode is this node's identity in its undo cleanup acknowledgements;
+	// see SetUndoCleanupRoster.
+	undoNode string
+
+	// undoAckHolds withholds this node's acknowledgement of an undone id
+	// while a teardown of it is in flight here; see TenantService's.
+	undoAckHolds undoAckHolds
+
 	logger *slog.Logger
 }
 
@@ -106,7 +118,7 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 	// absent key as (nil, nil) rather than an error, which checkTombstone
 	// handles; see tombstone.go. A fast refusal only -- the fenced commit
 	// decides.
-	if err := checkTombstone(ctx, s.store.Get, id); err != nil {
+	if err := checkTombstone(ctx, s.store.Get, id, s.undoActive()); err != nil {
 		return nil, err
 	}
 	if isolationType == "" {
@@ -152,7 +164,7 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
 
-	if err := commitCreate(ctx, fenced, s.store.Get, id, data); err != nil {
+	if err := commitCreate(ctx, fenced, s.store.Get, id, data, s.undoRelease(s.store)); err != nil {
 		return nil, err
 	}
 
@@ -273,6 +285,12 @@ func (s *kvTenantService) ListTenants(ctx context.Context) ([]TenantInfo, error)
 
 // DeleteTenant removes tenant metadata from the KV store.
 func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) error {
+	return s.deleteTenant(ctx, tenantID, newTombstone)
+}
+
+// deleteTenant is DeleteTenant with the fence's tombstone built by mint. See
+// TenantService.deleteTenant.
+func (s *kvTenantService) deleteTenant(ctx context.Context, tenantID string, mint tombstoneMinter) error {
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
@@ -284,6 +302,9 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 	if err := validateDeletableTenantID(tenantID); err != nil {
 		return err
 	}
+	// The acknowledgement fence every destructive teardown holds; see
+	// holdTeardown.
+	defer holdTeardown(ctx, &s.undoAckHolds, s, s.logger, tenantID)()
 
 	key := metadataPrefix + tenantID
 	data, err := s.store.Get(ctx, key)
@@ -325,12 +346,8 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 
 	// 2 and 3. The fence. Neither write destroys anything, so a failure in
 	//          either leaves the tenant intact.
-	tombstone, mErr := json.Marshal(newTombstone(&info, time.Now().UTC()))
-	if mErr != nil {
-		return &StoreError{Op: "marshal-tombstone", Err: mErr}
-	}
-	if pErr := s.store.Put(ctx, tombstoneKey(tenantID), tombstone); pErr != nil {
-		return &StoreError{Op: "put-tombstone", Err: pErr}
+	if err := putTombstone(ctx, s.store, tenantID, mint(&info, time.Now().UTC())); err != nil {
+		return err
 	}
 	if err := s.store.Delete(ctx, key); err != nil {
 		return &StoreError{Op: "delete", Err: err}
@@ -349,7 +366,14 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 // See TenantService.finishTeardown, whose barrier step is the only thing this
 // one lacks.
 func (s *kvTenantService) finishTeardown(ctx context.Context, tenantID string) error {
+	if destroy, err := guardTeardown(ctx, s.store, s.logger, tenantID); !destroy {
+		return err
+	}
 	if err := s.reclaim(ctx, tenantID); err != nil {
+		return &TeardownError{TenantID: tenantID, Err: err}
+	}
+	// Last: see TenantService.finishTeardown.
+	if err := markTornDown(ctx, s.store, tenantID); err != nil {
 		return &TeardownError{TenantID: tenantID, Err: err}
 	}
 

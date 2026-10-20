@@ -4449,7 +4449,8 @@ message TenantResponse {
     reserved 8;
     reserved "data_root";
     // volume_pool is the named volume pool an IsolationVolume/IsolationRaft
-    // tenant is placed on. Empty for prefix/barrier tenants.
+    // tenant is placed on, or the pool the registry placed an IsolationBarrier
+    // tenant's barrier on. Empty for prefix tenants.
     string volume_pool = 9;
     // refusal is set when the answering node will not serve this tenant's
     // data; absent otherwise.
@@ -4473,7 +4474,7 @@ message TenantCreateRequest {
     // volume_pool names the pool a volume/raft tenant is placed on. Empty
     // (the default) uses the tenant's default pool, the first entry of its
     // allowed_volume_pools; with none entitled, creation is refused
-    // (PERMISSION_DENIED, volume_pool:<none>). Ignored for prefix/barrier.
+    // (PERMISSION_DENIED, volume_pool:<none>). Refused for prefix/barrier.
     string volume_pool = 6;
     // admin_username is the tenant's first admin. Required: a tenant is
     // created with its first admin's login credential, or not at all.
@@ -4542,7 +4543,7 @@ message DeletedTenant {
     string created_at     = 5;
     string deleted_at     = 6;
     // volume_pool is the named volume pool the deleted tenant was placed
-    // on; empty for prefix/barrier tenants.
+    // on; empty for prefix tenants.
     string volume_pool = 7;
 }
 

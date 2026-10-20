@@ -362,12 +362,35 @@ func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, tenantID s
 	if err != nil {
 		return "", err
 	}
-	root, err := resolver.Root(ctx, assignment.Pool)
+	return placementRoot(ctx, resolver, tenantID, assignment.Pool, assignment.Path)
+}
+
+// PlacementDataRoot returns this node's directory for tenantID at path on
+// pool, with every containment check RequireInsideLocalPool makes, for a
+// placement the catalog no longer holds: once one node's teardown released
+// a retired tenant's Assignment, a node that missed the teardown still has
+// its own directory there, and the tombstone's pool is what names it.
+// Returns ErrPoolNotConfigured when this node has no volume pools.
+func (r *BarrierRegistry) PlacementDataRoot(ctx context.Context, tenantID, pool, path string) (string, error) {
+	if tenantID == "" {
+		return "", ErrEmptyTenantID
+	}
+	_, resolver := r.volumeResources()
+	if resolver == nil {
+		return "", ErrPoolNotConfigured
+	}
+	return placementRoot(ctx, resolver, tenantID, pool, path)
+}
+
+// placementRoot joins path onto pool's root on this node and refuses any
+// result that is not exactly one real directory component below it.
+func placementRoot(ctx context.Context, resolver VolumeResolver, tenantID, pool, path string) (string, error) {
+	root, err := resolver.Root(ctx, pool)
 	if err != nil {
 		return "", err
 	}
 
-	joined := filepath.Join(root, assignment.Path)
+	joined := filepath.Join(root, path)
 	rel, err := filepath.Rel(root, joined)
 	if err != nil {
 		return "", ErrTenantPathEscapesPool
@@ -380,7 +403,7 @@ func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, tenantID s
 		strings.ContainsRune(rel, filepath.Separator) {
 		return "", ErrTenantPathEscapesPool
 	}
-	if err := requireNotSymlinked(root, joined, assignment.Path, tenantID); err != nil {
+	if err := requireNotSymlinked(root, joined, path, tenantID); err != nil {
 		return "", err
 	}
 	return joined, nil

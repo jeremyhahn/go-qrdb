@@ -148,8 +148,8 @@ type fakeTenants struct {
 	createCalls      []createTenantCall
 	createErr        error
 	createAlreadyErr bool
-	deleteCalls      []string
-	deleteErr        error
+	undoCalls        []string
+	undoErr          error
 
 	// autoUnseal makes CreateTenant's returned *tenant.TenantInfo report
 	// BarrierAutoUnseal: true, as the real TenantService does when the
@@ -160,11 +160,11 @@ type fakeTenants struct {
 	autoUnseal bool
 }
 
-// DeleteTenant implements tenantDeleter so an Exclusive ProvisionTenant's
-// undo stack can be exercised against this double.
-func (f *fakeTenants) DeleteTenant(_ context.Context, id string) error {
-	f.deleteCalls = append(f.deleteCalls, id)
-	return f.deleteErr
+// UndoCreateTenant implements tenantUndoer so an Exclusive
+// ProvisionTenant's undo stack can be exercised against this double.
+func (f *fakeTenants) UndoCreateTenant(_ context.Context, id string) error {
+	f.undoCalls = append(f.undoCalls, id)
+	return f.undoErr
 }
 
 type createTenantCall struct {

@@ -324,7 +324,7 @@ func TestKVCreateTenant_RefusesAStoreThatCannotCommitAtomically(t *testing.T) {
 // read as either refusal.
 func TestCommitCreate_PropagatesAnUnknownOutcome(t *testing.T) {
 	boom := errors.New("proposal dropped")
-	err := commitCreate(context.Background(), erroringFenced{err: boom}, seal.NewMemoryBackend().Get, "acme", []byte("{}"))
+	err := commitCreate(context.Background(), erroringFenced{err: boom}, seal.NewMemoryBackend().Get, "acme", []byte("{}"), nil)
 	var se *StoreError
 	if !errors.As(err, &se) || !errors.Is(err, boom) || se.Op != "put" {
 		t.Fatalf("commitCreate = %v; want *StoreError{Op: put} wrapping the store error", err)

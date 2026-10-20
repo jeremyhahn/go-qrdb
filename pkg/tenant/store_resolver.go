@@ -118,7 +118,9 @@ var _ StoreResolver = (*defaultStoreResolver)(nil)
 // defaultStoreResolver is the production StoreResolver. It holds the shared
 // system KVStore, the barrier registry, and a tenant-metadata lookup for
 // resolving isolation types. Per-tenant barrier KVStore wrappers are cached
-// in a sync.Map keyed by tenant ID; the cached wrapper reads its barrier's
+// in a sync.Map keyed by tenant ID and serve only the barrier instance they
+// were built over, so a reused id never reaches a closed barrier through its
+// predecessor's wrapper; the cached wrapper reads its barrier's
 // seal state LIVE on every operation, so the sealed/unsealed decision is
 // never cached.
 type defaultStoreResolver struct {
@@ -135,7 +137,7 @@ type defaultStoreResolver struct {
 	// TenantServicer from outside this package.
 	tombstones tombstoneLookup
 
-	wrappers sync.Map // map[string]kvstore.KVStore — barrier-tenant wrappers
+	wrappers sync.Map // map[string]*barrierWrapper — barrier-tenant wrappers
 	// namespaced caches the shared-store confinement wrapper per "{tenant}/"
 	// prefix.
 	namespaced sync.Map // map[string]kvstore.KVStore
@@ -371,8 +373,15 @@ func (r *defaultStoreResolver) resolveBarrier(ctx context.Context, tenantID stri
 		return nil, ErrTenantSealed
 	}
 
-	if cached, ok := r.wrappers.Load(tenantID); ok {
-		return cached.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	// A cached wrapper serves only the barrier it was built over. An undone
+	// or deleted id's barrier is released and closed, and a reused id
+	// registers a new one: matching on the instance, not the id, means the
+	// closed barrier's wrapper is never handed to the id's next tenant.
+	cached, ok := r.wrappers.Load(tenantID)
+	if ok {
+		if bw := cached.(*barrierWrapper); bw.barrier == tb { //nolint:errcheck // type assertion on a value this container only ever holds
+			return bw.store, nil
+		}
 	}
 
 	// The wrapper persists the tenant's IAM in the SHARED replicated store,
@@ -386,6 +395,26 @@ func (r *defaultStoreResolver) resolveBarrier(ctx context.Context, tenantID stri
 	if err != nil {
 		return nil, err
 	}
-	actual, _ := r.wrappers.LoadOrStore(tenantID, wrapper)
-	return actual.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	fresh := &barrierWrapper{barrier: tb, store: wrapper}
+	for {
+		if !ok {
+			if cached, ok = r.wrappers.LoadOrStore(tenantID, fresh); !ok {
+				return wrapper, nil
+			}
+		}
+		if bw := cached.(*barrierWrapper); bw.barrier == tb { //nolint:errcheck // type assertion on a value this container only ever holds
+			return bw.store, nil
+		}
+		if r.wrappers.CompareAndSwap(tenantID, cached, fresh) {
+			return wrapper, nil
+		}
+		cached, ok = r.wrappers.Load(tenantID)
+	}
+}
+
+// barrierWrapper is a cached per-tenant barrier KVStore together with the
+// barrier instance it encrypts with.
+type barrierWrapper struct {
+	barrier *seal.TenantBarrier
+	store   kvstore.KVStore
 }

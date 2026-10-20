@@ -41,3 +41,18 @@ func TestMapWireError_CarriesTheRetryDelay(t *testing.T) {
 		t.Fatalf("mapped = %v, want RetryAfter 0 for a payload naming no delay", got)
 	}
 }
+
+// The UNAVAILABLE a create of a not-yet-released undone id answers keeps its
+// delay.
+func TestMapWireError_UndoPendingIsRetryableUnavailable(t *testing.T) {
+	body, err := wire.EncodeErrorPayload(wire.StatusUnavailable, wire.ErrorPayload{
+		Message: "tenant: id acme is pending the undo cleanup", RetryAfter: 5 * time.Second, HasRetryAfter: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reqErr *transport.RequestError
+	if got := mapWireError("tenant.Create", wire.StatusUnavailable, body); !errors.As(got, &reqErr) || reqErr.RetryAfter != 5*time.Second {
+		t.Fatalf("mapped = %v, want a RequestError with RetryAfter 5s", got)
+	}
+}

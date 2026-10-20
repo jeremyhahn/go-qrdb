@@ -73,6 +73,12 @@ func (m *mockTenantSvc) ListTenants(ctx context.Context) ([]tenantpkg.TenantInfo
 	}
 	return []tenantpkg.TenantInfo{{ID: "t1", Name: "alpha"}, {ID: "t2", Name: "beta"}}, nil
 }
+
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (m *mockTenantSvc) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return m.DeleteTenant(ctx, tenantID)
+}
+
 func (m *mockTenantSvc) DeleteTenant(ctx context.Context, id string) error {
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, id)

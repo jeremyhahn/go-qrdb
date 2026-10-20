@@ -97,6 +97,12 @@ func (s *stubTenantServicerForRegistry) ReconcileDeletedTenants(_ context.Contex
 func (s *stubTenantServicerForRegistry) ListTenants(_ context.Context) ([]tenant.TenantInfo, error) {
 	return nil, nil
 }
+
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (s *stubTenantServicerForRegistry) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return s.DeleteTenant(ctx, tenantID)
+}
+
 func (s *stubTenantServicerForRegistry) DeleteTenant(_ context.Context, _ string) error { return nil }
 func (s *stubTenantServicerForRegistry) UpdateTenant(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 	return nil, nil

@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // retryInfo returns the RetryInfo detail err's status carries, if any.
@@ -72,5 +73,21 @@ func TestMapServiceError_CarriesRetryInfo(t *testing.T) {
 	}
 	if ri := retryInfo(t, mapServiceError(errors.New("boom"))); ri != nil {
 		t.Errorf("an error naming no delay carries RetryInfo %v", ri)
+	}
+}
+
+// A create of an undone id that a serving node has not yet released is
+// Unavailable, not a throttle, and still says when to try again.
+func TestMapServiceError_UndoPendingIsUnavailableWithRetryInfo(t *testing.T) {
+	err := mapServiceError(&tenant.TenantUndoPendingError{TenantID: "acme", Pending: []string{"n2:7000"}, RetryAfter: tenant.UndoPendingRetryAfter})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v, want Unavailable", status.Code(err))
+	}
+	ri := retryInfo(t, err)
+	if ri == nil {
+		t.Fatal("no RetryInfo detail")
+	}
+	if got := ri.GetRetryDelay().AsDuration(); got != tenant.UndoPendingRetryAfter {
+		t.Fatalf("RetryDelay = %v, want %v", got, tenant.UndoPendingRetryAfter)
 	}
 }

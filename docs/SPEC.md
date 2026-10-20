@@ -125,6 +125,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | rate-limit | shipped | Per-permission request throttling, enforced identically on every transport. | [rate-limit/](rate-limit/) |
 | attested-caller | shipped | Admit a gated operation only from a peer whose measured state is currently acceptable. | [attested-caller/](attested-caller/) |
 | multi-tenancy | shipped | The isolation ladder, quotas, entitlements, per-tenant barriers. | [multi-tenancy/](multi-tenancy/), [scoping.md](scoping.md) |
+| tenant-undo-id-reuse | in progress | An undone tenant create writes a tombstone in an undone state, each serving node's ReconcileDeletedTenants cleans up its own leftovers and records a per-node cleanup acknowledgement, a create reuses an undone ID only once every serving node has acknowledged and answers the documented retryable error until then, and the new state and record sit behind a cluster feature gate. | #774, [multi-tenancy/](multi-tenancy/) |
 
 ### Clients
 

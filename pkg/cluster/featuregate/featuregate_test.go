@@ -551,8 +551,31 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo)}, SupportedNames())
+}
+
+// TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
+// implements tenant-undo: its activation record is adopted, not refused as
+// unsupported, and the gate reports the feature active.
+func TestCheckActivated_AdoptsTenantUndoActivation(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(TenantUndo), []byte(`{}`))
+	require.NoError(t, err)
+
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+	assert.True(t, g.Activated(TenantUndo))
+	assert.True(t, g.Enabled(0, TenantUndo))
+}
+
+// TestGate_TenantUndoInactiveWithoutRecord pins the other side: with no
+// activation record the feature is not active until the gate activates it.
+func TestGate_TenantUndoInactiveWithoutRecord(t *testing.T) {
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), newMemKV()))
+	assert.False(t, g.Activated(TenantUndo))
+	assert.False(t, g.Enabled(0, TenantUndo))
 }
 
 // TestCheckActivated_AdoptsPerNodeBarrierKeysActivation pins that this binary

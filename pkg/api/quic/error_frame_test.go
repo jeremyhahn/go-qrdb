@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // frameDecoded decodes an error frame body, failing the test if it is not a
@@ -79,6 +80,20 @@ func TestMapServiceError_CarriesTheRetryDelay(t *testing.T) {
 	}
 	if p := frameDecoded(t, bodyOf(mapServiceError(errors.New("boom")))); p.HasRetryAfter {
 		t.Errorf("an error naming no delay carries one: %+v", p)
+	}
+}
+
+// A create of an undone id that a serving node has not yet released is
+// UNAVAILABLE, not a throttle, and still says when to try again.
+func TestMapServiceError_UndoPendingIsUnavailableWithTheDelay(t *testing.T) {
+	err := &tenant.TenantUndoPendingError{TenantID: "acme", Pending: []string{"n2:7000"}, RetryAfter: tenant.UndoPendingRetryAfter}
+	st, body := mapServiceError(err)
+	if st != wire.StatusUnavailable {
+		t.Fatalf("status %s, want UNAVAILABLE", wire.StatusName(st))
+	}
+	p := frameDecoded(t, body)
+	if !p.HasRetryAfter || p.RetryAfter != tenant.UndoPendingRetryAfter || p.Message != err.Error() {
+		t.Fatalf("payload %+v, want message %q and delay %v", p, err.Error(), tenant.UndoPendingRetryAfter)
 	}
 }
 

@@ -16,6 +16,7 @@ package tenant
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"time"
@@ -88,9 +89,12 @@ type Tombstone struct {
 	IsolationType IsolationType `json:"isolation_type,omitempty"`
 
 	// VolumePool is the named volume pool the deleted tenant was placed on,
-	// empty for prefix and barrier isolation. It is recorded for the same
+	// empty for prefix isolation. It is recorded for the same
 	// reason IsolationType is: an operator inspecting a leaked directory can
-	// map it back to the deletion that abandoned it.
+	// map it back to the deletion that abandoned it. It is also the placement
+	// a node's reconcile reclaims once the catalog Assignment is gone, so a
+	// node that missed the teardown still removes its own directory before
+	// it acknowledges an undo.
 	VolumePool string `json:"volume_pool,omitempty"`
 
 	// CreatedAt is when the deleted tenant was created.
@@ -99,6 +103,53 @@ type Tombstone struct {
 	// DeletedAt is when the tenant was deleted. It is the timestamp the
 	// refusal reports.
 	DeletedAt time.Time `json:"deleted_at"`
+
+	// State is TombstoneRetired (empty) for a deletion, whose id is retired
+	// for good, or TombstoneUndone for an undone create, whose id a later
+	// create may reuse once every serving node has acknowledged its cleanup.
+	State TombstoneState `json:"state,omitempty"`
+
+	// Undo identifies one undo of the id. It is a random nonce, set only on
+	// an undone tombstone, and scopes the per-node cleanup acknowledgements
+	// to that undo so an acknowledgement left by an earlier undo of the same
+	// id never counts toward a later one.
+	Undo string `json:"undo,omitempty"`
+
+	// TornDown is set on an undone tombstone by the last step of its
+	// teardown, once the barrier is destroyed and the shared keyspace
+	// reclaimed. No node acknowledges the undo before it is set, so the id
+	// is never reused while the old tenant's records remain; and because it
+	// is a write of the tombstone itself, after the metadata delete, it
+	// re-delivers the undo to every node watching the tombstones.
+	TornDown bool `json:"torn_down,omitempty"`
+}
+
+// TombstoneState is the state a Tombstone records.
+type TombstoneState string
+
+const (
+	// TombstoneRetired is a deleted tenant's tombstone: its id is never
+	// reused. It is the zero value, so every tombstone written before the
+	// state existed reads as retired.
+	TombstoneRetired TombstoneState = ""
+
+	// TombstoneUndone is an undone create's tombstone: its id may be reused
+	// once every serving node has acknowledged cleaning up the undo.
+	TombstoneUndone TombstoneState = "undone"
+)
+
+// newUndoneTombstone builds the undone tombstone for info: newTombstone's
+// record, in the undone state, under a fresh 128-bit random undo nonce.
+func newUndoneTombstone(info *TenantInfo, now time.Time) *Tombstone {
+	t := newTombstone(info, now)
+	t.State = TombstoneUndone
+	t.Undo = rand.Text()
+	return t
+}
+
+// Undone reports whether t is an undone create's tombstone.
+func (t *Tombstone) Undone() bool {
+	return t.State == TombstoneUndone
 }
 
 // tombstoneKey returns the storage key holding tenantID's tombstone.
@@ -125,13 +176,15 @@ func newTombstone(info *TenantInfo, now time.Time) *Tombstone {
 // the same reason.
 type tombstoneReader func(ctx context.Context, key string) ([]byte, error)
 
-// checkTombstone refuses tenantID when a tombstone exists for it.
+// checkTombstone refuses tenantID when a tombstone exists for it. With undo
+// (the tenant-undo feature active) an undone tombstone is let through: the
+// release in commitCreate decides whether its id is free yet.
 //
 // A read failure other than "absent" FAILS the caller rather than being
 // treated as "no tombstone". Creating a tenant is the operation whose whole
 // safety property is that the id was never used before; answering it from an
 // unreadable store would defeat the record entirely.
-func checkTombstone(ctx context.Context, read tombstoneReader, tenantID string) error {
+func checkTombstone(ctx context.Context, read tombstoneReader, tenantID string, undo bool) error {
 	data, err := read(ctx, tombstoneKey(tenantID))
 	if err != nil {
 		if isAbsent(err) {
@@ -148,6 +201,11 @@ func checkTombstone(ctx context.Context, read tombstoneReader, tenantID string) 
 		// Refusing on the id alone is the conservative reading and is the
 		// only one that keeps a corrupt record from releasing an id.
 		ts = &Tombstone{ID: tenantID}
+	}
+	if undo && ts.Undone() {
+		// Not a refusal: commitCreate's release decides whether the id is
+		// free yet.
+		return nil
 	}
 	return &TenantDeletedError{TenantID: tenantID, DeletedAt: ts.DeletedAt}
 }
@@ -181,7 +239,12 @@ func fencedCreatorOf(store any) (kvstore.FencedCreator, error) {
 // tombstone exists, ErrTenantAlreadyExists when another create won the id.
 // The store is unchanged in both cases. A store error is an UNKNOWN outcome
 // and is reported as *StoreError{Op: "put"}.
-func commitCreate(ctx context.Context, fenced kvstore.FencedCreator, read tombstoneReader, id string, record []byte) error {
+//
+// A non-nil release (the tenant-undo feature active) is tried once when the
+// fence holds: it deletes an undone tombstone every serving node has
+// acknowledged, and the write is retried once. Until then the create is
+// refused with the release's *TenantUndoPendingError.
+func commitCreate(ctx context.Context, fenced kvstore.FencedCreator, read tombstoneReader, id string, record []byte, release undoReleaser) error {
 	created, err := fenced.PutIfAllAbsent(ctx, metadataPrefix+id, record, tombstoneKey(id))
 	if err != nil {
 		return &StoreError{Op: "put", Err: err}
@@ -189,7 +252,23 @@ func commitCreate(ctx context.Context, fenced kvstore.FencedCreator, read tombst
 	if created {
 		return nil
 	}
-	if err := checkTombstone(ctx, read, id); err != nil {
+	if release != nil {
+		released, err := release(ctx, id)
+		if err != nil {
+			return err
+		}
+		if released {
+			// Once: a create that loses this retry lost to another create.
+			created, err = fenced.PutIfAllAbsent(ctx, metadataPrefix+id, record, tombstoneKey(id))
+			if err != nil {
+				return &StoreError{Op: "put", Err: err}
+			}
+			if created {
+				return nil
+			}
+		}
+	}
+	if err := checkTombstone(ctx, read, id, false); err != nil {
 		return err
 	}
 	return ErrTenantAlreadyExists

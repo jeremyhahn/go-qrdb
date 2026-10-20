@@ -149,6 +149,11 @@ func (m *fullTenantMock) GetTenant(ctx context.Context, id string) (*tenant.Tena
 	return m.mockTenantService.GetTenant(ctx, id)
 }
 
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (m *fullTenantMock) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return m.DeleteTenant(ctx, tenantID)
+}
+
 func (m *fullTenantMock) DeleteTenant(ctx context.Context, id string) error {
 	m.called = true
 	return m.mockTenantService.DeleteTenant(ctx, id)

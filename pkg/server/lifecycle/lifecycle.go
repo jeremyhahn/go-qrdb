@@ -1163,6 +1163,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if err != nil {
 			return nil, &TenantServiceError{Err: err}
 		}
+		if w, ok := kvTenantSvc.(tenant.UndoWiring); ok {
+			w.SetTenantUndoGate(tenantUndoRequired(infra.Host))
+			w.SetUndoCleanupRoster(nodeIdentity(infra.Host), undoCleanupRoster(infra.Host))
+		}
 		n.Tenant = kvTenantSvc
 
 		// Route IAM here TOO. Keyspace isolation is not a property of
@@ -1477,7 +1481,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			// n.Watch is already live (set above, unconditionally on
 			// infra.WatchHub): wiring it here only enables
 			// DefaultCertProvider.WatchForDeletions, which starts nothing by
-			// itself. Every composer calls WatchCertProviderEvictions,
+			// itself. Every composer calls StartNodeWatchers,
 			// below, once, with its own long-lived background context, after
 			// BuildServices returns.
 			certOpts = append(certOpts, cert.WithWatchService(n.Watch))
@@ -1848,7 +1852,13 @@ func resolveReplicaID(id uint64) uint64 {
 // Infra.StrategyRegistry, and names this node by nodeIdentity in every
 // barrier-key request.
 func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
-	opts := []tenant.TenantServiceOption{tenant.WithNodeID(nodeIdentity(infra.Host))}
+	// An undone create's acknowledgements are written under nodeIdentity and
+	// counted against a roster of the same identities.
+	opts := []tenant.TenantServiceOption{
+		tenant.WithNodeID(nodeIdentity(infra.Host)),
+		tenant.WithTenantUndoGate(tenantUndoRequired(infra.Host)),
+		tenant.WithUndoCleanupRoster(undoCleanupRoster(infra.Host)),
+	}
 	// Reserve the node's own data directory so an operator-supplied dedicated
 	// DataRoot (WithDataRoot) can never be placed equal to, above, or below the
 	// system data dir — which would nest a tenant's dedicated disk inside the

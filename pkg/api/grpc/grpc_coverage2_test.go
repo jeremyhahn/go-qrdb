@@ -1171,6 +1171,12 @@ func (m *mockTenantBarrierOnlySvc) ReconcileDeletedTenants(_ context.Context) (*
 func (m *mockTenantBarrierOnlySvc) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
+
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (m *mockTenantBarrierOnlySvc) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return m.DeleteTenant(ctx, tenantID)
+}
+
 func (m *mockTenantBarrierOnlySvc) DeleteTenant(_ context.Context, _ string) error { return nil }
 func (m *mockTenantBarrierOnlySvc) UpdateTenant(_ context.Context, id string, p tenantpkg.TenantPatch) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Name: p.Name}, nil

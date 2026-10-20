@@ -68,6 +68,11 @@ func (s *stubTenantBarrierSvc) ListTenants(_ context.Context) ([]tenant.TenantIn
 	return nil, nil
 }
 
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (s *stubTenantBarrierSvc) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return s.DeleteTenant(ctx, tenantID)
+}
+
 func (s *stubTenantBarrierSvc) DeleteTenant(_ context.Context, _ string) error { return nil }
 
 func (s *stubTenantBarrierSvc) UpdateTenant(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {

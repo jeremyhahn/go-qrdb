@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestClassifiedToolError_CarriesRetryAfter: a refusal that says how long to
@@ -49,6 +50,20 @@ func TestClassifiedToolError_CarriesRetryAfter(t *testing.T) {
 		if payload.RetryAfterSeconds != tc.want {
 			t.Errorf("%s: RetryAfterSeconds = %d, want %d", name, payload.RetryAfterSeconds, tc.want)
 		}
+	}
+}
+
+// A create of an undone id that a serving node has not yet released says
+// when to try again.
+func TestClassifiedToolError_UndoPendingCarriesRetryAfter(t *testing.T) {
+	err := &tenant.TenantUndoPendingError{TenantID: "acme", Pending: []string{"n2:7000"}, RetryAfter: tenant.UndoPendingRetryAfter}
+	res := classifiedToolError("qrdb_tenant_create", err)
+	payload, ok := wire.DecodeErrorPayload(res.StructuredContent)
+	if !ok {
+		t.Fatal("no decodable error payload")
+	}
+	if want := int64(tenant.UndoPendingRetryAfter / time.Second); payload.RetryAfterSeconds != want {
+		t.Fatalf("RetryAfterSeconds = %d, want %d", payload.RetryAfterSeconds, want)
 	}
 }
 

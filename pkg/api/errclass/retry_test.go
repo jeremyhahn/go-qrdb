@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // wrappedError wraps an error the way a transport or service layer might.
@@ -45,6 +46,7 @@ func TestRetryAfter_ReadsEveryDelayingRefusal(t *testing.T) {
 		"wrapped":               {&wrappedError{&pin.SOPINLockedError{RetryAfter: 4 * time.Second}}, 4 * time.Second},
 		"tenant SO PIN lockout": {&auth.SOPINLockedError{RetryAfter: 5 * time.Second}, 5 * time.Second},
 		"auth rate limit":       {&middleware.RateLimitedError{RetryAfter: 6 * time.Second}, 6 * time.Second},
+		"undone tenant id":      {&tenant.TenantUndoPendingError{TenantID: "t", RetryAfter: 7 * time.Second}, 7 * time.Second},
 	}
 	for name, tc := range cases {
 		got, ok := RetryAfter(tc.err)

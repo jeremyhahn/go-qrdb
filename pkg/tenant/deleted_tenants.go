@@ -412,6 +412,20 @@ func (s *TenantService) reconcileRetired(ctx context.Context, id string, g *resi
 		return []*ResidueReconcileError{{TenantID: id, Op: op, Path: path, Err: err}}
 	}
 
+	// The pass holds the id's acknowledgement, and re-reads its tombstone
+	// under that hold, before it destroys anything: see undoAckHolds.
+	pass, done, err := s.beginCleanupPass(ctx, id)
+	if pass == nil {
+		return fail("undo-pass", "", err), nil
+	}
+	defer s.endCleanupPass(ctx, pass)
+	if err != nil {
+		return fail("undo-pass", "", err), nil
+	}
+	if done {
+		return nil, nil
+	}
+
 	// A direct read of the id's own record, not a scan: an undecodable record
 	// still EXISTS, and existence is what stops the reclamation.
 	if _, err := s.store.Get(ctx, metadataPrefix+id); err == nil {
@@ -421,14 +435,14 @@ func (s *TenantService) reconcileRetired(ctx context.Context, id string, g *resi
 		return fail("live-record", "", err), nil
 	}
 
-	candidates, err := s.registry.TenantDataRootCandidates(ctx, id)
+	candidates, err := s.dataRootCandidates(ctx, id)
 	if err != nil {
 		return fail("candidates", "", err), nil
 	}
 	if done, err := s.fullyReclaimed(ctx, id, candidates); err != nil {
 		return fail("candidates", "", err), nil
 	} else if done {
-		return nil, nil
+		return s.ackUndoneCleanup(ctx, pass), nil
 	}
 
 	if closer := s.TenantRuntimeCloser(); closer != nil {
@@ -443,6 +457,7 @@ func (s *TenantService) reconcileRetired(ctx context.Context, id string, g *resi
 	}
 
 	var failed []*ResidueReconcileError
+	skipped := false
 	for _, path := range candidates {
 		reason, perr, abort := s.removeResidue(ctx, id, path, g)
 		if abort != nil {
@@ -460,12 +475,15 @@ func (s *TenantService) reconcileRetired(ctx context.Context, id string, g *resi
 				slog.String("path", path))
 		case reasonAbsent:
 		default:
+			skipped = true
 			s.skip(report, id, path, reason)
 		}
 	}
-	if len(failed) > 0 {
-		// A directory that could not be removed keeps the records that name
-		// it, so the next pass finds it again.
+	if len(failed) > 0 || skipped {
+		// A directory that could not be removed, or was skipped because a
+		// live tenant or a reserved root holds it at this moment, keeps the
+		// records that name it and withholds the undo's acknowledgement: the
+		// next pass finds it again, and the id is never reused over it.
 		return failed, nil
 	}
 
@@ -473,7 +491,34 @@ func (s *TenantService) reconcileRetired(ctx context.Context, id string, g *resi
 	if err := s.registry.DropTenantRecords(ctx, id); err != nil {
 		return fail("drop-records", "", err), nil
 	}
-	return nil, nil
+	// An undone id's reuse waits on this node's acknowledgement, written only
+	// once nothing of the id is left here.
+	return s.ackUndoneCleanup(ctx, pass), nil
+}
+
+// dataRootCandidates returns the directories this node may still hold for
+// retired id. The catalog Assignment names them while it lasts. Once another
+// node's teardown has released it, the tombstone's VolumePool does: a node
+// that was offline for that teardown restarts with no barrier and no
+// Assignment for id, and without the tombstone's placement it would find
+// nothing, acknowledge, and leave a directory a reuse of the id could reopen.
+func (s *TenantService) dataRootCandidates(ctx context.Context, id string) ([]string, error) {
+	candidates, err := s.registry.TenantDataRootCandidates(ctx, id)
+	if err != nil || len(candidates) > 0 {
+		return candidates, err
+	}
+	ts, ok, err := readTombstone(ctx, s.store.Get, id)
+	if err != nil || !ok || ts.VolumePool == "" {
+		return nil, err
+	}
+	path, err := s.registry.PlacementDataRoot(ctx, id, ts.VolumePool, volumePlacementPath(id))
+	if errors.Is(err, seal.ErrPoolNotConfigured) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []string{path}, nil
 }
 
 // skip records a path left in place and logs it at Warn: it is disk the
@@ -638,5 +683,18 @@ func (s *kvTenantService) ReconcileDeletedTenants(ctx context.Context) (*Reconci
 	if err != nil {
 		return nil, &ResidueReconcileError{Op: "list-tombstones", Err: err}
 	}
-	return &ReconcileReport{Inspected: len(ids)}, nil
+	report := &ReconcileReport{Inspected: len(ids)}
+	// Nothing of a prefix tenant outlives its teardown here, so each undone
+	// id is acknowledged as it is found.
+	var failed []*ResidueReconcileError
+	for _, id := range ids {
+		if err := s.ReconcileUndone(ctx, id); err != nil {
+			failed = append(failed, &ResidueReconcileError{TenantID: id, Op: "undo-ack", Err: err})
+			report.Failed = append(report.Failed, FailedReclaim{TenantID: id, Op: "undo-ack", Error: err.Error()})
+		}
+	}
+	if len(failed) > 0 {
+		return report, &ResidueReconcileFailuresError{Errors: failed}
+	}
+	return report, nil
 }

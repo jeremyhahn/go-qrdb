@@ -107,7 +107,7 @@ type TenantAdminCredential struct {
 // tenantOnboardingTenants is the slice of the tenant service onboarding needs.
 type tenantOnboardingTenants interface {
 	CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error)
-	DeleteTenant(ctx context.Context, tenantID string) error
+	tenant.CreateUndoer
 }
 
 // TenantOnboardingService is the production TenantOnboardingServicer.
@@ -133,9 +133,10 @@ type TenantOnboardingService struct {
 // sequence of consensus rounds, not one: the tenant record, its pool
 // reservation and barrier, then the tenant's roles, its admin's account and
 // the certificate binding. Expiry is not a cheap refusal: exclusive
-// provisioning undoes what it wrote, and undoing deletes the tenant, which
-// retires its id for good, so a budget sized for a single read turns a slow
-// host into a lost tenant id.
+// provisioning undoes what it wrote, and an undone create holds its id until
+// every serving node has cleaned up after it (or, before the tenant-undo
+// feature is active, retires it for good), so a budget sized for a single
+// read turns a slow host into an id that cannot be re-created at once.
 const DefaultTenantOnboardingTimeout = 60 * time.Second
 
 // ClientTrustRefresher rebuilds the client-certificate trust this node's

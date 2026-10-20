@@ -649,7 +649,7 @@ func TestProvisionTenant_MissingPendingAdminsForBarrierIsolationRejected(t *test
 	}
 }
 
-func TestProvisionTenant_ExclusiveWithoutDeleteTenantSeamRejected(t *testing.T) {
+func TestProvisionTenant_ExclusiveWithoutUndoCreateTenantSeamRejected(t *testing.T) {
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID:    "acme",
 		Isolation:   tenant.IsolationPrefix,
@@ -661,8 +661,8 @@ func TestProvisionTenant_ExclusiveWithoutDeleteTenantSeamRejected(t *testing.T) 
 		Logger: discardLogger(),
 	})
 	var want *MissingProvisioningSeamError
-	if !errors.As(err, &want) || !strings.Contains(want.Seam, "DeleteTenant") {
-		t.Fatalf("err = %v, want *MissingProvisioningSeamError naming DeleteTenant", err)
+	if !errors.As(err, &want) || !strings.Contains(want.Seam, "UndoCreateTenant") {
+		t.Fatalf("err = %v, want *MissingProvisioningSeamError naming UndoCreateTenant", err)
 	}
 }
 
@@ -734,8 +734,8 @@ func TestProvisionTenant_ExclusiveCompensatesOnBindingFailure(t *testing.T) {
 	if len(undone.UndoFailures) != 0 {
 		t.Fatalf("UndoFailures = %v, want none (every undo step succeeded)", undone.UndoFailures)
 	}
-	if len(tenants.deleteCalls) != 1 || tenants.deleteCalls[0] != "acme" {
-		t.Errorf("tenant deleteCalls = %v, want [acme]", tenants.deleteCalls)
+	if len(tenants.undoCalls) != 1 || tenants.undoCalls[0] != "acme" {
+		t.Errorf("tenant deleteCalls = %v, want [acme]", tenants.undoCalls)
 	}
 	if len(users.deleteCalls) != 1 {
 		t.Errorf("user deleteCalls = %v, want the one created admin undone", users.deleteCalls)
@@ -764,8 +764,8 @@ func TestProvisionTenant_ExclusiveCompensatesOnSignerFailureAfterUserCreation(t 
 	if !errors.As(err, &undone) || !errors.Is(undone, signerErr) {
 		t.Fatalf("err = %v, want *ProvisioningUndoneError wrapping the signer failure", err)
 	}
-	if len(tenants.deleteCalls) != 1 {
-		t.Errorf("tenant deleteCalls = %v, want the tenant undone", tenants.deleteCalls)
+	if len(tenants.undoCalls) != 1 {
+		t.Errorf("tenant deleteCalls = %v, want the tenant undone", tenants.undoCalls)
 	}
 	if len(users.deleteCalls) != 1 {
 		t.Errorf("user deleteCalls = %v, want the admin undone", users.deleteCalls)
@@ -834,8 +834,8 @@ func TestProvisionTenant_ExclusiveReportsAFailedUndoStep(t *testing.T) {
 		t.Errorf("UndoStepError.Error() = %q, want it to name the failed step", stepErr.Error())
 	}
 	// The tenant delete still ran and succeeded despite the user delete failing.
-	if len(tenants.deleteCalls) != 1 {
-		t.Errorf("tenant deleteCalls = %v, want the tenant still undone", tenants.deleteCalls)
+	if len(tenants.undoCalls) != 1 {
+		t.Errorf("tenant deleteCalls = %v, want the tenant still undone", tenants.undoCalls)
 	}
 	if !strings.Contains(undone.Error(), "undo steps that failed") {
 		t.Errorf("ProvisioningUndoneError.Error() = %q, want it to mention the failed undo step", undone.Error())
@@ -874,8 +874,8 @@ func TestProvisionTenant_ExclusiveCompensatesOnAnchorRegistrationFailure(t *test
 	if !errors.As(err, &undone) || !errors.As(err, &tooMany) {
 		t.Fatalf("err = %v, want *ProvisioningUndoneError wrapping *trustanchor.TooManyAnchorsError", err)
 	}
-	if len(tenants.deleteCalls) != 1 {
-		t.Errorf("tenant deleteCalls = %v, want the tenant undone", tenants.deleteCalls)
+	if len(tenants.undoCalls) != 1 {
+		t.Errorf("tenant deleteCalls = %v, want the tenant undone", tenants.undoCalls)
 	}
 }
 
@@ -907,8 +907,8 @@ func TestProvisionTenant_ExclusiveUndoesRegisteredAnchorsOnALaterFailure(t *test
 	if list, _ := anchors.List(ctx, "acme"); len(list) != 0 {
 		t.Errorf("anchors.List(acme) = %v, want the registered anchor undone", list)
 	}
-	if len(tenants.deleteCalls) != 1 {
-		t.Errorf("tenant deleteCalls = %v, want the tenant undone", tenants.deleteCalls)
+	if len(tenants.undoCalls) != 1 {
+		t.Errorf("tenant deleteCalls = %v, want the tenant undone", tenants.undoCalls)
 	}
 }
 

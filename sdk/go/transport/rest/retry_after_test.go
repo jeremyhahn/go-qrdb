@@ -66,3 +66,19 @@ func TestDecodeErrorResponse_CarriesTheRetryDelay(t *testing.T) {
 		}
 	}
 }
+
+// The 503 a create of a not-yet-released undone id answers keeps its status
+// and its delay, so a caller can tell it to retry rather than give up.
+func TestDecodeErrorResponse_UndoPendingIsRetryable503(t *testing.T) {
+	resp := errorResponse("5")
+	resp.StatusCode, resp.Status = http.StatusServiceUnavailable, "503 Service Unavailable"
+	resp.Body = io.NopCloser(strings.NewReader(`{"error":"tenant: id acme is pending the undo cleanup"}`))
+	defer func() { _ = resp.Body.Close() }()
+	var reqErr *transport.RequestError
+	if err := (&Transport{}).decodeErrorResponse("CreateTenant", resp); !errors.As(err, &reqErr) {
+		t.Fatalf("decoded %T, want *transport.RequestError", err)
+	}
+	if reqErr.StatusCode != http.StatusServiceUnavailable || reqErr.RetryAfter != 5*time.Second {
+		t.Fatalf("RequestError = %+v, want 503 with RetryAfter 5s", reqErr)
+	}
+}

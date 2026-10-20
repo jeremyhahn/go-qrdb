@@ -747,8 +747,11 @@ read once too. Then, for each retired id, in order:
    the pass began keeps its directory.
 6. **Drop the durable records last** — `BarrierRegistry.DropTenantRecords`
    deletes the tenant-root record and the slot assignment. An id whose
-   removal failed never reaches this step, so the record that names the
-   directory survives and the next pass finds it again; dropping the records
+   removal failed, or one of whose directories was skipped, never reaches
+   this step, so the record that names the directory survives and the next
+   pass finds it again; an undone id's acknowledgement is written only after
+   this step, so it waits on the same pass, and `ReconcileUndone` reports the
+   skip as `*TenantUndoPendingError` naming this node. Dropping the records
    first would orphan an operator-supplied `DataRoot` that nothing named any
    more.
    `DestroyTenant` runs the same three steps in the same order —

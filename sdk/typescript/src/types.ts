@@ -3070,7 +3070,7 @@ export interface CreateTenantRequest {
      * Names the volume pool a volume/raft tenant is placed on. Empty (the
      * default) uses the tenant's default pool, the first entry of its
      * `allowedVolumePools`; with none entitled, creation is refused.
-     * Ignored for prefix/barrier isolation.
+     * Refused for prefix/barrier isolation.
      */
     readonly volumePool?: string;
     /**

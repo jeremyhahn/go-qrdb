@@ -86,7 +86,8 @@ type TenantInfo struct {
 	Name          string              `json:"name"`
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
 	// VolumePool is the named volume pool for an IsolationVolume /
-	// IsolationRaft tenant. Empty for prefix/barrier tenants.
+	// IsolationRaft tenant, or the pool the registry placed an IsolationBarrier
+	// tenant's barrier on. Empty for prefix tenants.
 	VolumePool   string              `json:"volume_pool,omitempty"`
 	Quotas       *TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements *TenantEntitlements `json:"entitlements,omitempty"`
@@ -224,7 +225,7 @@ type DeletedTenant struct {
 	// IsolationType is the isolation the deleted tenant used.
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
 	// VolumePool is the named volume pool the deleted tenant was placed on;
-	// empty for prefix and barrier isolation.
+	// empty for prefix isolation.
 	VolumePool string `json:"volume_pool,omitempty"`
 	// CreatedAt is when the deleted tenant was created; zero when unrecorded.
 	CreatedAt time.Time `json:"created_at,omitempty"`

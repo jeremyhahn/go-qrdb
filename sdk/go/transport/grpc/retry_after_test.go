@@ -44,3 +44,16 @@ func TestMapGRPCError_CarriesTheRetryDelay(t *testing.T) {
 		t.Fatalf("mapped = %v, want RetryAfter 0 for a status naming no delay", got)
 	}
 }
+
+// The Unavailable a create of a not-yet-released undone id answers keeps its
+// code and its RetryInfo delay.
+func TestMapGRPCError_UndoPendingIsRetryableUnavailable(t *testing.T) {
+	st, err := status.New(codes.Unavailable, "tenant: id acme is pending the undo cleanup").WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(5 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reqErr *transport.RequestError
+	if got := mapGRPCError("CreateTenant", st.Err()); !errors.As(got, &reqErr) || reqErr.StatusCode != int(codes.Unavailable) || reqErr.RetryAfter != 5*time.Second {
+		t.Fatalf("mapped = %v, want an Unavailable RequestError with RetryAfter 5s", got)
+	}
+}

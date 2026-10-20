@@ -302,3 +302,37 @@ func TestCreateTenant_OnboardingServiceError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// A create of an undone id a serving node has not yet released names its
+// retry delay, as the remote transports carry it, and keeps the typed error.
+func TestCreateTenant_UndoPendingCarriesTheRetryDelay(t *testing.T) {
+	mock := &mockTenantOnboardingServicer{
+		onboardTenantFn: func(context.Context, *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+			return nil, &tenant.TenantUndoPendingError{TenantID: "acme", Pending: []string{"n2:7000"}, RetryAfter: tenant.UndoPendingRetryAfter}
+		},
+	}
+	tr := newAuthTransport(t, WithTenantOnboarding(mock))
+	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "acme", Name: "Acme"})
+	var reqErr *transport.RequestError
+	var pending *tenant.TenantUndoPendingError
+	if !errors.As(err, &reqErr) || !errors.As(err, &pending) {
+		t.Fatalf("CreateTenant = %v, want a RequestError around *tenant.TenantUndoPendingError", err)
+	}
+	if reqErr.RetryAfter != tenant.UndoPendingRetryAfter || reqErr.Method != "CreateTenant" {
+		t.Fatalf("RequestError = %+v, want RetryAfter %v on CreateTenant", reqErr, tenant.UndoPendingRetryAfter)
+	}
+}
+
+// A refusal naming no delay is returned as it is.
+func TestCreateTenant_ErrorNamingNoDelayIsUnwrapped(t *testing.T) {
+	boom := errors.New("admin_username is required")
+	mock := &mockTenantOnboardingServicer{
+		onboardTenantFn: func(context.Context, *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+			return nil, boom
+		},
+	}
+	tr := newAuthTransport(t, WithTenantOnboarding(mock))
+	if _, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "acme", Name: "Acme"}); err != boom {
+		t.Fatalf("CreateTenant = %v, want %v unchanged", err, boom)
+	}
+}

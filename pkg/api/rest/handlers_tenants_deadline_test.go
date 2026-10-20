@@ -70,6 +70,11 @@ func (m *ctxRecordingTenantService) GetTenant(ctx context.Context, tenantID stri
 	return &tenant.TenantInfo{ID: tenantID}, nil
 }
 
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (m *ctxRecordingTenantService) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return m.DeleteTenant(ctx, tenantID)
+}
+
 func (m *ctxRecordingTenantService) DeleteTenant(ctx context.Context, _ string) error {
 	m.record(ctx)
 	return nil

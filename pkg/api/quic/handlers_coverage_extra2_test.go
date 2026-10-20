@@ -92,6 +92,11 @@ func (m *mockTenantSvc) UpdateTenant(ctx context.Context, id string, p tenant.Te
 	return &tenant.TenantInfo{ID: id, Name: p.Name, IsolationType: p.IsolationType, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (m *mockTenantSvc) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return m.DeleteTenant(ctx, tenantID)
+}
+
 func (m *mockTenantSvc) DeleteTenant(ctx context.Context, id string) error {
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, id)

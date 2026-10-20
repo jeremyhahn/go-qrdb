@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
@@ -50,6 +51,12 @@ var (
 	// followed by a write: that window is how a create racing a delete
 	// committed a live record for a permanently retired id.
 	ErrTenantStoreNotAtomic = errors.New("tenant: metadata store cannot commit a create atomically against the tombstone")
+
+	// ErrUndoNodeUnnamed is returned when a node would acknowledge its
+	// cleanup of an undone create without a node identity (WithNodeID,
+	// SetUndoCleanupRoster). An acknowledgement no roster can name would
+	// never count, so none is written.
+	ErrUndoNodeUnnamed = errors.New("tenant: undo cleanup acknowledgement needs this node's identity")
 
 	// ErrEmptyTenantID is returned when an empty tenant ID is provided.
 	ErrEmptyTenantID = errors.New("tenant: empty tenant ID")
@@ -404,6 +411,35 @@ func (e *TenantDeletedError) Error() string {
 	}
 	return "tenant: id " + e.TenantID + " was deleted at " +
 		e.DeletedAt.UTC().Format(time.RFC3339) + " and cannot be reused"
+}
+
+// TenantUndoPendingError is returned by CreateTenant when the requested id
+// was left by an undone create (CreateUndoer) that not every serving node has
+// yet acknowledged cleaning up. Unlike TenantDeletedError the id is not
+// retired: the refusal is retryable, and a create of the same id succeeds
+// once the last acknowledgement lands.
+type TenantUndoPendingError struct {
+	// TenantID is the undone id.
+	TenantID string
+	// Pending lists, by node identity, the serving nodes whose
+	// acknowledgement is missing. It is empty when the wait is not on a named
+	// node: no roster to count against, or a tombstone rewritten while the
+	// create read it.
+	Pending []string
+	// RetryAfter is how long a caller should wait before it retries.
+	RetryAfter time.Duration
+}
+
+// UndoPendingRetryAfter is the TenantUndoPendingError.RetryAfter a create
+// reports: about one reconcile on a serving node that is still cleaning up.
+const UndoPendingRetryAfter = 5 * time.Second
+
+func (e *TenantUndoPendingError) Error() string {
+	if len(e.Pending) == 0 {
+		return "tenant: id " + e.TenantID + " was undone and is not yet released; retry"
+	}
+	return "tenant: id " + e.TenantID + " was undone and awaits cleanup by " +
+		strings.Join(e.Pending, ", ") + "; retry"
 }
 
 // TenantHasDatabasesError is returned by DeleteTenant when the tenant still

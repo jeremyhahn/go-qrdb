@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // retryAfterRules are the refusals that say how long the caller must wait
@@ -51,6 +52,14 @@ var retryAfterRules = []func(error) (time.Duration, bool){
 	// An SO PIN check refused while the node's SO PIN lockout is engaged.
 	func(err error) (time.Duration, bool) {
 		var e *pin.SOPINLockedError
+		if errors.As(err, &e) {
+			return e.RetryAfter, true
+		}
+		return 0, false
+	},
+	// A create of an undone tenant id not every serving node has released.
+	func(err error) (time.Duration, bool) {
+		var e *tenant.TenantUndoPendingError
 		if errors.As(err, &e) {
 			return e.RetryAfter, true
 		}

@@ -3813,15 +3813,13 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return err
 	}
 
-	// Key B cache eviction (go-qrdb#591's review): watches for a deleted
-	// tenant's CA material/certificate, or the tenant's own tombstone, so a
-	// retired tenant's CA stops being cached and trusted on this node
-	// promptly rather than aging out by TTL alone. Bound to n.background(),
-	// not ctx (this call's own, short-lived setup context): the watchers
-	// this starts are meant to outlive wireClientAndServer's own return,
-	// for the life of the node.
-	if err := lifecycle.WatchCertProviderEvictions(n.background(), svcNode); err != nil && n.logger != nil {
-		n.logger.Warn("node: Key B cache eviction watch failed to start",
+	// The node's long-lived watchers (Key B cache eviction, undone tenant
+	// acknowledgement), composed in one place shared with qrdbd; see
+	// lifecycle.StartNodeWatchers. Bound to n.background(), not ctx (this
+	// call's own, short-lived setup context): the watchers are meant to
+	// outlive wireClientAndServer's own return, for the life of the node.
+	if err := lifecycle.StartNodeWatchers(n.background(), svcNode); err != nil && n.logger != nil {
+		n.logger.Warn("node: node watchers failed to start",
 			slog.Any("error", err))
 	}
 

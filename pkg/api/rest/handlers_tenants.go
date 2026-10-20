@@ -196,7 +196,8 @@ type tenantResponse struct {
 	Name          string               `json:"name"`
 	IsolationType tenant.IsolationType `json:"isolation_type"`
 	// VolumePool is the named volume pool for an IsolationVolume /
-	// IsolationRaft tenant. Empty for prefix/barrier tenants.
+	// IsolationRaft tenant, or the pool the registry placed an IsolationBarrier
+	// tenant's barrier on. Empty for prefix tenants.
 	VolumePool   string              `json:"volume_pool,omitempty"`
 	Quotas       *quota.Quotas       `json:"quotas,omitempty"`
 	Entitlements *quota.Entitlements `json:"entitlements,omitempty"`

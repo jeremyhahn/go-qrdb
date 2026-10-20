@@ -44,9 +44,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
 	}
 
+	// call's error is already the *transport.RequestError carrying the
+	// status and retry delay; a second wrapper would hide both from errors.As.
 	respBytes, err := t.call(ctx, "tenant.Create", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
+		return nil, err
 	}
 
 	var resp pb.TenantCreateResponse

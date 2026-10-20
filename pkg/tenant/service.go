@@ -91,8 +91,9 @@ type TenantInfo struct {
 	// IsolationVolume or IsolationRaft tenant is placed on. Every node
 	// resolves it to its own local mount plus this tenant's id, the
 	// parent of the tenant's "barrier" (IAM Pebble) and "databases"
-	// (per-tenant Raft host state) subdirectories. Empty for
-	// prefix/barrier tenants.
+	// (per-tenant Raft host state) subdirectories. For an IsolationBarrier
+	// tenant it is the pool the registry placed the barrier's own Pebble on.
+	// Empty for prefix tenants.
 	VolumePool string `json:"volume_pool,omitempty"`
 	// BarrierAutoUnseal selects the dedicated-isolation tenant's barrier
 	// key-management mode. False (the secure default) means self-managed: the
@@ -168,8 +169,9 @@ func WithBarrierAutoUnseal(autoUnseal bool) CreateTenantOption {
 // is refused the same way, naming "volume_pool:<none>".
 //
 // It is only meaningful for IsolationVolume and IsolationRaft tenants;
-// CreateTenant ignores it for prefix/barrier isolation, where a tenant has
-// no dedicated filesystem location.
+// CreateTenant refuses it for prefix/barrier isolation with a
+// *DataRootIsolationTypeError. A barrier tenant is placed by the registry,
+// and TenantInfo.VolumePool records where.
 func WithVolumePool(name string) CreateTenantOption {
 	return func(c *createTenantConfig) { c.volumePool = name }
 }
@@ -238,6 +240,10 @@ type TenantServicer interface {
 	// DeleteTenant removes a tenant from the barrier registry and
 	// deletes its metadata from storage.
 	DeleteTenant(ctx context.Context, tenantID string) error
+
+	// CreateUndoer undoes a create that did not complete, which is not a
+	// deletion; see CreateUndoer.
+	CreateUndoer
 
 	// ListDeletedTenants returns one page of retired tenant ids with their
 	// deletion records, in ascending id order: a paged range read over the
@@ -492,6 +498,12 @@ type TenantService struct {
 	// perNodeBarrierKeysGate refuses an isolated tenant until every node
 	// initialises its own barrier key; see WithPerNodeBarrierKeysGate.
 	perNodeBarrierKeysGate
+	// tenantUndoGate decides whether an undone create may release its id;
+	// see WithTenantUndoGate.
+	tenantUndoGate
+	// undoAckHolds withholds this node's acknowledgement of an undone id
+	// while rollbackRegistration destroys what a create provisioned for it.
+	undoAckHolds undoAckHolds
 	// barrierInitClaims claims a tenant barrier's signed init statement before
 	// this node generates its key; see WithBarrierInitBook.
 	barrierInitClaims
@@ -727,7 +739,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	// check and before any registration side effect, so a resurrection
 	// attempt costs one read and changes nothing. It is a fast refusal only:
 	// the guarantee is the fenced commit at the end. See tombstone.go.
-	if err := checkTombstone(ctx, s.store.Get, id); err != nil {
+	if err := checkTombstone(ctx, s.store.Get, id, s.undoActive()); err != nil {
 		return nil, err
 	}
 	// Barrier isolation is strictly opt-in: an unspecified isolation type
@@ -780,6 +792,29 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, &StoreError{Op: "check-exists", Err: err}
 	}
 
+	// The create holds the id's acknowledgement from before the release
+	// check until it commits or is rolled back (undoAckHolds). An undo of
+	// the id that lands meanwhile cannot then be released, because it waits
+	// for this node's acknowledgement, so the commit below still meets its
+	// tombstone and refuses: no later generation's release lets this
+	// create commit over what that generation's cleanup destroyed.
+	unhold := s.undoAckHolds.hold(id)
+	defer func() {
+		if unhold != nil {
+			s.reconcileDeferred(ctx, id, unhold())
+		}
+	}()
+
+	// An undone id is released here, before anything is provisioned, and
+	// never at the commit (undoRefusal): what a create provisions is keyed
+	// by id alone, so it provisions only on an id no undo fences. A pending
+	// undo refuses with nothing to roll back.
+	if release := s.undoRelease(s.store); release != nil {
+		if _, err := release(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+
 	// Register a per-tenant barrier only for barrier-isolated tenants.
 	// Prefix tenants share the system KVStore and need no barrier
 	// registration — their IAM records are separated logically by the
@@ -799,9 +834,11 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	var volumePool string
 	switch isolationType {
 	case IsolationBarrier:
-		if err := s.registerDedicatedBarrier(ctx, id, cfg.barrierAutoUnseal); err != nil {
-			return nil, err
+		pool, regErr := s.registerDedicatedBarrier(ctx, id, cfg.barrierAutoUnseal)
+		if regErr != nil {
+			return nil, regErr
 		}
+		volumePool = pool
 	case IsolationVolume:
 		// Entitlement plane: the tenant's plan (or the operator defaults, since
 		// the metadata record does not exist yet) must permit volume isolation
@@ -869,8 +906,12 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	// Commit the record only while it AND the tombstone are absent, in one
 	// atomic step. This, not the reads above, is what keeps a create racing a
 	// delete of the same id from committing a live tenant under a retired id.
-	if err := commitCreate(ctx, fenced, s.store.Get, id, data); err != nil {
-		s.rollbackRegistration(ctx, id, isolationType, err)
+	if err := commitCreate(ctx, fenced, s.store.Get, id, data, s.undoRefusal(s.store)); err != nil {
+		// The hold passes to the rollback, which releases it only once
+		// nothing it does can reach a later generation's records.
+		held := unhold
+		unhold = nil
+		s.rollbackHeld(ctx, id, isolationType, err, held)
 		return nil, err
 	}
 
@@ -953,7 +994,7 @@ func (s *TenantService) reserveAndRegisterVolumeTenant(ctx context.Context, id s
 	if s.defaultQuotas != nil {
 		reserveBytes = s.defaultQuotas.MaxStorageBytes
 	}
-	if _, err := s.volumeAllocator.Reserve(ctx, id, poolName, id, reserveBytes); err != nil {
+	if _, err := s.volumeAllocator.Reserve(ctx, id, poolName, volumePlacementPath(id), reserveBytes); err != nil {
 		return "", &VolumePoolReserveError{TenantID: id, Pool: poolName, Err: err}
 	}
 
@@ -974,6 +1015,12 @@ func (s *TenantService) reserveAndRegisterVolumeTenant(ctx context.Context, id s
 	}
 	return poolName, nil
 }
+
+// volumePlacementPath is the pool-relative directory a volume-backed tenant's
+// data lives in: its id. CreateTenant reserves it, and a reconcile that runs
+// after the catalog Assignment was released derives it again from the
+// tombstone's VolumePool, so every node can still find its own directory.
+func volumePlacementPath(id string) string { return id }
 
 // releaseVolumeReservation releases id's volume-pool reservation after a
 // failed registration step, logging rather than returning a release
@@ -998,24 +1045,63 @@ func (s *TenantService) releaseVolumeReservation(ctx context.Context, id, poolNa
 //     restores a volume or raft tenant's barrier from its tenant-root record,
 //     so merely unregistering would bring a retired id's barrier back on every
 //     restart. Destroying is safe because a retired id has no rightful owner.
+//   - The id was UNDONE and not yet released (*TenantUndoPendingError). The
+//     same destruction is safe only while that tombstone still fences the id:
+//     once it is released, a later create may hold the records, which are
+//     keyed by id alone. fenceTeardown decides, and keeps the fence up for
+//     the destruction by withholding this node's acknowledgement and voiding
+//     every one already given; this node then reconciles the id, which
+//     acknowledges it anew. Without the fence it only forgets the in-memory
+//     registration, as below.
 //   - Any other failure -- another create won the id, or the outcome is
 //     unknown -- only forgets the in-memory registration. The durable records
 //     may now belong to the create that won, and destroying them would take
 //     that tenant's barrier with them.
 func (s *TenantService) rollbackRegistration(ctx context.Context, id string, isolationType IsolationType, cause error) {
+	s.rollbackHeld(ctx, id, isolationType, cause, s.undoAckHolds.hold(id))
+}
+
+// rollbackHeld is rollbackRegistration under a hold of the id's
+// acknowledgement the caller already took, which it releases in every branch:
+// after the fence when that leaves the records alone, after the destroy
+// otherwise. An acknowledgement withheld from a pass while the hold was in
+// place is re-run once it is released.
+func (s *TenantService) rollbackHeld(ctx context.Context, id string, isolationType IsolationType, cause error, release func() bool) {
 	if isolationType != IsolationBarrier && isolationType != IsolationVolume && isolationType != IsolationRaft {
+		s.reconcileDeferred(ctx, id, release())
 		return
 	}
 	var retired *TenantDeletedError
-	if errors.As(cause, &retired) {
-		if err := s.registry.DestroyTenant(ctx, id); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
-			s.logger.Warn("tenant create lost to a delete; retired id's barrier residue not fully destroyed",
+	var undone *TenantUndoPendingError
+	if !errors.As(cause, &retired) && !errors.As(cause, &undone) {
+		_ = s.registry.UnregisterTenant(id)
+		s.reconcileDeferred(ctx, id, release())
+		return
+	}
+	fenced, err := fenceTeardown(ctx, s.store, id)
+	if err != nil {
+		s.logger.Warn("tenant create lost to a delete; could not fence the id, barrier residue left to reconcile",
+			slog.String("tenant_id", id),
+			slog.String("error", err.Error()))
+	}
+	if !fenced {
+		deferred := release()
+		_ = s.registry.UnregisterTenant(id)
+		s.reconcileDeferred(ctx, id, deferred)
+		return
+	}
+	if err := s.registry.DestroyTenant(ctx, id); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		s.logger.Warn("tenant create lost to a delete; retired id's barrier residue not fully destroyed",
+			slog.String("tenant_id", id),
+			slog.String("error", err.Error()))
+	}
+	if deferred := release(); undone != nil || deferred {
+		if err := s.ReconcileUndone(ctx, id); err != nil {
+			s.logger.Warn("tenant create lost to an undo; this node's acknowledgement left to reconcile",
 				slog.String("tenant_id", id),
 				slog.String("error", err.Error()))
 		}
-		return
 	}
-	_ = s.registry.UnregisterTenant(id)
 }
 
 // registerDedicatedBarrier registers an IsolationBarrier tenant's per-tenant
@@ -1026,26 +1112,47 @@ func (s *TenantService) rollbackRegistration(ctx context.Context, id string, iso
 // SEALED and left uninitialized; the tenant admin drives Initialize/Unseal via
 // the TenantBarrier* endpoints. Registration is rolled back on a failed init so
 // no dangling, uninitialized barrier is left behind.
-func (s *TenantService) registerDedicatedBarrier(ctx context.Context, id string, autoUnseal bool) error {
+func (s *TenantService) registerDedicatedBarrier(ctx context.Context, id string, autoUnseal bool) (string, error) {
 	register := s.registry.RegisterTenantPooled
 	if autoUnseal {
 		register = s.registry.RegisterTenantPooledSystemManaged
 	}
 	if _, regErr := register(ctx, id); regErr != nil {
 		if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
-			return ErrTenantAlreadyExists
+			return "", ErrTenantAlreadyExists
 		}
-		return &BarrierError{TenantID: id, Op: "register", Err: regErr}
+		return "", &BarrierError{TenantID: id, Op: "register", Err: regErr}
+	}
+	pool, err := s.barrierPlacementPool(ctx, id)
+	if err != nil {
+		_ = s.registry.UnregisterTenant(id)
+		return "", &BarrierError{TenantID: id, Op: "placement", Err: err}
 	}
 	if !autoUnseal {
 		// Self-managed: leave the barrier sealed for the tenant admin.
-		return nil
+		return pool, nil
 	}
 	if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
 		_ = s.registry.UnregisterTenant(id)
-		return &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+		return "", &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
 	}
-	return nil
+	return pool, nil
+}
+
+// barrierPlacementPool returns the pool the catalog placed a just-registered
+// barrier tenant on. The tenant record carries it, and its tombstone after it,
+// so a node that missed the undo or delete can still find its directory once
+// the catalog Assignment is released (dataRootCandidates).
+func (s *TenantService) barrierPlacementPool(ctx context.Context, id string) (string, error) {
+	allocator := s.registry.VolumeAllocator()
+	if allocator == nil {
+		return "", seal.ErrPoolNotConfigured
+	}
+	assignment, err := allocator.Resolve(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return assignment.Pool, nil
 }
 
 // UpdateTenant applies a partial update to an existing tenant. Non-empty
@@ -1316,6 +1423,13 @@ func (s *TenantService) checkLocalResolution(ctx context.Context, info *TenantIn
 // record. That is strictly less work than DROP DATABASE already performs
 // synchronously on the same key-at-a-time path.
 func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error {
+	return s.deleteTenant(ctx, tenantID, newTombstone)
+}
+
+// deleteTenant is DeleteTenant with the tombstone its fence writes built by
+// mint: newTombstone for a deletion, newUndoneTombstone for an undone create
+// (see UndoCreateTenant). Every other step is the same for both.
+func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint tombstoneMinter) error {
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
@@ -1325,6 +1439,10 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 	if err := validateDeletableTenantID(tenantID); err != nil {
 		return err
 	}
+	// This node withholds its acknowledgement of the id's undo until the
+	// whole teardown, however it overlaps another, is over; see
+	// holdTeardown.
+	defer holdTeardown(ctx, &s.undoAckHolds, s, s.logger, tenantID)()
 
 	// Read the tenant BEFORE anything is destroyed: the tombstone records
 	// what the tenant was, and the reclamation needs to know where it lived.
@@ -1351,7 +1469,7 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 
 	// 2 and 3. The fence. Nothing here destroys anything, so a failure
 	//          leaves the tenant intact and the error says only that.
-	if err := s.fence(ctx, tenantID, info); err != nil {
+	if err := s.fence(ctx, tenantID, mint(info, time.Now().UTC())); err != nil {
 		return err
 	}
 
@@ -1371,21 +1489,18 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 // with the tenant exactly as it was -- which is what lets the errors it
 // returns say "nothing changed" truthfully.
 //
-// The tombstone is written unconditionally rather than only when absent. A
+// A retirement is written unconditionally rather than only when absent. A
 // re-issued delete that reaches here refreshes DeletedAt, which is the
 // honest reading -- the retirement that stuck is the one being completed --
 // and it keeps this a plain write rather than a read-modify-write over a
-// store several nodes share.
+// store several nodes share. An undone tombstone is the exception: it is a
+// conditional write that never replaces a retirement; see putTombstone.
 // The id is taken as its own argument rather than read off info, because the
 // key the fence writes must be the one the caller asked about even when the
 // record it decoded disagrees.
-func (s *TenantService) fence(ctx context.Context, tenantID string, info *TenantInfo) error {
-	tombstone, err := json.Marshal(newTombstone(info, time.Now().UTC()))
-	if err != nil {
-		return &StoreError{Op: "marshal-tombstone", Err: err}
-	}
-	if err := s.store.Put(ctx, tombstoneKey(tenantID), tombstone); err != nil {
-		return &StoreError{Op: "put-tombstone", Err: err}
+func (s *TenantService) fence(ctx context.Context, tenantID string, ts *Tombstone) error {
+	if err := putTombstone(ctx, s.store, tenantID, ts); err != nil {
+		return err
 	}
 	if err := s.store.Delete(ctx, metadataPrefix+tenantID); err != nil {
 		return &StoreError{Op: "delete", Err: err}
@@ -1404,6 +1519,12 @@ func (s *TenantService) fence(ctx context.Context, tenantID string, info *Tenant
 // tells the operator the tenant is gone from the system's view even though
 // this call failed.
 func (s *TenantService) finishTeardown(ctx context.Context, tenantID string) error {
+	// Under deleteTenant's hold: void every acknowledgement given before it,
+	// and destroy nothing once the id was released. See guardTeardown.
+	if destroy, err := guardTeardown(ctx, s.store, s.logger, tenantID); !destroy {
+		return err
+	}
+
 	// 4. Not-found is success: the registry may never have held this tenant
 	//    (registration failed, or this is a node that never attached it), and
 	//    the delete must stay re-issuable.
@@ -1419,6 +1540,12 @@ func (s *TenantService) finishTeardown(ctx context.Context, tenantID string) err
 
 	// 5. Reclaim the keyspace.
 	if err := s.reclaim(ctx, tenantID); err != nil {
+		return &TeardownError{TenantID: tenantID, Err: err}
+	}
+
+	// 6. Last: an undone id's teardown is complete. Nothing acknowledges
+	//    the undo before this commits.
+	if err := markTornDown(ctx, s.store, tenantID); err != nil {
 		return &TeardownError{TenantID: tenantID, Err: err}
 	}
 

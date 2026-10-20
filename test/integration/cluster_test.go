@@ -226,21 +226,53 @@ func startThreeNodeClusterSPIFFENodes(t *testing.T, smType string) ([]int, []int
 // these here cannot change their behavior.
 func startThreeNodeClusterAllTransports(t *testing.T, smType string) (adminPorts, grpcPorts, quicPorts, mcpPorts []int, unixPaths []string, ca *testCA) {
 	t.Helper()
-	bin := buildBinary(t)
-	ca = generateTestCA(t)
+	c := startAllTransportsCluster(t, smType)
+	return c.adminPorts, c.grpcPorts, c.quicPorts, c.mcpPorts, c.unixPaths, c.ca
+}
+
+// allTransportsCluster is a startThreeNodeClusterAllTransports cluster with
+// what a test needs to stop and restart one of its nodes and to read what
+// each node logged.
+type allTransportsCluster struct {
+	bin        string
+	ca         *testCA
+	adminPorts []int
+	grpcPorts  []int
+	quicPorts  []int
+	mcpPorts   []int
+	unixPaths  []string
+	dataDirs   []string
+	args       [][]string
+	cmds       []*exec.Cmd
+	logs       []*nodeLog
+}
+
+// startAllTransportsCluster starts the cluster startThreeNodeClusterAllTransports
+// returns the coordinates of, keeping each node's process, start arguments
+// and captured log. The Unix sockets live under os.MkdirTemp rather than
+// t.TempDir, whose test-named path can pass the socket path length limit.
+func startAllTransportsCluster(t *testing.T, smType string) *allTransportsCluster {
+	t.Helper()
+	c := &allTransportsCluster{
+		bin:        buildBinary(t),
+		ca:         generateTestCA(t),
+		adminPorts: allocateTCPPorts(t, 3),
+		grpcPorts:  allocateTCPPorts(t, 3),
+		quicPorts:  allocateTCPPorts(t, 3),
+		mcpPorts:   allocateTCPPorts(t, 3),
+		unixPaths:  make([]string, 3),
+		dataDirs:   make([]string, 3),
+		args:       make([][]string, 3),
+		cmds:       make([]*exec.Cmd, 3),
+		logs:       make([]*nodeLog, 3),
+	}
 	ports := allocatePorts(t, 3)
-	adminPorts = allocateTCPPorts(t, 3)
-	grpcPorts = allocateTCPPorts(t, 3)
-	quicPorts = allocateTCPPorts(t, 3)
-	mcpPorts = allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
-	dataDirs := make([]string, 3)
-	unixPaths = make([]string, 3)
 
 	peerAdminURLs := make(map[string]string, 3)
 	for i := range 3 {
 		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
-		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
+		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", c.adminPorts[i])
 	}
 	cfgPath := writePeerAdminURLConfig(t, peerAdminURLs)
 
@@ -250,54 +282,70 @@ func startThreeNodeClusterAllTransports(t *testing.T, smType string) (adminPorts
 	nodeKeyPaths := make([]string, 3)
 	for i := range 3 {
 		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
-		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+		nodeCertPaths[i], nodeKeyPaths[i] = c.ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
 	}
 	memberIDs := memberIdentitiesFlag(t, nodeCertPaths)
 
 	for i := range 3 {
-		dataDir := t.TempDir()
-		dataDirs[i] = dataDir
-		unixPaths[i] = filepath.Join(t.TempDir(), "qrdbd.sock")
+		c.dataDirs[i] = t.TempDir()
+		sockDir, err := os.MkdirTemp("", "qrdb-all-")
+		if err != nil {
+			t.Fatalf("socket dir: %v", err)
+		}
+		t.Cleanup(func() { os.RemoveAll(sockDir) })
+		c.unixPaths[i] = filepath.Join(sockDir, "qrdbd.sock")
 
-		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
-		nodeCertPath, nodeKeyPath := nodeCertPaths[i], nodeKeyPaths[i]
-
-		args := []string{
+		c.args[i] = []string{
 			"start",
 			"--config", cfgPath,
 			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
-			"--raft-address", raftAddr,
-			"--data-dir", dataDir,
+			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
+			"--data-dir", c.dataDirs[i],
 			"--sm", smType,
 			"--discovery", "static",
 			"--peers", peersFlag,
 			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
-			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
-			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
-			"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPorts[i]),
-			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
-			"--enable-unix", "--unix-socket-path", unixPaths[i],
-			"--tls-ca-file", ca.CertPath,
-			"--tls-cert-file", nodeCertPath,
-			"--tls-key-file", nodeKeyPath,
+			"--admin-port", fmt.Sprintf("%d", c.adminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", c.grpcPorts[i]),
+			"--enable-quic", "--quic-port", fmt.Sprintf("%d", c.quicPorts[i]),
+			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", c.mcpPorts[i]),
+			"--enable-unix", "--unix-socket-path", c.unixPaths[i],
+			"--tls-ca-file", c.ca.CertPath,
+			"--tls-cert-file", nodeCertPaths[i],
+			"--tls-key-file", nodeKeyPaths[i],
 		}
-
-		prefix := fmt.Sprintf("[node%d] ", i+1)
-		startNode(t, bin, args, prefix)
+		c.logs[i] = &nodeLog{}
+		c.cmds[i] = startNode(t, c.bin, c.args[i], fmt.Sprintf("[node%d] ", i+1), c.logs[i])
 	}
 
-	bootstrapNodes(t, ca, adminPorts...)
-	for i, dir := range dataDirs {
+	bootstrapNodes(t, c.ca, c.adminPorts...)
+	for i, dir := range c.dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+		waitForAdmin(t, c.ca.Pool, c.adminPorts[i], 90*time.Second)
 	}
 
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-	warmupWrite(t, ca, leaderPort, 15*time.Second)
+	leaderPort := waitForLeaderViaAdmin(t, c.ca, c.adminPorts, 60*time.Second)
+	warmupWrite(t, c.ca, leaderPort, 15*time.Second)
+	return c
+}
 
-	return adminPorts, grpcPorts, quicPorts, mcpPorts, unixPaths, ca
+// stop stops node i, giving it grace to shut down.
+func (c *allTransportsCluster) stop(t *testing.T, i int) {
+	t.Helper()
+	stopNode(t, c.cmds[i], 10*time.Second)
+	c.cmds[i] = nil
+}
+
+// restart starts node i again, after stop, with the arguments it first
+// started with, and unseals it. Its log keeps what it logged before the stop.
+func (c *allTransportsCluster) restart(t *testing.T, i int) {
+	t.Helper()
+	c.cmds[i] = startNode(t, c.bin, c.args[i], fmt.Sprintf("[node%d] ", i+1), c.logs[i])
+	unsealNodes(t, c.ca, c.adminPorts[i])
+	waitForHealthy(t, c.dataDirs[i], 60*time.Second)
+	waitForAdmin(t, c.ca.Pool, c.adminPorts[i], 90*time.Second)
 }
 
 // spareClusterReplica is a 4th genesis member of a startThreeNodeClusterWithSpareSPIFFE

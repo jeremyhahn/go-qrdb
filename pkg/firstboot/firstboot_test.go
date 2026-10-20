@@ -104,6 +104,12 @@ func (f *fakeTenants) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo
 func (f *fakeTenants) ListTenants(_ context.Context) ([]tenant.TenantInfo, error) {
 	return nil, nil
 }
+
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (f *fakeTenants) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return f.DeleteTenant(ctx, tenantID)
+}
+
 func (f *fakeTenants) DeleteTenant(_ context.Context, _ string) error { return nil }
 func (f *fakeTenants) UpdateTenant(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 	return nil, nil

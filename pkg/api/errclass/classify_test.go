@@ -348,6 +348,8 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		{"removal outside this node's pool", &seal.DataRootOutsideLocalRootsError{DataRoot: "/d"}, Internal},
 		{"node is not a replica of the database", &placement.NotAReplicaError{TenantID: "t", Database: "d", NodeID: "n"}, Unavailable},
 		{"placement replica names a path", &placement.ReplicaDataRootError{TenantID: "t", Database: "d", NodeID: "n", DataRoot: "/d"}, FailedPrecondition},
+		{"undone tenant id not yet released", &tenant.TenantUndoPendingError{TenantID: "t", Pending: []string{"n"}}, Unavailable},
+		{"deleted tenant id is retired", &tenant.TenantDeletedError{TenantID: "t"}, AlreadyExists},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, e := range map[string]error{"bare": tc.err, "wrapped": wrapped{tc.err}} {

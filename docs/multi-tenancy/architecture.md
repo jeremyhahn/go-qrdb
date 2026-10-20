@@ -386,6 +386,9 @@ volume-pool base or a reserved root is skipped the same way, as is one inside
 a reserved root that is not also inside a pool base, and so is a recorded
 path that is not absolute and canonical — judged as recorded, before any
 cleaning could turn `x/..` into its parent. Every skip is logged at `WARN`.
+A skipped directory keeps the records that name it, so the next pass tries it
+again, and an undone id's acknowledgement waits until every directory is
+removed or absent: the id is never reused over a directory still on disk.
 
 **One id's failure does not stop the others.** A removal that fails for one
 retired id is collected and the pass goes on; the pass reports every failure
@@ -1591,6 +1594,71 @@ the init statement is written through the existing guarded write.
   `guarded-writes` activates by the same rule, and every binary that knows
   `per-node-barrier-keys` knows it, so the refusal is seen only transiently
   during a rolling upgrade; nothing activates it by hand.
+
+**`tenant-undo` (`featuregate.TenantUndo`)** is a third activation-based
+feature. It adds no Raft command: the undone tombstone and the
+acknowledgements are ordinary metadata writes.
+
+- **Why it exists.** Undoing a create that did not complete (an exclusive
+  provisioning that failed part-way) is not a deletion: the id never served
+  anyone, so it may be created again. A node whose binary predates the
+  feature never acknowledges its cleanup, and a reuse waiting on it would
+  wait forever, so the undone state is written only once every member
+  advertises the feature.
+- **Not yet active:** an undo retires the id exactly as a deletion does, and
+  a later create of it is refused with `*TenantDeletedError` (409).
+- **Active:** an undo writes a tombstone in the `undone` state carrying a
+  random nonce. Each serving node, once it holds nothing of the id, records
+  `__sys:tenants-undone-ack/<id>/<nonce>/<node>`, with `<node>` its node
+  identity. A create of the id waits until every node on the roster, by the
+  same identities, has acknowledged. It then deletes the tombstone only if it
+  still holds the bytes it read, deletes that undo's acknowledgements, and
+  commits. The nonce scopes the acknowledgements to one undo, so an earlier
+  undo's never counts toward a later one.
+- **An undo never downgrades a retirement.** The undone tombstone is a
+  conditional write: it is created only where no tombstone exists, or
+  swapped only for an earlier undone one still holding the bytes read. An
+  undo racing a deletion of the same id that lands first loses with
+  `*TenantDeletedError` (409), and the id stays retired.
+- **The roster** is every member of the system shard, read from its Raft
+  membership at the time of the create: voting nodes, observers and
+  witnesses alike, since each serves the API and may hold the id's material.
+  A standalone node's roster is itself.
+- **A node acknowledges only a finished teardown.** The undo's teardown —
+  barrier destruction, ceremony cleanup and reclamation of the id's records
+  from the shared keyspace — ends by marking the tombstone `torn_down`, and a
+  node acknowledges only a marked tombstone. A teardown that fails partway
+  leaves the mark unset, so no node acknowledges and the id stays pending;
+  re-issuing `tenant delete <id>` resumes the teardown, which marks the
+  tombstone when it completes.
+- **Each node acknowledges as the mark arrives.** The node that ran the undo
+  acknowledges at the undo itself. Every node also holds a watch on the
+  tombstone prefix, started by `lifecycle.StartNodeWatchers`, the one
+  composition qrdbd and `sdk/go/node` share. A put of an `undone` tombstone
+  makes the node clean up that id and acknowledge. The mark is written after
+  the tenant's record is deleted, so a node that saw the first tombstone
+  write while the record still existed sees the mark after it, and a reuse
+  waits on replication rather than on a timer. When the watch closes, the node
+  re-establishes it with backoff and then runs a full
+  `ReconcileDeletedTenants`, covering any tombstone written in the gap. A
+  node that was down acknowledges in the reconcile it runs at boot. A cleanup
+  that fails is left to the next reconcile, and the
+  `reconcile-deleted-tenants` verb runs one on demand.
+- **Until every node has acknowledged**, the create is refused with
+  `*TenantUndoPendingError`, naming the nodes still pending and carrying a
+  retry delay of `tenant.UndoPendingRetryAfter` (5 s). Every transport maps
+  it to its own Unavailable status with that delay, so an SDK caller reads
+  both off `*transport.RequestError` (`StatusCode`, `RetryAfter`):
+
+  | Transport | Status | Delay |
+  |---|---|---|
+  | REST | 503 | `Retry-After` header |
+  | gRPC, unix | `Unavailable` (14) | `RetryInfo` detail |
+  | QUIC | `StatusUnavailable` (5) | delay in the error frame |
+  | MCP | `CodeUnavailable` (-32006) | `retry_after_seconds` |
+  | Embedded | the error itself | `RetryAfter` |
+- **A deletion is unchanged.** A deleted id is retired for good whether or
+  not the feature is active.
 
 ### Alternatives rejected
 

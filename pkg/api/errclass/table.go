@@ -1014,6 +1014,10 @@ var tenantRules = []rule{
 	// A deleted tenant's id is retired permanently: taken, in exactly the
 	// sense an existing tenant's id is.
 	as(&tenant.TenantDeletedError{}, AlreadyExists),
+	// An undone id is not retired: it is released once every serving node
+	// has acknowledged its cleanup, so the create is retried after the
+	// delay the error names.
+	as(&tenant.TenantUndoPendingError{}, Unavailable),
 	// Satisfiable by dropping the databases the error names.
 	as(&tenant.TenantHasDatabasesError{}, FailedPrecondition),
 	is(tenant.ErrTenantHasData, FailedPrecondition),

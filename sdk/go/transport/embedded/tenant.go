@@ -123,7 +123,9 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		TrustAnchorsPEM:   []byte(req.TrustAnchorsPEM),
 	})
 	if err != nil {
-		return nil, err
+		// An undone id a serving node has not yet released names its retry
+		// delay, as the remote transports carry it.
+		return nil, delayed("CreateTenant", err)
 	}
 
 	return &transport.CreateTenantResponse{

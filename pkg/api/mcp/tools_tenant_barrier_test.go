@@ -676,6 +676,12 @@ func (e *extMockMCPTenantService) ListTenants(ctx context.Context) ([]tenant.Ten
 func (e *extMockMCPTenantService) UpdateTenant(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.UpdateTenant(ctx, id, p)
 }
+
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (e *extMockMCPTenantService) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return e.DeleteTenant(ctx, tenantID)
+}
+
 func (e *extMockMCPTenantService) DeleteTenant(ctx context.Context, id string) error {
 	return e.mockTenantService.DeleteTenant(ctx, id)
 }

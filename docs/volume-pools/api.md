@@ -41,7 +41,7 @@ the tenant's data lives on every node, which is a platform act.
 
 | Message / route | Change |
 |---|---|
-| `TenantCreateRequest` / `POST /v1/tenants` | `data_root` (field 5) is **removed** and its number reserved. Adds `volume_pool` (string): the pool a `volume` or `raft` tenant is placed on. When empty, the tenant's default pool (the first entry of `allowed_volume_pools`) is used, and with no entitled pool the create is refused with `PERMISSION_DENIED` (`volume_pool:<none>`). Ignored for `prefix` and `barrier`. |
+| `TenantCreateRequest` / `POST /v1/tenants` | `data_root` (field 5) is **removed** and its number reserved. Adds `volume_pool` (string): the pool a `volume` or `raft` tenant is placed on. When empty, the tenant's default pool (the first entry of `allowed_volume_pools`) is used, and with no entitled pool the create is refused with `PERMISSION_DENIED` (`volume_pool:<none>`). Refused for `prefix` and `barrier`; a `barrier` tenant is placed by the registry, and the tenant's `volume_pool` reports the pool it chose. |
 | `TenantResponse` | `data_root` (field 8) is **removed** and its number reserved. Adds `volume_pool` (string) and `refusal` (`TenantRefusal`, absent when the answering node serves the tenant). |
 | `TenantEntitlements` | adds `allowed_volume_pools` (repeated string). |
 | Deleted-tenant records (`TenantListDeleted`) | `data_root` is **removed**; adds `volume_pool`. |

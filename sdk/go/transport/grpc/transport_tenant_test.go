@@ -68,6 +68,12 @@ func (f *fakeTenantServicer) ReconcileDeletedTenants(_ context.Context) (*tenant
 func (f *fakeTenantServicer) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
+
+// UndoCreateTenant undoes a create the way this double deletes one.
+func (f *fakeTenantServicer) UndoCreateTenant(ctx context.Context, tenantID string) error {
+	return f.DeleteTenant(ctx, tenantID)
+}
+
 func (f *fakeTenantServicer) DeleteTenant(_ context.Context, _ string) error {
 	return nil
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -111,6 +112,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 
 	text, err := t.callTool(ctx, "qrdb_tenant_create", args)
 	if err != nil {
+		// A *transport.RequestError from callTool carries the status and
+		// retry delay; a second wrapper would hide both from errors.As.
+		if reqErr := (*transport.RequestError)(nil); errors.As(err, &reqErr) {
+			return nil, err
+		}
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
 	}
 
