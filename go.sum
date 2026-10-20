@@ -76,8 +76,8 @@ github.com/RaduBerinde/axisds v0.1.0 h1:YItk/RmU5nvlsv/awo2Fjx97Mfpt4JfgtEVAGPrL
 github.com/RaduBerinde/axisds v0.1.0/go.mod h1:UHGJonU9z4YYGKJxSaC6/TNcLOBptpmM5m2Cksbnw0Y=
 github.com/RaduBerinde/btreemap v0.0.0-20260105202824-d3184786f603 h1:fSdiBlO4Bad28mJOPlAynvfgdDC9v+yRlzSFHvvjKYI=
 github.com/RaduBerinde/btreemap v0.0.0-20260105202824-d3184786f603/go.mod h1:0tr7FllbE9gJkHq7CVeeDDFAFKQVy5RnCSSNBOvdqbc=
-github.com/RoaringBitmap/roaring/v2 v2.29.0 h1:jSjxqZEqiF9W5dHUFsemupb9bnLaQJwZVe5yMetbsZg=
-github.com/RoaringBitmap/roaring/v2 v2.29.0/go.mod h1:BZufmFbox589n3j5eOmyTaLSGXbRLc2LmQvjKjzSEGU=
+github.com/RoaringBitmap/roaring/v2 v2.30.0 h1:1sD4xsCenNd9n/gOWaExCWanP9WTyiNuqLAvaDQ5jkY=
+github.com/RoaringBitmap/roaring/v2 v2.30.0/go.mod h1:BZufmFbox589n3j5eOmyTaLSGXbRLc2LmQvjKjzSEGU=
 github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f h1:JjxwchlOepwsUWcQwD2mLUAGE9aCp0/ehy6yCHFBOvo=
 github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f/go.mod h1:tMDTce/yLLN/SK8gMOxQfnyeMeCg8KGzp0D1cbECEeo=
 github.com/aws/aws-sdk-go v1.55.8 h1:JRmEUbU52aJQZ2AjX4q4Wu7t4uZjOu71uyNmaWlUkJQ=

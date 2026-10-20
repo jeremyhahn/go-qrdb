@@ -16,7 +16,7 @@ go 1.27.2
 
 require (
 	connectrpc.com/connect/v2 v2.0.1
-	github.com/RoaringBitmap/roaring/v2 v2.29.0
+	github.com/RoaringBitmap/roaring/v2 v2.30.0
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cockroachdb/apd/v3 v3.2.3
