@@ -1550,6 +1550,50 @@ func TestStoragePebbleIndex_PutBatch(t *testing.T) {
 	}
 }
 
+func TestStoragePebbleIndex_GetInBatch_ReadsCommittedEntries(t *testing.T) {
+	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
+	entityKey := []byte("entity-1")
+	fieldValue := []byte("value-1")
+	if err := idx.Put(entityKey, fieldValue); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	batch := idx.storage.Batch()
+	defer func() { _ = batch.Close() }()
+
+	got, err := idx.GetInBatch(batch, fieldValue)
+	if err != nil {
+		t.Fatalf("GetInBatch: %v", err)
+	}
+	if len(got) != 1 || !bytes.Equal(got[0], entityKey) {
+		t.Fatalf("GetInBatch: got %q, want [%q]", got, entityKey)
+	}
+}
+
+func TestStoragePebbleIndex_GetInBatch_NonExistent(t *testing.T) {
+	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
+
+	batch := idx.storage.Batch()
+	defer func() { _ = batch.Close() }()
+
+	got, err := idx.GetInBatch(batch, []byte("missing"))
+	if err != nil {
+		t.Fatalf("GetInBatch: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("GetInBatch: got %d entity keys, want 0", len(got))
+	}
+}
+
+func TestStoragePebbleIndex_IsUnique(t *testing.T) {
+	if newTestStoragePebbleIndex(t, normalConfig("plain")).IsUnique() {
+		t.Error("IsUnique: normal index reported unique")
+	}
+	if !newTestStoragePebbleIndex(t, uniqueConfig("uniq")).IsUnique() {
+		t.Error("IsUnique: unique index reported non-unique")
+	}
+}
+
 func TestStoragePebbleIndex_DeleteBatch(t *testing.T) {
 	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
 

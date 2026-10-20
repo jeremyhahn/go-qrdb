@@ -213,3 +213,43 @@ func TestUniqueViolationError_ErrorsAs(t *testing.T) {
 		t.Errorf("errors.As: ExistingKey got %v, want %v", target.ExistingKey, []byte("key-10"))
 	}
 }
+
+func TestInvalidNumericBoundError_Error_ContainsFields(t *testing.T) {
+	e := &InvalidNumericBoundError{
+		IndexName: "users.age",
+		Op:        "scan",
+		Value:     []byte("abc"),
+		Err:       &KeyTooShortError{},
+	}
+	got := e.Error()
+	for _, want := range []string{"index: invalid numeric scan bound", "users.age", "(scan)", "abc", "key too short"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Error: expected %q in %q", want, got)
+		}
+	}
+}
+
+func TestInvalidNumericBoundError_Error_EmptyValue(t *testing.T) {
+	e := &InvalidNumericBoundError{IndexName: "idx", Op: "range", Err: &KeyTooShortError{}}
+	got := e.Error()
+	if !strings.HasPrefix(got, "index: ") {
+		t.Errorf("Error: expected 'index: ' prefix, got %q", got)
+	}
+	if !strings.Contains(got, "idx (range): : ") {
+		t.Errorf("Error: expected empty value between separators, got %q", got)
+	}
+}
+
+func TestNotFoundError_Error_ContainsName(t *testing.T) {
+	e := &NotFoundError{Name: "users.email"}
+	if got, want := e.Error(), "index: users.email not found"; got != want {
+		t.Errorf("Error: got %q, want %q", got, want)
+	}
+}
+
+func TestNotFoundError_Error_EmptyName(t *testing.T) {
+	e := &NotFoundError{}
+	if got, want := e.Error(), "index:  not found"; got != want {
+		t.Errorf("Error: got %q, want %q", got, want)
+	}
+}

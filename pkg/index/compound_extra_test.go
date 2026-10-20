@@ -173,6 +173,30 @@ func TestCompoundIndex_DeleteCompoundBatch(t *testing.T) {
 	assert.Empty(t, keys)
 }
 
+func TestCompoundIndex_ValueTypes_PadsWithDefaultValueType(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:            "test.vtypes.pad",
+		FieldNames:      []string{"A", "B", "C"},
+		ValueTypes:      []IndexValueType{IndexValueTypeNumeric},
+		ValueType:       IndexValueTypeString,
+		EncodingVersion: NumericEncodingVersion,
+	})
+
+	assert.Equal(t,
+		[]IndexValueType{IndexValueTypeNumeric, IndexValueTypeString, IndexValueTypeString},
+		idx.valueTypes())
+}
+
+func TestCompoundIndex_ValueTypes_NoPerFieldTypes(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.vtypes.none",
+		FieldNames: []string{"A", "B"},
+		ValueType:  IndexValueTypeString,
+	})
+
+	assert.Equal(t, []IndexValueType{IndexValueTypeString, IndexValueTypeString}, idx.valueTypes())
+}
+
 // ---------------------------------------------------------------------------
 // PutCompoundWithContext
 // ---------------------------------------------------------------------------
