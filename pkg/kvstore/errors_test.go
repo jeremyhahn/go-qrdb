@@ -128,3 +128,41 @@ func TestIndexRegistrationError_Unwrap_NilSafe(t *testing.T) {
 		t.Fatal("Unwrap should return the exact inner error")
 	}
 }
+
+func TestConstructionAndIndexErrors_Error(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"nil inner":       {&NilInnerStoreError{}, "kvstore: namespaced store requires a non-nil inner KVStore"},
+		"empty namespace": {&EmptyNamespaceError{}, "kvstore: namespaced store requires a non-empty key prefix"},
+		"unindexable": {
+			&UnindexableValueError{Key: "user/1", IndexName: "by_email"},
+			"kvstore: value at user/1 cannot be decoded to maintain index by_email; this store indexes JSON-encoded values only",
+		},
+		"conflicting index": {
+			&ConflictingIndexError{IndexName: "by_email"},
+			"kvstore: index by_email is already registered with a different definition",
+		},
+		"empty guard key": {&EmptyKeyError{Field: "guard", Index: 0}, "kvstore: guard 0 names an empty key"},
+		"empty write key": {&EmptyKeyError{Field: "write", Index: 3}, "kvstore: write 3 names an empty key"},
+	}
+	for name, tc := range cases {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("%s: Error(): got %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestConstructionErrors_As(t *testing.T) {
+	_, err := NewNamespacedKVStore(nil, "acme/")
+	var nilInner *NilInnerStoreError
+	if !errors.As(err, &nilInner) {
+		t.Fatalf("NewNamespacedKVStore(nil): got %v, want *NilInnerStoreError", err)
+	}
+	_, err = NewNamespacedKVStore(NewMemoryKVStore(), "")
+	var empty *EmptyNamespaceError
+	if !errors.As(err, &empty) {
+		t.Fatalf("NewNamespacedKVStore(\"\"): got %v, want *EmptyNamespaceError", err)
+	}
+}
