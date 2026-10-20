@@ -18,6 +18,7 @@ package gpu
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -90,5 +91,66 @@ func TestProbeGPU_FieldsConsistent(t *testing.T) {
 
 	if result.DriverFound != driverInPath {
 		t.Errorf("ProbeGPU().DriverFound = %v, want %v (exec.LookPath)", result.DriverFound, driverInPath)
+	}
+}
+
+// probeWithPATH runs ProbeGPU with PATH set to dir, so the driver lookup is
+// decided by the test rather than by the host.
+func probeWithPATH(t *testing.T, dir string) *GPUProbeResult {
+	t.Helper()
+	t.Setenv("PATH", dir)
+	result, err := ProbeGPU()
+	if err != nil {
+		t.Fatalf("ProbeGPU() returned unexpected error: %v", err)
+	}
+	return result
+}
+
+// TestProbeGPU_DriverInPATH covers the branches where nvidia-smi resolves:
+// the GPU is available when the device node exists, and otherwise the reason
+// names the missing device node.
+func TestProbeGPU_DriverInPATH(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "nvidia-smi"), []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- the fake nvidia-smi must be executable
+		t.Fatalf("write fake nvidia-smi: %v", err)
+	}
+	result := probeWithPATH(t, dir)
+
+	if !result.DriverFound {
+		t.Fatal("DriverFound = false with nvidia-smi in PATH")
+	}
+	_, devErr := os.Stat(nvidiaDevicePath)
+	if devErr == nil {
+		if !result.Available || result.Reason != "" {
+			t.Errorf("device and driver present: Available=%v Reason=%q", result.Available, result.Reason)
+		}
+		return
+	}
+	if result.Available {
+		t.Error("Available = true without a device node")
+	}
+	if want := "GPU device node not found at " + nvidiaDevicePath; result.Reason != want {
+		t.Errorf("Reason = %q, want %q", result.Reason, want)
+	}
+}
+
+// TestProbeGPU_DriverNotInPATH covers the branches where nvidia-smi does not
+// resolve: the GPU is never available, and the reason depends on whether the
+// device node exists.
+func TestProbeGPU_DriverNotInPATH(t *testing.T) {
+	result := probeWithPATH(t, t.TempDir())
+
+	if result.DriverFound {
+		t.Fatal("DriverFound = true with an empty PATH directory")
+	}
+	if result.Available {
+		t.Error("Available = true without nvidia-smi")
+	}
+	want := "GPU device node not found and nvidia-smi not in PATH"
+	if _, devErr := os.Stat(nvidiaDevicePath); devErr == nil {
+		want = "nvidia-smi not found in PATH"
+	}
+	if result.Reason != want {
+		t.Errorf("Reason = %q, want %q", result.Reason, want)
 	}
 }

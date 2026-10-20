@@ -97,3 +97,31 @@ func TestGPUMemoryError_ZeroValues(t *testing.T) {
 		t.Errorf("expected prefix in message, got: %s", msg)
 	}
 }
+
+func TestFactoryError_ErrorAndUnwrap(t *testing.T) {
+	err := &FactoryError{Op: "gpu factory: create remote index", Cause: ErrDeviceNotFound}
+
+	if got, want := err.Error(), "gpu factory: create remote index: "+ErrDeviceNotFound.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, ErrDeviceNotFound) {
+		t.Error("FactoryError should unwrap to its Cause")
+	}
+}
+
+func TestFactoryError_WrappedCauseMessage(t *testing.T) {
+	inner := &GPUMemoryError{RequestedBytes: 2048, AvailableBytes: 1024}
+	err := &FactoryError{Op: "create index", Cause: inner}
+
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "create index: ") {
+		t.Errorf("expected Op prefix, got: %s", msg)
+	}
+	if !strings.Contains(msg, "2048") {
+		t.Errorf("expected cause message in Error(), got: %s", msg)
+	}
+	var memErr *GPUMemoryError
+	if !errors.As(err, &memErr) || memErr != inner {
+		t.Error("errors.As should recover the wrapped *GPUMemoryError")
+	}
+}

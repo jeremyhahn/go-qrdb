@@ -17,9 +17,12 @@ package gpu
 
 import (
 	"errors"
+	"io"
+	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote"
 )
 
 // mockHNSWIndex is a test double implementing interfaces.HNSWIndex.
@@ -338,4 +341,87 @@ func TestGPUIndexFactory_CreateIndex_GPUEnabled_GPUAvailable_CreatesGPUIndex(t *
 	// In !gpu builds this returns ErrGPUNotCompiled from the CAGRA stub.
 	// In +gpu builds this succeeds. Both are expected outcomes.
 	_ = err
+}
+
+// closeRemoteIndex closes a remote index returned by a factory, failing the
+// test when the index does not hold a closable connection.
+func closeRemoteIndex(t *testing.T, idx interfaces.HNSWIndex) {
+	t.Helper()
+	closer, ok := idx.(io.Closer)
+	if !ok {
+		t.Fatalf("remote index %T does not implement io.Closer", idx)
+	}
+	if err := closer.Close(); err != nil {
+		t.Errorf("Close remote index: %v", err)
+	}
+}
+
+func TestGPUIndexFactory_CreateIndex_RemoteEnabled_CreatesRemoteIndex(t *testing.T) {
+	// grpc.NewClient connects lazily, so a reserved endpoint yields an index
+	// without any network I/O.
+	remoteCfg := DefaultRemoteGPUConfig()
+	remoteCfg.Enabled = true
+	remoteCfg.Endpoint = "127.0.0.1:1"
+
+	fallback := &mockHNSWFactory{index: &mockHNSWIndex{countVal: 9}}
+	factory := NewGPUIndexFactory(DefaultGPUConfig(), remoteCfg, fallback)
+	idx, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err != nil {
+		t.Fatalf("CreateIndex (remote enabled): %v", err)
+	}
+	if _, ok := idx.(*remote.RemoteGPUIndex); !ok {
+		t.Fatalf("CreateIndex returned %T, want *remote.RemoteGPUIndex", idx)
+	}
+	closeRemoteIndex(t, idx)
+}
+
+func TestGPUIndexFactory_CreateIndex_RemoteEnabled_MissingCA_FactoryError(t *testing.T) {
+	remoteCfg := DefaultRemoteGPUConfig()
+	remoteCfg.Enabled = true
+	remoteCfg.Endpoint = "127.0.0.1:1"
+	remoteCfg.TLSCA = filepath.Join(t.TempDir(), "absent-ca.pem")
+
+	factory := NewGPUIndexFactory(DefaultGPUConfig(), remoteCfg, &mockHNSWFactory{})
+	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	var factoryErr *FactoryError
+	if !errors.As(err, &factoryErr) {
+		t.Fatalf("expected *FactoryError, got %T: %v", err, err)
+	}
+	if factoryErr.Op != "gpu factory: create remote index" {
+		t.Errorf("FactoryError.Op = %q, want %q", factoryErr.Op, "gpu factory: create remote index")
+	}
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_RemoteEnabled_CreatesRemoteIndex(t *testing.T) {
+	cfg := DefaultRemoteGPUConfig()
+	cfg.Enabled = true
+	cfg.Endpoint = "127.0.0.1:1"
+
+	factory := NewRemoteGPUIndexFactory(cfg, nil)
+	idx, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err != nil {
+		t.Fatalf("CreateIndex (remote enabled): %v", err)
+	}
+	if _, ok := idx.(*remote.RemoteGPUIndex); !ok {
+		t.Fatalf("CreateIndex returned %T, want *remote.RemoteGPUIndex", idx)
+	}
+	closeRemoteIndex(t, idx)
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_RemoteEnabled_EmptyEndpoint_FactoryError(t *testing.T) {
+	cfg := DefaultRemoteGPUConfig()
+	cfg.Enabled = true
+
+	factory := NewRemoteGPUIndexFactory(cfg, &mockHNSWFactory{})
+	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	var factoryErr *FactoryError
+	if !errors.As(err, &factoryErr) {
+		t.Fatalf("expected *FactoryError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, remote.ErrEmptyEndpoint) {
+		t.Errorf("expected remote.ErrEmptyEndpoint in chain, got: %v", err)
+	}
+	if got, want := err.Error(), "remote gpu factory: "+remote.ErrEmptyEndpoint.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
 }
