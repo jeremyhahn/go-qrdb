@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -482,6 +483,13 @@ func TestTenantBarrierSeal_Closed(t *testing.T) {
 // TenantBarrierStatus
 // ---------------------------------------------------------------------------
 
+// servingNodes is a status's serving-node list, and wantServingNodes its
+// conversion.
+var (
+	servingNodes     = []tenant.BarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+	wantServingNodes = []transport.TenantBarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+)
+
 func TestTenantBarrierStatus_Success(t *testing.T) {
 	svc := newMockTenantSvc()
 	svc.statusResp = &tenant.TenantBarrierStatus{
@@ -490,6 +498,8 @@ func TestTenantBarrierStatus_Success(t *testing.T) {
 		Initialized:    true,
 		Strategy:       "shamir",
 		HardwareBacked: true,
+		KeyFingerprint: "0a1b2c",
+		Nodes:          servingNodes,
 	}
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
@@ -499,6 +509,12 @@ func TestTenantBarrierStatus_Success(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.KeyFingerprint != "0a1b2c" {
+		t.Errorf("expected key_fingerprint '0a1b2c', got %q", resp.KeyFingerprint)
+	}
+	if !reflect.DeepEqual(resp.Nodes, wantServingNodes) {
+		t.Errorf("Nodes = %+v, want %+v", resp.Nodes, wantServingNodes)
 	}
 	if svc.lastStatusID != "acme" {
 		t.Errorf("expected tenant_id 'acme', got %q", svc.lastStatusID)

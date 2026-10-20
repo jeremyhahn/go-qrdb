@@ -167,16 +167,16 @@ func TestTenantBarrierKVStore_TwoTenantsIsolated(t *testing.T) {
 	}
 }
 
-// TestRegisterTenantPooled_DurableIndependentBackend proves
-// RegisterTenantPooled creates a durable, independent per-tenant Pebble via
+// TestRegisterBarrierTenant_DurableIndependentBackend proves
+// RegisterBarrierTenant creates a durable, independent per-tenant Pebble via
 // the volume pool, inheriting the system strategies.
-func TestRegisterTenantPooled_DurableIndependentBackend(t *testing.T) {
-	reg, _, perTenantReg := newPooledRegistry(t)
+func TestRegisterBarrierTenant_DurableIndependentBackend(t *testing.T) {
+	reg, _, perTenantReg := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
-	tb, err := reg.RegisterTenantPooled(ctx, "pooled")
+	tb, err := reg.RegisterBarrierTenant(ctx, "pooled", false)
 	if err != nil {
-		t.Fatalf("RegisterTenantPooled: %v", err)
+		t.Fatalf("RegisterBarrierTenant: %v", err)
 	}
 	if tb.TenantID() != "pooled" {
 		t.Fatalf("TenantID = %q, want pooled", tb.TenantID())
@@ -188,7 +188,7 @@ func TestRegisterTenantPooled_DurableIndependentBackend(t *testing.T) {
 	}
 
 	// Initialize then round-trip a value to prove the backend is usable.
-	if err := reg.InitializeTenant(ctx, "pooled", Credentials{}); err != nil {
+	if err := reg.InitializeTenant(ctx, "pooled", MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
 	if err := tb.Put(ctx, "k", []byte("v")); err != nil {
@@ -200,34 +200,21 @@ func TestRegisterTenantPooled_DurableIndependentBackend(t *testing.T) {
 	}
 }
 
-// TestRegisterTenantPooled_NoPoolConfigured proves the pooled flow fails
-// closed when NEITHER a volume allocator/resolver NOR a per-tenant registry
-// is configured. The per-tenant registry precondition is checked first (see
-// allocatePooledBackend's doc comment: a Reserve that can never be used
-// would leak a capacity reservation), so this is the error returned.
-func TestRegisterTenantPooled_NoPoolConfigured(t *testing.T) {
-	system := newPoolSystemBarrier(t)
-	reg, err := NewBarrierRegistry(poolTestLogger(), system)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
-	if _, err := reg.RegisterTenantPooled(context.Background(), "x"); !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
-		t.Fatalf("RegisterTenantPooled without pool or per-tenant registry = %v, want ErrPerTenantRegistryNotConfigured", err)
-	}
-}
-
-// TestRegisterTenantPooled_NoVolumeAllocatorConfigured proves the pooled
+// TestRegisterBarrierTenant_NoVolumeAllocatorConfigured proves the barrier
 // flow fails closed with ErrPoolNotConfigured when a per-tenant registry IS
 // configured but no volume allocator/resolver is.
-func TestRegisterTenantPooled_NoVolumeAllocatorConfigured(t *testing.T) {
+func TestRegisterBarrierTenant_NoVolumeAllocatorConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
+	if err := system.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 	reg, err := NewBarrierRegistry(poolTestLogger(), system, WithPerTenantRegistry(perTenantReg))
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
-	if _, err := reg.RegisterTenantPooled(context.Background(), "x"); !errors.Is(err, ErrPoolNotConfigured) {
-		t.Fatalf("RegisterTenantPooled without a volume allocator = %v, want ErrPoolNotConfigured", err)
+	if _, err := reg.RegisterBarrierTenant(context.Background(), "x", true); !errors.Is(err, ErrPoolNotConfigured) {
+		t.Fatalf("RegisterBarrierTenant without a volume allocator = %v, want ErrPoolNotConfigured", err)
 	}
 }

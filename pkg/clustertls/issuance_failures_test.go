@@ -101,8 +101,8 @@ func TestIdentityLeafTemplate_NonNodeURINoAddressSAN(t *testing.T) {
 			if err != nil {
 				t.Fatalf("IdentityLeafTemplate: %v", err)
 			}
-			if len(tmpl.DNSNames) != 0 || len(tmpl.IPAddresses) != 0 {
-				t.Fatalf("DNSNames = %v, IPAddresses = %v, want none", tmpl.DNSNames, tmpl.IPAddresses)
+			if len(tmpl.DNSNames) != 1 || tmpl.DNSNames[0] != "localhost" || len(tmpl.IPAddresses) != 2 {
+				t.Fatalf("DNSNames = %v, IPAddresses = %v, want only the loopback SANs", tmpl.DNSNames, tmpl.IPAddresses)
 			}
 			if len(tmpl.URIs) != 1 || tmpl.URIs[0].String() != uri {
 				t.Fatalf("URIs = %v, want exactly [%s]", tmpl.URIs, uri)

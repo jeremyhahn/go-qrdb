@@ -742,12 +742,14 @@ sits cached in the clear BETWEEN signatures.
 > composed into every node, which initialises the node's own key for a tenant
 > it serves from a claimed statement; and the feature, advertised by every
 > binary and wired as the gate on isolated tenants and on the claim (see
-> **Feature gate** below). Not yet: per-node init of a passphrase or Shamir
-> tenant barrier on the nodes that did not take the owner's call; database and
-> node barriers; the owner-CA anchor a later epoch verifies against; and the
-> removal of key delivery (`DistributeTenantKey`), which still runs beside the
-> watcher — a node keeps whichever key reaches it first, and never replaces
-> one.
+> **Feature gate** below). Since PN-4 a `none` or `passphrase` tenant barrier
+> is initialised on every serving node by that node, the client sending a
+> passphrase init to each of them, and `DistributeTenantKey` ships neither.
+> A Shamir tenant barrier is not shipped either: every serving node is armed
+> from the claimed statement and keys itself at its holders' first quorum, and
+> a replica refuses a Shamir sealed blob rather than import a key it could
+> never unwrap. Not yet: database and node barriers, and the owner-CA anchor a
+> later epoch verifies against.
 
 Every node that serves a barrier — an isolated tenant's, a database's, and the
 node barrier, all through one `BarrierKeyProvider` seam — initialises **its
@@ -1034,7 +1036,7 @@ the node barrier can read them.
 
 | Prerequisite | State | Needed? |
 |---|---|---|
-| Home store for every isolated tenant, its Raft log on a dedicated WAL under each node's tenant barrier (S4: G1–G4, G6) | shipped | **Yes. This is the part of MT-15 this needs, and it is in place.** Tenant identity, the DEK keyring and invitations are plain Raft entries that each node encrypts at rest under its own tenant barrier, so a replica with its own key reads what another replica wrote. |
+| Home store for every isolated tenant, its Raft log on a dedicated WAL under each node's tenant barrier (S4: G1–G4, G6) | lands with WP-21-1 | **Yes. This is the part of MT-15 this needs.** Until WP-21-1, tenant users, roles, the DEK keyring and invitations sat in the system store under the tenant key, so a node holding its own key failed the lookup (the 2026-10-06 blocker, `quicraft/seal: decryption failed`). WP-21-1 moves them into the tenant's home group: plain Raft entries that each node encrypts at rest under its own tenant barrier, so a replica with its own key reads what another replica wrote. `TestIsolationRaft_EndToEnd` looks the tenant's users up on all three nodes. Key delivery still races self-init until PN-3 removes it, so no test yet asserts that the nodes' keys differ. |
 | Reconciler gates each tenant shard on a registered, unsealed barrier and the cluster seal record (`ensureStarted`) | shipped | **Yes, unchanged.** Once the barrier exists and is unsealed on each node, the replica starts and the group forms at a majority. |
 | Cluster seal record (`pkg/clusterseal`, feature `cluster-seal`) | shipped | **Yes.** It names every barrier level (`NodeBarrier`, `TenantBarrier`, `DatabaseBarrier`). Unseal is checked against it, and its epoch fences a node that is cut off. |
 | Proof of possession for init (`pkg/initproof`) | shipped | **Yes, extended.** Today it signs the tenant, the nonce and the TLS exporter, but not the init parameters. |

@@ -16,8 +16,6 @@ package tenant
 
 import (
 	"context"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -28,12 +26,12 @@ import (
 // tenant that was promised strict isolation must never lose it for data it
 // already holds.
 //
-// This file implements the setting and its S2 precondition (a prefix tenant
-// has no store and no key of its own, so it cannot be strict). It does NOT
-// implement the rest of the ruled design — the tenant home group, per-replica
-// keys, layer-4 passthrough, dedicated audit trail, etc. — which remain
-// unimplemented; see the "Remaining work" note in
-// docs/multi-tenancy/engineering.md.
+// The policy governs ISOLATED tenants (barrier, volume, raft) only. A shared
+// (prefix) tenant is never refused by the floor or by its own opt-in (owner
+// ruling 2026-10-07, superseding S2). It decides operator verbs, backups and
+// relay; it never decides where a record lives: every isolated tenant's
+// records are in its home store (home_store.go) whatever its policy, so no
+// change of either setting moves a record.
 // ---------------------------------------------------------------------------
 
 // clusterIsolationPolicyKey is the system-tenant record holding the
@@ -107,29 +105,6 @@ func EffectiveIsolationPolicy(floor ClusterIsolationPolicy, tenantPolicy TenantI
 		return ClusterIsolationPolicyStrict
 	}
 	return ClusterIsolationPolicyOperatorAccess
-}
-
-// ValidateIsolationModeAgainstPolicy enforces S2: a prefix tenant (no store,
-// no key of its own) cannot be strict. isolationType "" is treated as
-// IsolationPrefix, matching TenantInfo.EffectiveIsolationType. tenantID
-// exempts the system tenant, which owns the store its prefix names.
-func ValidateIsolationModeAgainstPolicy(tenantID string, isolationType IsolationType, effective ClusterIsolationPolicy) error {
-	// The system tenant is the exception S2's premise does not cover: its
-	// prefix is the system store itself, which it owns along with the
-	// system barrier, and CreateTenant refuses it any other isolation type.
-	// Holding it to S2 would refuse the system tenant on every first boot
-	// under a strict floor, which FIPS 140-3 mode always sets.
-	if tenantid.IsSystem(tenantID) {
-		return nil
-	}
-	et := isolationType
-	if et == "" {
-		et = IsolationPrefix
-	}
-	if effective == ClusterIsolationPolicyStrict && et == IsolationPrefix {
-		return &StrictRequiresDedicatedStorageError{IsolationType: et}
-	}
-	return nil
 }
 
 // clusterIsolationTransitionAllowed reports whether the cluster floor may
@@ -254,13 +229,11 @@ type ClusterIsolationPolicyReader interface {
 
 // checkIsolationPolicyChangeFor enforces UpdateTenant's isolation-policy
 // precondition: tighten-only (TenantIsolationPolicyInherit ->
-// TenantIsolationPolicyStrict is the only legal transition) and S2 (the
-// tenant's resulting isolation type — patch.IsolationType when the same
-// patch also changes it, info's current one otherwise — must not be
-// IsolationPrefix once the resulting effective policy is strict). A patch
-// naming no isolation-policy change, or the tenant's current one, is a no-op
-// and consults no reader.
-func checkIsolationPolicyChangeFor(ctx context.Context, reader ClusterIsolationPolicyReader, info *TenantInfo, patch TenantPatch) error {
+// TenantIsolationPolicyStrict is the only legal transition). No record moves
+// when a policy changes -- every isolated tenant's records are in its home
+// store whatever its policy -- so there is no other precondition. A patch
+// naming no isolation-policy change, or the tenant's current one, is a no-op.
+func checkIsolationPolicyChangeFor(info *TenantInfo, patch TenantPatch) error {
 	if patch.IsolationPolicy == "" || patch.IsolationPolicy == info.IsolationPolicy {
 		return nil
 	}
@@ -270,15 +243,7 @@ func checkIsolationPolicyChangeFor(ctx context.Context, reader ClusterIsolationP
 	if info.IsolationPolicy == TenantIsolationPolicyStrict {
 		return &IsolationPolicyChangeError{From: string(info.IsolationPolicy), To: string(patch.IsolationPolicy)}
 	}
-	isolationType := info.EffectiveIsolationType()
-	if patch.IsolationType != "" {
-		isolationType = patch.IsolationType
-	}
-	floor, err := reader.ClusterIsolationPolicy(ctx)
-	if err != nil {
-		return err
-	}
-	return ValidateIsolationModeAgainstPolicy(info.ID, isolationType, EffectiveIsolationPolicy(floor, patch.IsolationPolicy))
+	return nil
 }
 
 // ClusterIsolationPolicy returns the cluster-wide isolation floor.

@@ -214,6 +214,19 @@ func (l *nodeLog) String() string {
 	return l.buf.String()
 }
 
+// Lines returns every line the node has logged that contains s.
+func (l *nodeLog) Lines(s string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var lines []string
+	for line := range strings.Lines(l.buf.String()) {
+		if strings.Contains(line, s) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // ---------------------------------------------------------------------------
 // Single-node KV tests
 // ---------------------------------------------------------------------------

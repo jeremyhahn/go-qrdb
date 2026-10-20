@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 )
@@ -74,5 +75,19 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ShamirThreshold: status.ShamirThreshold,
 		ShamirTotal:     status.ShamirTotal,
 		ClusterSeal:     sealconv.FromReport(status.ClusterSeal),
+		KeyFingerprint:  status.KeyFingerprint,
+		Nodes:           barrierNodesFromTenant(status.Nodes),
 	}, nil
+}
+
+// barrierNodesFromTenant converts the nodes serving a tenant barrier.
+func barrierNodesFromTenant(nodes []tenant.BarrierNode) []transport.TenantBarrierNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]transport.TenantBarrierNode, len(nodes))
+	for i, n := range nodes {
+		out[i] = transport.TenantBarrierNode{Node: n.Node, Endpoints: n.Endpoints}
+	}
+	return out
 }

@@ -30,10 +30,13 @@ import (
 	"slices"
 	"sync/atomic"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -689,6 +692,20 @@ type Node struct {
 
 	// closers are called in reverse order on Stop.
 	closers []func() error
+
+	// adminCompletionBounds bounds each pending-admin completion
+	// (completePendingTenantAdmin); zero takes
+	// bootstrap.AdminCompletionBounds' defaults.
+	adminCompletionBounds bootstrap.AdminCompletionBounds
+
+	// homeLeader answers whether this node leads a tenant's home group; set
+	// by AttachTenantHomes, unset on a node that is every tenant's only
+	// writer.
+	homeLeader atomic.Pointer[databaseLeadership]
+
+	// work is what the node runs on its own behalf; Stop cancels it and
+	// waits for it before any closer runs.
+	work nodeWork
 }
 
 // addCloser registers a closer to be called during Stop.
@@ -696,9 +713,11 @@ func (n *Node) addCloser(fn func() error) {
 	n.closers = append(n.closers, fn)
 }
 
-// Stop calls all registered closers in LIFO order. All errors are collected;
+// Stop cancels the work the node runs on its own behalf and waits for it,
+// then calls all registered closers in LIFO order. All errors are collected;
 // the first non-nil error is returned.
 func (n *Node) Stop(_ context.Context) error {
+	n.work.stop()
 	var firstErr error
 	for i := len(n.closers) - 1; i >= 0; i-- {
 		if err := n.closers[i](); err != nil && firstErr == nil {
@@ -962,7 +981,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			if volumeSvc, ok := infra.BarrierRegistry.VolumeService(); ok {
 				if allocator := infra.BarrierRegistry.VolumeAllocator(); allocator != nil {
 					schedOpts = append(schedOpts, placement.WithReplicaFilter(
-						newVolumePoolHealthFilter(allocator, volumeSvc, infra.RaftAddrToNodeID)))
+						newVolumePoolHealthFilter(allocator, volumeSvc, infra.RaftAddrToNodeID,
+							func(ctx context.Context) (*quicraft.Membership, error) {
+								return infra.Host.SyncGetShardMembership(ctx, shard.ShardKV)
+							})))
 				}
 			}
 		}
@@ -1130,6 +1152,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				return nil, &UserServiceError{Err: err}
 			}
 			n.StoreResolver = resolver
+			// An isolated tenant's CA and certificate records follow its
+			// identity into its home store.
+			if router, ok := n.CertProv.(cert.TenantStoreRouter); ok {
+				router.SetStoreResolver(resolver)
+			}
 
 			routedUsers, err := user.NewRoutingService(resolver, userIDGen, userOpts...)
 			if err != nil {
@@ -1261,6 +1288,15 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// alone; a volume- or raft-isolated tenant's needs the tenant
 		// service, which exists only now.
 		service.WarnBarriersOffDataPath(ctx, dbManager.List(), n.Tenant, log)
+	}
+
+	// An isolated tenant's home group is a placement no DROP DATABASE removes,
+	// so DELETE TENANT retires it through the database service -- the one
+	// built last above, whichever branch built it.
+	if w, ok := n.Tenant.(tenant.TeardownWiring); ok {
+		if r, ok := n.Database.(tenant.HomeRetirer); ok {
+			w.SetHomeRetirer(r)
+		}
 	}
 
 	// The vector namespace create guard (validateTenantCreate) reads the
@@ -1588,7 +1624,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// per-node-barrier-keys activation, which a standalone node does not
 		// gate. Onboarding pins each tenant's first admin as the anchor its
 		// statements verify against.
-		barrierInit := newBarrierInit(n.KV)
+		barrierInit := newBarrierInit(n.KV, infraClock(infra))
 		perNodeKeys := perNodeBarrierKeysRequired(infra.Host)
 		tenantOpts = append(tenantOpts,
 			tenant.WithPerNodeBarrierKeysGate(perNodeKeys),
@@ -1609,6 +1645,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		}
 		n.Tenant = tenantSvcInst
 		barrierInit.selfInit = tenantSvcInst
+		barrierInit.tenants = tenantSvcInst
 		n.BarrierInit = barrierInit
 
 		// One-time, non-fatal compatibility migration: older builds persisted
@@ -1723,6 +1760,30 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	// against is the first admin onboarding records.
 	if n.BarrierInit != nil {
 		onboardingDeps.BarrierAnchors = n.BarrierInit.Anchors
+	}
+	// The resolver routes isolated tenants to their home stores, so it is
+	// also what provisions one; its source is attached once the data plane
+	// that hosts the homes is built (AttachTenantHomes in raft mode,
+	// AttachLocalTenantHomes on a standalone node).
+	if homes, ok := n.StoreResolver.(tenant.HomeRouter); ok {
+		onboardingDeps.Homes = homes
+	}
+	// A tenant whose identity records are behind its own barrier keeps its
+	// Key B CA there too, sealed until its first admin initializes it, so that
+	// admin's CSR is signed by the cluster CA (Key A), as system first boot
+	// signs its own admin's. A node with no cluster CA key (BYO-TLS) leaves
+	// the seam nil: the onboarding service signs a system-managed barrier's
+	// admin with its Key B, which serves from create, and refuses a
+	// self-managed one's CSR as system first boot refuses one, so that admin
+	// brings their own certificate.
+	if n.ClusterCAProv != nil {
+		signer, err := clusterCAAdminSigner(n.ClusterCAProv, infra.SPIFFETrustDomain)
+		if err != nil {
+			log.Warn("lifecycle: tenant first-admin CSRs for self-managed isolated tenants will be refused",
+				slog.String("error", err.Error()))
+		} else {
+			onboardingDeps.PendingAdminSigner = signer
+		}
 	}
 	n.TenantOnboarding = service.NewTenantOnboardingService(onboardingDeps)
 

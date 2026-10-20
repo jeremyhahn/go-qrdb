@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -45,22 +46,19 @@ import (
 //     segments of their own; that is now redundant with the namespace and is
 //     a follow-on cleanup, not a second enforcement point.
 //
-//   - dedicated-isolation tenants (IsolationBarrier, IsolationVolume,
-//     IsolationRaft) resolve to a per-tenant store backed by that tenant's
-//     own TenantBarrier: every value is encrypted with the tenant's DEK and
-//     stored under the tenant's "{tenantID}/" namespace in an independent
-//     backend. Such a tenant's IAM data is therefore cryptographically and
-//     physically isolated from the shared store and from every other tenant.
-//     All three modes register their per-tenant barrier in the SAME
-//     BarrierRegistry (IsolationBarrier via registerDedicatedBarrier,
-//     IsolationVolume/IsolationRaft via RegisterVolumeTenant), so a
-//     volume/raft tenant's IAM is gated by the SAME seal that protects that
-//     tenant's data — closing the gap where volume/raft IAM previously fell
-//     through to the unsealed shared store.
+//   - isolated tenants (IsolationBarrier, IsolationVolume, IsolationRaft)
+//     resolve to their home store (home_store.go), whatever their isolation
+//     policy: the tenant's own Raft group in raft mode, the tenant barrier's
+//     own backend at its data root in standalone mode. None of their records
+//     is in the system shard. The policy decides operator verbs, backups and
+//     relay; it never decides where a record lives. All three modes register
+//     their per-tenant barrier in the SAME BarrierRegistry, so the home store
+//     is gated by the same seal that protects the tenant's data.
 //
-// SECURITY: resolution fails closed for every dedicated-isolation tenant.
-// When such a tenant's barrier is sealed, Resolve returns ErrTenantSealed
-// and NEVER falls back to the shared system store.
+// SECURITY: resolution fails closed for every isolated tenant. When such a
+// tenant's barrier is sealed or absent, or its home store cannot be reached,
+// Resolve returns an error matching ErrTenantSealed and NEVER falls back to
+// the shared system store.
 type StoreResolver interface {
 	// Resolve returns the KVStore that backs the given tenant's IAM data.
 	// It returns ErrTenantSealed when the tenant is dedicated-isolation
@@ -68,11 +66,11 @@ type StoreResolver interface {
 	Resolve(ctx context.Context, tenantID string) (kvstore.KVStore, error)
 }
 
-// barrierRoutedIsolation is the set of isolation types whose IAM data is
-// routed through the tenant's dedicated per-tenant barrier rather than the
-// shared system store. Every mode in the set registers a TenantBarrier in the
-// SAME BarrierRegistry the resolver consults, so resolveBarrier gates all
-// three identically and fails closed when the barrier is sealed:
+// barrierRoutedIsolation is the set of isolated types: those whose records
+// live in the tenant's home store rather than the shared system store. Every
+// mode in the set registers a TenantBarrier in the SAME BarrierRegistry the
+// resolver consults, so resolveHome gates all three identically and fails
+// closed when the barrier is sealed:
 //
 //   - IsolationBarrier: keyspace-mode dedicated barrier.
 //   - IsolationVolume:  dedicated DataRoot with the IAM barrier at
@@ -116,13 +114,10 @@ type barrierLookup interface {
 var _ StoreResolver = (*defaultStoreResolver)(nil)
 
 // defaultStoreResolver is the production StoreResolver. It holds the shared
-// system KVStore, the barrier registry, and a tenant-metadata lookup for
-// resolving isolation types. Per-tenant barrier KVStore wrappers are cached
-// in a sync.Map keyed by tenant ID and serve only the barrier instance they
-// were built over, so a reused id never reaches a closed barrier through its
-// predecessor's wrapper; the cached wrapper reads its barrier's
-// seal state LIVE on every operation, so the sealed/unsealed decision is
-// never cached.
+// system KVStore, the barrier registry, a tenant-metadata lookup for
+// resolving isolation types, and the home-store source isolated tenants
+// resolve to. The barrier's seal state is read LIVE on every resolution, so
+// the sealed/unsealed decision is never cached.
 type defaultStoreResolver struct {
 	shared   kvstore.KVStore
 	registry barrierLookup
@@ -137,10 +132,14 @@ type defaultStoreResolver struct {
 	// TenantServicer from outside this package.
 	tombstones tombstoneLookup
 
-	wrappers sync.Map // map[string]*barrierWrapper — barrier-tenant wrappers
 	// namespaced caches the shared-store confinement wrapper per "{tenant}/"
 	// prefix.
 	namespaced sync.Map // map[string]kvstore.KVStore
+
+	// home is the isolated tenants' home-store source, attached once the data
+	// plane that hosts the home stores exists (SetHomeStoreSource). Until
+	// then an isolated tenant fails closed.
+	home atomic.Pointer[homeSourceRef]
 }
 
 // NewStoreResolver constructs the default StoreResolver. shared is the
@@ -223,18 +222,18 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 		return nil, err
 	}
 
-	// Only the dedicated-isolation modes route IAM through a per-tenant
-	// barrier. Prefix isolation — and the legacy empty IsolationType, which
-	// EffectiveIsolationType coerces to IsolationPrefix — resolves to the
-	// shared store. This routes IsolationVolume and IsolationRaft tenants
-	// through their own barrier too (not just IsolationBarrier), so a sealed
-	// volume/raft tenant's IAM fails closed instead of leaking to the shared
-	// store; all three register their barrier in the same registry.
+	// Only the isolated modes resolve to a home store. Prefix isolation — and
+	// the legacy empty IsolationType, which EffectiveIsolationType coerces to
+	// IsolationPrefix — resolves to the shared store.
 	if _, routed := barrierRoutedIsolation[info.EffectiveIsolationType()]; !routed {
 		return r.sharedFor(ctx, tenantID)
 	}
 
-	return r.resolveBarrier(ctx, tenantID)
+	// An isolated tenant's records live in its own home store, never in the
+	// system shard, whatever its policy (architecture.md "Strict isolation").
+	// There is no fallback from one to the other: an isolated tenant whose
+	// home cannot be reached fails closed.
+	return r.resolveHome(ctx, tenantID)
 }
 
 // refuseIfDeleted returns a *TenantDeletedError when tenantID has been
@@ -339,82 +338,32 @@ func (r *defaultStoreResolver) sharedFor(ctx context.Context, tenantID string) (
 	return actual.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
-// resolveBarrier returns the cached per-tenant barrier KVStore for a
-// barrier-isolated tenant, constructing and caching it on first use. The
-// seal state is read live, so a cached wrapper still surfaces ErrSealed
-// from the underlying barrier once it is sealed — Resolve translates that
-// into ErrTenantSealed up front to fail closed.
-func (r *defaultStoreResolver) resolveBarrier(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
+// requireUnsealed refuses an isolated tenant whose barrier is absent or sealed
+// on this node, with ErrTenantSealed, before its home store is consulted.
+func (r *defaultStoreResolver) requireUnsealed(tenantID string) error {
 	if r.registry == nil {
-		// No barrier registry on this node: a dedicated-isolation tenant has
-		// no barrier to route through, so its IAM is unreachable here. Fail
+		// No barrier registry on this node: an isolated tenant has no barrier
+		// to gate its home store, so its records are unreachable here. Fail
 		// closed with the same error a sealed barrier produces rather than
 		// serving it from the shared store, which would hand a tenant that
 		// asked for cryptographic isolation an unencrypted keyspace.
-		return nil, ErrTenantSealed
+		return ErrTenantSealed
 	}
 	tb, err := r.registry.GetTenant(tenantID)
 	if err != nil {
-		// A barrier-isolated tenant with NO registered barrier on this node
-		// is the same fail-closed state as a sealed one: its IAM cannot be
+		// An isolated tenant with NO registered barrier on this node is the
+		// same fail-closed state as a sealed one: its records cannot be
 		// resolved here until the barrier arrives (self-managed tenants get
 		// theirs via key delivery when a placement lands on this node). The
 		// distinction matters to callers — ErrTenantSealed flows through the
 		// auth middleware as a retryable unavailable (503) plus the sealed
 		// marker that unlocks the IdentityGated barrier bootstrap endpoints,
 		// whereas an opaque registry error would surface as a hard 403.
-		return nil, ErrTenantSealed
+		return ErrTenantSealed
 	}
-
 	// Read the seal state LIVE — never cache the sealed/unsealed decision.
-	// A sealed barrier tenant fails closed: callers must not fall back to
-	// the shared store.
 	if tb.IsSealed() {
-		return nil, ErrTenantSealed
+		return ErrTenantSealed
 	}
-
-	// A cached wrapper serves only the barrier it was built over. An undone
-	// or deleted id's barrier is released and closed, and a reused id
-	// registers a new one: matching on the instance, not the id, means the
-	// closed barrier's wrapper is never handed to the id's next tenant.
-	cached, ok := r.wrappers.Load(tenantID)
-	if ok {
-		if bw := cached.(*barrierWrapper); bw.barrier == tb { //nolint:errcheck // type assertion on a value this container only ever holds
-			return bw.store, nil
-		}
-	}
-
-	// The wrapper persists the tenant's IAM in the SHARED replicated store,
-	// encrypted with the tenant's own DEK — NOT in the tenant's node-local
-	// dedicated barrier backend. IAM must be resolvable on EVERY replica
-	// (the auth middleware runs wherever the request lands) and must
-	// survive node loss, so it rides the system shard's Raft replication;
-	// the per-tenant encryption preserves exactly the isolation the
-	// dedicated backend provided. See seal.NewTenantSharedKVStore.
-	wrapper, err := seal.NewTenantSharedKVStore(tb, r.shared)
-	if err != nil {
-		return nil, err
-	}
-	fresh := &barrierWrapper{barrier: tb, store: wrapper}
-	for {
-		if !ok {
-			if cached, ok = r.wrappers.LoadOrStore(tenantID, fresh); !ok {
-				return wrapper, nil
-			}
-		}
-		if bw := cached.(*barrierWrapper); bw.barrier == tb { //nolint:errcheck // type assertion on a value this container only ever holds
-			return bw.store, nil
-		}
-		if r.wrappers.CompareAndSwap(tenantID, cached, fresh) {
-			return wrapper, nil
-		}
-		cached, ok = r.wrappers.Load(tenantID)
-	}
-}
-
-// barrierWrapper is a cached per-tenant barrier KVStore together with the
-// barrier instance it encrypts with.
-type barrierWrapper struct {
-	barrier *seal.TenantBarrier
-	store   kvstore.KVStore
+	return nil
 }

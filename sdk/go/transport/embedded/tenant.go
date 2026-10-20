@@ -19,7 +19,6 @@ import (
 	"encoding/hex"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
-	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -27,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantinit"
 )
 
 // mapTenantInfo converts a tenant.TenantInfo to a transport.TenantInfo.
@@ -545,36 +545,37 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		return nil, err
 	}
 
-	var roster *tenant.TenantBarrierShamirRoster
-	if len(req.Officers) > 0 {
-		roster = &tenant.TenantBarrierShamirRoster{
-			Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
-			Policy:   seal.FactorPolicy(req.Policy),
-		}
-	}
-
 	// The owner's signed statement lets every replica of a clustered tenant
 	// initialize its own barrier key; without a Signer there is none.
-	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
-	if err != nil {
-		return nil, err
-	}
-	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
-		tenant.WithInitStatement(statement))
-	if err != nil {
-		return nil, err
-	}
-	if result == nil {
-		return &transport.TenantBarrierInitResponse{TenantID: req.TenantID, Strategy: req.Strategy}, nil
-	}
-	return &transport.TenantBarrierInitResponse{
-		TenantID:    result.TenantID,
-		Strategy:    result.Strategy,
-		ShareCount:  result.ShareCount,
-		Threshold:   result.Threshold,
-		TotalShares: result.TotalShares,
-		Holders:     holderwire.TenantBarrierHoldersTo(result.Holders),
-	}, nil
+	return tenantinit.Run(req, func(round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
+		var roster *tenant.TenantBarrierShamirRoster
+		if len(req.Officers) > 0 && !round.Complete {
+			roster = &tenant.TenantBarrierShamirRoster{
+				Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
+				Policy:   seal.FactorPolicy(req.Policy),
+			}
+		}
+		result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
+			tenant.WithInitStatement(round.Statement),
+			tenant.WithPreparedShamir(round.Roster, round.UnsealKeyCheck))
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			return &transport.TenantBarrierInitResponse{TenantID: req.TenantID, Strategy: req.Strategy}, nil
+		}
+		return &transport.TenantBarrierInitResponse{
+			TenantID:       result.TenantID,
+			Strategy:       result.Strategy,
+			ShareCount:     result.ShareCount,
+			Threshold:      result.Threshold,
+			TotalShares:    result.TotalShares,
+			Holders:        holderwire.TenantBarrierHoldersTo(result.Holders),
+			Roster:         result.Roster,
+			UnsealKeyCheck: result.UnsealKeyCheck,
+			AdminPending:   result.AdminPending,
+		}, nil
+	})
 }
 
 // TenantBarrierUnseal unseals a per-tenant barrier by delegating to

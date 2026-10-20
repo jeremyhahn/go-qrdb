@@ -289,8 +289,9 @@ func TestDefaultCertProvider_CACertPEMs_BuiltInMultiTenant(t *testing.T) {
 // has no watch on).
 func TestDefaultCertProvider_ResolveKeyProvider_RevalidatesPastTTL(t *testing.T) {
 	p, _, _ := newTestProvider()
+	ctx := context.Background()
 
-	first, err := p.resolveKeyProvider("acme")
+	first, _, err := p.resolveKeyProvider(ctx, "acme")
 	if err != nil {
 		t.Fatalf("resolveKeyProvider: %v", err)
 	}
@@ -304,7 +305,7 @@ func TestDefaultCertProvider_ResolveKeyProvider_RevalidatesPastTTL(t *testing.T)
 	entry.builtAt = time.Now().Add(-perTenantRevalidateTTL - time.Second)
 	p.mu.Unlock()
 
-	second, err := p.resolveKeyProvider("acme")
+	second, _, err := p.resolveKeyProvider(ctx, "acme")
 	if err != nil {
 		t.Fatalf("resolveKeyProvider (after TTL expiry): %v", err)
 	}
@@ -314,7 +315,7 @@ func TestDefaultCertProvider_ResolveKeyProvider_RevalidatesPastTTL(t *testing.T)
 
 	// A fresh resolve immediately afterward must NOT rebuild again: the
 	// revalidation is bounded by the TTL, not unconditional.
-	third, err := p.resolveKeyProvider("acme")
+	third, _, err := p.resolveKeyProvider(ctx, "acme")
 	if err != nil {
 		t.Fatalf("resolveKeyProvider (immediately after revalidation): %v", err)
 	}

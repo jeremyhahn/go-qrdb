@@ -15,6 +15,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -574,6 +575,71 @@ func TestRestoreVolumeTenants_SelfManagedStaysSealed(t *testing.T) {
 	}
 	if !tb.IsSealed() {
 		t.Error("self-managed tenant must remain sealed after RestoreVolumeTenants")
+	}
+}
+
+// TestRestoreVolumeTenants_RestoresBarrierTenants verifies a barrier tenant
+// (RegisterBarrierTenant) is restored at boot by the same path as a volume
+// tenant: its Assignment, posture and {dataRoot}/barrier store survive a fresh
+// registry, a system-managed one comes back unsealed with its data readable,
+// and a self-managed one stays sealed.
+func TestRestoreVolumeTenants_RestoresBarrierTenants(t *testing.T) {
+	ctx := context.Background()
+	system, opts, roots := newShareableComponents(t)
+	if err := system.Initialize(ctx, MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
+	}
+	auto, err := reg1.RegisterBarrierTenant(ctx, "bar-auto", true)
+	if err != nil {
+		t.Fatalf("RegisterBarrierTenant (auto): %v", err)
+	}
+	if err := reg1.InitializeTenant(ctx, "bar-auto", Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant (auto): %v", err)
+	}
+	if err := auto.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := reg1.RegisterBarrierTenant(ctx, "bar-self", false); err != nil {
+		t.Fatalf("RegisterBarrierTenant (self): %v", err)
+	}
+	// Release the first run's stores so the second run reopens them from disk.
+	for _, id := range []string{"bar-auto", "bar-self"} {
+		if err := reg1.ReleaseTenant(ctx, id); err != nil {
+			t.Fatalf("ReleaseTenant(%s): %v", id, err)
+		}
+	}
+
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
+	}
+	if err := reg2.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("RestoreVolumeTenants: %v", err)
+	}
+
+	restored, err := reg2.GetTenant("bar-auto")
+	if err != nil {
+		t.Fatalf("GetTenant(bar-auto) after restore: %v", err)
+	}
+	if restored.IsSealed() {
+		t.Fatal("system-managed barrier tenant must be unsealed after restore")
+	}
+	if got, err := restored.Get(ctx, "k"); err != nil || !bytes.Equal(got, []byte("v")) {
+		t.Fatalf("Get after restore = (%q, %v), want (v, nil)", got, err)
+	}
+	assertPebbleAtPath(t, filepath.Join(roots[0], "bar-auto", "barrier"))
+
+	self, err := reg2.GetTenant("bar-self")
+	if err != nil {
+		t.Fatalf("GetTenant(bar-self) after restore: %v", err)
+	}
+	if !self.IsSealed() {
+		t.Error("self-managed barrier tenant must stay sealed after restore")
 	}
 }
 

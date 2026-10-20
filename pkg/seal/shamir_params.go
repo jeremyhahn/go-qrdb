@@ -31,4 +31,15 @@ type ShamirInitParams struct {
 	// than TotalShares: a holder count that differs from the requested total
 	// is refused with HolderCountMismatchError.
 	ShareCount int `json:"share_count"`
+
+	// UnsealKeyCheck is the check value of the unseal key the shares
+	// reconstruct (UnsealKeyCheck). The owner signs it into the barrier's
+	// init statement, and every other serving node checks its first quorum
+	// against it (ArmShamir). Empty for the recovery domain.
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
+
+	// Roster is the encoded holder roster the shares were split to; its
+	// SHA-256 is the init statement's roster hash. Empty for the recovery
+	// domain.
+	Roster []byte `json:"roster,omitempty"`
 }

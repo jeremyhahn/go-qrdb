@@ -31,7 +31,7 @@ import (
 // "dir"-provider volume (rooted at a fresh t.TempDir(), pool name
 // "default"), a lightweight in-memory volume.Catalog, and a real
 // pkg/storage/pebble per-tenant registry -- the standard fixture every
-// package's tests use to exercise RegisterTenantPooled* /
+// package's tests use to exercise RegisterBarrierTenant /
 // RegisterVolumeTenant / ReattachVolumeTenant over system.
 //
 // The in-memory Catalog is backed by a non-replicated KV/Tx double: the

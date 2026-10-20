@@ -235,8 +235,8 @@ type RaftBackendFactory struct {
 
 	// walMux, when non-nil, is the shared host's multiplex LogDB into which a
 	// dedicated per-tenant-KEY WAL is registered for a shard that opted into
-	// 4d Option C. It is nil for single-node/standalone hosts (no multiplex);
-	// such hosts always fall back to the shared system-barrier WAL.
+	// 4d Option C. A shard that requires a dedicated WAL does not start on a
+	// host without one (database.TenantWALUnavailableError).
 	walMux *database.MultiplexLogDB
 
 	// mu guards shards, starting, pendingRestore and generation. It is never
@@ -249,6 +249,16 @@ type RaftBackendFactory struct {
 	// database's resolve and stop on this node behind it.
 	mu     sync.Mutex
 	shards map[raftShardKey]*raftShard
+
+	// sealWatched records the tenant barriers carrying this factory's
+	// OnSealing observer, so each barrier gets exactly one however many of
+	// its shards start. Guarded by mu.
+	sealWatched map[*seal.StorageBarrier]struct{}
+	// sealing records the watched barriers that have begun to seal and not
+	// been unsealed since: no shard of theirs starts while one is listed, so
+	// nothing opens a tenant's WAL between the seal's drain of its shards and
+	// the wipe of its key (go-qrdb#683). Guarded by mu.
+	sealing map[*seal.StorageBarrier]struct{}
 
 	// starting holds the starts in flight: a shard started on the host and
 	// waiting to serve, cached in shards only once it does. A caller that
@@ -298,6 +308,14 @@ type RaftBackendFactory struct {
 	// documents. See WithImportSessionConfig.
 	importSessionCfg qrdbconfig.ImportSessionConfig
 
+	// snapshotEntries and compactionOverhead are the automatic snapshot
+	// cadence of every shard this factory starts: the system shard's
+	// raft.snapshot_entries and raft.compaction_overhead. Zero takes
+	// go-quicraft's default, exactly as it does for the system shard. See
+	// WithSnapshotSettings.
+	snapshotEntries    uint64
+	compactionOverhead uint64
+
 	// leaseCfg sets the lease checkpoint interval and failover grace of every
 	// shard this factory builds (config.Lease, "lease:" in YAML). The zero
 	// value resolves to the lease package defaults. See WithLeaseConfig.
@@ -307,6 +325,11 @@ type RaftBackendFactory struct {
 	// (ShardPauser.beginStart); ShardPauser.SetTenants installs it. Unset, it
 	// admits every start.
 	startGate atomic.Pointer[ShardPauser]
+
+	// homeLeaderReady is told the tenant whose home group this node has
+	// become ready to lead (OnHomeLeaderReady). Unset, LeaderReady does
+	// nothing.
+	homeLeaderReady atomic.Pointer[func(tenantID string)]
 }
 
 // RaftBackendOption customizes a RaftBackendFactory.
@@ -326,6 +349,20 @@ func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 // defaults WithImportSessionLimits documents, not unbounded staging.
 func WithImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.importSessionCfg = cfg }
+}
+
+// WithSnapshotSettings gives every shard the factory starts the system
+// shard's automatic snapshot cadence: a snapshot every snapshotEntries
+// applied entries, keeping compactionOverhead entries of log behind it. A
+// dedicated shard, an isolated tenant's home group among them, then compacts its
+// log as the system shard does, and a replica that falls behind the
+// compacted log catches up by snapshot install. Zero takes go-quicraft's
+// default for that field.
+func WithSnapshotSettings(snapshotEntries, compactionOverhead uint64) RaftBackendOption {
+	return func(f *RaftBackendFactory) {
+		f.snapshotEntries = snapshotEntries
+		f.compactionOverhead = compactionOverhead
+	}
 }
 
 // WithLeaseConfig sets the checkpoint interval and failover grace the lease
@@ -571,6 +608,67 @@ func (f *RaftBackendFactory) forgetIfCached(key raftShardKey, rs *raftShard) boo
 // the Raft host. The database's data directory is shared by every
 // incarnation of the name, so only the retired shard's shard-<id>
 // subdirectory is removed and the current shard's survives.
+// watchSealLocked arranges for every shard of tenantID to be stopped before
+// tb's key is wiped, whichever path seals it. A sealed tenant's dedicated WAL
+// cannot encrypt, and go-quicraft fails permanently every shard in a commit
+// batch whose SaveState errors: left running, one tenant's seal would take the
+// system shard down with it. The observer runs inside StorageBarrier.Seal with
+// the key still live, and stops the shards -- closed, not purged -- so the
+// tenant's reconciler starts them again once it is unsealed. The caller MUST
+// hold f.mu.
+func (f *RaftBackendFactory) watchSealLocked(tenantID string, tb *seal.TenantBarrier) {
+	sb := tb.Barrier()
+	if sb == nil {
+		return
+	}
+	if _, ok := f.sealWatched[sb]; ok {
+		return
+	}
+	if f.sealWatched == nil {
+		f.sealWatched = make(map[*seal.StorageBarrier]struct{})
+	}
+	f.sealWatched[sb] = struct{}{}
+	sb.OnSealing(func(context.Context) error { return f.stopTenantShards(tenantID, sb) })
+	sb.OnUnsealed(func(context.Context) {
+		f.mu.Lock()
+		delete(f.sealing, sb)
+		f.mu.Unlock()
+	})
+}
+
+// stopTenantShards evicts and stops every shard this node runs for tenantID,
+// joining the errors so one failing shard does not keep the rest running.
+// It first lists sb as sealing, so no new start of the tenant begins, and
+// waits out every start of the tenant already in flight: a founding shard
+// still waiting to serve runs on the host and is cached, and so stopped
+// here, or has failed and stopped itself, before the key is wiped.
+func (f *RaftBackendFactory) stopTenantShards(tenantID string, sb *seal.StorageBarrier) error {
+	f.mu.Lock()
+	if sb != nil {
+		if f.sealing == nil {
+			f.sealing = make(map[*seal.StorageBarrier]struct{})
+		}
+		f.sealing[sb] = struct{}{}
+	}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k.tenantID == tenantID })
+	var stopping []*raftShard
+	for key, rs := range f.shards {
+		if key.tenantID == tenantID {
+			delete(f.shards, key)
+			stopping = append(stopping, rs)
+		}
+	}
+	f.mu.Unlock()
+
+	var errs []error
+	for _, rs := range stopping {
+		if err := f.stopShard(rs); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (f *RaftBackendFactory) retireShard(rs *raftShard) {
 	if err := f.stopShard(rs); err != nil {
 		f.logger.Warn("failed to stop a dropped incarnation's shard",
@@ -759,6 +857,11 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 	if tb.IsSealed() {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: seal.ErrSealed}
 	}
+	// The observer is registered under f.mu, which guards sealWatched; it is
+	// released before the Raft reads below.
+	f.mu.Lock()
+	f.watchSealLocked(tenantID, tb)
+	f.mu.Unlock()
 
 	// M2: single store.Get covers both the shard info and the placement entry.
 	// When the info source is a placementRaftInfoSource, databaseAndPlacementInfo
@@ -955,6 +1058,12 @@ func (f *RaftBackendFactory) startPlanned(ctx context.Context, key raftShardKey,
 		f.mu.Unlock()
 		return nil, true, nil
 	}
+	if plan.tb != nil {
+		if _, sealing := f.sealing[plan.tb.Barrier()]; sealing {
+			f.mu.Unlock()
+			return nil, false, &RaftBackendError{TenantID: plan.tenantID, Database: plan.db, Op: "resolve", Err: seal.ErrSealed}
+		}
+	}
 	rs, err = f.startShardAsMember(plan)
 	if err != nil {
 		f.mu.Unlock()
@@ -1033,6 +1142,50 @@ func (f *RaftBackendFactory) LeadsDatabase(tenantID, db string) bool {
 	}
 	info, err := f.host.GetShardInfo(rs.shardID)
 	return err == nil && info != nil && info.IsLeader
+}
+
+// OnHomeLeaderReady registers fn to be told, by LeaderReady, each tenant whose
+// home group this node has become ready to lead. It replaces any handler
+// registered before.
+func (f *RaftBackendFactory) OnHomeLeaderReady(fn func(tenantID string)) {
+	f.homeLeaderReady.Store(&fn)
+}
+
+// LeaderReady is the host's OnLeaderReady (LeaderEvents). When info reports
+// this replica as the leader of a tenant's home group, ready to serve
+// linearizable reads, it calls the OnHomeLeaderReady handler with the tenant.
+// It runs on quicraft's event dispatcher goroutine. A start registers its
+// shard under mu before the shard can elect, so the lookup here, taken under
+// mu, sees every shard an event can name.
+func (f *RaftBackendFactory) LeaderReady(info quicraftconfig.LeaderInfo) {
+	if info.LeaderID == 0 || info.LeaderID != info.ReplicaID {
+		return
+	}
+	fn := f.homeLeaderReady.Load()
+	if fn == nil {
+		return
+	}
+	if tenantID, ok := f.homeTenantOf(info.ShardID); ok {
+		(*fn)(tenantID)
+	}
+}
+
+// homeTenantOf returns the tenant whose home group is shardID, among the
+// shards this factory runs or is starting.
+func (f *RaftBackendFactory) homeTenantOf(shardID uint64) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key, rs := range f.shards {
+		if rs.shardID == shardID {
+			return key.tenantID, key.database == database.TenantHomeName
+		}
+	}
+	for key, start := range f.starting {
+		if start.shardID == shardID {
+			return key.tenantID, key.database == database.TenantHomeName
+		}
+	}
+	return "", false
 }
 
 // Attach starts (and caches) a dedicated raft shard eagerly. It is used at boot
@@ -1150,9 +1303,11 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 	// first appends route to it. Registration also makes the host's snapshot
 	// encryptor (via WithShardBarriers) seal this shard's snapshots under the same
 	// tenant barrier. If the opt-in cannot be honored (no multiplex, sealed/absent
-	// barrier, or the WAL fails to open) the shard falls back to the shared
-	// system-barrier WAL (Route A) so it still starts; the fallback is logged.
-	registeredWAL := f.openAndRegisterDedicatedWAL(tenantID, db, shardID, absDir, tb, plan.dedicatedWAL)
+	// barrier, or the WAL fails to open) the shard does not start.
+	registeredWAL, err := f.openAndRegisterDedicatedWAL(tenantID, db, shardID, absDir, tb, plan.dedicatedWAL)
+	if err != nil {
+		return nil, err
+	}
 
 	shardCfg := quicraftconfig.Config{
 		ShardID:    shardID,
@@ -1160,7 +1315,9 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 		DataDir:    absDir,
 		IsObserver: isObserver,
 
-		MemberIdentities: plan.identities,
+		SnapshotEntries:    f.snapshotEntries,
+		CompactionOverhead: f.compactionOverhead,
+		MemberIdentities:   plan.identities,
 	}
 	// Only the start itself is held against a seal's pause: once StartShard
 	// returns, the pause lists the shard and pauses it, so a slow election
@@ -1241,28 +1398,36 @@ const dedicatedWALSubdir = "wal"
 // openAndRegisterDedicatedWAL opens a dedicated single-barrier WAL under the
 // shard's DataRoot encrypted by the tenant barrier and registers it in the
 // shared host's multiplex for shardID. It returns the registered LogDB on
-// success, or nil when the opt-in cannot be honored (no multiplex wired, the
-// barrier is unavailable, or the WAL fails to open) — in which case the shard
-// transparently uses the shared system-barrier WAL. The caller holds f.mu.
+// success, and nil for a shard that did not ask for one. A shard that did ask
+// and whose WAL cannot be had -- no multiplex wired, the barrier absent or
+// sealed, the WAL failing to open or register -- gets a
+// database.TenantWALUnavailableError and does not start: it never falls back
+// to the shared WAL, which is under the node key. The caller holds f.mu.
 func (f *RaftBackendFactory) openAndRegisterDedicatedWAL(
 	tenantID, db string,
 	shardID uint64,
 	absDir string,
 	tb *seal.TenantBarrier,
 	dedicatedWAL bool,
-) logdb.LogDB {
+) (logdb.LogDB, error) {
 	if !dedicatedWAL {
-		return nil
+		return nil, nil
+	}
+	unavailable := func(cause error) (logdb.LogDB, error) {
+		f.logger.Error("dedicated tenant WAL unavailable; the shard does not start",
+			slog.String("tenant", tenantID), slog.String("database", db),
+			slog.Uint64("shard_id", shardID), slog.Any("error", cause))
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "open-dedicated-wal",
+			Err: &database.TenantWALUnavailableError{TenantID: tenantID, ShardID: shardID, Err: cause}}
 	}
 	if f.walMux == nil {
-		f.logger.Warn("dedicated WAL requested but no multiplex LogDB is wired; falling back to shared WAL",
-			slog.String("tenant", tenantID), slog.String("database", db), slog.Uint64("shard_id", shardID))
-		return nil
+		return unavailable(database.ErrDedicatedWALNotWired)
 	}
-	if tb == nil || tb.IsSealed() {
-		f.logger.Warn("dedicated WAL requested but tenant barrier is unavailable; falling back to shared WAL",
-			slog.String("tenant", tenantID), slog.String("database", db), slog.Uint64("shard_id", shardID))
-		return nil
+	if tb == nil {
+		return unavailable(seal.ErrTenantNotFound)
+	}
+	if tb.IsSealed() {
+		return unavailable(seal.ErrSealed)
 	}
 	barrier := tb.Barrier().EpochBarrier()
 	walDir := filepath.Join(absDir, dedicatedWALSubdir)
@@ -1272,22 +1437,16 @@ func (f *RaftBackendFactory) openAndRegisterDedicatedWAL(
 	)
 	dedDB, err := waldb.Open(walDir, waldb.WithBarrier(barrier), waldb.WithMetrics(collector))
 	if err != nil {
-		f.logger.Error("failed to open dedicated tenant WAL; falling back to shared WAL",
-			slog.String("tenant", tenantID), slog.String("database", db),
-			slog.Uint64("shard_id", shardID), slog.String("wal_dir", walDir), slog.Any("error", err))
-		return nil
+		return unavailable(err)
 	}
 	if err := f.walMux.Register(shardID, dedDB, barrier); err != nil {
-		f.logger.Error("failed to register dedicated tenant WAL; falling back to shared WAL",
-			slog.String("tenant", tenantID), slog.String("database", db),
-			slog.Uint64("shard_id", shardID), slog.Any("error", err))
 		_ = dedDB.Close()
-		return nil
+		return unavailable(err)
 	}
 	f.logger.Info("dedicated tenant WAL opened (per-tenant-KEY WAL, 4d Option C)",
 		slog.String("tenant", tenantID), slog.String("database", db),
 		slog.Uint64("shard_id", shardID), slog.String("wal_dir", walDir))
-	return dedDB
+	return dedDB, nil
 }
 
 // Close stops the named tenant database's dedicated shard (releasing the Pebble

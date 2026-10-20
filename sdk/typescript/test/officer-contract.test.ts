@@ -473,7 +473,11 @@ describe('initializeShamir – holders, not a secret', () => {
         installRouter({
             'POST /v1/tenants/t1/barrier/init/begin': { body: {} },
             'POST /v1/tenants/t1/barrier/init/complete': {
-                body: { tenant_id: 't1', strategy: 'shamir', threshold: 2, total_shares: 3, share_count: 3 },
+                // Both rounds of the init answer the same split.
+                body: {
+                    tenant_id: 't1', strategy: 'shamir', threshold: 2, total_shares: 3, share_count: 3,
+                    roster: 'cm9zdGVy', unseal_key_check: 'Y2hlY2s=',
+                },
             },
         });
 

@@ -23,6 +23,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
@@ -90,18 +91,39 @@ type userDeleter interface {
 	DeleteUser(ctx context.Context, id uint64) error
 }
 
+// adminSigner is the signer for the first admin's CSR: PendingAdminSigner for
+// an admin recorded as pending, Signer otherwise. A pending admin's CSR with
+// no PendingAdminSigner is refused as system first boot refuses a CSR on a
+// node with no cluster CA: the tenant's own CA is sealed behind the barrier
+// that admin has yet to initialize, so nothing else could sign it.
+func (deps Dependencies) adminSigner(pending bool) (firstboot.CertSigner, error) {
+	if pending {
+		if deps.PendingAdminSigner == nil {
+			return nil, &ceremony.AdminCredentialRequiresCAError{Path: "csr-sign"}
+		}
+		return deps.PendingAdminSigner, nil
+	}
+	if deps.Signer == nil {
+		return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Signer to sign the admin's CSR"}
+	}
+	return deps.Signer, nil
+}
+
 // adminPlan is the first admin's credential, judged before anything is
 // written.
 type adminPlan struct {
 	csrPEM  []byte
+	signer  firstboot.CertSigner
 	byoc    *certenroll.BYOC
 	anchors []*x509.Certificate
 }
 
 // planAdmin judges every input that can be refused -- the trust anchors, the
 // CSR, the bring-your-own certificate against those anchors and the admin's
-// identity -- so that a refusal happens before the tenant exists.
-func planAdmin(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMode, adminUsername string) (*adminPlan, error) {
+// identity -- so that a refusal happens before the tenant exists. pending
+// reports whether the admin is recorded as pending rather than created, which
+// decides the CSR's signer (Dependencies.adminSigner).
+func planAdmin(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMode, adminUsername string, pending bool) (*adminPlan, error) {
 	plan := &adminPlan{}
 	now := deps.now()
 	if len(cfg.TrustAnchorsPEM) > 0 {
@@ -132,9 +154,11 @@ func planAdmin(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmen
 	case len(cfg.AdminCSRPEM) > 0 && len(cfg.AdminCertPEM) > 0:
 		return nil, &ConflictingAdminCredentialError{}
 	case len(cfg.AdminCSRPEM) > 0:
-		if deps.Signer == nil {
-			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Signer to sign the admin's CSR"}
+		signer, err := deps.adminSigner(pending)
+		if err != nil {
+			return nil, err
 		}
+		plan.signer = signer
 		if _, err := cert.ParseCSR(cfg.AdminCSRPEM); err != nil {
 			return nil, &AdminCredentialRejectedError{Cause: err}
 		}
@@ -163,7 +187,7 @@ type adminCredential struct {
 
 // issue produces the admin's certificate from the plan: signed from the CSR,
 // or the verified bring-your-own one as is.
-func (p *adminPlan) issue(ctx context.Context, deps Dependencies, tenantID, adminUsername string) (*adminCredential, error) {
+func (p *adminPlan) issue(ctx context.Context, tenantID, adminUsername string) (*adminCredential, error) {
 	if p.byoc != nil {
 		return &adminCredential{
 			certPEM:    trustanchor.EncodePEM(p.byoc.Certificate),
@@ -171,7 +195,7 @@ func (p *adminPlan) issue(ctx context.Context, deps Dependencies, tenantID, admi
 			notAfter:   p.byoc.NotAfter,
 		}, nil
 	}
-	certPEM, err := deps.Signer.SignAdminCSR(ctx, tenantID, adminUsername, p.csrPEM)
+	certPEM, err := p.signer.SignAdminCSR(ctx, tenantID, adminUsername, p.csrPEM)
 	if err != nil {
 		return nil, &TenantAdminCertError{Cause: err}
 	}
@@ -252,6 +276,12 @@ func (e *UndoStepError) Error() string { return e.Step + ": " + e.Cause.Error() 
 // Unwrap exposes the cause.
 func (e *UndoStepError) Unwrap() error { return e.Cause }
 
+// HomeLeader reports whether this node leads a tenant's home Raft group, the
+// one replica that completes the tenant's pending admin.
+type HomeLeader interface {
+	LeadsHome(tenantID string) bool
+}
+
 // CompletePendingTenantAdmin creates the account of a tenant admin onboarded
 // before the tenant's identity records could be written (pkg/tenantadmin),
 // once they can: it seeds the tenant's built-in roles, creates the admin
@@ -259,11 +289,23 @@ func (e *UndoStepError) Unwrap() error { return e.Cause }
 // name -- binds the onboarding certificate to it, and deletes the pending
 // record. It reports whether there was a pending admin to complete.
 //
-// It is idempotent and safe to call whenever the tenant's barrier becomes
-// usable: on its initialization, and on every unseal, so an attempt that
-// failed part-way is finished by the next one.
+// It runs once per tenant, on the node leading the tenant's home group
+// (Dependencies.HomeLeader): on any other node a pending admin is left to
+// that leader and the call returns *AdminCompletionDeferredError having
+// written nothing. Every write it makes is guarded -- the roles and the
+// account are created only if absent, the binding is a compare-and-swap that
+// recognises its own earlier commit, and the record is deleted only while it
+// is still the one this call read -- so a retry, or a new leader finishing
+// what a deposed one started, completes the admin exactly once. A call that
+// finds the record already gone, or loses the delete to one that finished
+// first, reports false with a nil error.
 //
-// Uses: PendingAdmins, Users (with AddCertBinding, or Binder), Roles, Logger.
+// It is safe to call whenever the tenant's barrier becomes usable: on its
+// initialization, and on every unseal, so an attempt that failed part-way is
+// finished by the next one.
+//
+// Uses: PendingAdmins, Users (with AddCertBinding, or Binder), Roles,
+// HomeLeader, Logger.
 func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Dependencies) (bool, error) {
 	if deps.Logger == nil {
 		return false, &MissingLoggerError{}
@@ -277,6 +319,9 @@ func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Depen
 	}
 	if pending == nil {
 		return false, nil
+	}
+	if deps.HomeLeader != nil && !deps.HomeLeader.LeadsHome(tenantID) {
+		return false, &AdminCompletionDeferredError{TenantID: tenantID}
 	}
 	if deps.Users == nil || deps.Roles == nil {
 		return false, &MissingProvisioningSeamError{Seam: "Dependencies.Users and Dependencies.Roles to complete a pending admin"}
@@ -322,8 +367,14 @@ func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Depen
 	if err := bindAdmin(ctx, deps, tenantID, adminUser, c); err != nil {
 		return false, err
 	}
-	if err := deps.PendingAdmins.Delete(ctx, tenantID); err != nil {
+	deleted, err := deps.PendingAdmins.Delete(ctx, tenantID, pending)
+	if err != nil {
 		return false, &PendingTenantAdminError{Op: "delete", Cause: err}
+	}
+	if !deleted {
+		// Another completion read the same record and deleted it first; the
+		// account and binding this call found or made are the ones it made.
+		return false, nil
 	}
 	deps.Logger.Info("bootstrap: pending tenant admin completed",
 		slog.String("tenant", tenantID), slog.String("admin", pending.Username))
@@ -368,7 +419,10 @@ func (b AdminCompletionBounds) withDefaults() AdminCompletionBounds {
 // request: hand it a context that request's end does not cancel.
 //
 // An attempt cut off or failed part-way is retried, which
-// CompletePendingTenantAdmin's idempotence makes safe. It stops without
+// CompletePendingTenantAdmin's guarded writes make safe. On a node that does
+// not lead the tenant's home group each attempt defers, so the loop waits
+// for the record to go (the leader completed it) or for this node to take
+// the leadership, and then completes it here. It stops without
 // retrying on tenant.ErrTenantSealed -- the barrier-ready hook completes the
 // admin when the barrier next unseals -- and on an error no retry can
 // change. When Budget runs out it returns the error of the last attempt the
@@ -415,6 +469,18 @@ func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps
 		return false, err
 	}
 	return done, nil
+}
+
+// CompletePendingTenantAdminOnce makes one CompletePendingTenantAdmin attempt
+// on ctx, within b.AttemptTimeout, writing the tenant's own records as
+// CompletePendingTenantAdminWithin does. It is how a request that must not
+// wait for the tenant's home group -- a Shamir barrier init, which unseals
+// only its own node -- tries the admin once and leaves a record it cannot
+// complete yet to the barrier-ready hook's next unseal or status read.
+func CompletePendingTenantAdminOnce(ctx context.Context, tenantID string, deps Dependencies, b AdminCompletionBounds) (bool, error) {
+	ctx, cancel := context.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.withDefaults().AttemptTimeout)
+	defer cancel()
+	return CompletePendingTenantAdmin(ctx, tenantID, deps)
 }
 
 // adminCompletionRetryable reports whether a failed

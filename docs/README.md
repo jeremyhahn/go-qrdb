@@ -105,7 +105,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [audit](audit/) | compliance-grade audit logging and query |
 | [rate-limit](rate-limit/) | per-permission request throttling, enforced identically across every transport |
 | [attested-caller](attested-caller/) | the attested-caller gate: admit a gated operation only from a peer whose measured state is currently acceptable |
-| [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers; strict tenant isolation *(ruled, not yet implemented)* |
+| [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers; a home store for every isolated tenant; strict tenant isolation *(in progress)* |
 
 ### Interfaces
 

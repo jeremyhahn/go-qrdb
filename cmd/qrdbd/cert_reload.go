@@ -113,6 +113,15 @@ func (r *CertReloader) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate,
 	return r.cert.Load(), nil
 }
 
+// GetClientCertificate returns the currently loaded certificate for the
+// client side of a handshake, so a connection the node dials -- a request
+// forwarded to the leader, a replica forward -- presents the same
+// hot-reloaded leaf its listeners serve. It satisfies
+// tls.Config.GetClientCertificate.
+func (r *CertReloader) GetClientCertificate(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	return r.cert.Load(), nil
+}
+
 // Reload loads the certificate and key from disk and atomically swaps
 // the stored pointer. On success the new certificate is immediately
 // visible to all TLS handshakes. On failure the previous certificate

@@ -14,6 +14,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
 // mockLegacyStorage implements LegacyStorage for testing the StorageAdapter.
@@ -378,4 +381,124 @@ func TestStorageAdapter_GuardedOpsExcludeConcurrentWrites(t *testing.T) {
 	}
 
 	_ = adapter.Delete(ctx, key)
+}
+
+// failingGetStorage is a batching engine whose reads fail, so a guard cannot
+// be evaluated.
+type failingGetStorage struct {
+	*memory.MemoryStorage
+	err error
+}
+
+func (f *failingGetStorage) Get([]byte) ([]byte, error) { return nil, f.err }
+
+func TestStorageAdapter_PutAllIfAllUnchanged_AppliesWhileGuardsHold(t *testing.T) {
+	ctx := context.Background()
+	a := NewStorageAdapter(memory.NewStorage()).(*StorageAdapter)
+	if err := a.Put(ctx, "held", []byte("1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := a.Put(ctx, "gone", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	applied, err := a.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "held", Value: []byte("1")}, {Key: "absent"}},
+		[]kvstore.KV{{Key: "new", Value: []byte("v")}, {Key: "gone", Delete: true}})
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if got, _ := a.Get(ctx, "new"); string(got) != "v" {
+		t.Errorf("new = %q, want %q", got, "v")
+	}
+	if got, _ := a.Get(ctx, "gone"); got != nil {
+		t.Errorf("gone = %q, want deleted", got)
+	}
+}
+
+// TestStorageAdapter_PutAllIfAllUnchanged_DeclinesAndWritesNothing covers the
+// three ways a guard fails; each must leave every write unapplied.
+func TestStorageAdapter_PutAllIfAllUnchanged_DeclinesAndWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]kvstore.Guard{
+		"stale value":                {Key: "held", Value: []byte("2")},
+		"absent guard on a present":  {Key: "held"},
+		"present guard on an absent": {Key: "absent", Value: []byte{}},
+	}
+	for name, guard := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := NewStorageAdapter(memory.NewStorage()).(*StorageAdapter)
+			if err := a.Put(ctx, "held", []byte("1")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			applied, err := a.PutAllIfAllUnchanged(ctx, []kvstore.Guard{guard},
+				[]kvstore.KV{{Key: "new", Value: []byte("v")}, {Key: "held", Delete: true}})
+			if err != nil || applied {
+				t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+			}
+			if got, _ := a.Get(ctx, "new"); got != nil {
+				t.Errorf("new = %q, want unwritten", got)
+			}
+			if got, _ := a.Get(ctx, "held"); string(got) != "1" {
+				t.Errorf("held = %q, want untouched", got)
+			}
+		})
+	}
+}
+
+func TestStorageAdapter_PutAllIfAllUnchanged_RefusesAnEngineWithoutBatches(t *testing.T) {
+	a := NewStorageAdapter(newMockLegacyStorage()).(*StorageAdapter)
+	_, err := a.PutAllIfAllUnchanged(context.Background(), nil, []kvstore.KV{{Key: "k", Value: []byte("v")}})
+	if !errors.Is(err, ErrGuardedBatchUnsupported) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("err = %v, want ErrGuardedBatchUnsupported matching kvstore.ErrAtomicWriteUnsupported", err)
+	}
+}
+
+func TestStorageAdapter_PutAllIfAllUnchanged_EmptyWritesOnlyEvaluateGuards(t *testing.T) {
+	a := NewStorageAdapter(memory.NewStorage()).(*StorageAdapter)
+	applied, err := a.PutAllIfAllUnchanged(context.Background(), []kvstore.Guard{{Key: "absent"}}, nil)
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+}
+
+func TestStorageAdapter_PutAllIfAllUnchanged_PropagatesEngineFailures(t *testing.T) {
+	ctx := context.Background()
+	readErr := errors.New("read failed")
+	reads := NewStorageAdapter(&failingGetStorage{MemoryStorage: memory.NewStorage(), err: readErr}).(*StorageAdapter)
+	if _, err := reads.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "g"}}, nil); !errors.Is(err, readErr) {
+		t.Errorf("guard read: err = %v, want %v", err, readErr)
+	}
+
+	closed := memory.NewStorage()
+	if err := closed.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	writes := NewStorageAdapter(closed).(*StorageAdapter)
+	if _, err := writes.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: "k", Value: []byte("v")}}); err == nil {
+		t.Error("write to a closed engine: err = nil, want a failure")
+	}
+	if _, err := writes.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: "k", Delete: true}}); err == nil {
+		t.Error("delete on a closed engine: err = nil, want a failure")
+	}
+}
+
+func TestGuardHolds(t *testing.T) {
+	cases := []struct {
+		name              string
+		expected, current []byte
+		want              bool
+	}{
+		{"absent wanted, absent", nil, nil, true},
+		{"absent wanted, present", nil, []byte{}, false},
+		{"empty wanted, absent", []byte{}, nil, false},
+		{"empty wanted, empty", []byte{}, []byte{}, true},
+		{"value wanted, equal", []byte("v"), []byte("v"), true},
+		{"value wanted, different", []byte("v"), []byte("w"), false},
+	}
+	for _, c := range cases {
+		if got := guardHolds(c.expected, c.current); got != c.want {
+			t.Errorf("%s: guardHolds = %v, want %v", c.name, got, c.want)
+		}
+	}
 }

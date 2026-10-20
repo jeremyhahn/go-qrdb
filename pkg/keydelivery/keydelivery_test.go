@@ -41,7 +41,7 @@ func goodMeta() Meta {
 		ShardID:      42,
 		ReplicaID:    3,
 		TargetNodeID: "node-b",
-		Mode:         ModeSystemManaged,
+		Mode:         ModeSelfManaged,
 	}
 }
 
@@ -72,12 +72,12 @@ func newReceiver(t *testing.T, priv *ecdsa.PrivateKey, nodeID string, now time.T
 }
 
 func TestSealOpen_RoundTrip(t *testing.T) {
-	for _, mode := range []Mode{ModeSystemManaged, ModeSelfManaged} {
+	for _, mode := range []Mode{ModeSelfManaged} {
 		t.Run(string(mode), func(t *testing.T) {
 			recip := mustP256(t)
 			meta := goodMeta()
 			meta.Mode = mode
-			secret := []byte("32-byte-root-key-or-sealed-blob!")
+			secret := []byte("32-byte-sealed-blob-placeholder!")
 
 			env, err := Seal(&recip.PublicKey, meta, secret)
 			if err != nil {
@@ -159,7 +159,6 @@ func TestOpen_TamperedContextFailsClosed(t *testing.T) {
 		{"database", func(e *Envelope) { e.Database = "other" }, ErrDecrypt},
 		{"shard", func(e *Envelope) { e.ShardID = 99 }, ErrDecrypt},
 		{"replica", func(e *Envelope) { e.ReplicaID = 99 }, ErrDecrypt},
-		{"mode", func(e *Envelope) { e.Mode = ModeSelfManaged }, ErrDecrypt},
 		{"nonce", func(e *Envelope) { e.Nonce[0] ^= 0xFF }, ErrDecrypt},
 		{"payload", func(e *Envelope) { e.Payload[len(e.Payload)-1] ^= 0xFF }, ErrDecrypt},
 		{"target-node", func(e *Envelope) { e.TargetNodeID = "node-z" }, ErrWrongTarget},

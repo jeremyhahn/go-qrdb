@@ -36,17 +36,16 @@ package integration_test
 // per-node volume pools.
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -242,18 +241,31 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	t.Log("Phase D system-scope RF=3 cluster enable-encryption: all data survived, barrier keyed cluster-wide")
 }
 
-// TestClusterEnableEncryption_TenantScope_RF3 proves Phase D for the TENANT
-// barrier scope across a real 3-node cluster: an IsolationRaft tenant with a
-// self-managed UNENCRYPTED (none) dedicated barrier and an RF=3 database is
-// migrated to a passphrase barrier cluster-wide via a single
-// POST /v1/barrier/enable-encryption{tenant_id} to the leader. Every node hosting
-// a replica recycles its own shard ONLINE (no reboot — the tenant barrier reopens
-// keyed-and-unsealed) with its own credential -- the request's on the leader,
-// its own file on every other node -- and all tenant data survives on every
-// replica. The system barrier is untouched.
+// TestClusterEnableEncryption_TenantScope_RF3 proves two strict IsolationRaft
+// tenants' barriers on a real 3-node cluster, each served by every node
+// holding a replica of the tenant's home group, each node with its own key
+// and none ever sent between them.
+//
+// The first tenant's admin initializes a passphrase barrier through ONE node
+// with the real CLI, which sends the init to every node the barrier status
+// lists, and the home group forms with no key delivered and no node unsealed
+// by hand. An RF=3 database then serves the tenant's data, the tenant's own
+// seal through one follower reaches every replica, and each replica unseals
+// with the tenant's passphrase on that replica with all the data intact.
+//
+// The second tenant's self-managed UNENCRYPTED (none) barrier and RF=3
+// database are migrated to a passphrase barrier cluster-wide via a single
+// POST /v1/barrier/enable-encryption{tenant_id} to the leader. The replicas
+// recycle their own shards ONLINE one at a time, the leader last (no reboot —
+// the tenant barrier reopens keyed-and-unsealed), each with its own
+// credential -- the request's on the leader, its own file on every other
+// node -- and all tenant data survives on every replica. The system barrier
+// is untouched.
 func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	const tenantID = "rt1"
 	const dbName = "tdb1"
+	const migTenantID = "rt2"
+	const migDBName = "tdb2"
 	const tenantPass = "cluster-tenant-passphrase"
 
 	bin := buildBinary(t)
@@ -330,154 +342,71 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	createVolumePoolREST(t, sysClient, leaderPort, "default")
 	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
 
-	// Create a self-managed (auto_unseal=false) IsolationRaft tenant with
-	// its first admin: a tenant is created with its first admin, or not at
-	// all. The admin keeps its own key -- only the CSR crosses the wire.
-	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
-	if err != nil {
-		t.Fatalf("certtest.NewCSR: %v", err)
-	}
-	createBody, s := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id": tenantID, "name": "Raft Tenant", "isolation_type": "raft", "barrier_auto_unseal": false,
-			"admin_username": tenantID + "-admin", "admin_csr_pem": string(adminCSRPEM),
-		},
-	)
-	if s != http.StatusCreated && s != http.StatusOK {
-		t.Fatalf("create tenant: status %d, body: %s", s, createBody)
-	}
-	var createResp struct {
-		Admin struct {
-			CertPEM string `json:"cert_pem"`
-		} `json:"admin"`
-	}
-	if err := json.Unmarshal(createBody, &createResp); err != nil || createResp.Admin.CertPEM == "" {
-		t.Fatalf("decode tenant create admin cert: %v body=%s", err, createBody)
+	// The passphrase tenant: its first admin initializes the barrier as
+	// passphrase through the leader alone. The CLI sends the init to every
+	// node serving the barrier, and the home group forms once they hold their
+	// keys, each node then running the system shard and the tenant's home
+	// replica.
+	cli := buildCLIBinary(t)
+	tenantClient := onboardRaftTenantDBAdmin(t, ca, sysClient, leaderPort, adminPorts, tenantID,
+		func(admin *qrdbdharness.KeyPair) {
+			fanOutPassphraseBarrierInit(t, cli, leaderPort, ca.CertPath,
+				admin.CertPEM, admin.KeyPEM, tenantID, tenantPass, raftPorts)
+			for i := range 3 {
+				waitForShardCount(t, sysClient, adminPorts[i], 2, 90*time.Second)
+			}
+		})
+
+	// Create the RF=3 database as the tenant. Its replicas start on nodes
+	// already holding the tenant's key: nothing is delivered to them. Each
+	// node then hosts its system shard, the tenant's home replica and tdb1's.
+	seed := map[string]string{"k1": "v1", "k2": "v2", "k3": "v3"}
+	createSeededRF3Database(t, tenantClient, leaderPort, dbName, seed)
+	for i := range 3 {
+		waitForShardCount(t, sysClient, adminPorts[i], 3, 90*time.Second)
 	}
 
-	// The tenant's dedicated barrier must be initialized BEFORE any of its
-	// IAM can exist (the tenant's roles and users are encrypted under the
-	// tenant DEK; the store resolver fails closed until the barrier is up).
-	// The init itself is trust-on-first-init by the EXACT certificate the
-	// tenant's first admin was onboarded with above, never any other
-	// authenticated identity of the tenant — see pkg/api/rest
-	// authorizeTenantBarrierInit.
-	adminTLSCert, err := tls.X509KeyPair([]byte(createResp.Admin.CertPEM), adminKeyPEM)
-	if err != nil {
-		t.Fatalf("X509KeyPair for the onboarded admin: %v", err)
-	}
-	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-
-	// Initialize the dedicated barrier as none (unsealed) on the leader.
-	initTenantBarrierAsFirstAdmin(t, fmt.Sprintf("https://127.0.0.1:%d", leaderPort), ca.CertPath,
-		[]byte(createResp.Admin.CertPEM), adminKeyPEM, tenantID)
-
-	// The onboarded admin's account carries only the pending-admin
-	// completion's own role, not the data-plane permissions the rest of
-	// this test needs: the tenant's generic (CN=admin, OU=tenantID)
-	// identity, provisioned below with its own role, drives everything
-	// from here on -- the same two-identity split
-	// tenant_barrier_sealed_window_cli_test.go uses for the identical
-	// reason.
-	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
-	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
-
-	// Role + user, created AFTER the barrier init so the records land in the
-	// tenant's own encrypted IAM store. The system tenant can no longer
-	// provision records inside another tenant's IAM at all (owner ruling,
-	// 2026-10-01), so this authenticates as the tenant's own onboarded
-	// admin; its built-in Admin role cannot create a NEW role (RolesCreate
-	// is SO-exclusive), so it self-assigns its own pre-seeded SO role
-	// first, exactly like tenant_isolation_cli_test.go's
-	// provisionTenantIdentityFor.
-	selfAssignTenantSO(t, leaderPort, tenantID, onboardedAdminClient)
-	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
-		map[string]interface{}{
-			"name": "db-admin", "tenant_id": tenantID,
-			"permissions": []string{
-				"databases:create", "databases:create_raft", "databases:read", "databases:list",
-				"kv:put", "kv:get",
-				"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:unseal",
-				"tenant_barrier:seal", "tenant_barrier:enable_encryption",
-			},
-		},
-	)
-	if roleStatus != http.StatusCreated && roleStatus != http.StatusOK {
-		t.Fatalf("create role: status %d, body: %s", roleStatus, roleBody)
-	}
-	var roleResp struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
-		t.Fatalf("decode role id: %v body=%s", err, roleBody)
-	}
-	createBoundUser(t, onboardedAdminClient, leaderPort,
-		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
-		tenantCert)
-
-	// Create the RF=3 database as the tenant — schedules placement on 3 nodes and
-	// delivers the (self-managed) tenant barrier key to each follower.
-	if b, s := iraftAPIPost(t, tenantClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
-		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 3},
-	); s != http.StatusCreated && s != http.StatusOK {
-		t.Fatalf("create database: status %d, body: %s", s, b)
+	// The tenant barrier is passphrase and unsealed on every node.
+	for i := range 3 {
+		if strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); !ok || strategy != "passphrase" || sealed {
+			t.Fatalf("node %d tenant barrier: strategy=%q sealed=%v ok=%v, want unsealed passphrase", i+1, strategy, sealed, ok)
+		}
 	}
 
-	// Unseal the self-managed (none) tenant barrier on each node so its shard can
-	// start. The leader is already unsealed (from init); followers receive the key
-	// asynchronously (key delivery during create) and come up sealed. Poll each
-	// node's status: skip when already unsealed, unseal when sealed, retry until
-	// the barrier exists and is unsealed.
+	// A tenant's barrier is migrated under tenant_barrier:enable_encryption
+	// for THAT tenant (go-qrdb#791): the system root, outside the tenant, is
+	// refused before anything else is decided.
+	if b, s := iraftAPIPost(t, sysClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
+		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
+	); s != http.StatusForbidden {
+		t.Fatalf("system-root tenant enable-encryption: status %d, want 403; body: %s", s, b)
+	}
+
+	// The migrated tenant: a self-managed UNENCRYPTED (none) barrier, its
+	// first admin's init sent to the leader, from which every other node
+	// initializes its own, with an RF=3 database of its own.
+	migTenantClient := onboardRaftTenantDBAdmin(t, ca, sysClient, leaderPort, adminPorts, migTenantID,
+		func(admin *qrdbdharness.KeyPair) {
+			initTenantBarrierAsFirstAdmin(t, fmt.Sprintf("https://127.0.0.1:%d", leaderPort), ca.CertPath,
+				admin.CertPEM, admin.KeyPEM, migTenantID)
+			for i := range 3 {
+				waitForShardCount(t, sysClient, adminPorts[i], 4, 90*time.Second)
+			}
+		})
+	migSeed := map[string]string{"m1": "w1", "m2": "w2", "m3": "w3"}
+	createSeededRF3Database(t, migTenantClient, leaderPort, migDBName, migSeed)
+	for i := range 3 {
+		waitForShardCount(t, sysClient, adminPorts[i], 5, 90*time.Second)
+	}
 	for i := range 3 {
 		var strategy string
 		var sealed, ok bool
 		if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
-			strategy, sealed, ok = tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
-			if ok && !sealed {
-				return true // already unsealed (leader, or a prior pass succeeded)
-			}
-			if ok && sealed {
-				// The unseal endpoint requires non-empty key material (no derived
-				// fallback); a none barrier ignores the value, so a dummy non-empty
-				// key unseals the follower's imported none barrier.
-				_, s := iraftAPIPost(t, tenantClient,
-					fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/unseal", adminPorts[i], tenantID),
-					map[string]interface{}{"key": []byte("none")},
-				)
-				return s == http.StatusNoContent || s == http.StatusOK
-			}
-			return false
+			strategy, sealed, ok = tenantBarrierStatusJSON(t, migTenantClient, adminPorts[i], migTenantID)
+			return ok && strategy == "none" && !sealed
 		}) {
-			t.Fatalf("node %d tenant barrier never reached unsealed (last strategy=%q sealed=%v ok=%v)", i+1, strategy, sealed, ok)
-		}
-	}
-
-	// Each node must host its system shard + the tenant's db1 replica (>=2).
-	for i := range 3 {
-		waitForShardCount(t, sysClient, adminPorts[i], 2, 90*time.Second)
-	}
-
-	// Write tenant data through the RF=3 dedicated shard.
-	seed := map[string]string{"k1": "v1", "k2": "v2", "k3": "v3"}
-	for k, v := range seed {
-		var st int
-		var perr error
-		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
-			st, perr = dbScopedPutTolerant(t, tenantClient, leaderPort, dbName, k, []byte(v))
-			return perr == nil && (st == http.StatusOK || st == http.StatusNoContent || st == http.StatusCreated)
-		})
-		if perr != nil || (st != http.StatusOK && st != http.StatusNoContent && st != http.StatusCreated) {
-			t.Fatalf("tenant put %q: status %d err %v", k, st, perr)
-		}
-	}
-
-	// Confirm the tenant barrier is none on every node before migrating.
-	for i := range 3 {
-		if strategy, _, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); !ok || strategy != "none" {
-			t.Fatalf("node %d pre-migration tenant strategy = %q (ok=%v), want none", i+1, strategy, ok)
+			t.Fatalf("node %d pre-migration tenant barrier: strategy=%q sealed=%v ok=%v, want unsealed none", i+1, strategy, sealed, ok)
 		}
 	}
 
@@ -491,13 +420,13 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// refused, and the tenant's own identity holding the permission migrates.
 	if b, s := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
-		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
+		map[string]interface{}{"tenant_id": migTenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
 	); s != http.StatusForbidden {
 		t.Fatalf("system-root tenant enable-encryption: status %d, want 403; body: %s", s, b)
 	}
-	if b, s := iraftAPIPost(t, tenantClient,
+	if b, s := iraftAPIPost(t, migTenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
-		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
+		map[string]interface{}{"tenant_id": migTenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
 	); s != http.StatusOK && s != http.StatusAccepted {
 		t.Fatalf("tenant enable-encryption: status %d, body: %s", s, b)
 	}
@@ -509,11 +438,11 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// the files land.
 	tenantHolderIdx := adminPortIndex(t, adminPorts, leaderPort)
 	for i := range 3 {
-		if strategy, _, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); !ok || strategy != "none" {
+		if strategy, _, ok := tenantBarrierStatusJSON(t, migTenantClient, adminPorts[i], migTenantID); !ok || strategy != "none" {
 			t.Fatalf("node %d tenant strategy = %q (ok=%v) before any replica had its own credential, want none", i+1, strategy, ok)
 		}
 		if i != tenantHolderIdx {
-			writeMigrationCredential(t, credDirs[i], "tenant-"+tenantID, tenantPass)
+			writeMigrationCredential(t, credDirs[i], "tenant-"+migTenantID, tenantPass)
 		}
 	}
 
@@ -521,7 +450,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// transitions to passphrase and stays UNSEALED (no re-unseal needed).
 	for i := range 3 {
 		if !pollUntil(180*time.Second, 500*time.Millisecond, func() bool {
-			strategy, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID)
+			strategy, sealed, ok := tenantBarrierStatusJSON(t, migTenantClient, adminPorts[i], migTenantID)
 			return ok && strategy == "passphrase" && !sealed
 		}) {
 			t.Fatalf("node %d tenant barrier did not migrate to unsealed passphrase within timeout", i+1)
@@ -536,19 +465,10 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		}
 	}
 
-	// All tenant data survives the per-shard recycle, readable on the leader.
+	// All the migrated tenant's data survives the per-shard recycle, readable
+	// on the leader.
 	newLeaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-	for k, v := range seed {
-		var data []byte
-		var st int
-		pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
-			data, st = dbScopedGetTolerant(t, tenantClient, newLeaderPort, dbName, k)
-			return st == http.StatusOK
-		})
-		if st != http.StatusOK || string(data) != v {
-			t.Fatalf("post-migration tenant %q = %q (status %d), want %q (DATA LOSS)", k, string(data), st, v)
-		}
-	}
+	assertTenantData(t, migTenantClient, newLeaderPort, migDBName, migSeed, "post-migration")
 	t.Log("Phase D tenant-scope RF=3 cluster enable-encryption: all tenant data survived, tenant barrier keyed on all replicas")
 
 	// Cluster sealing (docs/barrier-seal): the tenant's own admin seals its
@@ -583,15 +503,160 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		}
 	}
 	finalLeader := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	assertTenantData(t, tenantClient, finalLeader, dbName, seed, "after the tenant unseal")
+}
+
+// onboardRaftTenantDBAdmin creates the self-managed (auto_unseal=false)
+// IsolationRaft tenant tenantID with its first admin, has initBarrier
+// initialize the tenant's barrier as that admin, and returns a client for the
+// tenant's generic identity holding a role with the database, KV and tenant
+// barrier permissions.
+//
+// A tenant is created with its first admin, or not at all. The admin brings
+// its own certificate: these BYO-TLS nodes have no cluster CA to sign a CSR
+// with, and the tenant's own CA is behind the barrier that admin has yet to
+// initialize. Each node admits the admin's certificate only once the tenant's
+// trust anchor has replicated to it.
+func onboardRaftTenantDBAdmin(t *testing.T, ca *testCA, sysClient *http.Client, leaderPort int, adminPorts []int,
+	tenantID string, initBarrier func(admin *qrdbdharness.KeyPair),
+) *http.Client {
+	t.Helper()
+	createReq, admin := adminBYOCFieldsForTenant(t, tenantID, tenantID+"-admin")
+	createReq["id"], createReq["name"] = tenantID, "Raft Tenant "+tenantID
+	createReq["isolation_type"], createReq["barrier_auto_unseal"] = "raft", false
+	createBody, s := iraftAPIPost(t, sysClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort), createReq)
+	if s != http.StatusCreated && s != http.StatusOK {
+		t.Fatalf("create tenant %s: status %d, body: %s", tenantID, s, createBody)
+	}
+
+	// The tenant's dedicated barrier must be initialized BEFORE any of its
+	// IAM can exist (the tenant's roles and users are encrypted under the
+	// tenant DEK; the store resolver fails closed until the barrier is up).
+	// The init itself is trust-on-first-init by the EXACT certificate the
+	// tenant's first admin was onboarded with above, never any other
+	// authenticated identity of the tenant — see pkg/api/rest
+	// authorizeTenantBarrierInit.
+	adminTLSCert, err := admin.TLSCertificate()
+	if err != nil {
+		t.Fatalf("key pair for the onboarded admin of %s: %v", tenantID, err)
+	}
+	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
+	for _, port := range adminPorts {
+		waitForNodeToTrustClient(t, onboardedAdminClient, port, 30*time.Second)
+	}
+	initBarrier(admin)
+
+	// The onboarded admin's account carries only the pending-admin
+	// completion's own role, not the data-plane permissions the rest of
+	// the test needs: the tenant's generic (CN=admin, OU=tenantID)
+	// identity, provisioned below with its own role, drives everything
+	// from here on -- the same two-identity split
+	// tenant_barrier_sealed_window_cli_test.go uses for the identical
+	// reason.
+	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
+	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
+
+	// Role + user, created AFTER the barrier init so the records land in the
+	// tenant's own encrypted IAM store. The system tenant can no longer
+	// provision records inside another tenant's IAM at all (owner ruling,
+	// 2026-10-01), so this authenticates as the tenant's own onboarded
+	// admin; its built-in Admin role cannot create a NEW role (RolesCreate
+	// is SO-exclusive), so it self-assigns its own pre-seeded SO role
+	// first, exactly like tenant_isolation_cli_test.go's
+	// provisionTenantIdentityFor.
+	selfAssignTenantSO(t, leaderPort, tenantID, onboardedAdminClient)
+	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
+		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
+		map[string]interface{}{
+			"name": "db-admin", "tenant_id": tenantID,
+			"permissions": []string{
+				"databases:create", "databases:create_raft", "databases:read", "databases:list",
+				"kv:put", "kv:get",
+				"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:unseal",
+				"tenant_barrier:seal", "tenant_barrier:enable_encryption",
+			},
+		},
+	)
+	if roleStatus != http.StatusCreated && roleStatus != http.StatusOK {
+		t.Fatalf("create role in %s: status %d, body: %s", tenantID, roleStatus, roleBody)
+	}
+	var roleResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
+		t.Fatalf("decode role id: %v body=%s", err, roleBody)
+	}
+	createBoundUser(t, onboardedAdminClient, leaderPort,
+		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
+		tenantCert)
+	return tenantClient
+}
+
+// createSeededRF3Database creates the RF=3 pebble database dbName as the
+// tenant behind tenantClient and writes seed through it.
+func createSeededRF3Database(t *testing.T, tenantClient *http.Client, leaderPort int, dbName string, seed map[string]string) {
+	t.Helper()
+	if b, s := iraftAPIPost(t, tenantClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
+		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 3},
+	); s != http.StatusCreated && s != http.StatusOK {
+		t.Fatalf("create database %s: status %d, body: %s", dbName, s, b)
+	}
+	for k, v := range seed {
+		var st int
+		var perr error
+		pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
+			st, perr = dbScopedPutTolerant(t, tenantClient, leaderPort, dbName, k, []byte(v))
+			return perr == nil && (st == http.StatusOK || st == http.StatusNoContent || st == http.StatusCreated)
+		})
+		if perr != nil || (st != http.StatusOK && st != http.StatusNoContent && st != http.StatusCreated) {
+			t.Fatalf("tenant put %s/%q: status %d err %v", dbName, k, st, perr)
+		}
+	}
+}
+
+// assertTenantData fails the test unless every key of seed reads back its
+// value from dbName through the node on port; when names the check.
+func assertTenantData(t *testing.T, tenantClient *http.Client, port int, dbName string, seed map[string]string, when string) {
+	t.Helper()
 	for k, v := range seed {
 		var data []byte
 		var st int
 		pollUntil(60*time.Second, 300*time.Millisecond, func() bool {
-			data, st = dbScopedGetTolerant(t, tenantClient, finalLeader, dbName, k)
+			data, st = dbScopedGetTolerant(t, tenantClient, port, dbName, k)
 			return st == http.StatusOK
 		})
 		if st != http.StatusOK || string(data) != v {
-			t.Fatalf("after the tenant unseal %q = %q (status %d), want %q", k, string(data), st, v)
+			t.Fatalf("%s %s/%q = %q (status %d), want %q (DATA LOSS)", when, dbName, k, string(data), st, v)
+		}
+	}
+}
+
+// fanOutPassphraseBarrierInit initializes tenantID's barrier as passphrase
+// with the real CLI, as the first admin, through the node on adminPort, and
+// asserts the CLI reports the init accepted by the node on every one of
+// raftPorts.
+func fanOutPassphraseBarrierInit(t *testing.T, cli string, adminPort int, caPath string, certPEM, keyPEM []byte, tenantID, passphrase string, raftPorts []int) {
+	t.Helper()
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "admin-cert.pem"), filepath.Join(dir, "admin-key.pem")
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(t, cli,
+		"--server", fmt.Sprintf("https://127.0.0.1:%d", adminPort),
+		"--ca-file", caPath, "--cert-file", certPath, "--key-file", keyPath, "--timeout", "60s",
+		"tenant", "barrier-init", "--id", tenantID, "--strategy", "passphrase", "--passphrase", passphrase)
+	if err != nil {
+		t.Fatalf("tenant barrier-init through node on %d: %v\noutput: %s", adminPort, err, out)
+	}
+	for _, port := range raftPorts {
+		if want := fmt.Sprintf("127.0.0.1:%d: OK", port); !strings.Contains(out, want) {
+			t.Fatalf("tenant barrier-init output lacks %q:\n%s", want, out)
 		}
 	}
 }

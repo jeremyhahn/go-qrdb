@@ -27,7 +27,7 @@ Creates a tenant **together with its first admin**, or not at all.
 | `--pool` | string | the tenant's default pool | for a `volume`/`raft` tenant, place it on this named volume pool instead of its default; the tenant must be entitled to the pool |
 | `--barrier-auto-unseal` | bool | false | for a dedicated-isolation tenant, use **system-managed** auto-unseal instead of the secure self-managed default — **entitlement-gated** |
 | `--admin-username` | string | — | required; the tenant's first admin |
-| `--admin-csr` | string | — | the first admin's PEM certificate signing request; signed by the tenant's own CA |
+| `--admin-csr` | string | — | the first admin's PEM certificate signing request: a `prefix` tenant's own CA signs it; for a `barrier`, `volume` or `raft` tenant the cluster CA signs it. A node with no cluster CA (bring-your-own TLS) signs a `--barrier-auto-unseal` tenant's with the tenant's CA and refuses a self-managed one's before creating anything; use `--admin-cert` with `--trust-anchors` there |
 | `--admin-cert` | string | — | the first admin's own PEM certificate, leaf first; must chain to `--trust-anchors` |
 | `--admin-chain` | string | — | optional PEM intermediates for `--admin-cert` |
 | `--trust-anchors` | string | — | a PEM bundle of CA certificates to register as the tenant's trust anchors |

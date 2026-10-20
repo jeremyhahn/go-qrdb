@@ -137,7 +137,7 @@ func deliveryRequest(t *testing.T, peer *x509.Certificate) *http.Request {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	})
 	if err != nil {
@@ -361,7 +361,7 @@ func TestHandler_RevocationCheckedAfterSAN(t *testing.T) {
 // Receiver: end-to-end, against a delivery that would otherwise succeed
 // ---------------------------------------------------------------------------
 
-// revocationRoundTrip runs a complete system-managed distribution from a
+// revocationRoundTrip runs a complete self-managed distribution from a
 // leader to a follower over an httptest server that presents the leader's
 // certificate as the verified TLS peer, and reports whether the follower ended
 // up holding the tenant key.
@@ -425,11 +425,11 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 	// leader.cert is the peer the receiver sees; a test revoking it must build
 	// its checker from this same certificate, which is why the helper hands the
 	// option in rather than the certificate out.
-	return followerReg, sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", true)
+	return followerReg, sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1")
 }
 
 // TestRoundTrip_RevokedLeader_KeyNotImported is the mutation-visible pair, run
-// end to end: an otherwise-valid system-managed delivery, refused because the
+// end to end: an otherwise-valid self-managed delivery, refused because the
 // delivering node's certificate is revoked, with the follower's tenant barrier
 // left absent rather than merely a non-200 on the wire.
 func TestRoundTrip_RevokedLeader_KeyNotImported(t *testing.T) {
@@ -452,7 +452,8 @@ func TestRoundTrip_RevokedLeader_KeyNotImported(t *testing.T) {
 
 // TestRoundTrip_NoChecker_KeyImported is the same distribution with the option
 // omitted. It documents the pre-change behaviour precisely: the revoked node's
-// delivery is accepted and the follower's tenant barrier ends up unsealed.
+// delivery is accepted and the follower's tenant barrier is registered, holding
+// the imported blob sealed until its owner unseals it.
 func TestRoundTrip_NoChecker_KeyImported(t *testing.T) {
 	followerReg, err := revocationRoundTrip(t, "tenant-unchecked", nil)
 	if err != nil {
@@ -462,8 +463,8 @@ func TestRoundTrip_NoChecker_KeyImported(t *testing.T) {
 	if gerr != nil {
 		t.Fatalf("GetTenant: %v", gerr)
 	}
-	if tb.IsSealed() {
-		t.Error("follower tenant barrier must be unsealed after a system-managed import")
+	if !tb.IsSealed() {
+		t.Error("follower tenant barrier must remain sealed after a self-managed import")
 	}
 }
 
@@ -525,7 +526,7 @@ func deliverTo(t *testing.T, sender *clusterkeys.Sender) error {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	return sender.Deliver(context.Background(), target, meta, []byte(`{"root_key":"AA=="}`))
 }

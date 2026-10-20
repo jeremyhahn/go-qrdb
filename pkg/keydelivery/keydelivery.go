@@ -52,14 +52,10 @@ const nonceLen = 32
 
 // Mode identifies how the transported payload is protected and how the receiver
 // must install it. It is part of the HPKE context binding, so a payload sealed
-// for one mode cannot be opened as the other.
+// for one mode cannot be opened as any other.
 type Mode string
 
 const (
-	// ModeSystemManaged carries the raw tenant root key (HPKE-sealed). The
-	// receiver re-wraps it under THAT node's system barrier (auto-unseal).
-	ModeSystemManaged Mode = "system-managed"
-
 	// ModeSelfManaged carries the tenant's already-sealed PORTABLE blob
 	// (HPKE-sealed on top). No plaintext root key ever transits; the receiver
 	// persists the blob and the tenant must unseal that replica itself.
@@ -68,7 +64,7 @@ const (
 
 // valid reports whether m is a recognized mode.
 func (m Mode) valid() bool {
-	return m == ModeSystemManaged || m == ModeSelfManaged
+	return m == ModeSelfManaged
 }
 
 // Meta is the delivery context. Every field binds into the HPKE `info`, so the

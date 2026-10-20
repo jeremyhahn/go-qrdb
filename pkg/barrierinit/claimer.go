@@ -51,12 +51,31 @@ func NewClaimer(book *Book, anchors AnchorSource) *Claimer {
 // any other init is refused with ReasonMismatch before it is verified or
 // stored.
 func (c *Claimer) ClaimTenantInit(ctx context.Context, tenantID string, strategyID seal.StrategyID, keyRef string, raw []byte) error {
+	return c.claimTenant(ctx, Expect{Barrier: clusterseal.TenantBarrier(tenantID), Epoch: 1, StrategyID: strategyID, KeyRef: keyRef}, raw)
+}
+
+// ClaimTenantShamirInit is ClaimTenantInit for the second request of a Shamir
+// init: the statement must sign exactly the split this node prepared --
+// prepared's threshold, roster and unseal key check value -- or it is refused
+// with ReasonMismatch before anything is written.
+func (c *Claimer) ClaimTenantShamirInit(ctx context.Context, tenantID string, prepared *seal.ShamirInitParams, raw []byte) error {
+	if prepared == nil {
+		return &InitStatementError{Barrier: clusterseal.TenantBarrier(tenantID), Epoch: 1, Reason: ReasonMismatch}
+	}
+	return c.claimTenant(ctx, Expect{
+		Barrier: clusterseal.TenantBarrier(tenantID), Epoch: 1, StrategyID: seal.StrategyShamir,
+		Threshold: prepared.Threshold, Roster: prepared.Roster, UnsealKeyCheck: prepared.UnsealKeyCheck,
+	}, raw)
+}
+
+// claimTenant claims raw for the tenant barrier e names once it matches e.
+func (c *Claimer) claimTenant(ctx context.Context, e Expect, raw []byte) error {
 	s, err := Parse(raw)
 	if err != nil {
 		return err
 	}
-	b := clusterseal.TenantBarrier(tenantID)
-	if err := s.Matches(Expect{Barrier: b, Epoch: 1, StrategyID: strategyID, KeyRef: keyRef}); err != nil {
+	b := e.Barrier
+	if err := s.Matches(e); err != nil {
 		return err
 	}
 	a, err := c.anchors(ctx, b)

@@ -32,13 +32,33 @@ import (
 type hookCapture struct {
 	mu    sync.Mutex
 	calls []string
+	modes []AdminCompletion
+	err   error // returned by every call
 }
 
-func (h *hookCapture) hook(_ context.Context, tenantID string) {
+func (h *hookCapture) hook(_ context.Context, tenantID string, mode AdminCompletion) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.calls = append(h.calls, tenantID)
+	h.modes = append(h.modes, mode)
+	return h.err
 }
+
+// lastMode returns the AdminCompletion of the latest call.
+func (h *hookCapture) lastMode() AdminCompletion {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.modes[len(h.modes)-1]
+}
+
+// failWith makes every later call return err.
+func (h *hookCapture) failWith(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.err = err
+}
+
+var _ BarrierReadyHook = (&hookCapture{}).hook
 
 // count returns the number of times the hook has fired so far.
 func (h *hookCapture) count() int {
@@ -138,7 +158,7 @@ func TestBarrierReadyHook_CalledAfterInit_Shamir(t *testing.T) {
 		}
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, len(holders), len(holders), seal.StrategyShamir, nil); err != nil {
+	if _, err := initShamir(ctx, svc, tenantID, len(holders), len(holders), nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(shamir): %v", err)
 	}
 	if got := hook.count(); got != 1 {
@@ -174,6 +194,186 @@ func TestBarrierReadyHook_CalledAfterUnseal(t *testing.T) {
 	}
 	if got := hook.count(); got != 1 {
 		t.Fatalf("hook fired %d times after unseal, want 1 (calls: %v)", got, hook.calls)
+	}
+	if got := hook.lastMode(); got != AdminCompletionWithin {
+		t.Fatalf("an unseal asked the hook for mode %d; want AdminCompletionWithin", got)
+	}
+}
+
+// errHookFailed is what a failing barrier-ready hook returns.
+var errHookFailed = errors.New("barrier-ready hook failed")
+
+// TestBarrierReadyHook_InitFailsWithTheHookError proves a barrier
+// initialization fails with the hook's own error: its caller must not
+// proceed on an init whose follow-up work -- a pending admin's account --
+// is missing.
+func TestBarrierReadyHook_InitFailsWithTheHookError(t *testing.T) {
+	svc, _, hook := newHookService(t)
+	ctx := context.Background()
+	const tenantID = "hook-init-fails"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Init Fails", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	hook.failWith(errHookFailed)
+
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("hook-init-fails-pw"), 0, 0, seal.StrategyPassphrase, nil)
+	if !errors.Is(err, errHookFailed) || res != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy = %+v, %v; want nil and the hook's error", res, err)
+	}
+	if got := hook.count(); got != 1 {
+		t.Fatalf("hook fired %d times, want 1 (calls: %v)", got, hook.calls)
+	}
+}
+
+// TestBarrierReadyHook_ShamirInitFailsWithTheHookError proves the same for
+// the Shamir init.
+func TestBarrierReadyHook_ShamirInitFailsWithTheHookError(t *testing.T) {
+	svc, _, hook := newHookService(t, WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}))
+	const tenantID = "hook-shamir-init-fails"
+
+	if _, err := svc.CreateTenant(context.Background(), tenantID, "Hook Shamir Init Fails", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	ctx := tenantAdminCtx(tenantID)
+	holders := []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob"), newTenantHolder(t, "carol")}
+	for _, h := range holders {
+		if _, err := svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: h.name, Role: seal.RoleCustodian, CSRPEM: h.csr}); err != nil {
+			t.Fatalf("register %s: %v", h.name, err)
+		}
+	}
+	hook.failWith(errHookFailed)
+
+	res, err := initShamir(ctx, svc, tenantID, len(holders), len(holders), nil)
+	if !errors.Is(err, errHookFailed) || res != nil {
+		t.Fatalf("shamir init = %+v, %v; want nil and the hook's error", res, err)
+	}
+}
+
+// registerHookHolders creates tenantID and enrols three custodians for a
+// Shamir init, returning the tenant admin's context.
+func registerHookHolders(t *testing.T, svc *TenantService, tenantID string) (context.Context, int) {
+	t.Helper()
+	if _, err := svc.CreateTenant(context.Background(), tenantID, tenantID, ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	ctx := tenantAdminCtx(tenantID)
+	holders := []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob"), newTenantHolder(t, "carol")}
+	for _, h := range holders {
+		if _, err := svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: h.name, Role: seal.RoleCustodian, CSRPEM: h.csr}); err != nil {
+			t.Fatalf("register %s: %v", h.name, err)
+		}
+	}
+	return ctx, len(holders)
+}
+
+// completeShamir runs both requests of a Shamir init and returns the
+// second's result, the one the barrier-ready hook shapes.
+func completeShamir(ctx context.Context, svc *TenantService, tenantID string, n int) (*TenantBarrierInitResult, error) {
+	first, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, n, n, seal.StrategyShamir, nil)
+	if err != nil {
+		return nil, err
+	}
+	statement := shamirStatement(&seal.ShamirInitParams{Threshold: first.Threshold, Roster: first.Roster, UnsealKeyCheck: first.UnsealKeyCheck})
+	return svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, n, n, seal.StrategyShamir, nil, WithInitStatement(statement))
+}
+
+// TestBarrierReadyHook_ShamirInitPendingAdminIsASuccess proves a Shamir init
+// whose hook reports ErrTenantAdminPending -- the tenant's home group has no
+// leader yet -- answers the committed init with AdminPending set rather than
+// an error that would cost the caller the init's holder certificates, and
+// asks the hook for one attempt.
+func TestBarrierReadyHook_ShamirInitPendingAdminIsASuccess(t *testing.T) {
+	svc, _, hook := newHookService(t, WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}))
+	const tenantID = "hook-shamir-admin-pending"
+	ctx, n := registerHookHolders(t, svc, tenantID)
+	hook.failWith(ErrTenantAdminPending)
+
+	res, err := completeShamir(ctx, svc, tenantID, n)
+	if err != nil {
+		t.Fatalf("shamir init = %v; want the committed init", err)
+	}
+	if !res.AdminPending || res.Threshold != n {
+		t.Fatalf("shamir init = %+v; want AdminPending and the split", res)
+	}
+	if got := hook.lastMode(); got != AdminCompletionOnce {
+		t.Fatalf("the shamir init asked the hook for mode %d; want AdminCompletionOnce", got)
+	}
+	st, err := svc.TenantBarrierStatus(ctx, tenantID)
+	if err != nil || !st.Initialized || st.Sealed {
+		t.Fatalf("status after a pending-admin init = %+v, %v; want initialized and unsealed", st, err)
+	}
+}
+
+// TestBarrierReadyHook_ShamirInitCompletedAdminIsNotPending proves a Shamir
+// init whose hook completes the admin reports nothing pending.
+func TestBarrierReadyHook_ShamirInitCompletedAdminIsNotPending(t *testing.T) {
+	svc, _, hook := newHookService(t, WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: holderTrustDomain}))
+	const tenantID = "hook-shamir-admin-complete"
+	ctx, n := registerHookHolders(t, svc, tenantID)
+
+	res, err := completeShamir(ctx, svc, tenantID, n)
+	if err != nil || res.AdminPending {
+		t.Fatalf("shamir init = %+v, %v; want success with no admin pending", res, err)
+	}
+	if got := hook.lastMode(); got != AdminCompletionOnce {
+		t.Fatalf("the shamir init asked the hook for mode %d; want AdminCompletionOnce", got)
+	}
+}
+
+// TestBarrierReadyHook_OtherTriggersWaitWithinTheHooksBounds proves only the
+// Shamir init asks for one attempt: a passphrase init, an unseal and a status
+// read let the hook complete the admin within its own bounds.
+func TestBarrierReadyHook_OtherTriggersWaitWithinTheHooksBounds(t *testing.T) {
+	svc, _, hook := newHookService(t)
+	ctx := context.Background()
+	const tenantID = "hook-modes"
+	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Modes", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("hook-modes-pw"), 0, 0, seal.StrategyPassphrase, nil); err != nil {
+		t.Fatalf("passphrase init: %v", err)
+	}
+	if got := hook.lastMode(); got != AdminCompletionWithin {
+		t.Fatalf("a passphrase init asked the hook for mode %d; want AdminCompletionWithin", got)
+	}
+	if _, err := svc.TenantBarrierStatus(ctx, tenantID); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if got := hook.lastMode(); got != AdminCompletionWithin {
+		t.Fatalf("a status read asked the hook for mode %d; want AdminCompletionWithin", got)
+	}
+}
+
+// TestBarrierReadyHook_UnsealAndStatusSucceedWhateverTheHookReturns proves an
+// unseal and a status read are not failed by the hook: each has served its
+// purpose, and the next one runs the hook again.
+func TestBarrierReadyHook_UnsealAndStatusSucceedWhateverTheHookReturns(t *testing.T) {
+	svc, reg, hook := newHookService(t)
+	ctx := context.Background()
+	const tenantID = "hook-unseal-ignores"
+	const passphrase = "hook-unseal-ignores-pw"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Unseal Ignores", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+	if err := reg.SealTenant(tenantID); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	hook.reset()
+	hook.failWith(errHookFailed)
+
+	if err := svc.TenantBarrierUnseal(WithTenantID(ctx, tenantID), tenantID, []byte(passphrase)); err != nil {
+		t.Fatalf("TenantBarrierUnseal = %v; want nil whatever the hook returns", err)
+	}
+	if _, err := svc.TenantBarrierStatus(ctx, tenantID); err != nil {
+		t.Fatalf("TenantBarrierStatus = %v; want nil whatever the hook returns", err)
+	}
+	if got := hook.count(); got != 2 {
+		t.Fatalf("hook fired %d times, want 2: the unseal and the status read (calls: %v)", got, hook.calls)
 	}
 }
 
@@ -446,4 +646,76 @@ func TestBarrierReadyHook_NilHookIsNoop(t *testing.T) {
 	// Also exercise notifyBarrierReady directly with no hook installed at
 	// all, which is the precise no-op this test is named for.
 	svc.notifyBarrierReady(ctx, tenantID)
+}
+
+// TestBarrierReadyHook_HomeLeadershipGained_CalledWhenInitializedAndUnsealed
+// proves this node gaining a tenant's home-group leadership is a trigger: the
+// hook runs once, in AdminCompletionWithin mode.
+func TestBarrierReadyHook_HomeLeadershipGained_CalledWhenInitializedAndUnsealed(t *testing.T) {
+	svc, _, hook := newHookService(t)
+	ctx := context.Background()
+	const tenantID = "hook-leader-ready"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Leader Ready", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+	hook.reset()
+
+	svc.HomeLeadershipGained(ctx, tenantID)
+	if got := hook.count(); got != 1 {
+		t.Fatalf("hook fired %d times on gaining home leadership, want 1 (calls: %v)", got, hook.calls)
+	}
+	if got := hook.lastMode(); got != AdminCompletionWithin {
+		t.Fatalf("gaining home leadership asked the hook for mode %d; want AdminCompletionWithin", got)
+	}
+}
+
+// TestBarrierReadyHook_HomeLeadershipGained_NotCalledWhenNotReady proves a
+// leadership change on a tenant whose barrier is sealed, never initialized or
+// unknown runs no hook: there is no usable barrier to complete an admin over.
+func TestBarrierReadyHook_HomeLeadershipGained_NotCalledWhenNotReady(t *testing.T) {
+	svc, reg, hook := newHookService(t)
+	ctx := context.Background()
+	const sealed, uninitialized = "hook-leader-sealed", "hook-leader-uninit"
+
+	for _, id := range []string{sealed, uninitialized} {
+		if _, err := svc.CreateTenant(ctx, id, id, ""); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, sealed, []byte("hook-leader-pw"), 0, 0, seal.StrategyPassphrase, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+	if err := reg.SealTenant(sealed); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	hook.reset()
+
+	for _, id := range []string{sealed, uninitialized, "hook-leader-unknown", ""} {
+		svc.HomeLeadershipGained(ctx, id)
+	}
+	if got := hook.count(); got != 0 {
+		t.Fatalf("hook fired %d times for tenants with no usable barrier, want 0 (calls: %v)", got, hook.calls)
+	}
+}
+
+// TestBarrierReadyHook_HomeLeadershipGained_NilHookIsNoop proves a service
+// built without a hook ignores a leadership change.
+func TestBarrierReadyHook_HomeLeadershipGained_NilHookIsNoop(t *testing.T) {
+	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t), testLogger())
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	ctx := context.Background()
+	const tenantID = "hook-leader-nil"
+	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Leader Nil", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+	svc.HomeLeadershipGained(ctx, tenantID)
 }

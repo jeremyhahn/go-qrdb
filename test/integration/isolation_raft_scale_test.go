@@ -262,8 +262,9 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	// system-shard leader (leaderPort). Since a single-replica Raft group is
 	// trivially its own leader, hitting that node's admin port directly for
 	// reads/writes needs no leader-forwarding.
-	t.Log("waiting for dedicated shard to start (ShardCount >= 2) and locating its host node")
-	dbHostPort := waitForShardOwnerPort(t, sysClient, adminPorts, 2, 120*time.Second)
+	shardID := dbInfo.ShardID
+	t.Logf("waiting for dedicated shard %d to start and locating its host node", shardID)
+	dbHostPort := waitForShardOwnerPort(t, sysClient, adminPorts, shardID, 120*time.Second)
 	t.Logf("dedicated shard hosted on admin port %d", dbHostPort)
 
 	// ---------------------------------------------------------------------
@@ -351,10 +352,10 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	t.Logf("scale-up PASS: database %s now reports replicas=%d", dbInfo.Name, dbInfo.Replicas)
 
 	// Poll every admin port until 3 distinct nodes host the dedicated shard
-	// (ShardCount >= 2 on each), then identify the two NEW replicas (every
-	// port other than dbHostPort).
+	// (each reports shardID in its topology), then identify the two NEW
+	// replicas (every port other than dbHostPort).
 	t.Log("waiting for all 3 nodes to host the dedicated shard")
-	newNodeIdx := waitForAllShardOwners(t, sysClient, adminPorts, 2, 120*time.Second)
+	newNodeIdx := waitForAllShardOwners(t, sysClient, adminPorts, shardID, 120*time.Second)
 	var newPorts []int
 	for _, idx := range newNodeIdx {
 		if adminPorts[idx] != dbHostPort {
@@ -435,12 +436,12 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	}
 	t.Logf("scale-down PASS: database %s now reports replicas=%d", dbInfo.Name, dbInfo.Replicas)
 
-	// The two demoted nodes' ShardCount must drop back below the
-	// dedicated-shard threshold (system shard only), confirming
-	// RaftBackendFactory.Close was invoked by the reconciler's demotion path.
+	// The two demoted nodes must stop hosting the dedicated shard,
+	// confirming RaftBackendFactory.Close was invoked by the reconciler's
+	// demotion path.
 	t.Log("waiting for demoted nodes to stop hosting the dedicated shard")
 	for _, port := range newPorts {
-		waitForShardCountBelow(t, sysClient, port, 2, 60*time.Second)
+		waitForShardGone(t, sysClient, port, shardID, 60*time.Second)
 	}
 	t.Logf("scale-down PASS: demoted ports %v no longer host the dedicated shard", newPorts)
 
@@ -512,29 +513,17 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 }
 
 // waitForAllShardOwners polls GET /admin/topology on every port in ports
-// until exactly 3 of them report ShardCount >= wantCount, returning the
-// indices (into ports) of every port that reached wantCount. Used once a
-// scale-up has been requested, to confirm the dedicated shard has spread to
-// every node in the cluster.
-func waitForAllShardOwners(t *testing.T, client *http.Client, ports []int, wantCount int, timeout time.Duration) []int {
+// until every one of them hosts shardID, returning their indices (into
+// ports). Used once a scale-up has been requested, to confirm the dedicated
+// shard has spread to every node in the cluster.
+func waitForAllShardOwners(t *testing.T, client *http.Client, ports []int, shardID uint64, timeout time.Duration) []int {
 	t.Helper()
 
 	var lastOwners []int
 	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		var owners []int
 		for i, port := range ports {
-			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-			body, status := iraftAPIGetTolerant(t, client, rawURL)
-			if status != http.StatusOK {
-				continue
-			}
-			var topo struct {
-				ShardCount int `json:"shard_count"`
-			}
-			if err := json.Unmarshal(body, &topo); err != nil {
-				continue
-			}
-			if topo.ShardCount >= wantCount {
+			if hosts, _ := nodeHostsShard(t, client, port, shardID); hosts {
 				owners = append(owners, i)
 			}
 		}
@@ -543,66 +532,40 @@ func waitForAllShardOwners(t *testing.T, client *http.Client, ports []int, wantC
 	}) {
 		return lastOwners
 	}
-	t.Fatalf("timed out after %v waiting for all of %v to reach shard count >= %d (last owners: %v)",
-		timeout, ports, wantCount, lastOwners)
+	t.Fatalf("timed out after %v waiting for all of %v to host shard %d (last owners: %v)",
+		timeout, ports, shardID, lastOwners)
 	return nil
 }
 
-// waitForShardCountBelow polls GET /admin/topology on the given port until
-// ShardCount drops below threshold, or the deadline expires. The inverse of
-// waitForShardCount -- used to confirm a demoted node's dedicated shard was
-// torn down (RaftBackendFactory.Close invoked by the reconciler).
-func waitForShardCountBelow(t *testing.T, client *http.Client, port int, threshold int, timeout time.Duration) {
+// waitForShardGone polls GET /admin/topology on the given port until the
+// node no longer hosts shardID, or the deadline expires -- used to confirm a
+// demoted node's dedicated shard was torn down (RaftBackendFactory.Close
+// invoked by the reconciler).
+func waitForShardGone(t *testing.T, client *http.Client, port int, shardID uint64, timeout time.Duration) {
 	t.Helper()
 
-	rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-	var lastCount int
 	if pollUntil(timeout, 300*time.Millisecond, func() bool {
-		body, status := iraftAPIGetTolerant(t, client, rawURL)
-		if status != http.StatusOK {
-			return false
-		}
-		var topo struct {
-			ShardCount int `json:"shard_count"`
-		}
-		if err := json.Unmarshal(body, &topo); err != nil {
-			return false
-		}
-		lastCount = topo.ShardCount
-		return topo.ShardCount < threshold
+		hosts, ok := nodeHostsShard(t, client, port, shardID)
+		return ok && !hosts
 	}) {
 		return
 	}
-	t.Fatalf("timed out after %v waiting for shard count on port %d to drop below %d (last count: %d)",
-		timeout, port, threshold, lastCount)
+	t.Fatalf("timed out after %v waiting for port %d to stop hosting shard %d",
+		timeout, port, shardID)
 }
 
 // waitForShardOwnerPort polls GET /admin/topology on every port in ports
-// until exactly one of them reports ShardCount >= wantCount, returning that
-// port. Unlike waitForShardCount (which targets one already-known port), this
-// is used when the caller does not yet know which node a low-RF placement
-// (e.g. RF=1) landed its replica on. It fails the test if no port reaches
-// wantCount before the deadline.
-func waitForShardOwnerPort(t *testing.T, client *http.Client, ports []int, wantCount int, timeout time.Duration) int {
+// until one of them hosts shardID, returning that port. It is used when the
+// caller does not yet know which node a low-RF placement (e.g. RF=1) landed
+// its replica on. It fails the test if no port hosts the shard before the
+// deadline.
+func waitForShardOwnerPort(t *testing.T, client *http.Client, ports []int, shardID uint64, timeout time.Duration) int {
 	t.Helper()
 
-	lastCounts := make([]int, len(ports))
 	owner := 0
 	if pollUntil(timeout, 200*time.Millisecond, func() bool {
-		for i, port := range ports {
-			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-			body, status := iraftAPIGetTolerant(t, client, rawURL)
-			if status != http.StatusOK {
-				continue
-			}
-			var topo struct {
-				ShardCount int `json:"shard_count"`
-			}
-			if err := json.Unmarshal(body, &topo); err != nil {
-				continue
-			}
-			lastCounts[i] = topo.ShardCount
-			if topo.ShardCount >= wantCount {
+		for _, port := range ports {
+			if hosts, _ := nodeHostsShard(t, client, port, shardID); hosts {
 				owner = port
 				return true
 			}
@@ -611,8 +574,7 @@ func waitForShardOwnerPort(t *testing.T, client *http.Client, ports []int, wantC
 	}) {
 		return owner
 	}
-	t.Fatalf("timed out after %v waiting for any of %v to reach shard count >= %d (last counts: %v)",
-		timeout, ports, wantCount, lastCounts)
+	t.Fatalf("timed out after %v waiting for any of %v to host shard %d", timeout, ports, shardID)
 	return 0
 }
 
@@ -834,9 +796,16 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	if dbStatus != http.StatusCreated && dbStatus != http.StatusOK {
 		t.Fatalf("create database: status %d, body: %s", dbStatus, dbBody)
 	}
+	var created struct {
+		ShardID uint64 `json:"shardId"`
+	}
+	if err := json.Unmarshal(dbBody, &created); err != nil || created.ShardID == 0 {
+		t.Fatalf("create database: no shard id in %s (%v)", dbBody, err)
+	}
+	shardID := created.ShardID
 
 	t.Log("waiting for RF=1 dedicated shard to start and locating its host node")
-	dbHostPort := waitForShardOwnerPort(t, sysClient, adminPorts, 2, 120*time.Second)
+	dbHostPort := waitForShardOwnerPort(t, sysClient, adminPorts, shardID, 120*time.Second)
 
 	const numKeys = 5
 	values := make([]string, numKeys)
@@ -873,7 +842,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	// is the pre-restart "new replicas caught up" precondition the restart
 	// itself must not regress.
 	t.Log("waiting for all 3 nodes to host the dedicated shard (pre-restart)")
-	waitForAllShardOwners(t, sysClient, adminPorts, 2, 120*time.Second)
+	waitForAllShardOwners(t, sysClient, adminPorts, shardID, 120*time.Second)
 	for _, port := range adminPorts {
 		for i := range numKeys {
 			key := fmt.Sprintf("scale-restart-data/%04d", i)

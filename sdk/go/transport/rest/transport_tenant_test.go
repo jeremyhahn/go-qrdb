@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -575,6 +576,69 @@ func TestTenantBarrierStatus_FillsTenantIDFromPath(t *testing.T) {
 	}
 	if resp.TenantID != "acme" {
 		t.Fatalf("TenantID = %q, want %q (fallback to request value)", resp.TenantID, "acme")
+	}
+}
+
+func TestTenantBarrierStatus_DecodesKeyFingerprint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tenant_id":       "acme",
+			"initialized":     true,
+			"strategy":        "passphrase",
+			"key_fingerprint": "0a1b2c",
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	rt := newWiredTransport(srv)
+	resp, err := rt.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if resp.KeyFingerprint != "0a1b2c" {
+		t.Fatalf("KeyFingerprint = %q, want 0a1b2c", resp.KeyFingerprint)
+	}
+}
+
+// TestTenantBarrierStatus_DecodesServingNodes pins that the nodes a barrier
+// init fans out to come through with their endpoints, and that a standalone
+// node's status, which lists none, decodes to none.
+func TestTenantBarrierStatus_DecodesServingNodes(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	t.Cleanup(srv.Close)
+	rt := newWiredTransport(srv)
+
+	body = map[string]any{
+		"tenant_id": "acme",
+		"nodes": []map[string]any{
+			{"node": "n1:7000", "endpoints": map[string]string{"rest": "n1:8443", "grpc": "n1:9443"}},
+			{"node": "n2:7000"},
+		},
+	}
+	resp, err := rt.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	want := []transport.TenantBarrierNode{
+		{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443", "grpc": "n1:9443"}},
+		{Node: "n2:7000"},
+	}
+	if !reflect.DeepEqual(resp.Nodes, want) {
+		t.Fatalf("Nodes = %+v, want %+v", resp.Nodes, want)
+	}
+
+	body = map[string]any{"tenant_id": "acme"}
+	resp, err = rt.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if resp.Nodes != nil {
+		t.Fatalf("standalone Nodes = %+v, want none", resp.Nodes)
 	}
 }
 

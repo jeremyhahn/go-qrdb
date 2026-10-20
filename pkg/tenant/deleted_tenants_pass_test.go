@@ -41,9 +41,6 @@ func TestReconcileDeletedTenants_PoolDirectoryInsideAReservedRootIsReclaimed(t *
 	ctx := context.Background()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatal(err)
-	}
 	bases, err := reg.PoolBasePaths(ctx)
 	if err != nil || len(bases) != 1 {
 		t.Fatalf("PoolBasePaths = %v, %v", bases, err)
@@ -82,9 +79,6 @@ func TestReconcileDeletedTenants_ReservedRootItselfIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatal(err)
-	}
 	bases, _ := reg.PoolBasePaths(ctx)
 	reserved := filepath.Join(bases[0], "system-data") // a reserved root INSIDE a pool base
 	if err := mkdirAll(reserved); err != nil {
@@ -150,9 +144,6 @@ func TestReconcileDeletedTenants_EverySkipIsLoggedAtWarn(t *testing.T) {
 	ctx := context.Background()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatal(err)
-	}
 	bases, err := reg.PoolBasePaths(ctx)
 	if err != nil || len(bases) != 1 {
 		t.Fatalf("PoolBasePaths = %v, %v", bases, err)
@@ -344,9 +335,6 @@ func TestReconcileDeletedTenants_MountPointDataRootIsReclaimed(t *testing.T) {
 	remover := &mountedRootRemover{mounts: map[string]bool{}}
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t, seal.WithDirectoryRemover(remover))
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatal(err)
-	}
 	bases, err := reg.PoolBasePaths(ctx)
 	if err != nil || len(bases) != 1 {
 		t.Fatalf("PoolBasePaths = %v, %v", bases, err)

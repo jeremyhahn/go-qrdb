@@ -477,13 +477,14 @@ func (s *KeyspaceReclaimService) fenceTarget(ctx context.Context, tenantID, db s
 // tenant's data behind with nothing left to name it.
 //
 // It runs against the SYSTEM store, with no StoreResolver hop, which is the
-// one place this differs from ReclaimDatabaseKeyspace. A prefix or barrier
-// tenant keeps everything there. A volume or raft tenant keeps its IAM there
-// too -- encrypted under its own DEK, because identity must be resolvable on
-// every replica (see seal.NewTenantSharedKVStore) -- while its data-plane
-// keys are on a dedicated store that DeleteTenant has already destroyed
-// wholesale, key material and directory together. Routing there would be
-// asking a store that no longer exists to delete keys that are already gone.
+// one place this differs from ReclaimDatabaseKeyspace. A shared tenant keeps
+// everything there. An isolated tenant keeps only what the system store
+// publishes about it -- its placement, its public CA certificate, its
+// collection work journal -- while its records are in its home store and its
+// data-plane keys on a dedicated store, both of which DeleteTenant has already
+// destroyed wholesale, key material and directory together. Routing there
+// would be asking a store that no longer exists to delete keys that are
+// already gone.
 //
 // The SYSTEM tenant is refused. Its namespace is "system/", which holds the
 // bootstrap database and every system identity record, so a reclamation that

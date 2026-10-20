@@ -45,7 +45,7 @@ var (
 	ErrPlacementGate = errors.New("clusterkeys: no placement entry for this node")
 
 	// ErrMalformedBody indicates the POST body could not be decoded as a valid
-	// keydelivery.Envelope or system-managed keyPayload.
+	// keydelivery.Envelope.
 	ErrMalformedBody = errors.New("clusterkeys: malformed request body")
 
 	// ErrUnknownMode indicates the delivery envelope carries a mode value

@@ -60,7 +60,18 @@ type strategyCapturingTenantService struct {
 
 	// resultFn, when set, overrides the synthesized TenantBarrierInitResult.
 	resultFn func(call capturedBarrierInitCall) (*tenant.TenantBarrierInitResult, error)
+
+	// shamirCompleted records that a Shamir init's second request echoed
+	// the split the first one prepared.
+	shamirCompleted bool
 }
+
+// mockPreparedRoster and mockPreparedUnsealKeyCheck are the split the
+// strategy-capturing mock prepares on a Shamir init's first request.
+var (
+	mockPreparedRoster         = []byte("mock prepared roster")
+	mockPreparedUnsealKeyCheck = []byte("mock prepared unseal key check")
+)
 
 func newStrategyCapturingTenantService() *strategyCapturingTenantService {
 	return &strategyCapturingTenantService{mockTenantService: &mockTenantService{}}
@@ -77,7 +88,7 @@ func (m *strategyCapturingTenantService) TenantBarrierInitWithStrategy(
 	threshold, shares int,
 	strategy seal.StrategyID,
 	_ *tenant.TenantBarrierShamirRoster,
-	_ ...tenant.TenantBarrierInitOption,
+	opts ...tenant.TenantBarrierInitOption,
 ) (*tenant.TenantBarrierInitResult, error) {
 	// passphrase is a BORROW valid only for this call — the CLI zeroizes the
 	// request's slice once TenantBarrierInit returns — so the recorded copy
@@ -100,13 +111,30 @@ func (m *strategyCapturingTenantService) TenantBarrierInitWithStrategy(
 	// only the Shamir strategy returns share metadata; every other strategy
 	// (including the empty-string default, which the server resolves to
 	// passphrase) returns a bare result with no share fields.
+	//
+	// A Shamir init is two requests (tenantBarrierInitShamir): the first
+	// prepares the split and returns its roster and unseal key check value,
+	// the second echoes them and completes, and an echo of any other split is
+	// refused. Both answers carry the split.
 	if strategy == seal.StrategyShamir {
+		settings := tenant.ResolveTenantBarrierInitOptions(opts...)
+		if settings.PreparedRoster != nil || settings.PreparedUnsealKeyCheck != nil {
+			if !bytes.Equal(settings.PreparedUnsealKeyCheck, mockPreparedUnsealKeyCheck) {
+				return nil, &seal.PreparedShamirMismatchError{Field: "unseal key check"}
+			}
+			if !bytes.Equal(settings.PreparedRoster, mockPreparedRoster) {
+				return nil, &seal.PreparedShamirMismatchError{Field: "roster"}
+			}
+			m.shamirCompleted = true
+		}
 		return &tenant.TenantBarrierInitResult{
-			TenantID:    tenantID,
-			Strategy:    string(strategy),
-			Threshold:   threshold,
-			TotalShares: shares,
-			ShareCount:  shares,
+			TenantID:       tenantID,
+			Strategy:       string(strategy),
+			Threshold:      threshold,
+			TotalShares:    shares,
+			ShareCount:     shares,
+			UnsealKeyCheck: mockPreparedUnsealKeyCheck,
+			Roster:         mockPreparedRoster,
 		}, nil
 	}
 	return &tenant.TenantBarrierInitResult{TenantID: tenantID, Strategy: string(strategy)}, nil
@@ -246,6 +274,9 @@ func TestTenantBarrierInitCmd_ShamirStrategyKeepsThresholdShares(t *testing.T) {
 	if svc.captured.threshold != 2 || svc.captured.shares != 3 {
 		t.Fatalf("expected threshold=2 shares=3, got threshold=%d shares=%d",
 			svc.captured.threshold, svc.captured.shares)
+	}
+	if !svc.shamirCompleted {
+		t.Fatal("expected a second request echoing the prepared split")
 	}
 	// No share bytes are ever printed (INV-1); only the enrollment metadata.
 	if strings.Contains(out, "share_bytes") || strings.Contains(out, "ShareBytes") {

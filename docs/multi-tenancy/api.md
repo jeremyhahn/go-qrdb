@@ -182,7 +182,7 @@ The first admin:
 | Field | Meaning |
 |---|---|
 | `admin_username` | required; the admin's account name |
-| `admin_csr_pem` | the admin's certificate signing request, signed by the new tenant's own CA |
+| `admin_csr_pem` | the admin's certificate signing request: a `prefix` tenant's own CA signs it; for a `barrier`, `volume` or `raft` tenant the cluster CA signs it. A node with no cluster CA (bring-your-own TLS) signs a system-managed tenant's with the tenant's CA and refuses a self-managed one's; send `admin_cert_pem` instead |
 | `admin_cert_pem` | the admin's own certificate, leaf first; must chain to `trust_anchors_pem` |
 | `admin_chain_pem` | optional intermediates for `admin_cert_pem` |
 | `trust_anchors_pem` | CA certificates registered as the tenant's trust anchors in the same call; required with `admin_cert_pem` |
@@ -407,6 +407,7 @@ leaks to a caller with no access to the tier.
 | Create without `admin_username`, or with neither or both of `admin_csr_pem` / `admin_cert_pem` | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |
 | Create with an admin CSR or certificate that is refused, or invalid trust anchors | 400 | `INVALID_ARGUMENT` — classified as the cause (`cert.InvalidCSRError`, `trustanchor.CertificateNotTrustedError`, `certenroll.IdentityMismatchError`, `*bootstrap.InvalidTrustAnchorsError`); nothing written |
 | Create with `admin_cert_pem` and no `trust_anchors_pem` | 409 | `FAILED_PRECONDITION` — `trustanchor.NoAnchorsError`; nothing written |
+| Create a self-managed `barrier`, `volume` or `raft` tenant with `admin_csr_pem` on a node with no cluster CA | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError`; nothing written, so the id stays free |
 | Create failed after a write and was undone | as the cause | `*bootstrap.ProvisioningUndoneError`; the id is retired; `UndoFailures` lists any undo step that failed |
 | Tenant onboarding not configured on this node | 501 | `UNIMPLEMENTED` |
 | Barrier init by any certificate other than the onboarded admin's | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitCertificateMismatchError` |
@@ -568,10 +569,10 @@ and the response carries the issued certificate.
 | A strict tenant not served by this node (Unix, embedded, or no tenant SNI) | 421 + `X-QRDB-Serving-Nodes` | `UNAVAILABLE`, reason `TENANT_NOT_SERVED_HERE` — `*TenantNotServedHereError` |
 | The certificate's tenant differs from the SNI tenant | TLS alert / 421 | `UNAUTHENTICATED` — `*TenantSNIMismatchError` |
 | Home group without quorum, or sealed on a quorum | 503 | `UNAVAILABLE` — `*TenantHomeUnavailableError` |
+| This node's home-group replica is still catching up after it joined (retry on another node) | 503 | `UNAVAILABLE` — `*TenantHomeUnavailableError` wrapping `*lifecycle.TenantHomeCatchingUpError` |
 | A system identity in another tenant on a non-cross permission | 403 | `PERMISSION_DENIED` |
 | `tenant_identity:*` against a strict tenant | 403 | `PERMISSION_DENIED` — `*IsolationPolicyError` |
 | Loosening the floor or a tenant's policy | 409 | `FAILED_PRECONDITION` — `*IsolationPolicyChangeError` |
-| A `prefix` tenant under a strict floor, or asking for strict | 409 | `FAILED_PRECONDITION` — `*StrictRequiresDedicatedStorageError` |
 | Create without `admin_username`, or with neither/both of `admin_csr_pem`/`admin_cert_pem` (already shipped; see "Status and error mapping" above) | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |
 | Init proof of possession absent, stale or by the wrong key | 401 | `UNAUTHENTICATED` — `*FirstAdminProofError` |
 | The credential does not match this node's verifier | 403 | `PERMISSION_DENIED` — `*seal.CredentialVerifierError` |

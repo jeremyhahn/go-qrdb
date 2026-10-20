@@ -20,7 +20,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"net"
+	"slices"
 	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
 // TestServerTLSConfig_ProvisionsTLS13LeafChainedToCA verifies the happy path:
@@ -149,6 +153,42 @@ func TestServerTLSConfig_IssuedKeyMismatch(t *testing.T) {
 				t.Fatalf("expected *CertEncodeError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+// TestBaseServerSANs_SameSetAsJoinedNodeLeaf pins node parity: a founder's
+// server certificate and a joined node's leaf carry the same loopback names.
+func TestBaseServerSANs_SameSetAsJoinedNodeLeaf(t *testing.T) {
+	tmpl, err := clustertls.IdentityLeafTemplate(time.Hour)
+	if err != nil {
+		t.Fatalf("IdentityLeafTemplate: %v", err)
+	}
+	joiner := slices.Clone(tmpl.DNSNames)
+	for _, ip := range tmpl.IPAddresses {
+		joiner = append(joiner, ip.String())
+	}
+	founder := slices.Clone(baseServerSANs)
+	slices.Sort(joiner)
+	slices.Sort(founder)
+	if !slices.Equal(founder, joiner) {
+		t.Fatalf("founder SANs = %v, joiner SANs = %v, want the same set", founder, joiner)
+	}
+}
+
+// TestServerSANs_CarriesLoopbackNames covers the founder side: every
+// loopback name is in the certificate's SANs, once, ahead of the extras.
+func TestServerSANs_CarriesLoopbackNames(t *testing.T) {
+	got := serverSANs([]string{"localhost", "db.example.com"})
+	for i, want := range clustertls.LoopbackSANs() {
+		if got[i] != want {
+			t.Fatalf("serverSANs = %v, want %v first", got, clustertls.LoopbackSANs())
+		}
+	}
+	if n := len(slices.DeleteFunc(slices.Clone(got), func(s string) bool { return s != "localhost" })); n != 1 {
+		t.Fatalf("serverSANs = %v, want localhost once", got)
+	}
+	if !slices.Contains(got, "db.example.com") {
+		t.Fatalf("serverSANs = %v, want the extra SAN", got)
 	}
 }
 

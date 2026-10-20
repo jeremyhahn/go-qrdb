@@ -46,6 +46,67 @@ func TestTenantBarrierStatusCmd_Table(t *testing.T) {
 	}
 }
 
+// The table shows this node's key fingerprint when the node reports one, and
+// omits it when it does not.
+func TestTenantBarrierStatusCmd_Fingerprint(t *testing.T) {
+	status := &tenant.TenantBarrierStatus{Initialized: true, Strategy: "passphrase", KeyFingerprint: "0a1b2c"}
+	svc := &mockTenantService{
+		barrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			st := *status
+			st.TenantID = tenantID
+			return &st, nil
+		},
+	}
+	out, err := executeTenantCmd(t, svc, "barrier-status", "--id", "acme")
+	if err != nil {
+		t.Fatalf("tenant barrier-status: %v", err)
+	}
+	if !strings.Contains(out, "Fingerprint: 0a1b2c") {
+		t.Fatalf("output %q missing the fingerprint", out)
+	}
+
+	status = &tenant.TenantBarrierStatus{Initialized: true, Strategy: "none"}
+	out, err = executeTenantCmd(t, svc, "barrier-status", "--id", "acme")
+	if err != nil {
+		t.Fatalf("tenant barrier-status: %v", err)
+	}
+	if strings.Contains(out, "Fingerprint") {
+		t.Fatalf("output %q shows a fingerprint for a barrier reporting none", out)
+	}
+}
+
+// The table lists each node serving the barrier, the nodes a barrier init
+// fans out to, and lists none when the node reports none.
+func TestTenantBarrierStatusCmd_ServingNodes(t *testing.T) {
+	status := &tenant.TenantBarrierStatus{Initialized: false, Nodes: []tenant.BarrierNode{
+		{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}},
+		{Node: "n2:7000"},
+	}}
+	svc := &mockTenantService{
+		barrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			st := *status
+			st.TenantID = tenantID
+			return &st, nil
+		},
+	}
+	out, err := executeTenantCmd(t, svc, "barrier-status", "--id", "acme")
+	if err != nil {
+		t.Fatalf("tenant barrier-status: %v", err)
+	}
+	if !strings.Contains(out, "Node:        n1:7000\n") || !strings.Contains(out, "Node:        n2:7000\n") {
+		t.Fatalf("output %q missing a serving node", out)
+	}
+
+	status = &tenant.TenantBarrierStatus{Initialized: true, Strategy: "none"}
+	out, err = executeTenantCmd(t, svc, "barrier-status", "--id", "acme")
+	if err != nil {
+		t.Fatalf("tenant barrier-status: %v", err)
+	}
+	if strings.Contains(out, "Node:") {
+		t.Fatalf("output %q lists a node the status did not report", out)
+	}
+}
+
 // TestTenantBarrierStatusCmd_JSON verifies --output json emits the raw
 // response fields.
 func TestTenantBarrierStatusCmd_JSON(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
@@ -397,7 +398,7 @@ func (b *StorageBarrier) SubmitHolderShareWith(ctx context.Context, sub *HolderS
 	if err := b.holderVerifier.AdmitSubmission(ctx, sub.Domain); err != nil {
 		return nil, err
 	}
-	_, roster, digest, err := b.loadWrapped(ctx, sub.Domain)
+	roster, digest, err := b.quorumRoster(ctx, sub.Domain, sub.Op)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +438,7 @@ func (b *StorageBarrier) refuseStaleRosterLocked(ctx context.Context, key quorum
 	if !ok || bytes.Equal(r.rosterDigest, digest) {
 		return nil
 	}
-	_, _, current, err := b.loadWrapped(ctx, key.domain)
+	_, current, err := b.quorumRoster(ctx, key.domain, key.op)
 	if err != nil {
 		return err
 	}
@@ -578,11 +579,17 @@ func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, ou
 	// consumers implement — receives the enclave's own locked pages and never
 	// a heap copy (go-qrdb#145). The root key is decrypted into a protected
 	// buffer allocated inside that borrow; it is a different object, so the
-	// nesting is safe (pkg/secure's doc, "Nesting").
+	// nesting is safe (pkg/secure's doc, "Nesting"). An armed barrier's first
+	// quorum keys it from the same borrow instead (keyFromArming), which
+	// reaches no other borrow of secretEnclave.
+	arming := b.armingFor(round)
 	var rootKey *secure.Buffer
 	opened := false
 	err = secretEnclave.WithBytes(func(key []byte) error {
 		opened = true
+		if arming != nil {
+			return b.keyFromArming(ctx, arming, key)
+		}
 		var resolveErr error
 		rootKey, resolveErr = b.resolveDomainKey(ctx, round.domain, key)
 		return resolveErr
@@ -591,22 +598,35 @@ func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, ou
 		if !opened {
 			return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed key", Cause: err}
 		}
-		emitAudit(b.config.AuditLogger, "quorum-complete", "barrier", b.config.RootKeyPath, "deny",
-			map[string]string{"domain": string(round.domain), "op": string(round.op)})
+		b.denyRound(round)
 		return nil, err
+	}
+	if arming != nil {
+		return b.roundComplete(round, outcome), nil
 	}
 	defer rootKey.Destroy()
 
 	if err := quorumFinishers[round.op](ctx, b, round, rootKey, outcome); err != nil {
 		return nil, err
 	}
+	return b.roundComplete(round, outcome), nil
+}
+
+// denyRound records a completed round whose key did not resolve.
+func (b *StorageBarrier) denyRound(round *quorumRound) {
+	emitAudit(b.config.AuditLogger, "quorum-complete", "barrier", b.config.RootKeyPath, "deny",
+		map[string]string{"domain": string(round.domain), "op": string(round.op)})
+}
+
+// roundComplete records a completed round whose operation ran.
+func (b *StorageBarrier) roundComplete(round *quorumRound, outcome *QuorumOutcome) *QuorumOutcome {
 	emitAudit(b.config.AuditLogger, "quorum-complete", "barrier", b.config.RootKeyPath, "allow",
 		map[string]string{"domain": string(round.domain), "op": string(round.op),
 			"submitted": itoa(outcome.Submitted), "required": itoa(outcome.Required)})
 	b.logger.Info("share-holder quorum complete",
 		slog.String("domain", string(round.domain)), slog.String("op", string(round.op)),
 		slog.Int("holders", outcome.Submitted))
-	return outcome, nil
+	return outcome
 }
 
 // quorumFinisher runs a completed round's operation with the authenticated
@@ -658,6 +678,12 @@ type quorumState struct {
 	// redistributions holds one redistribution slot per domain
 	// (QuorumDomain -> chan struct{}); see lockRedistribution.
 	redistributions sync.Map
+	// arming is the roster and unseal-key check a keyless node takes its
+	// first unseal quorum against (ArmShamir); nil once the node is keyed.
+	arming atomic.Pointer[shamirArming]
+	// pending is the first node's unseal key between PrepareShamir and
+	// CompleteShamir, in memory only.
+	pending atomic.Pointer[shamirPending]
 }
 
 // armLocked registers r under key and schedules its expiry sweep: when the TTL

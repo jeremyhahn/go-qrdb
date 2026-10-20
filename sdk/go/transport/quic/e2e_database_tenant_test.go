@@ -23,6 +23,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -426,11 +427,20 @@ func TestE2E_TenantBarrierSeal_HappyPath(t *testing.T) {
 	}
 }
 
+// servingNodes is a status's serving-node list on the wire, and
+// wantServingNodes the list the transport returns.
+var (
+	servingNodes     = []transport.TenantBarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+	wantServingNodes = servingNodes
+)
+
 func TestE2E_TenantBarrierStatus_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("tenant.BarrierStatus", func(_ []byte) (uint16, []byte) {
 		resp := quicTenantBarrierStatusResponse{
 			TenantID: "t1", Sealed: false, Initialized: true, Strategy: "shamir", HardwareBacked: false,
+			KeyFingerprint: "0a1b2c",
+			Nodes:          servingNodes,
 		}
 		b, _ := json.Marshal(resp)
 		return wire.StatusOK, b
@@ -439,7 +449,7 @@ func TestE2E_TenantBarrierStatus_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierStatus: %v", err)
 	}
-	if !resp.Initialized || resp.Strategy != "shamir" {
+	if !resp.Initialized || resp.Strategy != "shamir" || resp.KeyFingerprint != "0a1b2c" || !reflect.DeepEqual(resp.Nodes, wantServingNodes) {
 		t.Fatalf("resp = %+v", resp)
 	}
 }

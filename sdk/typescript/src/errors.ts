@@ -420,6 +420,41 @@ export class DesktopOnlyError extends QRDBError {
     }
 }
 
+/**
+ * Raised when the first request of a Shamir tenant barrier init answers
+ * without the roster and unseal key check value the second must echo: the
+ * node prepared no split, and the barrier is not initialized.
+ */
+export class ShamirSplitMissingError extends QRDBError {
+    /** The tenant whose barrier init was refused. */
+    readonly tenantId: string;
+
+    constructor(tenantId: string) {
+        super(`transport: shamir barrier init of tenant "${tenantId}" returned no unseal key check value or roster to sign`);
+        this.name = 'ShamirSplitMissingError';
+        this.tenantId = tenantId;
+    }
+}
+
+/**
+ * Raised when the second request of a Shamir tenant barrier init is answered
+ * with a split other than the one it echoed: the node did not complete the
+ * split the first request prepared, so the init is not reported done.
+ */
+export class ShamirSplitMismatchError extends QRDBError {
+    /** The tenant whose barrier init was refused. */
+    readonly tenantId: string;
+    /** The field that differs: "roster" or "unseal key check". */
+    readonly field: string;
+
+    constructor(tenantId: string, field: string) {
+        super(`transport: shamir barrier init of tenant "${tenantId}" completed a different ${field} than it prepared`);
+        this.name = 'ShamirSplitMismatchError';
+        this.tenantId = tenantId;
+        this.field = field;
+    }
+}
+
 /** Raised when a transport method is not yet implemented. */
 export class NotImplementedError extends QRDBError {
     /** The method that is not implemented. */

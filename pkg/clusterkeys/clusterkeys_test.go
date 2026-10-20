@@ -570,7 +570,7 @@ func TestHandler_PlacementNotFound(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -598,7 +598,7 @@ func TestHandler_PlacementGate_WrongReplica(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2, // mismatch: placement has 99
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -626,7 +626,7 @@ func TestHandler_PlacementGate_WrongShard(t *testing.T) {
 			ShardID:      1, // mismatch: placement has 7
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -663,7 +663,7 @@ func TestHandler_PlacementGate_NodeNotInPlacement(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -693,7 +693,7 @@ func TestHandler_WrongTargetNode(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "other-node", // deliberate mismatch
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	env, err := keydelivery.Seal(&follower.key.PublicKey, meta, []byte("plaintext-key-material"))
 	if err != nil {
@@ -726,7 +726,7 @@ func TestHandler_TamperedPayload(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	env, err := keydelivery.Seal(&follower.key.PublicKey, meta, []byte("plaintext-key-material"))
 	if err != nil {
@@ -771,82 +771,6 @@ func TestHandler_OversizedBody(t *testing.T) {
 // Integration round-trip tests
 // ---------------------------------------------------------------------------
 
-// TestHandler_SystemManaged_RoundTrip exercises the full system-managed key
-// delivery path end-to-end:
-//   - Leader initializes a tenant barrier and exports its root key context.
-//   - Sender seals the context to the follower's P-256 public key.
-//   - Receiver decrypts, imports, and auto-unseals the tenant barrier.
-//   - Follower's master key matches the leader's exported root key (DEK parity).
-func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
-	ctx := context.Background()
-
-	// ---- Leader registry ----
-	leaderReg, leaderAlloc := newTestRegistry(t)
-	initTestSystemBarrier(t, leaderReg)
-	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-sysmanaged")
-
-	leaderKey, err := leaderBarrier.GetMasterKey(context.Background())
-	if err != nil {
-		t.Fatalf("GetMasterKey (leader): %v", err)
-	}
-
-	// ---- Follower setup ----
-	ca := newTestCA(t)
-	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	followerDataRoot := t.TempDir()
-	p := newTestPlacement("tenant-sysmanaged", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg, followerAlloc := newTestRegistry(t)
-	initTestSystemBarrier(t, followerReg)
-	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-sysmanaged")
-
-	placements := &staticPlacementGetter{p: p}
-	recv, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, placements)
-	_ = recv
-
-	// ---- Sender ----
-	// The sender authenticates the follower's delivery cert against the cluster
-	// CA before sealing: HIGH-1 fix in production, verified by having CA-signed
-	// follower cert with ExtKeyUsageServerAuth and matching node SAN.
-	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
-	if err != nil {
-		t.Fatalf("NewSender: %v", err)
-	}
-	// Construct a Placement for DistributeTenantKey. It must have the follower
-	// as a replica and the leader as selfNodeID so the leader skips itself.
-	distPlacement := &placement.Placement{
-		TenantID:        "tenant-sysmanaged",
-		Database:        "db-main",
-		ShardID:         1,
-		RF:              2,
-		LeaderReplicaID: 1,
-		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "leader-node-1", RaftAddr: "leader-node-1:9000", DataRoot: leaderDataRoot},
-			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: followerDataRoot},
-		},
-	}
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", true); err != nil {
-		t.Fatalf("DistributeTenantKey: %v", err)
-	}
-
-	// ---- Verify follower barrier is unsealed with the same root key ----
-	followerTB, err := followerReg.GetTenant("tenant-sysmanaged")
-	if err != nil {
-		t.Fatalf("GetTenant (follower): %v", err)
-	}
-	if followerTB.IsSealed() {
-		t.Error("follower tenant barrier must be unsealed after system-managed import")
-	}
-	followerKey, err := followerTB.Barrier().GetMasterKey(context.Background())
-	if err != nil {
-		t.Fatalf("GetMasterKey (follower): %v", err)
-	}
-	if !bytes.Equal(leaderKey, followerKey) {
-		t.Error("follower master key does not match leader's root key (DEK parity violation)")
-	}
-}
-
 // TestHandler_SelfManaged_RoundTrip exercises the self-managed path:
 //   - Leader initializes a tenant barrier and exports the sealed blob.
 //   - Sender delivers the blob (HPKE-wrapped) to the follower.
@@ -872,7 +796,7 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 	placements := &staticPlacementGetter{p: p}
 	_, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, placements)
 
-	// ---- Sender: self-managed (autoUnseal=false) ----
+	// ---- Sender ----
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
 	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
@@ -889,8 +813,7 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: followerDataRoot},
 		},
 	}
-	// autoUnseal=false → self-managed path (delivers sealed blob).
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", false); err != nil {
+	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1"); err != nil {
 		t.Fatalf("DistributeTenantKey (self-managed): %v", err)
 	}
 
@@ -943,11 +866,11 @@ func TestHandler_IdempotentDelivery(t *testing.T) {
 	}
 
 	// First delivery: should succeed.
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", true); err != nil {
+	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1"); err != nil {
 		t.Fatalf("first DistributeTenantKey: %v", err)
 	}
 	// Second delivery: idempotent; must also succeed.
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", true); err != nil {
+	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1"); err != nil {
 		t.Fatalf("second DistributeTenantKey (idempotent): %v", err)
 	}
 }
@@ -1007,17 +930,17 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	}
 
 	// Delivery must succeed despite no mTLS.
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", true); err != nil {
+	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1"); err != nil {
 		t.Fatalf("DistributeTenantKey (no-TLS): %v", err)
 	}
 
-	// Follower must be unsealed.
+	// Follower must hold the imported blob, sealed until its owner unseals it.
 	followerTB, err := followerReg.GetTenant("tenant-nodl")
 	if err != nil {
 		t.Fatalf("GetTenant (follower): %v", err)
 	}
-	if followerTB.IsSealed() {
-		t.Error("follower tenant barrier must be unsealed after delivery")
+	if !followerTB.IsSealed() {
+		t.Error("follower tenant barrier must remain sealed after delivery")
 	}
 }
 
@@ -1053,7 +976,7 @@ func TestHandler_EvilClusterNode_RejectedAtPlacement(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
@@ -1093,7 +1016,7 @@ func TestHandler_InvalidPeerCert(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
@@ -1149,7 +1072,7 @@ func TestSender_FetchNodeKey_NonP256(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("some-key-material"))
 	if !errors.Is(err, clusterkeys.ErrNonP256NodeKey) {
@@ -1177,7 +1100,7 @@ func TestSender_Deliver_ResolveURLFails(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrResolveURL) {
@@ -1240,7 +1163,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: followerDataRoot},
 		},
 	}
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1", true); err != nil {
+	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1"); err != nil {
 		t.Fatalf("DistributeTenantKey: %v", err)
 	}
 
@@ -1249,21 +1172,19 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 		t.Errorf("expected 1 POST (leader skipped self), got %d", n)
 	}
 
-	// Follower must be unsealed.
+	// Follower holds the imported blob, sealed until its owner unseals it.
 	followerTB, err := followerReg.GetTenant("tenant-skip")
 	if err != nil {
 		t.Fatalf("GetTenant (follower): %v", err)
 	}
-	if followerTB.IsSealed() {
-		t.Error("follower tenant barrier must be unsealed after DistributeTenantKey")
+	if !followerTB.IsSealed() {
+		t.Error("follower tenant barrier must remain sealed after DistributeTenantKey")
 	}
 }
 
-// TestDistributeTenantKey_DeliversToFollowersConcurrently pins the shape an
-// isolated tenant's home group depends on: a follower whose import cannot
-// finish until the other followers also hold the key. Every follower here
-// answers only once all of them have been reached, so serial delivery would
-// stall on the first one until its deadline.
+// TestDistributeTenantKey_DeliversToFollowersConcurrently pins concurrent
+// delivery: every follower here answers only once all of them have been
+// reached, so serial delivery would stall on the first one until its deadline.
 func TestDistributeTenantKey_DeliversToFollowersConcurrently(t *testing.T) {
 	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
@@ -1301,7 +1222,7 @@ func TestDistributeTenantKey_DeliversToFollowersConcurrently(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := sender.DistributeTenantKey(ctx, p, leaderBarrier, "leader", true); err != nil {
+	if err := sender.DistributeTenantKey(ctx, p, leaderBarrier, "leader"); err != nil {
 		t.Fatalf("DistributeTenantKey: %v", err)
 	}
 	if n := arrived.Load(); n != int64(len(followers)) {
@@ -1344,7 +1265,7 @@ func TestDistributeTenantKey_JoinsEveryFollowerError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err = sender.DistributeTenantKey(ctx, p, leaderBarrier, "leader", true)
+	err = sender.DistributeTenantKey(ctx, p, leaderBarrier, "leader")
 	if !errors.Is(err, clusterkeys.ErrDelivery) {
 		t.Errorf("want ErrDelivery from the refusing follower, got %v", err)
 	}
@@ -1356,6 +1277,159 @@ func TestDistributeTenantKey_JoinsEveryFollowerError(t *testing.T) {
 	}
 	if n := posts.Load(); n != 2 {
 		t.Errorf("POSTs = %d, want 2 (both reachable followers attempted)", n)
+	}
+}
+
+// TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing proves a none or
+// passphrase barrier's key is never shipped: every node serving it holds its
+// own, so a follower is not even contacted.
+func TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		strategy seal.SealingStrategy
+		creds    func(t *testing.T) seal.Credentials
+	}{
+		"none": {seal.NewNoneStrategy(), func(*testing.T) seal.Credentials { return seal.Credentials{} }},
+		"passphrase": {seal.NewDeferredSoftwareStrategy(), func(t *testing.T) seal.Credentials {
+			creds, err := seal.NewCredentials(context.Background(), []byte("correct horse battery staple"))
+			if err != nil {
+				t.Fatalf("NewCredentials: %v", err)
+			}
+			return creds
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, err := seal.NewStorageBarrier(newTestLogger(), seal.NewMemoryBackend(),
+				seal.BarrierConfig{RootKeyPath: "tenant/root-key"}, tc.strategy)
+			if err != nil {
+				t.Fatalf("NewStorageBarrier: %v", err)
+			}
+			if err := b.Initialize(context.Background(), tc.creds(t)); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			if got := b.ActiveStrategy(); got != seal.StrategyID(name) {
+				t.Fatalf("ActiveStrategy = %q, want %q", got, name)
+			}
+
+			ca := newTestCA(t)
+			var posts atomic.Int64
+			follower := newFollowerServer(t, newTestNodeCert(t, ca, "cluster.local", "follower"), func(w http.ResponseWriter, _ *http.Request) {
+				posts.Add(1)
+				w.WriteHeader(http.StatusOK)
+			})
+			p := &placement.Placement{
+				TenantID: "tenant-own", Database: "db-main", ShardID: 3, RF: 2, LeaderReplicaID: 1,
+				Replicas: []placement.Replica{
+					{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
+					{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"},
+				},
+			}
+			sender, err := clusterkeys.NewSender(mapURLResolver{"follower:9000": follower.URL}, &http.Client{}, ca.pool, "cluster.local", nil, newTestLogger())
+			if err != nil {
+				t.Fatalf("NewSender: %v", err)
+			}
+			if err := sender.DistributeTenantKey(context.Background(), p, b, "leader"); err != nil {
+				t.Fatalf("DistributeTenantKey: %v", err)
+			}
+			if n := posts.Load(); n != 0 {
+				t.Fatalf("POSTs = %d, want 0: a %s barrier's key is never shipped", n, name)
+			}
+		})
+	}
+}
+
+// TestDistributeTenantKey_Shamir_ShipsNothing pins that a Shamir tenant key is
+// never shipped, whether the leader is unsealed or restarted and still sealed
+// (no active strategy): every replica keys itself at its holders' first quorum,
+// and an imported blob, which lacks the node's wrapped-key and roster records,
+// would leave it neither able to key itself nor to unwrap the import.
+func TestDistributeTenantKey_Shamir_ShipsNothing(t *testing.T) {
+	ctx := context.Background()
+	newShamirBarrier := func(t *testing.T, base seal.StorageBackend) *seal.StorageBarrier {
+		t.Helper()
+		strategy, err := seal.NewShamirStrategy(2, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := seal.NewStorageBarrier(newTestLogger(), base, seal.BarrierConfig{
+			RootKeyPath: "tenant/root-key",
+			Shamir:      &seal.ShamirConfig{Threshold: 2, TotalShares: 3},
+		}, strategy)
+		if err != nil {
+			t.Fatalf("NewStorageBarrier: %v", err)
+		}
+		return b
+	}
+	base := seal.NewMemoryBackend()
+	leader := newShamirBarrier(t, base)
+	sealtest.NewCustody("alice", "bob", "carol").Install(leader)
+	if _, err := leader.InitializeShamir(ctx, ""); err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	restarted := newShamirBarrier(t, base)
+	if got := restarted.ActiveStrategy(); got != "" {
+		t.Fatalf("restarted ActiveStrategy = %q, want none before an unseal", got)
+	}
+
+	for name, b := range map[string]*seal.StorageBarrier{"unsealed": leader, "restarted sealed": restarted} {
+		t.Run(name, func(t *testing.T) {
+			ca := newTestCA(t)
+			var posts atomic.Int64
+			follower := newFollowerServer(t, newTestNodeCert(t, ca, "cluster.local", "follower"), func(w http.ResponseWriter, _ *http.Request) {
+				posts.Add(1)
+				w.WriteHeader(http.StatusOK)
+			})
+			p := &placement.Placement{
+				TenantID: "tenant-shamir", Database: "db-main", ShardID: 3, RF: 2, LeaderReplicaID: 1,
+				Replicas: []placement.Replica{
+					{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
+					{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"},
+				},
+			}
+			sender, err := clusterkeys.NewSender(mapURLResolver{"follower:9000": follower.URL}, &http.Client{}, ca.pool, "cluster.local", nil, newTestLogger())
+			if err != nil {
+				t.Fatalf("NewSender: %v", err)
+			}
+			if err := sender.DistributeTenantKey(ctx, p, b, "leader"); err != nil {
+				t.Fatalf("DistributeTenantKey: %v", err)
+			}
+			if n := posts.Load(); n != 0 {
+				t.Fatalf("POSTs = %d, want 0: a Shamir barrier's key is never shipped", n)
+			}
+		})
+	}
+}
+
+// TestDistributeTenantKey_Uninitialized_ShipsNothing proves a barrier with no
+// key yet -- a tenant's at create, before its admin initializes it -- ships
+// nothing and reports no failure, rather than a delivery error per follower.
+func TestDistributeTenantKey_Uninitialized_ShipsNothing(t *testing.T) {
+	b, err := seal.NewStorageBarrier(newTestLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "tenant/root-key"}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	ca := newTestCA(t)
+	var posts atomic.Int64
+	follower := newFollowerServer(t, newTestNodeCert(t, ca, "cluster.local", "follower"), func(w http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	p := &placement.Placement{
+		TenantID: "tenant-new", Database: "__home", ShardID: 4, RF: 2, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
+			{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"},
+		},
+	}
+	sender, err := clusterkeys.NewSender(mapURLResolver{"follower:9000": follower.URL}, &http.Client{}, ca.pool, "cluster.local", nil, newTestLogger())
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+	if err := sender.DistributeTenantKey(context.Background(), p, b, "leader"); err != nil {
+		t.Fatalf("DistributeTenantKey: %v; want nothing to ship", err)
+	}
+	if n := posts.Load(); n != 0 {
+		t.Fatalf("POSTs = %d, want 0 for a barrier with no key", n)
 	}
 }
 
@@ -1401,7 +1475,7 @@ func TestSender_FetchNodeKey_MITMSelfSigned(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID: "tenant-1", Database: "db-1", ShardID: 1, ReplicaID: 2,
-		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSystemManaged,
+		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("secret-key-material"))
 	if !errors.Is(err, clusterkeys.ErrRecipientUntrusted) {
@@ -1445,7 +1519,7 @@ func TestSender_FetchNodeKey_WrongNodeSAN(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID: "t", Database: "db", ShardID: 1, ReplicaID: 2,
-		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSystemManaged,
+		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrRecipientNodeMismatch) {
@@ -1488,7 +1562,7 @@ func TestSender_FetchNodeKey_NoSAN(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID: "t", Database: "db", ShardID: 1, ReplicaID: 2,
-		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSystemManaged,
+		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrRecipientUntrusted) {
@@ -1696,7 +1770,7 @@ func TestHandler_TrustDomainMismatch(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSystemManaged,
+			Mode:         keydelivery.ModeSelfManaged,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
@@ -1739,28 +1813,29 @@ func TestHandler_CorrectNodeSAN_Proceeds(t *testing.T) {
 	}
 }
 
-// TestHandler_SystemManaged_InvalidJSONPayload verifies that an HPKE envelope
-// that decrypts to non-JSON bytes is rejected with 500. This exercises
-// importSystemManaged's unmarshalKeyPayload error path and the Handler's
-// "key import failed" response branch.
-func TestHandler_SystemManaged_InvalidJSONPayload(t *testing.T) {
+// TestHandler_SelfManaged_InvalidSealedBlob verifies that an HPKE envelope
+// that decrypts to bytes that are not a sealed root-key blob is rejected with
+// 500. This exercises importSelfManaged's ImportTenant error path and the
+// Handler's "key import failed" response branch.
+func TestHandler_SelfManaged_InvalidSealedBlob(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-badjson", "db-main", 1, 2, "follower-node-1", followerDataRoot)
 
-	followerReg, _ := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-badjson")
 
 	// Seal non-JSON bytes to the follower's key. Receiver will decrypt
-	// "not-json" successfully but unmarshalKeyPayload will fail.
+	// them successfully but ImportSealedBlob will refuse them.
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-badjson",
 		Database:     "db-main",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	env, err := keydelivery.Seal(&follower.key.PublicKey, meta, []byte("not-valid-json"))
 	if err != nil {
@@ -1779,9 +1854,9 @@ func TestHandler_SystemManaged_InvalidJSONPayload(t *testing.T) {
 	}
 	fullRecv.Handler()(rec, req)
 
-	// unmarshalKeyPayload fails → importSystemManaged returns error → 500
+	// ImportSealedBlob fails → importSelfManaged returns error → 500
 	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 (import failed after invalid JSON), got %d", rec.Code)
+		t.Errorf("expected 500 (import failed after an invalid blob), got %d", rec.Code)
 	}
 }
 
@@ -1806,7 +1881,7 @@ func TestSender_FetchNodeKey_NonOKStatus(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrNodeKeyFetch) {
@@ -1835,7 +1910,7 @@ func TestSender_FetchNodeKey_InvalidPEM(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrDeliveryCert) {
@@ -1868,7 +1943,7 @@ func TestSender_FetchNodeKey_BadCertDER(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrDeliveryCert) {
@@ -1909,56 +1984,12 @@ func TestSender_Deliver_PostNonOK(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSystemManaged,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("some-key-material"))
 	if !errors.Is(err, clusterkeys.ErrDelivery) {
 		t.Errorf("expected ErrDelivery (POST non-200), got %v", err)
 	}
-}
-
-// TestSender_DeliverSystemManaged_SealedBarrier verifies that when the leader
-// tenant barrier is sealed (ExportRootKeyContext fails), DistributeTenantKey
-// accumulates the error and returns non-nil. This covers both
-// deliverSystemManaged's ExportRootKeyContext error path and DistributeTenantKey's
-// error accumulation block.
-func TestSender_DeliverSystemManaged_SealedBarrier(t *testing.T) {
-	// Sealed, uninitialized barrier: ExportRootKeyContext returns ErrSealed.
-	sealedBarrier := newTestSystemBarrier(t)
-
-	ca := newTestCA(t)
-	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-
-	// The server will never be reached (delivery fails before fetchNodeKey).
-	// We still need the server URL for the resolver.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("server should not be reached when ExportRootKeyContext fails")
-	}))
-	defer srv.Close()
-
-	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
-	if err != nil {
-		t.Fatalf("NewSender: %v", err)
-	}
-	distPlacement := &placement.Placement{
-		TenantID:        "tenant-sealed",
-		Database:        "db-main",
-		ShardID:         1,
-		RF:              2,
-		LeaderReplicaID: 1,
-		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "leader-node-1", RaftAddr: "leader-node-1:9000"},
-			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: t.TempDir()},
-		},
-	}
-	// autoUnseal=true → deliverSystemManaged → ExportRootKeyContext fails (sealed)
-	err = sender.DistributeTenantKey(context.Background(), distPlacement, sealedBarrier, "leader-node-1", true)
-	if err == nil {
-		t.Fatal("expected error when ExportRootKeyContext fails on sealed barrier")
-	}
-
-	_ = follower // referenced by resolver setup above
 }
 
 // TestSender_DeliverSelfManaged_UninitializedBarrier verifies that when the
@@ -1985,10 +2016,9 @@ func TestSender_DeliverSelfManaged_UninitializedBarrier(t *testing.T) {
 			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "irrelevant:9000", DataRoot: t.TempDir()},
 		},
 	}
-	// autoUnseal=false → deliverSelfManaged → ExportSealedBlob fails (not initialized)
-	err = sender.DistributeTenantKey(context.Background(), distPlacement, uninitBarrier, "leader-node-1", false)
-	if err == nil {
-		t.Fatal("expected error when ExportSealedBlob fails on uninitialized barrier")
+	// No key yet: nothing is exported or sent, and no failure is reported.
+	if err := sender.DistributeTenantKey(context.Background(), distPlacement, uninitBarrier, "leader-node-1"); err != nil {
+		t.Fatalf("DistributeTenantKey on an uninitialized barrier: %v; want nothing to ship", err)
 	}
 }
 

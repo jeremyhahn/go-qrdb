@@ -78,6 +78,11 @@ var (
 	// BarrierKeyProvider answers without error but with no strategy.
 	ErrNilBarrierStrategy = errors.New("tenant: barrier key provider returned no strategy")
 
+	// ErrNotPlatformCustody is the cause a BarrierError carries when a
+	// platform-signed init statement names a barrier whose owner keeps
+	// custody: the platform never initializes a key for such a barrier.
+	ErrNotPlatformCustody = errors.New("tenant: barrier is not in platform custody")
+
 	// ErrNilStore is returned when a nil storage backend is provided
 	// to the tenant service constructor.
 	ErrNilStore = errors.New("tenant: nil storage backend")
@@ -103,6 +108,14 @@ var (
 	// closed on this error: a barrier tenant's data is NEVER served from
 	// the shared system store while its barrier is sealed.
 	ErrTenantSealed = errors.New("tenant: barrier is sealed")
+
+	// ErrTenantAdminPending is returned by a barrier-ready hook asked for
+	// one attempt (AdminCompletionOnce) that could not complete a tenant's
+	// pending first admin yet: the tenant's home group has no leader on
+	// this node, or its identity records are still sealed. The pending
+	// record stays, and the next unseal, quorum unseal or status read
+	// completes the admin.
+	ErrTenantAdminPending = errors.New("tenant: first admin pending: the tenant's home group cannot complete it yet")
 
 	// ErrSystemTenantMustBePrefix is returned when barrier isolation is
 	// requested for the reserved system tenant. The system tenant must be
@@ -520,6 +533,26 @@ func (e *KeyspaceReclaimError) Error() string {
 
 func (e *KeyspaceReclaimError) Unwrap() error { return e.Err }
 
+// RuntimeStopError is returned by DeleteTenant when what the tenant runs --
+// its home group's placement, or the runtimes this node started for it --
+// could not be stopped before its barrier is destroyed. Op names the step:
+// "retire-home" or "close-runtime".
+//
+// It is raised after the fence, so it reaches the caller wrapped in
+// *TeardownError, and nothing has been destroyed yet: the barrier is never
+// taken from under a replica that would still write through it.
+type RuntimeStopError struct {
+	TenantID string
+	Op       string
+	Err      error
+}
+
+func (e *RuntimeStopError) Error() string {
+	return "tenant: " + e.Op + " for " + e.TenantID + ": " + e.Err.Error()
+}
+
+func (e *RuntimeStopError) Unwrap() error { return e.Err }
+
 // DatabaseListError is returned by DeleteTenant when the tenant's databases
 // could not be enumerated, so the bottom-up refusal cannot be evaluated. It
 // fails the deletion rather than proceeding: an unanswerable "does this
@@ -618,21 +651,6 @@ func (e *ResidueReconcileFailuresError) Unwrap() []error {
 	return out
 }
 
-// StrictRequiresDedicatedStorageError is returned when the effective
-// isolation policy for a tenant is strict but its isolation type is
-// IsolationPrefix: a prefix tenant has no store and no key of its own, so it
-// cannot be strict (owner ruling S2). It is returned by CreateTenant (a
-// prefix create under a strict floor), and by UpdateTenant (asking for the
-// strict tenant policy on a prefix tenant).
-type StrictRequiresDedicatedStorageError struct {
-	IsolationType IsolationType
-}
-
-func (e *StrictRequiresDedicatedStorageError) Error() string {
-	return "tenant: strict isolation requires dedicated storage; isolation type " +
-		string(e.IsolationType) + " has none of its own"
-}
-
 // IsolationPolicyChangeError is returned when a requested isolation-policy
 // change is not a legal transition: the cluster floor and a tenant's own
 // policy both tighten only (owner ruling: "it can be tightened later, never
@@ -683,3 +701,31 @@ func (e *FirstAdminProofError) Error() string {
 
 // Unwrap returns the underlying refusal.
 func (e *FirstAdminProofError) Unwrap() error { return e.Err }
+
+// ErrTenantHomeNotAttached is the cause an isolated tenant's resolution
+// carries when no home-store source is attached to the resolver: the node has
+// no data plane that hosts tenant home stores (yet, or at all).
+var ErrTenantHomeNotAttached = errors.New("tenant: no home-store source attached")
+
+// ErrHomeStoreUnguarded is returned when a tenant barrier's KV store cannot
+// serve the atomic and multi-guarded writes a home store keeps, so it cannot
+// be put behind home admission without losing them.
+var ErrHomeStoreUnguarded = errors.New("tenant: barrier store lacks atomic and guarded writes")
+
+// TenantHomeUnavailableError is returned when an isolated tenant's home store
+// cannot be reached on this node. It matches ErrTenantSealed as well as its
+// cause, so it reaches a caller as the same retryable unavailable a sealed
+// tenant does -- and never as a fallback to the system shard.
+type TenantHomeUnavailableError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *TenantHomeUnavailableError) Error() string {
+	return "tenant: home store of " + strconv.Quote(e.TenantID) + " unavailable: " + e.Err.Error()
+}
+
+// Unwrap returns ErrTenantSealed and the cause.
+func (e *TenantHomeUnavailableError) Unwrap() []error {
+	return []error{ErrTenantSealed, e.Err}
+}

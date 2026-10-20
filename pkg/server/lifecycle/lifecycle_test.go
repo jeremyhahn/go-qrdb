@@ -114,7 +114,7 @@ func newTestBarrier(t *testing.T) (
 
 // newPooledRegistry returns a BarrierRegistry configured with a single-path
 // local volume pool (backed by a t-scoped temp dir) and a per-tenant registry,
-// so it can satisfy the pool-driven RegisterTenantPooled flow that
+// so it can satisfy the pool-driven RegisterBarrierTenant flow that
 // CreateTenant(IsolationBarrier) uses. Mirrors the tenant package's own test
 // fixture; required because the plain newTestBarrier registry has no pool.
 func newPooledRegistry(t *testing.T, system *seal.StorageBarrier) *seal.BarrierRegistry {
@@ -491,7 +491,7 @@ func buildRoutedIAMNodeOn(t *testing.T, host service.Host) (*lifecycle.Node, *se
 	t.Cleanup(hub.Close)
 
 	barrier, _, credSvc := newTestBarrier(t)
-	// CreateTenant(IsolationBarrier) takes the pool-driven RegisterTenantPooled
+	// CreateTenant(IsolationBarrier) takes the pool-driven RegisterBarrierTenant
 	// path, so the registry must be configured with a volume pool.
 	registry := newPooledRegistry(t, barrier)
 
@@ -508,6 +508,10 @@ func buildRoutedIAMNodeOn(t *testing.T, host service.Host) (*lifecycle.Node, *se
 		t.Fatalf("BuildServices: %v", err)
 	}
 	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+	// A standalone node: isolated tenants' home stores are their barriers.
+	if !lifecycle.AttachLocalTenantHomes(node, registry, nil) {
+		t.Fatal("AttachLocalTenantHomes = false")
+	}
 
 	return node, registry
 }
@@ -641,19 +645,17 @@ func TestBuildServices_StandaloneIsolatedTenantIsNotGated(t *testing.T) {
 // and gRPC surfaces straight into the store. Without a claim, one tenant
 // could create a role carrying ANOTHER tenant's role id, take over that id's
 // entry in the system-plane index, and silently redirect every by-id
-// operation an administrator performs on it.
+// operation an administrator performs on it. Only shared tenants claim: an
+// isolated tenant's ids live in its own home store and are resolved there.
 func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
-	node, registry := buildRoutedIAMNode(t)
+	node, _ := buildRoutedIAMNode(t)
 	ctx := context.Background()
 
 	const victimTenant = "victim-tenant"
 	const captorTenant = "captor-tenant"
 	for _, id := range []string{victimTenant, captorTenant} {
-		if _, err := node.Tenant.CreateTenant(ctx, id, id, tenant.IsolationBarrier); err != nil {
+		if _, err := node.Tenant.CreateTenant(ctx, id, id, tenant.IsolationPrefix); err != nil {
 			t.Fatalf("CreateTenant(%s): %v", id, err)
-		}
-		if err := registry.InitializeTenant(ctx, id, seal.Credentials{}); err != nil {
-			t.Fatalf("InitializeTenant(%s): %v", id, err)
 		}
 	}
 
@@ -670,6 +672,10 @@ func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
 	// The capture attempt: the captor names the victim's id explicitly, as
 	// its own caller.
 	captorCtx := tenant.WithTenantID(ctx, captorTenant)
+	before, err := node.Role.ListRoles(captorCtx, &role.ListRolesRequest{TenantID: captorTenant})
+	if err != nil {
+		t.Fatalf("ListRoles(captor): %v", err)
+	}
 	_, err = node.Role.CreateRole(captorCtx, &role.CreateRoleRequest{
 		ID:          victim.ID,
 		Name:        "impostor",
@@ -687,9 +693,9 @@ func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRoles(captor): %v", err)
 	}
-	if len(captorRoles.Roles) != 0 {
-		t.Fatalf("captor tenant holds %d roles after a refused capture: %+v",
-			len(captorRoles.Roles), captorRoles.Roles)
+	if len(captorRoles.Roles) != len(before.Roles) {
+		t.Fatalf("captor tenant holds %d roles after a refused capture, %d before",
+			len(captorRoles.Roles), len(before.Roles))
 	}
 
 	// And the id still routes to the victim's role, unchanged.
@@ -1697,6 +1703,40 @@ func TestBuildServices_WiresTheKeyspaceReclaimerIntoTheManager(t *testing.T) {
 	}
 	if wired != database.KeyspaceReclaimer(node.KeyspaceReclaim) {
 		t.Error("the manager must hold the same reclaimer the Node exposes, or a StoreResolver attached to one never reaches the other")
+	}
+}
+
+// TestBuildServices_WiresTheHomeRetirerIntoTheTenantService pins the seam
+// DELETE TENANT retires a strict tenant's home group through: without it the
+// home group's replicas outlive the barrier they write through.
+func TestBuildServices_WiresTheHomeRetirerIntoTheTenantService(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		DatabaseManager: database.NewManager(nil, t.TempDir()),
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	seams, ok := node.Tenant.(interface{ HomeRetirer() tenant.HomeRetirer })
+	if !ok {
+		t.Fatalf("tenant service %T carries no teardown seams", node.Tenant)
+	}
+	wired := seams.HomeRetirer()
+	if wired == nil {
+		t.Fatal("the tenant service has no home retirer; deleting a strict tenant would leave its home group running")
+	}
+	if wired != node.Database.(tenant.HomeRetirer) {
+		t.Error("the home retirer must be the database service the node serves, whose placement table holds the home group")
 	}
 }
 

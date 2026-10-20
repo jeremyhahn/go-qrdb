@@ -16,11 +16,13 @@ package barrierinit
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -58,11 +60,10 @@ func TestSignTenantInit_EncodesTheTenantsEpochOneStatement(t *testing.T) {
 	admin := newKey(t)
 	anchors := Anchors{FirstAdmin: thumbprint(t, admin.Public())}
 	for strategy, want := range map[string]seal.StrategyID{
-		"":       seal.StrategyPassphrase, // an unnamed strategy, as the node reads it
-		"none":   seal.StrategyNone,
-		"shamir": seal.StrategyShamir,
+		"":     seal.StrategyPassphrase, // an unnamed strategy, as the node reads it
+		"none": seal.StrategyNone,
 	} {
-		raw, err := SignTenantInit(admin, "acme", strategy)
+		raw, err := SignTenantInit(admin, "acme", strategy, testNow)
 		if err != nil {
 			t.Fatalf("SignTenantInit(%q): %v", strategy, err)
 		}
@@ -79,15 +80,56 @@ func TestSignTenantInit_EncodesTheTenantsEpochOneStatement(t *testing.T) {
 	}
 }
 
+// A Shamir statement signs the split it completes, so one naming no roster
+// or no check value is malformed: SignTenantInit has neither to give.
+func TestSignTenantInit_AShamirStatementNeedsItsSplit(t *testing.T) {
+	_, err := SignTenantInit(newKey(t), "acme", "shamir", testNow)
+	wantReason(t, err, ReasonMalformed)
+	for name, s := range map[string]InitStatement{
+		"no roster":      {Roster: nil, UnsealKeyCheck: []byte("check")},
+		"no check value": {Roster: []byte("roster"), UnsealKeyCheck: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hash := sha256.Sum256(s.Roster)
+			s.Barrier, s.Epoch, s.StrategyID, s.Threshold, s.RosterHash = clusterseal.TenantBarrier("acme"), 1, seal.StrategyShamir, 2, hash[:]
+			_, err := Sign(newKey(t), s)
+			wantReason(t, err, ReasonMalformed)
+		})
+	}
+}
+
+func TestSignTenantShamirInit_EncodesTheSplit(t *testing.T) {
+	admin := newKey(t)
+	raw, err := SignTenantShamirInit(admin, "acme", 2, []byte("roster"), []byte("check"), testNow)
+	if err != nil {
+		t.Fatalf("SignTenantShamirInit: %v", err)
+	}
+	s, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	hash := sha256.Sum256([]byte("roster"))
+	if s.StrategyID != seal.StrategyShamir || s.Epoch != 1 || s.Threshold != 2 ||
+		!bytes.Equal(s.RosterHash, hash[:]) || string(s.Roster) != "roster" || string(s.UnsealKeyCheck) != "check" {
+		t.Fatalf("statement = %+v, want acme's epoch-1 shamir statement for the split", s)
+	}
+	if err := Verify(s, Anchors{FirstAdmin: thumbprint(t, admin.Public())}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if raw, err := SignTenantShamirInit(nil, "acme", 2, []byte("roster"), []byte("check"), testNow); raw != nil || err != nil {
+		t.Fatalf("with no signer = %q, %v, want no statement", raw, err)
+	}
+}
+
 func TestSignTenantInit_NilSignerSignsNothing(t *testing.T) {
-	raw, err := SignTenantInit(nil, "acme", "none")
+	raw, err := SignTenantInit(nil, "acme", "none", testNow)
 	if err != nil || raw != nil {
 		t.Fatalf("SignTenantInit(nil) = %v, %v; want nil, nil", raw, err)
 	}
 }
 
 func TestSignTenantInit_RefusesAnUnencodableStatement(t *testing.T) {
-	_, err := SignTenantInit(newKey(t), "acme", strings.Repeat("s", MaxFieldLength+1))
+	_, err := SignTenantInit(newKey(t), "acme", strings.Repeat("s", MaxFieldLength+1), testNow)
 	wantReason(t, err, ReasonMalformed)
 }
 
@@ -112,6 +154,7 @@ func TestVerify_EveryFieldIsCovered(t *testing.T) {
 	anchors := Anchors{FirstAdmin: thumbprint(t, admin.Public())}
 	tamper := map[string]func(*InitStatement){
 		"barrier":   func(s *InitStatement) { s.Barrier = clusterseal.TenantBarrier("globex") },
+		"issued at": func(s *InitStatement) { s.IssuedAt-- },
 		"strategy":  func(s *InitStatement) { s.StrategyID = "system-barrier" },
 		"key ref":   func(s *InitStatement) { s.KeyRef = "kms://platform/key" },
 		"threshold": func(s *InitStatement) { s.Threshold = 3 },
@@ -158,17 +201,179 @@ func TestVerify_LaterEpochRefusals(t *testing.T) {
 	t.Run("no certificate", func(t *testing.T) {
 		wantReason(t, Verify(signed(t, admin, unsigned(2, "")), anchors), ReasonUntrustedCertificate)
 	})
-	t.Run("expired certificate", func(t *testing.T) {
+	t.Run("certificate expired at issue", func(t *testing.T) {
 		s := unsigned(2, "")
 		s.SignerCertificate = ca.issue(t, admin.Public())
+		s.IssuedAt = testNow.Add(2 * time.Hour).Unix()
 		late := Anchors{CA: ca.pool, At: testNow.AddDate(1, 0, 0)}
-		wantReason(t, Verify(signed(t, admin, s), late), ReasonUntrustedCertificate)
+		wantReason(t, Verify(signed(t, admin, s), late), ReasonNotValidAtIssue)
 	})
 	t.Run("no CA anchor", func(t *testing.T) {
 		s := unsigned(2, "")
 		s.SignerCertificate = ca.issue(t, admin.Public())
 		wantReason(t, Verify(signed(t, admin, s), Anchors{}), ReasonNoAnchor)
 	})
+}
+
+func TestSignPlatformInit_VerifiesAgainstTheClusterCAOnly(t *testing.T) {
+	cluster, owner, node := newCA(t), newCA(t), newKey(t)
+	raw, err := SignPlatformInit(node, cluster.issue(t, node.Public()), "acme", testNow)
+	if err != nil {
+		t.Fatalf("SignPlatformInit: %v", err)
+	}
+	s, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if s.Barrier != clusterseal.TenantBarrier("acme") || s.Epoch != 1 || s.StrategyID != seal.StrategySystemBarrier {
+		t.Fatalf("statement = %+v, want acme's epoch-1 system-barrier statement", s)
+	}
+	if err := Verify(s, Anchors{Platform: cluster.pool, At: testNow}); err != nil {
+		t.Fatalf("Verify(platform anchor): %v", err)
+	}
+
+	t.Run("owner keeps custody", func(t *testing.T) {
+		wantReason(t, Verify(s, Anchors{FirstAdmin: thumbprint(t, node.Public()), CA: cluster.pool, At: testNow}), ReasonNoAnchor)
+	})
+	t.Run("certificate from the owner's CA", func(t *testing.T) {
+		other, err := SignPlatformInit(node, owner.issue(t, node.Public()), "acme", testNow)
+		if err != nil {
+			t.Fatalf("SignPlatformInit: %v", err)
+		}
+		st, err := Parse(other)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		anchors := Anchors{CA: owner.pool, Platform: cluster.pool, At: testNow}
+		wantReason(t, Verify(st, anchors), ReasonUntrustedCertificate)
+	})
+	t.Run("certificate for another key", func(t *testing.T) {
+		other, err := SignPlatformInit(node, cluster.issue(t, newKey(t).Public()), "acme", testNow)
+		if err != nil {
+			t.Fatalf("SignPlatformInit: %v", err)
+		}
+		st, err := Parse(other)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		wantReason(t, Verify(st, Anchors{Platform: cluster.pool, At: testNow}), ReasonWrongSigner)
+	})
+}
+
+// platformStatement is acme's platform statement, signed by a node under a
+// cluster certificate valid from an hour before testNow to an hour after,
+// issued at issuedAt.
+func platformStatement(t *testing.T, cluster *testCA, issuedAt time.Time) InitStatement {
+	t.Helper()
+	node := newKey(t)
+	raw, err := SignPlatformInit(node, cluster.issue(t, node.Public()), "acme", issuedAt)
+	if err != nil {
+		t.Fatalf("SignPlatformInit: %v", err)
+	}
+	s, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return s
+}
+
+// A statement signed while its certificate was valid is verified at its issue
+// time: it still verifies once the certificate has expired, so a replica that
+// joins later can still initialize, and the tenant still unseals.
+func TestVerify_StatementOutlivesItsCertificate(t *testing.T) {
+	cluster, owner, admin := newCA(t), newCA(t), newKey(t)
+	expired := testNow.AddDate(1, 0, 0)
+	if err := Verify(platformStatement(t, cluster, testNow), Anchors{Platform: cluster.pool, At: expired}); err != nil {
+		t.Fatalf("Verify(platform statement, certificate expired since) = %v, want nil", err)
+	}
+	s := unsigned(2, "")
+	s.SignerCertificate = owner.issue(t, admin.Public())
+	if err := Verify(signed(t, admin, s), Anchors{CA: owner.pool, At: expired}); err != nil {
+		t.Fatalf("Verify(epoch 2, certificate expired since) = %v, want nil", err)
+	}
+}
+
+// An issue time outside the certificate's validity window is refused, however
+// the verification time falls: a certificate vouches only for what was signed
+// while it was valid.
+func TestVerify_IssueTimeOutsideTheCertificateIsRefused(t *testing.T) {
+	cluster := newCA(t)
+	anchors := Anchors{Platform: cluster.pool, At: testNow.AddDate(1, 0, 0)}
+	cases := map[string]time.Time{
+		"before not-before": testNow.Add(-2 * time.Hour),
+		"after not-after":   testNow.Add(2 * time.Hour),
+	}
+	for name, issuedAt := range cases {
+		t.Run(name, func(t *testing.T) {
+			wantReason(t, Verify(platformStatement(t, cluster, issuedAt), anchors), ReasonNotValidAtIssue)
+		})
+	}
+}
+
+// A statement issued after the time it is verified at is refused: there is no
+// allowance for clock skew. Issued at exactly that time, it verifies.
+func TestVerify_IssuedAfterTheVerificationTimeIsRefused(t *testing.T) {
+	cluster, admin := newCA(t), newKey(t)
+	platform := platformStatement(t, cluster, testNow)
+	firstAdmin := signed(t, admin, unsigned(1, ""))
+	early := testNow.Add(-time.Second)
+	wantReason(t, Verify(platform, Anchors{Platform: cluster.pool, At: early}), ReasonIssuedInFuture)
+	wantReason(t, Verify(firstAdmin, Anchors{FirstAdmin: thumbprint(t, admin.Public()), At: early}), ReasonIssuedInFuture)
+	if err := Verify(platform, Anchors{Platform: cluster.pool, At: testNow}); err != nil {
+		t.Fatalf("Verify(issued at the verification time) = %v, want nil", err)
+	}
+}
+
+// The issue time is signed: moving it, even inside the certificate's validity
+// window, breaks the signature.
+func TestVerify_TamperedIssueTimeBreaksTheSignature(t *testing.T) {
+	cluster := newCA(t)
+	anchors := Anchors{Platform: cluster.pool, At: testNow.AddDate(1, 0, 0)}
+	for name, shift := range map[string]int64{"earlier": -60, "later": 60} {
+		t.Run(name, func(t *testing.T) {
+			s := platformStatement(t, cluster, testNow)
+			s.IssuedAt += shift
+			wantReason(t, Verify(s, anchors), ReasonBadSignature)
+		})
+	}
+}
+
+func TestSignPlatformInit_Refusals(t *testing.T) {
+	cluster, node := newCA(t), newKey(t)
+	t.Run("no certificate", func(t *testing.T) {
+		_, err := SignPlatformInit(node, nil, "acme", testNow)
+		wantReason(t, err, ReasonUntrustedCertificate)
+	})
+	t.Run("nil signer", func(t *testing.T) {
+		if _, err := SignPlatformInit(nil, cluster.issue(t, node.Public()), "acme", testNow); err == nil {
+			t.Fatal("SignPlatformInit(nil signer) = nil error, want refusal")
+		}
+	})
+	t.Run("invalid tenant", func(t *testing.T) {
+		_, err := SignPlatformInit(node, cluster.issue(t, node.Public()), "", testNow)
+		wantReason(t, err, ReasonMalformed)
+	})
+}
+
+// A later epoch of a platform-custody barrier verifies under a certificate
+// from either the owner's CA or the cluster CA, and under neither once the
+// platform anchor is withdrawn.
+func TestVerify_LaterEpochUnderPlatformCustody(t *testing.T) {
+	cluster, owner, node := newCA(t), newCA(t), newKey(t)
+	s := unsigned(2, "")
+	s.SignerCertificate = cluster.issue(t, node.Public())
+	s = signed(t, node, s)
+	if err := Verify(s, Anchors{CA: owner.pool, Platform: cluster.pool, At: testNow}); err != nil {
+		t.Fatalf("Verify(cluster-certified, platform anchor): %v", err)
+	}
+	wantReason(t, Verify(s, Anchors{CA: owner.pool, At: testNow}), ReasonUntrustedCertificate)
+
+	o := unsigned(2, "")
+	o.SignerCertificate = owner.issue(t, node.Public())
+	o = signed(t, node, o)
+	if err := Verify(o, Anchors{CA: owner.pool, Platform: cluster.pool, At: testNow}); err != nil {
+		t.Fatalf("Verify(owner-certified, platform anchor): %v", err)
+	}
 }
 
 func TestVerify_EpochOneNeedsTheFirstAdmin(t *testing.T) {
@@ -184,6 +389,8 @@ func TestVerify_Malformed(t *testing.T) {
 	cases := map[string]func(*InitStatement){
 		"invalid barrier":    func(s *InitStatement) { s.Barrier = "tenant/" },
 		"zero epoch":         func(s *InitStatement) { s.Epoch = 0 },
+		"no issue time":      func(s *InitStatement) { s.IssuedAt = 0 },
+		"negative issue":     func(s *InitStatement) { s.IssuedAt = -1 },
 		"no strategy":        func(s *InitStatement) { s.StrategyID = "" },
 		"negative threshold": func(s *InitStatement) { s.Threshold = -1 },
 		"oversized key ref":  func(s *InitStatement) { s.KeyRef = strings.Repeat("k", MaxFieldLength+1) },
@@ -233,4 +440,52 @@ func TestMessage_LengthPrefixedAndDomainSeparated(t *testing.T) {
 	if !bytes.Equal(signedOnce.Message(), a.Message()) {
 		t.Fatal("the signature must not be part of the signed message")
 	}
+}
+
+func TestVerify_TheRosterMustBeTheOneItsHashCommitsTo(t *testing.T) {
+	admin := newKey(t)
+	anchors := Anchors{FirstAdmin: thumbprint(t, admin.Public())}
+	withRoster := func(roster []byte) InitStatement {
+		s := unsigned(1, "")
+		s.StrategyID = seal.StrategyShamir
+		s.Threshold = 2
+		s.Roster = roster
+		sum := sha256.Sum256(roster)
+		s.RosterHash = sum[:]
+		s.UnsealKeyCheck = bytes.Repeat([]byte{7}, seal.UnsealKeyCheckSize)
+		return s
+	}
+	roster := []byte(`{"version":1,"domain":"unseal"}`)
+	if err := Verify(signed(t, admin, withRoster(roster)), anchors); err != nil {
+		t.Fatalf("a statement carrying its committed roster: %v", err)
+	}
+	raw, err := signed(t, admin, withRoster(roster)).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Parse(raw); err != nil || !bytes.Equal(got.Roster, roster) {
+		t.Fatalf("the roster does not round-trip: %v", err)
+	}
+
+	other := withRoster(roster)
+	other.Roster = []byte(`{"version":1,"domain":"recovery"}`)
+	if _, err := Sign(admin, other); err == nil {
+		t.Fatal("signed a roster its hash does not commit to")
+	}
+	other = signed(t, admin, withRoster(roster))
+	other.Roster = []byte(`{"version":1,"domain":"recovery"}`)
+	wantReason(t, Verify(other, anchors), ReasonMalformed)
+
+	huge := signed(t, admin, withRoster(roster))
+	huge.Roster = bytes.Repeat([]byte{'x'}, MaxRosterLength+1)
+	sum := sha256.Sum256(huge.Roster)
+	huge.RosterHash = sum[:]
+	wantReason(t, Verify(huge, anchors), ReasonMalformed)
+
+	// Covering RosterHash covers Roster: a consistent swap breaks the signature.
+	swapped := signed(t, admin, withRoster(roster))
+	swapped.Roster = []byte(`{"version":1,"domain":"unseal","total":3}`)
+	sum = sha256.Sum256(swapped.Roster)
+	swapped.RosterHash = sum[:]
+	wantReason(t, Verify(swapped, anchors), ReasonBadSignature)
 }

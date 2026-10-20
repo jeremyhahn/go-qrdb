@@ -16,7 +16,6 @@ package service
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -221,13 +220,6 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // behind would wait for the collection sweeper to notice the tenant is gone
 // rather than going with the tenant.
 //
-// It DOES return the tenant's barrier-encrypted range in the shared store,
-// seal.TenantSharedNamespace. A dedicated-isolation tenant's identity records
-// and DEK keyring live there, outside "<tenant>/", so that the system shard
-// replicates them. Its barrier is destroyed earlier in the teardown, so what
-// is left is ciphertext — except under barrier protection "none", where it is
-// plaintext, which is why the range must be reclaimed rather than abandoned.
-//
 // The SYSTEM tenant returns nil. "<tenant>/" for the system tenant is
 // "system/", which is where the bootstrap database and every system identity
 // record live; a reclamation that accepted it would empty the store it was
@@ -240,7 +232,10 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // that tenant would otherwise still be able to authenticate against, and
 // what makes the dynamic client-auth trust pool (pkg/clienttrust) stop
 // widening for it once its 2-second cache next refreshes (go-qrdb#560
-// review, non-blocking).
+// review, non-blocking). An isolated tenant's CA is in its home store, which
+// is retired with the tenant; the public certificate it published to the
+// system store (tenantCertCAPubPrefix) is reclaimed here for the same
+// reason.
 func TenantKeyPrefixes(tenantID string) []string {
 	if tenantID == "" || tenantid.IsSystem(tenantID) {
 		return nil
@@ -252,10 +247,17 @@ func TenantKeyPrefixes(tenantID string) []string {
 		timeseries.KeyPrefixMetricIndex + ns,
 		timeseries.KeyPrefixRetention + ns,
 		placement.PlacementPrefix + ns,
-		seal.TenantSharedNamespace(tenantID),
 		CollectionWorkPrefix + ns,
 		tenantCertCAPrefix(tenantID),
+		tenantCertCAPubPrefix(tenantID),
 	}
+}
+
+// tenantCertCAPubPrefix duplicates pkg/cert's unexported prefixCertCAPub
+// (`"__sys:cert_ca_pub/"`) + the per-tenant `"/"`, for the same reason
+// tenantCertCAPrefix duplicates prefixCertCA.
+func tenantCertCAPubPrefix(tenantID string) string {
+	return "__sys:cert_ca_pub/" + tenantID + "/"
 }
 
 // tenantCertCAPrefix duplicates pkg/cert's own unexported prefixCertCA

@@ -109,6 +109,18 @@ func (e *PendingTenantAdminError) Error() string {
 // Unwrap exposes the cause.
 func (e *PendingTenantAdminError) Unwrap() error { return e.Cause }
 
+// AdminCompletionDeferredError is returned by CompletePendingTenantAdmin on
+// a node that does not lead the tenant's home group while the tenant still
+// has a pending admin: the leader completes it, and this node wrote nothing.
+type AdminCompletionDeferredError struct {
+	TenantID string
+}
+
+// Error implements error.
+func (e *AdminCompletionDeferredError) Error() string {
+	return "bootstrap: tenant " + e.TenantID + " admin completion deferred: this node does not lead the tenant's home group"
+}
+
 // ProvisioningUndoneError is returned by an exclusive ProvisionTenant whose
 // failure was undone. Cause is the failure; UndoFailures lists any undo step
 // that itself failed, which an operator must finish by hand.

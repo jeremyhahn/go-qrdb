@@ -61,9 +61,6 @@ func TestCreateTenant_Raft_AllocatesDataRootAndBarrier(t *testing.T) {
 	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
 	// while the system barrier is sealed; this test is about the tenant's own
 	// (self-managed, left sealed) barrier, not the system barrier's state.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	info, err := svc.CreateTenant(ctx, "rtenant", "Raft Tenant", IsolationRaft)
 	if err != nil {
@@ -134,9 +131,6 @@ func TestCreateTenant_Raft_PoolMissingFromCatalogIsRefused(t *testing.T) {
 		t.Fatalf("NewTenantService: %v", err)
 	}
 	ctx := context.Background()
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	_, err = svc.CreateTenant(ctx, "nopool", "No Pool", IsolationRaft)
 	var reserveErr *VolumePoolReserveError
@@ -187,9 +181,6 @@ func TestCreateTenant_Raft_SystemManaged_AutoUnsealed(t *testing.T) {
 	reg := newTestBarrierRegistry(t)
 	// The system-managed strategy needs an unsealed system barrier (the unseal
 	// authority for the wrapped tenant DEK).
-	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 	svc, err := NewTenantService(store, reg, testLogger(),
 		WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeRaft},

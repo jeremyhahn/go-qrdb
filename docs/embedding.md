@@ -206,6 +206,20 @@ n, err := node.NewClusteredNode(ctx, cfg,
 )
 ```
 
+The embedded node carries the same node identity and platform-init signer as
+a `qrdbd` node, through the same composition. A single-node cluster handed no
+identity (no `WithRaftMTLS`, `WithClusterCAKeyProvider` or
+`WithClusterCAMaterial`) issues its own the way `qrdbd` does with no TLS
+flags: on the first boot it generates a cluster CA and a node certificate
+naming its Raft address into `cfg.Raft.DataDir`, and loads them from there on
+every boot after. The CA key leaves the disk once it is in the replicated
+store. The platform signs a raft tenant's auto-unseal init statement with that
+identity, so such a tenant can be created on the node. A node given the
+cluster CA but no node certificate has no signer and refuses that create with
+`*tenant.InitStatementRequiredError`; the signed statement is never skipped.
+An identity that can be neither loaded nor generated fails construction with
+`*node.ClusterIdentityError`.
+
 ### Multi-node cluster
 
 ```go
@@ -391,8 +405,7 @@ through `database.NewRaftWAL`, the code path qrdbd uses:
 | Posture | WAL |
 |---|---|
 | Seal disabled | written `WithoutEncryption` (plaintext, like every other byte) |
-| Single-member cluster, or system protection `none` | go-quicraft's own WAL `WithBarrier`; encrypts once encryption is enabled |
-| Multi-member cluster whose system barrier encrypts | the multiplex: shared system-barrier WAL plus per-tenant dedicated WALs for `dedicatedWal` databases |
+| Sealed, single- or multi-member, system protection encrypting or `none` | the multiplex: shared system-barrier WAL plus per-tenant dedicated WALs for `dedicatedWal` databases; under protection `none` it encrypts once encryption is enabled |
 
 The WAL directory records its format in `<data-dir>/wal/.qrdb-wal-format`.
 Before v0.25.1-alpha the SDK node wrote its WAL `WithoutEncryption` even when

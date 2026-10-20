@@ -25,8 +25,52 @@ are not reconstructed here — their history is in the git log.
   a node joins through a changed listener. See
   `docs/clustering/architecture.md`.
 
+### Changed
+
+- **The isolation policy governs isolated tenants only** (**BREAKING**). A
+  shared (`prefix`) tenant is never refused by the cluster floor or by its own
+  `strict` opt-in, and a strict floor is not refused over shared tenants.
+  `tenant.StrictRequiresDedicatedStorageError` is deleted; the tighten-only
+  rule on the floor and on a tenant's policy is unchanged.
+- **A home store for every isolated tenant, in every mode** (**BREAKING**).
+  Every `barrier`, `volume` and `raft` tenant keeps its identity records --
+  users, roles, factors, invitations, the DEK keyring -- in its own home store,
+  whatever its isolation policy; the policy decides only operator verbs,
+  backups and relay. Raft mode serves the home from a dedicated Raft group on a
+  WAL under the tenant's key, and standalone from `tenant.LocalHomes`, a store
+  under the tenant's barrier. A node whose copy has not caught up refuses with
+  a retryable `lifecycle.TenantHomeCatchingUpError`. A tenant's policy may be
+  tightened at any time; `tenant.StrictPolicyTightenError` and
+  `tenant.StrictHomeUnsupportedError` are deleted. The system shard holds none
+  of them, and the shared-tenant-key namespace that held an `operator-access`
+  tenant's records is deleted with its store: `seal.NewTenantSharedKVStore`,
+  `seal.TenantSharedNamespace`, and that namespace's range in
+  `service.TenantKeyPrefixes` are gone. There is no migration: pre-release
+  isolated tenants are re-created.
+- **A `barrier` tenant is registered and restored the way a `volume` tenant
+  is** (**BREAKING**). `seal.BarrierRegistry.RegisterBarrierTenant` replaces
+  `RegisterTenantPooled` and `RegisterTenantPooledSystemManaged`, which are
+  deleted. The tenant takes a generic-pool slot, its store moves from
+  `{poolBase}/{tenant}` to `{DataRoot}/barrier`, and it gets a tenant-root
+  record, so `RestoreVolumeTenants` brings it back at boot (system-managed
+  unsealed, self-managed sealed). Registration now needs the system barrier
+  unsealed. Existing `barrier` tenants are re-created.
+
 ### Fixed
 
+- **A value a barrier stores is no longer lost to a WAL epoch purge.** The
+  system barrier and every isolated tenant's barrier double as their Raft
+  host's WAL barrier. After a snapshot, go-quicraft purged every epoch below
+  its WAL and snapshot floor, including the epochs of values the barrier had
+  stored and of tenant root keys wrapped by `system-barrier`. Each unseal
+  rotates the epoch, so after one restart and one snapshot those values stopped
+  decrypting: an auto-unsealed tenant stayed sealed on that node after its next
+  restart, and its home group never started there. A `StorageBarrier` now pins
+  every epoch it encrypts under, and on unseal every epoch its blob still
+  knows, so the purge leaves them alone.
+- **A `barrier` tenant survives a restart.** Nothing restored a `barrier`
+  tenant's barrier at boot, so after a restart every request for it failed
+  `barrier is sealed`.
 - **A user auth factor add or rotate naming an id already in use is refused
   instead of overwriting it.** The new factor's primary record was written
   unconditionally, so an add reusing an existing id replaced that factor's
@@ -690,6 +734,23 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A dedicated tenant can be created with its first admin again.**
+  `tenant create` for a self-managed `barrier`, `volume` or `raft` tenant
+  failed with `tenant: barrier is sealed`. The admin's CSR was sent to the
+  tenant's own login CA (Key B), whose records live behind the barrier that
+  admin has yet to initialize. Such an admin is now signed by the cluster CA
+  (Key A) through `ceremony.AdminCSRSigner`, the way the system admin is
+  signed at first boot. The certificate's first OU names the tenant, so it
+  authenticates only as that tenant's admin. Composers can inject their own
+  signer through `bootstrap.Dependencies.PendingAdminSigner` /
+  `service.TenantOnboardingDeps.PendingAdminSigner`. A node serving
+  bring-your-own TLS has no cluster CA. It still signs a system-managed
+  tenant's admin with Key B, which serves from creation. It refuses a
+  self-managed tenant's CSR before the tenant is created, as first boot does
+  (`ceremony.AdminCredentialRequiresCAError`, `FailedPrecondition`). Before
+  this, the CSR failed after the tenant was written, and the undo retired
+  the id. Bring the admin's own certificate (`--admin-cert`,
+  `--trust-anchors`) instead. `prefix` tenants are unchanged.
 - **A membership change no longer fails because it arrived mid-election.**
   `admin member add`, `add-observer`, `promote` and `remove` were refused
   with `not leader for shard N, leader unknown` -- a refusal no transport can

@@ -732,9 +732,12 @@ func TestProvisionTenant_ReportsTheCommittedTenantRecord(t *testing.T) {
 			}, Dependencies{
 				Tenants: &fakeTenants{createAlreadyErr: tc.existing}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 				Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
-				TrustDomain:   onboardingTrustDomain,
-				PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
-				Logger:        discardLogger(),
+				// A pending admin's CSR is signed by the cluster CA, the
+				// tenant's own being sealed until that admin initializes it.
+				PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)},
+				TrustDomain:        onboardingTrustDomain,
+				PendingAdmins:      tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
+				Logger:             discardLogger(),
 			})
 			if err != nil {
 				t.Fatalf("ProvisionTenant: %v", err)
@@ -768,7 +771,7 @@ func TestProvisionTenant_DoesNotInitTenantBarrier(t *testing.T) {
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: signer, Binder: &fakeBinder{}, PendingAdmins: pending,
+		PendingAdminSigner: signer, Binder: &fakeBinder{}, PendingAdmins: pending,
 		TrustDomain: onboardingTrustDomain,
 		Barriers:    reg, Logger: discardLogger(),
 	})

@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -1311,6 +1312,13 @@ func TestEmbeddedTenant_BarrierStatus(t *testing.T) {
 	}
 }
 
+// servingNodes is a status's serving-node list, and wantServingNodes its
+// conversion.
+var (
+	servingNodes     = []tenant.BarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+	wantServingNodes = []transport.TenantBarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+)
+
 func TestEmbeddedTenant_BarrierStatus_ShamirFields(t *testing.T) {
 	svc := &mockTenantService{
 		barrierStatusFn: func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
@@ -1322,6 +1330,8 @@ func TestEmbeddedTenant_BarrierStatus_ShamirFields(t *testing.T) {
 				HardwareBacked:  true,
 				ShamirThreshold: 2,
 				ShamirTotal:     5,
+				KeyFingerprint:  "0a1b2c",
+				Nodes:           servingNodes,
 			}, nil
 		},
 	}
@@ -1329,6 +1339,12 @@ func TestEmbeddedTenant_BarrierStatus_ShamirFields(t *testing.T) {
 	resp, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "t-shamir"})
 	if err != nil {
 		t.Fatalf("TenantBarrierStatus: %v", err)
+	}
+	if resp.KeyFingerprint != "0a1b2c" {
+		t.Errorf("fingerprint mapping: got %q, want 0a1b2c", resp.KeyFingerprint)
+	}
+	if !reflect.DeepEqual(resp.Nodes, wantServingNodes) {
+		t.Errorf("Nodes = %+v, want %+v", resp.Nodes, wantServingNodes)
 	}
 	if resp.TenantID != "t-shamir" || !resp.Sealed || !resp.Initialized {
 		t.Errorf("base fields: resp = %+v", resp)

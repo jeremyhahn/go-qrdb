@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // While the composer's per-node-barrier-keys check refuses, an isolated
@@ -39,7 +38,7 @@ func TestTenantService_CreateTenant_IsolatedBeforePerNodeBarrierKeysActivation(t
 		}
 		return notActivePerNodeBarrierKeys()
 	}
-	svc := newUnsealedRaftService(t, WithPerNodeBarrierKeysGate(required))
+	svc, _ := newRaftService(t, WithPerNodeBarrierKeysGate(required))
 
 	for _, isolation := range []IsolationType{IsolationBarrier, IsolationVolume, IsolationRaft} {
 		_, err := svc.CreateTenant(ctx, "acme", "Acme", isolation, WithIsolationPolicy(TenantIsolationPolicyStrict))
@@ -80,7 +79,7 @@ func TestTenantService_UpdateTenant_ToIsolatedBeforePerNodeBarrierKeysActivation
 
 func TestWithPerNodeBarrierKeysGate_NilGatesNothing(t *testing.T) {
 	ctx := context.Background()
-	svc := newUnsealedRaftService(t, WithPerNodeBarrierKeysGate(nil))
+	svc, _ := newRaftService(t, WithPerNodeBarrierKeysGate(nil))
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationRaft, WithIsolationPolicy(TenantIsolationPolicyStrict)); err != nil {
 		t.Fatalf("CreateTenant(raft) on a node that gates nothing: %v", err)
 	}
@@ -90,16 +89,4 @@ func TestWithPerNodeBarrierKeysGate_NilGatesNothing(t *testing.T) {
 // before activation (pkg/server/lifecycle featureRequired).
 func notActivePerNodeBarrierKeys() error {
 	return &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
-}
-
-// newUnsealedRaftService is newRaftService with the system barrier
-// initialized: RegisterVolumeTenant, reached through CreateTenant, refuses
-// while it is sealed, and these tests are about the gate, not that barrier.
-func newUnsealedRaftService(t *testing.T, opts ...TenantServiceOption) *TenantService {
-	t.Helper()
-	svc, reg := newRaftService(t, opts...)
-	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
-	return svc
 }

@@ -191,9 +191,6 @@ func newReconcileService(t *testing.T) (*TenantService, *seal.BarrierRegistry, *
 	t.Helper()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
-		t.Fatalf("initialize system barrier: %v", err)
-	}
 	svc, err := NewTenantService(store, reg, testLogger(),
 		WithDefaultEntitlements(volumeEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {

@@ -647,18 +647,23 @@ func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
 	return nil
 }
 
-// initializeShamir initializes barrier under Shamir custody with the scope's
+// shamirSplit is the barrier step a Shamir initialization runs: the one-shot
+// seal.StorageBarrier.InitializeShamir, or PrepareShamir, the first half of
+// the two-request initialization the owner's signed statement completes.
+type shamirSplit func(context.Context, seal.FactorPolicy) (*seal.ShamirInitParams, error)
+
+// initializeShamir runs split under Shamir custody with the scope's
 // initialization marked in flight (initializing): a registration, an
 // unenrolment or a second initialization is refused with
 // ErrInitializationInProgress until it returns. mu is the owning service's
 // lock, which guards the mark; it is not held across the initialization,
 // because the barrier calls back into PrepareRoster, Distribute and
 // Committed, which take it.
-func (h *holderScope) initializeShamir(ctx context.Context, mu sync.Locker, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+func (h *holderScope) initializeShamir(ctx context.Context, mu sync.Locker, split shamirSplit, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
 	var params *seal.ShamirInitParams
 	err := h.whileInitializing(mu, func() error {
 		var err error
-		params, err = barrier.InitializeShamir(ctx, policy)
+		params, err = split(ctx, policy)
 		return err
 	})
 	return params, err

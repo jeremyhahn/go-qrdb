@@ -21,15 +21,19 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -126,7 +130,9 @@ func TestCompletePendingTenantAdmin_NilPendingAdmins_NoOp(t *testing.T) {
 	n := &Node{User: users, Role: roles} // PendingAdmins deliberately nil
 
 	hook := n.completePendingTenantAdmin(discardLog())
-	hook(context.Background(), "acme") // must not panic
+	if err := hook(context.Background(), "acme", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 }
 
 // TestCompletePendingTenantAdmin_NilUser_NoOp proves a Node with no User
@@ -142,7 +148,9 @@ func TestCompletePendingTenantAdmin_NilUser_NoOp(t *testing.T) {
 	n := &Node{PendingAdmins: pending, Role: roles} // User deliberately nil
 
 	hook := n.completePendingTenantAdmin(discardLog())
-	hook(ctx, "acme")
+	if err := hook(ctx, "acme", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 
 	got, err := pending.Get(ctx, "acme")
 	if err != nil {
@@ -164,7 +172,9 @@ func TestCompletePendingTenantAdmin_NilRole_NoOp(t *testing.T) {
 	n := &Node{PendingAdmins: pending, User: users} // Role deliberately nil
 
 	hook := n.completePendingTenantAdmin(discardLog())
-	hook(ctx, "acme")
+	if err := hook(ctx, "acme", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 
 	got, err := pending.Get(ctx, "acme")
 	if err != nil {
@@ -194,7 +204,9 @@ func TestCompletePendingTenantAdmin_ErrTenantSealed_Deferred(t *testing.T) {
 	n := &Node{PendingAdmins: pending, User: users, Role: sealedRoles}
 
 	hook := n.completePendingTenantAdmin(discardLog())
-	hook(ctx, "acme") // must not panic, and must not treat this as a hard failure
+	if err := hook(ctx, "acme", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 
 	got, err := pending.Get(ctx, "acme")
 	if err != nil {
@@ -227,7 +239,9 @@ func TestCompletePendingTenantAdmin_Success_CreatesAccount(t *testing.T) {
 	n := &Node{PendingAdmins: pending, User: users, Role: roles}
 
 	hook := n.completePendingTenantAdmin(discardLog())
-	hook(ctx, "acme")
+	if err := hook(ctx, "acme", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 
 	u, err := users.GetUserByUsername(ctx, "acme", "admin")
 	if err != nil {
@@ -288,7 +302,9 @@ func TestCompletePendingTenantAdmin_RunsAsTheCallerOnItsOwnClock(t *testing.T) {
 
 	caller, cancel := context.WithCancel(context.WithValue(context.Background(), callerKey{}, "rt1-admin"))
 	cancel() // the request's deadline is already spent
-	n.completePendingTenantAdmin(discardLog())(caller, "acme")
+	if err := n.completePendingTenantAdmin(discardLog())(caller, "acme", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 
 	if len(recording.seen) == 0 {
 		t.Fatal("the completion created no role")
@@ -320,9 +336,96 @@ func TestCompletePendingTenantAdmin_NoRecord_NoOp(t *testing.T) {
 	n := &Node{PendingAdmins: pending, User: users, Role: roles}
 
 	hook := n.completePendingTenantAdmin(discardLog())
-	hook(ctx, "no-such-tenant") // must not panic
+	if err := hook(ctx, "no-such-tenant", tenant.AdminCompletionWithin); err != nil {
+		t.Fatalf("hook = %v; want nil", err)
+	}
 
 	if _, err := users.GetUserByUsername(ctx, "no-such-tenant", "admin"); err == nil {
 		t.Fatal("expected no account to be created for a tenant with no pending record")
+	}
+}
+
+// tenantServiceWithHook builds a TenantService whose barrier-ready hook is
+// n's, over an initialized in-memory system barrier, and creates tenantID in
+// it.
+func tenantServiceWithHook(t *testing.T, n *Node, tenantID string) *tenant.TenantService {
+	t.Helper()
+	ctx := context.Background()
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("pending-admin-system-passphrase"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	system, err := seal.NewStorageBarrier(discardLog(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := system.Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize (system): %v", err)
+	}
+	reg, _, _ := sealtest.PooledRegistry(t, system)
+	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, discardLog(),
+		tenant.WithBarrierReadyHook(n.completePendingTenantAdmin(discardLog())))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	if _, err := svc.CreateTenant(ctx, tenantID, tenantID, ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	return svc
+}
+
+// TestCompletePendingTenantAdmin_AccountExistsWhenInitReturns proves the
+// pending admin's account is created inside the barrier init request: the
+// moment the init returns, the account exists and the record is gone, so the
+// caller's next request -- the admin's first login -- finds it.
+func TestCompletePendingTenantAdmin_AccountExistsWhenInitReturns(t *testing.T) {
+	ctx := context.Background()
+	users, roles := newRealUserAndRole(t)
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	n := &Node{PendingAdmins: pending, User: users, Role: roles}
+	svc := tenantServiceWithHook(t, n, "acme")
+	putPending(t, pending, "acme", "admin", spkiThumbprint(t))
+
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, "acme", []byte("acme-passphrase"), 0, 0, seal.StrategyPassphrase, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+
+	admin, err := users.GetUserByUsername(ctx, "acme", "admin")
+	if err != nil {
+		t.Fatalf("the admin account did not exist when the init returned: %v", err)
+	}
+	if len(admin.CertBindings) != 1 {
+		t.Fatalf("admin bindings = %+v; want the onboarded certificate's", admin.CertBindings)
+	}
+	if got, err := pending.Get(ctx, "acme"); err != nil || got != nil {
+		t.Fatalf("pending after the init = %+v, %v; want it gone", got, err)
+	}
+}
+
+// TestCompletePendingTenantAdmin_InitFailsWithTheCompletionError proves a
+// completion that cannot create the account fails the init request with the
+// completion's typed error rather than answering success over a missing
+// admin.
+func TestCompletePendingTenantAdmin_InitFailsWithTheCompletionError(t *testing.T) {
+	ctx := context.Background()
+	users, roles := newRealUserAndRole(t)
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	n := &Node{PendingAdmins: pending, User: users, Role: roles}
+	svc := tenantServiceWithHook(t, n, "acme")
+	putPending(t, pending, "acme", "admin", spkiThumbprint(t))
+	// An account of the admin's name that is not the tenant's Admin: the
+	// completion must not adopt it, and no retry changes that.
+	if _, err := users.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "admin", TenantID: "acme"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, "acme", []byte("acme-passphrase"), 0, 0, seal.StrategyPassphrase, nil)
+	var conflict *bootstrap.PendingAdminAccountConflictError
+	if !errors.As(err, &conflict) || res != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy = %+v, %v; want nil and *bootstrap.PendingAdminAccountConflictError", res, err)
+	}
+	if got, err := pending.Get(ctx, "acme"); err != nil || got == nil {
+		t.Fatalf("pending after the failed init = %+v, %v; want it kept for the next unseal or status read", got, err)
 	}
 }

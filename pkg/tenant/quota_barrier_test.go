@@ -685,6 +685,10 @@ func TestTenantService_BarrierStatus_Initialized(t *testing.T) {
 	if st.Strategy == "" {
 		t.Error("expected non-empty Strategy")
 	}
+	// An unsealed keyed barrier names its key by a 16-byte check value.
+	if len(st.KeyFingerprint) != 32 {
+		t.Errorf("KeyFingerprint = %q, want 32 hex characters", st.KeyFingerprint)
+	}
 }
 
 func TestTenantService_BarrierStatus_NotRegistered(t *testing.T) {
@@ -741,6 +745,9 @@ func TestTenantService_BarrierStatus_Sealed(t *testing.T) {
 	}
 	if !st.Initialized {
 		t.Error("expected Initialized = true")
+	}
+	if st.KeyFingerprint != "" {
+		t.Errorf("KeyFingerprint = %q for a sealed barrier, want none", st.KeyFingerprint)
 	}
 }
 

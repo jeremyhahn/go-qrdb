@@ -24,8 +24,7 @@ import (
 // Compile-time interface checks. Only the capability-carrying variants
 // implement AtomicKVStore / GuardedBatchKVStore, so the type assertion a
 // caller performs after NewNamespacedKVStore answers honestly over a
-// non-capable inner store — the same discipline seal.NewTenantSharedKVStore
-// uses.
+// non-capable inner store.
 var (
 	_ KVStore                  = (*namespacedKVStore)(nil)
 	_ AtomicKVStore            = (*atomicNamespacedKVStore)(nil)

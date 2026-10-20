@@ -27,17 +27,19 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // migrateStagingSuffix names the staging root-key path for a tenant migration.
 const migrateStagingSuffix = ".migrating"
 
 // MigrateEncryption migrates a single IsolationVolume tenant's dedicated barrier
-// from none to a keyed strategy, re-encrypting both halves of its at-rest data
-// — the state-machine Pebble and the Raft WAL — in place, then transitioning the
-// live tenant barrier to the keyed strategy. The tenant Host is quiesced
-// (closed) for the duration and reopened keyed at the end; only this tenant is
-// affected.
+// from none to a keyed strategy, re-encrypting all of its at-rest data in place
+// — the tenant Host's state-machine Pebble and Raft WAL, and every dedicated
+// raft shard the tenant runs beside it (its home group, tenantShardRecode) —
+// then transitioning the live tenant barrier to the keyed strategy. The tenant
+// Host and the shards are quiesced (closed) for the duration and reopened keyed
+// afterwards; only this tenant is affected.
 //
 // opts.TargetStrategy must be a keyed strategy. The migration is crash-safe via
 // the tenant barrier's journal: copy -> verify -> atomic swap -> adopt key.
@@ -55,6 +57,20 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	// Attach (once the keyed barrier is installed) and via defer on any error path.
 	r.migrating.Store(tenantID, struct{}{})
 	defer r.migrating.Delete(tenantID)
+	// The tenant's dedicated raft shards -- its home group -- run beside the
+	// Host under the same barrier: hold them stopped until the keyed barrier is
+	// installed. keyedSealed is set once a Shamir target installs a SEALED keyed
+	// barrier, when a shard that cannot start for that reason is the expected
+	// state pending the holders' quorum, not a migration failure. The release
+	// runs after the finalize defer below, so a failed migration's shards start
+	// under the rolled-back barrier.
+	shards := r.raftShards.Load().beginTenantShardRecode(tenantID)
+	keyedSealed := false
+	defer func() {
+		if rerr := shards.Release(ctx, keyedSealed); rerr != nil && err == nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-reattach-shards", Err: rerr}
+		}
+	}()
 
 	tb, err := r.barrierReg.GetTenant(tenantID)
 	if err != nil {
@@ -114,16 +130,30 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	}
 	j.StagingRootKeyPath = target.RootKeyPath()
 	// Record the directories the commit swaps so a crash-recovery pass can roll
-	// the swaps forward (or back) from the journal alone. The volume tenant's
-	// snapshots ride the smDir swap, so no staged-snapshot record is needed.
-	j.StoreDirs = []string{smDir, walDir}
+	// the swaps forward (or back) from the journal alone. The Host's snapshots
+	// ride the smDir swap; the shards' are staged in the shared host tree and
+	// recorded as the copy stages them.
+	j.StoreDirs = append([]string{smDir, walDir}, shards.StoreDirs()...)
+	// A standalone tenant's home store (tenant.LocalHomes) keeps its IAM
+	// records, CA material and DEK keyring in the barrier's own backend, under
+	// the HomeName keyspace, beside the root key and this journal: no store
+	// directory to swap. They are re-encrypted record by record into a staging
+	// keyspace the commit copies over them (a raft tenant's home group is one
+	// of its shards, and this keyspace is then empty).
+	j.StagedRecords = []seal.StagedRecords{{
+		Prefix:        tenant.HomeName + "/",
+		StagingPrefix: target.RootKeyPath() + "/records/",
+	}}
 	// Registered BEFORE the first CheckpointMigration so any post-begin failure
 	// rolls the journal to terminal PhaseFailed — else a leftover non-terminal
 	// journal wedges the next BeginMigration with ErrMigrationInProgress.
 	defer func() {
 		if err != nil && !j.Committed() {
-			_ = os.RemoveAll(smDir + database.KeyedDirSuffix)
-			_ = os.RemoveAll(walDir + database.KeyedDirSuffix)
+			shards.Discard()
+			_ = source.RollbackStagedRecords(ctx, j.StagedRecords)
+			for _, dir := range j.StoreDirs {
+				_ = os.RemoveAll(dir + database.KeyedDirSuffix)
+			}
 			j.Phase = seal.PhaseFailed
 			_ = source.CheckpointMigration(ctx, j)
 			_ = source.FinishMigration(ctx)
@@ -133,8 +163,22 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		err = cerr
 		return err
 	}
+	r.migrationPhase(tenantID, j.Phase)
 
-	// Quiesce: close the tenant Host, releasing its locks on the SM Pebble + WAL.
+	// Quiesce: drain the standalone home store's admitted operations (the
+	// migrating guard above refuses new ones until the keyed barrier is
+	// installed), stop the tenant's shards, then close the tenant Host,
+	// releasing its locks on the SM Pebble + WAL. The home store and the
+	// shards stop first: the Host's close below seals the barrier they write
+	// through.
+	if derr := r.drainHomeOps(ctx, tenantID); derr != nil {
+		err = derr
+		return err
+	}
+	if qerr := shards.Quiesce(); qerr != nil {
+		err = &TenantHostError{TenantID: tenantID, Op: "migrate-quiesce-shards", Err: qerr}
+		return err
+	}
 	if cerr := r.Close(tenantID); cerr != nil {
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-quiesce", Err: cerr}
 		return err
@@ -164,6 +208,7 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		err = cerr
 		return err
 	}
+	r.migrationPhase(tenantID, j.Phase)
 	smKeyed := smDir + database.KeyedDirSuffix
 	_ = os.RemoveAll(smKeyed)
 	recode := database.ReencryptPebbleStore
@@ -189,6 +234,19 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-wal", Err: cerr}
 		return err
 	}
+	if cerr := shards.Copy(ctx, source, target, recode, func(staged []database.StagedSnapshot) error {
+		j.StagedSnapshots = staged
+		return source.CheckpointMigration(ctx, j)
+	}); cerr != nil {
+		err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-shards", Err: cerr}
+		return err
+	}
+	for _, rec := range j.StagedRecords {
+		if _, cerr := source.StageMigratedRecords(ctx, target, rec); cerr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-records", Err: cerr}
+			return err
+		}
+	}
 
 	// Verify the SM Pebble round-trip (no data loss). The WAL is verified
 	// implicitly by the host reopen below, which replays it into the keyed SM.
@@ -197,31 +255,51 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		err = cerr
 		return err
 	}
+	r.migrationPhase(tenantID, j.Phase)
 	if verr := database.VerifyReencryptedStore(ctx, smDir, srcEnc, smKeyed, dstEnc); verr != nil {
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-verify-sm", Err: verr}
 		return err
 	}
+	if verr := shards.Verify(ctx, source, target); verr != nil {
+		err = &TenantHostError{TenantID: tenantID, Op: "migrate-verify-shards", Err: verr}
+		return err
+	}
+	for _, rec := range j.StagedRecords {
+		if verr := source.VerifyMigratedRecords(ctx, target, rec); verr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-verify-records", Err: verr}
+			return err
+		}
+	}
 
-	// Commit (point of no return): swap dirs, adopt the keyed root key.
+	// Commit (point of no return): swap every dir, commit the shards' staged
+	// snapshots and the staged barrier records, then adopt the keyed root key.
 	j.Phase = seal.PhaseCommitting
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
 		err = cerr
 		return err
 	}
-	if serr := database.SwapStoreDir(smDir); serr != nil {
-		err = &TenantHostError{TenantID: tenantID, Op: "migrate-swap-sm", Err: serr}
+	r.migrationPhase(tenantID, j.Phase)
+	for _, dir := range j.StoreDirs {
+		if serr := database.SwapStoreDir(dir); serr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-swap-store", Err: serr}
+			return err
+		}
+	}
+	if cerr := shards.CommitSnapshots(ctx); cerr != nil {
+		err = &TenantHostError{TenantID: tenantID, Op: "migrate-commit-snapshots", Err: cerr}
 		return err
 	}
-	if serr := database.SwapStoreDir(walDir); serr != nil {
-		err = &TenantHostError{TenantID: tenantID, Op: "migrate-swap-wal", Err: serr}
+	if cerr := source.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
+		err = &TenantHostError{TenantID: tenantID, Op: "migrate-commit-records", Err: cerr}
 		return err
 	}
 	if aerr := source.AdoptMigratedRootKey(ctx, target); aerr != nil {
 		err = aerr
 		return err
 	}
-	database.RemoveStoreBackup(smDir)
-	database.RemoveStoreBackup(walDir)
+	for _, dir := range j.StoreDirs {
+		database.RemoveStoreBackup(dir)
+	}
 
 	// Replace the live (none) tenant barrier with a keyed one reopened from the
 	// now-keyed canonical root key, then drop the staging blob.
@@ -239,6 +317,7 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-replace-barrier", Err: perr}
 		return err
 	}
+	keyedSealed = keyed.IsSealed()
 
 	j.Phase = seal.PhaseComplete
 	_ = source.CheckpointMigration(ctx, j)
@@ -272,6 +351,14 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	r.logger.Info("tenant encryption migration complete",
 		"tenant", tenantID, "strategy", string(opts.TargetStrategy))
 	return nil
+}
+
+// migrationPhase reports the durable journal checkpoint phase of tenantID's
+// migration to onMigrationPhase, when set.
+func (r *TenantHostRegistry) migrationPhase(tenantID string, phase seal.MigrationPhase) {
+	if r.onMigrationPhase != nil {
+		r.onMigrationPhase(tenantID, phase)
+	}
 }
 
 // reopenStrategyFor builds the keyed sealing strategy ReopenKeyed uses to

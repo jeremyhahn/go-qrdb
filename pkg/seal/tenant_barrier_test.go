@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // ---------- NewTenantBarrier tests ----------
@@ -545,5 +547,73 @@ func TestTenantBarrier_PutIfAbsent_Success(t *testing.T) {
 	}
 	if stored {
 		t.Error("expected stored=false for duplicate")
+	}
+}
+
+func TestNamespacedBackend_PutAllIfAllUnchanged_PrefixesGuardsAndWrites(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryBackend()
+	ns := NewNamespacedBackend("t1/", base)
+	if err := base.Put(ctx, "held", []byte("outside")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// "held" exists only OUTSIDE the namespace, so an absent guard on it holds.
+	applied, err := ns.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "held"}},
+		[]kvstore.KV{{Key: "held", Value: []byte("inside")}})
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if got, _ := base.Get(ctx, "t1/held"); string(got) != "inside" {
+		t.Errorf("t1/held = %q, want %q", got, "inside")
+	}
+	if got, _ := base.Get(ctx, "held"); string(got) != "outside" {
+		t.Errorf("held = %q, want untouched", got)
+	}
+
+	applied, err = ns.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "held", Value: []byte("inside")}},
+		[]kvstore.KV{{Key: "held", Delete: true}})
+	if err != nil || !applied {
+		t.Fatalf("delete: PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if ok, _ := base.Exists(ctx, "t1/held"); ok {
+		t.Error("t1/held survived a batched delete")
+	}
+}
+
+func TestNamespacedBackend_PutAllIfAllUnchanged_RefusesABaseWithoutIt(t *testing.T) {
+	ns := NewNamespacedBackend("t1/", nonGuardedBackend{NewMemoryBackend()})
+	_, err := ns.PutAllIfAllUnchanged(context.Background(), nil, []kvstore.KV{{Key: "k", Value: []byte("v")}})
+	if !errors.Is(err, ErrGuardedBatchUnsupported) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("err = %v, want ErrGuardedBatchUnsupported matching kvstore.ErrAtomicWriteUnsupported", err)
+	}
+}
+
+func TestTenantBarrier_PutAllIfAllUnchanged_EncryptsUnderTheTenantNamespace(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryBackend()
+	tb, err := NewTenantBarrier("tenant-1", testLogger(), base, BarrierConfig{}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewTenantBarrier: %v", err)
+	}
+	if err := tb.Initialize(ctx, MustCredentials(ctx, []byte("pw"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	applied, err := tb.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "k"}}, []kvstore.KV{{Key: "k", Value: []byte("v")}})
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if got, _ := tb.Get(ctx, "k"); string(got) != "v" {
+		t.Errorf("k = %q, want %q", got, "v")
+	}
+	raw, err := base.Get(ctx, "tenant-1/k")
+	if err != nil || string(raw) == "v" {
+		t.Errorf("tenant-1/k = (%q, %v), want ciphertext", raw, err)
+	}
+
+	applied, err = tb.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "k"}}, []kvstore.KV{{Key: "k", Value: []byte("w")}})
+	if err != nil || applied {
+		t.Fatalf("second create: PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
 	}
 }

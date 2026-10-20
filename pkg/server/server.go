@@ -1418,6 +1418,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 		s.adminSvc = s.opts.adminSvc
 	}
 
+	s.wireTenantHostShards()
 	s.wireStoreResolver()
 	s.wireTenantDataProbe()
 	s.wireReclaimStoreResolver()
@@ -1489,6 +1490,16 @@ func (s *Server) wireCompactionPolicies() {
 	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetCompactionPolicies(service.NewCompactionPolicies(reg))
+	}
+}
+
+// wireTenantHostShards gives the tenant Host registry the raft backend
+// factory, so an IsolationVolume tenant's encryption migration re-encrypts the
+// dedicated raft shards the tenant runs beside its Host -- its home group --
+// under the same tenant barrier. It is a no-op unless the server has both.
+func (s *Server) wireTenantHostShards() {
+	if s.opts.tenantHosts != nil && s.opts.raftBackend != nil {
+		s.opts.tenantHosts.raftShards.Store(s.opts.raftBackend)
 	}
 }
 

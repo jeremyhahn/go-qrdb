@@ -134,20 +134,37 @@ func TestResolveErrorIsTransient_ProducerDeclaresTransience(t *testing.T) {
 	})
 
 	t.Run("role store decrypt failure is not transient (N1)", func(t *testing.T) {
-		// A real, unsealed TenantBarrier wrapping a real encrypted KVStore --
-		// the same construction a dedicated-isolation tenant's role store
-		// uses in production (seal.NewTenantSharedKVStore).
-		tb := seal.WrapTenantBarrier("acme", sealtest.UnsealedBarrier(t))
-		shared := kvstore.NewMemoryKVStore()
-		encKV, err := seal.NewTenantSharedKVStore(tb, shared)
+		// A real, unsealed TenantBarrier wrapped the way an isolated tenant's
+		// home store is in production (seal.NewTenantBarrierKVStore), over a
+		// backend this test holds so it can reach the ciphertext beneath.
+		ctx := context.Background()
+		const passphrase = "resolve-producer-decrypt-failure"
+		strategy, err := seal.NewSoftwareStrategy(ctx, []byte(passphrase))
 		if err != nil {
-			t.Fatalf("NewTenantSharedKVStore: %v", err)
+			t.Fatalf("NewSoftwareStrategy: %v", err)
+		}
+		backend := seal.NewMemoryBackend()
+		tb, err := seal.NewTenantBarrier("acme", slog.Default(), backend, seal.BarrierConfig{DeploymentID: 1}, strategy)
+		if err != nil {
+			t.Fatalf("NewTenantBarrier: %v", err)
+		}
+		if err := tb.Initialize(ctx, seal.MustCredentials(ctx, []byte(passphrase))); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		if tb.IsSealed() {
+			if err := tb.Unseal(ctx, seal.MustCredentials(ctx, []byte(passphrase))); err != nil {
+				t.Fatalf("Unseal: %v", err)
+			}
+		}
+		encKV, err := seal.NewTenantBarrierKVStore(tb)
+		if err != nil {
+			t.Fatalf("NewTenantBarrierKVStore: %v", err)
 		}
 		svc, err := role.NewStore(encKV)
 		if err != nil {
 			t.Fatalf("role.NewStore: %v", err)
 		}
-		r, err := svc.CreateRole(context.Background(), &role.CreateRoleRequest{
+		r, err := svc.CreateRole(ctx, &role.CreateRoleRequest{
 			TenantID:    "acme",
 			Name:        "custom-role",
 			Permissions: []permission.Permission{permission.KVGet},
@@ -156,11 +173,12 @@ func TestResolveErrorIsTransient_ProducerDeclaresTransience(t *testing.T) {
 			t.Fatalf("CreateRole: %v", err)
 		}
 
-		// Tamper with the ciphertext directly in the SHARED (undecrypted)
-		// store, bypassing the seal-aware wrapper entirely, so the next read
-		// through encKV fails to decrypt it -- a real seal.ErrDecryptionFailed,
-		// not an asserted one.
-		keys, err := shared.List(context.Background(), "")
+		// Tamper with the ciphertext directly in the backend, bypassing the
+		// barrier entirely, so the next read through encKV fails to decrypt
+		// it -- a real seal.ErrDecryptionFailed, not an asserted one. The keys
+		// come from the store's own listing, so the barrier's key material
+		// beside them is left alone.
+		keys, err := encKV.List(ctx, "")
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -169,7 +187,8 @@ func TestResolveErrorIsTransient_ProducerDeclaresTransience(t *testing.T) {
 		}
 		tampered := false
 		for _, k := range keys {
-			raw, err := shared.Get(context.Background(), k)
+			physical := "acme/" + k
+			raw, err := backend.Get(ctx, physical)
 			if err != nil || raw == nil {
 				continue
 			}
@@ -183,7 +202,7 @@ func TestResolveErrorIsTransient_ProducerDeclaresTransience(t *testing.T) {
 			}
 			garbled := append([]byte(nil), raw...)
 			garbled[0] ^= 0xFF
-			if err := shared.Put(context.Background(), k, garbled); err != nil {
+			if err := backend.Put(ctx, physical, garbled); err != nil {
 				t.Fatalf("Put (tamper): %v", err)
 			}
 			tampered = true

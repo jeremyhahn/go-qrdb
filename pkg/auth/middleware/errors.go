@@ -500,8 +500,12 @@ func (e *FirstInitCertificateMismatchError) Error() string {
 	if presented == "" {
 		presented = "<no peer certificate>"
 	}
-	return "auth/middleware: tenant " + e.TenantID + "'s barrier may be initialized only with the certificate its first admin " +
-		e.Username + " was onboarded with (presented " + presented + ")"
+	admin := "its first admin"
+	if e.Username != "" {
+		admin += " " + e.Username
+	}
+	return "auth/middleware: tenant " + e.TenantID + "'s barrier may be initialized only with the certificate " +
+		admin + " was onboarded with (presented " + presented + ")"
 }
 
 // FirstInitNotOnboardedError is returned under auth.mtls_binding_policy

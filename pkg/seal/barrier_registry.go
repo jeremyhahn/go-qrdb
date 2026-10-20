@@ -633,13 +633,14 @@ func (r *BarrierRegistry) RegisterTenant(
 // allocatePooledBackend resolves the local directory the catalog's
 // Assignment names for tenantID -- this node's own mount for the
 // Assignment's pool, joined with the Assignment's tenant-relative path --
-// opens a per-tenant Pebble there, and wraps it as a StorageBackend. For a
+// opens a per-tenant Pebble in its "barrier" subdirectory, and wraps it as a
+// StorageBackend. For a
 // tenant.Service-registered tenant the Assignment already exists:
 // reserving it is that caller's job (pkg/tenant.CreateTenant, via
 // volume.Allocator.Reserve) before RegisterTenant is ever called, exactly
 // as architecture.md's Data flow section orders it -- entitlement and
 // reservation precede registration. For the generic, pool-name-free
-// registration primitives (RegisterTenantPooled and friends, below)
+// registration primitives (RegisterBarrierTenant and friends, below)
 // ensureGenericPoolAssignment reserves one on demand.
 func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID string) (StorageBackend, error) {
 	// Checked before ensureGenericPoolAssignment's Reserve below: a Reserve
@@ -655,18 +656,21 @@ func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID st
 		return nil, err
 	}
 
-	tenantPath, err := r.RequireInsideLocalPool(ctx, tenantID)
+	dataRoot, err := r.RequireInsideLocalPool(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	storage, err := perTenantReg.Open(ctx, tenantID, tenantPath)
+	// The same layout as a volume tenant's (registerVolumeTenant), so the
+	// boot restore finds every tenant's barrier store in one place.
+	barrierPath := filepath.Join(dataRoot, "barrier")
+	storage, err := perTenantReg.Open(ctx, tenantID, barrierPath)
 	if err != nil {
 		return nil, err
 	}
 	if r.logger != nil {
 		r.logger.Info("barrier-mode tenant resolved through its volume pool assignment",
 			slog.String("tenant", tenantID),
-			slog.String("path", tenantPath))
+			slog.String("barrier_path", barrierPath))
 	}
 
 	return NewStorageAdapter(storage), nil
@@ -674,19 +678,18 @@ func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID st
 
 // ensureGenericPoolAssignment reserves tenantID a path on this node's
 // lexicographically-first local pool when it has no catalog Assignment
-// yet. It exists only for the generic, pool-name-free registration
-// primitives (RegisterTenantPooled, RegisterTenantPooledWithStrategy,
-// RegisterTenantPooledShamir) that predate per-tenant, entitlement-gated
-// pool selection (pkg/tenant.CreateTenant) and carry no quota of their
-// own; the reservation it writes is capacity 0 (untracked against the
-// pool's capacity), matching those primitives' historical behavior of
-// drawing from whatever single pool the composer configured, with no
-// entitlement check -- they are trusted, in-process callers (e.g.
-// pkg/bootstrap), not tenant-create requests. A tenant.Service-registered
-// tenant never reaches here with a missing Assignment, since it has
-// already Reserved one (with its own entitled pool and real quota) before
-// calling RegisterTenant; for it this is a no-op, because Resolve already
-// succeeds.
+// yet. It exists for the pool-name-free registrations: RegisterBarrierTenant
+// (an IsolationBarrier tenant names no pool and has no pool entitlement),
+// and the generic primitives RegisterTenantPooledWithStrategy and
+// RegisterTenantPooledShamir. The reservation it writes is capacity 0
+// (untracked against the pool's capacity), drawing from whatever single
+// pool the composer configured with no entitlement check -- these are
+// trusted, in-process callers (pkg/tenant.CreateTenant for a barrier
+// tenant, pkg/bootstrap), not raw tenant-create requests. A volume or raft
+// tenant never reaches here with a missing Assignment, since
+// pkg/tenant.CreateTenant has already Reserved one (with its own entitled
+// pool and real quota) before registering; for it this is a no-op, because
+// Resolve already succeeds.
 func (r *BarrierRegistry) ensureGenericPoolAssignment(ctx context.Context, tenantID string) error {
 	allocator, resolver := r.volumeResources()
 	if allocator == nil || resolver == nil {
@@ -943,12 +946,12 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 }
 
 // RegisterVolumeTenant registers a durable, barrier-isolated tenant for the
-// IsolationVolume mode and returns the tenant's filesystem DataRoot. Unlike
-// RegisterTenantPooled (whose barrier Pebble occupies the entire per-tenant
-// pool directory), the IsolationVolume layout reserves the pool directory as
-// the tenant's DataRoot and places the barrier IAM Pebble in a dedicated
-// "barrier" subdirectory, leaving "databases" free for the per-tenant Raft
-// host's state. The resulting layout is:
+// IsolationVolume mode and returns the tenant's filesystem DataRoot. The
+// IsolationVolume layout reserves the pool directory as the tenant's DataRoot
+// and places the barrier IAM Pebble in a dedicated "barrier" subdirectory,
+// leaving "databases" free for the per-tenant Raft host's state. Every pooled
+// tenant barrier uses the same layout (allocatePooledBackend,
+// RegisterBarrierTenant). The resulting layout is:
 //
 //	{poolRoot}/{tenantID}/barrier      — barrier IAM Pebble (this registration)
 //	{poolRoot}/{tenantID}/databases    — per-tenant Raft host state (caller)
@@ -1096,33 +1099,45 @@ func (r *BarrierRegistry) RegisterTenantDefault(tenantID string) (*TenantBarrier
 	return r.RegisterTenant(context.Background(), tenantID, base, config, r.systemStrategies()...)
 }
 
-// RegisterTenantPooled creates and registers a durable, barrier-isolated
-// tenant. It mirrors RegisterTenantDefault but passes a nil base backend
-// so RegisterTenant takes the pool-driven flow: a per-tenant path is
-// pulled from the configured volume pool and a dedicated per-tenant Pebble
-// is opened at that path (see WithVolumeAllocator / WithVolumeResolver / WithPerTenantRegistry). The
-// tenant inherits the system barrier's sealing strategies so its DEK is
-// wrapped with the same posture as the system barrier.
+// RegisterBarrierTenant registers an IsolationBarrier tenant's durable
+// barrier. The tenant is placed on this node's first local pool when it has
+// no Assignment yet (ensureGenericPoolAssignment), then registered exactly as
+// a volume tenant is: its barrier store at {dataRoot}/barrier and its
+// key-management posture persisted, so the boot restore
+// (RestoreVolumeTenants) re-attaches it -- and, for a system-managed tenant,
+// unseals it -- after a restart. Its records, its home store included, are
+// encrypted under the tenant's own DEK in that store, never in the shared
+// system store.
 //
-// This is the registration path for IsolationBarrier tenants that do not
-// specify their own strategy: their IAM data (and any other per-tenant
-// state) is encrypted with the tenant's own DEK and stored under the
-// tenant's "{tenantID}/" namespace in an independent backend, never in the
-// shared system store. When the volume pool / per-tenant registry is not
-// configured, RegisterTenant returns ErrPoolNotConfigured /
-// ErrPerTenantRegistryNotConfigured.
-//
-// Inheritance of the system strategy is the DEFAULT. A tenant that needs
-// its own sealing posture (e.g. TPM2 or Shamir) registers via
-// RegisterTenantPooledWithStrategy instead.
-func (r *BarrierRegistry) RegisterTenantPooled(ctx context.Context, tenantID string) (*TenantBarrier, error) {
-	return r.RegisterTenant(ctx, tenantID, nil, tenantBarrierConfig(tenantID), r.systemStrategies()...)
+// autoUnseal selects the key-management posture, as for RegisterVolumeTenant:
+// true wraps the DEK under the system barrier so the tenant initializes and
+// re-attaches credential-free; false inherits the system barrier's own
+// strategies and leaves init and unseal to the tenant admin. The barrier is
+// returned registered but neither initialized nor unsealed.
+func (r *BarrierRegistry) RegisterBarrierTenant(ctx context.Context, tenantID string, autoUnseal bool) (*TenantBarrier, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	// Checked before ensureGenericPoolAssignment's Reserve, as in
+	// allocatePooledBackend: a reservation for a registration that was always
+	// going to fail would leak.
+	if r.perTenantRegistry() == nil {
+		return nil, ErrPerTenantRegistryNotConfigured
+	}
+	if r.system == nil || r.system.IsSealed() {
+		return nil, ErrSealed
+	}
+	if err := r.ensureGenericPoolAssignment(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	_, tb, err := r.registerVolumeTenant(ctx, tenantID, autoUnseal, false)
+	return tb, err
 }
 
 // RegisterTenantPooledWithStrategy creates and registers a durable,
-// barrier-isolated tenant using the SAME durable Pebble-pool backend as
-// RegisterTenantPooled, but seals the tenant's DEK with the GIVEN strategies
-// instead of inheriting the system barrier's posture.
+// barrier-isolated tenant on a durable Pebble-pool backend, sealing the
+// tenant's DEK with the GIVEN strategies instead of inheriting the system
+// barrier's posture.
 //
 // This is the registration path for IsolationBarrier tenants that supply
 // their own sealing strategy (e.g. TPM2 or Shamir): the per-tenant path is
@@ -1131,8 +1146,8 @@ func (r *BarrierRegistry) RegisterTenantPooled(ctx context.Context, tenantID str
 // the volume pool / per-tenant registry is not configured, RegisterTenant
 // returns ErrPoolNotConfigured / ErrPerTenantRegistryNotConfigured.
 //
-// At least one strategy must be supplied; callers that want to inherit the
-// system posture use RegisterTenantPooled instead.
+// At least one strategy must be supplied; an IsolationBarrier tenant that
+// inherits the system posture registers through RegisterBarrierTenant.
 func (r *BarrierRegistry) RegisterTenantPooledWithStrategy(
 	ctx context.Context,
 	tenantID string,
@@ -1237,21 +1252,9 @@ func (r *BarrierRegistry) systemBarrierStrategy() SealingStrategy {
 	return NewSystemBarrierStrategy(r.system)
 }
 
-// RegisterTenantPooledSystemManaged creates and registers a durable,
-// barrier-isolated tenant whose root key is wrapped under the SYSTEM barrier
-// (the system-managed auto-unseal mode). It mirrors RegisterTenantPooled but
-// seals the tenant DEK with the SystemBarrierStrategy instead of inheriting the
-// system barrier's own (credential-bound) strategy, so the tenant can be
-// initialized credential-free at create and re-attached credential-free at
-// boot. The pooled Pebble backend is allocated exactly as for
-// RegisterTenantPooled; only the sealing posture differs.
-func (r *BarrierRegistry) RegisterTenantPooledSystemManaged(ctx context.Context, tenantID string) (*TenantBarrier, error) {
-	return r.RegisterTenant(ctx, tenantID, nil, tenantBarrierConfig(tenantID), r.systemBarrierStrategy())
-}
-
 // systemStrategies returns the system barrier's sealing strategies as a
 // slice suitable for passing to RegisterTenant. It is the inheritance seam
-// shared by RegisterTenantDefault and RegisterTenantPooled.
+// used by RegisterTenantDefault and RegisterVolumeTenant.
 func (r *BarrierRegistry) systemStrategies() []SealingStrategy {
 	strategies := r.system.Strategies()
 	strategySlice := make([]SealingStrategy, 0, len(strategies))
@@ -1589,29 +1592,25 @@ func (r *BarrierRegistry) TenantStatus(tenantID string) (*BarrierStatus, error) 
 	return tb.Status(), nil
 }
 
-// ImportTenant registers a volume-backed tenant barrier and initializes it
-// from a replicated root-key context rather than generating a new root key.
-// It is the high-level entry point for bootstrapping follower replicas in a
-// multi-node tenant Raft group.
+// ImportTenant registers a volume-backed, owner-sealed tenant barrier and
+// initializes it from the portable sealed root-key blob a peer replica holds,
+// rather than generating a new root key. It bootstraps a follower replica of
+// a self-managed tenant in a multi-node tenant Raft group; a platform-custody
+// tenant's replicas initialize their own keys instead, and import nothing.
 //
-// The tenant is registered via RegisterVolumeTenant, resolved through the
-// catalog's Assignment exactly as the leader that created the tenant
+// A barrier the node already registered for the tenant -- the uninitialized,
+// sealed shell placement registers when it assigns the node to the tenant's
+// group -- is the one initialized; one already initialized refuses the blob
+// with ErrAlreadyInitialized. Otherwise the tenant is registered via
+// RegisterVolumeTenant, resolved through the catalog's Assignment exactly as the leader that created the tenant
 // resolved it: there is no "allocate a fresh path" branch here, because
 // every follower sees the SAME Assignment and is opening its own
-// per-tenant Pebble under it for the first time. After registration, one
-// of two initialization paths is taken:
+// per-tenant Pebble under it for the first time. The blob is then stored
+// verbatim (ImportSealedBlob) and the barrier remains sealed: the tenant
+// unseals it later with their own credential.
 //
-//   - autoUnseal=true (system-managed): calls ImportRootKey with the supplied
-//     ImportedKey; the root key is re-sealed under this node's system barrier
-//     strategy and the barrier is immediately unsealed, yielding identical DEKs
-//     to the leader. The system barrier must be unsealed before calling.
-//
-//   - autoUnseal=false (self-managed): calls ImportSealedBlob with the supplied
-//     blob; the portable sealed root key is stored verbatim and the barrier
-//     remains sealed. The tenant unseals it later with their own credential.
-//
-// Returns the registered TenantBarrier on success. An initialization that
-// fails unregisters the barrier it registered, so the tenant is left
+// Returns the registered TenantBarrier on success. An import that fails
+// unregisters a barrier this call registered, so the tenant is left
 // unregistered rather than registered and sealed: the cluster key plane acks a
 // redelivery that finds the tenant registered (ErrTenantAlreadyExists) as a key
 // already installed, and a sealed barrier left behind would keep the tenant
@@ -1619,47 +1618,28 @@ func (r *BarrierRegistry) TenantStatus(tenantID string) (*BarrierStatus, error) 
 // per-tenant store open in the per-tenant registry -- a tenant barrier reaches
 // it through a NamespacedBackend, whose Close does not close it -- so the
 // redelivery's registration opens that same live store. A redelivery that
-// finds the root key already persisted -- an earlier import stored it and then
-// failed -- keeps its registration and completes that import instead
-// (resumePersistedImport).
-func (r *BarrierRegistry) ImportTenant(
-	ctx context.Context,
-	tenantID string,
-	autoUnseal bool,
-	imported *ImportedKey,
-	sealedBlob []byte,
-) (*TenantBarrier, error) {
-	_, tb, err := r.RegisterVolumeTenant(ctx, tenantID, autoUnseal)
+// finds the sealed blob already persisted -- an earlier import stored it and
+// then failed -- keeps its registration, sealed for the tenant to unseal.
+func (r *BarrierRegistry) ImportTenant(ctx context.Context, tenantID string, sealedBlob []byte) (*TenantBarrier, error) {
+	registered := false
+	tb, err := r.GetTenant(tenantID)
 	if err != nil {
-		return nil, err
+		if _, tb, err = r.RegisterVolumeTenant(ctx, tenantID, false); err != nil {
+			return nil, err
+		}
+		registered = true
 	}
-	if autoUnseal {
-		err = tb.Barrier().ImportRootKey(ctx, imported, Credentials{})
-	} else {
-		err = tb.Barrier().ImportSealedBlob(ctx, sealedBlob)
-	}
-	if errors.Is(err, ErrAlreadyInitialized) {
-		err = resumePersistedImport(ctx, tb, autoUnseal)
+	err = tb.Barrier().ImportSealedBlob(ctx, sealedBlob)
+	if registered && errors.Is(err, ErrAlreadyInitialized) {
+		return tb, nil
 	}
 	if err != nil {
-		_ = r.RemoveTenant(tenantID)
+		if registered {
+			_ = r.RemoveTenant(tenantID)
+		}
 		return nil, err
 	}
 	return tb, nil
-}
-
-// resumePersistedImport completes an import over a store that already holds
-// the tenant's root key: an earlier delivery persisted it and then failed, on
-// its metadata or its unseal. The registration stands, and the barrier comes
-// up as a fresh import would leave it -- a system-managed barrier unsealed by
-// this node's system strategy, a self-managed one sealed for the tenant. An
-// unseal that fails is returned as itself, never as ErrAlreadyInitialized,
-// which the cluster key plane acks as a key already installed.
-func resumePersistedImport(ctx context.Context, tb *TenantBarrier, autoUnseal bool) error {
-	if !autoUnseal || !tb.IsSealed() {
-		return nil
-	}
-	return tb.Barrier().Unseal(ctx, Credentials{})
 }
 
 // ListTenants returns the IDs of all registered tenant barriers. The order

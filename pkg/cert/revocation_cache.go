@@ -146,7 +146,9 @@ func (c *RevocationCache) TTL() time.Duration {
 //
 // The serial is derived with FormatSerial, the same function that keys the
 // certificate record and the revocation marker, so the enforcement lookup
-// cannot drift from the issuance format.
+// cannot drift from the issuance format. A provider that implements
+// PeerRevocationChecker is asked about the certificate itself, so it can
+// find a marker kept in the issuing tenant's home store.
 //
 // Error contract, which the authentication layer depends on:
 //
@@ -177,7 +179,15 @@ func (c *RevocationCache) IsCertRevoked(ctx context.Context, peer *x509.Certific
 		return revoked, nil
 	}
 
-	revoked, err := c.provider.IsRevoked(ctx, serial)
+	var (
+		revoked bool
+		err     error
+	)
+	if checker, ok := c.provider.(PeerRevocationChecker); ok {
+		revoked, err = checker.IsPeerRevoked(ctx, peer)
+	} else {
+		revoked, err = c.provider.IsRevoked(ctx, serial)
+	}
 	if err != nil {
 		var sealed *BarrierSealedError
 		if errors.As(err, &sealed) {

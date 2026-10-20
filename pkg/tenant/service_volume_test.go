@@ -61,9 +61,6 @@ func TestCreateTenant_Volume_AllocatesDataRootAndBarrier(t *testing.T) {
 	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
 	// while the system barrier is sealed; this test is about the tenant's own
 	// (self-managed, left sealed) barrier, not the system barrier's state.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	info, err := svc.CreateTenant(ctx, "vtenant", "Volume Tenant", IsolationVolume)
 	if err != nil {
@@ -101,9 +98,6 @@ func TestCreateTenant_Volume_SystemManaged_AutoUnsealed(t *testing.T) {
 	ctx := context.Background()
 	// The system-managed strategy needs an unsealed system barrier (the unseal
 	// authority). The fixture's system barrier is bound; init ignores creds.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 	// Grant the system-managed-barrier entitlement on top of volume.
 	svc2, err := NewTenantService(seal.NewMemoryBackend(), reg, testLogger(),
 		WithDefaultEntitlements(&quota.Entitlements{
@@ -194,9 +188,6 @@ func TestCreateTenant_Volume_SystemTenantRejected(t *testing.T) {
 func TestUpdateQuotas_Volume_AdjustsCatalogReservation(t *testing.T) {
 	svc, reg := newVolumeService(t)
 	ctx := context.Background()
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationVolume); err != nil {
 		t.Fatalf("CreateTenant: %v", err)

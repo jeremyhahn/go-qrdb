@@ -106,8 +106,7 @@ type modeImporter func(ctx context.Context, r *Receiver, meta keydelivery.Meta, 
 // modeHandlers is the map-based dispatch for delivery modes. Map-based
 // dispatch is preferred over switch per project conventions.
 var modeHandlers = map[keydelivery.Mode]modeImporter{
-	keydelivery.ModeSystemManaged: importSystemManaged,
-	keydelivery.ModeSelfManaged:   importSelfManaged,
+	keydelivery.ModeSelfManaged: importSelfManaged,
 }
 
 // NewReceiver constructs a Receiver bound to this follower node. caPool may be
@@ -181,7 +180,7 @@ func NewReceiver(
 //	c. Placement-table gate: this node must appear as the replica assigned for
 //	   the envelope's (tenant, database, shard, replica) (403 on mismatch).
 //	d. keydelivery.Receiver.Open: HPKE decryption + freshness + replay guard.
-//	e. Mode dispatch (map-based) to importSystemManaged or importSelfManaged.
+//	e. Mode dispatch (map-based) to importSelfManaged.
 func (r *Receiver) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
@@ -386,26 +385,11 @@ func httpCodeForOpenErr(err error) int {
 	return http.StatusForbidden
 }
 
-// importSystemManaged handles ModeSystemManaged: unmarshal the plaintext as
-// a keyPayload and call BarrierRegistry.ImportTenant with autoUnseal=true.
-// The caller wipes plaintext, but unmarshal base64-decodes the root key into a
-// FRESH allocation (imported.RootKey) that the caller's defer never touches, so
-// it is wiped here explicitly regardless of import outcome.
-func importSystemManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error {
-	imported, err := unmarshalKeyPayload(plaintext)
-	if err != nil {
-		return errors.Join(ErrMalformedBody, err)
-	}
-	defer enclave.Wipe(imported.RootKey)
-	_, err = r.registry.ImportTenant(ctx, meta.TenantID, true, imported, nil)
-	return err
-}
-
 // importSelfManaged handles ModeSelfManaged: treat the plaintext as the
-// already-sealed blob and call BarrierRegistry.ImportTenant with
-// autoUnseal=false. The barrier remains sealed; the tenant unseals later.
+// already-sealed blob and call BarrierRegistry.ImportTenant. The barrier
+// remains sealed; the tenant unseals later.
 func importSelfManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error {
-	_, err := r.registry.ImportTenant(ctx, meta.TenantID, false, nil, plaintext)
+	_, err := r.registry.ImportTenant(ctx, meta.TenantID, plaintext)
 	return err
 }
 

@@ -37,9 +37,10 @@ var ErrSystemBarrierUnavailable = errors.New("qrdb/seal: system barrier unavaila
 // root key using the system StorageBarrier's authenticated encryption. It
 // invents no new cryptography: SealRootKey delegates to the system barrier's
 // Encrypt (AEAD under the system master key) and UnsealRootKey delegates to its
-// Decrypt. The system barrier owns nonce/epoch management and key rotation, so
-// a tenant root key wrapped under this strategy survives system barrier epoch
-// rotation transparently.
+// Decrypt. The system barrier owns nonce/epoch management and key rotation.
+// A wrapped tenant root key stays under the epoch it was written in, and the
+// system barrier pins that epoch so a WAL purge cannot retire its DEK, which
+// is what lets the key survive restarts and rotations (see epoch_pins.go).
 //
 // The strategy holds no key material itself; it composes the already-unsealed
 // system barrier as its KEK. It is constructed fresh on every tenant-barrier

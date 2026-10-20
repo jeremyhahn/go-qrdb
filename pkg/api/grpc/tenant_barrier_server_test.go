@@ -373,6 +373,43 @@ func TestTenantBarrier_Status_Success(t *testing.T) {
 	}
 }
 
+// TestTenantBarrier_Status_ServingNodes pins that the nodes serving the
+// barrier reach the client with their endpoints, and that a status listing
+// none sends none.
+func TestTenantBarrier_Status_ServingNodes(t *testing.T) {
+	var nodes []tenantpkg.BarrierNode
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
+		return &tenantpkg.TenantBarrierStatus{TenantID: id, Sealed: true, Nodes: nodes}, nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+	client := pb.NewTenantBarrierServiceClient(conn)
+
+	nodes = []tenantpkg.BarrierNode{
+		{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443", "grpc": "n1:9443"}},
+		{Node: "n2:7000"},
+	}
+	resp, err := client.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	got := resp.GetNodes()
+	if len(got) != 2 || got[0].GetNode() != "n1:7000" || got[0].GetEndpoints()["grpc"] != "n1:9443" ||
+		got[1].GetNode() != "n2:7000" || len(got[1].GetEndpoints()) != 0 {
+		t.Fatalf("nodes = %v, want n1:7000 with its endpoints and n2:7000 with none", got)
+	}
+
+	nodes = nil
+	resp, err = client.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(resp.GetNodes()) != 0 {
+		t.Fatalf("nodes = %v, want none", resp.GetNodes())
+	}
+}
+
 func TestTenantBarrier_Status_DefaultUninitialized(t *testing.T) {
 	svc := newMockTenantService()
 	conn, cleanup := startTenantBarrierTestServer(t, svc)

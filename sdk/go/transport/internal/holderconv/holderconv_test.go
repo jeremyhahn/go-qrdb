@@ -407,6 +407,54 @@ func TestTenantBarrierHoldersFromPB_Empty(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierInitResponseFromPB asserts every field of an init
+// response decodes, the Shamir split's roster and unseal key check included.
+func TestTenantBarrierInitResponseFromPB(t *testing.T) {
+	got := TenantBarrierInitResponseFromPB(&pb.TenantBarrierInitResponse{
+		TenantId:       "acme",
+		Strategy:       "shamir",
+		Threshold:      2,
+		TotalShares:    3,
+		ShareCount:     3,
+		Holders:        []*pb.CeremonyHolderCert{{Username: "alice", Role: "officer", CertPem: []byte("pem")}},
+		Roster:         []byte("roster"),
+		UnsealKeyCheck: []byte("check"),
+	})
+	if got.TenantID != "acme" || got.Strategy != "shamir" || got.Threshold != 2 || got.TotalShares != 3 || got.ShareCount != 3 {
+		t.Fatalf("TenantBarrierInitResponseFromPB = %+v, want acme's shamir response", got)
+	}
+	if len(got.Holders) != 1 || got.Holders[0].Username != "alice" || got.Holders[0].CertPEM != "pem" {
+		t.Errorf("Holders = %+v, want alice's certificate", got.Holders)
+	}
+	if string(got.Roster) != "roster" || string(got.UnsealKeyCheck) != "check" {
+		t.Errorf("split = %q, %q, want the roster and check", got.Roster, got.UnsealKeyCheck)
+	}
+}
+
+func TestTenantBarrierInitResponseFromPB_AdminPending(t *testing.T) {
+	got := TenantBarrierInitResponseFromPB(&pb.TenantBarrierInitResponse{
+		TenantId:     "acme",
+		ShareCount:   3,
+		Holders:      []*pb.CeremonyHolderCert{{Username: "alice", Role: "officer", CertPem: []byte("pem")}},
+		AdminPending: true,
+	})
+	if !got.AdminPending || len(got.Holders) != 1 {
+		t.Fatalf("TenantBarrierInitResponseFromPB = %+v, want the pending status with alice's certificate", got)
+	}
+	if TenantBarrierInitResponseFromPB(&pb.TenantBarrierInitResponse{TenantId: "acme", ShareCount: 3}).AdminPending {
+		t.Error("a response without admin_pending reported a pending admin")
+	}
+}
+
+// TestTenantBarrierInitResponseFromPB_NonShamir asserts a response without a
+// split decodes with neither roster nor check.
+func TestTenantBarrierInitResponseFromPB_NonShamir(t *testing.T) {
+	got := TenantBarrierInitResponseFromPB(&pb.TenantBarrierInitResponse{TenantId: "acme", Strategy: "passphrase"})
+	if got.TenantID != "acme" || got.Holders != nil || got.Roster != nil || got.UnsealKeyCheck != nil {
+		t.Errorf("TenantBarrierInitResponseFromPB = %+v, want no holders or split", got)
+	}
+}
+
 // TestTenantBarrierHoldersFromPB_Success decodes the certificates an inline
 // roster's initialization issued, in order.
 func TestTenantBarrierHoldersFromPB_Success(t *testing.T) {

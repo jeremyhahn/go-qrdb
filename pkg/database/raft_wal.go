@@ -64,10 +64,6 @@ type RaftWALConfig struct {
 	// disabled.
 	SystemBarrier *seal.EpochBarrier
 
-	// SingleNode reports a host without a Raft transport. A single node has
-	// no dedicated tenant WALs, so it never uses the multiplex.
-	SingleNode bool
-
 	// UnmarkedFormat is the format an existing WAL directory that carries no
 	// format marker was written in by this caller before the marker existed:
 	// qrdbd always wrote the format it writes now, while the SDK node wrote
@@ -77,8 +73,8 @@ type RaftWALConfig struct {
 }
 
 // RaftWAL is the at-rest configuration of a host's Raft log: the host options
-// to pass to quicraft.NewHost and, on a clustered host whose system barrier
-// encrypts, the multiplex LogDB the options install.
+// to pass to quicraft.NewHost and, on a host with a system barrier, the
+// multiplex LogDB the options install.
 type RaftWAL struct {
 	// Options configure quicraft.NewHost's at-rest encryption, LogDB and
 	// metrics collector.
@@ -147,16 +143,15 @@ func (e *RaftWALMarkerError) Unwrap() error { return e.Err }
 // WAL directory written in the other format, records the format, and returns
 // the host options:
 //
-//   - No system barrier (seal disabled): WithoutEncryption.
-//   - A single node, or a system barrier in plaintext mode (protection
-//     "none"): WithBarrier over go-quicraft's own WAL. go-quicraft 0.15
-//     accepts a supplied LogDB beside WithBarrier only when it declares itself
-//     encrypted, and a waldb under a plaintext-mode barrier honestly does not;
-//     the default WAL is the same directory and format, and encrypts once
-//     EnableEncryption flips the barrier.
-//   - A clustered host whose system barrier encrypts: the multiplex, with
-//     WithLogDB, WithBarrier and WithShardBarriers, so dedicated-WAL shards
-//     get their own tenant-barrier WAL.
+//   - No system barrier (seal disabled): WithoutEncryption, and no multiplex.
+//   - A system barrier, encrypting or in plaintext mode, on a single node or a
+//     cluster alike: the multiplex, with WithLogDB, WithBarrier and
+//     WithShardBarriers, so dedicated-WAL shards get their own tenant-barrier
+//     WAL. One code path whether or not the barrier encrypts yet: under a
+//     plaintext-mode barrier the shared waldb declares AtRestHostRouted, which
+//     go-quicraft accepts because its one possibly-plaintext route writes
+//     through the host's own barrier, and the records encrypt from the moment
+//     EnableEncryption flips that barrier.
 func NewRaftWAL(cfg RaftWALConfig) (*RaftWAL, error) {
 	want := WALFormatPlaintext
 	if cfg.SystemBarrier != nil {
@@ -168,11 +163,8 @@ func NewRaftWAL(cfg RaftWALConfig) (*RaftWAL, error) {
 
 	collector := NewRaftMetrics(syncwatch.WithAttrs(slog.String("wal_dir", cfg.Dir)))
 	withMetrics := quicraft.WithMetrics(collector)
-	switch {
-	case cfg.SystemBarrier == nil:
+	if cfg.SystemBarrier == nil {
 		return &RaftWAL{Format: want, Metrics: collector, Options: []quicraft.HostOption{quicraft.WithoutEncryption(), withMetrics}}, nil
-	case cfg.SingleNode || cfg.SystemBarrier.IsPlaintextMode():
-		return &RaftWAL{Format: want, Metrics: collector, Options: []quicraft.HostOption{quicraft.WithBarrier(cfg.SystemBarrier), withMetrics}}, nil
 	}
 
 	// quicraft threads the collector only into a WAL it opens itself, so the

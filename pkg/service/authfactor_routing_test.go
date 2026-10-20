@@ -449,9 +449,8 @@ func TestRoutedAuthFactorServiceFailsClosedOnSealedTenant(t *testing.T) {
 }
 
 // sealAfterResolveResolver resolves every request to the SAME real
-// barrier-backed tenant store (seal.NewTenantSharedKVStore over a real
-// *seal.StorageBarrier — the store type tenant.StoreResolver hands back for a
-// barrier-isolated tenant). Once armed, it seals the real barrier AFTER
+// barrier-backed tenant store (seal.NewTenantBarrierKVStore over a real
+// *seal.StorageBarrier — the store an isolated tenant's home store wraps). Once armed, it seals the real barrier AFTER
 // deciding the resolution succeeded and BEFORE returning the store: the
 // resolution itself saw an unsealed tenant, so the first store operation the
 // request makes is the one that meets the seal.
@@ -483,9 +482,9 @@ func newSealAfterResolveResolver(t *testing.T) *sealAfterResolveResolver {
 		t.Fatalf("Initialize: %v", err)
 	}
 	seal.DestroyCredentials(creds)
-	store, err := seal.NewTenantSharedKVStore(seal.WrapTenantBarrier("acme", barrier), kvstore.NewMemoryKVStore())
+	store, err := seal.NewTenantBarrierKVStore(seal.WrapTenantBarrier("acme", barrier))
 	if err != nil {
-		t.Fatalf("NewTenantSharedKVStore: %v", err)
+		t.Fatalf("NewTenantBarrierKVStore: %v", err)
 	}
 	return &sealAfterResolveResolver{store: store, barrier: barrier}
 }

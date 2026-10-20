@@ -116,6 +116,13 @@ type TenantInfraConfig struct {
 	// Raft log. Its presence gates the IsolationRaft factory build.
 	Host *quicraft.Host
 
+	// LeaderEvents is the relay installed as Host's event listener
+	// (LeaderEvents.Listener). When set, the IsolationRaft factory is bound
+	// to it, so a node that becomes ready to lead a tenant's home group is
+	// told (RaftBackendFactory.OnHomeLeaderReady). Nil leaves the factory
+	// unaware of leadership changes.
+	LeaderEvents *LeaderEvents
+
 	// Manager is the database manager that records persisted shard metadata.
 	// Required when Host is set: IsolationRaft needs a database.Manager to
 	// track per-tenant shard IDs and to walk existing shards on reattach.
@@ -149,6 +156,13 @@ type TenantInfraConfig struct {
 	// "import_session:" in YAML). The zero value resolves to the package
 	// defaults WithImportSessionLimits documents, not unbounded staging.
 	ImportSession qrdbconfig.ImportSessionConfig
+
+	// SnapshotEntries and CompactionOverhead are the system shard's automatic
+	// snapshot cadence (raft.snapshot_entries, raft.compaction_overhead),
+	// given to every IsolationRaft shard, an isolated tenant's home group among
+	// them. Zero takes go-quicraft's default, as it does for the system shard.
+	SnapshotEntries    uint64
+	CompactionOverhead uint64
 
 	// Lease sets the lease checkpoint interval and failover grace of every
 	// IsolationRaft database (config.Lease, "lease:" in YAML). The zero value
@@ -282,9 +296,15 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		if cfg.FeatureGate != nil {
 			raftOpts = append(raftOpts, WithFeatureGate(cfg.FeatureGate))
 		}
-		raftOpts = append(raftOpts, WithImportSessionConfig(cfg.ImportSession), WithLeaseConfig(cfg.Lease))
+		raftOpts = append(raftOpts,
+			WithImportSessionConfig(cfg.ImportSession),
+			WithSnapshotSettings(cfg.SnapshotEntries, cfg.CompactionOverhead),
+			WithLeaseConfig(cfg.Lease))
 		ti.Raft = NewRaftBackendFactoryFromManager(
 			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, logger, raftOpts...)
+		if cfg.LeaderEvents != nil {
+			cfg.LeaderEvents.Bind(ti.Raft.LeaderReady)
+		}
 
 		if cfg.ClusterSealer != nil {
 			logger.Info("start: raft tenant shards start from the reconciler and on first access; their cluster seal records are not read yet")

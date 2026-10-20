@@ -144,6 +144,10 @@ type quicTenantBarrierInitRequest struct {
 	// this barrier (barrierinit.InitStatement): every other node serving the
 	// barrier initializes its own key from it.
 	InitStatement []byte `json:"init_statement,omitempty"`
+	// Roster and UnsealKeyCheck mark a Shamir init's second request: they
+	// echo the split the first request prepared (tenant.WithPreparedShamir).
+	Roster         []byte `json:"roster,omitempty"`
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
 }
 
 // quicTenantBarrierInitResponse is the JSON response for
@@ -157,6 +161,12 @@ type quicTenantBarrierInitResponse struct {
 	TotalShares int                                 `json:"total_shares,omitempty"`
 	ShareCount  int                                 `json:"share_count,omitempty"`
 	Holders     []transport.TenantBarrierHolderCert `json:"holders,omitempty"`
+	// Roster and UnsealKeyCheck are the Shamir split the owner signs
+	// between a Shamir init's two requests. Empty for other strategies.
+	Roster         []byte `json:"roster,omitempty"`
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
+	// AdminPending is transport.TenantBarrierInitResponse.AdminPending.
+	AdminPending bool `json:"admin_pending,omitempty"`
 }
 
 // quicTenantBarrierUnsealRequest is the JSON payload for tenant.BarrierUnseal
@@ -190,6 +200,10 @@ type quicTenantBarrierStatusResponse struct {
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
 
 	ClusterSeal *clusterseal.Report `json:"cluster_seal"`
+
+	KeyFingerprint string `json:"key_fingerprint,omitempty"`
+
+	Nodes []tenant.BarrierNode `json:"nodes,omitempty"`
 }
 
 // missingTenantIDError is returned when a tenant-barrier frame omits the
@@ -262,7 +276,8 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 		}
 	}
 	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
-		tenant.WithInitStatement(req.InitStatement))
+		tenant.WithInitStatement(req.InitStatement),
+		tenant.WithPreparedShamir(req.Roster, req.UnsealKeyCheck))
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +285,15 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 	resp := quicTenantBarrierInitResponse{TenantID: req.TenantID, Strategy: req.Strategy}
 	if result != nil {
 		resp = quicTenantBarrierInitResponse{
-			TenantID:    result.TenantID,
-			Strategy:    result.Strategy,
-			Threshold:   result.Threshold,
-			TotalShares: result.TotalShares,
-			ShareCount:  result.ShareCount,
-			Holders:     holderwire.TenantBarrierHoldersTo(result.Holders),
+			TenantID:       result.TenantID,
+			Strategy:       result.Strategy,
+			Threshold:      result.Threshold,
+			TotalShares:    result.TotalShares,
+			ShareCount:     result.ShareCount,
+			Holders:        holderwire.TenantBarrierHoldersTo(result.Holders),
+			Roster:         result.Roster,
+			UnsealKeyCheck: result.UnsealKeyCheck,
+			AdminPending:   result.AdminPending,
 		}
 	}
 	out, err := json.Marshal(resp)
@@ -371,6 +389,8 @@ func (s *Server) handleTenantBarrierStatus(ctx context.Context, payload []byte) 
 		ShamirThreshold: st.ShamirThreshold,
 		ShamirTotal:     st.ShamirTotal,
 		ClusterSeal:     st.ClusterSeal,
+		KeyFingerprint:  st.KeyFingerprint,
+		Nodes:           st.Nodes,
 	}
 	if resp.ClusterSeal == nil {
 		resp.ClusterSeal = &clusterseal.Report{}

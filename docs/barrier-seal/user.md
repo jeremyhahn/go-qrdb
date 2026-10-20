@@ -292,16 +292,38 @@ When it can read them again it resumes on its own — unless something was
 sealed in the meantime, in which case it seals first. SQL clients reconnect.
 
 **Every node gets its own key (rolling out).** An isolated tenant's barrier is
-moving to one key per node, each initialised on its node from an init
-statement the tenant's own first admin signs; no key will be carried between
-nodes. What you see today:
+moving to one key per node, each initialised on its node from a signed init
+statement; no key is carried between nodes. What you see today:
 
-- Creating a `barrier`, `volume` or `raft` tenant works as before: the
-  tenant's key is still delivered to each node that serves it. Once per-node
-  keys ship, on a cluster such a create will be refused as unavailable until
-  every node runs a release with the `per-node-barrier-keys` feature, which
-  activates on its own once they all do; retry after the rollout. A
-  standalone node will not be affected.
+- A `raft` tenant whose key auto-unseals already has one key per node: the
+  platform signs its statement and each node initialises its own key, so
+  barrier status on two nodes shows different key fingerprints. A node newly
+  placed in the tenant's group reports the barrier sealed and uninitialised
+  until it has done so. The platform signs with the node's cluster
+  certificate, which a node embedded through the Go SDK carries just as a
+  `qrdbd` node does: a single-node embedded cluster given no certificate
+  issues its own on first boot, as `qrdbd` does with no TLS flags. An
+  embedded node given the cluster CA but no node certificate cannot sign,
+  and refuses such a tenant.
+- A tenant whose own admin initialises a `passphrase` or `none` barrier
+  already has one key per node, and no key is carried between them. Run the
+  init once, through any node: under `passphrase` it reaches every node
+  serving the tenant at once, over the transport you connected with, and
+  prints one result per node; under `none` the other nodes initialise from
+  the first one's record. `qrdb tenant barrier-status --id acme` lists the
+  nodes serving the tenant. A node that refused or could not be reached is
+  named in the result; the others are initialised regardless.
+
+  ```bash
+  qrdb tenant barrier-init --id acme --strategy passphrase --passphrase "$PASS"
+  ```
+
+- A tenant whose own admin holds a Shamir key still has it delivered, sealed,
+  to each node that serves it.
+- On a cluster, creating a `barrier`, `volume` or `raft` tenant is refused as
+  unavailable until every node runs a release with the
+  `per-node-barrier-keys` feature, which activates on its own once they all
+  do; retry after the rollout. A standalone node is not affected.
 - Whether a tenant's key auto-unseals stays the tenant's choice. A `prefix`
   tenant has no key of its own: its data is under the platform's barrier and
   readable by the platform; choose an isolated type to keep data from the

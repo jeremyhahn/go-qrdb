@@ -361,6 +361,11 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 		if cerr := CommitStagedSnapshots(j.StagedSnapshots); cerr != nil {
 			return cerr
 		}
+		// Copy the staged barrier records over their live keys, BEFORE the
+		// keyed root key below makes the live ones the only readable copies.
+		if cerr := seal.CommitStagedRecordsFrom(ctx, backend, j.StagedRecords); cerr != nil {
+			return cerr
+		}
 		// Ensure the canonical root key is the keyed one. If the crash struck
 		// before the root-key update, the staging blob still holds it.
 		if persisted := persistedStrategy(ctx, backend, canonicalRootKeyPath); persisted == seal.StrategyNone || persisted == "" {
@@ -385,6 +390,9 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 	// Roll back: discard keyed staging copies + staged snapshots, restore any
 	// swapped originals.
 	RollbackStagedSnapshots(j.StagedSnapshots)
+	if rerr := seal.RollbackStagedRecordsFrom(ctx, backend, j.StagedRecords); rerr != nil {
+		return rerr
+	}
 	for _, dir := range dirs {
 		_ = os.RemoveAll(dir + keyedSuffix)
 		if _, berr := os.Stat(dir + backupSuffix); berr == nil {

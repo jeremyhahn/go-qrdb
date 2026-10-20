@@ -178,6 +178,45 @@ func TestPrintTenantBarrierInitResponse_Table(t *testing.T) {
 	}
 }
 
+func TestPrintTenantBarrierInitResponse_TableReportsAPendingAdmin(t *testing.T) {
+	resp := &transport.TenantBarrierInitResponse{
+		TenantID: "tenant-1", Strategy: "shamir", Threshold: 2, TotalShares: 3, ShareCount: 3,
+		Holders:      []transport.TenantBarrierHolderCert{{Username: "alice", Role: transport.RoleSecurityOfficer}},
+		AdminPending: true,
+	}
+	out, err := executePrintTenantBarrierInitResponse(t, "table", resp)
+	if err != nil {
+		t.Fatalf("printTenantBarrierInitResponse: %v", err)
+	}
+	for _, want := range []string{"Holder:      alice (so)", "AdminPending:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q, got: %q", want, out)
+		}
+	}
+}
+
+func TestPrintTenantBarrierInitResponse_TableOmitsACompletedAdmin(t *testing.T) {
+	resp := &transport.TenantBarrierInitResponse{TenantID: "tenant-1", Strategy: "shamir", ShareCount: 3}
+	out, err := executePrintTenantBarrierInitResponse(t, "table", resp)
+	if err != nil {
+		t.Fatalf("printTenantBarrierInitResponse: %v", err)
+	}
+	if strings.Contains(out, "AdminPending") {
+		t.Errorf("a completed admin printed a pending line: %q", out)
+	}
+}
+
+func TestPrintTenantBarrierInitResponse_JSONCarriesAdminPending(t *testing.T) {
+	resp := &transport.TenantBarrierInitResponse{TenantID: "tenant-1", Strategy: "shamir", ShareCount: 1, AdminPending: true}
+	out, err := executePrintTenantBarrierInitResponse(t, "json", resp)
+	if err != nil {
+		t.Fatalf("printTenantBarrierInitResponse json: %v", err)
+	}
+	if !strings.Contains(out, `"admin_pending": true`) {
+		t.Errorf("output = %q, want admin_pending true", out)
+	}
+}
+
 func TestPrintTenantBarrierInitResponse_JSON(t *testing.T) {
 	resp := &transport.TenantBarrierInitResponse{TenantID: "tenant-1", Strategy: "shamir", ShareCount: 1}
 	out, err := executePrintTenantBarrierInitResponse(t, "json", resp)

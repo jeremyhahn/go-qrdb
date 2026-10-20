@@ -742,3 +742,83 @@ func TestGenerateAdminCSR_ProducesAVerifiableCSRAndMatchingKey(t *testing.T) {
 		assert.True(t, priv.PublicKey.Equal(csr.PublicKey), "keyPEM and csrPEM must describe the same key pair")
 	}
 }
+
+// TestNewAdminCSRSigner_RefusesANilCA: a node with no cluster CA key has no
+// CSR-sign path for a tenant's first admin, only bring-your-own-certificate.
+func TestNewAdminCSRSigner_RefusesANilCA(t *testing.T) {
+	signer, err := NewAdminCSRSigner(nil, testTrustDomain)
+	var want *AdminCredentialRequiresCAError
+	require.ErrorAs(t, err, &want)
+	assert.Equal(t, "csr-sign", want.Path)
+	assert.Nil(t, signer)
+}
+
+// TestNewAdminCSRSigner_RefusesAnEmptyTrustDomain: a trust domain no admin
+// SPIFFE ID can be written under is refused when the signer is composed, as
+// Initialize refuses it, not at the first tenant onboarding that signs.
+func TestNewAdminCSRSigner_RefusesAnEmptyTrustDomain(t *testing.T) {
+	signer, err := NewAdminCSRSigner(newMockCA(t), "")
+	var want *AdminCredentialIssuanceError
+	require.ErrorAs(t, err, &want)
+	var subjectErr *CertSubjectError
+	require.ErrorAs(t, err, &subjectErr)
+	assert.Nil(t, signer)
+}
+
+// TestAdminCSRSigner_SignsTheAdminInItsTenant: the certificate names the
+// admin in the tenant it was asked for, carries the CSR's key and nothing else
+// from the CSR, has no SAN, and chains to the cluster CA.
+func TestAdminCSRSigner_SignsTheAdminInItsTenant(t *testing.T) {
+	ca := newMockCA(t)
+	signer, err := NewAdminCSRSigner(ca, testTrustDomain)
+	require.NoError(t, err)
+	csrPEM, key := generateCSRPEM(t, "someone-else")
+
+	certPEM, err := signer.SignAdminCSR(context.Background(), "vault", "vera", csrPEM)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, "vera", cert.Subject.CommonName)
+	assert.Equal(t, []string{"vault", "administrator"}, cert.Subject.OrganizationalUnit)
+	require.Len(t, cert.URIs, 1)
+	assert.Equal(t, "spiffe://vault/user/vera", cert.URIs[0].String())
+	assert.Empty(t, cert.DNSNames)
+	assert.True(t, key.PublicKey.Equal(cert.PublicKey))
+	assert.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, cert.ExtKeyUsage)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.cert)
+	_, err = cert.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	require.NoError(t, err)
+}
+
+// TestAdminCSRSigner_EmptyTenantIsTheSystemTenant: an empty tenant id names
+// the system tenant, as everywhere else a tenant id is normalized.
+func TestAdminCSRSigner_EmptyTenantIsTheSystemTenant(t *testing.T) {
+	signer, err := NewAdminCSRSigner(newMockCA(t), testTrustDomain)
+	require.NoError(t, err)
+	csrPEM, _ := generateCSRPEM(t, "x")
+
+	certPEM, err := signer.SignAdminCSR(context.Background(), "", "admin", csrPEM)
+	require.NoError(t, err)
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"system", "administrator"}, cert.Subject.OrganizationalUnit)
+}
+
+// TestAdminCSRSigner_RefusesAnUnusableCSR: a CSR that does not parse is
+// refused before the CA signs anything.
+func TestAdminCSRSigner_RefusesAnUnusableCSR(t *testing.T) {
+	signer, err := NewAdminCSRSigner(newMockCA(t), testTrustDomain)
+	require.NoError(t, err)
+
+	certPEM, err := signer.SignAdminCSR(context.Background(), "vault", "vera", []byte("not a csr"))
+	var want *AdminCredentialIssuanceError
+	require.ErrorAs(t, err, &want)
+	assert.Nil(t, certPEM)
+}

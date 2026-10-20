@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
@@ -120,10 +121,12 @@ type TenantOnboardingService struct {
 	pending     tenantadmin.Store
 	trustDomain string
 	logger      *slog.Logger
+	homes       bootstrap.HomeEnsurer
 	audit       audit.AuditLogger
 	auditPolicy audit.FailurePolicy
 	timeout     time.Duration
 	barrierPins bootstrap.FirstAdminPinner
+	pendingSign firstboot.CertSigner
 	clientTrust ClientTrustRefresher
 }
 
@@ -168,6 +171,10 @@ type TenantOnboardingDeps struct {
 	Pending     tenantadmin.Store
 	TrustDomain string
 	Logger      *slog.Logger
+	// Homes provisions an isolated tenant's home store before its first record
+	// is written (bootstrap.Dependencies.Homes). Nil leaves an isolated tenant's
+	// onboarding to fail closed at its first record write.
+	Homes bootstrap.HomeEnsurer
 	// Audit is the compliance audit trail OnboardTenant records
 	// tenant.onboard on. Nil disables emission.
 	Audit audit.AuditLogger
@@ -182,6 +189,18 @@ type TenantOnboardingDeps struct {
 	// pins nothing, which is right only for a node whose tenant service claims
 	// no init statements.
 	BarrierAnchors bootstrap.FirstAdminPinner
+
+	// PendingAdminSigner signs the CSR of a first admin whose tenant keeps
+	// its identity records -- and its Key B CA -- behind its own barrier
+	// (bootstrap.Dependencies.PendingAdminSigner): the node's cluster CA
+	// through ceremony.AdminCSRSigner, or a composer's own signer. Nil is a
+	// node with no cluster CA key: a system-managed barrier serves from
+	// creation, so the tenant's Key B CA signs; a self-managed one is sealed
+	// until its admin initializes it, so such a CSR is refused with
+	// *ceremony.AdminCredentialRequiresCAError before the tenant is created,
+	// and the admin brings their own certificate instead.
+	PendingAdminSigner firstboot.CertSigner
+
 	// ClientTrust rebuilds this node's client-certificate trust after a
 	// create commits and before it answers, so the admin certificate the
 	// answer carries -- signed by the tenant's new login CA -- is admitted
@@ -206,9 +225,11 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		pending:     deps.Pending,
 		trustDomain: deps.TrustDomain,
 		logger:      deps.Logger,
+		homes:       deps.Homes,
 		audit:       deps.Audit,
 		auditPolicy: deps.AuditPolicy,
 		barrierPins: deps.BarrierAnchors,
+		pendingSign: deps.PendingAdminSigner,
 		clientTrust: deps.ClientTrust,
 	}
 }
@@ -278,16 +299,25 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		audit.EmitBestEffort(actx, s.audit, tenantOnboardingAuditComponent, ev)
 	}
 
+	keyB := &bootstrap.KeyBSigner{Certs: s.certs}
+	// With no cluster CA, a pending admin's CSR can be signed only by a Key B
+	// that is readable at create: one behind a system-managed barrier.
+	pendingSign := s.pendingSign
+	if pendingSign == nil && req.BarrierAutoUnseal {
+		pendingSign = keyB
+	}
 	deps := bootstrap.Dependencies{
-		Tenants:        s.tenants,
-		Users:          s.users,
-		Roles:          s.roles,
-		Signer:         &bootstrap.KeyBSigner{Certs: s.certs},
-		TrustAnchors:   s.anchors,
-		PendingAdmins:  s.pending,
-		BarrierAnchors: s.barrierPins,
-		TrustDomain:    s.trustDomain,
-		Logger:         s.logger,
+		Tenants:            s.tenants,
+		Users:              s.users,
+		Roles:              s.roles,
+		Signer:             keyB,
+		PendingAdminSigner: pendingSign,
+		TrustAnchors:       s.anchors,
+		PendingAdmins:      s.pending,
+		BarrierAnchors:     s.barrierPins,
+		TrustDomain:        s.trustDomain,
+		Homes:              s.homes,
+		Logger:             s.logger,
 	}
 	// The service bounds the provisioning; the caller's sooner deadline still
 	// applies. The audit outcome is settled on its own bound, so an

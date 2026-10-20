@@ -53,6 +53,29 @@ func (e *DedicatedWALError) Error() string {
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *DedicatedWALError) Unwrap() error { return e.Err }
 
+// ErrDedicatedWALNotWired is the cause of a TenantWALUnavailableError when the
+// host carries no multiplex LogDB to register a dedicated WAL in.
+var ErrDedicatedWALNotWired = errors.New("database: no multiplex log DB is wired on this host")
+
+// TenantWALUnavailableError reports that a shard whose placement requires a
+// dedicated, tenant-keyed WAL was not started because that WAL could not be
+// opened or registered. The shard never falls back to the shared WAL: a
+// tenant's log is under its own key or the shard does not run.
+type TenantWALUnavailableError struct {
+	TenantID string
+	ShardID  uint64
+	Err      error
+}
+
+// Error implements the error interface.
+func (e *TenantWALUnavailableError) Error() string {
+	return "database: dedicated WAL of tenant " + e.TenantID + " shard " +
+		strconv.FormatUint(e.ShardID, 10) + " is unavailable: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is/As.
+func (e *TenantWALUnavailableError) Unwrap() error { return e.Err }
+
 // walRoute pairs an underlying single-barrier LogDB with the barrier identity
 // that encrypts its records. The barrier is retained so MinLiveEpochForBarrier
 // can locate the owning WAL by identity and so BarrierForShard can hand the
@@ -177,7 +200,10 @@ func (m *MultiplexLogDB) BarrierForShard(shardID uint64) *seal.EpochBarrier {
 // Every route is a single-barrier waldb: the shared route under the system
 // barrier and each dedicated route under a tenant barrier. Dedicated routes are
 // always opened WithBarrier, so the multiplex is encrypted at rest exactly when
-// its shared route is — delegate to the shared WAL's own declaration. A shared
+// its shared route is — delegate to the shared WAL's own declaration. Under a
+// system barrier still in plaintext mode the shared waldb declares
+// AtRestHostRouted, which the host accepts because that route writes through
+// its own barrier, so a plaintext-mode host runs the multiplex too. A shared
 // db that does not declare its protection is treated as unprotected (fail
 // closed), matching the host's zero-value semantics.
 func (m *MultiplexLogDB) AtRestProtection() logdb.AtRestProtection {

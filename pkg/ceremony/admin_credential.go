@@ -224,9 +224,17 @@ func validateAdminCredentialInputs(ca CeremonyCA, trustDomain string, opts *Init
 // ceremony signs carries: CN=admin in the system tenant, under the admin
 // role profile, with the admin's SPIFFE ID SAN under trustDomain.
 func adminSignCSROptions(trustDomain string) *SignCSROptions {
+	return adminLoginSignCSROptions(tenantid.System, adminUsername, trustDomain)
+}
+
+// adminLoginSignCSROptions is the identity an admin login certificate in
+// tenantID carries: CN=username, OU=[tenantID, administrator], under the
+// admin role profile, with the admin's SPIFFE ID SAN under tenantID's trust
+// domain within the cluster's trustDomain.
+func adminLoginSignCSROptions(tenantID, username, trustDomain string) *SignCSROptions {
 	return &SignCSROptions{
-		TenantID:     tenantid.System,
-		Username:     adminUsername,
+		TenantID:     tenantID,
+		Username:     username,
 		TrustDomain:  trustDomain,
 		Profile:      adminCertProfile.profile,
 		ValidityDays: adminCertProfile.validityDays,
@@ -248,13 +256,58 @@ func requireAdminSPIFFEIdentity(trustDomain string) error {
 	return nil
 }
 
-// signAdminCSR signs csrPEM as the bootstrap admin's certificate, through the
-// same signHolderCSR/checkIssuedSubject rule sign-csr applies to every holder
-// certificate: the Subject comes from opts, never the CSR, and the CSR
-// contributes only its key. The certificate names the admin's SPIFFE ID under
-// trustDomain, agreeing with its system-tenant OU.
+// signAdminCSR signs csrPEM as the bootstrap admin's certificate. The
+// certificate names the admin's SPIFFE ID under trustDomain, agreeing with
+// its system-tenant OU.
 func signAdminCSR(ctx context.Context, ca CeremonyCA, trustDomain string, csrPEM []byte) ([]byte, error) {
-	cert, _, err := signHolderCSR(ctx, ca, csrPEM, adminSignCSROptions(trustDomain))
+	return signAdminLoginCSR(ctx, ca, adminSignCSROptions(trustDomain), csrPEM)
+}
+
+// AdminCSRSigner signs a tenant's first-admin CSR with the cluster CA, the
+// CA system first boot signs its own admin's CSR with (signAdminCSR). Tenant
+// onboarding composes it for a tenant whose identity records are behind its
+// own barrier: that tenant's Key B CA lives behind the same barrier, which is
+// not initialized until the admin it is signing for first logs in. The
+// certificate names the admin in its tenant (CN=username, OU=[tenant,
+// administrator]) with the admin's SPIFFE ID SAN under the tenant's trust
+// domain, and the authenticator binds a cluster-CA certificate to the tenant
+// it names (auth.IssuerVerifier).
+//
+// It satisfies firstboot.CertSigner; pkg/firstboot cannot be imported here
+// without a cycle, so the assertion lives with the composer.
+type AdminCSRSigner struct {
+	ca          CeremonyCA
+	trustDomain string
+}
+
+// NewAdminCSRSigner returns an AdminCSRSigner over ca, writing each admin's
+// SPIFFE ID SAN under the cluster's trustDomain. A nil ca is refused with
+// *AdminCredentialRequiresCAError: a node with no cluster CA key has no
+// CSR-sign path, only the bring-your-own-certificate one. A trust domain no
+// SPIFFE ID can be written under is refused as requireAdminSPIFFEIdentity
+// refuses it, before the signer is composed rather than at the first sign.
+func NewAdminCSRSigner(ca CeremonyCA, trustDomain string) (*AdminCSRSigner, error) {
+	if ca == nil {
+		return nil, &AdminCredentialRequiresCAError{Path: "csr-sign"}
+	}
+	if err := requireAdminSPIFFEIdentity(trustDomain); err != nil {
+		return nil, err
+	}
+	return &AdminCSRSigner{ca: ca, trustDomain: trustDomain}, nil
+}
+
+// SignAdminCSR signs csrPEM as subject's login certificate in tenantID.
+// Nothing the CSR says but its key is used.
+func (s *AdminCSRSigner) SignAdminCSR(ctx context.Context, tenantID, subject string, csrPEM []byte) ([]byte, error) {
+	return signAdminLoginCSR(ctx, s.ca, adminLoginSignCSROptions(tenantid.Normalize(tenantID), subject, s.trustDomain), csrPEM)
+}
+
+// signAdminLoginCSR signs csrPEM as the admin login certificate opts names,
+// through the same signHolderCSR/checkIssuedSubject rule sign-csr applies to
+// every holder certificate: the Subject comes from opts, never the CSR, and
+// the CSR contributes only its key.
+func signAdminLoginCSR(ctx context.Context, ca CeremonyCA, opts *SignCSROptions, csrPEM []byte) ([]byte, error) {
+	cert, _, err := signHolderCSR(ctx, ca, csrPEM, opts)
 	if err != nil {
 		return nil, &AdminCredentialIssuanceError{Cause: err}
 	}

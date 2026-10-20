@@ -66,7 +66,16 @@ Delete it with `qrdb tenant delete` -- the delete removes its records and
 touches no directory -- and create it again. Remove the old directory yourself
 once you no longer need it.
 
-The CSR is signed by the new tenant's own CA. Send the admin the certificate
+For a `prefix` tenant the CSR is signed by the tenant's own CA. For a
+`barrier`, `volume` or `raft` tenant it is signed by the cluster CA, because
+the tenant's own CA sits behind a barrier that stays sealed until the admin
+initializes it. Either way the certificate logs in only to this tenant. A
+node that serves your own TLS certificates (`--tls-cert-file`) has no
+cluster CA: it signs a `--barrier-auto-unseal` tenant's CSR with the
+tenant's CA, but refuses a self-managed one's before creating anything. For
+that tenant, give the admin's own certificate with `--admin-cert` and its
+issuer with `--trust-anchors`. Send
+the admin the certificate
 (`acme/admin-cert.pem` with `--out`); with the key they already hold, it is
 their login.
 
@@ -304,13 +313,23 @@ not implemented**.
 > — the heart of "what a strict tenant gets" below — has not started.
 >
 > **Per-node barrier keys (2026-10-08).** Each node serving an isolated tenant
-> will initialise its own copy of the tenant's key from an init statement the
-> tenant's own admin signs; no key is carried between nodes. That is not
-> shipped yet: today the tenant's key is still delivered to each serving node,
-> and isolated tenants are created as before. Once it ships, on a cluster,
-> creating a `barrier`, `volume` or `raft` tenant, or changing a tenant to one
-> of those types, will be refused as unavailable until every node runs a
-> release with the `per-node-barrier-keys` feature, and will succeed once a
+> initialises its own key for the tenant's barrier from a signed init
+> statement; no key is carried between nodes.
+>
+> - **Shipped for a `raft` tenant whose key auto-unseals.** The platform
+>   signs the statement and every node of the tenant's groups initialises its
+>   own key, so `qrdb tenant barrier-status` on two nodes shows different key
+>   fingerprints. A node added to the tenant's group shows the barrier as
+>   sealed and uninitialised until it has initialised its own key.
+> - **Not yet for a tenant whose admin holds the key.** Its key is still
+>   delivered to the other serving nodes.
+> - **A single-node cluster run without a cluster certificate** cannot create
+>   a `raft` tenant whose key auto-unseals yet: the create is refused because
+>   the node has nothing to sign the statement with.
+>
+> On a cluster, creating a `barrier`, `volume` or `raft` tenant, or changing a
+> tenant to one of those types, is refused as unavailable until every node
+> runs a release with the `per-node-barrier-keys` feature, and succeeds once a
 > retry finds it active. A standalone node is never refused.
 >
 > **Choosing a type for confidentiality.** A `prefix` tenant lives in the
@@ -320,6 +339,31 @@ not implemented**.
 > an isolated tenant's key auto-unseals is the tenant's own choice, never
 > refused; once per-node keys are complete, its barrier status shows which it
 > chose.
+>
+> **Correction (2026-10-07):** the cluster floor can now be set at start with
+> the configuration key `tenant.isolation_policy` (`strict` or
+> `operator-access`; environment `QRDB_TENANT_ISOLATION_POLICY`). It is
+> applied on every start and only ever tightens: a value looser than the
+> stored floor is logged and ignored. Left unset, nothing is applied.
+>
+> ```yaml
+> tenant:
+>   isolation_policy: strict
+> ```
+>
+> **Correction (2026-10-07, revised the same day):** every isolated tenant —
+> `barrier`, `volume` or `raft`, under either policy — now gets a home store
+> of its own. On a cluster it is a group with a replica on every node; on a
+> standalone server it is a store under the tenant's own barrier. Its users,
+> roles, role bindings, data-key keyring, invitations, CA and the certificates
+> its CA issues live there and not in the platform's store, and its admin
+> signs in through any node. The policy decides only what an operator may do,
+> so a tenant may be made strict, or the floor raised to `strict`, at any
+> time. Creating an isolated tenant on a cluster waits for that group to
+> start, so `tenant create` can take up to 25 seconds. A node that has just
+> joined answers a tenant's requests with a retryable "unavailable" until its
+> copy has caught up; clients retry on another node. The tenant's custodians,
+> audit trail and database catalog have not moved yet.
 
 - The tenant keeps all of its own records in its own store: users, roles,
   factors, certificates, its CA, its database catalog, its audit trail and its

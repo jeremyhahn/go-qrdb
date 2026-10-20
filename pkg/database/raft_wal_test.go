@@ -58,25 +58,27 @@ func readMarker(t *testing.T, dir string) WALFormat {
 	return WALFormat(strings.TrimSpace(string(data)))
 }
 
-// Every posture picks the option set go-quicraft 0.15 accepts for it, and
-// records the WAL's format.
+// Every posture picks the option set go-quicraft accepts for it, and records
+// the WAL's format. Any system barrier, encrypting or still in plaintext mode,
+// gets the multiplex: one code path, so a plaintext-mode node starts an
+// isolated tenant's dedicated-WAL shard as an encrypting one does.
 func TestNewRaftWAL_ChoosesTheAcceptedPosture(t *testing.T) {
 	for _, c := range []struct {
 		name      string
 		barrier   func(*testing.T) *seal.EpochBarrier
-		single    bool
 		format    WALFormat
 		options   int
 		multiplex bool
 	}{
-		{"seal disabled", func(*testing.T) *seal.EpochBarrier { return nil }, false, WALFormatPlaintext, 2, false},
-		{"single node, encrypting", encryptingEpochBarrier, true, WALFormatBarrier, 2, false},
-		{"cluster, plaintext-mode barrier", newInitializedEpochBarrier, false, WALFormatBarrier, 2, false},
-		{"cluster, encrypting", encryptingEpochBarrier, false, WALFormatBarrier, 4, true},
+		{"seal disabled", func(*testing.T) *seal.EpochBarrier { return nil }, WALFormatPlaintext, 2, false},
+		// A single node and a cluster alike: a dedicated tenant WAL does not
+		// depend on a Raft transport.
+		{"plaintext-mode barrier", newInitializedEpochBarrier, WALFormatBarrier, 4, true},
+		{"encrypting barrier", encryptingEpochBarrier, WALFormatBarrier, 4, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
-			wal, err := NewRaftWAL(RaftWALConfig{Dir: dir, SystemBarrier: c.barrier(t), SingleNode: c.single, UnmarkedFormat: c.format})
+			wal, err := NewRaftWAL(RaftWALConfig{Dir: dir, SystemBarrier: c.barrier(t), UnmarkedFormat: c.format})
 			if err != nil {
 				t.Fatalf("NewRaftWAL: %v", err)
 			}
@@ -92,6 +94,31 @@ func TestNewRaftWAL_ChoosesTheAcceptedPosture(t *testing.T) {
 				t.Fatalf("marker = %q, want %q", got, c.format)
 			}
 		})
+	}
+}
+
+// The multiplex a plaintext-mode host gets is the store go-quicraft's NewHost
+// accepts beside WithBarrier: it declares AtRestHostRouted, and it attributes
+// its records to the system barrier by identity, the barrier the host's
+// one possibly-plaintext route writes through.
+func TestNewRaftWAL_PlaintextModeMultiplexIsHostRouted(t *testing.T) {
+	b := newInitializedEpochBarrier(t)
+	if !b.IsPlaintextMode() {
+		t.Fatal("newInitializedEpochBarrier no longer reports plaintext mode; the fixture is wrong")
+	}
+	wal, err := NewRaftWAL(RaftWALConfig{Dir: t.TempDir(), SystemBarrier: b})
+	if err != nil {
+		t.Fatalf("NewRaftWAL: %v", err)
+	}
+	defer func() { _ = wal.Close() }()
+	if wal.Multiplex == nil {
+		t.Fatal("a plaintext-mode host must get the multiplex")
+	}
+	if got := wal.Multiplex.AtRestProtection(); got != logdb.AtRestHostRouted {
+		t.Fatalf("AtRestProtection = %s, want %s", got, logdb.AtRestHostRouted)
+	}
+	if _, known, err := wal.Multiplex.MinLiveEpochForBarrier(b); err != nil || !known {
+		t.Fatalf("MinLiveEpochForBarrier(system barrier) = known %v, err %v; want known", known, err)
 	}
 }
 
@@ -156,7 +183,7 @@ func TestNewRaftWAL_AdoptsItsOwnUnmarkedFormat(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "shard-0"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	wal, err := NewRaftWAL(RaftWALConfig{Dir: dir, SystemBarrier: encryptingEpochBarrier(t), SingleNode: true, UnmarkedFormat: WALFormatBarrier})
+	wal, err := NewRaftWAL(RaftWALConfig{Dir: dir, SystemBarrier: encryptingEpochBarrier(t), UnmarkedFormat: WALFormatBarrier})
 	if err != nil {
 		t.Fatalf("NewRaftWAL: %v", err)
 	}
@@ -169,7 +196,7 @@ func TestNewRaftWAL_AdoptsItsOwnUnmarkedFormat(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(crashed, walFormatMarker+".tmp"), []byte("barr"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewRaftWAL(RaftWALConfig{Dir: crashed, SystemBarrier: encryptingEpochBarrier(t), SingleNode: true}); err != nil {
+	if _, err := NewRaftWAL(RaftWALConfig{Dir: crashed, SystemBarrier: encryptingEpochBarrier(t)}); err != nil {
 		t.Fatalf("a leftover temporary marker was taken for WAL content: %v", err)
 	}
 }

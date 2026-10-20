@@ -17,6 +17,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"strconv"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
@@ -77,10 +80,11 @@ func (e *UnknownRaftAddrError) Error() string {
 //
 // raftAddrToNodeID is a point-in-time snapshot (see Infra.RaftAddrToNodeID's
 // own doc comment for why it cannot be a live lookup at BuildServices
-// construction time). A raftAddr absent from it is refused with
+// construction time); members, read at filter time, covers the nodes it
+// cannot -- see resolveNodeID. A raftAddr neither resolves is refused with
 // *UnknownRaftAddrError: this filter fails closed on an address it
 // cannot verify rather than silently admitting it.
-func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Service, raftAddrToNodeID map[string]string) placement.ReplicaFilter {
+func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Service, raftAddrToNodeID map[string]string, members systemMembership) placement.ReplicaFilter {
 	return func(tenantID string, _ uint64, raftAddr string) error {
 		ctx := context.Background()
 		assignment, err := allocator.Resolve(ctx, tenantID)
@@ -92,9 +96,9 @@ func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Serv
 			return err
 		}
 
-		nodeID, ok := raftAddrToNodeID[raftAddr]
-		if !ok {
-			return &UnknownRaftAddrError{RaftAddr: raftAddr}
+		nodeID, err := resolveNodeID(ctx, raftAddr, raftAddrToNodeID, members)
+		if err != nil {
+			return err
 		}
 
 		detail, err := volumeSvc.GetPool(ctx, assignment.Pool)
@@ -112,4 +116,40 @@ func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Serv
 		}
 		return &PoolNotHealthyOnNodeError{TenantID: tenantID, Pool: assignment.Pool, NodeID: nodeID}
 	}
+}
+
+// systemMembership reads the system shard's committed membership: the live
+// source of every node's replica ID, the decimal form of which is the NodeID
+// a volume pool's per-node health report is keyed by.
+type systemMembership func(ctx context.Context) (*quicraft.Membership, error)
+
+// resolveNodeID translates a placement candidate's raftAddr into the NodeID
+// its volume-pool health report is keyed by. The composer's boot-time
+// snapshot answers first; on a miss the system shard's live membership does,
+// because a node admitted after this one booted (`admin member add`) is in
+// the membership and never in the snapshot. An address in neither is refused
+// with *UnknownRaftAddrError, and a membership read that fails is returned
+// as is: both fail closed. Witnesses are not consulted, since a witness
+// hosts no data and never reports a pool.
+func resolveNodeID(ctx context.Context, raftAddr string, snapshot map[string]string, members systemMembership) (string, error) {
+	if nodeID, ok := snapshot[raftAddr]; ok {
+		return nodeID, nil
+	}
+	if members == nil {
+		return "", &UnknownRaftAddrError{RaftAddr: raftAddr}
+	}
+	m, err := members(ctx)
+	if err != nil {
+		return "", err
+	}
+	if m != nil {
+		for _, replicas := range []map[uint64]string{m.Nodes, m.Observers} {
+			for replicaID, addr := range replicas {
+				if addr == raftAddr {
+					return strconv.FormatUint(replicaID, 10), nil
+				}
+			}
+		}
+	}
+	return "", &UnknownRaftAddrError{RaftAddr: raftAddr}
 }

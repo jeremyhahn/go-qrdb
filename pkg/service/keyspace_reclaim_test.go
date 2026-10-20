@@ -28,7 +28,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -950,6 +949,9 @@ func tenantPopulatedStore() *memoryKVSvc {
 	// Key B: acme's own login CA -- must be reclaimed with the rest of the
 	// tenant (go-qrdb#560 review, non-blocking).
 	put("__sys:cert_ca/acme/material")
+	// A strict tenant's CA lives in its home store; the system store holds
+	// only the published copy relying parties trust, which goes with it.
+	put("__sys:cert_ca_pub/acme/certificate")
 
 	// Must survive.
 	put(tenant.IdentityNamespace("other") + "user/bob")
@@ -962,6 +964,7 @@ func tenantPopulatedStore() *memoryKVSvc {
 	// A different tenant's Key B CA, and the cluster CA (Key A, no tenant
 	// segment at all): neither belongs to acme's reclamation.
 	put("__sys:cert_ca/other/material")
+	put("__sys:cert_ca_pub/acme2/certificate")
 	put("__sys:cluster_ca/material")
 	return kv
 }
@@ -971,6 +974,7 @@ func tenantPopulatedStore() *memoryKVSvc {
 func tenantSurvivors() []string {
 	keep := []string{
 		"__sys:cert_ca/other/material",
+		"__sys:cert_ca_pub/acme2/certificate",
 		"__sys:cluster_ca/material",
 		"__sys:roles/admin",
 		CollectionWorkPrefix + "acme2/reports/events",
@@ -1141,12 +1145,12 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		timeseries.KeyPrefixMetricIndex + tenant.ComposeNamespace("acme", "reports") + "cpu",
 		timeseries.KeyPrefixRetention + tenant.ComposeNamespace("acme", "reports") + "cpu",
 		placement.PlacementPrefix + "acme/reports",
-		seal.TenantSharedNamespace("acme") + "__sys:dek/keyring",
 		CollectionWorkPrefix + "acme/reports/events",
 		// Key B: acme's own login CA (go-qrdb#560 review, non-blocking --
 		// tenant deletion must remove it, not leave an orphaned CA an old
 		// leaf naming acme could still authenticate against).
 		"__sys:cert_ca/acme/material",
+		"__sys:cert_ca_pub/acme/certificate",
 	}
 	for _, key := range owned {
 		assert.True(t, hasAnyPrefix(key, prefixes), "no tenant prefix covers %q", key)
@@ -1157,8 +1161,6 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		"__sys:roles/admin",
 		timeseries.KeyPrefixTagIndex + "host:web1",
 		placement.PlacementPrefix + "other/reports",
-		seal.TenantSharedNamespace("other") + "__sys:dek/keyring",
-		seal.TenantSharedNamespace("acmecorp") + "__sys:dek/keyring",
 		CollectionWorkPrefix + "other/reports/events",
 		CollectionWorkPrefix + "acme2/reports/events",
 		// A DIFFERENT tenant's Key B CA, and the cluster CA (Key A, which
@@ -1166,6 +1168,8 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		// reclamation.
 		"__sys:cert_ca/other/material",
 		"__sys:cert_ca/acme2/material",
+		"__sys:cert_ca_pub/other/certificate",
+		"__sys:cert_ca_pub/acme2/certificate",
 		"__sys:cluster_ca/material",
 	}
 	for _, key := range notOwned {

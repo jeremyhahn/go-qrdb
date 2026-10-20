@@ -18,8 +18,6 @@ import (
 	"context"
 	"crypto/x509"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
@@ -117,20 +115,7 @@ func confirmClusterCAPersisted(ctx context.Context, provider cakey.Provider, dat
 		return nil
 	}
 
-	keyPath := filepath.Join(dataDir, "ca-key.pem")
-	if err := os.Remove(keyPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		// Not fatal: the key is durably persisted either way, and the
-		// stale local copy is a cleanup failure, not a correctness one.
-		// Logged at ERROR because a key file lingering on disk is exactly
-		// the state this change set out to eliminate.
-		slog.Error("cluster CA key persisted to the replicated store, but the local cache could not be removed",
-			slog.String("path", keyPath), slog.String("error", err.Error()))
-		return nil
-	}
-	slog.Info("cluster CA key persisted to the replicated store; local file cache removed", slog.String("path", keyPath))
+	lifecycle.RemoveClusterCAKeyCache(dataDir, slog.Default())
 	return nil
 }
 

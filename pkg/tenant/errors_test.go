@@ -222,8 +222,6 @@ func TestRefusalErrors_MessageNamesEveryField(t *testing.T) {
 			[]string{"bogus"}},
 		{"database list", &DatabaseListError{TenantID: "acme", Err: cause},
 			[]string{"acme", "disk on fire"}},
-		{"strict requires dedicated storage", &StrictRequiresDedicatedStorageError{IsolationType: IsolationPrefix},
-			[]string{string(IsolationPrefix), "strict"}},
 		{"isolation policy change", &IsolationPolicyChangeError{From: "strict", To: "standard"},
 			[]string{"strict", "standard", "tighten only"}},
 		{"invalid isolation policy", &InvalidIsolationPolicyError{Value: "loose"},

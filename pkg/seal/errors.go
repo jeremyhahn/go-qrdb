@@ -111,6 +111,11 @@ var (
 	// prior migration journal is still present in a non-terminal phase.
 	ErrMigrationInProgress = errors.New("qrdb/seal: an encryption migration is already in progress")
 
+	// ErrMigrationRecordMismatch is returned when a barrier record a migration
+	// re-encrypted into its staging keyspace is missing there or does not
+	// decrypt to the source record's plaintext.
+	ErrMigrationRecordMismatch = errors.New("qrdb/seal: migrated barrier record does not match its source")
+
 	// ErrNilSealedData is returned when a nil SealedData pointer is passed
 	// to an unseal operation.
 	ErrNilSealedData = quicraftseal.ErrNilSealedData
@@ -313,28 +318,7 @@ var (
 	// the filesystem sink.
 	ErrTenantPathEscapesPool = errors.New("qrdb/seal: tenant path escapes volume pool root")
 
-	// --- Root-key import seam (multi-node tenant Raft groups) ---.
-
-	// ErrImportedKeyNil is returned when a nil *ImportedKey is passed to
-	// ImportRootKey or Validate.
-	ErrImportedKeyNil = errors.New("qrdb/seal: imported key must not be nil")
-
-	// ErrImportedRootKeyEmpty is returned when ImportedKey.RootKey is empty.
-	ErrImportedRootKeyEmpty = errors.New("qrdb/seal: imported root key must not be empty")
-
-	// ErrImportedSaltInvalid is returned when ImportedKey.Salt is not exactly
-	// 32 bytes. The HKDF salt must match the leader's value precisely so that
-	// replica DEK derivation is identical.
-	ErrImportedSaltInvalid = errors.New("qrdb/seal: imported salt must be exactly 32 bytes")
-
-	// ErrImportedEpochZero is returned when ImportedKey.Epoch is zero. A
-	// valid barrier epoch is always >= 1.
-	ErrImportedEpochZero = errors.New("qrdb/seal: imported epoch must be greater than zero")
-
-	// ErrImportedEpochNotInKnown is returned when ImportedKey.KnownEpochs
-	// does not contain ImportedKey.Epoch. The current epoch must appear in
-	// the known-epochs list for the EpochBarrier to validate the sealed blob.
-	ErrImportedEpochNotInKnown = errors.New("qrdb/seal: imported KnownEpochs must contain Epoch")
+	// --- Sealed-blob import seam (self-managed tenant Raft replicas) ---.
 
 	// ErrImportSealedBlobNil is returned when a nil blob is passed to
 	// ImportSealedBlob.
@@ -345,6 +329,14 @@ var (
 	// SealedRootKey (missing epoch, wrong salt length, epoch absent from
 	// KnownEpochs, or malformed JSON).
 	ErrImportSealedBlobInvalid = errors.New("qrdb/seal: sealed blob is not a valid sealed root key")
+
+	// ErrImportSealedBlobShamir is returned when the blob passed to
+	// ImportSealedBlob is a Shamir root key. A Shamir key unwraps only through
+	// the wrapped-key and holder-roster records of the node that generated it,
+	// which a blob does not carry; every Shamir replica keys itself at its
+	// holders' first quorum instead (ArmShamir), and an imported blob would
+	// block that.
+	ErrImportSealedBlobShamir = errors.New("qrdb/seal: a shamir sealed blob is never imported; the replica keys itself through ArmShamir")
 )
 
 // GetError is returned when a barrier Get operation fails during decryption.

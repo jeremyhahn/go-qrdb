@@ -27,14 +27,14 @@ import (
 //
 // The move algorithm constructs a single-replica Placement containing only the
 // destination replica and delegates to DistributeTenantKey so that HPKE-seal,
-// key-export, and recipient-authentication logic remain inside clusterkeys
-// without duplication in this package.
+// sealed-blob export, and recipient-authentication logic remain inside
+// clusterkeys without duplication in this package.
 type RebalanceKeyDeliverer interface {
 	// DistributeTenantKey ships the barrier key to each replica in p, skipping
 	// the replica whose NodeID equals selfNodeID. For a MOVE the caller passes a
 	// single-replica Placement containing only the destination replica so exactly
 	// one delivery occurs.
-	DistributeTenantKey(ctx context.Context, p *placement.Placement, leaderBarrier *seal.StorageBarrier, selfNodeID string, autoUnseal bool) error
+	DistributeTenantKey(ctx context.Context, p *placement.Placement, leaderBarrier *seal.StorageBarrier, selfNodeID string) error
 }
 
 // RebalanceBarrierLookup resolves the dedicated storage barrier for a tenant.

@@ -112,6 +112,7 @@ func unsigned(epoch uint64, keyRef string) InitStatement {
 	return InitStatement{
 		Barrier:      clusterseal.TenantBarrier("acme"),
 		Epoch:        epoch,
+		IssuedAt:     testNow.Unix(),
 		StrategyID:   seal.StrategyPassphrase,
 		KeyRef:       keyRef,
 		VerifierSalt: []byte("0123456789abcdef"),

@@ -631,6 +631,21 @@ services and to the server, which wraps the node's sealed-window probe with
   process that stops with no diagnostic.
 - **Nodes never exchange shares.** Custody is per node; a Shamir barrier opens
   only through its own authenticated holder quorum.
+- **An epoch that holds barrier ciphertext is never purged.** The system
+  barrier is also the system Raft host's WAL barrier, and an isolated tenant's
+  barrier is its host's WAL barrier. After a snapshot, go-quicraft purges every
+  epoch below the floor its WAL and snapshots still need. That floor knows
+  nothing of the values a `StorageBarrier` stores, or of a tenant root key that
+  `system-barrier` wraps under the system barrier. Every unseal rotates the
+  epoch, so after one restart and one snapshot such a value's epoch fell below
+  the floor and was dropped, and the value stopped decrypting: an
+  auto-unsealed tenant stayed sealed after its node's next restart. A
+  `StorageBarrier` now pins (`RegisterInFlightEpoch`) each epoch it encrypts
+  under, in the same step as the encrypt. Each unseal also pins every epoch the
+  persisted blob still knows, before the `EpochBarrier` unseals and so before
+  any purge can run (`pkg/seal/epoch_pins.go`). The cost is that a barrier's
+  `KnownEpochs` keeps one entry per rotation. Retiring an epoch safely would
+  mean re-encrypting what was written under it, and nothing does that yet.
 
 ## Dual-mode operation
 
@@ -1136,6 +1151,60 @@ key.
   initialised.
 - `IsolationRaft` without a statement is `*tenant.InitStatementRequiredError`
   when a book is composed; other isolation types may init without one.
+- An isolated tenant (`barrier`, `volume` or `raft`, each with a home group
+  placed on every node) created with `BarrierAutoUnseal` (platform custody)
+  claims
+  the platform's statement: `tenant.PlatformInitSigner.SignPlatformInit`,
+  which `lifecycle` wires from the node's cluster identity
+  (`barrierinit.SignPlatformInit`, strategy `seal.StrategySystemBarrier`,
+  signer certificate carried in the statement). It verifies only against
+  the cluster CA (`BarrierInit.SetPlatformAnchor`) and only for a tenant
+  whose record chose platform custody. Every node of the tenant's groups
+  then self-initialises its own key from it; no key is delivered, so two
+  nodes' key fingerprints in barrier status differ. `qrdbd` and the embedded
+  `sdk/go/node` node carry the same identity and signer through the same
+  code: each derives the identity with `lifecycle.NodeIdentity` and composes
+  through `lifecycle.ComposeRaftTenantCluster`, the only caller of the one
+  function that installs the signer (`test/buildgates/platform_init_signer_test.go`
+  holds this). A single-member embedded node handed no identity resolves its
+  own the way `qrdbd` does with no TLS flags (`clusterenroll.Resolve`: the node
+  certificate and cluster CA generated into the data directory on first boot
+  and loaded from it after; the CA key removed once Key A is replicated,
+  through the shared `lifecycle.RemoveClusterCAKeyCache`). A node composed
+  without a cluster identity -- an embedder that supplies the cluster CA but
+  no `WithRaftMTLS` -- has no signer, and such a create is
+  `*tenant.InitStatementRequiredError`. The statement is never optional.
+- A raft tenant whose owner initialises a `none` or `passphrase` barrier is
+  keyed on every node of its groups by that node, and the key is never
+  shipped: `clusterkeys.Sender.DistributeTenantKey` returns without contacting
+  a follower for either strategy (`ownKeyOnEveryNode`), nor for a barrier not
+  yet initialised. A `none` barrier's other nodes initialise from the owner's
+  claimed statement. A `passphrase` barrier's nodes each need the passphrase,
+  which only the owner holds, so the client sends the init to every serving
+  node, concurrently, and returns one result per node; each call proves the
+  init on its own connection and re-signs the statement, which `Book.Claim`
+  accepts as the same init (`sameStatement`). The serving nodes come from
+  `TenantBarrierStatus.Nodes` (`tenant.BarrierNode`): every node holding a
+  replica of the tenant's groups, with the API endpoints its member record
+  publishes, sourced by `lifecycle` from the placement table and member
+  records. A standalone node lists none, and a list the node cannot read is
+  logged and left out of the status rather than failing it. A Shamir key is
+  not shipped either (`ownKeyOnEveryNode` names it, read from the persisted
+  blob so a leader still sealed after a restart is covered): each serving node
+  is armed from the claimed statement's roster and check value and keys itself
+  at its holders' first quorum. `StorageBarrier.ImportSealedBlob` refuses a
+  Shamir blob with `seal.ErrImportSealedBlobShamir` and persists nothing,
+  because the blob carries none of the node's wrapped-key and roster records:
+  imported, it would leave the replica unable to key itself
+  (`ErrAlreadyInitialized`) or to unwrap the import (`ErrHolderRosterMissing`).
+- A node placement assigns to a raft tenant's group, holding no barrier for
+  it, registers the tenant's shell (`TenantService.RegisterTenantShell`,
+  reached from `TenantShardReconciler` through `server.ShellRegistrar`):
+  registered, uninitialised and sealed, with the tenant's custody persisted.
+  The shard stays deferred; self-init, an owner's init or
+  `BarrierRegistry.ImportTenant` initialises that same barrier, and an
+  initialised barrier still refuses an imported blob
+  (`ErrAlreadyInitialized`).
 - `TenantBarrierSelfInit` initialises only a strategy with
   `seal.CredentialNone`; Shamir and credential-bearing strategies return nil
   untouched. An already-initialised barrier is nil, so redelivery is
@@ -1146,6 +1215,14 @@ key.
   as the caller on `context.WithoutCancel` of the caller's context with its own
   15-second deadline, so its replicated writes are not cut short by the
   request's.
+- A tenant barrier's trust-on-first-init window admits the pending first
+  admin's certificate while its record exists. The record is consumed when the
+  admin's account is created, which a passphrase fan-out reaches before every
+  serving node holds its key; after that, the window admits the certificate
+  whose thumbprint was pinned for the barrier at onboarding, the anchor every
+  later node verifies the epoch-1 statement against
+  (`middleware.FirstAdminPins`, implemented by `lifecycle.BarrierInit`). A pin
+  that cannot be read fails closed.
 
 ## Error semantics
 
@@ -1178,6 +1255,7 @@ key.
 | First admin pinned again with another thumbprint | `*barrierinit.AnchorConflictError`; the pin is unchanged | **yes** |
 | Tenant barrier unseal after a restart whose root key is sealed with another strategy than its statement names | `*seal.UnsealStrategyMismatchError`; stays sealed, no same-ID system strategy tried | **yes** |
 | Raft-isolated tenant barrier unseal with no recorded statement | `*tenant.InitStatementMissingError`; stays sealed | **yes** |
+| Tenant barrier unseal whose statement names `system-barrier` for a tenant its owner keeps custody of | `tenant.ErrNotPlatformCustody` inside `tenant.BarrierError{Op: unseal}`; stays sealed (`TestTenantBarrierUnseal_PlatformStatementForAnOwnersBarrier`) | **yes** |
 | Statement record for a barrier level the node cannot yet self-initialise | `*lifecycle.UnsupportedBarrierKindError`; retried on the next poll | **yes** |
 | Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*featuregate.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
 | Node lease expired, or no read since start | node gate refuses as `SEAL_STATE_UNCONFIRMED`, never `SEALED` (`sealedwindow.StateProbe`, `TestClusterSeal_LapsedLeaseIsUnconfirmedNotSealed`); streams end with `SealStateUnconfirmedError`; keys kept | **yes** |

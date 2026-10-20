@@ -88,6 +88,21 @@ func (m *memPlacementKV) CompareAndSwap(_ context.Context, key string, expected,
 	return true, nil
 }
 
+// PutIfAbsent implements placement.PutIfAbsentKV, as the production adapter
+// over the system KVStore does, so a create that must not overwrite another
+// node's entry (placement.Store.ClaimPlacement) runs its real guarded path.
+func (m *memPlacementKV) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[key]; ok {
+		return false, nil
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	m.data[key] = cp
+	return true, nil
+}
+
 func (m *memPlacementKV) Scan(_ context.Context, prefix string, fn func(string, []byte) error) error {
 	m.mu.Lock()
 	snapshot := make(map[string][]byte)
@@ -116,11 +131,18 @@ func (s *staticTopology) Nodes() []placement.NodeLoad { return s.nodes }
 // tenant wired with a placement store + scheduler over the given topology.
 func newPlacementDatabaseService(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota, nodes []placement.NodeLoad) (DatabaseServicer, *placement.Store) {
 	t.Helper()
+	return newPlacementDatabaseServiceOn(t, info, f, nodes, newMemPlacementKV())
+}
+
+// newPlacementDatabaseServiceOn is newPlacementDatabaseService with its
+// placement table kept in kv.
+func newPlacementDatabaseServiceOn(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota, nodes []placement.NodeLoad, kv placement.KV) (DatabaseServicer, *placement.Store) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
-	store, err := placement.NewStore(newMemPlacementKV())
+	store, err := placement.NewStore(kv)
 	if err != nil {
 		t.Fatalf("placement.NewStore: %v", err)
 	}

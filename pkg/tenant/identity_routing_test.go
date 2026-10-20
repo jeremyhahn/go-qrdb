@@ -258,7 +258,6 @@ func TestTenantErrors_Messages(t *testing.T) {
 		{&TenantUndoPendingError{TenantID: "acme", Pending: []string{"n1", "n2"}}, "tenant: id acme was undone and awaits cleanup by n1, n2; retry"},
 		{&KeyspaceReclaimError{TenantID: "acme", Err: cause}, "tenant: keyspace reclaim for acme: underlying"},
 		{&DatabaseListError{TenantID: "acme", Err: cause}, "tenant: list databases for acme: underlying"},
-		{&StrictRequiresDedicatedStorageError{IsolationType: IsolationPrefix}, "tenant: strict isolation requires dedicated storage; isolation type " + string(IsolationPrefix) + " has none of its own"},
 		{&IsolationPolicyChangeError{From: "strict", To: "standard"}, "tenant: isolation policy cannot move from strict to standard (tighten only)"},
 		{&InvalidIsolationPolicyError{Value: "loose"}, `tenant: invalid isolation policy "loose"`},
 		{&IdentityClaimConflictError{Kind: IdentityUser, ID: "9"}, "tenant: user id 9 is already claimed"},

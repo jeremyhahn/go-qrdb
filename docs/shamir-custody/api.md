@@ -81,6 +81,39 @@ A dedicated tenant barrier has the unseal domain only.
 | Start rekey | `POST /v1/tenants/{id}/barrier/rekey/start` | `RekeyStart` | `tenant.BarrierRekeyStart` | `qrdb_tenant_barrier_rekey_start` | `tenant_barrier:rekey` |
 | Revoke holder | `POST /v1/tenants/{id}/barrier/officers/revoke` | `OfficerRevoke` | `tenant.BarrierOfficerRevoke` | `qrdb_tenant_barrier_officer_revoke` | `tenant_barrier:officer_revoke` |
 
+## A Shamir tenant barrier init and its pending first admin
+
+A Shamir init of a tenant barrier that names its holders inline is the
+two-round init:
+
+| Round | REST | gRPC / Unix (`TenantBarrierService`) | QUIC | MCP tool |
+|---|---|---|---|---|
+| Begin | `POST /v1/tenants/{id}/barrier/init/begin` | `InitBegin` | `tenant.BarrierInitBegin` | `qrdb_tenant_barrier_init_begin` |
+| Complete | `POST /v1/tenants/{id}/barrier/init/complete` | `InitComplete` | `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_complete` |
+
+The completion answers with the holder certificates the init issued, and with
+`admin_pending` on every transport: the JSON field `admin_pending` on REST,
+QUIC and MCP, omitted when false, and field 10, `admin_pending`, of
+`TenantBarrierInitResponse` on gRPC and Unix. When it is set,
+`qrdb tenant barrier-init` prints an `AdminPending:` line, and under
+`--output json` it carries `admin_pending: true`.
+
+The init unseals only the node that serves it. The tenant's pending first
+admin is created at the leader of the tenant's home group. The init tries
+once, and if this node cannot complete the admin yet, the init still
+succeeds: it returns the holder certificates with `admin_pending: true`, and
+the pending admin record stays. The init never waits for the home group,
+because that group may need the other nodes unsealed before it has a leader,
+and only these holders can unseal them. Any other failure to complete the
+admin fails the init; the barrier stays initialized.
+
+When `admin_pending` is set, the holders claim their shares and quorum-unseal
+the other nodes. Each unseal that completes a quorum completes the admin if
+that node leads the home group, and so does a barrier status read on a node
+where the barrier is unsealed. Either can block for up to the admin's 2-minute
+completion budget on a node that does not lead the group. Until the admin is
+complete, its certificate names no account.
+
 ## Why claims and submissions are identity-gated
 
 Holders use these routes while the barrier is sealed, and a holder identity is

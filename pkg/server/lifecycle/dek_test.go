@@ -118,10 +118,10 @@ func TestBuildServices_DEKRidesThePrefixTenantsNamespace(t *testing.T) {
 }
 
 // TestBuildServices_DEKIsWrappedByTheTenantsBarrier runs the seal-ENABLED
-// branch with a barrier-isolated tenant: the keyring record sits in the
-// replicated shared store encrypted under the tenant's own barrier, and a
-// sealed tenant barrier makes the keyring unreachable until it is unsealed —
-// after which the earlier ciphertext still decrypts.
+// branch with a barrier-isolated tenant on a standalone node: the keyring
+// record sits in the tenant's home store, its own barrier, and nowhere in the
+// system store; a sealed tenant barrier makes the keyring unreachable until it
+// is unsealed — after which the earlier ciphertext still decrypts.
 func TestBuildServices_DEKIsWrappedByTheTenantsBarrier(t *testing.T) {
 	node, registry := buildRoutedIAMNode(t)
 	if node.DEK == nil {
@@ -141,12 +141,20 @@ func TestBuildServices_DEKIsWrappedByTheTenantsBarrier(t *testing.T) {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	raw, err := node.KV.Get(ctx, seal.TenantSharedNamespace(id)+keyringRecordKey)
-	if err != nil || len(raw) == 0 {
-		t.Fatalf("keyring record not in the tenant's shared range: %v", err)
+	for _, key := range []string{
+		keyringRecordKey,
+		tenant.IdentityNamespace(id) + keyringRecordKey,
+	} {
+		if raw, err := node.KV.Get(ctx, key); err == nil && len(raw) > 0 {
+			t.Fatalf("the isolated tenant's keyring record is in the system store at %q", key)
+		}
 	}
-	if bytes.Contains(raw, []byte(`"versions"`)) {
-		t.Fatal("the keyring record is stored in the clear; it must be encrypted under the tenant barrier")
+	tb, err := registry.GetTenant(id)
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if raw, err := tb.Get(ctx, tenant.HomeName+"/"+keyringRecordKey); err != nil || len(raw) == 0 {
+		t.Fatalf("keyring record not in the tenant's home store: %v", err)
 	}
 
 	if err := registry.SealTenant(id); err != nil {
@@ -163,13 +171,13 @@ func TestBuildServices_DEKIsWrappedByTheTenantsBarrier(t *testing.T) {
 		t.Fatalf("Decrypt after unseal = %v, %v", opened, err)
 	}
 
-	// Deleting the tenant leaves no keyring behind: the record is reclaimed
-	// with the tenant's shared range, not merely made unreadable.
+	// Deleting the tenant leaves no keyring behind: the home store goes with
+	// the tenant's barrier.
 	if err := node.Tenant.DeleteTenant(ctx, id); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
-	if raw, err := node.KV.Get(ctx, seal.TenantSharedNamespace(id)+keyringRecordKey); err == nil && len(raw) > 0 {
-		t.Fatal("the deleted tenant's keyring record is still in the shared store")
+	if _, err := registry.GetTenant(id); err == nil {
+		t.Fatal("the deleted tenant's barrier, and with it its home store, is still registered")
 	}
 	if _, err := node.DEK.Decrypt(caller, "", sealed.Ciphertext, nil); err == nil {
 		t.Fatal("a deleted tenant's ciphertext still decrypts")

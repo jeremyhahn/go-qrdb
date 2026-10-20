@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -90,7 +92,7 @@ func (f *fakeVolumeServiceForReplicaFilter) GetMove(context.Context, string) (*v
 func TestVolumePoolHealthFilter_NoAssignmentPassesThrough(t *testing.T) {
 	allocator := &fakeAllocatorForReplicaFilter{assignments: map[string]volume.Assignment{}}
 	volumeSvc := &fakeVolumeServiceForReplicaFilter{pools: map[string]*volume.PoolDetail{}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{}, nil)
 
 	if err := filter("tenant-no-assignment", 1, "10.0.0.1:7000"); err != nil {
 		t.Fatalf("filter() = %v, want nil", err)
@@ -109,7 +111,7 @@ func TestVolumePoolHealthFilter_ReadyNodeAdmits(t *testing.T) {
 			{NodeID: "1", State: volume.NodeStateReady},
 		}},
 	}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
 
 	if err := filter("tenant-a", 1, "10.0.0.1:7000"); err != nil {
 		t.Fatalf("filter() = %v, want nil", err)
@@ -129,7 +131,7 @@ func TestVolumePoolHealthFilter_NotReadyRefusesWithTypedError(t *testing.T) {
 			{NodeID: "1", State: volume.NodeStateUnavailable},
 		}},
 	}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
 
 	err := filter("tenant-a", 1, "10.0.0.1:7000")
 	var target *PoolNotHealthyOnNodeError
@@ -154,7 +156,7 @@ func TestVolumePoolHealthFilter_NoReportForNodeRefuses(t *testing.T) {
 			{NodeID: "2", State: volume.NodeStateReady},
 		}},
 	}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
 
 	err := filter("tenant-a", 1, "10.0.0.1:7000")
 	var target *PoolNotHealthyOnNodeError
@@ -175,7 +177,7 @@ func TestVolumePoolHealthFilter_UnknownRaftAddrFailsClosed(t *testing.T) {
 		"tenant-a": {TenantID: "tenant-a", Pool: "fast"},
 	}}
 	volumeSvc := &fakeVolumeServiceForReplicaFilter{pools: map[string]*volume.PoolDetail{}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{}, nil)
 
 	err := filter("tenant-a", 1, "10.0.0.1:7000")
 	var target *UnknownRaftAddrError
@@ -187,6 +189,138 @@ func TestVolumePoolHealthFilter_UnknownRaftAddrFailsClosed(t *testing.T) {
 	}
 }
 
+// fixedMembership returns a systemMembership that answers m (or err) and
+// counts its reads, so a test can tell whether the snapshot short-circuited.
+func fixedMembership(m *quicraft.Membership, err error, reads *int) systemMembership {
+	return func(context.Context) (*quicraft.Membership, error) {
+		*reads++
+		return m, err
+	}
+}
+
+// TestVolumePoolHealthFilter_JoinedNodeResolvedFromMembership is the #812
+// three-node case: a node admitted with `admin member add` after the
+// founders booted is absent from their --peers snapshot, and is admitted
+// on its pool report because the system shard's membership names it.
+func TestVolumePoolHealthFilter_JoinedNodeResolvedFromMembership(t *testing.T) {
+	allocator := &fakeAllocatorForReplicaFilter{assignments: map[string]volume.Assignment{
+		"tenant-a": {TenantID: "tenant-a", Pool: "fast"},
+	}}
+	volumeSvc := &fakeVolumeServiceForReplicaFilter{pools: map[string]*volume.PoolDetail{
+		"fast": {NodeReports: []volume.NodeReportRow{
+			{NodeID: "3", State: volume.NodeStateReady},
+		}},
+	}}
+	var reads int
+	members := fixedMembership(&quicraft.Membership{Nodes: map[uint64]string{
+		1: "10.0.0.1:7000", 2: "10.0.0.2:7000", 3: "10.0.0.3:7000",
+	}}, nil, &reads)
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc,
+		map[string]string{"10.0.0.1:7000": "1", "10.0.0.2:7000": "2"}, members)
+
+	if err := filter("tenant-a", 1, "10.0.0.3:7000"); err != nil {
+		t.Fatalf("filter() = %v, want nil", err)
+	}
+	if reads != 1 {
+		t.Fatalf("membership reads = %d, want 1", reads)
+	}
+}
+
+// TestVolumePoolHealthFilter_JoinedNodeNotReadyRefuses keeps the pool check
+// in force for a membership-resolved node: resolving the address is not
+// admitting it.
+func TestVolumePoolHealthFilter_JoinedNodeNotReadyRefuses(t *testing.T) {
+	allocator := &fakeAllocatorForReplicaFilter{assignments: map[string]volume.Assignment{
+		"tenant-a": {TenantID: "tenant-a", Pool: "fast"},
+	}}
+	volumeSvc := &fakeVolumeServiceForReplicaFilter{pools: map[string]*volume.PoolDetail{
+		"fast": {NodeReports: []volume.NodeReportRow{
+			{NodeID: "3", State: volume.NodeStateLocked},
+		}},
+	}}
+	var reads int
+	members := fixedMembership(&quicraft.Membership{Nodes: map[uint64]string{3: "10.0.0.3:7000"}}, nil, &reads)
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, members)
+
+	err := filter("tenant-a", 1, "10.0.0.3:7000")
+	var target *PoolNotHealthyOnNodeError
+	if !errors.As(err, &target) {
+		t.Fatalf("filter() = %v, want *PoolNotHealthyOnNodeError", err)
+	}
+	if target.NodeID != "3" {
+		t.Fatalf("PoolNotHealthyOnNodeError.NodeID = %q, want 3", target.NodeID)
+	}
+}
+
+func TestResolveNodeID_SnapshotHitSkipsMembership(t *testing.T) {
+	var reads int
+	members := fixedMembership(nil, errors.New("must not be read"), &reads)
+
+	got, err := resolveNodeID(context.Background(), "10.0.0.1:7000", map[string]string{"10.0.0.1:7000": "1"}, members)
+	if err != nil {
+		t.Fatalf("resolveNodeID() error = %v", err)
+	}
+	if got != "1" {
+		t.Fatalf("resolveNodeID() = %q, want 1", got)
+	}
+	if reads != 0 {
+		t.Fatalf("membership reads = %d, want 0", reads)
+	}
+}
+
+func TestResolveNodeID_ObserverResolvedWitnessNot(t *testing.T) {
+	var reads int
+	members := fixedMembership(&quicraft.Membership{
+		Observers: map[uint64]string{4: "10.0.0.4:7000"},
+		Witnesses: map[uint64]string{5: "10.0.0.5:7000"},
+	}, nil, &reads)
+
+	got, err := resolveNodeID(context.Background(), "10.0.0.4:7000", nil, members)
+	if err != nil || got != "4" {
+		t.Fatalf("resolveNodeID(observer) = %q, %v, want 4, nil", got, err)
+	}
+	_, err = resolveNodeID(context.Background(), "10.0.0.5:7000", nil, members)
+	var target *UnknownRaftAddrError
+	if !errors.As(err, &target) {
+		t.Fatalf("resolveNodeID(witness) error = %v, want *UnknownRaftAddrError", err)
+	}
+}
+
+func TestResolveNodeID_MissInBothFailsClosed(t *testing.T) {
+	cases := map[string]systemMembership{
+		"no membership source": nil,
+		"absent from membership": func(context.Context) (*quicraft.Membership, error) {
+			return &quicraft.Membership{Nodes: map[uint64]string{1: "10.0.0.1:7000"}}, nil
+		},
+		"nil membership": func(context.Context) (*quicraft.Membership, error) {
+			return nil, nil
+		},
+	}
+	for name, members := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveNodeID(context.Background(), "10.0.0.9:7000", map[string]string{}, members)
+			var target *UnknownRaftAddrError
+			if !errors.As(err, &target) {
+				t.Fatalf("resolveNodeID() error = %v, want *UnknownRaftAddrError", err)
+			}
+			if target.RaftAddr != "10.0.0.9:7000" {
+				t.Fatalf("UnknownRaftAddrError.RaftAddr = %q, want 10.0.0.9:7000", target.RaftAddr)
+			}
+		})
+	}
+}
+
+func TestResolveNodeID_MembershipErrorPropagates(t *testing.T) {
+	sentinel := errors.New("membership read failed")
+	var reads int
+	members := fixedMembership(nil, sentinel, &reads)
+
+	_, err := resolveNodeID(context.Background(), "10.0.0.3:7000", nil, members)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("resolveNodeID() error = %v, want %v", err, sentinel)
+	}
+}
+
 // TestVolumePoolHealthFilter_AllocatorErrorPropagates proves an allocator
 // error other than *volume.AssignmentNotFoundError is returned verbatim,
 // not swallowed as a pass-through.
@@ -194,7 +328,7 @@ func TestVolumePoolHealthFilter_AllocatorErrorPropagates(t *testing.T) {
 	wantErr := errors.New("boom")
 	allocator := &erroringAllocator{err: wantErr}
 	volumeSvc := &fakeVolumeServiceForReplicaFilter{pools: map[string]*volume.PoolDetail{}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{}, nil)
 
 	if err := filter("tenant-a", 1, "10.0.0.1:7000"); !errors.Is(err, wantErr) {
 		t.Fatalf("filter() = %v, want %v", err, wantErr)
@@ -209,7 +343,7 @@ func TestVolumePoolHealthFilter_PoolLookupErrorPropagates(t *testing.T) {
 		"tenant-a": {TenantID: "tenant-a", Pool: "retired"},
 	}}
 	volumeSvc := &fakeVolumeServiceForReplicaFilter{pools: map[string]*volume.PoolDetail{}}
-	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"})
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
 
 	err := filter("tenant-a", 1, "10.0.0.1:7000")
 	var notFound *volume.PoolNotFoundError

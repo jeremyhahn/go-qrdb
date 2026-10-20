@@ -241,26 +241,46 @@ func (s *Sender) Deliver(ctx context.Context, target placement.Replica, meta key
 	return nil
 }
 
-// DistributeTenantKey ships the tenant barrier key to every follower replica in
-// p (skipping selfNodeID). For system-managed mode (autoUnseal=true) it exports
-// the leader's ImportedKey context; for self-managed mode (autoUnseal=false) it
-// exports the sealed blob verbatim. All replicas are attempted; errors are
-// accumulated via errors.Join.
-//
-// The deliveries run concurrently, and they must. A follower answers only once
-// its import has unsealed its barrier, and the unseal's audit event can wait
-// for the very Raft group these deliveries are forming: an isolated tenant's
-// home group writes that event to the tenant's own trail, which has no leader
-// until a quorum of replicas holds the key. Delivered one at a time, the first
-// follower waits on a quorum the queued deliveries have not yet made, and the
-// tenant creation deadlocks until the follower's readiness bound expires.
+// ownKeyOnEveryNode is the strategies whose barrier every serving node
+// initializes with its own key, so none is ever shipped to a follower: a none
+// barrier from the owner's claimed init statement, and a passphrase one from
+// the owner's init, which the client sends to every serving node, and a
+// Shamir one at its holders' first quorum on that node (seal.ArmShamir): its
+// key unwraps only through the node's own wrapped-key and roster records,
+// which a blob does not carry. A platform-custody barrier is not shipped
+// either; DatabaseService never asks.
+var ownKeyOnEveryNode = map[seal.StrategyID]bool{
+	seal.StrategyNone:       true,
+	seal.StrategyPassphrase: true,
+	seal.StrategyShamir:     true,
+}
+
+// DistributeTenantKey ships the owner-sealed tenant barrier blob to every
+// follower replica in p (skipping selfNodeID), verbatim: no plaintext root key
+// ever transits. A barrier whose every node holds its own key is not shipped
+// at all; see ownKeyOnEveryNode. All replicas are attempted, concurrently;
+// errors are accumulated via errors.Join.
 func (s *Sender) DistributeTenantKey(
 	ctx context.Context,
 	p *placement.Placement,
 	leaderTenantBarrier *seal.StorageBarrier,
 	selfNodeID string,
-	autoUnseal bool,
 ) error {
+	// A barrier not yet initialized -- a tenant's, at create, before its
+	// admin initializes it -- has no key to ship; followers reconcile once
+	// it does.
+	initialized, err := leaderTenantBarrier.Initialized(ctx)
+	if err != nil {
+		return err
+	}
+	if !initialized {
+		return nil
+	}
+	// The persisted blob names the strategy: a leader still sealed after a
+	// restart has no active one.
+	if ownKeyOnEveryNode[leaderTenantBarrier.PersistedStrategy(ctx)] {
+		return nil
+	}
 	errs := make([]error, len(p.Replicas))
 	var wg sync.WaitGroup
 	for i, replica := range p.Replicas {
@@ -268,31 +288,25 @@ func (s *Sender) DistributeTenantKey(
 			continue // skip the leader itself
 		}
 		wg.Go(func() {
-			errs[i] = s.distributeTo(ctx, p, replica, leaderTenantBarrier, autoUnseal)
+			errs[i] = s.distributeTo(ctx, p, replica, leaderTenantBarrier)
 		})
 	}
 	wg.Wait()
 	return errors.Join(errs...)
 }
 
-// distributeTo delivers the tenant barrier key to one follower replica and
+// distributeTo delivers the tenant barrier blob to one follower replica and
 // logs a failure against that replica's node.
-func (s *Sender) distributeTo(ctx context.Context, p *placement.Placement, replica placement.Replica, b *seal.StorageBarrier, autoUnseal bool) error {
+func (s *Sender) distributeTo(ctx context.Context, p *placement.Placement, replica placement.Replica, b *seal.StorageBarrier) error {
 	meta := keydelivery.Meta{
 		TenantID:     p.TenantID,
 		Database:     p.Database,
 		ShardID:      p.ShardID,
 		ReplicaID:    replica.ReplicaID,
 		TargetNodeID: replica.NodeID,
+		Mode:         keydelivery.ModeSelfManaged,
 	}
-	var err error
-	if autoUnseal {
-		meta.Mode = keydelivery.ModeSystemManaged
-		err = s.deliverSystemManaged(ctx, replica, meta, b)
-	} else {
-		meta.Mode = keydelivery.ModeSelfManaged
-		err = s.deliverSelfManaged(ctx, replica, meta, b)
-	}
+	err := s.deliverSelfManaged(ctx, replica, meta, b)
 	if err != nil {
 		s.logger.Error("clusterkeys: delivery failed",
 			slog.String("node", replica.NodeID),
@@ -300,23 +314,6 @@ func (s *Sender) distributeTo(ctx context.Context, p *placement.Placement, repli
 			slog.String("error", err.Error()))
 	}
 	return err
-}
-
-// deliverSystemManaged exports the leader's ImportedKey context, marshals it as
-// JSON, and delivers it via Deliver. The key material is wiped immediately after
-// Deliver returns.
-func (s *Sender) deliverSystemManaged(ctx context.Context, replica placement.Replica, meta keydelivery.Meta, b *seal.StorageBarrier) error {
-	imported, err := b.ExportRootKeyContext(ctx)
-	if err != nil {
-		return err
-	}
-	plaintext, err := marshalKeyPayload(imported)
-	enclave.Wipe(imported.RootKey) // wipe the exported root key immediately
-	if err != nil {
-		return errors.Join(ErrDelivery, err)
-	}
-	defer enclave.Wipe(plaintext)
-	return s.Deliver(ctx, replica, meta, plaintext)
 }
 
 // deliverSelfManaged exports the sealed root-key blob and delivers it verbatim.

@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
+	"sync/atomic"
 	"testing"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
@@ -42,6 +44,10 @@ type mockTenantBarrierSvc struct {
 	unsealFn func(ctx context.Context, tenantID string, key []byte) error
 	sealFn   func(ctx context.Context, tenantID string) error
 	statusFn func(ctx context.Context, tenantID string) (*tenantpkg.TenantBarrierStatus, error)
+	// initResults answers successive inits in order, as a Shamir init's
+	// two requests; past its end an init answers as TenantBarrierInit does.
+	initResults []*tenantpkg.TenantBarrierInitResult
+	initCalls   atomic.Int32
 }
 
 // CreateTenant is unused by the barrier transport tests.
@@ -92,6 +98,9 @@ func (m *mockTenantBarrierSvc) TenantBarrierInit(ctx context.Context, tenantID s
 
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit.
 func (m *mockTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster, _ ...tenantpkg.TenantBarrierInitOption) (*tenantpkg.TenantBarrierInitResult, error) {
+	if n := int(m.initCalls.Add(1)) - 1; n < len(m.initResults) {
+		return m.initResults[n], nil
+	}
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
@@ -221,6 +230,46 @@ func TestTransport_TenantBarrierInit_RoundTrip(t *testing.T) {
 	}
 }
 
+// A Shamir init round-trips its split: the first response's roster and
+// check value reach the SDK, which makes the second request and returns its
+// response with the first's holders.
+func TestTransport_TenantBarrierInit_ShamirRoundTrip(t *testing.T) {
+	mock := &mockTenantBarrierSvc{initResults: []*tenantpkg.TenantBarrierInitResult{
+		{TenantID: "acme", Strategy: "shamir", Threshold: 2, TotalShares: 2,
+			Holders: []tenantpkg.TenantBarrierHolderCert{{Username: "alice"}},
+			Roster:  []byte("roster"), UnsealKeyCheck: []byte("check")},
+		{TenantID: "acme", Strategy: "shamir", Threshold: 2, TotalShares: 2, ShareCount: 2,
+			Roster: []byte("roster"), UnsealKeyCheck: []byte("check")},
+	}}
+	tr, cleanup := connectTransportWithBarrier(t, mock)
+	defer cleanup()
+
+	resp, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme", Strategy: "shamir"})
+	if err != nil {
+		t.Fatalf("TenantBarrierInit: %v", err)
+	}
+	if got := mock.initCalls.Load(); got != 2 {
+		t.Fatalf("init requests = %d, want 2", got)
+	}
+	if resp.ShareCount != 2 || string(resp.Roster) != "roster" || string(resp.UnsealKeyCheck) != "check" ||
+		len(resp.Holders) != 1 || resp.Holders[0].Username != "alice" {
+		t.Fatalf("resp = %+v, want the completed split with the first response's holders", resp)
+	}
+}
+
+// A first response without the split refuses the init before a second request.
+func TestTransport_TenantBarrierInit_ShamirWithoutSplitRefused(t *testing.T) {
+	mock := &mockTenantBarrierSvc{initResults: []*tenantpkg.TenantBarrierInitResult{{TenantID: "acme", Strategy: "shamir"}}}
+	tr, cleanup := connectTransportWithBarrier(t, mock)
+	defer cleanup()
+
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme", Strategy: "shamir"})
+	var missing *transport.ShamirSplitMissingError
+	if !errors.As(err, &missing) || mock.initCalls.Load() != 1 {
+		t.Fatalf("TenantBarrierInit = %v after %d requests, want ShamirSplitMissingError after one", err, mock.initCalls.Load())
+	}
+}
+
 func TestTransport_TenantBarrierUnseal_RoundTrip_KeyTakesPrecedence(t *testing.T) {
 	var gotID string
 	var gotKey []byte
@@ -270,6 +319,13 @@ func TestTransport_TenantBarrierSeal_RoundTrip(t *testing.T) {
 	}
 }
 
+// servingNodes is a status's serving-node list, and wantServingNodes its
+// conversion.
+var (
+	servingNodes     = []tenant.BarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+	wantServingNodes = []transport.TenantBarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+)
+
 func TestTransport_TenantBarrierStatus_RoundTrip(t *testing.T) {
 	mock := &mockTenantBarrierSvc{
 		statusFn: func(_ context.Context, tenantID string) (*tenantpkg.TenantBarrierStatus, error) {
@@ -279,6 +335,8 @@ func TestTransport_TenantBarrierStatus_RoundTrip(t *testing.T) {
 				Initialized:    true,
 				Strategy:       "shamir",
 				HardwareBacked: true,
+				KeyFingerprint: "0a1b2c",
+				Nodes:          servingNodes,
 			}, nil
 		},
 	}
@@ -290,6 +348,12 @@ func TestTransport_TenantBarrierStatus_RoundTrip(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("TenantBarrierStatus: %v", err)
+	}
+	if resp.KeyFingerprint != "0a1b2c" {
+		t.Fatalf("got KeyFingerprint=%q, want 0a1b2c", resp.KeyFingerprint)
+	}
+	if !reflect.DeepEqual(resp.Nodes, wantServingNodes) {
+		t.Fatalf("Nodes = %+v, want %+v", resp.Nodes, wantServingNodes)
 	}
 	if resp.TenantID != "eve" {
 		t.Fatalf("got tenant %q, want eve", resp.TenantID)

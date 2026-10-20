@@ -711,7 +711,7 @@ func (s *CeremonyService) InitializeShamir(ctx context.Context, policy seal.Fact
 	s.mu.Lock()
 	barrier := s.barrier
 	s.mu.Unlock()
-	return s.system.initializeShamir(ctx, &s.mu, barrier, policy)
+	return s.system.initializeShamir(ctx, &s.mu, barrier.InitializeShamir, policy)
 }
 
 // GenerateRecoveryKeys generates the system barrier's recovery key

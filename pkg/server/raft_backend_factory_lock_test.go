@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // lockTestDeadline bounds a call that must not wait on another caller's
@@ -429,6 +430,177 @@ func TestSealEnforcer_SealTenantStopsAStartInFlight(t *testing.T) {
 	}
 	if e.TenantUnsealed("rt") {
 		t.Fatal("SealTenant left the tenant's barrier unsealed")
+	}
+}
+
+// TestRaftBackendFactory_ConcurrentColdServicesRegisterSealObserversSafely is
+// the first Codex finding on #812: planStart registered each tenant's seal
+// observer in sealWatched without f.mu, so cold Services calls racing for two
+// tenants wrote the map at once. Run under -race, it fails without the lock.
+func TestRaftBackendFactory_ConcurrentColdServicesRegisterSealObserversSafely(t *testing.T) {
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	tenants := []struct {
+		id    string
+		shard uint64
+	}{{"ca", 2400}, {"cb", 2401}}
+	for _, tn := range tenants {
+		root, _ := registerVolumeTenant(t, reg, tn.id)
+		src.add(tn.id, "app", tn.shard, root)
+		src.setDedicated(tn.id, "app")
+	}
+
+	const callersPerTenant = 4
+	var wg sync.WaitGroup
+	errs := make(chan error, len(tenants)*callersPerTenant)
+	for _, tn := range tenants {
+		for range callersPerTenant {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if _, err := f.Services(context.Background(), tn.id, "app"); err != nil {
+					errs <- err
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent cold Services: %v", err)
+	}
+
+	f.mu.Lock()
+	watched := len(f.sealWatched)
+	f.mu.Unlock()
+	if watched != len(tenants) {
+		t.Fatalf("%d barriers watched; want one per tenant (%d)", watched, len(tenants))
+	}
+}
+
+// TestRaftBackendFactory_BarrierSealStopsAStartInFlight is the second Codex
+// finding on #812: a founding shard waiting in WaitForShardServing runs on the
+// host but sits only in f.starting, so the sealing observer, which listed
+// f.shards alone, let the barrier wipe the key under its dedicated WAL. The
+// seal now waits for that start to end and returns only once the shard is
+// stopped. The start ends here as it does on a node: its wait for the shard to
+// serve returns, by the caller's context ending.
+func TestRaftBackendFactory_BarrierSealStopsAStartInFlight(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, tb := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", 1001, dataRoot)
+	src.placements = map[raftShardKey]*placement.Placement{{tenantID: "rt", database: "a"}: noQuorumPlacement("rt", "a", 1001)}
+	f.identitiesOverride = func(context.Context, uint64, uint64, bool, map[uint64]string) (map[uint64]string, error) {
+		return nil, nil
+	}
+	startCtx, endStart := context.WithCancel(context.Background())
+	defer endStart()
+
+	started := resolveAsync(startCtx, f, "rt", "a")
+	awaitStarting(t, f, "rt", "a")
+	sealed := make(chan error, 1)
+	go func() { sealed <- tb.Seal() }()
+
+	// The seal lists the barrier as sealing, then waits on the start.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.mu.Lock()
+		_, sealing := f.sealing[tb.Barrier()]
+		f.mu.Unlock()
+		if sealing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the seal never listed the tenant's barrier as sealing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-sealed:
+		t.Fatalf("Seal = %v while the tenant's start was in flight, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	endStart()
+	within(t, "Seal", func() {
+		if err := <-sealed; err != nil {
+			t.Errorf("Seal = %v, want nil", err)
+		}
+	})
+	f.mu.Lock()
+	_, inFlight := f.starting[raftShardKey{tenantID: "rt", database: "a"}]
+	f.mu.Unlock()
+	if inFlight {
+		t.Fatal("Seal returned with the tenant's start still running on the host: the key was wiped under it")
+	}
+	requireAwaitLeader(t, "Services(a)", (<-started).err)
+	if got := f.ListOnHost(); len(got) != 0 {
+		t.Fatalf("ListOnHost after Seal = %v, want none", got)
+	}
+	if !tb.IsSealed() {
+		t.Fatal("Seal left the tenant's barrier unsealed")
+	}
+}
+
+// TestRaftBackendFactory_StartSucceedsAgainAfterUnseal checks that the seal's
+// refusal of new starts lasts only until the barrier is unsealed: a start
+// planned while the barrier was listed as sealing is refused, and once the
+// unseal clears the listing the tenant's shard starts and serves again.
+func TestRaftBackendFactory_StartSucceedsAgainAfterUnseal(t *testing.T) {
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	ctx := context.Background()
+	root, tb := registerVolumeTenant(t, reg, "su")
+	const shardID = uint64(2402)
+	src.add("su", "app", shardID, root)
+	src.setDedicated("su", "app")
+	if _, err := f.Services(ctx, "su", "app"); err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	// A plan made while the barrier was unsealed, then started after the
+	// seal began: startPlanned refuses it.
+	plan, err := f.planStart(ctx, "su", "app", true, false)
+	if err != nil {
+		t.Fatalf("planStart: %v", err)
+	}
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	f.mu.Lock()
+	generation := f.generation
+	f.mu.Unlock()
+	if _, _, err := f.startPlanned(ctx, raftShardKey{tenantID: "su", database: "app"}, plan, generation); !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("start planned before the seal, started after it = %v; want seal.ErrSealed", err)
+	}
+
+	if err := reg.UnsealTenant(ctx, "su", seal.Credentials{}); err != nil {
+		t.Fatalf("UnsealTenant: %v", err)
+	}
+	f.mu.Lock()
+	_, sealing := f.sealing[tb.Barrier()]
+	f.mu.Unlock()
+	if sealing {
+		t.Fatal("the unseal left the barrier listed as sealing")
+	}
+	svcs, err := f.Services(ctx, "su", "app")
+	if err != nil {
+		t.Fatalf("Services after unseal: %v", err)
+	}
+	if !mux.IsDedicated(shardID) {
+		t.Fatal("the dedicated WAL was not registered again after unseal")
+	}
+	if err := svcs.KV.Put(ctx, "k", []byte("after-unseal")); err != nil {
+		t.Fatalf("Put after unseal: %v", err)
 	}
 }
 

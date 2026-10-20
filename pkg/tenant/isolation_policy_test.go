@@ -47,40 +47,6 @@ func TestEffectiveIsolationPolicy(t *testing.T) {
 	}
 }
 
-func TestValidateIsolationModeAgainstPolicy(t *testing.T) {
-	tests := []struct {
-		name          string
-		tenantID      string
-		isolationType IsolationType
-		effective     ClusterIsolationPolicy
-		wantErr       bool
-	}{
-		{"prefix under strict refused", "acme", IsolationPrefix, ClusterIsolationPolicyStrict, true},
-		{"empty (defaults to prefix) under strict refused", "acme", "", ClusterIsolationPolicyStrict, true},
-		{"prefix under operator-access allowed", "acme", IsolationPrefix, ClusterIsolationPolicyOperatorAccess, false},
-		{"barrier under strict allowed", "acme", IsolationBarrier, ClusterIsolationPolicyStrict, false},
-		{"volume under strict allowed", "acme", IsolationVolume, ClusterIsolationPolicyStrict, false},
-		{"raft under strict allowed", "acme", IsolationRaft, ClusterIsolationPolicyStrict, false},
-		{"system tenant prefix under strict allowed", tenantid.System, IsolationPrefix, ClusterIsolationPolicyStrict, false},
-		{"empty id is the system tenant", "", IsolationPrefix, ClusterIsolationPolicyStrict, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateIsolationModeAgainstPolicy(tc.tenantID, tc.isolationType, tc.effective)
-			if tc.wantErr {
-				var want *StrictRequiresDedicatedStorageError
-				if !errors.As(err, &want) {
-					t.Fatalf("err = %v, want *StrictRequiresDedicatedStorageError", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
 func TestClusterIsolationTransitionAllowed(t *testing.T) {
 	tests := []struct {
 		from, to ClusterIsolationPolicy
@@ -210,23 +176,22 @@ func TestTenantService_SetClusterIsolationPolicy_PersistsAcrossNewServiceInstanc
 }
 
 // ---------------------------------------------------------------------------
-// S2: a prefix tenant cannot be strict
+// The policy governs isolated tenants only: a shared tenant is never refused
 // ---------------------------------------------------------------------------
 
-func TestTenantService_CreateTenant_S2_PrefixRefusedUnderStrictFloor(t *testing.T) {
+func TestTenantService_CreateTenant_SharedAllowedUnderStrictFloor(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t)
 	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict); err != nil {
 		t.Fatalf("SetClusterIsolationPolicy: %v", err)
 	}
 
-	_, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix)
-	var want *StrictRequiresDedicatedStorageError
-	if !errors.As(err, &want) {
-		t.Fatalf("CreateTenant(prefix) under a strict floor = %v, want *StrictRequiresDedicatedStorageError", err)
+	info, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix)
+	if err != nil {
+		t.Fatalf("CreateTenant(prefix) under a strict floor = %v, want nil", err)
 	}
-	if _, gerr := svc.GetTenant(ctx, "acme"); gerr == nil {
-		t.Fatal("a refused create must not leave a record behind")
+	if info.EffectiveIsolationType() != IsolationPrefix {
+		t.Fatalf("isolation type = %q, want prefix", info.EffectiveIsolationType())
 	}
 }
 
@@ -249,16 +214,24 @@ func TestTenantService_CreateTenant_S2_SystemTenantUnderStrictFloor(t *testing.T
 	}
 }
 
-func TestTenantService_CreateTenant_S2_PrefixRefusedWithExplicitIsolationPolicy(t *testing.T) {
+func TestTenantService_CreateTenant_SharedAllowedWithExplicitIsolationPolicy(t *testing.T) {
 	ctx := context.Background()
-	// The floor is untouched (operator-access), but the caller directly asks
-	// for the tenant's own strict opt-in -- S2 must still refuse a prefix
-	// tenant.
 	svc, _ := newTestService(t)
-	_, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix, WithIsolationPolicy(TenantIsolationPolicyStrict))
-	var want *StrictRequiresDedicatedStorageError
-	if !errors.As(err, &want) {
-		t.Fatalf("CreateTenant(prefix, isolation_policy=strict) = %v, want *StrictRequiresDedicatedStorageError", err)
+	info, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix, WithIsolationPolicy(TenantIsolationPolicyStrict))
+	if err != nil {
+		t.Fatalf("CreateTenant(prefix, isolation_policy=strict) = %v, want nil", err)
+	}
+	if info.IsolationPolicy != TenantIsolationPolicyStrict {
+		t.Fatalf("IsolationPolicy = %q, want strict", info.IsolationPolicy)
+	}
+}
+
+func TestTenantService_CreateTenant_InvalidIsolationPolicyRefused(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateTenant(context.Background(), "acme", "Acme", IsolationPrefix, WithIsolationPolicy("bogus"))
+	var invalid *InvalidIsolationPolicyError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("CreateTenant(bogus policy) = %v, want *InvalidIsolationPolicyError", err)
 	}
 }
 
@@ -308,16 +281,46 @@ func TestTenantService_UpdateTenant_IsolationPolicy_TightenOnly(t *testing.T) {
 	}
 }
 
-func TestTenantService_UpdateTenant_IsolationPolicy_S2(t *testing.T) {
+// No record moves when the floor tightens -- every isolated tenant's records
+// are in its home store whatever the policy -- so the floor tightens to strict
+// over existing isolated tenants of every type and policy.
+func TestTenantService_SetClusterIsolationPolicy_StrictOverExistingIsolatedTenants(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyOperatorAccess); err != nil {
+		t.Fatalf("SetClusterIsolationPolicy(operator-access): %v", err)
+	}
+	if _, err := svc.CreateTenant(ctx, "loose", "Loose", IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant(loose): %v", err)
+	}
+	if _, err := svc.CreateTenant(ctx, "opted", "Opted", IsolationBarrier, WithIsolationPolicy(TenantIsolationPolicyStrict)); err != nil {
+		t.Fatalf("CreateTenant(opted): %v", err)
+	}
+	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict); err != nil {
+		t.Fatalf("SetClusterIsolationPolicy(strict) over isolated tenants: %v", err)
+	}
+	if got, err := svc.ClusterIsolationPolicy(ctx); err != nil || got != ClusterIsolationPolicyStrict {
+		t.Fatalf("ClusterIsolationPolicy = (%q, %v), want strict", got, err)
+	}
+}
+
+func TestTenantService_UpdateTenant_IsolationPolicy_SharedTenantAllowed(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t)
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	_, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
-	var want *StrictRequiresDedicatedStorageError
-	if !errors.As(err, &want) {
-		t.Fatalf("UpdateTenant(prefix tenant, isolation_policy=strict) = %v, want *StrictRequiresDedicatedStorageError", err)
+	updated, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
+	if err != nil {
+		t.Fatalf("UpdateTenant(prefix tenant, isolation_policy=strict) = %v, want nil", err)
+	}
+	if updated.IsolationPolicy != TenantIsolationPolicyStrict {
+		t.Fatalf("IsolationPolicy = %q, want strict", updated.IsolationPolicy)
+	}
+	_, err = svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: "bogus"})
+	var invalid *InvalidIsolationPolicyError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("UpdateTenant(bogus policy) = %v, want *InvalidIsolationPolicyError", err)
 	}
 }
 
@@ -369,19 +372,16 @@ func TestKVTenantService_SetClusterIsolationPolicy_TightenOnly(t *testing.T) {
 	}
 }
 
-func TestKVCreateTenant_S2_RefusedUnderStrictFloor(t *testing.T) {
+func TestKVCreateTenant_SharedAllowedUnderStrictFloor(t *testing.T) {
 	ctx := context.Background()
 	svc := &kvTenantService{store: newMemKVStore(), logger: slog.Default()}
 	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict); err != nil {
 		t.Fatalf("SetClusterIsolationPolicy: %v", err)
 	}
-	// This service only ever creates prefix tenants, so a strict floor
-	// refuses every create -- matching "without a pool, tenant creation
-	// fails cleanly before any write" (there is no pool here either).
-	_, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix)
-	var want *StrictRequiresDedicatedStorageError
-	if !errors.As(err, &want) {
-		t.Fatalf("CreateTenant under a strict floor = %v, want *StrictRequiresDedicatedStorageError", err)
+	// This service only ever creates shared tenants, and the floor governs
+	// isolated ones only, so a strict floor refuses nothing here.
+	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant under a strict floor = %v, want nil", err)
 	}
 }
 
@@ -397,12 +397,6 @@ func TestKVCreateTenant_S2_SystemTenantUnderStrictFloor(t *testing.T) {
 	}
 	if _, err := svc.CreateTenant(WithInternalCall(ctx), tenantid.System, "System", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant(system) under a strict floor = %v, want success", err)
-	}
-	// Exempting the system tenant did not open S2 for anyone else.
-	_, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix)
-	var want *StrictRequiresDedicatedStorageError
-	if !errors.As(err, &want) {
-		t.Fatalf("CreateTenant(acme) under a strict floor = %v, want *StrictRequiresDedicatedStorageError", err)
 	}
 }
 

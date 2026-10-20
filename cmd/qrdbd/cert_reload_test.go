@@ -205,6 +205,50 @@ func TestCertReloader_GetCertificate_WithClientHello(t *testing.T) {
 	require.NotNil(t, cert, "GetCertificate must work with non-nil ClientHelloInfo")
 }
 
+func TestCertReloader_GetClientCertificate(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := testCertPair(t)
+	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
+
+	r, err := NewCertReloader(certPath, keyPath, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop() })
+
+	cert, err := r.GetClientCertificate(&tls.CertificateRequestInfo{})
+	require.NoError(t, err)
+	require.NotNil(t, cert)
+
+	expected, err := tls.X509KeyPair(certPEM, keyPEM)
+	require.NoError(t, err)
+
+	assert.Equal(t, expected.Certificate, cert.Certificate,
+		"GetClientCertificate must present the currently loaded cert")
+}
+
+func TestCertReloader_GetClientCertificate_AfterReload(t *testing.T) {
+	dir := t.TempDir()
+	origCert, origKey := testCertPair(t)
+	certPath, keyPath := writeCertFiles(t, dir, origCert, origKey)
+
+	r, err := NewCertReloader(certPath, keyPath, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop() })
+
+	newCert, newKey := testCertPair(t)
+	require.NoError(t, os.WriteFile(certPath, newCert, 0o600))
+	require.NoError(t, os.WriteFile(keyPath, newKey, 0o600))
+	require.NoError(t, r.Reload())
+
+	cert, err := r.GetClientCertificate(nil)
+	require.NoError(t, err)
+
+	expected, err := tls.X509KeyPair(newCert, newKey)
+	require.NoError(t, err)
+
+	assert.Equal(t, expected.Certificate, cert.Certificate,
+		"after Reload a dialed connection must present the new certificate")
+}
+
 // ---------------------------------------------------------------------------
 // TestCertReloader_Reload
 // ---------------------------------------------------------------------------

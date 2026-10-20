@@ -92,12 +92,9 @@ type resolverStoreCase struct {
 //
 //   - the system tenant resolves to the shared store, which is
 //     lifecycle.kvStoreAdapter over the replicated KV service;
-//   - a barrier-isolated tenant resolves to seal.tenantSharedKVStore, the
-//     tenant-DEK-encrypting wrapper over that same shared store.
-//
-// seal.tenantBarrierKVStore is deliberately absent: it has no production
-// construction site — NewTenantBarrierKVStore is reachable only from tests —
-// so no consumer can obtain one from the resolver.
+//   - an isolated tenant resolves to its home store (tenant.LocalHomes): a
+//     namespace over seal.tenantBarrierKVStore, which encrypts under the
+//     tenant's own barrier in its data root.
 func resolverStoreCases() []resolverStoreCase {
 	return []resolverStoreCase{
 		{
@@ -122,11 +119,11 @@ func resolverStoreCases() []resolverStoreCase {
 			indexCapable: true,
 		},
 		{
-			name:     "tenant_shared_store_barrier_isolated_tenant",
+			name:     "home_store_isolated_tenant",
 			tenantID: "acme",
-			// Stores ciphertext in the shared store, so nothing beneath it
-			// can read a field to index. It refuses instead of answering
-			// empty; see seal.tenantSharedKVStore.RegisterEntityIndexes.
+			// Stores ciphertext under the tenant's barrier, so nothing
+			// beneath it can read a field to index. It refuses instead of
+			// answering empty; see seal.tenantBarrierKVStore.RegisterEntityIndexes.
 			indexCapable: false,
 			setup: func(ctx context.Context, t *testing.T, n *Node) {
 				t.Helper()

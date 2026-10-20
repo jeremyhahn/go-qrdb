@@ -138,11 +138,20 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 	}
 
 	// Direction 2 (succeeds after unseal): initializing the tenant's barrier
-	// transitions it to unsealed, and the same IAM op now resolves to the
-	// tenant's own barrier-backed store.
+	// transitions it to unsealed, and with the standalone home source attached
+	// the same IAM op resolves to the tenant's home store under that barrier.
 	if err := reg.InitializeTenant(ctx, sealedTenant, seal.Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant(%s): %v", sealedTenant, err)
 	}
+	homes, err := tenant.NewLocalHomes(reg)
+	if err != nil {
+		t.Fatalf("NewLocalHomes: %v", err)
+	}
+	router, ok := mgmt.storeResolver.(tenant.HomeRouter)
+	if !ok {
+		t.Fatalf("the daemon's store resolver %T cannot route home stores", mgmt.storeResolver)
+	}
+	router.SetHomeStoreSource(homes)
 	if _, err := mgmt.servedRoleSvc.CreateRole(tenantCtx, &role.CreateRoleRequest{
 		Name: "r", TenantID: sealedTenant, Permissions: []permission.Permission{permission.KVGet},
 	}); err != nil {

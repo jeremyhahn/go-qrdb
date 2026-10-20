@@ -21,6 +21,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"os"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
 // ServerTLSValidityDays is the validity, in days, of a server TLS
@@ -29,11 +31,11 @@ import (
 const ServerTLSValidityDays = 365
 
 // baseServerSANs are the Subject Alternative Names every auto-provisioned
-// server certificate carries so that local clients (loopback dials, the CLI
-// over the unix socket, embedded transports) verify the leaf without extra
-// configuration. The machine hostname and any caller-supplied SANs are added
-// on top of these by ServerTLSConfig.
-var baseServerSANs = []string{"localhost", "127.0.0.1", "::1"}
+// server certificate carries: the loopback names clustertls gives every
+// node's certificate, so a founder's and a joiner's carry the same set. The
+// machine hostname and any caller-supplied SANs are added on top of these by
+// ServerTLSConfig.
+var baseServerSANs = clustertls.LoopbackSANs()
 
 // ServerTLSConfig auto-provisions a server TLS configuration from the node's
 // CeremonyCA. It issues a fresh leaf certificate for key — signed by the same

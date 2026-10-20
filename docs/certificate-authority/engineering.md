@@ -427,8 +427,23 @@ type AuthMiddlewareConfig struct {
 |---|---|---|
 | `__sys:cert_ca/{tenantID}/material` | SEC1 DER-encoded EC private key, raw | the CA private key, written together with `certificate` below in one atomic `PutAllIfAllUnchanged` batch — no per-record encryption of its own; see "Trust boundaries" |
 | `__sys:cert_ca/{tenantID}/certificate` | DER-encoded X.509 certificate, raw | the CA's own self-signed certificate; public data, read without ever touching `material` |
+| `__sys:cert_ca_pub/{tenantID}/certificate` | the CA certificate, DER | the published copy of an isolated tenant's CA certificate (below) |
 | `__sys:certs/{tenantID}/{serial}` | `CertRecord` JSON | issued certificate records |
 | `__sys:certs_revoked/{serial}` | revocation-entry JSON | revocation markers |
+
+The `material` row above previously described one combined JSON record written
+with `PutIfAbsent`; the key and certificate are two records written in one
+guarded batch, as `architecture.md` describes.
+
+**An isolated tenant's records live in its home store.** For a tenant whose
+records the node's resolver homes — every `barrier`, `volume` and `raft`
+tenant, whatever its isolation policy — (`tenant.HomeLocator`, see
+`docs/multi-tenancy/`), `material`, `certificate`, the `certs/` records and the
+revocation markers of the certificates its CA signed are in the tenant's home
+store, under the same keys. The system store holds only
+`__sys:cert_ca_pub/{tenantID}/certificate`, written before the CA first signs,
+and chain verification reads only that copy. Every other tenant's records, and
+every node and platform certificate's, are in the system store.
 
 The revocation entry is:
 
@@ -442,7 +457,7 @@ deny-by-serial case. Only a marker with an expiry is ever reaped, so a marker
 for a serial nobody here can date is permanent. Markers written by an older
 build hold the literal `"1"`; they still revoke and are never reaped.
 
-All four are inside the internal namespace and invisible to user KV
+Every key above is inside the internal namespace and invisible to user KV
 enumeration.
 
 ## Error semantics

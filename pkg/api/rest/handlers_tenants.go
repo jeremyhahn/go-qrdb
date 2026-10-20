@@ -179,6 +179,11 @@ type tenantBarrierInitRequest struct {
 	// this barrier (barrierinit.InitStatement), base64 on the wire: every
 	// other node serving the barrier initializes its own key from it.
 	InitStatement []byte `json:"init_statement,omitempty"`
+	// Roster and UnsealKeyCheck mark a Shamir init's second request, base64
+	// on the wire: they echo the split the first request prepared
+	// (tenant.WithPreparedShamir).
+	Roster         []byte `json:"roster,omitempty"`
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
 }
 
 // tenantBarrierUnsealRequest is the JSON payload for
@@ -802,7 +807,8 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster,
-		tenant.WithInitStatement(req.InitStatement))
+		tenant.WithInitStatement(req.InitStatement),
+		tenant.WithPreparedShamir(req.Roster, req.UnsealKeyCheck))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -810,15 +816,21 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 
 	// INV-1: share bytes are never included in initialization responses.
 	// Security Officers retrieve their shares via the per-tenant claim
-	// handshake. Return share_count so callers know enrollment succeeded.
-	if result != nil && result.ShareCount > 0 {
+	// handshake. Return share_count so callers know enrollment succeeded,
+	// and the Shamir split's roster and check value, which the owner signs
+	// between the two requests of a Shamir init, and admin_pending when the
+	// committed init's first admin waits on the tenant's home group.
+	if result != nil && (result.ShareCount > 0 || len(result.UnsealKeyCheck) > 0 || result.AdminPending) {
 		writeJSON(w, map[string]interface{}{
-			"tenant_id":    result.TenantID,
-			"strategy":     result.Strategy,
-			"threshold":    result.Threshold,
-			"total_shares": result.TotalShares,
-			"share_count":  result.ShareCount,
-			"holders":      holderwire.TenantBarrierHoldersTo(result.Holders),
+			"tenant_id":        result.TenantID,
+			"strategy":         result.Strategy,
+			"threshold":        result.Threshold,
+			"total_shares":     result.TotalShares,
+			"share_count":      result.ShareCount,
+			"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
+			"roster":           result.Roster,
+			"unseal_key_check": result.UnsealKeyCheck,
+			"admin_pending":    result.AdminPending,
 		})
 		return
 	}

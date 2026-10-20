@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // discardLogger keeps migration output out of test logs without discarding
@@ -50,6 +51,26 @@ func claimUser(t *testing.T, owners tenant.IdentityIndex, userID uint64, tenantI
 	t.Helper()
 	if _, err := owners.Record(context.Background(), tenant.IdentityUser, tenant.IdentityID(userID), tenantID); err != nil {
 		t.Fatalf("Record(%d -> %s): %v", userID, tenantID, err)
+	}
+}
+
+// legacyClaimUser writes the index entry an isolated tenant's user carried
+// before isolated tenants were homed. Record no longer claims for such a
+// tenant, but an entry written then still names it, and the migration must
+// still route the user's legacy factors by it.
+func legacyClaimUser(t *testing.T, h *factorTenantHarness, owners tenant.IdentityIndex, userID uint64, tenantID string) {
+	t.Helper()
+	ctx := context.Background()
+	kv, _, err := owners.PrepareClaim(tenant.IdentityUser, tenant.IdentityID(userID), tenantID)
+	if err != nil {
+		t.Fatalf("PrepareClaim(%d -> %s): %v", userID, tenantID, err)
+	}
+	system, err := h.res.Resolve(ctx, tenantid.System)
+	if err != nil {
+		t.Fatalf("Resolve(system): %v", err)
+	}
+	if err := system.Put(ctx, kv.Key, kv.Value); err != nil {
+		t.Fatalf("Put(%s): %v", kv.Key, err)
 	}
 }
 
@@ -549,7 +570,7 @@ func TestMigrateFactorsRefusesAnUnreachableTenantAndCompletesTheRun(t *testing.T
 	h := newFactorTenantHarness(t, "acme")
 	sealed := sealedTenant(t, h, "sealedco")
 	owners := ownersFor(t, h)
-	claimUser(t, owners, 900, sealed)
+	legacyClaimUser(t, h, owners, 900, sealed)
 	claimUser(t, owners, 1, "acme")
 	writeLegacyFactor(t, h.shared, mtlsFactor("sealed-owned", 900, []byte("sealed-cred")))
 	writeLegacyFactor(t, h.shared, mtlsFactor("healthy", 1, []byte("healthy-cred")))
@@ -591,7 +612,7 @@ func TestRoutedServiceServesEveryOtherTenantWhenOneIsUnreachable(t *testing.T) {
 	h := newFactorTenantHarness(t, "acme", "globex")
 	sealed := sealedTenant(t, h, "sealedco")
 	owners := ownersFor(t, h)
-	claimUser(t, owners, 900, sealed)
+	legacyClaimUser(t, h, owners, 900, sealed)
 	claimUser(t, owners, 1, "acme")
 	writeLegacyFactor(t, h.shared, mtlsFactor("sealed-owned", 900, []byte("sealed-cred")))
 	writeLegacyFactor(t, h.shared, mtlsFactor("healthy", 1, []byte("healthy-cred")))
@@ -638,7 +659,7 @@ func TestRoutedServiceRetriesAfterATransientRefusal(t *testing.T) {
 	h := newFactorTenantHarness(t, "acme")
 	sealed := sealedTenant(t, h, "sealedco")
 	owners := ownersFor(t, h)
-	claimUser(t, owners, 900, sealed)
+	legacyClaimUser(t, h, owners, 900, sealed)
 	writeLegacyFactor(t, h.shared, mtlsFactor("sealed-owned", 900, []byte("sealed-cred")))
 
 	svc, err := NewRoutingUserAuthFactorService(RoutingUserAuthFactorServiceConfig{

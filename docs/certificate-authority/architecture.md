@@ -678,7 +678,11 @@ per-tenant login CA**, one `cakey.SoftwareProvider` instance per tenant
 under `__sys:cert_ca/{tenantID}/`, resolved and cached lazily by
 `pkg/cert.DefaultCertProvider.resolveKeyProvider`. Both read and write the
 identical record shape this section describes; neither is a separate
-implementation any more.
+implementation any more. For an isolated tenant the Key B records are in the
+tenant's home store rather than the system store, and only the public CA
+certificate is published to the system store, at
+`__sys:cert_ca_pub/{tenantID}/certificate` (see `engineering.md`, "Storage
+schema", and `docs/multi-tenancy/`).
 
 The key and certificate are now TWO SEPARATE records
 (`{prefix}material` for the private key, `{prefix}certificate` for the

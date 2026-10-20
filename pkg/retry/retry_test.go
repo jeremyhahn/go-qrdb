@@ -18,6 +18,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -395,63 +396,69 @@ func TestDo_ContextCancellation(t *testing.T) {
 // genuinely fired, so Do always stops there. The deadline is short enough to
 // keep the suite quick and long enough that nothing depends on winning a race.
 func TestDo_ContextTimeout(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	// The bubble's clock moves only when every goroutine in it is durably
+	// blocked, so the deadline cannot expire while attempt 1 or the backoff
+	// runs, however slowly the runner schedules them: it expires exactly
+	// while attempt 2 waits on it. The deadline is still the context's own
+	// timer, so the context ends by DEADLINE.
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
 
-	cfg := &Config{
-		MaxAttempts: 10,
-		Backoff: &ConstantBackoff{
-			Delay:  time.Millisecond,
-			Jitter: 0,
-		},
-	}
-
-	var callCount atomic.Int32
-	op := func(opCtx context.Context) error {
-		if callCount.Add(1) == 2 {
-			// Wait for the real timer. No margin to lose: the attempt does not
-			// finish until the deadline has actually passed.
-			<-opCtx.Done()
+		cfg := &Config{
+			MaxAttempts: 10,
+			Backoff: &ConstantBackoff{
+				Delay:  time.Millisecond,
+				Jitter: 0,
+			},
 		}
-		return dberrors.New(dberrors.ErrUnavailable, "test.op", "service unavailable")
-	}
 
-	done := make(chan error, 1)
-	go func() { done <- Do(ctx, cfg, op) }()
+		var callCount atomic.Int32
+		op := func(opCtx context.Context) error {
+			if callCount.Add(1) == 2 {
+				// Blocks until the bubble's clock reaches the deadline.
+				<-opCtx.Done()
+			}
+			return dberrors.New(dberrors.ErrUnavailable, "test.op", "service unavailable")
+		}
 
-	var err error
-	select {
-	case err = <-done:
-	case <-time.After(returnBound):
-		t.Fatalf("Do did not return within %v of a %v deadline expiring",
-			returnBound, 50*time.Millisecond)
-	}
+		done := make(chan error, 1)
+		go func() { done <- Do(ctx, cfg, op) }()
 
-	require.Error(t, err)
-	assert.Equal(t, int32(2), callCount.Load(),
-		"the loop must stop on the attempt that saw the deadline expire, "+
-			"not continue to MaxAttempts")
-	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded,
-		"the context must have expired by DEADLINE, not by cancellation")
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(returnBound):
+			t.Fatalf("Do did not return within %v of a %v deadline expiring",
+				returnBound, 50*time.Millisecond)
+		}
 
-	// See TestDo_ContextCancellation: the wrap now applies retry.Do's own code.
-	var qe *dberrors.QRDBError
-	require.True(t, dberrors.As(err, &qe))
-	assert.Equal(t, "retry.Do", qe.Op)
-	assert.True(t, dberrors.Is(err, dberrors.ErrCanceled),
-		"Do must report WHY it stopped, got %v", err)
-	assert.False(t, qe.IsRetryable(),
-		"a deadline-driven stop must not come back retryable, got %v", err)
+		require.Error(t, err)
+		assert.Equal(t, int32(2), callCount.Load(),
+			"the loop must stop on the attempt that saw the deadline expire, "+
+				"not continue to MaxAttempts")
+		assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded,
+			"the context must have expired by DEADLINE, not by cancellation")
 
-	// ErrUnavailable IS retryable, so this is the case that matters most: the
-	// old inheritance would have marked the whole thing retryable and invited
-	// a caller to retry a context that has already expired.
-	var inner *dberrors.QRDBError
-	require.True(t, errors.As(qe.Unwrap(), &inner))
-	assert.Equal(t, dberrors.ErrUnavailable, inner.Code,
-		"the operation's own classification must survive in the chain")
-	assert.True(t, inner.IsRetryable(),
-		"precondition: the inner error must be retryable, or this proves nothing")
+		// See TestDo_ContextCancellation: the wrap now applies retry.Do's own code.
+		var qe *dberrors.QRDBError
+		require.True(t, dberrors.As(err, &qe))
+		assert.Equal(t, "retry.Do", qe.Op)
+		assert.True(t, dberrors.Is(err, dberrors.ErrCanceled),
+			"Do must report WHY it stopped, got %v", err)
+		assert.False(t, qe.IsRetryable(),
+			"a deadline-driven stop must not come back retryable, got %v", err)
+
+		// ErrUnavailable IS retryable, so this is the case that matters most: the
+		// old inheritance would have marked the whole thing retryable and invited
+		// a caller to retry a context that has already expired.
+		var inner *dberrors.QRDBError
+		require.True(t, errors.As(qe.Unwrap(), &inner))
+		assert.Equal(t, dberrors.ErrUnavailable, inner.Code,
+			"the operation's own classification must survive in the chain")
+		assert.True(t, inner.IsRetryable(),
+			"precondition: the inner error must be retryable, or this proves nothing")
+	})
 }
 
 // A context that is ALREADY done is not attempted at all.

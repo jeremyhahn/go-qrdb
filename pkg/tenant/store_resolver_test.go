@@ -30,16 +30,29 @@ import (
 )
 
 // newResolverFixture builds a TenantService (with a pooled barrier
-// registry) and a StoreResolver over a fresh shared in-memory store.
+// registry) and a StoreResolver over a fresh shared in-memory store, with the
+// standalone home source attached as a standalone node attaches it.
 func newResolverFixture(t *testing.T) (*memKVStore, *TenantService, *seal.BarrierRegistry, StoreResolver) {
 	t.Helper()
 	svc, reg := newTestService(t)
 	shared := newMemKVStore()
+	return shared, svc, reg, newLocalHomedResolver(t, shared, reg, svc)
+}
+
+// newLocalHomedResolver returns a StoreResolver over shared with LocalHomes
+// over reg attached.
+func newLocalHomedResolver(t *testing.T, shared kvstore.KVStore, reg *seal.BarrierRegistry, svc TenantServicer) StoreResolver {
+	t.Helper()
 	resolver, err := NewStoreResolver(shared, reg, svc)
 	if err != nil {
 		t.Fatalf("NewStoreResolver: %v", err)
 	}
-	return shared, svc, reg, resolver
+	homes, err := NewLocalHomes(reg)
+	if err != nil {
+		t.Fatalf("NewLocalHomes: %v", err)
+	}
+	resolver.(HomeRouter).SetHomeStoreSource(homes)
+	return resolver
 }
 
 // requireBackedByShared asserts that a resolved store writes THROUGH to the
@@ -196,12 +209,12 @@ func TestStoreResolver_BarrierTenantUsesOwnBarrier(t *testing.T) {
 	}
 }
 
-// TestStoreResolver_ReusedIDResolvesItsNewBarrier pins that the wrapper cache
-// is matched on the barrier instance: once an undone id is created again, its
-// identity store is the one over the new barrier, never the cached wrapper
-// over the barrier the undo closed.
+// TestStoreResolver_ReusedIDResolvesItsNewBarrier pins that the home-store
+// cache is matched on the barrier instance: once an undone id is created
+// again, its identity store is the one over the new barrier, never the cached
+// store over the barrier the undo closed.
 func TestStoreResolver_ReusedIDResolvesItsNewBarrier(t *testing.T) {
-	shared, svc, reg, resolver := newResolverFixture(t)
+	_, svc, reg, resolver := newResolverFixture(t)
 	WithTenantUndoGate(undoActive)(svc)
 	WithNodeID("node-a")(svc)
 	WithUndoCleanupRoster(rosterOf("node-a"))(svc)
@@ -229,14 +242,16 @@ func TestStoreResolver_ReusedIDResolvesItsNewBarrier(t *testing.T) {
 
 	const key = "__sys:users/id/reused"
 	require.NoError(t, second.Put(ctx, key, []byte("next tenant")))
-	direct, err := seal.NewTenantSharedKVStore(reused, shared)
+	inner, err := seal.NewTenantBarrierKVStore(reused)
+	require.NoError(t, err)
+	direct, err := kvstore.NewNamespacedKVStore(inner, HomeName+"/")
 	require.NoError(t, err)
 	got, err := direct.Get(ctx, key)
 	require.NoError(t, err)
 	assert.Equal(t, "next tenant", string(got), "the resolved store does not encrypt under the new barrier")
 	again, err := resolver.Resolve(ctx, "secure")
 	require.NoError(t, err)
-	assert.Same(t, second, again, "the new barrier's wrapper is not cached")
+	assert.Same(t, second, again, "the new barrier's home store is not cached")
 }
 
 // (c) Two barrier tenants are isolated: tenant A's record is not resolvable
@@ -330,11 +345,7 @@ func newResolverFixtureFor(t *testing.T, ents *quota.Entitlements) (*memKVStore,
 		t.Fatalf("NewTenantService: %v", err)
 	}
 	shared := newMemKVStore()
-	resolver, err := NewStoreResolver(shared, reg, svc)
-	if err != nil {
-		t.Fatalf("NewStoreResolver: %v", err)
-	}
-	return shared, svc, reg, resolver
+	return shared, svc, reg, newLocalHomedResolver(t, shared, reg, svc)
 }
 
 // A volume-isolated tenant routes IAM through its own barrier (NOT the shared
@@ -347,9 +358,6 @@ func TestStoreResolver_VolumeTenantRoutesThroughBarrier(t *testing.T) {
 	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
 	// while the system barrier is sealed; this test is about the tenant's
 	// own barrier sealing IAM, not the system barrier's state.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	if _, err := svc.CreateTenant(ctx, "vault-vol", "Volume", IsolationVolume); err != nil {
 		t.Fatalf("CreateTenant(volume): %v", err)
@@ -408,9 +416,6 @@ func TestStoreResolver_RaftTenantRoutesThroughBarrier(t *testing.T) {
 	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
 	// while the system barrier is sealed; this test is about the tenant's
 	// own barrier sealing IAM, not the system barrier's state.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	if _, err := svc.CreateTenant(ctx, "vault-raft", "Raft", IsolationRaft); err != nil {
 		t.Fatalf("CreateTenant(raft): %v", err)

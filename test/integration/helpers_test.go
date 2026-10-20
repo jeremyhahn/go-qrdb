@@ -2426,6 +2426,19 @@ func mtlsHTTPClientFromFiles(t *testing.T, ca *testCA, certPath, keyPath string,
 // Returns the path to the written config file.
 func writeIsolationRaftConfig(t *testing.T, volumePoolDir string, peerAdminURLs map[string]string) string {
 	t.Helper()
+	return writeIsolationRaftConfigWithPolicy(t, volumePoolDir, peerAdminURLs, "")
+}
+
+// writeIsolationRaftConfigWithPolicy is writeIsolationRaftConfig with the
+// cluster isolation floor (tenant.isolation_policy) set to policy; an empty
+// policy leaves the key out.
+func writeIsolationRaftConfigWithPolicy(t *testing.T, volumePoolDir string, peerAdminURLs map[string]string, policy string) string {
+	t.Helper()
+
+	policySection := ""
+	if policy != "" {
+		policySection = fmt.Sprintf("  isolation_policy: %s\n", policy)
+	}
 
 	// Build the peer_admin_urls YAML block as a list of {raft_addr, admin_url}
 	// structs. A list is required because Viper uses "." as its internal key
@@ -2448,7 +2461,7 @@ storage:
     - name: default
       path: %s
 tenant:
-  default_entitlements:
+%s  default_entitlements:
     allowed_isolation_modes:
       - prefix
       - raft
@@ -2463,7 +2476,7 @@ tenant:
     max_replicas_per_group: -1
     max_total_replicas: -1
     max_dedicated_wal_groups: -1
-%s`, volumePoolDir, peerAdminSection)
+%s`, volumePoolDir, policySection, peerAdminSection)
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
@@ -2923,6 +2936,32 @@ func iraftAPIGetTolerant(t *testing.T, client *http.Client, rawURL string) ([]by
 	return body, resp.StatusCode
 }
 
+// waitForNodeToTrustClient waits until the node at adminPort completes a TLS
+// handshake with client's certificate: GET /health answers with any HTTP
+// status. A node verifies a presented client certificate at the handshake on
+// every route, and it verifies a tenant-issued one only once that tenant's
+// trust anchor has replicated to it, so this is the observable point at which
+// the node serves the tenant's identities. Only this wait tolerates transport
+// errors; a request made after it that fails on the transport is a defect.
+func waitForNodeToTrustClient(t *testing.T, client *http.Client, adminPort int, timeout time.Duration) {
+	t.Helper()
+
+	url := fmt.Sprintf("https://127.0.0.1:%d/health", adminPort)
+	var lastErr error
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return
+		}
+		lastErr = err
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("node on port %d did not accept the client certificate within %v: %v", adminPort, timeout, lastErr)
+}
+
 // fixtureVolumePoolCapacityBytes is the explicit capacity every fixture pool
 // is created with. A pool created without one derives its capacity from the
 // smallest filesystem a healthy node reports (decision D4), and a fixture's
@@ -3120,4 +3159,32 @@ func waitForShardCount(t *testing.T, client *http.Client, port int, wantCount in
 	}
 	t.Fatalf("timed out after %v waiting for shard count >= %d on port %d (last count: %d, last body: %s)",
 		timeout, wantCount, port, lastCount, lastBody)
+}
+
+// nodeHostsShard reads GET /admin/topology on port and reports whether the
+// node hosts shardID; ok is false when the node did not answer, so a poll
+// loop tries again under its own deadline (iraftAPIGetTolerant). A node's
+// shard COUNT says nothing about which shards it hosts: every isolated
+// tenant has a home group of its own beside its databases, so a count
+// threshold passes for a node that does not host the database's shard.
+func nodeHostsShard(t *testing.T, client *http.Client, port int, shardID uint64) (hosts, ok bool) {
+	t.Helper()
+	body, status := iraftAPIGetTolerant(t, client, fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port))
+	if status != http.StatusOK {
+		return false, false
+	}
+	var topo struct {
+		Shards []struct {
+			ShardID uint64 `json:"shard_id"`
+		} `json:"shards"`
+	}
+	if err := json.Unmarshal(body, &topo); err != nil {
+		return false, false
+	}
+	for _, s := range topo.Shards {
+		if s.ShardID == shardID {
+			return true, true
+		}
+	}
+	return false, true
 }

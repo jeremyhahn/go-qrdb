@@ -12,6 +12,8 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // TenantBarrier wraps a *StorageBarrier with tenant-specific isolation.
@@ -147,6 +149,13 @@ func (t *TenantBarrier) CompareAndSwap(ctx context.Context, key string, expected
 	return t.barrier.CompareAndSwap(ctx, key, expected, next)
 }
 
+// PutAllIfAllUnchanged encrypts the writes with the tenant's DEK and applies
+// them atomically, only while every guard holds its expected plaintext. See
+// StorageBarrier.PutAllIfAllUnchanged.
+func (t *TenantBarrier) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return t.barrier.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
 // Delete removes the key from the tenant's storage.
 func (t *TenantBarrier) Delete(ctx context.Context, key string) error {
 	return t.barrier.Delete(ctx, key)
@@ -182,7 +191,10 @@ type NamespacedBackend struct {
 }
 
 // Compile-time interface check.
-var _ StorageBackend = (*NamespacedBackend)(nil)
+var (
+	_ StorageBackend      = (*NamespacedBackend)(nil)
+	_ guardedBatchBackend = (*NamespacedBackend)(nil)
+)
 
 // NewNamespacedBackend creates a new NamespacedBackend that prefixes all keys
 // with the given prefix.
@@ -229,6 +241,25 @@ func (n *NamespacedBackend) CompareAndSwap(ctx context.Context, key string, expe
 		return false, ErrGuardedSwapUnsupported
 	}
 	return guarded.CompareAndSwap(ctx, n.prefix+key, expected, next)
+}
+
+// PutAllIfAllUnchanged applies the writes under their namespaced keys, only
+// while every namespaced guard holds. Atomicity is the base backend's; a base
+// offering no guarded batch is refused rather than degraded.
+func (n *NamespacedBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	batcher, ok := n.base.(guardedBatchBackend)
+	if !ok {
+		return false, &kvstore.GuardedBatchUnsupportedError{Err: ErrGuardedBatchUnsupported}
+	}
+	prefixedGuards := make([]kvstore.Guard, len(guards))
+	for i, g := range guards {
+		prefixedGuards[i] = kvstore.Guard{Key: n.prefix + g.Key, Value: g.Value}
+	}
+	prefixedWrites := make([]kvstore.KV, len(writes))
+	for i, w := range writes {
+		prefixedWrites[i] = kvstore.KV{Key: n.prefix + w.Key, Value: w.Value, Delete: w.Delete}
+	}
+	return batcher.PutAllIfAllUnchanged(ctx, prefixedGuards, prefixedWrites)
 }
 
 // Delete removes the namespaced key from storage.

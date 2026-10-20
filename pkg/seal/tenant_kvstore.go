@@ -22,7 +22,10 @@ import (
 )
 
 // Compile-time interface check.
-var _ kvstore.KVStore = (*tenantBarrierKVStore)(nil)
+var (
+	_ kvstore.KVStore                  = (*tenantBarrierKVStore)(nil)
+	_ kvstore.MultiGuardedBatchKVStore = (*tenantBarrierKVStore)(nil)
+)
 
 // tenantBarrierKVStore adapts a *TenantBarrier to the kvstore.KVStore
 // interface so the IAM stores (user, role) can persist their records
@@ -79,6 +82,32 @@ func (s *tenantBarrierKVStore) CompareAndSwap(ctx context.Context, key string, e
 	return s.barrier.CompareAndSwap(ctx, key, expected, next)
 }
 
+// PutAllIfUnchanged applies every write atomically, and only while guardKey
+// still holds guardValue: PutAllIfAllUnchanged with a single guard.
+func (s *tenantBarrierKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
+}
+
+// PutAllIfAllUnchanged encrypts every write with the tenant DEK and applies
+// them atomically, only while every guard's key still holds its expected
+// value (nil: absent). A tenant's home store on a standalone node is this
+// type under a namespace, and the tenant CA it holds is written with this
+// verb. An empty guard or write key is refused with *kvstore.EmptyKeyError
+// before anything is read, as every MultiGuardedBatchKVStore refuses it.
+func (s *tenantBarrierKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for i, g := range guards {
+		if g.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "guard", Index: i}
+		}
+	}
+	for i, w := range writes {
+		if w.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "write", Index: i}
+		}
+	}
+	return s.barrier.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
 // Get decrypts and returns the value for key. It translates the seal
 // subsystem's ErrSecretNotFound into (nil, nil) to satisfy the
 // kvstore.KVStore contract ("returns nil, nil when key does not exist").
@@ -129,8 +158,12 @@ func (s *tenantBarrierKVStore) Exists(ctx context.Context, key string) (bool, er
 
 // RegisterEntityIndexes refuses with kvstore.ErrIndexUnsupported: the
 // TenantBarrier stores ciphertext, so nothing beneath this wrapper can read
-// a field value to index it, and indexing above the barrier is the same
-// cryptographic design question tenantSharedKVStore documents.
+// a field value to index it. Building the index ABOVE the encryption -- the
+// only place the plaintext exists -- would put the indexed field value into
+// an index KEY in the clear, which is the isolation the barrier is there to
+// provide. That is a cryptographic design decision (deterministic or keyed-
+// hash index terms, and what they cost range scans), not an implementation
+// detail, and it is not made here.
 //
 // The methods previously returned (nil, nil), which made every DAO index
 // query over this store answer "no records" with no error. The typed error

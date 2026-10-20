@@ -65,10 +65,9 @@ func TestProvisionPendingAdmin_PinsTheFirstAdminAsTheBarrierAnchor(t *testing.T)
 	pins := &pinDouble{}
 	var undo undoStack
 	fail := func(cause error) (*TenantProvisionResult, error) { return nil, cause }
-	plan := &adminPlan{csrPEM: validAdminCSR(t)}
+	plan := &adminPlan{csrPEM: validAdminCSR(t), signer: &fakeSigner{cert: realCertPEM(t)}}
 
 	result, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Signer:         &fakeSigner{cert: realCertPEM(t)},
 		TrustDomain:    onboardingTrustDomain,
 		PendingAdmins:  tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
 		BarrierAnchors: pins,
@@ -89,9 +88,8 @@ func TestProvisionPendingAdmin_ARerunPinsTheRecordedAdmin(t *testing.T) {
 	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
 	var undo undoStack
 	fail := func(cause error) (*TenantProvisionResult, error) { return nil, cause }
-	plan := &adminPlan{csrPEM: validAdminCSR(t)}
+	plan := &adminPlan{csrPEM: validAdminCSR(t), signer: &fakeSigner{cert: realCertPEM(t)}}
 	first, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Signer:        &fakeSigner{cert: realCertPEM(t)},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending,
 		Logger:        discardLogger(),
@@ -102,7 +100,6 @@ func TestProvisionPendingAdmin_ARerunPinsTheRecordedAdmin(t *testing.T) {
 
 	pins := &pinDouble{}
 	again, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Signer:         &fakeSigner{cert: realCertPEM(t)},
 		TrustDomain:    onboardingTrustDomain,
 		PendingAdmins:  pending,
 		BarrierAnchors: pins,
@@ -137,9 +134,8 @@ func TestProvisionPendingAdmin_APinFailureUndoesThePendingAdmin(t *testing.T) {
 				}
 				return nil, cause
 			}
-			plan := &adminPlan{csrPEM: validAdminCSR(t)}
+			plan := &adminPlan{csrPEM: validAdminCSR(t), signer: &fakeSigner{cert: realCertPEM(t)}}
 			_, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme", Exclusive: true}, Dependencies{
-				Signer:         &fakeSigner{cert: realCertPEM(t)},
 				TrustDomain:    onboardingTrustDomain,
 				PendingAdmins:  pending,
 				BarrierAnchors: &pinDouble{err: pinErr},

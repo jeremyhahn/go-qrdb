@@ -339,6 +339,15 @@ func (c ImportSessionConfig) ResolvedSessionTTLSeconds() int64 {
 	return c.SessionTTLSeconds
 }
 
+// tenantIsolationPolicies is the set of values tenant.isolation_policy may
+// take: the settable cluster floors (tenant.ClusterIsolationPolicy) and empty,
+// which applies none.
+var tenantIsolationPolicies = map[string]struct{}{
+	"":                {},
+	"strict":          {},
+	"operator-access": {},
+}
+
 // TenantConfig configures tenant isolation behaviour.
 type TenantConfig struct {
 	// DefaultQuotas are the resource limits applied to tenants whose own
@@ -357,6 +366,14 @@ type TenantConfig struct {
 	// (e.g. "5m", "30s"). Default: "5m". Overridable via
 	// QRDB_TENANT_QUOTA_RECONCILE_INTERVAL.
 	QuotaReconcileInterval string `yaml:"quota_reconcile_interval"`
+
+	// IsolationPolicy is the cluster isolation-policy floor this node
+	// applies at start: "strict" or "operator-access". Empty applies
+	// nothing. The floor is a replicated record and tightens only, so this
+	// key can set it or tighten it, never loosen it; a refused change is
+	// logged and the stored floor stands. See docs/multi-tenancy/user.md.
+	// Overridable via QRDB_TENANT_ISOLATION_POLICY.
+	IsolationPolicy string `yaml:"isolation_policy"`
 }
 
 // DefaultQuotaReconcileIntervalString is the default
@@ -2571,6 +2588,9 @@ func (c *Config) Validate() error {
 		if d <= 0 {
 			return &ValidationError{Field: "tenant.quota_reconcile_interval", Reason: "must be greater than zero"}
 		}
+	}
+	if _, ok := tenantIsolationPolicies[c.Tenant.IsolationPolicy]; !ok {
+		return &ValidationError{Field: "tenant.isolation_policy", Reason: `must be "strict" or "operator-access"`}
 	}
 
 	// Database validation.

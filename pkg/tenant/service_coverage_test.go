@@ -44,7 +44,7 @@ func TestTenantService_CreateTenant_RegistryDuplicateError(t *testing.T) {
 		t.Fatalf("store.Delete: %v", err)
 	}
 
-	// RegisterTenantPooled should return ErrTenantAlreadyExists, which the
+	// RegisterBarrierTenant should return ErrTenantAlreadyExists, which the
 	// service maps to our typed error.
 	_, err = svc.CreateTenant(ctx, "reg-dup", "Reg Dup Again", IsolationBarrier)
 	if !errors.Is(err, ErrTenantAlreadyExists) {

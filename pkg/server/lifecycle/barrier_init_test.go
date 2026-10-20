@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
@@ -43,14 +44,27 @@ type selfInitCall struct {
 	keyRef   string
 }
 
-// selfIniterDouble records each self-init it is handed and answers with err.
+// armCall is one TenantBarrierArmShamir call.
+type armCall struct {
+	tenantID      string
+	roster, check []byte
+}
+
+// selfIniterDouble records each self-init and arming it is handed and answers
+// with err.
 type selfIniterDouble struct {
 	calls []selfInitCall
+	arms  []armCall
 	err   error
 }
 
 func (d *selfIniterDouble) TenantBarrierSelfInit(_ context.Context, tenantID string, strategyID seal.StrategyID, keyRef string) error {
 	d.calls = append(d.calls, selfInitCall{tenantID, strategyID, keyRef})
+	return d.err
+}
+
+func (d *selfIniterDouble) TenantBarrierArmShamir(_ context.Context, tenantID string, roster, check []byte) error {
+	d.arms = append(d.arms, armCall{tenantID, roster, check})
 	return d.err
 }
 
@@ -95,6 +109,24 @@ func TestBarrierInitWatch_HandleInitializesThisNodesTenantKey(t *testing.T) {
 	self.err = errors.New("provider unavailable")
 	if err := w.handle(context.Background(), s); !errors.Is(err, self.err) {
 		t.Fatalf("handle = %v, want the self-init failure", err)
+	}
+}
+
+func TestBarrierInitWatch_HandleArmsAShamirTenantFromTheStatement(t *testing.T) {
+	self := &selfIniterDouble{}
+	w := &barrierInitWatch{init: &BarrierInit{selfInit: self}}
+	s := barrierinit.InitStatement{Barrier: clusterseal.TenantBarrier("acme"), Epoch: 1, StrategyID: seal.StrategyShamir,
+		Threshold: 2, Roster: []byte("roster"), UnsealKeyCheck: []byte("check")}
+	if err := w.handle(context.Background(), s); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if len(self.calls) != 0 || len(self.arms) != 1 || self.arms[0].tenantID != "acme" ||
+		string(self.arms[0].roster) != "roster" || string(self.arms[0].check) != "check" {
+		t.Fatalf("self-inits = %+v, arms = %+v", self.calls, self.arms)
+	}
+	self.err = errors.New("pool unavailable")
+	if err := w.handle(context.Background(), s); !errors.Is(err, self.err) {
+		t.Fatalf("handle = %v, want the arming failure", err)
 	}
 }
 
@@ -155,6 +187,11 @@ func (d *signallingSelfIniter) TenantBarrierSelfInit(_ context.Context, tenantID
 	return nil
 }
 
+func (d *signallingSelfIniter) TenantBarrierArmShamir(_ context.Context, tenantID string, _, _ []byte) error {
+	d.calls <- selfInitCall{tenantID, seal.StrategyShamir, ""}
+	return nil
+}
+
 // The node's composition end to end: the owner's statement, claimed through
 // the claimer its tenant service is given and verified against the pinned
 // first admin, reaches this node's own self-init through the watcher, which
@@ -191,7 +228,7 @@ func newSignedBarrierInit(t *testing.T, tenantID string) (*BarrierInit, *signall
 	ctx := context.Background()
 	stg := memory.NewStorage()
 	t.Cleanup(func() { _ = stg.Close() })
-	bi := newBarrierInit(service.NewKVService(backend.NewLocalBackend(engine.NewKVEngine(stg)), 0))
+	bi := newBarrierInit(service.NewKVService(backend.NewLocalBackend(engine.NewKVEngine(stg)), 0), clocktest.NewAt(platformNow))
 	self := &signallingSelfIniter{calls: make(chan selfInitCall, 1)}
 	bi.selfInit = self
 
@@ -207,7 +244,7 @@ func newSignedBarrierInit(t *testing.T, tenantID string) (*BarrierInit, *signall
 		t.Fatalf("PinFirstAdmin: %v", err)
 	}
 	signed, err := barrierinit.Sign(owner, barrierinit.InitStatement{
-		Barrier: clusterseal.TenantBarrier(tenantID), Epoch: 1, StrategyID: seal.StrategyNone,
+		Barrier: clusterseal.TenantBarrier(tenantID), Epoch: 1, IssuedAt: platformNow.Unix(), StrategyID: seal.StrategyNone,
 	})
 	if err != nil {
 		t.Fatalf("Sign: %v", err)

@@ -36,7 +36,6 @@ func postureKey(id string) string { return "__registry:tenant_posture/" + id }
 func newRollbackService(t *testing.T, store seal.StorageBackend) (*TenantService, *seal.BarrierRegistry) {
 	t.Helper()
 	reg := newTestBarrierRegistry(t)
-	require.NoError(t, reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}))
 	svc, err := NewTenantService(store, reg, testLogger(),
 		WithDefaultEntitlements(volumeEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg)),
 		WithTenantUndoGate(undoActive), WithNodeID("node-b"), WithUndoCleanupRoster(rosterOf("node-a", "node-b")))

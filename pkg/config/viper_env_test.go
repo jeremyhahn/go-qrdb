@@ -184,3 +184,43 @@ func TestQuotaReconcileInterval_InvalidRejected(t *testing.T) {
 		t.Fatal("expected validation error for non-positive tenant.quota_reconcile_interval")
 	}
 }
+
+// TestTenantIsolationPolicy_DefaultAndOverride covers tenant.isolation_policy:
+// empty when unset, a YAML value, and a QRDB_TENANT_ISOLATION_POLICY env
+// override.
+func TestTenantIsolationPolicy_DefaultAndOverride(t *testing.T) {
+	cfg, err := Load(writeMinimalConfig(t, "logging:\n  level: info\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tenant.IsolationPolicy != "" {
+		t.Errorf("default isolation_policy = %q, want empty (the stored floor stands)", cfg.Tenant.IsolationPolicy)
+	}
+
+	cfg, err = Load(writeMinimalConfig(t, "tenant:\n  isolation_policy: operator-access\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tenant.IsolationPolicy != "operator-access" {
+		t.Errorf("file isolation_policy = %q, want operator-access", cfg.Tenant.IsolationPolicy)
+	}
+
+	t.Setenv("QRDB_TENANT_ISOLATION_POLICY", "strict")
+	cfg, err = Load(writeMinimalConfig(t, "tenant:\n  isolation_policy: operator-access\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tenant.IsolationPolicy != "strict" {
+		t.Errorf("env isolation_policy = %q, want strict (env override)", cfg.Tenant.IsolationPolicy)
+	}
+}
+
+// TestTenantIsolationPolicy_InvalidRejected verifies validation refuses a
+// value that is not a settable floor.
+func TestTenantIsolationPolicy_InvalidRejected(t *testing.T) {
+	for _, v := range []string{"bogus", "Strict", "inherit"} {
+		if _, err := Load(writeMinimalConfig(t, "tenant:\n  isolation_policy: "+v+"\n")); err == nil {
+			t.Errorf("expected validation error for tenant.isolation_policy %q", v)
+		}
+	}
+}

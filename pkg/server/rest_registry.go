@@ -254,6 +254,14 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	if err != nil {
 		return nil, err
 	}
+	// The tenant's home group is a placement, so the raft branch below would
+	// resolve it like any dedicated-raft database and hand a caller with KV
+	// permissions the tenant's identity records, past the user and role
+	// services. It is reached only through the home store; here it is a
+	// database that does not exist.
+	if database.IsTenantHome(db) {
+		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+	}
 	// The database's catalog record, resolved ONCE: the same lookup refuses
 	// a database being dropped and supplies the incarnation its views are
 	// guarded by, so no drop can start between the two (see

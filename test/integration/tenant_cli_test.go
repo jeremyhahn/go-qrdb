@@ -298,15 +298,15 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 	// entitlement reason (registerDedicatedBarrier's self-managed path is
 	// indeed entitlement-free, matching the doc comment on
 	// pkg/tenant/service.go's IsolationBarrier case), but because
-	// registerDedicatedBarrier always calls the registry's *Pooled*
-	// constructor (RegisterTenantPooled / RegisterTenantPooledSystemManaged)
+	// registerDedicatedBarrier always calls the registry's pooled
+	// constructor (RegisterBarrierTenant)
 	// regardless of key-management mode, and this plain node has no
 	// storage.volume_pools configured. Verified empirically against a live
 	// server (pkg/seal/errors.go ErrPoolNotConfigured): every DEDICATED
 	// isolation mode -- barrier included, not just volume/raft -- requires a
 	// configured volume pool at the infrastructure level.
 	barrierID := base + "-barrier"
-	barrierAdminArgs := adminCSRArgsForTenant(t, node, proto, barrierID+"-admin")
+	barrierAdminArgs, _ := adminBYOCArgsForTenant(t, barrierID, barrierID+"-admin")
 	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
 		"--id", barrierID, "--name", "Barrier Tenant", "--isolation-type", "barrier"}, barrierAdminArgs...)...)
 	if err == nil {
@@ -334,7 +334,7 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 	// volume: denied -- AllowedIsolationModes defaults to [prefix] only,
 	// and this node has no configured volume pool either.
 	volumeID := base + "-volume"
-	volumeAdminArgs := adminCSRArgsForTenant(t, node, proto, volumeID+"-admin")
+	volumeAdminArgs, _ := adminBYOCArgsForTenant(t, volumeID, volumeID+"-admin")
 	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
 		"--id", volumeID, "--name", "Volume Tenant", "--isolation-type", "volume"}, volumeAdminArgs...)...)
 	if err == nil {
@@ -346,7 +346,7 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 
 	// raft: denied -- same AllowedIsolationModes gate as volume.
 	raftID := base + "-raft"
-	raftAdminArgs := adminCSRArgsForTenant(t, node, proto, raftID+"-admin")
+	raftAdminArgs, _ := adminBYOCArgsForTenant(t, raftID, raftID+"-admin")
 	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
 		"--id", raftID, "--name", "Raft Tenant", "--isolation-type", "raft"}, raftAdminArgs...)...)
 	if err == nil {
@@ -369,9 +369,23 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 // barrier-denial case for the empirical proof on a pool-less node.
 func writeTenantEntitlementConfig(t *testing.T, volumePoolDir string) string {
 	t.Helper()
-	yaml := fmt.Sprintf(`seal:
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "qrdbd.yaml")
+	if err := os.WriteFile(cfgPath, []byte(tenantEntitlementYAML("passphrase", volumePoolDir)), 0o600); err != nil {
+		t.Fatalf("writeTenantEntitlementConfig: %v", err)
+	}
+	return cfgPath
+}
+
+// tenantEntitlementYAML is the qrdbd configuration body
+// writeTenantEntitlementConfig writes, under the given system seal strategy:
+// one "default" volume pool at volumePoolDir and default entitlements and
+// quotas that admit every isolation mode. A caller that needs more keys
+// (startSelfIssuedCAMultiProtocolCluster's peer_admin_urls) appends them.
+func tenantEntitlementYAML(sealStrategy, volumePoolDir string) string {
+	return fmt.Sprintf(`seal:
   enabled: true
-  strategy: passphrase
+  strategy: %s
 storage:
   volume_pools:
     - name: default
@@ -395,13 +409,7 @@ tenant:
     max_replicas_per_group: -1
     max_total_replicas: -1
     max_dedicated_wal_groups: -1
-`, volumePoolDir)
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "qrdbd.yaml")
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
-		t.Fatalf("writeTenantEntitlementConfig: %v", err)
-	}
-	return cfgPath
+`, sealStrategy, volumePoolDir)
 }
 
 // startTenantEntitlementNode boots a single-node qrdbd exactly like
@@ -549,7 +557,25 @@ func testTenantIsolationTypeSuccessOverProtocol(t *testing.T, node *multiProtoNo
 
 	for _, tc := range cases {
 		id := fmt.Sprintf("%s-%s-auto%v", base, tc.isolationType, tc.autoUnseal)
+
+		// A system-managed tenant's CA serves from create and signs the
+		// admin's CSR. A self-managed one is sealed at create, and this node
+		// serves bring-your-own TLS, so it has no cluster CA to sign in its
+		// place: the CSR is refused before the tenant exists, as at first
+		// boot, the id stays free, and the admin brings its own certificate.
 		adminArgs := adminCSRArgsForTenant(t, node, proto, id+"-admin")
+		if !tc.autoUnseal {
+			refused := append([]string{"tenant", "create", "--id", id, "--name", "Entitled Tenant", "--isolation-type", tc.isolationType}, adminArgs...)
+			out, err := runCLIProto(t, node, proto, refused...)
+			if err == nil || !strings.Contains(out, "--admin-cert") {
+				t.Fatalf("[%s] tenant create (isolation=%s, self-managed) with a CSR on a node without a cluster CA: err=%v, want a refusal naming --admin-cert\noutput: %s",
+					proto.name, tc.isolationType, err, out)
+			}
+			if out, err := runCLIProto(t, node, proto, "tenant", "get", id); err == nil {
+				t.Fatalf("[%s] a refused tenant create (isolation=%s) left tenant %s behind: %s", proto.name, tc.isolationType, id, out)
+			}
+			adminArgs, _ = adminBYOCArgsForTenant(t, id, id+"-admin")
+		}
 		args := []string{"--output", "json", "tenant", "create",
 			"--id", id, "--name", "Entitled Tenant", "--isolation-type", tc.isolationType}
 		if tc.autoUnseal {

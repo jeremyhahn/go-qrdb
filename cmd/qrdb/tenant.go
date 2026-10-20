@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"encoding/base64"
 	"fmt"
@@ -435,7 +436,12 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			"On a network transport initialization is two calls on one connection: the\n" +
 			"node issues a single-use nonce, and the key in --key-file signs it together\n" +
 			"with the connection's TLS exporter, proving the caller holds the key and not\n" +
-			"merely a certificate. The key never leaves this process.",
+			"merely a certificate. The key never leaves this process.\n\n" +
+			"A barrier served by several nodes holds its own key on each. A passphrase init\n" +
+			"reads the nodes from --server's barrier status and is sent to every one of them,\n" +
+			"over --server's transport (rest, grpc, quic or mcp) at the endpoint each node\n" +
+			"publishes, with one result printed per node. Under any other strategy the init\n" +
+			"goes to --server's node and the others initialize their own keys from it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			officerRoster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
@@ -472,6 +478,22 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			}
 			defer secure.Wipe(req.Passphrase)
 
+			if initFansOut(strategy) {
+				status, err := client.Tenants().TenantBarrierStatus(cmd.Context(), &transport.TenantBarrierStatusRequest{TenantID: tenantID})
+				if err != nil {
+					return err
+				}
+				// A barrier served by one node -- a single-member Raft
+				// deployment's -- is that node's, reached on --server's
+				// client over any transport, unix and embedded included.
+				if len(status.Nodes) > 1 {
+					return runOnServingNodes(cmd, status.Nodes, "the barrier init", func(ctx context.Context, tenants transport.TenantClient) error {
+						_, err := tenants.TenantBarrierInit(ctx, req)
+						return err
+					})
+				}
+			}
+
 			resp, err := client.Tenants().TenantBarrierInit(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -497,6 +519,15 @@ func newTenantBarrierInitCmd() *cobra.Command {
 		"Factor policy for --officers/--custodians: designated (default) or any-enrolled")
 
 	return cmd
+}
+
+// initFansOut reports whether an init under strategy is sent to every node
+// serving the barrier. Each node holds its own key, and a passphrase is the
+// operator's alone to give each of them; under any other strategy one node's
+// claimed init is enough, the others initializing their own keys from it (a
+// Shamir key travels to them sealed).
+func initFansOut(strategy string) bool {
+	return strategy == "" || strategy == "passphrase"
 }
 
 // initProofSigner loads keyFile, the key of the client certificate the
@@ -570,6 +601,9 @@ func printTenantBarrierInitResponse(resp *transport.TenantBarrierInitResponse) e
 		_, _ = fmt.Fprintf(outputWriter, "ShareCount:  %d\n", resp.ShareCount)
 		for _, h := range resp.Holders {
 			_, _ = fmt.Fprintf(outputWriter, "Holder:      %s (%s)\n", h.Username, h.Role)
+		}
+		if resp.AdminPending {
+			_, _ = fmt.Fprintln(outputWriter, "AdminPending: the first admin completes once holders unseal enough nodes for the tenant's home group to elect a leader")
 		}
 		return nil
 	}
@@ -698,6 +732,12 @@ func printTenantBarrierStatus(status *transport.TenantBarrierStatusResponse) err
 		}
 		if status.ShamirThreshold > 0 {
 			_, _ = fmt.Fprintf(outputWriter, "Threshold:   %d of %d\n", status.ShamirThreshold, status.ShamirTotal)
+		}
+		if status.KeyFingerprint != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Fingerprint: %s\n", status.KeyFingerprint)
+		}
+		for _, n := range status.Nodes {
+			_, _ = fmt.Fprintf(outputWriter, "Node:        %s\n", n.Node)
 		}
 		printClusterSeal(status.ClusterSeal)
 		return nil

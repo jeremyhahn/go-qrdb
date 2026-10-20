@@ -34,7 +34,7 @@ func initSystemBarrierForImport(t *testing.T, reg *BarrierRegistry) {
 }
 
 // buildValidSealedBlob returns a JSON-encoded SealedRootKey with valid
-// structure for use with ImportTenant(autoUnseal=false). The NoneStrategy
+// structure for use with ImportTenant. The NoneStrategy
 // identifier is used so that Unseal (if ever called) can succeed without
 // requiring a real ciphertext.
 func buildValidSealedBlob(t *testing.T) []byte {
@@ -58,122 +58,9 @@ func buildValidSealedBlob(t *testing.T) []byte {
 	return blob
 }
 
-// TestBarrierRegistry_ImportTenant_AutoUnseal verifies the system-managed
-// import path: the follower registry imports a leader's root-key context, the
-// barrier is immediately unsealed, and the master key matches the exported key.
-func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
-	ctx := context.Background()
-
-	// ---- Leader registry ----
-	leaderReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, leaderReg)
-
-	reserveTestVolumeTenant(t, leaderReg, "leader-tenant")
-	leaderDataRoot, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "leader-tenant", true)
-	if err != nil {
-		t.Fatalf("RegisterVolumeTenant(leader): %v", err)
-	}
-	_ = leaderDataRoot
-
-	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
-		t.Fatalf("Initialize(leader tenant): %v", err)
-	}
-
-	exported, err := leaderTB.Barrier().ExportRootKeyContext(context.Background())
-	if err != nil {
-		t.Fatalf("ExportRootKeyContext: %v", err)
-	}
-
-	// ---- Follower registry (distinct node) ----
-	followerReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, followerReg)
-	reserveTestVolumeTenant(t, followerReg, "replicated-tenant")
-
-	followerTB, err := followerReg.ImportTenant(ctx, "replicated-tenant", true, exported, nil)
-	if err != nil {
-		t.Fatalf("ImportTenant(autoUnseal=true): %v", err)
-	}
-
-	if followerTB.IsSealed() {
-		t.Error("follower barrier must be unsealed after ImportTenant(autoUnseal=true)")
-	}
-
-	// Master key on the follower must match the exported root key.
-	followerKey, err := followerTB.Barrier().GetMasterKey(context.Background())
-	if err != nil {
-		t.Fatalf("GetMasterKey(follower): %v", err)
-	}
-	if !bytes.Equal(followerKey, exported.RootKey) {
-		t.Error("follower master key must equal leader's exported root key")
-	}
-
-	// Encrypt/decrypt round-trip on the follower must succeed.
-	plaintext := []byte("import-tenant-round-trip")
-	ciphertext, err := followerTB.Barrier().Encrypt(plaintext)
-	if err != nil {
-		t.Fatalf("Encrypt(follower): %v", err)
-	}
-	decrypted, err := followerTB.Barrier().Decrypt(ciphertext)
-	if err != nil {
-		t.Fatalf("Decrypt(follower): %v", err)
-	}
-	if !bytes.Equal(decrypted, plaintext) {
-		t.Errorf("round-trip = %q, want %q", decrypted, plaintext)
-	}
-}
-
-// TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity verifies that
-// data encrypted by the leader can be decrypted by the follower after
-// ImportTenant, proving identical DEK derivation via shared Salt/Epoch.
-func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T) {
-	ctx := context.Background()
-
-	leaderReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, leaderReg)
-
-	reserveTestVolumeTenant(t, leaderReg, "dek-leader")
-	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "dek-leader", true)
-	if err != nil {
-		t.Fatalf("RegisterVolumeTenant(dek-leader): %v", err)
-	}
-	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
-		t.Fatalf("Initialize(dek-leader): %v", err)
-	}
-
-	// Encrypt on the leader.
-	leaderPlain := []byte("dek-parity-test-vector-from-leader")
-	leaderCipher, err := leaderTB.Barrier().Encrypt(leaderPlain)
-	if err != nil {
-		t.Fatalf("Encrypt(leader): %v", err)
-	}
-
-	exported, err := leaderTB.Barrier().ExportRootKeyContext(context.Background())
-	if err != nil {
-		t.Fatalf("ExportRootKeyContext: %v", err)
-	}
-
-	followerReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, followerReg)
-	reserveTestVolumeTenant(t, followerReg, "dek-follower")
-
-	followerTB, err := followerReg.ImportTenant(ctx, "dek-follower", true, exported, nil)
-	if err != nil {
-		t.Fatalf("ImportTenant(dek-follower): %v", err)
-	}
-
-	// Follower must decrypt the leader's ciphertext.
-	decrypted, err := followerTB.Barrier().Decrypt(leaderCipher)
-	if err != nil {
-		t.Fatalf("Decrypt(follower) leader ciphertext: %v", err)
-	}
-	if !bytes.Equal(decrypted, leaderPlain) {
-		t.Errorf("cross-node decrypt = %q, want %q", decrypted, leaderPlain)
-	}
-}
-
 // TestBarrierRegistry_ImportTenant_SelfManaged verifies the self-managed
-// (autoUnseal=false) import path: the follower is registered with a sealed
-// blob stored and the barrier remains sealed for later tenant-driven unseal.
+// import path: the follower is registered with a sealed blob stored and the
+// barrier remains sealed for later tenant-driven unseal.
 func TestBarrierRegistry_ImportTenant_SelfManaged(t *testing.T) {
 	ctx := context.Background()
 
@@ -183,12 +70,12 @@ func TestBarrierRegistry_ImportTenant_SelfManaged(t *testing.T) {
 	blob := buildValidSealedBlob(t)
 	reserveTestVolumeTenant(t, reg, "self-managed-tenant")
 
-	followerTB, err := reg.ImportTenant(ctx, "self-managed-tenant", false, nil, blob)
+	followerTB, err := reg.ImportTenant(ctx, "self-managed-tenant", blob)
 	if err != nil {
-		t.Fatalf("ImportTenant(autoUnseal=false): %v", err)
+		t.Fatalf("ImportTenant: %v", err)
 	}
 	if !followerTB.IsSealed() {
-		t.Error("self-managed barrier must remain sealed after ImportTenant(autoUnseal=false)")
+		t.Error("self-managed barrier must remain sealed after ImportTenant")
 	}
 
 	// The tenant must be registered and retrievable.
@@ -201,74 +88,11 @@ func TestBarrierRegistry_ImportTenant_SelfManaged(t *testing.T) {
 	}
 }
 
-// TestBarrierRegistry_ImportTenant_AutoUnseal_NilImportedKey verifies that
-// a nil ImportedKey propagates ErrImportedKeyNil from ImportRootKey.
-func TestBarrierRegistry_ImportTenant_AutoUnseal_NilImportedKey(t *testing.T) {
-	ctx := context.Background()
-
-	reg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, reg)
-	reserveTestVolumeTenant(t, reg, "nil-key-tenant")
-
-	_, err := reg.ImportTenant(ctx, "nil-key-tenant", true, nil, nil)
-	if !errors.Is(err, ErrImportedKeyNil) {
-		t.Errorf("expected ErrImportedKeyNil, got %v", err)
-	}
-}
-
-// TestBarrierRegistry_ImportTenant_FailedImportLeavesNoSealedBarrier verifies
-// that an import that fails registers nothing: the cluster key plane acks a
-// redelivery that finds the tenant registered as already imported, so a
-// sealed barrier left behind would keep the tenant sealed on this node for
-// good. The redelivery must instead install the key.
-func TestBarrierRegistry_ImportTenant_FailedImportLeavesNoSealedBarrier(t *testing.T) {
-	ctx := context.Background()
-
-	leaderReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, leaderReg)
-	reserveTestVolumeTenant(t, leaderReg, "redelivered-tenant")
-	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "redelivered-tenant", true)
-	if err != nil {
-		t.Fatalf("RegisterVolumeTenant(leader): %v", err)
-	}
-	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
-		t.Fatalf("Initialize(leader tenant): %v", err)
-	}
-	exported, err := leaderTB.Barrier().ExportRootKeyContext(ctx)
-	if err != nil {
-		t.Fatalf("ExportRootKeyContext: %v", err)
-	}
-
-	reg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, reg)
-	reserveTestVolumeTenant(t, reg, "redelivered-tenant")
-
-	if _, err := reg.ImportTenant(ctx, "redelivered-tenant", true, nil, nil); !errors.Is(err, ErrImportedKeyNil) {
-		t.Fatalf("first ImportTenant = %v, want ErrImportedKeyNil", err)
-	}
-	if _, err := reg.GetTenant("redelivered-tenant"); !errors.Is(err, ErrTenantNotFound) {
-		t.Fatalf("GetTenant after a failed import = %v, want ErrTenantNotFound", err)
-	}
-
-	tb, err := reg.ImportTenant(ctx, "redelivered-tenant", true, exported, nil)
-	if err != nil {
-		t.Fatalf("redelivered ImportTenant: %v", err)
-	}
-	if tb.IsSealed() {
-		t.Fatal("the redelivered key left the barrier sealed")
-	}
-	// The key must land over a store opened afresh, not over the handle the
-	// failed import's rollback closed.
-	if err := tb.Barrier().Put(ctx, "redelivery/probe", []byte("written")); err != nil {
-		t.Fatalf("Put through the redelivered barrier: %v", err)
-	}
-	if got, err := tb.Barrier().Get(ctx, "redelivery/probe"); err != nil || string(got) != "written" {
-		t.Fatalf("Get through the redelivered barrier = %q, %v; want %q", got, err, "written")
-	}
-}
-
 // TestBarrierRegistry_ImportTenant_SelfManaged_FailedImportLeavesNoBarrier
-// verifies the same for a self-managed tenant's sealed blob.
+// verifies that an import that fails registers nothing: the cluster key plane
+// acks a redelivery that finds the tenant registered as already imported, so
+// a sealed barrier left behind would keep the tenant sealed on this node for
+// good. The redelivery must instead install the sealed blob.
 func TestBarrierRegistry_ImportTenant_SelfManaged_FailedImportLeavesNoBarrier(t *testing.T) {
 	ctx := context.Background()
 
@@ -276,14 +100,14 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_FailedImportLeavesNoBarrier(t 
 	initSystemBarrierForImport(t, reg)
 	reserveTestVolumeTenant(t, reg, "redelivered-blob-tenant")
 
-	if _, err := reg.ImportTenant(ctx, "redelivered-blob-tenant", false, nil, nil); !errors.Is(err, ErrImportSealedBlobNil) {
+	if _, err := reg.ImportTenant(ctx, "redelivered-blob-tenant", nil); !errors.Is(err, ErrImportSealedBlobNil) {
 		t.Fatalf("first ImportTenant = %v, want ErrImportSealedBlobNil", err)
 	}
 	if _, err := reg.GetTenant("redelivered-blob-tenant"); !errors.Is(err, ErrTenantNotFound) {
 		t.Fatalf("GetTenant after a failed import = %v, want ErrTenantNotFound", err)
 	}
 	blob := buildValidSealedBlob(t)
-	tb, err := reg.ImportTenant(ctx, "redelivered-blob-tenant", false, nil, blob)
+	tb, err := reg.ImportTenant(ctx, "redelivered-blob-tenant", blob)
 	if err != nil {
 		t.Fatalf("redelivered ImportTenant: %v", err)
 	}
@@ -298,58 +122,11 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_FailedImportLeavesNoBarrier(t 
 	}
 }
 
-// TestBarrierRegistry_ImportTenant_RedeliveryOverPersistedKeyRegisters
-// verifies a redelivery after an import that persisted the root key and then
-// failed (on its metadata or its unseal): the store already holds the key, the
-// import answers ErrAlreadyInitialized, and the cluster key plane acks that as
-// delivered -- so the redelivery must leave the tenant registered and
-// unsealed, not roll the registration back.
-func TestBarrierRegistry_ImportTenant_RedeliveryOverPersistedKeyRegisters(t *testing.T) {
-	ctx := context.Background()
-
-	leaderReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, leaderReg)
-	reserveTestVolumeTenant(t, leaderReg, "persisted-key-tenant")
-	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "persisted-key-tenant", true)
-	if err != nil {
-		t.Fatalf("RegisterVolumeTenant(leader): %v", err)
-	}
-	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
-		t.Fatalf("Initialize(leader tenant): %v", err)
-	}
-	exported, err := leaderTB.Barrier().ExportRootKeyContext(ctx)
-	if err != nil {
-		t.Fatalf("ExportRootKeyContext: %v", err)
-	}
-
-	reg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, reg)
-	reserveTestVolumeTenant(t, reg, "persisted-key-tenant")
-
-	// The state a late import failure leaves: the root key persisted in the
-	// tenant's store, the registration rolled back.
-	if _, err := reg.ImportTenant(ctx, "persisted-key-tenant", true, exported, nil); err != nil {
-		t.Fatalf("first ImportTenant: %v", err)
-	}
-	if err := reg.RemoveTenant("persisted-key-tenant"); err != nil {
-		t.Fatalf("RemoveTenant: %v", err)
-	}
-
-	tb, err := reg.ImportTenant(ctx, "persisted-key-tenant", true, exported, nil)
-	if err != nil {
-		t.Fatalf("redelivered ImportTenant over a persisted key: %v", err)
-	}
-	if _, err := reg.GetTenant("persisted-key-tenant"); err != nil {
-		t.Fatalf("GetTenant after the redelivery: %v", err)
-	}
-	if tb.IsSealed() {
-		t.Fatal("the redelivery over a persisted key left the barrier sealed")
-	}
-}
-
 // TestBarrierRegistry_ImportTenant_SelfManaged_RedeliveryOverPersistedBlobRegisters
-// verifies the same for a self-managed tenant: the barrier stays registered,
-// sealed, for the tenant to unseal.
+// verifies a redelivery after an import that persisted the sealed blob and
+// then failed: the store already holds the blob, the import answers
+// ErrAlreadyInitialized, and the cluster key plane acks that as delivered --
+// so the barrier stays registered, sealed, for the tenant to unseal.
 func TestBarrierRegistry_ImportTenant_SelfManaged_RedeliveryOverPersistedBlobRegisters(t *testing.T) {
 	ctx := context.Background()
 
@@ -358,14 +135,14 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_RedeliveryOverPersistedBlobReg
 	reserveTestVolumeTenant(t, reg, "persisted-blob-tenant")
 
 	blob := buildValidSealedBlob(t)
-	if _, err := reg.ImportTenant(ctx, "persisted-blob-tenant", false, nil, blob); err != nil {
+	if _, err := reg.ImportTenant(ctx, "persisted-blob-tenant", blob); err != nil {
 		t.Fatalf("first ImportTenant: %v", err)
 	}
 	if err := reg.RemoveTenant("persisted-blob-tenant"); err != nil {
 		t.Fatalf("RemoveTenant: %v", err)
 	}
 
-	tb, err := reg.ImportTenant(ctx, "persisted-blob-tenant", false, nil, blob)
+	tb, err := reg.ImportTenant(ctx, "persisted-blob-tenant", blob)
 	if err != nil {
 		t.Fatalf("redelivered ImportTenant over a persisted blob: %v", err)
 	}
@@ -386,16 +163,15 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_NilBlob(t *testing.T) {
 	initSystemBarrierForImport(t, reg)
 	reserveTestVolumeTenant(t, reg, "nil-blob-tenant")
 
-	_, err := reg.ImportTenant(ctx, "nil-blob-tenant", false, nil, nil)
+	_, err := reg.ImportTenant(ctx, "nil-blob-tenant", nil)
 	if !errors.Is(err, ErrImportSealedBlobNil) {
 		t.Errorf("expected ErrImportSealedBlobNil, got %v", err)
 	}
 }
 
 // TestBarrierRegistry_ImportTenant_Idempotency verifies that calling
-// ImportTenant a second time with the same tenantID on the same registry
-// returns ErrTenantAlreadyExists (from RegisterVolumeTenant), not a
-// lower-level import error.
+// ImportTenant a second time with the same tenantID on the same registry is
+// refused: the barrier the first import initialized refuses a second blob.
 func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	ctx := context.Background()
 
@@ -403,24 +179,10 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	initSystemBarrierForImport(t, reg)
 	reserveTestVolumeTenant(t, reg, "idem-tenant")
 
-	// Create a leader to get a valid exported key.
-	leaderReg, _, _ := newPooledRegistry(t)
-	initSystemBarrierForImport(t, leaderReg)
-	reserveTestVolumeTenant(t, leaderReg, "idem-leader")
-	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "idem-leader", true)
-	if err != nil {
-		t.Fatalf("RegisterVolumeTenant(idem-leader): %v", err)
-	}
-	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
-		t.Fatalf("Initialize(idem-leader): %v", err)
-	}
-	exported, err := leaderTB.Barrier().ExportRootKeyContext(context.Background())
-	if err != nil {
-		t.Fatalf("ExportRootKeyContext: %v", err)
-	}
+	blob := buildValidSealedBlob(t)
 
 	// First import — must succeed.
-	if _, err := reg.ImportTenant(ctx, "idem-tenant", true, exported, nil); err != nil {
+	if _, err := reg.ImportTenant(ctx, "idem-tenant", blob); err != nil {
 		t.Fatalf("first ImportTenant: %v", err)
 	}
 
@@ -429,8 +191,55 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	// in-memory tenants map) or a per-tenant Pebble "already opened" error (from
 	// the per-tenant Pebble registry which refuses to open the same tenant at a
 	// second path). Either outcome proves the call is rejected.
-	_, err = reg.ImportTenant(ctx, "idem-tenant", true, exported, nil)
-	if err == nil {
+	if _, err := reg.ImportTenant(ctx, "idem-tenant", blob); err == nil {
 		t.Error("second ImportTenant with same tenantID must return an error")
+	}
+}
+
+// TestBarrierRegistry_ImportTenant_InitializesRegisteredShell verifies that a
+// blob imported for a tenant whose barrier is already registered -- the
+// uninitialized, sealed shell placement registers -- initializes that same
+// barrier rather than failing on the registration.
+func TestBarrierRegistry_ImportTenant_InitializesRegisteredShell(t *testing.T) {
+	ctx := context.Background()
+
+	reg, _, _ := newPooledRegistry(t)
+	initSystemBarrierForImport(t, reg)
+	reserveTestVolumeTenant(t, reg, "shell-tenant")
+
+	_, shell, err := reg.RegisterVolumeTenant(ctx, "shell-tenant", false)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	imported, err := reg.ImportTenant(ctx, "shell-tenant", buildValidSealedBlob(t))
+	if err != nil {
+		t.Fatalf("ImportTenant into a registered shell: %v", err)
+	}
+	if imported != shell {
+		t.Error("ImportTenant must initialize the registered shell, not a second barrier")
+	}
+	if initialized, err := imported.Barrier().Initialized(ctx); err != nil || !initialized {
+		t.Errorf("the shell must be initialized after ImportTenant: initialized=%v err=%v", initialized, err)
+	}
+	if !imported.IsSealed() {
+		t.Error("an imported owner-sealed barrier must stay sealed")
+	}
+}
+
+// TestBarrierRegistry_ImportTenant_InitializedBarrierRefusesBlob verifies that
+// a second blob for a barrier already initialized is refused with
+// ErrAlreadyInitialized, leaving the first key in place.
+func TestBarrierRegistry_ImportTenant_InitializedBarrierRefusesBlob(t *testing.T) {
+	ctx := context.Background()
+
+	reg, _, _ := newPooledRegistry(t)
+	initSystemBarrierForImport(t, reg)
+	reserveTestVolumeTenant(t, reg, "twice-tenant")
+
+	if _, err := reg.ImportTenant(ctx, "twice-tenant", buildValidSealedBlob(t)); err != nil {
+		t.Fatalf("first ImportTenant: %v", err)
+	}
+	if _, err := reg.ImportTenant(ctx, "twice-tenant", buildValidSealedBlob(t)); !errors.Is(err, ErrAlreadyInitialized) {
+		t.Fatalf("second ImportTenant: got %v, want ErrAlreadyInitialized", err)
 	}
 }

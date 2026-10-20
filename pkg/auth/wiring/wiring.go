@@ -221,6 +221,13 @@ type AuthMiddlewareConfig struct {
 	// lifecycle.Node.PendingAdmins -- the store tenant onboarding writes.
 	PendingTenantAdmins middleware.PendingTenantAdmins
 
+	// FirstAdminPins, when non-nil, keeps that window confined once the
+	// pending record is consumed (middleware.WithFirstAdminPins): a node
+	// serving the barrier that initializes after the first admin's account
+	// exists admits only the certificate pinned for the barrier at
+	// onboarding. qrdb's composers pass the node's lifecycle.Node.BarrierInit.
+	FirstAdminPins middleware.FirstAdminPins
+
 	// CertTargetGuard is the certificate target guard users:add_cert_binding
 	// is held to, the same one certs:issue and certs:enroll apply
 	// (lifecycle.Node.CertTargets). Nil leaves add_cert_binding failing
@@ -461,6 +468,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.PendingTenantAdmins != nil {
 		opts = append(opts, middleware.WithPendingTenantAdmins(cfg.PendingTenantAdmins))
+	}
+	if cfg.FirstAdminPins != nil {
+		opts = append(opts, middleware.WithFirstAdminPins(cfg.FirstAdminPins))
 	}
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))

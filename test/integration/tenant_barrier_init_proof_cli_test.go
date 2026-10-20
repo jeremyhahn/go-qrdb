@@ -116,6 +116,51 @@ func testTenantBarrierInitProofOverProtocol(t *testing.T, node *multiProtoNode, 
 	}
 }
 
+// TestTenantBarrierInit_SingleMemberRaft_Passphrase_CLI_PerProtocol proves
+// on every transport, unix included, that `qrdb tenant barrier-init` with a
+// passphrase initializes a raft tenant's barrier on a single-member Raft
+// deployment: the barrier status lists the one node serving it, and the init
+// goes to that node on --server's own connection rather than being refused
+// for a transport the multi-node fan-out cannot dial, or dialled anew at the
+// endpoint the node publishes.
+func TestTenantBarrierInit_SingleMemberRaft_Passphrase_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startTenantEntitlementNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			tenantID := fmt.Sprintf("sm812-%s-%d", proto.name, time.Now().UnixNano())
+			adminCert, adminKey := createTenantWithAdminCert(t, node, proto, tenantID, "Single Member Tenant", "raft", false, tenantID+"-admin")
+			adminCLI := func(args ...string) (string, error) {
+				return runCLI(t, node.cli, append(tenantCLIArgsForProto(node, proto, adminCert, adminKey), args...)...)
+			}
+
+			out, err := adminCLI("tenant", "barrier-status", "--id", tenantID)
+			if err != nil {
+				t.Fatalf("[%s] barrier-status before init: %v\noutput: %s", proto.name, err, out)
+			}
+			if n := strings.Count(out, "Node:"); n != 1 {
+				t.Fatalf("[%s] barrier-status lists %d serving nodes, want the single member:\n%s", proto.name, n, out)
+			}
+
+			if out, err = adminCLI("tenant", "barrier-init", "--id", tenantID, "--passphrase", "single-member-passphrase"); err != nil {
+				t.Fatalf("[%s] tenant barrier-init --passphrase: %v\noutput: %s", proto.name, err, out)
+			}
+			if !strings.Contains(out, "OK") {
+				t.Fatalf("[%s] tenant barrier-init output = %q; want OK", proto.name, out)
+			}
+
+			// The first-admin window has closed: the same identity, with no
+			// role yet, is refused a second initialization, which is only
+			// true of an initialized barrier.
+			if out, err = adminCLI("tenant", "barrier-init", "--id", tenantID, "--passphrase", "single-member-passphrase"); err == nil {
+				t.Fatalf("[%s] a second barrier-init succeeded: %s", proto.name, out)
+			}
+		})
+	}
+}
+
 // initTenantBarrierAsFirstAdmin initializes tenantID's barrier with the none
 // strategy over the REST listener at baseURL, as the first admin whose
 // onboarded certificate and key are certPEM/keyPEM. It goes through the SDK,

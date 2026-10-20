@@ -83,6 +83,12 @@ type FirstAdminPinner interface {
 	PinFirstAdmin(ctx context.Context, b clusterseal.Barrier, thumbprint string) error
 }
 
+// HomeEnsurer provisions an isolated tenant's home store.
+// tenant.HomeRouter implements it.
+type HomeEnsurer interface {
+	EnsureHome(ctx context.Context, tenantID string) error
+}
+
 // Dependencies carries the seams every entry point composes. The same struct
 // is shared by all three entry points; an individual call uses only the fields
 // it needs (documented per entry point). Pass by interface so the orchestrator
@@ -123,6 +129,17 @@ type Dependencies struct {
 	// RevokeCert, an exclusive provisioning that is undone revokes what it
 	// signed.
 	Signer firstboot.CertSigner
+
+	// PendingAdminSigner signs the CSR of a first admin recorded as pending:
+	// the admin of a tenant whose identity records are behind its own barrier
+	// (tenant.IAMBehindTenantBarrier). That tenant's Key B CA lives behind the
+	// same barrier, sealed until the admin initializes it, so qrdb's own
+	// transports pass ceremony.AdminCSRSigner over the cluster CA -- the CA
+	// system first boot signs its admin's CSR with. Nil -- a node with no
+	// cluster CA key (BYO-TLS) -- refuses such a CSR before anything is
+	// written, with first boot's *ceremony.AdminCredentialRequiresCAError;
+	// the admin brings their own certificate instead.
+	PendingAdminSigner firstboot.CertSigner
 
 	// Binder pins a certificate's SPKI thumbprint to its user record. A
 	// tenant admin's certificate is bound through Users' own AddCertBinding
@@ -172,6 +189,19 @@ type Dependencies struct {
 	// one; BootstrapSystem passes it to first boot as
 	// firstboot.Dependencies.TrustDomain.
 	TrustDomain string
+
+	// Homes provisions an isolated tenant's home store -- where every one of
+	// its records lives (docs/multi-tenancy/architecture.md "Strict
+	// isolation") -- before ProvisionTenant writes the first of them. It does
+	// nothing for a shared tenant. Nil skips the step, and an isolated
+	// tenant's first record write then fails closed
+	// (tenant.TenantHomeUnavailableError), undoing an exclusive provisioning.
+	Homes HomeEnsurer
+
+	// HomeLeader confines CompletePendingTenantAdmin's writes to the node
+	// leading the tenant's home group. Nil means this node is the tenant's
+	// only writer (a standalone node).
+	HomeLeader HomeLeader
 
 	// Now is ProvisionTenant's clock for certificate and anchor validity.
 	// Nil is time.Now.
@@ -552,7 +582,8 @@ type TenantProvisionResult struct {
 // no tenant key. The tenant admin self-bootstraps their barrier later via
 // InitializeTenantBarrier.
 //
-// Uses: Tenants/Users/Roles (required), Logger (required); Signer for a CSR;
+// Uses: Tenants/Users/Roles (required), Logger (required); Signer for a CSR,
+// or PendingAdminSigner when the admin is recorded as pending;
 // TrustAnchors for anchors; Users with AddCertBinding, or Binder, for the
 // binding; PendingAdmins for a tenant whose identity records are behind its
 // barrier. Barriers and CA are unused.
@@ -627,7 +658,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	}
 	behindBarrier := tenant.IAMBehindTenantBarrier(isolation)
 
-	plan, err := planAdmin(cfg, deps, mode, adminUsername)
+	plan, err := planAdmin(cfg, deps, mode, adminUsername, behindBarrier)
 	if err != nil {
 		return nil, err
 	}
@@ -682,6 +713,15 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 			}
 			return u.UndoCreateTenant(ctx, cfg.TenantID)
 		})
+	}
+
+	// Step 1a: an isolated tenant's home store, before the first record that
+	// lives in it. EnsureHome is idempotent, so a re-run against an existing
+	// tenant converges rather than failing.
+	if deps.Homes != nil {
+		if err := deps.Homes.EnsureHome(ctx, cfg.TenantID); err != nil {
+			return fail(&TenantHomeProvisionError{Cause: err})
+		}
 	}
 
 	// Step 1b: trust anchors, before any credential that may depend on them.
@@ -811,11 +851,11 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	// admin's first credential is bound by the consumer's
 	// invitation-redemption flow.
 	if adminUser != nil && mode == AdminEnrollCert {
-		c, err := plan.issue(ctx, deps, cfg.TenantID, adminUsername)
+		c, err := plan.issue(ctx, cfg.TenantID, adminUsername)
 		if err != nil {
 			return fail(err)
 		}
-		pushRevoke(&undo, deps, c)
+		pushRevoke(&undo, plan.signer, c)
 		if err := bindAdmin(ctx, deps, cfg.TenantID, adminUser, c); err != nil {
 			return fail(err)
 		}
@@ -868,16 +908,18 @@ func provisionPendingAdmin(ctx context.Context, cfg TenantProvisionConfig, deps 
 			AdminAwaitsBarrierInit: true,
 		}, nil
 	}
-	c, err := plan.issue(ctx, deps, cfg.TenantID, adminUsername)
+	c, err := plan.issue(ctx, cfg.TenantID, adminUsername)
 	if err != nil {
 		return fail(err)
 	}
-	pushRevoke(undo, deps, c)
-	if err := deps.PendingAdmins.Create(ctx, cfg.TenantID, pendingFrom(adminUsername, c)); err != nil {
+	pushRevoke(undo, plan.signer, c)
+	recorded := pendingFrom(adminUsername, c)
+	if err := deps.PendingAdmins.Create(ctx, cfg.TenantID, recorded); err != nil {
 		return fail(&PendingTenantAdminError{Op: "record", Cause: err})
 	}
 	undo.push("delete pending admin", func(ctx context.Context) error {
-		return deps.PendingAdmins.Delete(ctx, cfg.TenantID)
+		_, err := deps.PendingAdmins.Delete(ctx, cfg.TenantID, recorded)
+		return err
 	})
 	// The pin has no undo: it is written once, and an undone provisioning
 	// deletes the tenant, whose id is then retired and never reused.
@@ -931,12 +973,12 @@ func validAdminUsername(name string) bool {
 }
 
 // pushRevoke records the revocation of a certificate this provisioning
-// signed, when the Signer can revoke it.
-func pushRevoke(undo *undoStack, deps Dependencies, c *adminCredential) {
+// signed, when signer can revoke it.
+func pushRevoke(undo *undoStack, signer firstboot.CertSigner, c *adminCredential) {
 	if c.serial == "" {
 		return
 	}
-	revoker, ok := deps.Signer.(certRevoker)
+	revoker, ok := signer.(certRevoker)
 	if !ok {
 		return
 	}

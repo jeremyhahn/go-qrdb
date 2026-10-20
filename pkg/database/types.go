@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // namePattern matches valid database names: alphanumeric characters, hyphens,
@@ -510,14 +511,22 @@ const (
 	TenantHostWALDirName = "wal"
 	// TenantHostNodeHostDirName is the tenant host's node-host directory.
 	TenantHostNodeHostDirName = "nodehost"
+	// TenantHomeName names an isolated tenant's home group: the Raft group of
+	// the tenant's own that holds its identity records and DEK keyring. It is
+	// both the group's placement name and its directory beside the tenant's
+	// databases. It is never a catalog database. It is tenant.HomeName, the
+	// keyspace a standalone node's home store occupies in the tenant barrier,
+	// so reserving the one reserves the other.
+	TenantHomeName = tenant.HomeName
 )
 
 // reservedNames is the set of database names that collide with a directory
-// the node keeps beside per-database directories, lower-cased so the check
-// also holds on a case-insensitive filesystem.
+// or group the node keeps beside per-database directories, lower-cased so the
+// check also holds on a case-insensitive filesystem.
 var reservedNames = map[string]struct{}{
 	TenantHostWALDirName:      {},
 	TenantHostNodeHostDirName: {},
+	TenantHomeName:            {},
 }
 
 // IsReservedName reports whether name is reserved for node state and may not
@@ -525,6 +534,16 @@ var reservedNames = map[string]struct{}{
 func IsReservedName(name string) bool {
 	_, reserved := reservedNames[strings.ToLower(name)]
 	return reserved
+}
+
+// IsTenantHome reports whether name selects TenantHomeName, an isolated
+// tenant's home group. The group holds the tenant's identity records and DEK
+// keyring and is read only through the tenant's home store; a resolver that
+// takes a database name from a caller refuses it exactly as it refuses a
+// database that does not exist, because the group's placement makes the name
+// resolvable even though no catalog database carries it.
+func IsTenantHome(name string) bool {
+	return strings.EqualFold(name, TenantHomeName)
 }
 
 // Validate checks that the configuration is complete and consistent.

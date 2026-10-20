@@ -407,6 +407,22 @@ type TenantBarrierInitResponse struct {
 	// Shamir roster (TenantBarrierInitRequest.Officers), in roster order.
 	// Empty when no roster was supplied.
 	Holders []TenantBarrierHolderCert `json:"holders,omitempty"`
+
+	// Roster and UnsealKeyCheck are the encoded holder roster and the check
+	// value of the unseal key a Shamir barrier was split to, which the
+	// owner's init statement signs between a Shamir init's two requests,
+	// which TenantBarrierInit makes on every transport. Empty for
+	// non-Shamir strategies.
+	Roster         []byte `json:"roster,omitempty"`
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
+
+	// AdminPending reports a committed init whose tenant first admin is not
+	// created yet: a Shamir init unseals only the node that served it, so
+	// the tenant's home group completes the admin once Holders have
+	// unsealed enough other nodes for it to elect a leader. The holder
+	// certificates above are what they unseal with; a retried init answers
+	// already-initialized.
+	AdminPending bool `json:"admin_pending,omitempty"`
 }
 
 // UpdateTenantQuotasRequest contains parameters for updating tenant quotas.
@@ -485,4 +501,23 @@ type TenantBarrierStatusResponse struct {
 
 	// ClusterSeal is the tenant barrier's cluster seal state.
 	ClusterSeal *ClusterSeal `json:"cluster_seal,omitempty"`
+
+	// KeyFingerprint names the answering node's own key of the barrier
+	// without revealing it. Every node serving the barrier holds its own key,
+	// so every node reports a different fingerprint. Empty while sealed or
+	// unencrypted.
+	KeyFingerprint string `json:"key_fingerprint,omitempty"`
+
+	// Nodes are the nodes holding a replica of the tenant's groups, each
+	// with the API endpoints it publishes: the nodes a barrier init fans out
+	// to, since each holds its own key. Empty on a standalone node.
+	Nodes []TenantBarrierNode `json:"nodes,omitempty"`
+}
+
+// TenantBarrierNode is one node serving a tenant barrier. Endpoints maps a
+// protocol name ("rest", "grpc", "quic", "mcp") to the address the node
+// serves it on.
+type TenantBarrierNode struct {
+	Node      string            `json:"node"`
+	Endpoints map[string]string `json:"endpoints,omitempty"`
 }

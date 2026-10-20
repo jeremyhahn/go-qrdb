@@ -270,6 +270,8 @@ import {
     DesktopOnlyError,
     KeyNotFoundError,
     NotConnectedError,
+    ShamirSplitMismatchError,
+    ShamirSplitMissingError,
     TransportError,
 } from './errors.js';
 import type { AuditFilter, AuditPage } from './audit.js';
@@ -2371,40 +2373,41 @@ export class RestClient implements Client {
                 // for that proof this client cannot give it: the desktop app,
                 // whose Go bindings sign with the connection's key, and the CLI
                 // can. An unauthenticated node asks none.
+                //
+                // A "shamir" init is two such pairs, as the Go transports run
+                // it (tenantinit.Run): the first prepares the split and answers
+                // with its roster and unseal key check value, the barrier still
+                // sealed; the second echoes both and keys the barrier. Only the
+                // second answer reports an initialized barrier.
                 const base = `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/init`;
-                const challenge = await this.fetchJSON<{ nonce?: string }>(`${base}/begin`, { method: 'POST' });
-                if (challenge?.nonce) {
-                    throw new DesktopOnlyError('tenants.barrierInit with proof of possession');
-                }
-                // "none" and "passphrase" strategies respond 204 No Content;
-                // "shamir" responds 200 with threshold/share_count but NO shares.
-                // fetchJSON cannot parse an empty body, so we issue the request
-                // directly and synthesize a response for the 204 case.
-                const path = `${base}/complete`;
                 // passphrase is base64 on the wire; the server field is
                 // `[]byte` so it can be zeroized. See seal.initialize.
                 const initBody: Record<string, unknown> = { ...req };
                 if (req.passphrase) initBody.passphrase = encodeBase64Utf8(req.passphrase);
-                let resp: Response;
-                try {
-                    resp = await fetch(this.baseUrl + path, { method: 'POST', ...jsonBody(initBody) });
-                } catch (err: unknown) {
-                    throw new TransportError(
-                        `POST ${path}`,
-                        undefined,
-                        err instanceof Error ? err : new Error(String(err)),
-                    );
+                if (req.strategy !== 'shamir') {
+                    // "none" and "passphrase" respond 204 No Content, which
+                    // carries nothing to decode.
+                    const raw = await this.tenantBarrierInitRound(base, initBody);
+                    return raw ?? { tenantId: req.tenantId, strategy: req.strategy ?? '' };
                 }
-                if (!resp.ok) {
-                    throw new TransportError(`POST ${path}`, resp.status, new Error(await resp.text()));
+                const first = await this.tenantBarrierInitRound(base, initBody);
+                if (!first?.roster || !first.unsealKeyCheck) {
+                    throw new ShamirSplitMissingError(req.tenantId);
                 }
-                if (resp.status === 204) {
-                    return { tenantId: req.tenantId, strategy: req.strategy ?? '' };
+                const second = await this.tenantBarrierInitRound(base, {
+                    ...initBody,
+                    roster: first.roster,
+                    unsealKeyCheck: first.unsealKeyCheck,
+                });
+                // The node answers the second request with the split it
+                // completed; anything else is not the init this client asked for.
+                if (second?.roster !== first.roster) {
+                    throw new ShamirSplitMismatchError(req.tenantId, 'roster');
                 }
-                const raw = await resp.json();
-                // The wire response has no `shares` field; deepSnakeToCamel maps
-                // share_count → shareCount, total_shares → totalShares.
-                return deepSnakeToCamel(raw) as TenantBarrierInitResponse;
+                if (second.unsealKeyCheck !== first.unsealKeyCheck) {
+                    throw new ShamirSplitMismatchError(req.tenantId, 'unseal key check');
+                }
+                return { ...second, holders: first.holders };
             },
             barrierUnseal: async (req: TenantBarrierUnsealRequest): Promise<void> => {
                 this.ensureConnected();
@@ -2801,6 +2804,42 @@ export class RestClient implements Client {
     /** Database-scope-aware wrapper over {@link requestJSON}. */
     private fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
         return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init));
+    }
+
+    /**
+     * Issues one init/begin, init/complete pair of a tenant barrier init under
+     * base, returning the decoded answer, or undefined for 204 No Content.
+     */
+    private async tenantBarrierInitRound(
+        base: string,
+        body: Record<string, unknown>,
+    ): Promise<TenantBarrierInitResponse | undefined> {
+        const challenge = await this.fetchJSON<{ nonce?: string }>(`${base}/begin`, { method: 'POST' });
+        if (challenge?.nonce) {
+            throw new DesktopOnlyError('tenants.barrierInit with proof of possession');
+        }
+        // fetchJSON cannot parse an empty body, so the request is issued
+        // directly and a 204 answered with undefined.
+        const path = `${base}/complete`;
+        let resp: Response;
+        try {
+            resp = await fetch(this.baseUrl + path, { method: 'POST', ...jsonBody(body) });
+        } catch (err: unknown) {
+            throw new TransportError(
+                `POST ${path}`,
+                undefined,
+                err instanceof Error ? err : new Error(String(err)),
+            );
+        }
+        if (!resp.ok) {
+            throw new TransportError(`POST ${path}`, resp.status, new Error(await resp.text()));
+        }
+        if (resp.status === 204) {
+            return undefined;
+        }
+        // The wire answer has no `shares` field; deepSnakeToCamel maps
+        // share_count → shareCount, unseal_key_check → unsealKeyCheck.
+        return deepSnakeToCamel(await resp.json()) as TenantBarrierInitResponse;
     }
 
     /** Database-scope-aware wrapper over {@link requestVoid}. */

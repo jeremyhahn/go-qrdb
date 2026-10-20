@@ -36,7 +36,6 @@ type captureDistributorCall struct {
 	plan          *placement.Placement
 	leaderBarrier *seal.StorageBarrier
 	selfNodeID    string
-	autoUnseal    bool
 }
 
 func (c *captureDistributor) DistributeTenantKey(
@@ -44,13 +43,11 @@ func (c *captureDistributor) DistributeTenantKey(
 	p *placement.Placement,
 	lb *seal.StorageBarrier,
 	nodeID string,
-	autoUnseal bool,
 ) error {
 	c.calls = append(c.calls, captureDistributorCall{
 		plan:          p,
 		leaderBarrier: lb,
 		selfNodeID:    nodeID,
-		autoUnseal:    autoUnseal,
 	})
 	return nil
 }
@@ -120,8 +117,8 @@ func newDistributorDatabaseService(
 
 // TestCreateForTenant_DistributorCalledOnPlacement verifies that when a
 // dedicated-raft database is created and placement succeeds the KeyDistributor
-// is called with the computed Placement, the leader's StorageBarrier, the
-// local node ID, and the correct autoUnseal flag.
+// is called with the computed Placement, the leader's StorageBarrier and the
+// local node ID.
 func TestCreateForTenant_DistributorCalledOnPlacement(t *testing.T) {
 	t.Parallel()
 
@@ -131,9 +128,8 @@ func TestCreateForTenant_DistributorCalledOnPlacement(t *testing.T) {
 	localNode := "node1:63001"
 
 	raftInfo := &tenant.TenantInfo{
-		ID:                "rt",
-		IsolationType:     tenant.IsolationRaft,
-		BarrierAutoUnseal: true, // system-managed
+		ID:            "rt",
+		IsolationType: tenant.IsolationRaft,
 	}
 	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, localNode,
 		healthyNodes("node1", "node2", "node3"))
@@ -166,41 +162,36 @@ func TestCreateForTenant_DistributorCalledOnPlacement(t *testing.T) {
 	if call.selfNodeID != localNode {
 		t.Errorf("selfNodeID = %q, want %q", call.selfNodeID, localNode)
 	}
-	if !call.autoUnseal {
-		t.Error("autoUnseal should be true for system-managed (BarrierAutoUnseal=true) tenant")
-	}
 }
 
-// TestCreateForTenant_DistributorCalledSelfManagedMode verifies the autoUnseal
-// flag is false for a self-managed (BarrierAutoUnseal=false) tenant.
-func TestCreateForTenant_DistributorCalledSelfManagedMode(t *testing.T) {
+// TestCreateForTenant_PlatformCustodySkipsDistribution verifies that a
+// platform-custody (BarrierAutoUnseal) tenant's database create never ships a
+// key: every replica self-initializes its own barrier under its own key, so
+// there is nothing to deliver.
+func TestCreateForTenant_PlatformCustodySkipsDistribution(t *testing.T) {
 	t.Parallel()
 
 	dist := &captureDistributor{}
-	tb := newTestTenantBarrier(t, "self-rt")
+	tb := newTestTenantBarrier(t, "platform-rt")
 	lookup := &fakeTenantBarrierLookup{tb: tb}
-	localNode := "leader:63001"
 
 	raftInfo := &tenant.TenantInfo{
-		ID:                "self-rt",
+		ID:                "platform-rt",
 		IsolationType:     tenant.IsolationRaft,
-		BarrierAutoUnseal: false, // self-managed
+		BarrierAutoUnseal: true,
 	}
-	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, localNode,
+	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, "leader:63001",
 		healthyNodes("leader", "follower1"))
 
-	ctx := tenant.WithTenantID(context.Background(), "self-rt")
+	ctx := tenant.WithTenantID(context.Background(), "platform-rt")
 	cfg := testDBConfig("orders")
 	cfg.Replicas = 2
 	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 
-	if len(dist.calls) != 1 {
-		t.Fatalf("DistributeTenantKey called %d times, want 1", len(dist.calls))
-	}
-	if dist.calls[0].autoUnseal {
-		t.Error("autoUnseal should be false for self-managed (BarrierAutoUnseal=false) tenant")
+	if len(dist.calls) != 0 {
+		t.Fatalf("DistributeTenantKey called %d times for a platform-custody tenant, want 0", len(dist.calls))
 	}
 }
 
@@ -289,9 +280,8 @@ func TestSetDistributor_PostConstruction(t *testing.T) {
 	t.Parallel()
 
 	raftInfo := &tenant.TenantInfo{
-		ID:                "rt",
-		IsolationType:     tenant.IsolationRaft,
-		BarrierAutoUnseal: true,
+		ID:            "rt",
+		IsolationType: tenant.IsolationRaft,
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

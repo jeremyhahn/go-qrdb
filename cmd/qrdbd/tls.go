@@ -450,9 +450,12 @@ func fileExists(path string) bool {
 // wireCertReloader creates a CertReloader for the given certificate and
 // key paths, then wires it into the bundle's TLSConfig so that the
 // GetCertificate callback atomically serves the latest certificate from
-// disk. The static Certificates slice is cleared so GetCertificate
-// takes precedence. The reloader is stored on the bundle for lifecycle
-// management.
+// disk, and GetClientCertificate presents that same certificate on every
+// connection the node dials with this config (leader and replica
+// forwarding copy both hooks). The static Certificates slice is cleared,
+// so without the client hook a dialed connection would present no
+// certificate at all and the peer's mTLS check would reject it. The
+// reloader is stored on the bundle for lifecycle management.
 func wireCertReloader(bundle *TLSBundle, certPath, keyPath string, logger *slog.Logger) error {
 	reloader, err := NewCertReloader(certPath, keyPath, logger)
 	if err != nil {
@@ -460,6 +463,7 @@ func wireCertReloader(bundle *TLSBundle, certPath, keyPath string, logger *slog.
 	}
 
 	bundle.TLSConfig.GetCertificate = reloader.GetCertificate
+	bundle.TLSConfig.GetClientCertificate = reloader.GetClientCertificate
 	bundle.TLSConfig.Certificates = nil
 	bundle.Reloader = reloader
 

@@ -23,9 +23,9 @@ import (
 
 // TestRegisterTenantPooledWithStrategy_DurableBackend verifies that the
 // strategy-honoring pooled registration path uses the SAME durable
-// Pebble-pool backend as RegisterTenantPooled — a real on-disk store, not
+// Pebble-pool backend as RegisterBarrierTenant — a real on-disk store, not
 // an ephemeral in-memory backend. We assert the per-tenant Pebble was
-// opened at the resolved volume-pool path.
+// opened at the barrier directory under the resolved volume-pool path.
 func TestRegisterTenantPooledWithStrategy_DurableBackend(t *testing.T) {
 	reg, roots, perTenantReg := newPooledRegistry(t)
 	ctx := context.Background()
@@ -50,7 +50,7 @@ func TestRegisterTenantPooledWithStrategy_DurableBackend(t *testing.T) {
 	}
 
 	// The Pebble directory must exist on disk at the picked pool root.
-	expected := filepath.Join(roots[0], "alpha")
+	expected := filepath.Join(roots[0], "alpha", "barrier")
 	assertPebbleAtPath(t, expected)
 }
 
@@ -85,16 +85,16 @@ func TestRegisterTenantPooledWithStrategy_AppliesGivenStrategy(t *testing.T) {
 	}
 }
 
-// TestRegisterTenantPooled_InheritsSystemStrategy is the inheritance-default
-// counterpart: when no strategy is supplied, the pooled tenant inherits the
+// TestRegisterBarrierTenant_InheritsSystemStrategy is the inheritance-default
+// counterpart: when no strategy is supplied, the barrier tenant inherits the
 // system barrier's posture. This guards the CreateTenant default path.
-func TestRegisterTenantPooled_InheritsSystemStrategy(t *testing.T) {
-	reg, _, _ := newPooledRegistry(t)
+func TestRegisterBarrierTenant_InheritsSystemStrategy(t *testing.T) {
+	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
-	tb, err := reg.RegisterTenantPooled(ctx, "alpha")
+	tb, err := reg.RegisterBarrierTenant(ctx, "alpha", false)
 	if err != nil {
-		t.Fatalf("RegisterTenantPooled(alpha): %v", err)
+		t.Fatalf("RegisterBarrierTenant(alpha): %v", err)
 	}
 
 	tenantStrategies := tb.Barrier().Strategies()
@@ -202,46 +202,52 @@ func TestRegisterTenantPooledWithStrategy_NoPoolConfigured(t *testing.T) {
 	}
 }
 
-// TestRegisterTenantPooledSystemManaged_RegistrationSucceeds verifies that
-// RegisterTenantPooledSystemManaged opens a pooled per-tenant Pebble and
-// registers the tenant with a SystemBarrierStrategy.
-func TestRegisterTenantPooledSystemManaged_RegistrationSucceeds(t *testing.T) {
+// TestRegisterBarrierTenant_SystemManaged verifies that a system-managed
+// barrier tenant opens a pooled per-tenant Pebble at {dataRoot}/barrier and
+// registers with a SystemBarrierStrategy.
+func TestRegisterBarrierTenant_SystemManaged(t *testing.T) {
 	ctx := context.Background()
-	reg, _, _ := newPooledRegistry(t)
+	reg, roots, _ := newPooledRegistryUnsealed(t)
 
-	// Unseal the system barrier so the SystemBarrierStrategy is functional.
-	if err := reg.SystemBarrier().Initialize(ctx, MustCredentials(context.Background(), []byte("pool-test-pass"))); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
-
-	tb, err := reg.RegisterTenantPooledSystemManaged(ctx, "sys-mgd-tenant")
+	tb, err := reg.RegisterBarrierTenant(ctx, "sys-mgd-tenant", true)
 	if err != nil {
-		t.Fatalf("RegisterTenantPooledSystemManaged: %v", err)
+		t.Fatalf("RegisterBarrierTenant: %v", err)
 	}
-	if tb == nil {
-		t.Fatal("expected non-nil TenantBarrier")
+	if _, ok := tb.Barrier().Strategies()[StrategySystemBarrier]; !ok {
+		t.Errorf("system-managed tenant missing StrategySystemBarrier; have %v", keysOf(tb.Barrier().Strategies()))
 	}
-
-	// The registered barrier should be retrievable.
-	if got, gerr := reg.GetTenant("sys-mgd-tenant"); gerr != nil || got == nil {
-		t.Fatalf("GetTenant after RegisterTenantPooledSystemManaged: %v", gerr)
+	if got, gerr := reg.GetTenant("sys-mgd-tenant"); gerr != nil || got != tb {
+		t.Fatalf("GetTenant after RegisterBarrierTenant = (%v, %v), want the registered barrier", got, gerr)
 	}
+	assertPebbleAtPath(t, filepath.Join(roots[0], "sys-mgd-tenant", "barrier"))
 }
 
-// TestRegisterTenantPooledSystemManaged_NoPool verifies that the function
-// fails closed (ErrPerTenantRegistryNotConfigured, checked first -- see
-// allocatePooledBackend's doc comment) when nothing is attached.
-func TestRegisterTenantPooledSystemManaged_NoPool(t *testing.T) {
-	system := newPoolSystemBarrier(t)
-	reg, err := NewBarrierRegistry(poolTestLogger(), system)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+// TestRegisterBarrierTenant_Refusals verifies each precondition fails closed
+// with its own error rather than falling back to an ephemeral backend.
+func TestRegisterBarrierTenant_Refusals(t *testing.T) {
+	ctx := context.Background()
 
-	_, err = reg.RegisterTenantPooledSystemManaged(context.Background(), "sys-mgd-nopool")
-	if !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
-		t.Errorf("RegisterTenantPooledSystemManaged without pool: got %v, want ErrPerTenantRegistryNotConfigured", err)
-	}
+	t.Run("empty tenant id", func(t *testing.T) {
+		reg, _, _ := newPooledRegistryUnsealed(t)
+		if _, err := reg.RegisterBarrierTenant(ctx, "", true); !errors.Is(err, ErrEmptyTenantID) {
+			t.Fatalf("err = %v, want ErrEmptyTenantID", err)
+		}
+	})
+	t.Run("no per-tenant registry", func(t *testing.T) {
+		reg, err := NewBarrierRegistry(poolTestLogger(), newPoolSystemBarrier(t))
+		if err != nil {
+			t.Fatalf("NewBarrierRegistry: %v", err)
+		}
+		if _, err := reg.RegisterBarrierTenant(ctx, "x", true); !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
+			t.Fatalf("err = %v, want ErrPerTenantRegistryNotConfigured", err)
+		}
+	})
+	t.Run("system sealed", func(t *testing.T) {
+		reg, _, _ := newPooledRegistry(t)
+		if _, err := reg.RegisterBarrierTenant(ctx, "x", true); !errors.Is(err, ErrSealed) {
+			t.Fatalf("err = %v, want ErrSealed", err)
+		}
+	})
 }
 
 // keysOf returns the StrategyID keys of a strategies map for diagnostics.

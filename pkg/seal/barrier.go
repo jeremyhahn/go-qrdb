@@ -96,6 +96,7 @@ func (b *StorageBarrier) loadInitializedAt(ctx context.Context) (time.Time, erro
 var (
 	_ StorageBackend        = (*StorageBarrier)(nil)
 	_ kvstore.FencedCreator = (*StorageBarrier)(nil)
+	_ guardedBatchBackend   = (*StorageBarrier)(nil)
 )
 
 // StorageBarrier wraps a StorageBackend with transparent authenticated
@@ -188,6 +189,11 @@ type StorageBarrier struct {
 	// distributor seals both key domains' shares to their holders (init,
 	// recovery-key generation, rekey). Set via SetCeremonyDistributor.
 	distributor CeremonyDistributor
+
+	// epochPins is the set of epochs (uint64 -> struct{}) this barrier holds
+	// one in-flight pin on, so that a WAL purge never drops a DEK its own
+	// long-lived ciphertext still needs (see epoch_pins.go).
+	epochPins sync.Map
 
 	// quorumState holds the share-holder quorum rounds and the holder
 	// verifier (see quorum.go).
@@ -503,6 +509,10 @@ func (b *StorageBarrier) unseal(ctx context.Context, chosen SealingStrategy, cre
 	if err := b.barrier.SetSealedRootKey(&sealed); err != nil {
 		return err
 	}
+
+	// Pin every epoch the blob knows before unsealing, so no purge can run
+	// against them first (see epoch_pins.go).
+	b.pinKnownEpochs(&sealed)
 
 	// Delegate unseal to the EpochBarrier.
 	if err := b.barrier.Unseal(ctx, strategy, creds); err != nil {
@@ -962,7 +972,7 @@ func (b *StorageBarrier) Put(ctx context.Context, key string, value []byte) erro
 	if b.state.Load() != stateUnsealed {
 		return ErrSealed
 	}
-	encrypted, err := b.barrier.Encrypt(nil, value)
+	encrypted, err := b.encrypt(value)
 	if err != nil {
 		return &PutError{Key: key, Err: err}
 	}
@@ -978,7 +988,7 @@ func (b *StorageBarrier) PutIfAbsent(ctx context.Context, key string, value []by
 	if b.state.Load() != stateUnsealed {
 		return false, ErrSealed
 	}
-	encrypted, err := b.barrier.Encrypt(nil, value)
+	encrypted, err := b.encrypt(value)
 	if err != nil {
 		return false, &PutError{Key: key, Err: err}
 	}
@@ -1004,7 +1014,7 @@ func (b *StorageBarrier) PutIfAllAbsent(ctx context.Context, key string, value [
 	if !ok {
 		return false, ErrFencedCreateUnsupported
 	}
-	encrypted, err := b.barrier.Encrypt(nil, value)
+	encrypted, err := b.encrypt(value)
 	if err != nil {
 		return false, &PutError{Key: key, Err: err}
 	}
@@ -1147,11 +1157,93 @@ func (b *StorageBarrier) CompareAndSwap(ctx context.Context, key string, expecte
 	if !ok {
 		return false, ErrGuardedSwapUnsupported
 	}
-	ciphertext, eerr := b.barrier.Encrypt(nil, next)
+	ciphertext, eerr := b.encrypt(next)
 	if eerr != nil {
 		return false, eerr
 	}
 	return guarded.CompareAndSwap(ctx, key, stored, ciphertext)
+}
+
+// guardedBatchBackend is the batch half of the storage-backend contract:
+// several writes applied in one atomic step, only while every guard still
+// holds the bytes the caller expects. Like guardedSwapBackend it is a real
+// discriminator, since StorageBackend does not declare it; a tenant home store
+// needs it to hold the tenant CA, whose key and certificate records are
+// written together (kvstore.MultiGuardedBatchKVStore).
+type guardedBatchBackend interface {
+	PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error)
+}
+
+// ErrGuardedBatchUnsupported is returned, wrapped in
+// kvstore.GuardedBatchUnsupportedError, when a storage backend cannot apply a
+// guarded batch atomically. There is no safe fallback: applying the writes one
+// at a time can leave a prefix of them behind, and checking the guards before
+// writing reopens the window they exist to close.
+var ErrGuardedBatchUnsupported = errors.New("seal: storage backend has no guarded batch")
+
+// PutAllIfAllUnchanged encrypts every write and applies them atomically, only
+// while every guard's key still holds its expected PLAINTEXT. A nil
+// Guard.Value requires the key to be absent.
+//
+// It guards the way CompareAndSwap does, for the same reason: each present
+// guard key's stored ciphertext is read and decrypted to compare against the
+// caller's plaintext, and the guard handed to the backend is that exact
+// ciphertext, so a write landing in between still makes the backend refuse.
+// A guard that does not hold is an ordinary outcome, (false, nil), decided
+// before anything is written. A base without the capability is refused with
+// kvstore.GuardedBatchUnsupportedError, which kvstore.ProbeGuardedBatch reads
+// as "this store cannot".
+func (b *StorageBarrier) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if b.state.Load() != stateUnsealed {
+		return false, ErrSealed
+	}
+	batcher, ok := b.base.(guardedBatchBackend)
+	if !ok {
+		return false, &kvstore.GuardedBatchUnsupportedError{Err: ErrGuardedBatchUnsupported}
+	}
+	baseGuards := make([]kvstore.Guard, len(guards))
+	for i, g := range guards {
+		// Absent reads as ErrSecretNotFound or (nil, nil) depending on the
+		// backend; see CompareAndSwap.
+		stored, err := b.base.Get(ctx, g.Key)
+		if errors.Is(err, ErrSecretNotFound) {
+			stored, err = nil, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if g.Value == nil {
+			if stored != nil {
+				return false, nil
+			}
+			baseGuards[i] = kvstore.Guard{Key: g.Key}
+			continue
+		}
+		if stored == nil {
+			return false, nil
+		}
+		plaintext, derr := b.barrier.Decrypt(nil, stored)
+		if derr != nil {
+			return false, &GetError{Key: g.Key, Err: derr}
+		}
+		if !bytes.Equal(plaintext, g.Value) {
+			return false, nil
+		}
+		baseGuards[i] = kvstore.Guard{Key: g.Key, Value: stored}
+	}
+	baseWrites := make([]kvstore.KV, len(writes))
+	for i, w := range writes {
+		if w.Delete {
+			baseWrites[i] = kvstore.KV{Key: w.Key, Delete: true}
+			continue
+		}
+		ciphertext, err := b.encrypt(w.Value)
+		if err != nil {
+			return false, &PutError{Key: w.Key, Err: err}
+		}
+		baseWrites[i] = kvstore.KV{Key: w.Key, Value: ciphertext}
+	}
+	return batcher.PutAllIfAllUnchanged(ctx, baseGuards, baseWrites)
 }
 
 // Delete removes the key from storage.
@@ -1202,13 +1294,14 @@ func (b *StorageBarrier) Close() error {
 	return b.base.Close()
 }
 
-// Encrypt encrypts plaintext using the epoch barrier's master key.
-// Returns ErrSealed if the barrier is sealed.
+// Encrypt encrypts plaintext under the epoch barrier's current epoch and pins
+// that epoch so a WAL purge can never retire the DEK the ciphertext needs (see
+// epoch_pins.go). Returns ErrSealed if the barrier is sealed.
 func (b *StorageBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	if b.state.Load() != stateUnsealed {
 		return nil, ErrSealed
 	}
-	return b.barrier.Encrypt(nil, plaintext)
+	return b.encrypt(plaintext)
 }
 
 // Decrypt decrypts ciphertext using the epoch barrier's master key.
@@ -1273,6 +1366,7 @@ type MemoryBackend struct {
 var (
 	_ StorageBackend        = (*MemoryBackend)(nil)
 	_ kvstore.FencedCreator = (*MemoryBackend)(nil)
+	_ guardedBatchBackend   = (*MemoryBackend)(nil)
 )
 
 // NewMemoryBackend returns a new in-memory StorageBackend.
@@ -1365,6 +1459,37 @@ func (m *MemoryBackend) CompareAndSwap(_ context.Context, key string, expected, 
 	stored := make([]byte, len(next))
 	copy(stored, next)
 	m.data[key] = stored
+	return true, nil
+}
+
+// PutAllIfAllUnchanged applies every write only while every guard holds — a
+// nil Guard.Value requires the key to be absent, any other value requires it
+// to be present and equal — under the same lock that makes PutIfAbsent
+// indivisible.
+func (m *MemoryBackend) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, g := range guards {
+		current, ok := m.data[g.Key]
+		if g.Value == nil {
+			if ok {
+				return false, nil
+			}
+			continue
+		}
+		if !ok || !bytes.Equal(current, g.Value) {
+			return false, nil
+		}
+	}
+	for _, w := range writes {
+		if w.Delete {
+			delete(m.data, w.Key)
+			continue
+		}
+		stored := make([]byte, len(w.Value))
+		copy(stored, w.Value)
+		m.data[w.Key] = stored
+	}
 	return true, nil
 }
 

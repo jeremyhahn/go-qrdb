@@ -143,6 +143,10 @@ var dominantRules = []rule{
 	// A dedicated-raft database asked of a node its placement does not name:
 	// retryable against one of the replicas the refusal lists.
 	as(&placement.NotAReplicaError{}, Unavailable),
+	// A shard that requires a dedicated tenant WAL was not started because the
+	// WAL could not be opened: it never falls back to the shared WAL, and the
+	// request is retryable once the volume or the tenant barrier is back.
+	as(&database.TenantWALUnavailableError{}, Unavailable),
 	// A placement record names a path for a replica: refused, never opened;
 	// the database must be dropped and re-created.
 	as(&placement.ReplicaDataRootError{}, FailedPrecondition),
@@ -1008,6 +1012,9 @@ var tenantRules = []rule{
 	// A raft-isolated tenant's barrier with no recorded init statement has
 	// nothing to reattach from: no retry or other credential changes that.
 	as(&tenant.InitStatementMissingError{}, FailedPrecondition),
+	// A platform statement names a barrier its owner keeps custody of: the
+	// platform holds no key for it, whatever the caller retries with.
+	is(tenant.ErrNotPlatformCustody, FailedPrecondition),
 	is(tenant.ErrBarrierIsolationUnavailable, Unprocessable),
 	is(tenant.ErrBarrierNotEnabled, Unprocessable),
 	is(tenant.ErrTenantAlreadyExists, AlreadyExists),
@@ -1173,6 +1180,9 @@ var holderRules = []rule{
 	as(&seal.StaleRosterError{}, Aborted),
 	as(&seal.RevocationBreaksQuorumError{}, FailedPrecondition),
 	as(&seal.HolderCountMismatchError{}, FailedPrecondition),
+	// A Shamir init's second request echoed a split other than the one this
+	// node prepared: the caller signs the split the first request returned.
+	as(&seal.PreparedShamirMismatchError{}, FailedPrecondition),
 	// Every holder the uninitialized barrier is split to is enrolled.
 	as(&ceremony.HolderLimitReachedError{}, FailedPrecondition),
 	// An initialized barrier's holder is removed by revocation.

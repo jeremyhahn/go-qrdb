@@ -95,6 +95,17 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 			delete(store, key)
 			return true, nil
 		},
+		// A swap that always lost made every delete over this mock fail as a
+		// concurrent update: DeleteUser marks the record deleting by swapping
+		// it against the version it read.
+		compareAndSwapFn: func(_ context.Context, key string, expected, next []byte) (bool, error) {
+			current, exists := store[key]
+			if !exists || !bytes.Equal(current, expected) {
+				return false, nil
+			}
+			store[key] = next
+			return true, nil
+		},
 		getFn: func(_ context.Context, key string) ([]byte, error) {
 			if v, ok := store[key]; ok {
 				return v, nil
@@ -214,6 +225,7 @@ type mockKVServicer struct {
 	putFn              func(ctx context.Context, key string, value []byte) error
 	putIfAbsentFn      func(ctx context.Context, key string, value []byte) (bool, error)
 	compareAndDeleteFn func(ctx context.Context, key string, expected []byte) (bool, error)
+	compareAndSwapFn   func(ctx context.Context, key string, expected, next []byte) (bool, error)
 	getFn              func(ctx context.Context, key string) ([]byte, error)
 	deleteFn           func(ctx context.Context, key string) error
 	scanFn             func(ctx context.Context, prefix string) (map[string][]byte, error)
@@ -244,6 +256,9 @@ func (m *mockKVServicer) CompareAndDelete(ctx context.Context, key string, expec
 }
 
 func (m *mockKVServicer) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if m.compareAndSwapFn != nil {
+		return m.compareAndSwapFn(ctx, key, expected, next)
+	}
 	return false, nil
 }
 

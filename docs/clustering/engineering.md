@@ -133,6 +133,17 @@ keys itself (`ecdh.KeyExchanger`) serves as the default decrypter. Otherwise
 the composer supplies one with `WithKeyDeliveryDecrypter` (see
 `docs/multi-tenancy/engineering.md`); without one the key plane is off, with a
 warning. `qrdbd` builds the identity from its TLS bundle's software key.
+
+Both binaries turn their identity into the node certificate through
+`lifecycle.NodeIdentity`, and compose the platform-init signer and the
+barrier-init watcher from it through `lifecycle.ComposeRaftTenantCluster`, so
+the embedded node and `qrdbd` sign a raft tenant's auto-unseal init statement
+the same way. A single-member SDK node handed no identity, no CA key provider
+and no CA material resolves one through `clusterenroll.Resolve` with
+`SingleNode` set -- `qrdbd`'s no-TLS-flags path -- and both remove the
+generated CA key once Key A is replicated through
+`lifecycle.RemoveClusterCAKeyCache`. A multi-member node needs `WithRaftMTLS`
+for its transport and is never reached by this.
 - The SDK node wraps each refusal in `*node.ConfigError{Field:
   "raft.member_identities"}`, which unwraps to the typed cause.
 

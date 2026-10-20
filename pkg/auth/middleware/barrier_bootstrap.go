@@ -267,20 +267,48 @@ func (m *AuthMiddleware) verifyTenantBarrierInitProof(ctx context.Context, tenan
 }
 
 // initProofThumbprint returns the SPKI thumbprint the init proof must be by:
-// the pending first admin's, or with none recorded, the certificate's on this
-// connection. Empty means there is no key the proof could be by. A failure to
-// read the record fails closed.
+// the pending first admin's, the pinned first admin's once that record is
+// consumed, or with neither, the certificate's on this connection. Empty
+// means there is no key the proof could be by. A failure to read either
+// record fails closed.
 func (m *AuthMiddleware) initProofThumbprint(ctx context.Context, tenantID string) (string, error) {
+	pending, pinned, err := m.firstInitAdmin(ctx, tenantID)
+	switch {
+	case err != nil:
+		return "", err
+	case pending != nil:
+		return pending.Thumbprint, nil
+	case pinned != "":
+		return pinned, nil
+	}
+	return presentedThumbprint(ctx), nil
+}
+
+// firstInitAdmin reads who may initialize tenantID's barrier on a node where
+// it is not initialized yet: the pending first admin while the tenant's
+// identity records are still to be written, and the thumbprint pinned for the
+// barrier when its owner was onboarded. The pending record is consumed when
+// the admin's account is created, which can happen before every node serving
+// the barrier is initialized -- a node that was down initializes later -- so
+// the pin, written once and never consumed, is what the window falls back to.
+func (m *AuthMiddleware) firstInitAdmin(ctx context.Context, tenantID string) (*tenantadmin.Pending, string, error) {
 	if m.pendingAdmins != nil {
 		pending, err := m.pendingAdmins.Get(ctx, tenantID)
 		if err != nil {
-			return "", &StoreUnavailableError{Err: err}
+			return nil, "", &StoreUnavailableError{Err: err}
 		}
 		if pending != nil {
-			return pending.Thumbprint, nil
+			return pending, "", nil
 		}
 	}
-	return presentedThumbprint(ctx), nil
+	if m.firstAdminPins == nil {
+		return nil, "", nil
+	}
+	pinned, err := m.firstAdminPins.TenantFirstAdmin(ctx, tenantID)
+	if err != nil {
+		return nil, "", &StoreUnavailableError{Err: err}
+	}
+	return nil, pinned, nil
 }
 
 // PendingTenantAdmins reads the first admin a tenant was onboarded with
@@ -297,6 +325,21 @@ func WithPendingTenantAdmins(p PendingTenantAdmins) Option {
 	return func(m *AuthMiddleware) { m.pendingAdmins = p }
 }
 
+// FirstAdminPins reads the SPKI thumbprint of the first admin each tenant's
+// barrier was pinned to when its owner was onboarded; empty when none is.
+// *lifecycle.BarrierInit implements it.
+type FirstAdminPins interface {
+	TenantFirstAdmin(ctx context.Context, tenantID string) (string, error)
+}
+
+// WithFirstAdminPins gives the trust-on-first-init window of a tenant barrier
+// the pinned first admin, which it admits once the pending record is
+// consumed: a node serving the barrier that initializes after the admin's
+// account exists still admits that admin's certificate and no other.
+func WithFirstAdminPins(p FirstAdminPins) Option {
+	return func(m *AuthMiddleware) { m.firstAdminPins = p }
+}
+
 // checkFirstInitCertificate decides whether the certificate on this request
 // may initialize tenantID's never-initialized barrier through the
 // trust-on-first-init window.
@@ -305,7 +348,10 @@ func WithPendingTenantAdmins(p PendingTenantAdmins) Option {
 //     record: only a certificate whose SPKI is the onboarded one, naming the
 //     onboarded admin, may initialize -- whoever initializes the barrier is
 //     the admin the platform operator onboarded.
-//   - With no record, the "enrolled" posture keeps the window as it was: any
+//   - Once that record is consumed -- the admin's account exists, while a
+//     node serving the barrier is still to initialize -- only a certificate
+//     whose SPKI is the one pinned for the barrier at onboarding may.
+//   - With neither, the "enrolled" posture keeps the window as it was: any
 //     authenticated identity of the tenant.
 //   - With no record under "required", nobody may: a certificate bound to no
 //     account cannot initialize a tenant barrier under a posture that admits
@@ -313,27 +359,26 @@ func WithPendingTenantAdmins(p PendingTenantAdmins) Option {
 //
 // A failure to read the record fails closed.
 func (m *AuthMiddleware) checkFirstInitCertificate(ctx context.Context, caller *auth.Identity, tenantID string) error {
-	var pending *tenantadmin.Pending
-	if m.pendingAdmins != nil {
-		p, err := m.pendingAdmins.Get(ctx, tenantID)
-		if err != nil {
-			return &StoreUnavailableError{Err: err}
-		}
-		pending = p
-	}
-	if pending == nil {
-		if m.bindingPolicy == auth.MTLSBindingRequired {
-			return &FirstInitNotOnboardedError{TenantID: tenantID}
-		}
-		return nil
+	pending, pinned, err := m.firstInitAdmin(ctx, tenantID)
+	if err != nil {
+		return err
 	}
 	presented := presentedThumbprint(ctx)
-	if presented == "" || presented != pending.Thumbprint || caller.AccountName() != pending.Username {
-		return &FirstInitCertificateMismatchError{
-			TenantID:            tenantID,
-			Username:            pending.Username,
-			PresentedThumbprint: presented,
+	switch {
+	case pending != nil:
+		if presented == "" || presented != pending.Thumbprint || caller.AccountName() != pending.Username {
+			return &FirstInitCertificateMismatchError{
+				TenantID:            tenantID,
+				Username:            pending.Username,
+				PresentedThumbprint: presented,
+			}
 		}
+	case pinned != "":
+		if presented == "" || presented != pinned {
+			return &FirstInitCertificateMismatchError{TenantID: tenantID, PresentedThumbprint: presented}
+		}
+	case m.bindingPolicy == auth.MTLSBindingRequired:
+		return &FirstInitNotOnboardedError{TenantID: tenantID}
 	}
 	return nil
 }

@@ -97,6 +97,11 @@ type AuthMiddleware struct {
 	// checkFirstInitCertificate). Nil reads as "no tenant has one".
 	pendingAdmins PendingTenantAdmins
 
+	// firstAdminPins holds the first admin each tenant barrier was pinned to
+	// at onboarding, which the window admits once the pending record is
+	// consumed (see firstInitAdmin). Nil reads as "no barrier has one".
+	firstAdminPins FirstAdminPins
+
 	// initChallenges holds the tenant barrier init nonces this node issued
 	// and has not yet seen completed (BeginTenantBarrierInit). New supplies
 	// one on the real clock when WithInitChallengeBook did not.

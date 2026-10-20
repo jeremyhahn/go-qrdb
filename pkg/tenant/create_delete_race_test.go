@@ -139,9 +139,6 @@ func TestCreateTenant_LosingToADeleteLeavesNoBarrierAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	store := &interleaveOnCommit{MemoryBackend: seal.NewMemoryBackend(), before: retire(t, "vacme")}
 	reg := newTestBarrierRegistry(t)
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("initialize system barrier: %v", err)
-	}
 	svc, err := NewTenantService(store, reg, testLogger(),
 		WithDefaultEntitlements(volumeEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {

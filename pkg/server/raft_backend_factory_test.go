@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -269,6 +270,88 @@ func TestRaftBackendFactory_ReattachPersistence(t *testing.T) {
 	}
 	if string(got) != "durable" {
 		t.Errorf("KV.Get after re-attach = %q, want durable (data did not persist)", got)
+	}
+}
+
+// writeAndAwaitLogRange writes n KV entries through svcs and returns the
+// shard's log range: it polls for up to wait until the first index rises above
+// one, so a shard that does not compact reports its uncompacted range rather
+// than failing here.
+func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Host, svcs *DatabaseServices, shardID uint64, n int, wait time.Duration) quicraft.LogRange {
+	t.Helper()
+	for i := range n {
+		if err := svcs.KV.Put(ctx, "snap-"+strconv.Itoa(i), []byte("v")); err != nil {
+			t.Fatalf("KV.Put %d: %v", i, err)
+		}
+	}
+	var lr quicraft.LogRange
+	deadline := time.Now().Add(wait)
+	for {
+		var err error
+		lr, err = host.GetLogRange(shardID)
+		if err != nil {
+			t.Fatalf("GetLogRange: %v", err)
+		}
+		if lr.FirstIndex > 1 || time.Now().After(deadline) {
+			return lr
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRaftBackendFactory_WithSnapshotSettings_CompactsLog proves a dedicated
+// shard takes the snapshot cadence it is given: with a snapshot every 20
+// entries and 5 retained, writing well past the cadence compacts the log, so
+// its first index rises above one. A replica that falls behind that index can
+// only catch up by snapshot install.
+func TestRaftBackendFactory_WithSnapshotSettings_CompactsLog(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+		WithSnapshotSettings(20, 5))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	ctx := context.Background()
+	dataRoot, _ := registerVolumeTenant(t, reg, "sc")
+	const shardID = uint64(1000)
+	src.add("sc", "db", shardID, dataRoot)
+
+	svcs, err := f.Services(ctx, "sc", "db")
+	if err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	lr := writeAndAwaitLogRange(ctx, t, host, svcs, shardID, 100, 10*time.Second)
+	if lr.FirstIndex <= 1 {
+		t.Fatalf("log range = [%d, %d]: the shard did not compact under a 20-entry snapshot cadence", lr.FirstIndex, lr.LastIndex)
+	}
+}
+
+// TestRaftBackendFactory_DefaultSnapshotSettings_KeepsLog proves the zero
+// value takes go-quicraft's default cadence, as it does for the system shard:
+// a hundred entries is far below that default, so nothing is compacted.
+func TestRaftBackendFactory_DefaultSnapshotSettings_KeepsLog(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+		WithSnapshotSettings(0, 0))
+	t.Cleanup(func() { _ = f.CloseAll() })
+	if f.snapshotEntries != 0 || f.compactionOverhead != 0 {
+		t.Fatalf("snapshot settings = (%d, %d), want the zero defaults", f.snapshotEntries, f.compactionOverhead)
+	}
+
+	ctx := context.Background()
+	dataRoot, _ := registerVolumeTenant(t, reg, "sd")
+	const shardID = uint64(1000)
+	src.add("sd", "db", shardID, dataRoot)
+
+	svcs, err := f.Services(ctx, "sd", "db")
+	if err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	if lr := writeAndAwaitLogRange(ctx, t, host, svcs, shardID, 100, 0); lr.FirstIndex > 1 {
+		t.Fatalf("log range = [%d, %d]: the default cadence compacted a hundred-entry log", lr.FirstIndex, lr.LastIndex)
 	}
 }
 
@@ -819,7 +902,12 @@ func TestManagerRaftInfoSource_NilManager(t *testing.T) {
 // provides in production.
 func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.MultiplexLogDB) {
 	t.Helper()
-	hostDir := t.TempDir()
+	return newSharedTestHostAt(t, t.TempDir(), newTestSystemBarrier(t))
+}
+
+// newTestSystemBarrier returns an initialized, unsealed system barrier.
+func newTestSystemBarrier(t *testing.T) *seal.StorageBarrier {
+	t.Helper()
 	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("mux-shared-wal-test"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
@@ -833,15 +921,33 @@ func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.Multiplex
 		seal.MustCredentials(context.Background(), []byte("mux-shared-wal-test"))); err != nil {
 		t.Fatalf("Initialize system barrier: %v", err)
 	}
-	sharedWAL, err := waldb.Open(filepath.Join(hostDir, "wal"),
-		waldb.WithBarrier(sysBarrier.EpochBarrier()))
+	return sysBarrier
+}
+
+// newPlaintextSystemBarrier returns an initialized, unsealed system barrier
+// under StrategyNone: the plaintext-mode barrier a node runs before
+// EnableEncryption.
+func newPlaintextSystemBarrier(t *testing.T) *seal.StorageBarrier {
+	t.Helper()
+	sysBarrier, err := seal.NewStorageBarrier(volTestLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key", DeploymentID: 1}, seal.NewNoneStrategy())
 	if err != nil {
-		t.Fatalf("open shared WAL: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	mux, err := database.NewMultiplexLogDB(sharedWAL, sysBarrier.EpochBarrier())
-	if err != nil {
-		t.Fatalf("new multiplex: %v", err)
+	if err := sysBarrier.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize system barrier: %v", err)
 	}
+	if !sysBarrier.EpochBarrier().IsPlaintextMode() {
+		t.Fatal("a StrategyNone barrier does not report plaintext mode; the fixture is wrong")
+	}
+	return sysBarrier
+}
+
+// newSharedTestHostAt is newSharedTestHostWithMux over a caller-owned host
+// directory and system barrier, so a test can reopen the shared WAL after the
+// host closes.
+func newSharedTestHostAt(t *testing.T, hostDir string, sysBarrier *seal.StorageBarrier) (*quicraft.Host, *database.MultiplexLogDB) {
+	t.Helper()
 	cfg := quicraftconfig.HostConfig{
 		WALDir:        filepath.Join(hostDir, "wal"),
 		NodeHostDir:   filepath.Join(hostDir, "nodehost"),
@@ -849,22 +955,24 @@ func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.Multiplex
 		ListenAddress: sharedHostRaftAddr,
 		DeploymentID:  1,
 	}
-	host, err := quicraft.NewHost(cfg,
-		quicraft.WithoutTransport(),
-		quicraft.WithLogDB(mux),
-		// The host-wide barrier is the shared route's snapshot key: a shard NOT
-		// opted into a dedicated WAL resolves to nil below and falls back to it,
-		// matching the shared WAL's own system-barrier encryption. Dedicated
-		// shards override it with their tenant barrier via the resolver.
-		quicraft.WithBarrier(sysBarrier.EpochBarrier()),
-		quicraft.WithShardBarriers(func(shardID uint64) quicraft.Barrier {
-			if b := mux.BarrierForShard(shardID); b != nil {
-				return b
-			}
-			return nil
-		}),
-	)
+	// The WAL is decided by database.NewRaftWAL, the path qrdbd and the SDK
+	// node share, on a host with no transport: a single node gets the
+	// multiplex exactly as a cluster does.
+	wal, err := database.NewRaftWAL(database.RaftWALConfig{
+		Dir:           cfg.WALDir,
+		SystemBarrier: sysBarrier.EpochBarrier(),
+	})
 	if err != nil {
+		t.Fatalf("NewRaftWAL: %v", err)
+	}
+	mux := wal.Multiplex
+	if mux == nil {
+		_ = wal.Close()
+		t.Fatalf("a single node with a system barrier must get the multiplex")
+	}
+	host, err := quicraft.NewHost(cfg, append([]quicraft.HostOption{quicraft.WithoutTransport()}, wal.Options...)...)
+	if err != nil {
+		_ = wal.Close()
 		t.Fatalf("NewHost: %v", err)
 	}
 	t.Cleanup(func() { _ = host.Close() })
@@ -931,11 +1039,236 @@ func TestRaftBackendFactory_DedicatedWAL_OptIn(t *testing.T) {
 	assertPlaintextAbsent(t, walDir, []byte(secret))
 }
 
-// TestRaftBackendFactory_DedicatedWAL_FallbackNoMux proves that when no multiplex
-// LogDB is wired (single-node/standalone, or seal disabled) a dedicated-WAL
-// opt-in is ignored and the shard transparently uses the shared WAL: no
-// per-shard WAL directory is created.
-func TestRaftBackendFactory_DedicatedWAL_FallbackNoMux(t *testing.T) {
+// TestRaftBackendFactory_DedicatedWAL_PlaintextModeHost proves a host whose
+// system barrier is still in plaintext mode (StrategyNone, before
+// EnableEncryption) runs the multiplex, so an isolated tenant's dedicated-WAL
+// shard starts and serves on it instead of being refused with
+// ErrDedicatedWALNotWired. The host and its tenants are all StrategyNone, the
+// posture of a node that has not enabled encryption yet.
+func TestRaftBackendFactory_DedicatedWAL_PlaintextModeHost(t *testing.T) {
+	host, mux := newSharedTestHostAt(t, t.TempDir(), newPlaintextSystemBarrier(t))
+	reg := newVolumePooledRegistryWith(t, seal.NewNoneStrategy())
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	ctx := context.Background()
+	dataRoot, tb := registerVolumeTenant(t, reg, "pt")
+	const shardID = uint64(2100)
+	src.add("pt", "app", shardID, dataRoot)
+	src.setDedicated("pt", "app")
+
+	svcs, err := f.Services(ctx, "pt", "app")
+	if err != nil {
+		t.Fatalf("Services on a plaintext-mode host: %v", err)
+	}
+	if !mux.IsDedicated(shardID) {
+		t.Fatalf("shard %d must be registered as dedicated in the multiplex", shardID)
+	}
+	if got := mux.BarrierForShard(shardID); got != tb.Barrier().EpochBarrier() {
+		t.Fatalf("BarrierForShard returned the wrong barrier for the dedicated shard")
+	}
+	if err := svcs.KV.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("KV.Put: %v", err)
+	}
+	if got, err := svcs.KV.Get(ctx, "k"); err != nil || string(got) != "v" {
+		t.Fatalf("KV.Get = %q, %v; want %q", got, err, "v")
+	}
+}
+
+// Sealing a tenant stops its shards and unregisters their dedicated WALs
+// BEFORE the key is wiped, and leaves every other tenant's shard committing: a
+// sealed WAL in a commit batch would fail the batch's other shards for good.
+func TestRaftBackendFactory_SealTenant_StopsItsShardsOnly(t *testing.T) {
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	ctx := context.Background()
+	rootA, tbA := registerVolumeTenant(t, reg, "sa")
+	rootB, _ := registerVolumeTenant(t, reg, "sb")
+	const shardA1, shardA2, shardB = uint64(2100), uint64(2101), uint64(2102)
+	for _, d := range []struct {
+		tenant, db string
+		shard      uint64
+		root       string
+	}{{"sa", "one", shardA1, rootA}, {"sa", "two", shardA2, rootA}, {"sb", "app", shardB, rootB}} {
+		src.add(d.tenant, d.db, d.shard, d.root)
+		src.setDedicated(d.tenant, d.db)
+		if _, err := f.Services(ctx, d.tenant, d.db); err != nil {
+			t.Fatalf("Services(%s/%s): %v", d.tenant, d.db, err)
+		}
+	}
+	if n := len(f.sealWatched); n != 2 {
+		t.Fatalf("%d barriers watched; want one per tenant (2)", n)
+	}
+
+	if err := tbA.Seal(); err != nil {
+		t.Fatalf("Seal tenant sa: %v", err)
+	}
+
+	for _, id := range []uint64{shardA1, shardA2} {
+		if mux.IsDedicated(id) {
+			t.Fatalf("shard %d of the sealed tenant is still registered in the multiplex", id)
+		}
+	}
+	for _, s := range f.ListStarted() {
+		if s.TenantID == "sa" {
+			t.Fatalf("sealed tenant's shard %s/%s is still started", s.TenantID, s.Database)
+		}
+	}
+	if !mux.IsDedicated(shardB) {
+		t.Fatalf("sealing tenant sa unregistered tenant sb's WAL")
+	}
+	svcs, err := f.Services(ctx, "sb", "app")
+	if err != nil {
+		t.Fatalf("Services(sb/app) after sa sealed: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "k", []byte("still-committing")); err != nil {
+		t.Fatalf("tenant sb stopped committing when sa sealed: %v", err)
+	}
+	if _, err := f.Services(ctx, "sa", "one"); !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("Services on a sealed tenant = %v; want seal.ErrSealed", err)
+	}
+}
+
+// A tenant with no shard started on this node seals without touching the
+// factory, and sealing twice stops nothing twice.
+func TestRaftBackendFactory_SealTenant_Idempotent(t *testing.T) {
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	_, tb := registerVolumeTenant(t, reg, "si")
+	if err := f.stopTenantShards("si", nil); err != nil {
+		t.Fatalf("stopTenantShards with nothing started: %v", err)
+	}
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("second Seal: %v", err)
+	}
+}
+
+// A tenant's shard stopped by its seal starts again when the tenant is
+// unsealed, with the dedicated WAL registered again and the data written before
+// the seal intact: nothing failed by the seal stays latched on the host.
+func TestRaftBackendFactory_SealTenant_ShardRestartsAfterUnseal(t *testing.T) {
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	ctx := context.Background()
+	root, tb := registerVolumeTenant(t, reg, "ru")
+	const shardID = uint64(2300)
+	src.add("ru", "app", shardID, root)
+	src.setDedicated("ru", "app")
+	svcs, err := f.Services(ctx, "ru", "app")
+	if err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "k", []byte("before-seal")); err != nil {
+		t.Fatalf("Put before seal: %v", err)
+	}
+
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if _, err := f.Services(ctx, "ru", "app"); !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("Services while sealed = %v; want seal.ErrSealed", err)
+	}
+	if err := reg.UnsealTenant(ctx, "ru", seal.Credentials{}); err != nil {
+		t.Fatalf("UnsealTenant: %v", err)
+	}
+
+	svcs, err = f.Services(ctx, "ru", "app")
+	if err != nil {
+		t.Fatalf("Services after unseal: %v", err)
+	}
+	if !mux.IsDedicated(shardID) {
+		t.Fatalf("the dedicated WAL was not registered again after unseal")
+	}
+	if err := svcs.KV.Put(ctx, "k2", []byte("after-unseal")); err != nil {
+		t.Fatalf("Put after unseal: %v", err)
+	}
+	got, err := svcs.KV.Get(ctx, "k")
+	if err != nil || string(got) != "before-seal" {
+		t.Fatalf("Get after unseal = %q, %v; want the value written before the seal", got, err)
+	}
+}
+
+// A tenant's home group is placed DedicatedWAL, so its Raft log is written to a
+// WAL under the tenant's key and the host's shared WAL never holds an entry of
+// it. A database that did not opt in, on the same host, does land in the shared
+// WAL: that is what makes the empty answer for the home group meaningful.
+func TestRaftBackendFactory_HomeGroup_SharedWALHoldsNoEntry(t *testing.T) {
+	hostDir := t.TempDir()
+	sysBarrier := newTestSystemBarrier(t)
+	host, mux := newSharedTestHostAt(t, hostDir, sysBarrier)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+
+	ctx := context.Background()
+	root, _ := registerVolumeTenant(t, reg, "hg")
+	const homeShard, sharedShard = uint64(2400), uint64(2401)
+	src.add("hg", database.TenantHomeName, homeShard, root)
+	src.setDedicated("hg", database.TenantHomeName)
+	src.add("hg", "plain", sharedShard, root)
+	for _, name := range []string{database.TenantHomeName, "plain"} {
+		svcs, err := f.Services(ctx, "hg", name)
+		if err != nil {
+			t.Fatalf("Services(%s): %v", name, err)
+		}
+		if err := svcs.KV.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put(%s): %v", name, err)
+		}
+	}
+	if !mux.IsDedicated(homeShard) {
+		t.Fatalf("the home group's WAL is not registered as dedicated")
+	}
+
+	if err := f.CloseAll(); err != nil {
+		t.Fatalf("CloseAll: %v", err)
+	}
+	shared, err := waldb.Open(filepath.Join(hostDir, "wal"), waldb.WithBarrier(sysBarrier.EpochBarrier()))
+	if err != nil {
+		t.Fatalf("reopen the shared WAL: %v", err)
+	}
+	t.Cleanup(func() { _ = shared.Close() })
+	infos, err := shared.ListNodeInfo()
+	if err != nil {
+		t.Fatalf("ListNodeInfo: %v", err)
+	}
+	held := map[uint64]bool{}
+	for _, ni := range infos {
+		held[ni.ShardID] = true
+	}
+	if held[homeShard] {
+		t.Fatalf("the shared host WAL holds an entry of the tenant's home group (shard %d)", homeShard)
+	}
+	if !held[sharedShard] {
+		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
+	}
+}
+
+// TestRaftBackendFactory_DedicatedWAL_NoMuxRefusesToStart proves that when no
+// multiplex LogDB is wired a dedicated-WAL requirement is refused, not
+// ignored: the shard does not start, is not cached, and no WAL directory is
+// created. Its log is never written under the node key instead.
+func TestRaftBackendFactory_DedicatedWAL_NoMuxRefusesToStart(t *testing.T) {
 	f, reg, src := newRaftFactory(t) // no WithMultiplexLogDB
 	ctx := context.Background()
 	dataRoot, _ := registerVolumeTenant(t, reg, "nm")
@@ -943,8 +1276,16 @@ func TestRaftBackendFactory_DedicatedWAL_FallbackNoMux(t *testing.T) {
 	src.add("nm", "app", shardID, dataRoot)
 	src.setDedicated("nm", "app")
 
-	if _, err := f.Services(ctx, "nm", "app"); err != nil {
-		t.Fatalf("Services: %v", err)
+	_, err := f.Services(ctx, "nm", "app")
+	var unavailable *database.TenantWALUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.TenantID != "nm" || unavailable.ShardID != shardID {
+		t.Fatalf("Services = %v; want a TenantWALUnavailableError for nm/%d", err, shardID)
+	}
+	if !errors.Is(err, database.ErrDedicatedWALNotWired) {
+		t.Fatalf("Services = %v; want the cause ErrDedicatedWALNotWired", err)
+	}
+	if n := len(f.ListStarted()); n != 0 {
+		t.Fatalf("%d shards started; the refused shard must not be cached", n)
 	}
 	walDir := filepath.Join(dataRoot, "databases", "app", "wal")
 	if _, err := os.Stat(walDir); !os.IsNotExist(err) {
@@ -984,11 +1325,12 @@ func TestRaftBackendFactory_DedicatedWAL_NotOptedIn(t *testing.T) {
 	}
 }
 
-// TestOpenAndRegisterDedicatedWAL_Fallbacks exercises every fallback branch of
-// openAndRegisterDedicatedWAL: opt-out, no multiplex, sealed/absent barrier, a
-// WAL-open failure, and a duplicate-registration failure. Each must return nil
-// (use the shared WAL) without leaving a dedicated WAL registered.
-func TestOpenAndRegisterDedicatedWAL_Fallbacks(t *testing.T) {
+// TestOpenAndRegisterDedicatedWAL_Refusals exercises every branch of
+// openAndRegisterDedicatedWAL: opt-out returns no WAL and no error; no
+// multiplex, an absent or sealed barrier, a WAL-open failure and a duplicate
+// registration each return a TenantWALUnavailableError, with the cause named,
+// and leave no dedicated WAL registered.
+func TestOpenAndRegisterDedicatedWAL_Refusals(t *testing.T) {
 	host, mux := newSharedTestHostWithMux(t)
 	reg := newVolumePooledRegistry(t)
 	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg,
@@ -997,40 +1339,63 @@ func TestOpenAndRegisterDedicatedWAL_Fallbacks(t *testing.T) {
 	_, tb := registerVolumeTenant(t, reg, "fb")
 	dir := t.TempDir()
 
-	// Not opted in → nil.
-	if got := f.openAndRegisterDedicatedWAL("fb", "a", 3000, dir, tb, false); got != nil {
-		t.Fatalf("opt-out must return nil")
+	refused := func(t *testing.T, f *RaftBackendFactory, shardID uint64, dir string, tb *seal.TenantBarrier) error {
+		t.Helper()
+		got, err := f.openAndRegisterDedicatedWAL("fb", "a", shardID, dir, tb, true)
+		var unavailable *database.TenantWALUnavailableError
+		if got != nil || !errors.As(err, &unavailable) || unavailable.TenantID != "fb" || unavailable.ShardID != shardID {
+			t.Fatalf("openAndRegisterDedicatedWAL = %v, %v; want no WAL and a TenantWALUnavailableError for fb/%d", got, err, shardID)
+		}
+		return err
 	}
 
-	// No multiplex wired → nil.
+	// Not opted in: nothing to open, nothing refused.
+	if got, err := f.openAndRegisterDedicatedWAL("fb", "a", 3000, dir, tb, false); got != nil || err != nil {
+		t.Fatalf("opt-out = %v, %v; want nil, nil", got, err)
+	}
+
+	// No multiplex wired.
 	noMux := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg,
 		newFakeRaftInfoSource(), volTestLogger())
-	if got := noMux.openAndRegisterDedicatedWAL("fb", "a", 3001, dir, tb, true); got != nil {
-		t.Fatalf("no-multiplex must return nil")
+	if err := refused(t, noMux, 3001, dir, tb); !errors.Is(err, database.ErrDedicatedWALNotWired) {
+		t.Fatalf("no multiplex: %v; want ErrDedicatedWALNotWired", err)
 	}
 
-	// Nil barrier → nil.
-	if got := f.openAndRegisterDedicatedWAL("fb", "a", 3002, dir, nil, true); got != nil {
-		t.Fatalf("nil barrier must return nil")
+	// Nil barrier.
+	if err := refused(t, f, 3002, dir, nil); !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("nil barrier: %v; want ErrTenantNotFound", err)
 	}
 
-	// Sealed barrier → nil.
-	if err := tb.Seal(); err != nil {
-		t.Fatalf("seal tenant barrier: %v", err)
+	// WAL directory that cannot be created: a regular file where it must go.
+	blocked := t.TempDir()
+	if err := os.WriteFile(filepath.Join(blocked, dedicatedWALSubdir), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got := f.openAndRegisterDedicatedWAL("fb", "a", 3003, dir, tb, true); got != nil {
-		t.Fatalf("sealed barrier must return nil")
-	}
+	refused(t, f, 3004, blocked, tb)
 
 	// Duplicate registration: pre-register the shard, then opening again must
-	// fail to register and fall back to nil.
+	// fail to register.
 	_, tb2 := registerVolumeTenant(t, reg, "fb2")
 	dup := &fakeLogDBForServer{}
 	if err := mux.Register(3005, dup, tb2.Barrier().EpochBarrier()); err != nil {
 		t.Fatalf("pre-register: %v", err)
 	}
-	if got := f.openAndRegisterDedicatedWAL("fb2", "a", 3005, t.TempDir(), tb2, true); got != nil {
-		t.Fatalf("duplicate registration must return nil")
+	if err := refused(t, f, 3005, t.TempDir(), tb2); !errors.Is(err, database.ErrShardAlreadyDedicated) {
+		t.Fatalf("duplicate registration: %v; want ErrShardAlreadyDedicated", err)
+	}
+
+	// Sealed barrier.
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("seal tenant barrier: %v", err)
+	}
+	if err := refused(t, f, 3003, dir, tb); !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("sealed barrier: %v; want seal.ErrSealed", err)
+	}
+
+	for _, id := range []uint64{3001, 3002, 3003, 3004} {
+		if mux.IsDedicated(id) {
+			t.Fatalf("refused shard %d left a dedicated WAL registered", id)
+		}
 	}
 }
 

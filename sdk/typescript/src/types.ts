@@ -3222,6 +3222,11 @@ export interface TenantBarrierUnsealRequest {
  * Security Officers through the officer claim flow. For "none" and
  * "passphrase" strategies the server returns 204 No Content and the SDK
  * synthesizes a response containing only the tenant id and strategy.
+ *
+ * A "shamir" init is two requests: the first prepares the split and returns
+ * its {@link roster} and {@link unsealKeyCheck} with the barrier still
+ * sealed; the second echoes both and keys the barrier. The SDK runs both and
+ * returns the second response only once the node has completed that split.
  */
 export interface TenantBarrierInitResponse {
     /** Target tenant identifier. */
@@ -3237,6 +3242,20 @@ export interface TenantBarrierInitResponse {
      * Always equals the number of enrolled officers at init time.
      */
     readonly shareCount?: number;
+    /**
+     * Certificates issued to the officers of an inline roster, in roster
+     * order (Shamir only); absent on the pre-enrolled-holders path.
+     */
+    readonly holders?: readonly CeremonyHolderCertificate[];
+    /** Encoded holder roster the unseal key was split to; base64 (Shamir only). */
+    readonly roster?: string;
+    /** Check value of the Shamir unseal key; base64 (Shamir only). */
+    readonly unsealKeyCheck?: string;
+    /**
+     * The init committed but the tenant's first admin is not created yet; the
+     * next unseal, quorum unseal or status read completes it.
+     */
+    readonly adminPending?: boolean;
 }
 
 /** Current seal state of a tenant's encryption barrier. */

@@ -64,6 +64,24 @@ type TenantHostRegistry struct {
 	// returns ErrTenantMigrationInProgress (retryable) instead.
 	migrating sync.Map // tenantID -> struct{}
 
+	// homeOps counts each tenant's in-flight standalone home-store
+	// operations, which AdmitHome admits against migrating; MigrateEncryption
+	// drains them before it touches the barrier. See tenant_home_admission.go.
+	homeOps sync.Map // tenantID -> *homeOpGate
+
+	// onMigrationPhase, when set, observes each journal checkpoint
+	// MigrateEncryption writes, after it is durable; onHomeDrainWait observes
+	// a drain that found operations in flight, before it waits. Tests set
+	// them to act at an exact point in a migration without sleeping.
+	onMigrationPhase func(tenantID string, phase seal.MigrationPhase)
+	onHomeDrainWait  func(tenantID string)
+
+	// raftShards is the server's raft backend factory, which runs a tenant's
+	// dedicated raft shards -- its home group -- beside its Host under the same
+	// tenant barrier, so the tenant's migration re-encrypts them with its Host's
+	// stores. It is nil until the server that serves this registry wires it.
+	raftShards atomic.Pointer[RaftBackendFactory]
+
 	// startGate admits each Host build against a whole-node seal's pause
 	// (ShardPauser.beginStart); ShardPauser.SetTenants installs it. Unset, it
 	// admits every build.

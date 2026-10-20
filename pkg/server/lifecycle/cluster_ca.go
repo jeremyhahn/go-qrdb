@@ -18,11 +18,16 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -121,6 +126,42 @@ func EstablishClusterCA(ctx context.Context, n *Node) error {
 		return &ClusterCAEstablishError{Err: err}
 	}
 	return nil
+}
+
+// RemoveClusterCAKeyCache deletes the cluster CA private key a
+// self-generated identity cached in dataDir (ca-key.pem), once the key is
+// durably in the replicated store: the one cleanup cmd/qrdbd and sdk/go/node
+// both run after the cluster CA is established, so neither leaves a CA key on
+// disk the other would not. A key that is not there is not an error. A key
+// that cannot be removed is logged at ERROR and not returned: the key is
+// persisted either way, so the stale copy is a cleanup failure, not a
+// correctness one, but a CA key lingering on disk is the state this exists to
+// eliminate.
+func RemoveClusterCAKeyCache(dataDir string, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	keyPath := filepath.Join(dataDir, "ca-key.pem")
+	if err := os.Remove(keyPath); err != nil {
+		if !os.IsNotExist(err) {
+			logger.Error("cluster CA key persisted to the replicated store, but the local cache could not be removed",
+				slog.String("path", keyPath), slog.String("error", err.Error()))
+		}
+		return
+	}
+	logger.Info("cluster CA key persisted to the replicated store; local file cache removed", slog.String("path", keyPath))
+}
+
+// clusterCAAdminSigner returns the firstboot.CertSigner that signs a tenant's
+// first-admin CSR with the cluster CA behind p, resolved fresh on every call
+// (ceremony.ProviderCA) so a re-seal or HSM failover is reflected at once, and
+// names the admin's SPIFFE ID under the cluster's trustDomain.
+func clusterCAAdminSigner(p cakey.Provider, trustDomain string) (firstboot.CertSigner, error) {
+	clusterCA, err := ceremony.NewProviderCA(p)
+	if err != nil {
+		return nil, err
+	}
+	return ceremony.NewAdminCSRSigner(clusterCA, trustDomain)
 }
 
 // ClusterCAEstablishError is returned by EstablishClusterCA when the

@@ -93,6 +93,13 @@ func (m *Manager) issueShardID(ctx context.Context) (uint64, error) {
 	return id, nil
 }
 
+// ClaimShardID claims a cluster-unique shard ID from the replicated ledger
+// for a Raft group that is not a catalog database -- an isolated tenant's home
+// group. Catalog databases take theirs inside Create.
+func (m *Manager) ClaimShardID(ctx context.Context) (uint64, error) {
+	return m.issueShardID(ctx)
+}
+
 // recordDrop remembers that name was dropped on this node.
 func (m *Manager) recordDrop(name string) error {
 	dir := filepath.Join(m.dataDir, droppedDir)

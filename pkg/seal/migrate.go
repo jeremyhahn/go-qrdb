@@ -210,6 +210,11 @@ type MigrationJournal struct {
 	// recovery renames them into place on roll-forward and discards them on
 	// roll-back.
 	StagedSnapshots []StagedSnapshot `json:"staged_snapshots,omitempty"`
+	// StagedRecords lists the keyspaces of the barrier's own backend the
+	// migration re-encrypts into staging keyspaces (see StagedRecords). Crash
+	// recovery copies them over their live keys on roll-forward and deletes
+	// them on roll-back.
+	StagedRecords []StagedRecords `json:"staged_records,omitempty"`
 	// StartedAt / UpdatedAt are UTC timestamps for observability and audit.
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`

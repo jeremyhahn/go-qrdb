@@ -115,48 +115,6 @@ func selfSignedIdentity(t *testing.T) ([]byte, *ecdsa.PrivateKey) {
 	return der, key
 }
 
-// A composer's signer-backed Certificate is the node's identity as given --
-// no key bytes are needed -- and takes precedence over PEM, as it does for
-// the Raft transport.
-func TestClusterIdentityCert_DeviceHeldCertificate(t *testing.T) {
-	der, key := selfSignedIdentity(t)
-	device := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: &deviceSigner{key: key}}
-
-	got, err := clusterIdentityCert(&RaftMTLSConfig{CACert: []byte("ca"), Certificate: device, Cert: []byte("ignored")})
-	if err != nil {
-		t.Fatalf("clusterIdentityCert: %v", err)
-	}
-	if got != device {
-		t.Fatal("clusterIdentityCert did not return the composer's certificate")
-	}
-	if _, ok := got.PrivateKey.(*deviceSigner); !ok {
-		t.Fatalf("identity key = %T; want the device signer", got.PrivateKey)
-	}
-}
-
-// Without a Certificate the identity is the Cert/Key PEM pair, and a pair
-// that does not parse is an error.
-func TestClusterIdentityCert_PEMPair(t *testing.T) {
-	der, key := selfSignedIdentity(t)
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	got, err := clusterIdentityCert(&RaftMTLSConfig{Cert: certPEM, Key: keyPEM})
-	if err != nil {
-		t.Fatalf("clusterIdentityCert: %v", err)
-	}
-	if len(got.Certificate) != 1 || !bytes.Equal(got.Certificate[0], der) {
-		t.Fatal("clusterIdentityCert did not carry the PEM certificate")
-	}
-	if _, err := clusterIdentityCert(&RaftMTLSConfig{Cert: certPEM}); err == nil {
-		t.Fatal("clusterIdentityCert accepted a certificate with no key")
-	}
-}
-
 // The node's own certificate -- for its member identity and its cluster
 // join -- comes from the signer-backed Certificate when there is one, else
 // from Cert.

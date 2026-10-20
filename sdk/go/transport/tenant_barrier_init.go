@@ -89,3 +89,15 @@ func ProveTenantBarrierInit(signer crypto.Signer, tenantID string, nonce []byte,
 	}
 	return &TenantBarrierInitProof{Nonce: nonce, PublicKey: pub, Signature: sig}, nil
 }
+
+// ShamirSplitMissingError is returned when the first request of a Shamir
+// tenant barrier init answers without the unseal key check value and roster
+// the owner's statement must sign.
+type ShamirSplitMissingError struct {
+	TenantID string
+}
+
+func (e *ShamirSplitMissingError) Error() string {
+	return "transport: shamir barrier init of tenant " + strconv.Quote(e.TenantID) +
+		" returned no unseal key check value or roster to sign"
+}

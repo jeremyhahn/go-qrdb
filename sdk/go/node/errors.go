@@ -106,6 +106,21 @@ func (e *ConfigError) Error() string {
 // Unwrap returns the typed cause, if any.
 func (e *ConfigError) Unwrap() error { return e.Err }
 
+// ClusterIdentityError indicates that a clustered node handed no cluster
+// identity could not resolve its own: its certificate and cluster CA could be
+// neither loaded from its data directory nor generated into it.
+type ClusterIdentityError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ClusterIdentityError) Error() string {
+	return "node: failed to resolve the cluster identity: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ClusterIdentityError) Unwrap() error { return e.Err }
+
 // ClientCreateError indicates that the embedded SDK client could not be
 // created.
 type ClientCreateError struct {

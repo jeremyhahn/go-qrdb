@@ -23,11 +23,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantinit"
 )
 
 // Compile-time interface assertion.
@@ -369,6 +369,10 @@ type quicTenantBarrierInitRequest struct {
 	// InitStatement is the first admin's signed init statement
 	// (barrierinit.SignTenantInit).
 	InitStatement []byte `json:"init_statement,omitempty"`
+	// Roster and UnsealKeyCheck echo, on a Shamir init's second request,
+	// the split the first prepared (tenantinit.Run).
+	Roster         []byte `json:"roster,omitempty"`
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
 }
 
 // quicTenantBarrierUnsealRequest mirrors the server-side wire schema for
@@ -403,6 +407,11 @@ type quicTenantBarrierInitResponse struct {
 	TotalShares int                                 `json:"total_shares,omitempty"`
 	ShareCount  int                                 `json:"share_count,omitempty"`
 	Holders     []transport.TenantBarrierHolderCert `json:"holders,omitempty"`
+	// Roster and UnsealKeyCheck are the Shamir split the owner signs.
+	Roster         []byte `json:"roster,omitempty"`
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
+	// AdminPending is transport.TenantBarrierInitResponse.AdminPending.
+	AdminPending bool `json:"admin_pending,omitempty"`
 }
 
 // quicTenantBarrierStatusResponse mirrors the server-side wire schema for
@@ -417,6 +426,9 @@ type quicTenantBarrierStatusResponse struct {
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
 
 	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
+
+	KeyFingerprint string                        `json:"key_fingerprint,omitempty"`
+	Nodes          []transport.TenantBarrierNode `json:"nodes,omitempty"`
 }
 
 // nilTenantBarrierRequestError is returned when a per-tenant barrier method
@@ -451,7 +463,14 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierInit"}}
 	}
+	return tenantinit.Run(req, func(round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
+		return t.tenantBarrierInitRound(ctx, req, round)
+	})
+}
 
+// tenantBarrierInitRound issues one init/begin, init/complete pair of a
+// tenant barrier init (tenantinit.Run).
+func (t *Transport) tenantBarrierInitRound(ctx context.Context, req *transport.TenantBarrierInitRequest, round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
 	beginPayload, err := json.Marshal(quicTenantBarrierInitBeginRequest{TenantID: req.TenantID})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
@@ -468,24 +487,26 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}
-	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
-	}
 
-	payload, err := json.Marshal(quicTenantBarrierInitRequest{
-		TenantID:      req.TenantID,
-		Passphrase:    req.Passphrase,
-		Threshold:     req.Threshold,
-		Shares:        req.Shares,
-		Strategy:      req.Strategy,
-		Officers:      req.Officers,
-		Policy:        req.Policy,
-		Nonce:         proof.Nonce,
-		PublicKey:     proof.PublicKey,
-		Signature:     proof.Signature,
-		InitStatement: statement,
-	})
+	wireReq := quicTenantBarrierInitRequest{
+		TenantID:       req.TenantID,
+		Passphrase:     req.Passphrase,
+		Threshold:      req.Threshold,
+		Shares:         req.Shares,
+		Strategy:       req.Strategy,
+		Officers:       req.Officers,
+		Policy:         req.Policy,
+		Nonce:          proof.Nonce,
+		PublicKey:      proof.PublicKey,
+		Signature:      proof.Signature,
+		InitStatement:  round.Statement,
+		Roster:         round.Roster,
+		UnsealKeyCheck: round.UnsealKeyCheck,
+	}
+	if round.Complete {
+		wireReq.Officers, wireReq.Policy = nil, ""
+	}
+	payload, err := json.Marshal(wireReq)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}
@@ -506,12 +527,15 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
 	}
 	return &transport.TenantBarrierInitResponse{
-		TenantID:    wire.TenantID,
-		Strategy:    wire.Strategy,
-		ShareCount:  wire.ShareCount,
-		Threshold:   wire.Threshold,
-		TotalShares: wire.TotalShares,
-		Holders:     wire.Holders,
+		TenantID:       wire.TenantID,
+		Strategy:       wire.Strategy,
+		ShareCount:     wire.ShareCount,
+		Threshold:      wire.Threshold,
+		TotalShares:    wire.TotalShares,
+		Holders:        wire.Holders,
+		Roster:         wire.Roster,
+		UnsealKeyCheck: wire.UnsealKeyCheck,
+		AdminPending:   wire.AdminPending,
 	}, nil
 }
 
@@ -595,6 +619,8 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ShamirThreshold: wire.ShamirThreshold,
 		ShamirTotal:     wire.ShamirTotal,
 		ClusterSeal:     wire.ClusterSeal,
+		KeyFingerprint:  wire.KeyFingerprint,
+		Nodes:           wire.Nodes,
 	}, nil
 }
 

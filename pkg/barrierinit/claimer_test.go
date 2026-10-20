@@ -88,6 +88,45 @@ func TestClaimer_RefusesAStatementForAnotherInit(t *testing.T) {
 	}
 }
 
+// A Shamir statement is claimed against the split this node prepared: the
+// threshold, the roster and the unseal key's check value must all be the
+// ones the owner signed.
+func TestClaimer_ClaimsTheShamirStatementForThePreparedSplit(t *testing.T) {
+	ctx, f := context.Background(), newClaimerFixture(t)
+	prepared := &seal.ShamirInitParams{Threshold: 2, Roster: []byte("roster"), UnsealKeyCheck: []byte("check")}
+	raw, err := SignTenantShamirInit(f.admin, "acme", prepared.Threshold, prepared.Roster, prepared.UnsealKeyCheck, testNow)
+	if err != nil {
+		t.Fatalf("SignTenantShamirInit: %v", err)
+	}
+	if err := f.claimer.ClaimTenantShamirInit(ctx, "acme", prepared, raw); err != nil {
+		t.Fatalf("ClaimTenantShamirInit: %v", err)
+	}
+	if _, found, _ := f.kv.Get(ctx, Prefix+string(clusterseal.TenantBarrier("acme"))); !found {
+		t.Fatal("no init record was written")
+	}
+}
+
+func TestClaimer_RefusesAShamirStatementForAnotherSplit(t *testing.T) {
+	f := newClaimerFixture(t)
+	raw, err := SignTenantShamirInit(f.admin, "acme", 2, []byte("roster"), []byte("check"), testNow)
+	if err != nil {
+		t.Fatalf("SignTenantShamirInit: %v", err)
+	}
+	for name, prepared := range map[string]*seal.ShamirInitParams{
+		"nothing prepared": nil,
+		"other threshold":  {Threshold: 3, Roster: []byte("roster"), UnsealKeyCheck: []byte("check")},
+		"other roster":     {Threshold: 2, Roster: []byte("other"), UnsealKeyCheck: []byte("check")},
+		"other key":        {Threshold: 2, Roster: []byte("roster"), UnsealKeyCheck: []byte("other")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			wantReason(t, f.claimer.ClaimTenantShamirInit(context.Background(), "acme", prepared, raw), ReasonMismatch)
+		})
+	}
+	if got, _ := f.kv.Scan(context.Background(), Prefix); len(got) != 0 {
+		t.Fatalf("a mismatched statement was recorded: %v", got)
+	}
+}
+
 func TestClaimer_RefusesMalformedAndForeignStatements(t *testing.T) {
 	ctx, f := context.Background(), newClaimerFixture(t)
 	wantReason(t, f.claimer.ClaimTenantInit(ctx, "acme", seal.StrategyPassphrase, "", []byte("{")), ReasonMalformed)

@@ -198,7 +198,8 @@ func (s *tenantBarrierServer) InitComplete(ctx context.Context, req *pb.TenantBa
 
 	result, err := s.svc.TenantBarrierInitWithStrategy(ctx, req.GetTenantId(), req.GetPassphrase(),
 		int(req.GetThreshold()), int(req.GetShares()), seal.StrategyID(req.GetStrategy()), roster,
-		tenantpkg.WithInitStatement(req.GetInitStatement()))
+		tenantpkg.WithInitStatement(req.GetInitStatement()),
+		tenantpkg.WithPreparedShamir(req.GetRoster(), req.GetUnsealKeyCheck()))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -206,12 +207,15 @@ func (s *tenantBarrierServer) InitComplete(ctx context.Context, req *pb.TenantBa
 	out := &pb.TenantBarrierInitResponse{TenantId: req.GetTenantId(), Strategy: req.GetStrategy()}
 	if result != nil {
 		out = &pb.TenantBarrierInitResponse{
-			TenantId:    result.TenantID,
-			Strategy:    result.Strategy,
-			Threshold:   int32(result.Threshold),   //nolint:gosec
-			TotalShares: int32(result.TotalShares), //nolint:gosec
-			ShareCount:  int32(result.ShareCount),  //nolint:gosec
-			Holders:     holderpb.TenantBarrierHoldersToPB(result.Holders),
+			TenantId:       result.TenantID,
+			Strategy:       result.Strategy,
+			Threshold:      int32(result.Threshold),   //nolint:gosec
+			TotalShares:    int32(result.TotalShares), //nolint:gosec
+			ShareCount:     int32(result.ShareCount),  //nolint:gosec
+			Holders:        holderpb.TenantBarrierHoldersToPB(result.Holders),
+			Roster:         result.Roster,
+			UnsealKeyCheck: result.UnsealKeyCheck,
+			AdminPending:   result.AdminPending,
 		}
 	}
 	return out, nil
@@ -278,7 +282,22 @@ func (s *tenantBarrierServer) Status(ctx context.Context, req *pb.TenantBarrierS
 		ShamirThreshold: int32(st.ShamirThreshold), //nolint:gosec
 		ShamirTotal:     int32(st.ShamirTotal),     //nolint:gosec
 		ClusterSeal:     ClusterSealToProto(st.ClusterSeal),
+		KeyFingerprint:  st.KeyFingerprint,
+		Nodes:           tenantBarrierNodesToProto(st.Nodes),
 	}, nil
+}
+
+// tenantBarrierNodesToProto encodes the nodes serving a tenant barrier, each
+// with its API endpoints: the nodes a client fans a barrier init out to.
+func tenantBarrierNodesToProto(nodes []tenantpkg.BarrierNode) []*pb.TenantBarrierNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]*pb.TenantBarrierNode, len(nodes))
+	for i, n := range nodes {
+		out[i] = &pb.TenantBarrierNode{Node: n.Node, Endpoints: n.Endpoints}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

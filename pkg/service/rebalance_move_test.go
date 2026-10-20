@@ -34,12 +34,12 @@ import (
 
 // fakeKeyDeliverer is a test double for RebalanceKeyDeliverer.
 type fakeKeyDeliverer struct {
-	deliverFn func(ctx context.Context, p *placement.Placement, barrier *seal.StorageBarrier, selfNodeID string, autoUnseal bool) error
+	deliverFn func(ctx context.Context, p *placement.Placement, barrier *seal.StorageBarrier, selfNodeID string) error
 }
 
-func (f *fakeKeyDeliverer) DistributeTenantKey(ctx context.Context, p *placement.Placement, barrier *seal.StorageBarrier, selfNodeID string, autoUnseal bool) error {
+func (f *fakeKeyDeliverer) DistributeTenantKey(ctx context.Context, p *placement.Placement, barrier *seal.StorageBarrier, selfNodeID string) error {
 	if f.deliverFn != nil {
-		return f.deliverFn(ctx, p, barrier, selfNodeID, autoUnseal)
+		return f.deliverFn(ctx, p, barrier, selfNodeID)
 	}
 	return nil
 }
@@ -730,7 +730,7 @@ func TestMoveTenantGroupShard_KeyDeliveryFailure_NonFatal(t *testing.T) {
 		raftHost:       host,
 		logger:         testLogger(),
 		keyDeliverer: &fakeKeyDeliverer{
-			deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string, _ bool) error {
+			deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string) error {
 				return deliverErr
 			},
 		},
@@ -1562,19 +1562,19 @@ func TestRebalancePlacementReadError_ErrorAndUnwrap(t *testing.T) {
 // deliverKeyToDst: success path
 // ---------------------------------------------------------------------------
 
-// TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesAutoUnsealAndSelfNodeID
+// TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesSelfNodeID
 // verifies moveTenantGroupShard's key delivery (through the shared
 // addObserverReplica -> deliverTenantKeyToReplicaWithRetry ->
 // deliverTenantKeyToReplica chain) resolves the tenant barrier and
-// correctly propagates autoUnseal and selfNodeID to the deliverer, exactly
+// correctly propagates selfNodeID to the deliverer, exactly
 // as DatabaseService.scaleUp's identical delivery does. This replaces the
 // old TestDeliverKeyToDst_SuccessPath, which exercised a
 // RebalanceService.deliverKeyToDst method now superseded by the shared
 // addObserverReplica helper.
-func TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesAutoUnsealAndSelfNodeID(t *testing.T) {
+func TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesSelfNodeID(t *testing.T) {
 	// Build a minimal real TenantBarrier (sealed, StrategyNone) so that
 	// Barrier().ActiveStrategy() is callable. A sealed barrier returns "" from
-	// ActiveStrategy, which is ≠ StrategySystemBarrier, so autoUnseal = false.
+	// ActiveStrategy, which is not StrategySystemBarrier, so the key ships.
 	backend := seal.NewMemoryBackend()
 	tb, err := seal.NewTenantBarrier(
 		"acme",
@@ -1590,11 +1590,11 @@ func TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesAutoUnsealAndSelfNode
 		t.Fatalf("NewTenantBarrier: %v", err)
 	}
 
-	var capturedAutoUnseal bool
+	delivered := false
 	var capturedSelfNodeID string
 	deliverer := &fakeKeyDeliverer{
-		deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, selfNodeID string, autoUnseal bool) error {
-			capturedAutoUnseal = autoUnseal
+		deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, selfNodeID string) error {
+			delivered = true
 			capturedSelfNodeID = selfNodeID
 			return nil
 		},
@@ -1625,13 +1625,66 @@ func TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesAutoUnsealAndSelfNode
 		t.Fatalf("moveTenantGroupShard: %v", err)
 	}
 
-	// A sealed barrier (not initialized) returns "" for ActiveStrategy, which is
-	// not StrategySystemBarrier → autoUnseal must be false.
-	if capturedAutoUnseal {
-		t.Error("expected autoUnseal=false for non-system-barrier strategy")
+	if !delivered {
+		t.Error("the key was not delivered for a non-platform-custody barrier")
 	}
 	if capturedSelfNodeID != "node-b:9100" {
 		t.Errorf("selfNodeID = %q, want node-b:9100", capturedSelfNodeID)
+	}
+}
+
+// TestMoveTenantGroupShard_PlatformCustodySkipsKeyDelivery verifies a MOVE of
+// a platform-custody tenant's group ships no key: the barrier is sealed by the
+// system barrier, so the destination self-initializes under its own key and
+// the deliverer must never be reached.
+func TestMoveTenantGroupShard_PlatformCustodySkipsKeyDelivery(t *testing.T) {
+	ctx := context.Background()
+	sys, err := seal.NewStorageBarrier(slog.Default(), seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "sys/root"}, seal.NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := sys.Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize(system): %v", err)
+	}
+	tb, err := seal.NewTenantBarrier("acme", slog.Default(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "tenants/acme/root"}, seal.NewSystemBarrierStrategy(sys))
+	if err != nil {
+		t.Fatalf("NewTenantBarrier: %v", err)
+	}
+	if err := tb.Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize(tenant): %v", err)
+	}
+	if got := tb.Barrier().ActiveStrategy(); got != seal.StrategySystemBarrier {
+		t.Fatalf("ActiveStrategy = %q, want %q", got, seal.StrategySystemBarrier)
+	}
+
+	delivered := false
+	deliverer := &fakeKeyDeliverer{
+		deliverFn: func(context.Context, *placement.Placement, *seal.StorageBarrier, string) error {
+			delivered = true
+			return nil
+		},
+	}
+
+	p := newTestPlacement("acme", "db1", 10)
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: newTestPlacementStore(t, p),
+		selfNodeID:     "node-b:9100",
+		raftHost:       &fakeRaftHost{leaderID: 2, leaderOK: true},
+		logger:         testLogger(),
+		keyDeliverer:   deliverer,
+		barrierLookup: &fakeBarrierLookup{
+			getFn: func(string) (*seal.TenantBarrier, error) { return tb, nil },
+		},
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	if err := svc.moveTenantGroupShard(ctx, move, p); err != nil {
+		t.Fatalf("moveTenantGroupShard: %v", err)
+	}
+	if delivered {
+		t.Error("a platform-custody tenant's key was delivered to the MOVE destination")
 	}
 }
 

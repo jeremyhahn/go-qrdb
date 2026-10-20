@@ -238,10 +238,11 @@ type DefaultCertProvider struct {
 
 	mu sync.RWMutex
 
-	// perTenant holds the built-in cakey.SoftwareProvider for each tenant
-	// that has resolved Key B material, keyed by tenant ID, constructed
-	// lazily on first use. Empty and never consulted when
-	// keyProviderFactory is injected.
+	// perTenant holds, for each tenant resolved so far, keyed by tenant ID
+	// and constructed lazily on first use, whether its records are in its
+	// home store and the built-in cakey.SoftwareProvider over its Key B
+	// material. Under an injected keyProviderFactory an entry carries the
+	// routing decision only.
 	//
 	// Each entry also ages out on its own, independent of the watch-driven
 	// eviction WatchForDeletions installs (go-qrdb#591's review, non-
@@ -289,6 +290,14 @@ type DefaultCertProvider struct {
 	// audit is the compliance audit sink RevokeCert records to
 	// (WithAuditLogger). Nil disables emission.
 	audit audit.AuditLogger
+
+	// routing is the resolver isolated tenants' records are routed through
+	// (SetStoreResolver), or nil, when every record is in kvStore.
+	routing atomic.Pointer[storeRouting]
+
+	// now is the clock perTenant entries are aged by against
+	// perTenantRevalidateTTL; time.Now outside tests.
+	now func() time.Time
 }
 
 // SkippedTenantCACount returns how many tenants CACertPEMs has skipped,
@@ -324,6 +333,7 @@ func NewDefaultProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.E
 		watchSvc:           o.watchSvc,
 		onNewCA:            o.onNewCA,
 		audit:              o.audit,
+		now:                time.Now,
 	}
 }
 
@@ -344,7 +354,7 @@ func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 		return &BarrierSealedError{}
 	}
 	tenantID := tenant.FromContext(ctx)
-	prov, err := p.resolveKeyProvider(tenantID)
+	prov, entry, err := p.resolveKeyProvider(ctx, tenantID)
 	if err != nil {
 		return err
 	}
@@ -359,8 +369,7 @@ func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 	if err != nil {
 		return mapProviderError(err)
 	}
-	p.noteHeldCA(cert)
-	return nil
+	return p.holdCA(ctx, tenantID, entry, cert)
 }
 
 // Unseal resolves this provider's cakey.Provider for the system tenant and
@@ -376,7 +385,7 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 		return &BarrierSealedError{}
 	}
 	tenantID := tenant.FromContext(ctx)
-	prov, err := p.resolveKeyProvider(tenantID)
+	prov, entry, err := p.resolveKeyProvider(ctx, tenantID)
 	if err != nil {
 		return err
 	}
@@ -391,8 +400,7 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 	if err != nil {
 		return mapProviderError(err)
 	}
-	p.noteHeldCA(cert)
-	return nil
+	return p.holdCA(ctx, tenantID, entry, cert)
 }
 
 // perTenantEntry is one cached entry in DefaultCertProvider.perTenant: the
@@ -401,8 +409,24 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 // watch-driven eviction (go-qrdb#591's review, non-blocking defense in
 // depth; see perTenant's own field doc comment).
 type perTenantEntry struct {
-	sp      *cakey.SoftwareProvider
+	// sp is the built-in provider over store. It is nil under an injected
+	// keyProviderFactory, and for a homed tenant until a signing path has
+	// resolved its home store (homeKeyProvider).
+	sp *cakey.SoftwareProvider
+
+	// store is the store sp was built over: the system store, or the
+	// tenant's home store.
+	store kvstore.MultiGuardedBatchKVStore
+
+	// home reports whether the tenant's records are in its home store.
+	home bool
+
 	builtAt time.Time
+
+	// published is a homed tenant's CA certificate as the system store is
+	// known to hold it (prefixCertCAPub), or nil until it has been read or
+	// written.
+	published atomic.Pointer[x509.Certificate]
 }
 
 // noteHeldCA records that this provider now holds cert as a login CA, and
@@ -435,45 +459,36 @@ func (p *DefaultCertProvider) noteHeldCA(cert *x509.Certificate) {
 // for tenantID: f.ProviderForTenant(tenantID) when WithKeyProviderFactory
 // was used -- resolved FRESH for this specific tenant, never a value shared
 // across tenants -- otherwise the built-in cakey.SoftwareProvider for
-// tenantID, constructed lazily and cached in perTenant on first use.
+// tenantID, constructed lazily and cached in perTenant on first use, over
+// the system store or, for a homed tenant, its home store. The tenant's
+// entry is returned with it (nil under a factory), for holdCA.
 //
 // The common case -- tenantID already cached and not yet due for
 // revalidation -- takes ONLY a read lock (go-qrdb#591's review, non-
-// blocking): IsTenantIssuer calls this on every authentication request,
-// and an exclusive lock per call serialized every tenant's authentication
-// through one lock for a map read that never writes anything. The slow
-// path (construct and cache a new cakey.SoftwareProvider, or rebuild an
-// entry older than perTenantRevalidateTTL) still takes the exclusive lock,
-// and re-checks the map's freshness after acquiring it: another goroutine
-// may have already won the race to rebuild tenantID's entry between this
-// call's RUnlock and Lock.
-func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provider, error) {
+// blocking; see route): an exclusive lock per call serialized every
+// tenant's authentication through one lock for a map read that never
+// writes anything. The slow path (construct and cache a new entry, or
+// rebuild one older than perTenantRevalidateTTL) still takes the exclusive
+// lock, and re-checks the map's freshness after acquiring it: another
+// goroutine may have already won the race to rebuild tenantID's entry
+// between this call's RUnlock and Lock.
+func (p *DefaultCertProvider) resolveKeyProvider(ctx context.Context, tenantID string) (cakey.Provider, *perTenantEntry, error) {
 	if p.keyProviderFactory != nil {
-		return p.keyProviderFactory.ProviderForTenant(tenantID)
+		prov, err := p.keyProviderFactory.ProviderForTenant(tenantID)
+		return prov, nil, err
 	}
-
-	p.mu.RLock()
-	entry, ok := p.perTenant[tenantID]
-	p.mu.RUnlock()
-	if ok && time.Since(entry.builtAt) < perTenantRevalidateTTL {
-		return entry.sp, nil
+	entry, err := p.route(ctx, tenantID)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if entry, ok := p.perTenant[tenantID]; ok && time.Since(entry.builtAt) < perTenantRevalidateTTL {
-		return entry.sp, nil
+	if !entry.home {
+		return entry.sp, entry, nil
 	}
-	if p.perTenant == nil {
-		p.perTenant = make(map[string]*perTenantEntry)
+	sp, entry, err := p.homeKeyProvider(ctx, tenantID, entry)
+	if err != nil {
+		return nil, nil, err
 	}
-	subject := pkix.Name{
-		CommonName:         "qrdb-ca",
-		OrganizationalUnit: []string{tenantID},
-	}
-	sp := cakey.NewSoftwareProvider(p.kvStore, p.barrier, prefixCertCA+tenantID+"/", subject, caTTL)
-	p.perTenant[tenantID] = &perTenantEntry{sp: sp, builtAt: time.Now()}
-	return sp, nil
+	return sp, entry, nil
 }
 
 // mapProviderError translates a cakey package error into the equivalent
@@ -511,7 +526,9 @@ func (p *DefaultCertProvider) Seal() error {
 	defer p.mu.Unlock()
 
 	for _, entry := range p.perTenant {
-		entry.sp.Seal()
+		if entry.sp != nil {
+			entry.sp.Seal()
+		}
 	}
 	return nil
 }
@@ -630,7 +647,11 @@ func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueReq
 	if err != nil {
 		return nil, &CertGenerateError{Err: err}
 	}
-	if err := p.kvStore.Put(ctx, recordKey, recordBytes); err != nil {
+	store, _, err := p.recordStore(ctx, req.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Put(ctx, recordKey, recordBytes); err != nil {
 		return nil, &StoreError{Op: "put", Detail: recordKey, Err: err}
 	}
 
@@ -764,7 +785,7 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 
 	// Locate the certificate record for this serial. This runs first so that
 	// a scan failure aborts before anything is written.
-	recordKey, record, err := p.findBySerial(ctx, serial)
+	store, recordKey, record, err := p.findBySerial(ctx, serial)
 	if err != nil {
 		return nil, err
 	}
@@ -781,7 +802,7 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 	}
 
 	revokedKey := prefixCertsRevoked + serial
-	if err := p.kvStore.Put(ctx, revokedKey, payload); err != nil {
+	if err := store.Put(ctx, revokedKey, payload); err != nil {
 		return nil, &StoreError{Op: "put", Detail: revokedKey, Err: err}
 	}
 
@@ -793,14 +814,14 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 		if err != nil {
 			return nil, &StoreError{Op: "marshal", Detail: recordKey, Err: err}
 		}
-		if err := p.kvStore.Put(ctx, recordKey, updated); err != nil {
+		if err := store.Put(ctx, recordKey, updated); err != nil {
 			return nil, &StoreError{Op: "put", Detail: recordKey, Err: err}
 		}
 	}
 
 	// Best-effort: a reap failure must not turn a completed revocation into a
 	// reported failure. The marker for this serial is already durable.
-	if _, err := p.ReapExpiredRevocations(ctx); err != nil {
+	if _, err := p.reapIn(ctx, store); err != nil {
 		slog.Warn("qrdb/cert: reaping expired revocation markers failed",
 			"error", err,
 		)
@@ -826,20 +847,38 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 }
 
 // findBySerial locates the issued certificate record for a serial and
-// returns its store key alongside it. A serial this node holds no record for
-// yields ("", nil, nil) -- not an error, because that is the deny-by-serial
-// case RevokeCert exists to serve.
+// returns the store holding it and its key alongside it. A serial this node
+// holds no record for yields (system store, "", nil, nil) -- not an error,
+// because that is the deny-by-serial case RevokeCert exists to serve, and
+// its marker is kept in the system store.
 //
-// The scan covers EVERY tenant because the caller supplies only a serial, and
-// a serial carries no tenant. That is exactly why the result must reach the
-// authorization layer: TenantForSerial is the only way a caller's claim on a
-// serial can be checked at all.
-func (p *DefaultCertProvider) findBySerial(ctx context.Context, serial string) (string, *CertRecord, error) {
+// The scan covers EVERY tenant whose records are in the system store because
+// the caller supplies only a serial, and a serial carries no tenant. That is
+// exactly why the result must reach the authorization layer: TenantForSerial
+// is the only way a caller's claim on a serial can be checked at all. A
+// homed tenant's records are in its home store, which is searched first
+// when the caller is that tenant and by no other caller.
+func (p *DefaultCertProvider) findBySerial(ctx context.Context, serial string) (kvstore.KVStore, string, *CertRecord, error) {
+	if store, home, err := p.recordStore(ctx, tenant.FromContext(ctx)); err != nil {
+		return nil, "", nil, err
+	} else if home {
+		recordKey, record, err := scanForSerial(ctx, store, serial)
+		if err != nil || record != nil {
+			return store, recordKey, record, err
+		}
+	}
+	recordKey, record, err := scanForSerial(ctx, p.kvStore, serial)
+	return p.kvStore, recordKey, record, err
+}
+
+// scanForSerial returns the certificate record for serial in store, with
+// its key, or ("", nil, nil) when store holds none.
+func scanForSerial(ctx context.Context, store kvstore.KVStore, serial string) (string, *CertRecord, error) {
 	var (
 		recordKey string
 		record    *CertRecord
 	)
-	if err := p.kvStore.Scan(ctx, prefixCerts, func(key string, value []byte) error {
+	if err := store.Scan(ctx, prefixCerts, func(key string, value []byte) error {
 		if record != nil || !hasSerialSuffix(key, serial) {
 			return nil
 		}
@@ -874,7 +913,7 @@ func (p *DefaultCertProvider) TenantForSerial(ctx context.Context, serial string
 	if serial == "" {
 		return "", false, &ValidationError{Field: "serial", Reason: "must not be empty"}
 	}
-	_, record, err := p.findBySerial(ctx, serial)
+	_, _, record, err := p.findBySerial(ctx, serial)
 	if err != nil {
 		return "", false, err
 	}
@@ -899,6 +938,19 @@ func (p *DefaultCertProvider) IsRevoked(ctx context.Context, serial string) (boo
 	if err != nil {
 		return false, &StoreError{Op: "get", Detail: revokedKey, Err: err}
 	}
+	if val != nil {
+		return true, nil
+	}
+
+	// A homed caller's own markers are in its home store.
+	store, home, err := p.recordStore(ctx, tenant.FromContext(ctx))
+	if err != nil || !home {
+		return false, err
+	}
+	val, err = store.Get(ctx, revokedKey)
+	if err != nil {
+		return false, &StoreError{Op: "get", Detail: revokedKey, Err: err}
+	}
 	return val != nil, nil
 }
 
@@ -912,9 +964,13 @@ func (p *DefaultCertProvider) ListCerts(ctx context.Context, tenantID string) ([
 		return nil, &ValidationError{Field: "tenantID", Reason: "must not be empty"}
 	}
 
+	store, _, err := p.recordStore(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	prefix := prefixCerts + tenantID + "/"
 	var records []*CertRecord
-	if err := p.kvStore.Scan(ctx, prefix, func(_ string, value []byte) error {
+	if err := store.Scan(ctx, prefix, func(_ string, value []byte) error {
 		var rec CertRecord
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return nil // skip corrupt records
@@ -992,19 +1048,25 @@ func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) 
 			return nil, mapProviderError(err)
 		}
 		tenantIDs = ids
-	} else if err := p.kvStore.Scan(ctx, prefixCertCA, func(key string, _ []byte) error {
-		if !strings.HasSuffix(key, certRecordSuffix) {
-			return nil
+	} else {
+		// A tenant whose records are in the system store has its CA under
+		// prefixCertCA; a homed tenant's is published under prefixCertCAPub.
+		for _, prefix := range []string{prefixCertCA, prefixCertCAPub} {
+			if err := p.kvStore.Scan(ctx, prefix, func(key string, _ []byte) error {
+				if !strings.HasSuffix(key, certRecordSuffix) {
+					return nil
+				}
+				rel := strings.TrimPrefix(key, prefix)
+				tenantID := strings.TrimSuffix(rel, certRecordSuffix)
+				if tenantID == "" {
+					return nil
+				}
+				tenantIDs = append(tenantIDs, tenantID)
+				return nil
+			}); err != nil {
+				return nil, &StoreError{Op: "scan", Detail: prefix, Err: err}
+			}
 		}
-		rel := strings.TrimPrefix(key, prefixCertCA)
-		tenantID := strings.TrimSuffix(rel, certRecordSuffix)
-		if tenantID == "" {
-			return nil
-		}
-		tenantIDs = append(tenantIDs, tenantID)
-		return nil
-	}); err != nil {
-		return nil, &StoreError{Op: "scan", Detail: prefixCertCA, Err: err}
 	}
 
 	// A single tenant's corrupt or unreadable record withdraws only that
@@ -1017,16 +1079,14 @@ func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) 
 	// on -- locking out principals that have nothing to do with the
 	// broken tenant at all.
 	out := make([][]byte, 0, len(tenantIDs))
+	seen := make(map[string]struct{}, len(tenantIDs))
 	var skipped int
 	for _, tenantID := range tenantIDs {
-		prov, err := p.resolveKeyProvider(tenantID)
-		if err != nil {
-			skipped++
-			slog.Warn("qrdb/cert: skipping a tenant's Key B CA in CACertPEMs; its own anchor is withdrawn, every other tenant's is not",
-				"tenant_id", tenantID, "error", err)
+		if _, dup := seen[tenantID]; dup {
 			continue
 		}
-		cert, err := p.loadOnlyCertificate(ctx, prov)
+		seen[tenantID] = struct{}{}
+		cert, err := p.tenantCACert(ctx, tenantID)
 		if err != nil {
 			skipped++
 			slog.Warn("qrdb/cert: skipping a tenant's Key B CA in CACertPEMs; its own anchor is withdrawn, every other tenant's is not",
@@ -1073,11 +1133,7 @@ func (p *DefaultCertProvider) IsTenantIssuer(ctx context.Context, tenantID strin
 		return false, &BarrierSealedError{}
 	}
 
-	prov, err := p.resolveKeyProvider(tenantID)
-	if err != nil {
-		return false, err
-	}
-	registered, err := p.loadOnlyCertificate(ctx, prov)
+	registered, err := p.tenantCACert(ctx, tenantID)
 	if err != nil {
 		var notAvailable *CAKeyNotAvailableError
 		if errors.As(err, &notAvailable) {
@@ -1143,7 +1199,7 @@ func (p *DefaultCertProvider) getCAMaterial(ctx context.Context, tenantID string
 		return nil, nil, &BarrierSealedError{}
 	}
 
-	prov, err := p.resolveKeyProvider(tenantID)
+	prov, entry, err := p.resolveKeyProvider(ctx, tenantID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1155,7 +1211,9 @@ func (p *DefaultCertProvider) getCAMaterial(ctx context.Context, tenantID string
 	if err != nil {
 		return nil, nil, mapProviderError(err)
 	}
-	p.noteHeldCA(cert)
+	if err := p.holdCA(ctx, tenantID, entry, cert); err != nil {
+		return nil, nil, err
+	}
 	return signer, cert, nil
 }
 

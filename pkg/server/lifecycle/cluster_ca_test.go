@@ -17,8 +17,14 @@ package lifecycle
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +32,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -280,5 +287,77 @@ func TestClusterCAEstablishError_Error(t *testing.T) {
 	}
 	if !strings.Contains(msg, "barrier sealed") {
 		t.Errorf("Error() = %q, missing the underlying cause", msg)
+	}
+}
+
+// TestClusterCAAdminSigner_NilProviderRefused: with no cluster CA key there is
+// no cluster-CA signer to compose.
+func TestClusterCAAdminSigner_NilProviderRefused(t *testing.T) {
+	signer, err := clusterCAAdminSigner(nil, "cluster.example.com")
+	var want *ceremony.NilCeremonyCAProviderError
+	if !errors.As(err, &want) {
+		t.Fatalf("clusterCAAdminSigner(nil) = %v, want *ceremony.NilCeremonyCAProviderError", err)
+	}
+	if signer != nil {
+		t.Errorf("signer = %v, want nil", signer)
+	}
+}
+
+// TestClusterCAAdminSigner_SignsWithTheClusterCA: a tenant's first-admin
+// certificate chains to the cluster CA and names the admin in that tenant.
+func TestClusterCAAdminSigner_SignsWithTheClusterCA(t *testing.T) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "cluster-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := cakey.NewStaticProvider(caKey, caCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := clusterCAAdminSigner(provider, "cluster.example.com")
+	if err != nil {
+		t.Fatalf("clusterCAAdminSigner: %v", err)
+	}
+
+	adminKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "vera"}}, adminKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, err := signer.SignAdminCSR(context.Background(), "vault", "vera",
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+	if err != nil {
+		t.Fatalf("SignAdminCSR: %v", err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		t.Fatal("SignAdminCSR returned no PEM certificate")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.CheckSignatureFrom(caCert); err != nil {
+		t.Errorf("certificate is not signed by the cluster CA: %v", err)
+	}
+	if leaf.Subject.CommonName != "vera" || len(leaf.Subject.OrganizationalUnit) == 0 || leaf.Subject.OrganizationalUnit[0] != "vault" {
+		t.Errorf("Subject = %v, want CN=vera with tenant vault as the first OU", leaf.Subject)
+	}
+	if len(leaf.URIs) != 1 || leaf.URIs[0].String() != "spiffe://vault/user/vera" {
+		t.Errorf("URIs = %v, want the admin's SPIFFE ID under the tenant's trust domain", leaf.URIs)
 	}
 }

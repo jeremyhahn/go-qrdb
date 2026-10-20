@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -306,6 +307,17 @@ func TestWireCertReloader_WiresGetCertificate(t *testing.T) {
 
 	// Cleanup the reloader goroutine.
 	t.Cleanup(func() { _ = bundle.Reloader.Stop() })
+
+	// With Certificates cleared, a connection dialed from this config
+	// presents only what GetClientCertificate returns: the served leaf.
+	require.NotNil(t, bundle.TLSConfig.GetClientCertificate,
+		"wireCertReloader must set GetClientCertificate callback")
+	clientCert, err := bundle.TLSConfig.GetClientCertificate(&tls.CertificateRequestInfo{})
+	require.NoError(t, err)
+	serverCert, err := bundle.TLSConfig.GetCertificate(nil)
+	require.NoError(t, err)
+	assert.Equal(t, serverCert.Certificate, clientCert.Certificate,
+		"a dialed connection must present the same leaf the listeners serve")
 }
 
 func TestWireCertReloader_InvalidCertReturnsError(t *testing.T) {
@@ -794,7 +806,7 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil)
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, nil, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil)
 	}
 }
 

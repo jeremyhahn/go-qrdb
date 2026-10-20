@@ -37,6 +37,12 @@ var ErrTenantDataRootUnset = errors.New("server: tenant data root is unset")
 // source barrier and fail against the already-keyed at-rest stores.
 var ErrTenantMigrationInProgress = errors.New("server: tenant encryption migration in progress")
 
+// ErrHomeOpGateInvalid is returned when the registry's record of a tenant's
+// in-flight home-store operations is not a gate it created. No operation is
+// admitted and no drain is reported complete against a count that cannot be
+// read: the home-store operation is refused and the migration fails closed.
+var ErrHomeOpGateInvalid = errors.New("server: tenant home-store operation gate is invalid")
+
 // ErrTenantShardNoLeader is returned when a per-tenant Host's local shard fails
 // to elect a leader within the readiness timeout.
 var ErrTenantShardNoLeader = errors.New("server: tenant shard did not elect a leader")

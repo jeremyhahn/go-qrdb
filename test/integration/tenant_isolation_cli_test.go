@@ -113,31 +113,40 @@ func createTenant(t *testing.T, node *multiProtoNode, proto multiProtocol, id, n
 }
 
 // createTenantWithAdminCert is createTenant, but keeps the first admin's
-// own key and issued certificate (rather than discarding them inside
-// adminCSRArgsForTenant) and returns their paths: trust-on-first-init
+// own key and certificate and returns their paths: trust-on-first-init
 // admits only that exact certificate (see docs/multi-tenancy, the
 // pending-admin record), never any other authenticated identity of the
 // tenant, so a test driving the pre-RBAC window must authenticate AS the
 // admin it onboarded, not a separately-minted tenant identity.
+//
+// The admin enrolls by CSR, except that of a self-managed dedicated tenant,
+// which brings its own certificate (adminBYOCArgsForTenant): that tenant's CA
+// is sealed at create, so only a cluster CA could sign the CSR, and these
+// harness nodes serve bring-your-own TLS without one.
 func createTenantWithAdminCert(t *testing.T, node *multiProtoNode, proto multiProtocol, id, name, isolationType string, autoUnseal bool, adminUsername string) (certPath, keyPath string) {
 	t.Helper()
-	adminArgs := adminCSRArgsForTenant(t, node, proto, adminUsername)
-	// adminCSRArgsForTenant's last element is the CSR path; its key.pem
-	// sibling is the matching private key.
-	keyPath = filepath.Join(filepath.Dir(adminArgs[len(adminArgs)-1]), "key.pem")
-
-	certDir := t.TempDir()
 	args := []string{"tenant", "create", "--id", id, "--name", name, "--isolation-type", isolationType}
 	if autoUnseal {
 		args = append(args, "--barrier-auto-unseal")
 	}
-	args = append(args, adminArgs...)
-	args = append(args, "--out", certDir)
+	if selfManagedDedicated(isolationType, autoUnseal) {
+		adminArgs, leaf := adminBYOCArgsForTenant(t, id, adminUsername)
+		args = append(args, adminArgs...)
+		certPath, keyPath = leaf.CertPath, leaf.KeyPath
+	} else {
+		adminArgs := adminCSRArgsForTenant(t, node, proto, adminUsername)
+		// adminCSRArgsForTenant's last element is the CSR path; its key.pem
+		// sibling is the matching private key.
+		keyPath = filepath.Join(filepath.Dir(adminArgs[len(adminArgs)-1]), "key.pem")
+		certDir := t.TempDir()
+		args = append(args, adminArgs...)
+		args = append(args, "--out", certDir)
+		certPath = filepath.Join(certDir, "admin-cert.pem")
+	}
 	out, err := runCLIProto(t, node, proto, args...)
 	if err != nil {
 		t.Fatalf("[%s] tenant create %s (isolation=%s): %v\noutput: %s", proto.name, id, isolationType, err, out)
 	}
-	certPath = filepath.Join(certDir, "admin-cert.pem")
 	registerTenantAdminCred(id, certPath, keyPath)
 	return certPath, keyPath
 }

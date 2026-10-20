@@ -121,6 +121,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -1216,6 +1217,16 @@ type Node struct {
 	// are delivered to. Nil on a standalone node.
 	clusterIdentity *quicraftconfig.MTLSConfig
 
+	// enrollAdvertiser is the enrollment listener clusterenroll.Resolve
+	// returned with a resolved identity (resolveClusterIdentity); nil for a
+	// single-node identity, which advertises nothing, and stopped by Close.
+	enrollAdvertiser *clusterenroll.Advertiser
+
+	// clusterCAKeyCacheDir is the data directory resolveClusterIdentity
+	// generated the cluster CA key into, removed from there once Key A is
+	// established (removeClusterCAKeyCache); empty when no key was cached.
+	clusterCAKeyCacheDir string
+
 	// keyDecrypter opens the tenant keys peers deliver to this node
 	// (WithKeyDeliveryDecrypter); nil derives it from clusterIdentity's key.
 	keyDecrypter keydelivery.Decrypter
@@ -1687,6 +1698,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
+	// An isolated tenant's records live in its home store, on a standalone
+	// node its own barrier's backend at its data root; until it is attached
+	// they fail closed.
+	if barrierRegistry != nil && !lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, n.tenantHostsHolder) {
+		n.logger.Warn("isolated tenants' home stores are not available on this node; their requests fail closed")
+	}
 	// An engine that keeps no leases (file, objstore) has nothing to publish
 	// the lease-backed volume-pool health report on.
 	if lifecycle.LocalEngineKeepsLeases(pending.backendType) {
@@ -2154,7 +2171,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	if barrier != nil {
 		systemBarrier = barrier.EpochBarrier()
 	}
-	host, walMux, err := buildClusteredHost(ctx, pending.cfg, pending.members, createFn, pending.raftMTLS, systemBarrier, n.logger)
+	leaderEvents := server.NewLeaderEvents()
+	host, walMux, err := buildClusteredHost(ctx, pending.cfg, pending.members, createFn, pending.raftMTLS, systemBarrier, leaderEvents, n.logger)
 	if err != nil {
 		return &HostCreateError{Err: err}
 	}
@@ -2312,12 +2330,12 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			// reattachRaftTenants so clustered embedded nodes gain full
 			// IsolationRaft parity with the daemon. PlacementStore comes from
 			// the just-built svcNode so shard placement is replicated into the
-			// system KV. MultiplexLogDB is the host's WAL multiplex when it
-			// has one (a cluster whose system barrier encrypts; see
-			// buildClusteredHost), so dedicated-raft databases get their own
-			// tenant-barrier WAL as on qrdbd; otherwise nil and they use the
-			// shared system WAL.
+			// system KV. MultiplexLogDB is the host's WAL multiplex, which
+			// every host with a system barrier has, encrypting or in plaintext
+			// mode (see buildClusteredHost), so dedicated-raft databases get
+			// their own tenant-barrier WAL as on qrdbd.
 			Host:           host,
+			LeaderEvents:   leaderEvents,
 			MultiplexLogDB: walMux,
 			Manager:        dbManager,
 			ReplicaID:      pending.cfg.Raft.ReplicaID,
@@ -2326,6 +2344,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			PlacementStore: svcNode.PlacementStore,
 			FeatureGate:    n.featureGate,
 			ClusterSealer:  n.clusterSeal,
+			// Dedicated shards snapshot on the system shard's cadence.
+			SnapshotEntries:    pending.cfg.Raft.SnapshotEntries,
+			CompactionOverhead: pending.cfg.Raft.CompactionOverhead,
 		})
 		if tiErr != nil {
 			n.stopVolumeReporter()
@@ -2344,6 +2365,11 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.tenantHostsHolder.Store(ti.Hosts)
 		}
 		n.raftBackend = ti.Raft
+		// An isolated tenant's records live in its home group, a dedicated
+		// Raft group of its own; until it is attached they fail closed.
+		if ti.Raft != nil && !lifecycle.AttachTenantHomes(svcNode, ti.Raft) {
+			n.logger.Warn("isolated tenants' home stores are not available on this node; their requests fail closed")
+		}
 		n.shardPauser.SetTenants(ti.Raft, ti.Hosts)
 		// Wire the IsolationRaft factory into the already-built backup
 		// service as its ShardRestarter, enabling ONLINE restore for
@@ -2353,6 +2379,11 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			service.SetShardRestarter(svcNode.Backup, n.raftBackend)
 		}
 		reconciler = ti.Reconciler
+		// A node placement assigns to a tenant's group registers the
+		// tenant's barrier shell, so status, init and unseal reach it.
+		if shells, ok := svcNode.Tenant.(server.ShellRegistrar); ok && reconciler != nil {
+			reconciler.SetShellRegistrar(shells)
+		}
 		tenantInfraBuiltHook()
 	}
 
@@ -2639,6 +2670,7 @@ func (n *Node) Close() error {
 
 	// The join listener takes no new joiner once the node is closing.
 	n.clusterJoin.Stop()
+	n.enrollAdvertiser.Stop()
 
 	// Cancel the node-lifetime background context before stopping any service
 	// so long-running goroutines (the lease-expiry sweeper, the reclaim
@@ -3098,6 +3130,14 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	if dataDir == "" {
 		dataDir = "./data"
 	}
+	if err := n.resolveClusterIdentity(ctx, cfg, members, dataDir); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			n.enrollAdvertiser.Stop()
+		}
+	}()
 
 	// Build the seal subsystem BEFORE host construction so encfs wraps the
 	// state machine's Pebble stores once the barrier is unsealed. Clustered
@@ -3129,7 +3169,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 				members:      members,
 				serverOpts:   serverOpts,
 				cfg:          cfg,
-				raftMTLS:     nOpts.raftMTLS,
+				raftMTLS:     n.clusterIdentity,
 				noSyncWrites: nOpts.noSyncWrites,
 			}); err != nil {
 				n.closeSeal()
@@ -3142,7 +3182,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 			members:      members,
 			serverOpts:   serverOpts,
 			cfg:          cfg,
-			raftMTLS:     nOpts.raftMTLS,
+			raftMTLS:     n.clusterIdentity,
 			noSyncWrites: nOpts.noSyncWrites,
 		}
 		return n, nil
@@ -3168,7 +3208,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 
 	// Seal disabled: no system barrier, so the WAL is written
 	// WithoutEncryption and there is no multiplex.
-	host, _, err := buildClusteredHost(ctx, cfg, members, createFn, nOpts.raftMTLS, nil, n.logger)
+	host, _, err := buildClusteredHost(ctx, cfg, members, createFn, n.clusterIdentity, nil, nil, n.logger)
 	if err != nil {
 		return nil, &HostCreateError{Err: err}
 	}
@@ -3805,9 +3845,13 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// Logged, not fatal: a node booting sealed (unseal to follow later) is
 	// expected to fail this the same way the old implicit path would have
 	// failed the first handshake, and must still finish construction.
-	if err := lifecycle.EstablishClusterCA(ctx, svcNode); err != nil && n.logger != nil {
-		n.logger.Warn("node: cluster CA establishment failed; Key A is not yet available",
-			slog.Any("error", err))
+	if err := lifecycle.EstablishClusterCA(ctx, svcNode); err != nil {
+		if n.logger != nil {
+			n.logger.Warn("node: cluster CA establishment failed; Key A is not yet available",
+				slog.Any("error", err))
+		}
+	} else if svcNode.ClusterCAProv != nil {
+		n.removeClusterCAKeyCache()
 	}
 	// Member-side CSR join, composed exactly as qrdbd composes it: this
 	// node's identity recorded as admitted whenever it holds a cluster CA
@@ -4679,9 +4723,9 @@ func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb
 //
 // systemBarrier is the unsealed system barrier, or nil when seal is disabled.
 // The Raft WAL is configured from it by database.NewRaftWAL, exactly as qrdbd
-// configures its own: encrypted under the barrier, the multiplex on a cluster
-// whose barrier encrypts, and WithoutEncryption only with seal disabled. The
-// returned multiplex is nil unless the host uses it. Before this node shared
+// configures its own: the multiplex under any system barrier, encrypting or
+// still in plaintext mode, and WithoutEncryption only with seal disabled. The
+// returned multiplex is nil only with seal disabled. Before this node shared
 // that path it always wrote its WAL WithoutEncryption, so an unmarked WAL is
 // judged plaintext, and one found under a barrier is refused with
 // *database.RaftWALFormatError rather than replayed as ciphertext.
@@ -4692,11 +4736,15 @@ func buildClusteredHost(
 	createFn sm.CreateFunc,
 	mtls *quicraftconfig.MTLSConfig,
 	systemBarrier *seal.EpochBarrier,
+	events *server.LeaderEvents,
 	log *slog.Logger,
 ) (*quicraft.Host, *database.MultiplexLogDB, error) {
 	hostCfg, shardCfg, hostOpts, err := buildClusteredRaftConfigs(cfg, members, mtls)
 	if err != nil {
 		return nil, nil, err
+	}
+	if events != nil {
+		hostCfg.EventListener = events.Listener()
 	}
 
 	// A caller that has given up gets its cancellation, not a host: building
@@ -4710,7 +4758,6 @@ func buildClusteredHost(
 	wal, err := database.NewRaftWAL(database.RaftWALConfig{
 		Dir:            hostCfg.WALDir,
 		SystemBarrier:  systemBarrier,
-		SingleNode:     len(members) == 1,
 		UnmarkedFormat: database.WALFormatPlaintext,
 	})
 	if err != nil {
@@ -4789,7 +4836,7 @@ func buildClusteredRaftConfigs(
 	// in-process single-node clusters (dev/test) need not configure them.
 	if len(members) == 1 {
 		if raftAddress == "" {
-			raftAddress = "127.0.0.1:63901"
+			raftAddress = defaultSingleNodeRaftAddress
 		}
 		if listenAddress == "" {
 			listenAddress = raftAddress

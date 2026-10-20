@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
 // --------------------------------------------------------------------------
@@ -161,5 +162,83 @@ func TestTenantBarrierKVStore_ScanCompoundIndex_Refuses(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("ScanCompoundIndex returned %v alongside a refusal; a refused query carries no results", result)
+	}
+}
+
+// TestTenantBarrierKVStore_HomeStoreHoldsGuardedBatches composes a
+// standalone tenant home store the way tenant.LocalHomes does — a namespace
+// over the tenant barrier's KV store, over a batching engine — and proves it
+// offers and honours the guarded batch the tenant CA is written with.
+func TestTenantBarrierKVStore_HomeStoreHoldsGuardedBatches(t *testing.T) {
+	ctx := context.Background()
+	tb, err := NewTenantBarrier("acme", testLogger(), NewStorageAdapter(memory.NewStorage()), BarrierConfig{}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewTenantBarrier: %v", err)
+	}
+	if err := tb.Initialize(ctx, MustCredentials(ctx, []byte("pw"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	kv, err := NewTenantBarrierKVStore(tb)
+	if err != nil {
+		t.Fatalf("NewTenantBarrierKVStore: %v", err)
+	}
+	home, err := kvstore.NewNamespacedKVStore(kv, "__home/")
+	if err != nil {
+		t.Fatalf("NewNamespacedKVStore: %v", err)
+	}
+	guarded, ok := home.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		t.Fatal("a standalone home store does not offer guarded batches")
+	}
+	if capable, err := kvstore.ProbeGuardedBatch(ctx, guarded); err != nil || !capable {
+		t.Fatalf("ProbeGuardedBatch = (%v, %v), want (true, nil)", capable, err)
+	}
+
+	writes := []kvstore.KV{{Key: "ca/key", Value: []byte("k")}, {Key: "ca/cert", Value: []byte("c")}}
+	applied, err := guarded.PutAllIfUnchanged(ctx, "ca/key", nil, writes)
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	for _, w := range writes {
+		if got, _ := home.Get(ctx, w.Key); string(got) != string(w.Value) {
+			t.Errorf("%s = %q, want %q", w.Key, got, w.Value)
+		}
+	}
+	applied, err = guarded.PutAllIfUnchanged(ctx, "ca/key", nil, writes)
+	if err != nil || applied {
+		t.Fatalf("second create: PutAllIfUnchanged = (%v, %v), want (false, nil)", applied, err)
+	}
+	applied, err = guarded.PutAllIfUnchanged(ctx, "ca/key", []byte("k"), []kvstore.KV{{Key: "ca/cert", Delete: true}})
+	if err != nil || !applied {
+		t.Fatalf("guarded delete: PutAllIfUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if got, _ := home.Get(ctx, "ca/cert"); got != nil {
+		t.Errorf("ca/cert = %q, want deleted", got)
+	}
+}
+
+func TestTenantBarrierKVStore_PutAllIfAllUnchanged_RefusesEmptyKeys(t *testing.T) {
+	store, _ := newInitializedKVStore(t)
+	ctx := context.Background()
+	var emptyKey *kvstore.EmptyKeyError
+
+	_, err := store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "g"}, {Key: ""}}, nil)
+	if !errors.As(err, &emptyKey) || emptyKey.Field != "guard" || emptyKey.Index != 1 {
+		t.Errorf("empty guard: err = %v, want EmptyKeyError{guard 1}", err)
+	}
+	_, err = store.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: ""}})
+	if !errors.As(err, &emptyKey) || emptyKey.Field != "write" || emptyKey.Index != 0 {
+		t.Errorf("empty write: err = %v, want EmptyKeyError{write 0}", err)
+	}
+}
+
+func TestTenantBarrierKVStore_PutAllIfAllUnchanged_RefusesWhileSealed(t *testing.T) {
+	store, tb := newInitializedKVStore(t)
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	_, err := store.PutAllIfUnchanged(context.Background(), "g", nil, []kvstore.KV{{Key: "k", Value: []byte("v")}})
+	if !errors.Is(err, ErrSealed) {
+		t.Fatalf("err = %v, want ErrSealed", err)
 	}
 }

@@ -21,8 +21,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -610,14 +613,81 @@ func TestIdentityLeafTemplate_IPAddressSAN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IdentityLeafTemplate: %v", err)
 	}
-	if len(tmpl.DNSNames) != 0 {
-		t.Fatalf("DNSNames = %v, want none for an IP address", tmpl.DNSNames)
+	if !slices.Equal(tmpl.DNSNames, []string{"localhost"}) {
+		t.Fatalf("DNSNames = %v, want only the loopback name for an IP address", tmpl.DNSNames)
 	}
-	if len(tmpl.IPAddresses) != 1 || tmpl.IPAddresses[0].String() != "10.0.0.2" {
-		t.Fatalf("IPAddresses = %v, want exactly [10.0.0.2]", tmpl.IPAddresses)
+	if got := ipStrings(tmpl.IPAddresses); !slices.Equal(got, []string{"10.0.0.2", "127.0.0.1", "::1"}) {
+		t.Fatalf("IPAddresses = %v, want [10.0.0.2 127.0.0.1 ::1]", got)
 	}
 	if len(tmpl.URIs) != 1 || tmpl.URIs[0].String() != nodeURI {
 		t.Fatalf("URIs = %v, want exactly [%s]", tmpl.URIs, nodeURI)
+	}
+}
+
+// ipStrings renders addresses for comparison.
+func ipStrings(ips []net.IP) []string {
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.String())
+	}
+	return out
+}
+
+// TestIdentityLeafTemplate_JoinedNodeCarriesLoopbackSANs covers the joined
+// node's leaf: gRPC dials a unix socket with "localhost" as the server name,
+// so the leaf carries every loopback name beside its bound address and URI.
+func TestIdentityLeafTemplate_JoinedNodeCarriesLoopbackSANs(t *testing.T) {
+	t.Parallel()
+
+	const nodeURI = "spiffe://qrdb.cluster/node/node3.internal:9000"
+	tmpl, err := clustertls.IdentityLeafTemplate(time.Hour, nodeURI)
+	if err != nil {
+		t.Fatalf("IdentityLeafTemplate: %v", err)
+	}
+	if !slices.Equal(tmpl.DNSNames, []string{"node3.internal", "localhost"}) {
+		t.Fatalf("DNSNames = %v, want [node3.internal localhost]", tmpl.DNSNames)
+	}
+	if got := ipStrings(tmpl.IPAddresses); !slices.Equal(got, []string{"127.0.0.1", "::1"}) {
+		t.Fatalf("IPAddresses = %v, want [127.0.0.1 ::1]", got)
+	}
+	if len(tmpl.URIs) != 1 || tmpl.URIs[0].String() != nodeURI {
+		t.Fatalf("URIs = %v, want exactly [%s]", tmpl.URIs, nodeURI)
+	}
+}
+
+// TestIdentityLeafTemplate_LoopbackAddressNotDuplicated covers a node bound to
+// a loopback address: the address SAN and the loopback set are one entry.
+func TestIdentityLeafTemplate_LoopbackAddressNotDuplicated(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ uri, wantDNS, wantIPs string }{
+		{"spiffe://qrdb.cluster/node/127.0.0.1:9000", "[localhost]", "[127.0.0.1 ::1]"},
+		{"spiffe://qrdb.cluster/node/localhost:9000", "[localhost]", "[127.0.0.1 ::1]"},
+	} {
+		tmpl, err := clustertls.IdentityLeafTemplate(time.Hour, tc.uri)
+		if err != nil {
+			t.Fatalf("IdentityLeafTemplate(%s): %v", tc.uri, err)
+		}
+		if got := fmt.Sprint(tmpl.DNSNames); got != tc.wantDNS {
+			t.Errorf("%s: DNSNames = %s, want %s", tc.uri, got, tc.wantDNS)
+		}
+		if got := fmt.Sprint(ipStrings(tmpl.IPAddresses)); got != tc.wantIPs {
+			t.Errorf("%s: IPAddresses = %s, want %s", tc.uri, got, tc.wantIPs)
+		}
+	}
+}
+
+// TestLoopbackSANs covers the shared set and that callers get a copy.
+func TestLoopbackSANs(t *testing.T) {
+	t.Parallel()
+
+	got := clustertls.LoopbackSANs()
+	if !slices.Equal(got, []string{"localhost", "127.0.0.1", "::1"}) {
+		t.Fatalf("LoopbackSANs() = %v, want [localhost 127.0.0.1 ::1]", got)
+	}
+	got[0] = "mutated"
+	if clustertls.LoopbackSANs()[0] != "localhost" {
+		t.Fatal("LoopbackSANs() returned the shared slice, want a copy")
 	}
 }
 
@@ -632,11 +702,11 @@ func TestIdentityLeafTemplate_HostnameSAN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IdentityLeafTemplate: %v", err)
 	}
-	if len(tmpl.IPAddresses) != 0 {
-		t.Fatalf("IPAddresses = %v, want none for a hostname", tmpl.IPAddresses)
+	if slices.Contains(ipStrings(tmpl.IPAddresses), "node3.internal") {
+		t.Fatalf("IPAddresses = %v, want no address for a hostname", tmpl.IPAddresses)
 	}
-	if len(tmpl.DNSNames) != 1 || tmpl.DNSNames[0] != "node3.internal" {
-		t.Fatalf("DNSNames = %v, want exactly [node3.internal]", tmpl.DNSNames)
+	if len(tmpl.DNSNames) == 0 || tmpl.DNSNames[0] != "node3.internal" {
+		t.Fatalf("DNSNames = %v, want node3.internal first", tmpl.DNSNames)
 	}
 }
 
@@ -650,8 +720,9 @@ func TestIdentityLeafTemplate_NoURI_NoAddressSAN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IdentityLeafTemplate: %v", err)
 	}
-	if len(tmpl.DNSNames) != 0 || len(tmpl.IPAddresses) != 0 || len(tmpl.URIs) != 0 {
-		t.Fatalf("template = %+v, want no SANs at all with no nodeURI", tmpl)
+	if !slices.Equal(tmpl.DNSNames, []string{"localhost"}) ||
+		!slices.Equal(ipStrings(tmpl.IPAddresses), []string{"127.0.0.1", "::1"}) || len(tmpl.URIs) != 0 {
+		t.Fatalf("template = %+v, want only the loopback SANs with no nodeURI", tmpl)
 	}
 }
 

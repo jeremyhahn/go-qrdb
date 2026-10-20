@@ -376,12 +376,17 @@ type startFlags struct {
 	// set only after the barrier is unsealed, before the Host is constructed.
 	walSystemBarrier *seal.EpochBarrier
 
-	// walMux is the multiplex LogDB wired as the shared host's LogDB in
-	// clustered/raft mode when seal is enabled. It owns the shared system-barrier
-	// WAL and routes opted-in dedicated-raft shards to per-tenant-KEY WALs. It is
-	// nil for single-node/standalone hosts and when seal is disabled, leaving the
-	// shared-WAL (Route A) path byte-identical to before.
+	// walMux is the multiplex LogDB wired as the host's LogDB whenever seal is
+	// enabled, on a single node or a cluster, whether the system barrier
+	// encrypts or is still in plaintext mode. It owns the shared system-barrier
+	// WAL and routes dedicated-WAL shards, a tenant's home group included, to
+	// per-tenant-KEY WALs. It is nil only when seal is disabled.
 	walMux *database.MultiplexLogDB
+
+	// leaderEvents is the relay installed as the host's event listener; the
+	// tenant infrastructure binds its IsolationRaft factory to it, so a node
+	// that becomes a tenant home group's leader is told.
+	leaderEvents *server.LeaderEvents
 }
 
 // raftNode is the interface that the start command requires for shard
@@ -1628,7 +1633,7 @@ func runStart(f *startFlags) (err error) {
 			}
 
 			// Barrier-mode (IsolationBarrier) tenants that use the generic,
-			// pool-name-free registration primitives (RegisterTenantPooled and
+			// pool-name-free registration primitives (RegisterBarrierTenant and
 			// friends) still need a per-tenant Pebble registry; attach it now so
 			// it is available even before the replicated catalog is (below).
 			perTenantReg := pebblestore.NewPerTenantRegistry()
@@ -2335,7 +2340,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2445,9 +2450,12 @@ func runStart(f *startFlags) (err error) {
 				SystemTenant:         tenantid.System,
 				PlacementStore:       svcNode.PlacementStore,
 				MultiplexLogDB:       f.walMux,
+				LeaderEvents:         f.leaderEvents,
 				FeatureGate:          featureGate,
 				ClusterSealer:        tenantSealer,
 				ImportSession:        f.importSessionConfig,
+				SnapshotEntries:      f.snapshotEntries,
+				CompactionOverhead:   f.compactionOverhead,
 				Lease:                f.leaseConfig,
 			})
 			if err != nil {
@@ -2456,6 +2464,22 @@ func runStart(f *startFlags) (err error) {
 			}
 			tenantHostReg := ti.Hosts
 			raftBackendReg := ti.Raft
+			// An isolated tenant's records live in its home store: in raft
+			// mode a dedicated Raft group of its own, on a standalone node its
+			// barrier's own backend at its data root. Until one is attached
+			// they fail closed. The served IAM services and the auth middleware
+			// resolve through mgmtResult's resolver, so it gets the same home
+			// stores.
+			homesAttached := false
+			switch {
+			case standalone && barrierRegistry != nil:
+				homesAttached = lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, tenantHostReg, mgmtResult.storeResolver)
+			case raftBackendReg != nil:
+				homesAttached = lifecycle.AttachTenantHomes(svcNode, raftBackendReg, mgmtResult.storeResolver)
+			}
+			if !homesAttached && barrierRegistry != nil {
+				slog.Warn("isolated tenants' home stores are not available on this node; their requests fail closed")
+			}
 			shardPauser.SetTenants(raftBackendReg, tenantHostReg)
 			// Security review item 4(a): publish the just-built registry to
 			// sealSub.VolumeLifecycle's close-before-lock closure, which has
@@ -2505,6 +2529,11 @@ func runStart(f *startFlags) (err error) {
 			// until the monitor is Set, so it starts only now -- and the
 			// monitor refuses every barrier until its first read.
 			if ti.Reconciler != nil {
+				// A node placement assigns to a tenant's group registers the
+				// tenant's barrier shell, so status, init and unseal reach it.
+				if shells, ok := svcNode.Tenant.(server.ShellRegistrar); ok {
+					ti.Reconciler.SetShellRegistrar(shells)
+				}
 				go ti.Reconciler.Run(bootCtx)
 			}
 			// Wire the IsolationRaft factory into the already-built backup
@@ -2551,14 +2580,18 @@ func runStart(f *startFlags) (err error) {
 			if authResult != nil {
 				ckRevocation = authResult.authMW.RevocationChecker()
 			}
-			// The node's software key from its TLS bundle; a pair that does
-			// not parse leaves Identity nil, and the key plane off with a
-			// warning, as every other missing piece does.
-			var nodeIdentity *tls.Certificate
-			if pair, err := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM); err == nil {
-				nodeIdentity = &pair
-			} else {
-				slog.Warn("clusterkeys: node certificate and key do not form a pair", slog.Any("error", err))
+			// The node's software key from its TLS bundle, through the one
+			// derivation an embedded clustered node's identity goes through
+			// too; a pair that does not parse leaves Identity nil, and the
+			// key plane and the platform-init signer off with a warning, as
+			// every other missing piece does.
+			nodeIdentity, err := lifecycle.NodeIdentity(&quicraftconfig.MTLSConfig{
+				CACert: bundle.CACertPEM,
+				Cert:   bundle.CertPEM,
+				Key:    bundle.KeyPEM,
+			})
+			if err != nil {
+				slog.Warn("clusterkeys: no usable node identity", slog.Any("error", err))
 			}
 			raftTenants := lifecycle.ComposeRaftTenantCluster(lifecycle.RaftTenantClusterConfig{
 				Services:      svcNode,
@@ -2955,6 +2988,10 @@ func runStart(f *startFlags) (err error) {
 			dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 			dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shard.ShardKV))
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
+
+			if tenantSvcInst != nil {
+				applyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
+			}
 
 			// The sockets the sealed-window listener served on, if it ran;
 			// bound here otherwise.
@@ -3453,6 +3490,8 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, compl
 
 	// Build host configuration.
 	hostCfg := buildHostConfig(f, mtlsCfg)
+	f.leaderEvents = server.NewLeaderEvents()
+	hostCfg.EventListener = f.leaderEvents.Listener()
 
 	// Determine host options based on peer count.
 	// Single-node (no remote peers) uses WithoutTransport.
@@ -3467,14 +3506,13 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, compl
 	}
 
 	// The Raft WAL's at-rest posture -- WithoutEncryption with seal disabled,
-	// the system barrier over quicraft's own WAL on a single node or while
-	// the barrier is in plaintext mode, and the multiplex (shared system WAL
-	// plus per-tenant dedicated WALs) on a cluster whose barrier encrypts -- is
-	// decided by database.NewRaftWAL, the one path qrdbd and the SDK node
-	// share. f.walSystemBarrier is set in runStart only after the barrier is
-	// unsealed, and is nil when seal is disabled. qrdbd has always written the
-	// format it writes now, so an unmarked WAL from an earlier build is
-	// adopted as that format.
+	// and otherwise the multiplex (shared system WAL plus per-tenant dedicated
+	// WALs) on a single node or cluster, whether the barrier encrypts or is
+	// still in plaintext mode -- is decided by database.NewRaftWAL, the one
+	// path qrdbd and the SDK node share. f.walSystemBarrier is set in runStart
+	// only after the barrier is unsealed, and is nil when seal is disabled.
+	// qrdbd has always written the format it writes now, so an unmarked WAL
+	// from an earlier build is adopted as that format.
 	walFormat := database.WALFormatPlaintext
 	if f.walSystemBarrier != nil {
 		walFormat = database.WALFormatBarrier
@@ -3482,7 +3520,6 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, compl
 	wal, err := database.NewRaftWAL(database.RaftWALConfig{
 		Dir:            hostCfg.WALDir,
 		SystemBarrier:  f.walSystemBarrier,
-		SingleNode:     isSingleNode(f),
 		UnmarkedFormat: walFormat,
 	})
 	if err != nil {
@@ -4376,7 +4413,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
 	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
@@ -4571,6 +4608,9 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// init window of a dedicated tenant's barrier admits only the admin
 		// that tenant was onboarded with.
 		PendingTenantAdmins: pendingAdmins,
+		// The first admin pinned for each barrier at onboarding: what that
+		// window admits on a node initializing after the record is consumed.
+		FirstAdminPins: pins,
 		// users:add_cert_binding is held to the certificate target guard.
 		CertTargetGuard:    certTargets,
 		RevocationCacheTTL: revocationTTL,
@@ -4602,6 +4642,15 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		adminWatchWG:                 &adminWatchWG,
 		adminWatchCancel:             adminWatchCancel,
 	}, nil
+}
+
+// firstAdminPins is init as the auth middleware's middleware.FirstAdminPins,
+// or none on a node without barrier init records.
+func firstAdminPins(init *lifecycle.BarrierInit) middleware.FirstAdminPins {
+	if init == nil {
+		return nil
+	}
+	return init
 }
 
 // adminBindingWait bounds the boot-time wait for the bootstrap admin's

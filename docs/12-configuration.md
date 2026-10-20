@@ -432,6 +432,10 @@ omitted. Ignored for a single-node cluster.
   (go-quicraft's `SnapshotsDisabled`) disables automatic snapshots.
   *(Corrected: this said `0` disables automatic snapshots.)*
 - Setting `compaction_overhead` to `0` uses the system default of 5000 entries.
+- `snapshot_entries` must be greater than `compaction_overhead` when both are set.
+- `snapshot_entries` and `compaction_overhead` apply to every raft group the
+  node starts: the system shard, each dedicated database shard, and each strict
+  tenant's home group.
 - Setting `max_in_mem_log_size` or `max_total_in_mem_log_size` to `0` means no
   limit, which is go-quicraft's default.
 - go-quicraft's own `TransportConfig` (stream pool sizing, snapshot receive

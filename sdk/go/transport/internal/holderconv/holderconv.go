@@ -368,3 +368,32 @@ func TenantBarrierHoldersFromPB(holders []*pb.CeremonyHolderCert) []transport.Te
 	}
 	return out
 }
+
+// TenantBarrierInitResponseFromPB decodes a tenant barrier init/complete
+// response, the Shamir split's roster and unseal key check value included.
+func TenantBarrierInitResponseFromPB(resp *pb.TenantBarrierInitResponse) *transport.TenantBarrierInitResponse {
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       resp.GetTenantId(),
+		Strategy:       resp.GetStrategy(),
+		Threshold:      int(resp.GetThreshold()),
+		TotalShares:    int(resp.GetTotalShares()),
+		ShareCount:     int(resp.GetShareCount()),
+		Holders:        TenantBarrierHoldersFromPB(resp.GetHolders()),
+		Roster:         resp.GetRoster(),
+		UnsealKeyCheck: resp.GetUnsealKeyCheck(),
+		AdminPending:   resp.GetAdminPending(),
+	}
+}
+
+// TenantBarrierNodesFromPB converts the nodes serving a tenant barrier from
+// a gRPC or Unix status response.
+func TenantBarrierNodesFromPB(nodes []*pb.TenantBarrierNode) []transport.TenantBarrierNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]transport.TenantBarrierNode, len(nodes))
+	for i, n := range nodes {
+		out[i] = transport.TenantBarrierNode{Node: n.GetNode(), Endpoints: n.GetEndpoints()}
+	}
+	return out
+}

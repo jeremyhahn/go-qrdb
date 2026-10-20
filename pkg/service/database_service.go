@@ -388,12 +388,14 @@ type QuotaUsageRecorder interface {
 	DecrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*tenant.TenantInfo, error)
 }
 
-// KeyDistributor ships the tenant barrier key to follower replicas after a
-// dedicated-raft (IsolationRaft) database is placed. It is satisfied by
+// KeyDistributor ships an owner-sealed tenant barrier blob to follower
+// replicas after a dedicated-raft (IsolationRaft) database is placed. A
+// platform-custody tenant's barrier is never distributed: each node
+// initializes its own key from the platform's init statement. It is satisfied by
 // *clusterkeys.Sender (duck-typed; defined here so service does not import
 // clusterkeys — the dependency flows one way: daemon → service, daemon → clusterkeys).
 type KeyDistributor interface {
-	DistributeTenantKey(ctx context.Context, p *placement.Placement, leaderBarrier *seal.StorageBarrier, selfNodeID string, autoUnseal bool) error
+	DistributeTenantKey(ctx context.Context, p *placement.Placement, leaderBarrier *seal.StorageBarrier, selfNodeID string) error
 }
 
 // TenantBarrierLookup resolves the dedicated storage barrier for a given
@@ -431,13 +433,16 @@ func WithTenantDataRootResolver(resolver TenantDataRootResolver) DatabaseService
 // step is defined exactly once; KeyDistributor/TenantBarrierLookup and
 // RebalanceKeyDeliverer/RebalanceBarrierLookup are structurally identical
 // interfaces, so both callers' fields satisfy this signature without
-// adaptation.
+// adaptation. A platform-custody barrier delivers nothing: dst initializes
+// its own key from the platform's init statement.
 func deliverTenantKeyToReplica(ctx context.Context, deliverer KeyDistributor, lookup TenantBarrierLookup, p *placement.Placement, dst placement.Replica, selfNodeID string) error {
 	tb, err := lookup.GetTenant(p.TenantID)
 	if err != nil {
 		return err
 	}
-	autoUnseal := tb.Barrier().ActiveStrategy() == seal.StrategySystemBarrier
+	if tb.Barrier().ActiveStrategy() == seal.StrategySystemBarrier {
+		return nil
+	}
 
 	singleReplica := &placement.Placement{
 		TenantID: p.TenantID,
@@ -446,7 +451,7 @@ func deliverTenantKeyToReplica(ctx context.Context, deliverer KeyDistributor, lo
 		RF:       1,
 		Replicas: []placement.Replica{dst},
 	}
-	return deliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), selfNodeID, autoUnseal)
+	return deliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), selfNodeID)
 }
 
 // deliverTenantKeyToReplicaWithRetry wraps deliverTenantKeyToReplica with a
@@ -1582,9 +1587,9 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// tenant-create gate) and route the catalog DataDir under the tenant's
 	// DataRoot so the on-disk location is physically isolated.
 	//
-	// tenantBarrierAutoUnseal is captured here so the Phase 4c-1c key
-	// distribution below can determine whether the tenant uses system-managed
-	// (true) or self-managed (false) barrier mode without a second GetTenant call.
+	// tenantBarrierAutoUnseal is captured here so the key distribution below
+	// can skip a platform-custody tenant, whose every node self-initializes
+	// under its own key, without a second GetTenant call.
 	var tenantBarrierAutoUnseal bool
 	if s.tenantInfo != nil {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
@@ -1636,7 +1641,8 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 			} else if root != "" {
 				cfg.DataDir = filepath.Join(root, "databases", cfg.Name)
 			}
-			// Capture the barrier mode for the Phase 4c-1c key delivery below.
+			// Capture the barrier custody: a platform-custody tenant skips
+			// the Phase 4c-1c key delivery below.
 			tenantBarrierAutoUnseal = info.BarrierAutoUnseal
 		}
 	}
@@ -1808,55 +1814,67 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 			return nil, placeErr
 		}
 
-		// Phase 4c-1c: ship the tenant barrier key to every follower replica.
-		// A delivery error must NOT fail the create — followers reconcile and
-		// pull the key during their own shard start sequence (Phase 4c-1d).
-		// All three of keyDistributor, barrierLookup, and localNodeID must be
-		// present; single-node or non-clustered deployments leave them unset.
-		if plan != nil && s.keyDistributor != nil && s.barrierLookup != nil && s.localNodeID != "" {
-			tb, lookupErr := s.barrierLookup.GetTenant(tenantID)
-			if lookupErr != nil {
-				s.logger.Warn("clusterkeys: tenant barrier lookup failed, skipping key distribution",
-					slog.String("tenant", tenantID),
-					slog.String("database", info.Name),
-					slog.Any("error", lookupErr))
-			} else if deliverErr := s.keyDistributor.DistributeTenantKey(ctx, plan, tb.Barrier(), s.localNodeID, tenantBarrierAutoUnseal); deliverErr != nil {
-				s.logger.Warn("clusterkeys: key distribution failed, followers will reconcile in Phase 4c-1d",
-					slog.String("tenant", tenantID),
-					slog.String("database", info.Name),
-					slog.Any("error", deliverErr))
-			}
-		}
-
-		// Phase 4c-1d (leader-side membership invite): after placement is
-		// persisted the local leader calls AddFollowerNode for every follower
-		// replica so the Raft group's initial config change is committed before
-		// TenantShardReconciler starts materializing followers. This is an
-		// optimistic best-effort step — if the dedicated shard is not yet running
-		// (the reconciler materializes it asynchronously) AddFollowerNode returns
-		// an error, which is logged non-fatally; the reconciler and Raft retries
-		// converge. Only the leader node performs this step; followers are
-		// identified as replicas whose NodeID differs from the local node ID.
-		if plan != nil && s.raftHost != nil && s.localNodeID != "" {
-			leaderReplica, leaderOK := plan.Leader()
-			if leaderOK && leaderReplica.NodeID == s.localNodeID {
-				for _, replica := range plan.Replicas {
-					if replica.NodeID == s.localNodeID {
-						continue
-					}
-					if addErr := s.raftHost.AddFollowerNode(ctx, plan.ShardID, replica.ReplicaID, replica.RaftAddr); addErr != nil {
-						s.logger.Warn("raft: AddFollowerNode failed, reconciler will retry",
-							slog.String("tenant", tenantID),
-							slog.String("database", info.Name),
-							slog.String("follower_node", replica.NodeID),
-							slog.Any("error", addErr))
-					}
-				}
-			}
-		}
+		s.inviteReplicas(ctx, tenantID, info.Name, plan, tenantBarrierAutoUnseal)
 	}
 
 	return &info, nil
+}
+
+// inviteReplicas does the best-effort steps that follow persisting a
+// dedicated-raft placement: shipping the tenant barrier key to the follower
+// replicas and, on the leader, adding them to the group. Neither failure fails
+// the caller; followers reconcile and the reconciler retries.
+func (s *DatabaseService) inviteReplicas(ctx context.Context, tenantID, name string, plan *placement.Placement, autoUnseal bool) {
+	// Phase 4c-1c: ship an owner-sealed tenant barrier blob to every
+	// follower replica. A platform-custody tenant ships nothing: each node
+	// initializes its own key from the platform's init statement.
+	// A delivery error must NOT fail the create — followers reconcile and
+	// pull the key during their own shard start sequence (Phase 4c-1d).
+	// All three of keyDistributor, barrierLookup, and localNodeID must be
+	// present; single-node or non-clustered deployments leave them unset.
+	if plan != nil && !autoUnseal && s.keyDistributor != nil && s.barrierLookup != nil && s.localNodeID != "" {
+		tb, lookupErr := s.barrierLookup.GetTenant(tenantID)
+		if lookupErr != nil {
+			s.logger.Warn("clusterkeys: tenant barrier lookup failed, skipping key distribution",
+				slog.String("tenant", tenantID),
+				slog.String("database", name),
+				slog.Any("error", lookupErr))
+		} else if deliverErr := s.keyDistributor.DistributeTenantKey(ctx, plan, tb.Barrier(), s.localNodeID); deliverErr != nil {
+			s.logger.Warn("clusterkeys: key distribution failed, followers will reconcile in Phase 4c-1d",
+				slog.String("tenant", tenantID),
+				slog.String("database", name),
+				slog.Any("error", deliverErr))
+		}
+	}
+
+	// Phase 4c-1d (leader-side membership invite): after placement is
+	// persisted the local leader calls AddFollowerNode for every follower
+	// replica so the Raft group's initial config change is committed before
+	// TenantShardReconciler starts materializing followers. This is an
+	// optimistic best-effort step — if the dedicated shard is not yet running
+	// (the reconciler materializes it asynchronously) AddFollowerNode returns
+	// an error, which is logged non-fatally; the reconciler and Raft retries
+	// converge. Only the leader node performs this step; followers are
+	// identified as replicas whose NodeID differs from the local node ID.
+	if plan == nil || s.raftHost == nil || s.localNodeID == "" {
+		return
+	}
+	leaderReplica, leaderOK := plan.Leader()
+	if !leaderOK || leaderReplica.NodeID != s.localNodeID {
+		return
+	}
+	for _, replica := range plan.Replicas {
+		if replica.NodeID == s.localNodeID {
+			continue
+		}
+		if addErr := s.raftHost.AddFollowerNode(ctx, plan.ShardID, replica.ReplicaID, replica.RaftAddr); addErr != nil {
+			s.logger.Warn("raft: AddFollowerNode failed, reconciler will retry",
+				slog.String("tenant", tenantID),
+				slog.String("database", name),
+				slog.String("follower_node", replica.NodeID),
+				slog.Any("error", addErr))
+		}
+	}
 }
 
 // validateRaftTopology enforces that a raft-backed database's requested Raft
@@ -2071,6 +2089,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	wasDedicatedWAL := false
 	db, dbErr := s.manager.GetForTenantIgnoringFence(ctx, name)
 	switch {
+	case dbErr != nil && database.IsTenantHome(name):
+		// The tenant's home group has a placement but no catalog record;
+		// its placement is retired only with the tenant (RetireTenantHome).
+		return dbErr
 	case dbErr == nil:
 		info := db.Info()
 		wasRaft = info.Backend == database.BackendRaft
@@ -2390,6 +2412,11 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 
 	if s.placementStore == nil || s.placementScheduler == nil {
 		return nil, &RaftDistributedUnavailableError{Database: name}
+	}
+	// The tenant's home group has a placement but is no database: scaling it
+	// is refused as for any name with no dedicated-raft placement.
+	if database.IsTenantHome(name) {
+		return nil, &NotDedicatedRaftDatabaseError{Database: name}
 	}
 
 	muKey := tenantID + "/" + name

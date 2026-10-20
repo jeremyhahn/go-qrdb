@@ -52,7 +52,7 @@ func TestTenantBarrierInitShamir_AlreadyInitialized_RefusesAndLeavesStateUnchang
 	firstRoster := &TenantBarrierShamirRoster{Officers: []ceremony.OfficerConfig{
 		shamirRosterOfficer(alice), shamirRosterOfficer(bob), shamirRosterOfficer(carol),
 	}}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, "acme", nil, 3, 3, seal.StrategyShamir, firstRoster); err != nil {
+	if _, err := initShamir(ctx, svc, "acme", 3, 3, firstRoster); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
 

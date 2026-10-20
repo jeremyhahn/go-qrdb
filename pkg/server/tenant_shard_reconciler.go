@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -113,6 +114,21 @@ type BarrierReadiness interface {
 	GetTenant(tenantID string) (*seal.TenantBarrier, error)
 }
 
+// ShellRegistrar registers a tenant's barrier on this node as an
+// uninitialized, sealed shell when placement assigns the node to one of the
+// tenant's groups and BarrierReadiness reports no barrier for it. It is
+// satisfied by *tenant.TenantService.
+type ShellRegistrar interface {
+	// RegisterTenantShell registers tenantID's shell, doing nothing for a
+	// tenant that needs none or already has a barrier here.
+	RegisterTenantShell(ctx context.Context, tenantID string) error
+}
+
+// shellRegistrarBox holds a ShellRegistrar behind an atomic.Pointer.
+type shellRegistrarBox struct {
+	registrar ShellRegistrar
+}
+
 // TenantShardReconcilerOption configures TenantShardReconciler behavior.
 type TenantShardReconcilerOption func(*TenantShardReconciler)
 
@@ -201,6 +217,7 @@ type TenantShardReconciler struct {
 	factory         ShardLifecycle
 	selfNodeID      string
 	barriers        BarrierReadiness
+	shells          atomic.Pointer[shellRegistrarBox]
 	sealRecords     clusterseal.Sealer
 	joinObserver    JoinObserver
 	promoter        Promoter
@@ -547,6 +564,9 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 	}
 	if r.barriers != nil {
 		tb, err := r.barriers.GetTenant(p.TenantID)
+		if err != nil || tb == nil {
+			r.registerShell(ctx, p.TenantID)
+		}
 		if err != nil || tb == nil || tb.IsSealed() {
 			r.logger.Debug("placement reconciler: barrier not ready, deferring shard start",
 				slog.String("tenant", p.TenantID),
@@ -563,6 +583,36 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 		return false
 	}
 	return true
+}
+
+// registerShell registers tenantID's barrier shell on this node through the
+// installed ShellRegistrar, so that status, init and unseal reach a node
+// placement has assigned to the tenant before the node holds a key. The shell
+// is sealed, so the shard start still defers; a failure is logged and retried
+// on the next reconcile.
+func (r *TenantShardReconciler) registerShell(ctx context.Context, tenantID string) {
+	shells := r.shells.Load()
+	if shells == nil {
+		return
+	}
+	if err := shells.registrar.RegisterTenantShell(ctx, tenantID); err != nil {
+		r.logger.Warn("placement reconciler: tenant barrier shell registration failed, will retry",
+			slog.String("tenant", tenantID),
+			slog.Any("error", err))
+	}
+}
+
+// SetShellRegistrar installs the registrar of the barrier shell a node
+// registers when placement assigns it to a tenant's group (registerShell). It
+// is set once the tenant service that registers shells exists, which is after
+// the reconciler is built; until then, and when s is nil, no shell is
+// registered.
+func (r *TenantShardReconciler) SetShellRegistrar(s ShellRegistrar) {
+	if s == nil {
+		r.shells.Store(nil)
+		return
+	}
+	r.shells.Store(&shellRegistrarBox{registrar: s})
 }
 
 // Run drives the reconciler lifecycle. It calls ReconcileOnce immediately

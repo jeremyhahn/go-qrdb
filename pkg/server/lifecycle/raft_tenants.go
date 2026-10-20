@@ -27,6 +27,7 @@ import (
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -213,8 +214,13 @@ func (c *RaftTenantCluster) ServerOptions() []server.ServerOption {
 //     deliver, and a sender delivering this node's to the replicas a
 //     placement names -- only with a Raft host, a barrier registry and a
 //     placement table, and a usable node key;
+//   - the platform's init statement for a tenant that chose platform custody:
+//     signed with the node's key under its certificate when such a tenant is
+//     created here, and trusted through CACertPool, the CA node certificates
+//     chain to, for that tenant alone (wirePlatformInit) -- so every node it
+//     is placed on initializes its own key under its own system barrier;
 //   - DatabaseService's key distributor, so a dedicated raft database's
-//     tenant key reaches its replicas when it is placed;
+//     owner-sealed tenant key reaches its replicas when it is placed;
 //   - RebalanceService's placement table, key deliverer and barrier lookup,
 //     for a dedicated tenant group's MOVE;
 //   - with dedicated raft groups, the replica host both services add and
@@ -239,6 +245,10 @@ func ComposeRaftTenantCluster(c RaftTenantClusterConfig) *RaftTenantCluster {
 	}
 	if c.Services == nil {
 		return out
+	}
+	wireBarrierNodes(c.Services)
+	if c.Host != nil {
+		wirePlatformInit(c.Services, c.CACertPool, c.Identity)
 	}
 	if out.KeySender != nil {
 		if concrete, ok := c.Services.Database.(*service.DatabaseService); ok {
@@ -339,6 +349,28 @@ func composeKeySender(c RaftTenantClusterConfig, logger *slog.Logger) *clusterke
 		return nil
 	}
 	return sender
+}
+
+// NodeIdentity is the Identity of RaftTenantClusterConfig, derived from the
+// cluster mTLS material the node's Raft transport is configured with: the one
+// derivation cmd/qrdbd and sdk/go/node both put their node certificate
+// through, so the key plane and the platform-init signer read the same
+// identity on either. A composer-built Certificate (a key held on a device)
+// is used as is; otherwise the PEM certificate and key are parsed as a pair.
+// A nil id is no identity, which is not an error; a pair that does not parse
+// is a *NodeIdentityError.
+func NodeIdentity(id *quicraftconfig.MTLSConfig) (*tls.Certificate, error) {
+	if id == nil {
+		return nil, nil
+	}
+	if id.Certificate != nil {
+		return id.Certificate, nil
+	}
+	pair, err := tls.X509KeyPair(id.Cert, id.Key)
+	if err != nil {
+		return nil, &NodeIdentityError{Reason: "node certificate and key do not form a pair", Err: err}
+	}
+	return &pair, nil
 }
 
 // identityLeaf parses the leaf of the node's identity: the certificate it

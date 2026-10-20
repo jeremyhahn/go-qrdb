@@ -136,6 +136,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		nil,        // no cert provider: revocation not enforced
 		nil,        // no cluster CA: issuer-tenant binding not enforced
 		nil,        // no pending tenant admins: first-init window unconfined
+		nil,        // no first-admin pins: no fallback once a record is consumed
 		nil,        // no cert target guard: add_cert_binding not exercised
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
@@ -179,6 +180,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		nil,        // no cert provider: revocation not enforced
 		nil,        // no cluster CA: issuer-tenant binding not enforced
 		nil,        // no pending tenant admins: first-init window unconfined
+		nil,        // no first-admin pins: no fallback once a record is consumed
 		nil,        // no cert target guard: add_cert_binding not exercised
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)

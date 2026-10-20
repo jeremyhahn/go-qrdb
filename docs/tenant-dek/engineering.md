@@ -171,11 +171,10 @@ resource, the other two by verb).
 
 There is no DEK-shred step. The fence makes the tenant unresolvable, so the
 keyring is unusable from that point; the barrier destroy makes a dedicated
-tenant's record undecryptable; the keyspace reclaim deletes it.
-`service.TenantKeyPrefixes` covers both `<tenant>/` and
-`seal.TenantSharedNamespace(tenant)`, so a dedicated tenant's identity records
-and keyring are reclaimed too — including under barrier protection `none`,
-where they would otherwise survive as plaintext.
+tenant's record undecryptable; the teardown deletes it. A shared tenant's
+keyring is under `<tenant>/`, which `service.TenantKeyPrefixes` covers; an
+isolated tenant's keyring, like its identity records, is in its home store,
+which is retired with the tenant before its barrier is destroyed.
 
 ## Tests
 

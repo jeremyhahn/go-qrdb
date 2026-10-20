@@ -96,6 +96,8 @@ export {
     FeatureDisabledError,
     DesktopOnlyError,
     NotImplementedError,
+    ShamirSplitMissingError,
+    ShamirSplitMismatchError,
 } from './errors.js';
 
 // Request/response types

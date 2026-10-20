@@ -143,6 +143,27 @@ func tenantQuorumSubmit(t *testing.T, node *multiProtoNode, proto multiProtocol,
 	return &outcome
 }
 
+// waitForTenantFirstAdmin polls an authenticated read (`kv exists`) on node
+// with the tenant's bootstrap certificate until the certificate names an
+// account: the read is answered, or refused by RBAC, which runs only after
+// authentication. A Shamir barrier-init may answer admin_pending, and until
+// the first admin is complete its certificate names no account and every
+// authenticated request it makes is refused before authorization. The tenant's home leader completes it within the
+// admin's 2-minute completion budget (docs/shamir-custody/api.md,
+// "admin_pending").
+func waitForTenantFirstAdmin(t *testing.T, node *multiProtoNode, proto multiProtocol, certPath, keyPath string) {
+	t.Helper()
+	probeArgs := append(tenantCLIArgsForProto(node, proto, certPath, keyPath), "kv", "exists", "__tenant_first_admin_probe__")
+	var lastOut string
+	if !pollUntil(3*time.Minute, 500*time.Millisecond, func() bool {
+		out, err := runCLI(t, node.cli, probeArgs...)
+		lastOut = out
+		return err == nil || strings.Contains(out, "permission denied")
+	}) {
+		t.Fatalf("[%s] the tenant's first admin never became usable; last kv exists output: %s", proto.name, lastOut)
+	}
+}
+
 // TestTenantBarrierOfficer_ShamirLifecycle_PerProtocol drives the full
 // tenant-scoped Shamir share-holder lifecycle -- inline-roster init, list,
 // claim (both styles), and barrier-quorum seal/unseal -- through the real
@@ -482,6 +503,9 @@ func testTenantBarrierInitShamirRosterNegativePathsOverProtocol(t *testing.T, no
 	if err != nil {
 		t.Fatalf("[%s] tenant barrier-init with inline roster: %v\noutput: %s", proto.name, err, out)
 	}
+	// The init may answer admin_pending; the re-init below must reach the
+	// barrier's own refusal, not an unknown-account one.
+	waitForTenantFirstAdmin(t, node, proto, bootCertPath, bootKeyPath)
 
 	// A second barrier-init attempt, with a COMPLETELY DIFFERENT roster,
 	// must be refused -- and leave the original holder set untouched.

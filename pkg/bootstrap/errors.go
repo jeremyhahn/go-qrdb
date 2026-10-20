@@ -174,6 +174,20 @@ func (e *TenantRecordCreationError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *TenantRecordCreationError) Unwrap() error { return e.Cause }
 
+// TenantHomeProvisionError wraps errors that occur while provisioning a
+// isolated tenant's home store during ProvisionTenant.
+type TenantHomeProvisionError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *TenantHomeProvisionError) Error() string {
+	return "bootstrap: tenant home store provisioning failed: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *TenantHomeProvisionError) Unwrap() error { return e.Cause }
+
 // TenantAdminRoleCreationError wraps errors that occur while seeding the
 // tenant-admin role during ProvisionTenant.
 type TenantAdminRoleCreationError struct {

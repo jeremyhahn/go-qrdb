@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"reflect"
 	"testing"
 	"time"
 
@@ -582,6 +583,34 @@ func TestHandleTenantBarrierStatus_Success(t *testing.T) {
 	}
 	if got.HardwareBacked {
 		t.Error("expected HardwareBacked=false")
+	}
+}
+
+// TestHandleTenantBarrierStatus_ServingNodes pins that the nodes serving the
+// barrier are on the wire with their endpoints.
+func TestHandleTenantBarrierStatus_ServingNodes(t *testing.T) {
+	nodes := []tenant.BarrierNode{
+		{Node: "n1:7000", Endpoints: map[string]string{"quic": "n1:9444"}},
+		{Node: "n2:7000"},
+	}
+	svc := &mockTenantService{
+		barrierStatusFn: func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: id, Sealed: true, Nodes: nodes}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+	payload, _ := json.Marshal(quicTenantBarrierStatusRequest{TenantID: "acme"})
+
+	resp, err := srv.handleTenantBarrierStatus(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got quicTenantBarrierStatusResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got.Nodes, nodes) {
+		t.Fatalf("Nodes = %+v, want %+v", got.Nodes, nodes)
 	}
 }
 

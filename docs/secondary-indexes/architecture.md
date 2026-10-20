@@ -200,8 +200,7 @@ full scans over a store that was only briefly unavailable.
 |---|---|---|
 | `lifecycle.kvStoreAdapter` (system tenant, via `StoreResolver`) | **yes**, when built with the node's `IndexServicer` | It routes to the same engine host that applies its writes (`engine.MVCCEngine` on every backend as of Lane 1A — see [../databases/](../databases/)), so index entries are maintained inside the Raft-applied batch, backfilled on registration, and replicated |
 | `kvstore.MemoryKVStore` | **yes** | Maintains entries on the write path from the value's JSON fields; single-process |
-| `seal.tenantSharedKVStore` (dedicated tenant, via `StoreResolver`) | no — refuses | Stores only ciphertext in the shared store, so nothing beneath it can read a field value to index. See below |
-| `seal.tenantBarrierKVStore` | no — refuses | Same reason |
+| `seal.tenantBarrierKVStore` (an isolated tenant's home store on a standalone node, via `StoreResolver`) | no — refuses | Stores only ciphertext under the tenant's barrier, so nothing beneath it can read a field value to index. See below |
 | `lifecycle.NewKVStoreAdapter` (volume-pool cursor) | no — refuses | Built without an `IndexServicer`; its record is a single cluster-wide scalar with nothing to index |
 | `embedded.serverKVAdapter` | no — refuses | Wraps a bare `KVServicer` with no index subsystem behind it |
 

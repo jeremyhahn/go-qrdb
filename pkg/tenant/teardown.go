@@ -68,6 +68,21 @@ type KeyspaceReclaimer interface {
 	ReclaimTenantKeyspace(ctx context.Context, tenantID string) error
 }
 
+// HomeRetirer removes an isolated tenant's home group from the replicated
+// placement table.
+//
+// The home group is a placement with no catalog entry, so the bottom-up
+// refusal cannot see it and no DROP DATABASE removes it. DeleteTenant retires
+// it after the fence and before the barrier is destroyed: once the placement
+// is gone no node starts a replica of it again, and every node's shard
+// reconciler closes and removes the replica it holds. *service.DatabaseService
+// satisfies it.
+type HomeRetirer interface {
+	// RetireTenantHome deletes tenantID's home-group placement. A tenant with
+	// no home group is the success case.
+	RetireTenantHome(ctx context.Context, tenantID string) error
+}
+
 // teardownSeams holds DeleteTenant's optional dependencies.
 //
 // It is embedded in BOTH tenant services so a node behaves identically
@@ -79,6 +94,7 @@ type KeyspaceReclaimer interface {
 type teardownSeams struct {
 	databases DatabaseLister
 	reclaimer KeyspaceReclaimer
+	homes     HomeRetirer
 }
 
 // TeardownWiring is the post-construction wiring surface for DeleteTenant's
@@ -115,6 +131,12 @@ type TeardownWiring interface {
 	// shared store behind it and a leak for one with -- so a daemon asserts
 	// on it rather than discovering it later.
 	SetKeyspaceReclaimer(KeyspaceReclaimer)
+
+	// SetHomeRetirer sets the seam DeleteTenant retires an isolated tenant's
+	// home group through. With none wired a deleted tenant's home placement
+	// is left until the keyspace reclamation removes its placement range,
+	// which is after the barrier the home group runs under is destroyed.
+	SetHomeRetirer(HomeRetirer)
 }
 
 // Compile-time checks: both tenant services carry the teardown seams.
@@ -128,6 +150,12 @@ func (t *teardownSeams) SetDatabaseLister(l DatabaseLister) { t.databases = l }
 
 // SetKeyspaceReclaimer implements TeardownWiring.
 func (t *teardownSeams) SetKeyspaceReclaimer(r KeyspaceReclaimer) { t.reclaimer = r }
+
+// SetHomeRetirer implements TeardownWiring.
+func (t *teardownSeams) SetHomeRetirer(h HomeRetirer) { t.homes = h }
+
+// HomeRetirer returns the configured home retirer, or nil when none is wired.
+func (t *teardownSeams) HomeRetirer() HomeRetirer { return t.homes }
 
 // KeyspaceReclaimer returns the configured reclaimer, or nil when none is
 // wired.

@@ -53,6 +53,9 @@ func (s *faultingKVStore) PutIfAbsent(ctx context.Context, key string, value []b
 
 // CompareAndDelete and CompareAndSwap complete kvstore.AtomicKVStore.
 func (s *faultingKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if s.deleteErr != nil {
+		return false, s.deleteErr
+	}
 	return s.inner.(kvstore.AtomicKVStore).CompareAndDelete(ctx, key, expected)
 }
 
@@ -124,8 +127,8 @@ func TestKVStore_RoundTrips(t *testing.T) {
 		t.Fatalf("Get = %+v, want %+v", got, p)
 	}
 
-	if err := s.Delete(ctx, "acme"); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if deleted, err := s.Delete(ctx, "acme", got); err != nil || !deleted {
+		t.Fatalf("Delete of the record Get read = %v, %v; want true, nil", deleted, err)
 	}
 	got, err = s.Get(ctx, "acme")
 	if err != nil || got != nil {
@@ -164,8 +167,12 @@ func TestKVStore_IsolatesTenants(t *testing.T) {
 		t.Fatalf("Get(globex) = %v, %v; want bob", gotGlobex, err)
 	}
 
-	if err := s.Delete(ctx, "acme"); err != nil {
-		t.Fatal(err)
+	if deleted, err := s.Delete(ctx, "acme", globex); err != nil || deleted {
+		t.Fatalf("Delete of a record acme does not hold = %v, %v; want false, nil", deleted, err)
+	}
+	// The record Create wrote, held in memory, is compared as it was encoded.
+	if deleted, err := s.Delete(ctx, "acme", acme); err != nil || !deleted {
+		t.Fatalf("Delete(acme) = %v, %v; want true, nil", deleted, err)
 	}
 	if got, err := s.Get(ctx, "globex"); err != nil || got == nil {
 		t.Fatalf("deleting acme's record removed globex's: %v, %v", got, err)
@@ -175,8 +182,8 @@ func TestKVStore_IsolatesTenants(t *testing.T) {
 func TestKVStore_DeleteOfAnAbsentRecordIsNotAnError(t *testing.T) {
 	ctx := context.Background()
 	s := NewKVStore(kvstore.NewMemoryKVStore())
-	if err := s.Delete(ctx, "acme"); err != nil {
-		t.Fatalf("Delete of an absent record = %v, want nil", err)
+	if deleted, err := s.Delete(ctx, "acme", &Pending{Username: "alice", Thumbprint: "tp"}); err != nil || deleted {
+		t.Fatalf("Delete of an absent record = %v, %v; want false, nil", deleted, err)
 	}
 }
 
@@ -192,7 +199,7 @@ func TestKVStore_RefusesTheSystemTenant(t *testing.T) {
 	if _, err := s.Get(ctx, tenantid.System); !errors.As(err, &bad) {
 		t.Fatalf("Get for the system tenant = %v, want *InvalidTenantError", err)
 	}
-	if err := s.Delete(ctx, tenantid.System); !errors.As(err, &bad) {
+	if _, err := s.Delete(ctx, tenantid.System, &Pending{Username: "alice", Thumbprint: "tp"}); !errors.As(err, &bad) {
 		t.Fatalf("Delete for the system tenant = %v, want *InvalidTenantError", err)
 	}
 	// The empty tenant id is the same tenant as SystemTenantID.
@@ -213,7 +220,7 @@ func TestKVStore_RefusesAnInvalidTenantID(t *testing.T) {
 	if _, err := s.Get(ctx, "acme/evil"); !errors.As(err, &bad) {
 		t.Fatalf("Get for a nesting tenant id = %v, want *InvalidTenantError", err)
 	}
-	if err := s.Delete(ctx, "acme/evil"); !errors.As(err, &bad) {
+	if _, err := s.Delete(ctx, "acme/evil", &Pending{Username: "alice", Thumbprint: "tp"}); !errors.As(err, &bad) {
 		t.Fatalf("Delete for a nesting tenant id = %v, want *InvalidTenantError", err)
 	}
 }
@@ -268,8 +275,89 @@ func TestKVStore_PropagatesADeleteFailure(t *testing.T) {
 	s := NewKVStore(fs)
 
 	var se *StoreError
-	if err := s.Delete(ctx, "acme"); !errors.As(err, &se) || se.Op != "delete" {
+	if _, err := s.Delete(ctx, "acme", &Pending{Username: "alice", Thumbprint: "tp"}); !errors.As(err, &se) || se.Op != "delete" {
 		t.Fatalf("Delete over a failing store = %v, want *StoreError{Op: delete}", err)
+	}
+}
+
+// TestKVStore_DeleteLeavesARecordRecordedSinceTheRead is the guard: a caller
+// that read a record which was completed and replaced before its delete must
+// not remove the replacement it never saw.
+func TestKVStore_DeleteLeavesARecordRecordedSinceTheRead(t *testing.T) {
+	ctx := context.Background()
+	s := NewKVStore(kvstore.NewMemoryKVStore())
+	if err := s.Create(ctx, "acme", &Pending{Username: "alice", Thumbprint: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := s.Get(ctx, "acme")
+	if err != nil || stale == nil {
+		t.Fatalf("Get = %v, %v", stale, err)
+	}
+	if deleted, err := s.Delete(ctx, "acme", stale); err != nil || !deleted {
+		t.Fatalf("first Delete = %v, %v; want true, nil", deleted, err)
+	}
+	if err := s.Create(ctx, "acme", &Pending{Username: "alice", Thumbprint: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := s.Delete(ctx, "acme", stale); err != nil || deleted {
+		t.Fatalf("Delete with the stale read = %v, %v; want false, nil", deleted, err)
+	}
+	if got, err := s.Get(ctx, "acme"); err != nil || got == nil || got.Thumbprint != "second" {
+		t.Fatalf("Get after the stale Delete = %+v, %v; want the second record", got, err)
+	}
+}
+
+func TestKVStore_DeleteRefusesANilRead(t *testing.T) {
+	s := NewKVStore(kvstore.NewMemoryKVStore())
+	var inc *IncompleteError
+	if _, err := s.Delete(context.Background(), "acme", nil); !errors.As(err, &inc) {
+		t.Fatalf("Delete(nil) = %v, want *IncompleteError", err)
+	}
+}
+
+func TestKVStore_DeleteRefusesANonAtomicStore(t *testing.T) {
+	s := NewKVStore(nonAtomicKVStore{kvstore.NewMemoryKVStore()})
+	var se *StoreError
+	_, err := s.Delete(context.Background(), "acme", &Pending{Username: "alice", Thumbprint: "t"})
+	if !errors.As(err, &se) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("Delete over a non-atomic store = %v, want a StoreError wrapping ErrAtomicWriteUnsupported", err)
+	}
+}
+
+// unencodablePending is a record encoding/json refuses: time.Time marshals
+// only years 0 through 9999 (RFC 3339).
+func unencodablePending() *Pending {
+	return &Pending{Username: "alice", Thumbprint: "tp", NotAfter: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}
+}
+
+func TestKVStore_CreateRefusesAnUnencodableRecord(t *testing.T) {
+	ctx := context.Background()
+	s := NewKVStore(kvstore.NewMemoryKVStore())
+	var se *StoreError
+	if err := s.Create(ctx, "acme", unencodablePending()); !errors.As(err, &se) || se.Op != "encode" {
+		t.Fatalf("Create of an unencodable record = %v, want *StoreError{Op: encode}", err)
+	}
+	if got, err := s.Get(ctx, "acme"); err != nil || got != nil {
+		t.Fatalf("Get after a refused Create = %+v, %v; want nil, nil", got, err)
+	}
+}
+
+// TestKVStore_DeleteRefusesAnUnencodableInMemoryRead covers the record built
+// in memory, which Delete encodes to compare: one that cannot be encoded is
+// refused and the stored record is left in place.
+func TestKVStore_DeleteRefusesAnUnencodableInMemoryRead(t *testing.T) {
+	ctx := context.Background()
+	s := NewKVStore(kvstore.NewMemoryKVStore())
+	if err := s.Create(ctx, "acme", &Pending{Username: "alice", Thumbprint: "tp"}); err != nil {
+		t.Fatal(err)
+	}
+	var se *StoreError
+	deleted, err := s.Delete(ctx, "acme", unencodablePending())
+	if !errors.As(err, &se) || se.Op != "encode" || deleted {
+		t.Fatalf("Delete with an unencodable read = %v, %v; want false, *StoreError{Op: encode}", deleted, err)
+	}
+	if got, err := s.Get(ctx, "acme"); err != nil || got == nil || got.Thumbprint != "tp" {
+		t.Fatalf("Get after a refused Delete = %+v, %v; want the stored record", got, err)
 	}
 }
 
@@ -284,7 +372,7 @@ func TestKVStore_PropagatesAScopeFailure(t *testing.T) {
 	if _, err := s.Get(ctx, "acme"); !errors.As(err, &se) || se.Op != "scope" {
 		t.Fatalf("Get over a nil store = %v, want *StoreError{Op: scope}", err)
 	}
-	if err := s.Delete(ctx, "acme"); !errors.As(err, &se) || se.Op != "scope" {
+	if _, err := s.Delete(ctx, "acme", &Pending{Username: "alice", Thumbprint: "tp"}); !errors.As(err, &se) || se.Op != "scope" {
 		t.Fatalf("Delete over a nil store = %v, want *StoreError{Op: scope}", err)
 	}
 }

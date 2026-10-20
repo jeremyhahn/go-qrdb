@@ -559,7 +559,6 @@ copies and so proves the measurement can fail).
 | Store maintains no indexes — `QueryByIndex` / `ScanByIndex` / compound | `kvstore.ErrIndexUnsupported` | **yes** — a named access path cannot be silently substituted |
 | Store maintains no indexes — planned `Find().Where(...)` | full scan, correct results | **yes** — no plan routes to an index that does not exist |
 | Registration fails for any other reason | DAO construction fails | **yes** |
-| Shared store lacks compare-and-set — `tenantSharedKVStore.PutIfAbsent` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — never degrades to `Exists`-then-`Put` |
 | DAO `SaveIfAbsent` / `CompareAndSwap` / `DeleteIfMatch` over a store with no atomic write, or one that refused it | `*dao.AtomicWriteUnsupportedError` (matches `kvstore.ErrAtomicWriteUnsupported`; a store refusal stays in the chain) | **yes** — never degrades to `Get`-then-`Save`; any other store error is returned unchanged as outcome-unknown |
 | DAO `CompareAndSwap` where `expected`/`next` carry different `EntityID()`s, or either `CompareAndSwap`/`DeleteIfMatch` on an entity with `EntityID() == 0` | `dao.InvalidEntityIDError` | **yes** |
 | Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |

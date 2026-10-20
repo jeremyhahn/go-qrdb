@@ -49,7 +49,7 @@ func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 	_, err = bootstrapAuthEnforcement(
 		context.Background(), mgmt, t.TempDir(), node,
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
-		nil, nil, nil, nil, "not-a-duration", "", "",
+		nil, nil, nil, nil, nil, "not-a-duration", "", "",
 		firstboot.NewAwaitingAdminCredentialProbe(), nil,
 	)
 	require.Error(t, err)

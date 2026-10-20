@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 > Conflicts with this document are defects. Fix them here first.
 
 A per-tenant, versioned keyring of AES-256-GCM data encryption keys. A caller
@@ -33,18 +33,25 @@ caller ─► transport ─► service.DEKService ─► dek.Keyring ─► Stor
                        (tenant scoping)      (versions,       │
                                               AEAD)           ├─ prefix tenant:    "<tenant>/__sys:dek/keyring"
                                                               │                    in the replicated shared store
-                                                              └─ dedicated tenant: "__tiam:<tenant>/__sys:dek/keyring"
-                                                                                   in the replicated shared store,
-                                                                                   encrypted under the tenant's barrier
+                                                              └─ isolated tenant:  "__sys:dek/keyring"
+                                                                                   in the tenant's home store,
+                                                                                   under the tenant's barrier
 ```
+
+An isolated (`barrier`, `volume` or `raft`) tenant's resolved store is its
+home store, whatever its isolation policy: its home group in a cluster, or a
+store under its barrier on a standalone node — never the system shard (see
+[multi-tenancy architecture](../multi-tenancy/architecture.md), "Strict
+tenant isolation — design"). The keyring code is the same; only the store the
+resolver hands out differs.
 
 Riding the resolver gives the keyring every property the tenant's identity
 already has, with no second mechanism:
 
 | Property | How the keyring gets it |
 |---|---|
-| Wrapped by the tenant's barrier | A dedicated-isolation tenant's resolved store encrypts every value with that tenant's barrier. A prefix tenant has no barrier of its own; its record is protected at rest by the system barrier. |
-| Replicated | The resolved store is the system shard's replicated KV. Every node reads the same keyring, so any node decrypts what any node encrypted, and a rotation or retirement on one node is in force on all of them at the next call. |
+| Wrapped by the tenant's barrier | An isolated tenant's resolved store encrypts every value with that tenant's barrier. A prefix tenant has no barrier of its own; its record is protected at rest by the system barrier. |
+| Replicated | The resolved store is the system shard's replicated KV, or for an isolated tenant in a cluster its home group, which has a replica on every node; a node that joins later serves the tenant once its replica has caught up. Every node holding a replica reads the same keyring, so any node decrypts what any node encrypted, and a rotation or retirement on one node is in force on all of them at the next call. |
 | Survives restart | It is a durable KV record, not process memory. |
 | Fails closed when sealed | The resolver refuses a sealed tenant; the keyring answers `ErrKeyringUnavailable`. |
 | Dies with the tenant | The teardown fence makes the tenant unresolvable, then the barrier destroy and keyspace reclaim remove the record. |

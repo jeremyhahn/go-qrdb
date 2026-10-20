@@ -208,6 +208,25 @@ func TestDedicatedWALError_Error(t *testing.T) {
 	}
 }
 
+func TestTenantWALUnavailableError_Error(t *testing.T) {
+	e := &TenantWALUnavailableError{TenantID: "acme", ShardID: 42, Err: errors.New("disk full")}
+	want := "database: dedicated WAL of tenant acme shard 42 is unavailable: disk full"
+	if got := e.Error(); got != want {
+		t.Fatalf("Error() = %q; want %q", got, want)
+	}
+}
+
+func TestTenantWALUnavailableError_Unwrap(t *testing.T) {
+	var err error = &TenantWALUnavailableError{TenantID: "acme", ShardID: 42, Err: ErrDedicatedWALNotWired}
+	if !errors.Is(err, ErrDedicatedWALNotWired) {
+		t.Fatalf("errors.Is must reach the cause through Unwrap")
+	}
+	var target *TenantWALUnavailableError
+	if !errors.As(err, &target) || target.ShardID != 42 {
+		t.Fatalf("errors.As must find the TenantWALUnavailableError")
+	}
+}
+
 func TestNewMultiplexLogDB_NilShared(t *testing.T) {
 	if _, err := NewMultiplexLogDB(nil, nil); !errors.Is(err, ErrNilSharedWAL) {
 		t.Fatalf("expected ErrNilSharedWAL, got %v", err)

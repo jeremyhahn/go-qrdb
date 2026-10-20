@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // LegacyStorage is the interface for storage backends that use []byte keys
@@ -48,7 +49,15 @@ type StorageAdapter struct {
 var (
 	_ StorageBackend        = (*StorageAdapter)(nil)
 	_ kvstore.FencedCreator = (*StorageAdapter)(nil)
+	_ guardedBatchBackend   = (*StorageAdapter)(nil)
 )
+
+// batchingStorage is the capability PutAllIfAllUnchanged needs from the
+// wrapped engine: a batch that commits several writes in one step. Every
+// storage.Storage has it; a LegacyStorage need not.
+type batchingStorage interface {
+	Batch() storage.Batch
+}
 
 // NewStorageAdapter creates a StorageBackend adapter from a LegacyStorage.
 func NewStorageAdapter(s LegacyStorage) StorageBackend {
@@ -153,6 +162,66 @@ func (a *StorageAdapter) CompareAndSwap(_ context.Context, key string, expected,
 		return false, err
 	}
 	return true, nil
+}
+
+// PutAllIfAllUnchanged applies every write in one committed batch, and only
+// while every guard holds against the bytes stored now: a nil Guard.Value
+// requires the key to be absent, any other value requires it to be present
+// and equal. The guards are read and the batch committed under writeMu, the
+// same mutex every other write here takes, so no write lands in between. An
+// engine without batches is refused with ErrGuardedBatchUnsupported: applying
+// the writes one at a time could leave a prefix of them behind.
+func (a *StorageAdapter) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	batcher, ok := a.inner.(batchingStorage)
+	if !ok {
+		return false, &kvstore.GuardedBatchUnsupportedError{Err: ErrGuardedBatchUnsupported}
+	}
+
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+
+	for _, g := range guards {
+		current, err := a.inner.Get([]byte(g.Key))
+		if err != nil {
+			return false, err
+		}
+		if !guardHolds(g.Value, current) {
+			return false, nil
+		}
+	}
+	if len(writes) == 0 {
+		return true, nil
+	}
+	// Closing an uncommitted batch discards it, so an early return below
+	// leaves the store untouched.
+	batch := batcher.Batch()
+	defer func() { _ = batch.Close() }()
+	for _, w := range writes {
+		var err error
+		if w.Delete {
+			err = batch.Delete([]byte(w.Key))
+		} else {
+			err = batch.Set([]byte(w.Key), w.Value)
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	if err := batch.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// guardHolds reports whether a stored value satisfies a guard's expectation:
+// absent when expected is nil, otherwise present and byte-equal. A present
+// key holding an empty value is not absent, and an absent key never equals a
+// non-nil empty expectation.
+func guardHolds(expected, current []byte) bool {
+	if expected == nil {
+		return current == nil
+	}
+	return current != nil && bytes.Equal(current, expected)
 }
 
 // Delete removes the key from storage.

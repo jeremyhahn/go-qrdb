@@ -382,13 +382,14 @@ func (b *StorageBarrier) loadWrapped(ctx context.Context, domain QuorumDomain) (
 // authenticated only when a quorum's key opens the blob it is bound to, so a
 // caller that acts on it earlier (issuing a challenge, say) is acting on a
 // claim; share submission therefore pins the digest per round and the
-// completing quorum authenticates exactly that roster.
+// completing quorum authenticates exactly that roster. A node armed for its
+// first key (ArmShamir) returns the armed roster for the unseal domain, whose
+// completing quorum is checked against the init statement instead.
 func (b *StorageBarrier) HolderRoster(ctx context.Context, domain QuorumDomain) (*HolderRoster, []byte, error) {
 	if !domain.Valid() {
 		return nil, nil, &QuorumOpInvalidError{Domain: domain}
 	}
-	_, roster, digest, err := b.loadWrapped(ctx, domain)
-	return roster, digest, err
+	return b.quorumRoster(ctx, domain, OpUnseal)
 }
 
 // resolveDomainKey converts a key reconstructed from domain's share quorum

@@ -143,8 +143,10 @@ data yet).
 > standalone `qrdbd` daemon AND the embedder / SDK-node path (`sdk/go/node`, used
 > by downstream composers such as xkms and quicbaas):
 > - **tenant** scope recycles the tenant's dedicated IsolationVolume Host,
->   re-encrypting its state-machine Pebble and Raft write-ahead log in place; the
->   rest of the node keeps serving.
+>   re-encrypting its state-machine Pebble and Raft write-ahead log in place,
+>   together with each dedicated raft shard the tenant runs beside the Host
+>   (its home group, which is under the same tenant barrier); the rest of the
+>   node keeps serving.
 > - **system** scope recycles the node's whole data plane. On the daemon this is
 >   an in-process re-initialization (the OS process never exits): it quiesces the
 >   data plane, re-encrypts the system Raft host's WAL + state-machine Pebble and

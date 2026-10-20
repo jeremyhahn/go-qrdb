@@ -15,6 +15,7 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
@@ -271,8 +273,8 @@ func (p *pendingAdminsFaulting) Get(ctx context.Context, tenantID string) (*tena
 	return p.inner.Get(ctx, tenantID)
 }
 
-func (p *pendingAdminsFaulting) Delete(ctx context.Context, tenantID string) error {
-	return p.inner.Delete(ctx, tenantID)
+func (p *pendingAdminsFaulting) Delete(ctx context.Context, tenantID string, read *tenantadmin.Pending) (bool, error) {
+	return p.inner.Delete(ctx, tenantID, read)
 }
 
 var _ tenantadmin.Store = (*pendingAdminsFaulting)(nil)
@@ -301,7 +303,7 @@ func TestPlanAdmin_RefusesInvalidTrustAnchors(t *testing.T) {
 	_, err := planAdmin(TenantProvisionConfig{
 		TenantID:        "acme",
 		TrustAnchorsPEM: []byte("not a certificate"),
-	}, Dependencies{TrustAnchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())}, AdminEnrollCert, "admin")
+	}, Dependencies{TrustAnchors: trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())}, AdminEnrollCert, "admin", false)
 	var want *InvalidTrustAnchorsError
 	if !errors.As(err, &want) || want.Unwrap() == nil {
 		t.Fatalf("planAdmin with an undecodable anchor bundle = %v, want *InvalidTrustAnchorsError", err)
@@ -312,7 +314,7 @@ func TestPlanAdmin_RefusesACSRThatDoesNotParse(t *testing.T) {
 	_, err := planAdmin(TenantProvisionConfig{
 		TenantID:    "acme",
 		AdminCSRPEM: []byte("not a csr"),
-	}, Dependencies{Signer: &fakeSigner{}, TrustDomain: onboardingTrustDomain}, AdminEnrollCert, "admin")
+	}, Dependencies{Signer: &fakeSigner{}, TrustDomain: onboardingTrustDomain}, AdminEnrollCert, "admin", false)
 	var want *AdminCredentialRejectedError
 	if !errors.As(err, &want) || want.Unwrap() == nil {
 		t.Fatalf("planAdmin with an undecodable CSR = %v, want *AdminCredentialRejectedError", err)
@@ -363,10 +365,9 @@ func TestProvisionPendingAdmin_IssueErrorWrapped(t *testing.T) {
 	signerErr := errors.New("key b ca unavailable")
 	var undo undoStack
 	fail := func(cause error) (*TenantProvisionResult, error) { return nil, cause }
-	plan := &adminPlan{csrPEM: validAdminCSR(t)}
+	plan := &adminPlan{csrPEM: validAdminCSR(t), signer: &fakeSignerErr{err: signerErr}}
 
 	_, err := provisionPendingAdmin(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Signer:        &fakeSignerErr{err: signerErr},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()),
 		Logger:        discardLogger(),
@@ -388,11 +389,10 @@ func TestProvisionPendingAdmin_RefusesAnInvalidUsernameBeforeSigning(t *testing.
 	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
 	var undo undoStack
 	fail := func(cause error) (*TenantProvisionResult, error) { return nil, cause }
-	plan := &adminPlan{csrPEM: validAdminCSR(t)}
+	plan := &adminPlan{csrPEM: validAdminCSR(t), signer: signer}
 
 	for _, bad := range []string{"", "has a space", strings.Repeat("a", 65)} {
 		_, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-			Signer:        signer,
 			TrustDomain:   onboardingTrustDomain,
 			PendingAdmins: pending,
 			Logger:        discardLogger(),
@@ -415,10 +415,9 @@ func TestProvisionPendingAdmin_UndoRemovesTheStoredRecord(t *testing.T) {
 	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
 	var undo undoStack
 	fail := func(cause error) (*TenantProvisionResult, error) { return nil, cause }
-	plan := &adminPlan{csrPEM: validAdminCSR(t)}
+	plan := &adminPlan{csrPEM: validAdminCSR(t), signer: &fakeSigner{cert: realCertPEM(t)}}
 
 	result, err := provisionPendingAdmin(ctx, TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Signer:        &fakeSigner{cert: realCertPEM(t)},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending,
 		Logger:        discardLogger(),
@@ -609,6 +608,7 @@ func TestProvisionTenant_BYOCPath_WrongIdentityRefusedBeforeCreatingTheTenant(t 
 func TestProvisionTenant_MissingSignerForCSRRejected(t *testing.T) {
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
@@ -691,7 +691,7 @@ func TestProvisionTenant_MissingPendingAdminsForBarrierIsolationRejected(t *test
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		TrustDomain: onboardingTrustDomain,
 		Logger:      discardLogger(),
 	})
@@ -988,7 +988,7 @@ func TestProvisionTenant_BarrierIsolation_StoresAPendingRecordAndCreatesNoUser(t
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: users, Roles: roles,
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	})
@@ -1016,13 +1016,162 @@ func TestProvisionTenant_BarrierIsolation_StoresAPendingRecordAndCreatesNoUser(t
 	}
 }
 
+// TestProvisionTenant_BarrierIsolation_SignsWithThePendingAdminSigner: the
+// tenant's own CA is behind the barrier the pending admin has yet to
+// initialize, so the injected PendingAdminSigner signs, never Signer.
+func TestProvisionTenant_BarrierIsolation_SignsWithThePendingAdminSigner(t *testing.T) {
+	keyB := &fakeSigner{cert: realCertPEM(t)}
+	cluster := &fakeSigner{cert: realCertPEM(t)}
+
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: keyB, PendingAdminSigner: cluster, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
+		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if n := cluster.called.Load(); n != 1 {
+		t.Errorf("PendingAdminSigner called %d times, want 1", n)
+	}
+	if n := keyB.called.Load(); n != 0 {
+		t.Errorf("Signer called %d times, want 0 (the tenant's CA is behind its barrier)", n)
+	}
+	if !bytes.Equal(result.AdminCertPEM, cluster.cert) {
+		t.Error("result.AdminCertPEM is not the certificate PendingAdminSigner issued")
+	}
+}
+
+// TestProvisionTenant_PrefixIsolation_SignsWithSigner: a tenant whose
+// identity records are not behind its own barrier creates its admin at once,
+// and its CSR goes to Signer even when a PendingAdminSigner is composed.
+func TestProvisionTenant_PrefixIsolation_SignsWithSigner(t *testing.T) {
+	keyB := &fakeSigner{cert: realCertPEM(t)}
+	cluster := &fakeSigner{cert: realCertPEM(t)}
+
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: keyB, PendingAdminSigner: cluster, Binder: &fakeBinder{},
+		TrustDomain: onboardingTrustDomain,
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if n := keyB.called.Load(); n != 1 {
+		t.Errorf("Signer called %d times, want 1", n)
+	}
+	if n := cluster.called.Load(); n != 0 {
+		t.Errorf("PendingAdminSigner called %d times, want 0", n)
+	}
+}
+
+// TestProvisionTenant_BarrierIsolation_UndoRevokesThroughTheSignerThatSigned:
+// an undone exclusive provisioning revokes the admin's certificate with the
+// signer that issued it, not with Signer.
+func TestProvisionTenant_BarrierIsolation_UndoRevokesThroughTheSignerThatSigned(t *testing.T) {
+	keyB := &fakeRevokingSigner{fakeSigner: fakeSigner{cert: realCertPEM(t)}}
+	cluster := &fakeRevokingSigner{fakeSigner: fakeSigner{cert: realCertPEM(t)}}
+	pending := &pendingAdminsFaulting{inner: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), putErr: errors.New("store unavailable")}
+
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+		Exclusive:   true,
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: keyB, PendingAdminSigner: cluster, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
+		PendingAdmins: pending, Logger: discardLogger(),
+	})
+	var undone *ProvisioningUndoneError
+	if !errors.As(err, &undone) {
+		t.Fatalf("err = %v, want *ProvisioningUndoneError", err)
+	}
+	if len(cluster.revokeCalls) != 1 {
+		t.Errorf("PendingAdminSigner revokeCalls = %v, want one", cluster.revokeCalls)
+	}
+	if len(keyB.revokeCalls) != 0 {
+		t.Errorf("Signer revokeCalls = %v, want none", keyB.revokeCalls)
+	}
+}
+
+func TestDependenciesAdminSigner(t *testing.T) {
+	keyB := &fakeSigner{}
+	cluster := &fakeSigner{}
+	cases := []struct {
+		name    string
+		deps    Dependencies
+		pending bool
+		want    firstboot.CertSigner
+		wantErr any
+	}{
+		{"pending admin with a pending signer", Dependencies{Signer: keyB, PendingAdminSigner: cluster}, true, cluster, nil},
+		{"pending admin without one is refused", Dependencies{Signer: keyB}, true, nil, new(*ceremony.AdminCredentialRequiresCAError)},
+		{"created admin ignores the pending signer", Dependencies{Signer: keyB, PendingAdminSigner: cluster}, false, keyB, nil},
+		{"created admin without Signer", Dependencies{PendingAdminSigner: cluster}, false, nil, new(*MissingProvisioningSeamError)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.deps.adminSigner(tc.pending)
+			if tc.wantErr != nil {
+				if !errors.As(err, tc.wantErr) {
+					t.Fatalf("adminSigner(%v) error = %v, want %T", tc.pending, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("adminSigner(%v) = %v, %v; want %v", tc.pending, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestProvisionTenant_BarrierIsolation_CSRWithoutPendingSignerRefusedBeforeCreate:
+// with no cluster CA to sign a pending admin's CSR (a BYO-TLS node), the CSR
+// is refused as system first boot refuses it, and before the tenant record is
+// written, so the refusal does not retire the tenant id.
+func TestProvisionTenant_BarrierIsolation_CSRWithoutPendingSignerRefusedBeforeCreate(t *testing.T) {
+	tenants := &fakeTenants{}
+	keyB := &fakeSigner{cert: realCertPEM(t)}
+
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+		Exclusive:   true,
+	}, Dependencies{
+		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: keyB, Binder: &fakeBinder{},
+		TrustDomain:   onboardingTrustDomain,
+		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
+	})
+	var want *ceremony.AdminCredentialRequiresCAError
+	if !errors.As(err, &want) || want.Path != "csr-sign" {
+		t.Fatalf("err = %v, want *ceremony.AdminCredentialRequiresCAError{Path: csr-sign}", err)
+	}
+	if n := len(tenants.createCalls); n != 0 {
+		t.Errorf("tenant createCalls = %d, want 0 (refused before the tenant exists)", n)
+	}
+	if n := keyB.called.Load(); n != 0 {
+		t.Errorf("Signer called %d times, want 0", n)
+	}
+}
+
 func TestProvisionTenant_BarrierIsolation_NonExclusiveReRunKeepsTheRecordedCredential(t *testing.T) {
 	ctx := context.Background()
 	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
 	signer := &fakeSigner{cert: realCertPEM(t)}
 	deps := Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: signer, Binder: &fakeBinder{},
+		PendingAdminSigner: signer, Binder: &fakeBinder{},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	}
@@ -1059,7 +1208,7 @@ func provisionAutoUnsealTenant(t *testing.T, users firstboot.UserCreator) (*Tena
 	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
 	deps := Dependencies{
 		Tenants: &fakeTenants{autoUnseal: true}, Users: users, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	}
@@ -1118,7 +1267,7 @@ func TestProvisionTenant_BarrierIsolation_SelfManaged_NoAdminCompletionDue(t *te
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
 	})
@@ -1275,6 +1424,46 @@ func TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget(t *testing.T) {
 	}
 }
 
+// TestCompletePendingTenantAdminOnce_Completes proves the single attempt
+// completes the admin as the retrying form does.
+func TestCompletePendingTenantAdminOnce_Completes(t *testing.T) {
+	users := &fakeUsers{}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+
+	done, err := CompletePendingTenantAdminOnce(context.Background(), "acme", deps, testAdminCompletionBounds)
+	if err != nil || !done {
+		t.Fatalf("CompletePendingTenantAdminOnce = %v, %v; want true, nil", done, err)
+	}
+	if len(users.createCalls) != 1 || users.createCalls[0].Username != "admin" {
+		t.Fatalf("user createCalls = %+v, want one call for the admin account", users.createCalls)
+	}
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec != nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record deleted", rec, err)
+	}
+}
+
+// TestCompletePendingTenantAdminOnce_DoesNotRetry proves a failed attempt is
+// reported at once, with the record left for the barrier-ready hook, where
+// the retrying form would spend its budget.
+func TestCompletePendingTenantAdminOnce_DoesNotRetry(t *testing.T) {
+	boom := errors.New("boom")
+	users := &fakeUsers{createErr: boom}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+	bounds := testAdminCompletionBounds
+	bounds.Budget = time.Hour
+
+	done, err := CompletePendingTenantAdminOnce(context.Background(), "acme", deps, bounds)
+	if done || !errors.Is(err, boom) {
+		t.Fatalf("CompletePendingTenantAdminOnce = %v, %v; want false and the attempt's error", done, err)
+	}
+	if len(users.createCalls) != 1 {
+		t.Errorf("user createCalls = %d, want one attempt", len(users.createCalls))
+	}
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec == nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record left for the hook", rec, err)
+	}
+}
+
 // failThenStallUsers fails its first CreateUser with err and stalls every
 // later one until its context ends. onStall, when set, runs as a call starts
 // to stall, so a test can end the context at that point rather than at a
@@ -1404,7 +1593,7 @@ func TestProvisionTenant_BarrierIsolation_PendingAdminsReadErrorWrapped(t *testi
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	})
@@ -1423,7 +1612,7 @@ func TestProvisionTenant_BarrierIsolation_PendingAdminsPutErrorWrapped(t *testin
 		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		TrustDomain:   onboardingTrustDomain,
 		PendingAdmins: pending, Logger: discardLogger(),
 	})
@@ -1699,7 +1888,9 @@ func (d deleteFailingStore) Create(ctx context.Context, tenantID string, p *tena
 func (d deleteFailingStore) Get(ctx context.Context, tenantID string) (*tenantadmin.Pending, error) {
 	return d.inner.Get(ctx, tenantID)
 }
-func (d deleteFailingStore) Delete(ctx context.Context, tenantID string) error { return d.err }
+func (d deleteFailingStore) Delete(ctx context.Context, tenantID string, read *tenantadmin.Pending) (bool, error) {
+	return false, d.err
+}
 
 var _ tenantadmin.Store = deleteFailingStore{}
 

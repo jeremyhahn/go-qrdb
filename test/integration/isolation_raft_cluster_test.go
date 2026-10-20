@@ -47,6 +47,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -217,6 +218,8 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 				// dedicated Raft shard via PUT /kv/{key} + X-QRDB-Database.
 				"kv:put",
 				"kv:get",
+				// Assertion (b2) reads each node's tenant barrier status.
+				"tenant_barrier:status",
 			},
 		},
 	)
@@ -325,18 +328,41 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	//
 	// TenantShardReconciler defers Attach while the tenant barrier is absent or
 	// sealed (Phase 4c-1d). Once Phase 4c-1c delivers the root key and the
-	// barrier unseals, the reconciler calls Attach and ShardCount rises from 1
-	// (system shard) to >= 2 (system + dedicated). Observing ShardCount >= 2 on
-	// all 3 nodes is therefore a compound proof of: (b1) barrier unsealed on each
-	// node, and (b2) dedicated shard started by the reconciler.
+	// barrier unseals, the reconciler calls Attach and ShardCount rises to 3:
+	// the system shard, the tenant's home group (started at tenant create) and
+	// the dedicated shard. Observing ShardCount >= 3 on all 3 nodes is
+	// therefore a compound proof of: (b1) barrier unsealed on each node, and
+	// (b2) dedicated shard started by the reconciler.
 	// ---------------------------------------------------------------------------
 	t.Log("assertion (b): waiting for dedicated shard to start on all 3 nodes (proves barrier delivery + reconciler attach)")
 	for i, port := range adminPorts {
-		t.Logf("waiting for shard count >= 2 on node %d (port %d)", i+1, port)
-		waitForShardCount(t, sysClient, port, 2, 120*time.Second)
-		t.Logf("assertion (b) node %d PASS: ShardCount >= 2", i+1)
+		t.Logf("waiting for shard count >= 3 on node %d (port %d)", i+1, port)
+		waitForShardCount(t, sysClient, port, 3, 120*time.Second)
+		t.Logf("assertion (b) node %d PASS: ShardCount >= 3", i+1)
 	}
 	t.Log("assertion (b) PASS: dedicated shard running on all 3 nodes")
+
+	// ---------------------------------------------------------------------------
+	// Assertion (b2): every node serves the platform-sealed tenant barrier under
+	// its own key. Each replica initialises its barrier from the platform's
+	// signed init statement and seals its root key to its own system barrier,
+	// so no two nodes report the same key fingerprint; no key ever travels.
+	// ---------------------------------------------------------------------------
+	t.Log("assertion (b2): verifying each node serves the tenant barrier under its own key")
+	assertPerNodeTenantKeys(t, tenantClient, adminPorts, iraftTenantID, 60*time.Second)
+	t.Log("assertion (b2) PASS: the tenant barrier is unsealed on all 3 nodes, each under its own key")
+
+	// ---------------------------------------------------------------------------
+	// Assertion (g): every node looks up the tenant's users. Each node holds
+	// its own key of the tenant barrier, as (b2) shows: the init-statement
+	// watcher initializes a platform-sealed barrier on each node under that
+	// node's key, and no key leaves a node. The tenant's users therefore live in
+	// its home group, plain Raft entries each node keeps under its own
+	// barrier, never in a store encrypted under one node's key.
+	// ---------------------------------------------------------------------------
+	t.Log("assertion (g): verifying every node looks up the tenant's users")
+	assertTenantUsersOnEveryNode(t, raftAdminClient, tenantClient, adminPorts, 60*time.Second)
+	t.Log("assertion (g) PASS: the tenant's users are looked up on all 3 nodes")
 
 	// ---------------------------------------------------------------------------
 	// Assertion (c): System shard replication is unaffected — write N keys on
@@ -502,14 +528,15 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	//
 	// The reconciler's boot re-attach pass (ReconcileOnce called immediately in
 	// Run) reads the placement table and calls Attach for each assigned replica.
-	// ShardCount >= 2 after restart proves the reconciler re-attach path works.
+	// ShardCount >= 3 (system, home group, dedicated) after restart proves the
+	// reconciler re-attach path works.
 	// ---------------------------------------------------------------------------
 	t.Log("assertion (d): verifying dedicated shard re-attached after restart")
 	restartClient := mtlsHTTPClient(t, ca, 15*time.Second)
 	for i, port := range adminPorts {
-		t.Logf("waiting for shard count >= 2 on restarted node %d (port %d)", i+1, port)
-		waitForShardCount(t, restartClient, port, 2, 120*time.Second)
-		t.Logf("assertion (d) node %d PASS: ShardCount >= 2 after restart", i+1)
+		t.Logf("waiting for shard count >= 3 on restarted node %d (port %d)", i+1, port)
+		waitForShardCount(t, restartClient, port, 3, 120*time.Second)
+		t.Logf("assertion (d) node %d PASS: ShardCount >= 3 after restart", i+1)
 	}
 	t.Log("assertion (d) PASS: reconciler re-attached dedicated shard on all 3 nodes after restart")
 
@@ -555,4 +582,81 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	t.Logf("assertion (f) PASS: %d db1 keys survived full-cluster restart (NO-DATA-LOSS for dedicated raft group)", numDB1Keys)
 
 	t.Log("TestIsolationRaft_EndToEnd PASS")
+}
+
+// assertPerNodeTenantKeys waits until every node at ports reports tenantID's
+// barrier initialised and unsealed with a key fingerprint, then fails the
+// test if any two nodes report the same fingerprint: each node must hold its
+// own key of the barrier.
+func assertPerNodeTenantKeys(t *testing.T, client *http.Client, ports []int, tenantID string, timeout time.Duration) {
+	t.Helper()
+	fingerprints := make(map[string]int, len(ports))
+	for i, port := range ports {
+		url := fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/status", port, tenantID)
+		var status struct {
+			Initialized    bool   `json:"initialized"`
+			Sealed         bool   `json:"sealed"`
+			KeyFingerprint string `json:"key_fingerprint"`
+		}
+		var body []byte
+		var code int
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			body, code = iraftAPIGet(t, client, url)
+			if code == http.StatusOK && json.Unmarshal(body, &status) == nil &&
+				status.Initialized && !status.Sealed && status.KeyFingerprint != "" {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		if code != http.StatusOK || !status.Initialized || status.Sealed || status.KeyFingerprint == "" {
+			t.Fatalf("node %d: tenant %q barrier not serving with a key: status %d, body: %s",
+				i+1, tenantID, code, body)
+		}
+		if prev, dup := fingerprints[status.KeyFingerprint]; dup {
+			t.Fatalf("node %d shares its tenant key fingerprint with node %d; every node's key must be its own",
+				i+1, prev)
+		}
+		fingerprints[status.KeyFingerprint] = i + 1
+		t.Logf("node %d: tenant %q barrier unsealed, key fingerprint %s", i+1, tenantID, status.KeyFingerprint)
+	}
+}
+
+// assertTenantUsersOnEveryNode waits until every node at ports serves the
+// tenant's users: the tenant admin reads the bound user "admin" by username,
+// and that user, authenticating with its own certificate, lists the tenant's
+// databases. Both requests look a user up on the node that serves them.
+func assertTenantUsersOnEveryNode(t *testing.T, admin, user *http.Client, ports []int, timeout time.Duration) {
+	t.Helper()
+	for i, port := range ports {
+		lookups := []struct {
+			client *http.Client
+			url    string
+			want   string
+		}{
+			{admin, fmt.Sprintf("https://127.0.0.1:%d/users/by-username/admin", port), `"admin"`},
+			{user, fmt.Sprintf("https://127.0.0.1:%d/v1/databases/list", port), ""},
+		}
+		// A node refuses a tenant-issued certificate at the handshake until
+		// the tenant's trust anchor has replicated to it: wait for the node to
+		// serve each client before looking anything up through it.
+		waitForNodeToTrustClient(t, admin, port, timeout)
+		waitForNodeToTrustClient(t, user, port, timeout)
+		for _, l := range lookups {
+			var body []byte
+			var code int
+			deadline := time.Now().Add(timeout)
+			for time.Now().Before(deadline) {
+				body, code = iraftAPIGet(t, l.client, l.url)
+				if code == http.StatusOK {
+					break
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
+			if code != http.StatusOK || !strings.Contains(string(body), l.want) {
+				t.Fatalf("node %d: GET %s = %d, want 200 containing %q; body: %s", i+1, l.url, code, l.want, body)
+			}
+		}
+		t.Logf("node %d: the tenant's users are looked up", i+1)
+	}
 }

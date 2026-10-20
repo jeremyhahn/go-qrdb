@@ -16,7 +16,6 @@ package node
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 
@@ -61,9 +60,9 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 		Clock:       n.clock,
 	}
 	if id := n.clusterIdentity; id != nil {
-		identity, err := clusterIdentityCert(id)
+		identity, err := lifecycle.NodeIdentity(id)
 		if err != nil {
-			n.logger.Warn("clusterkeys: cluster certificate and key do not form a pair", "error", err)
+			n.logger.Warn("clusterkeys: no usable node identity", "error", err)
 		}
 		c.Identity = identity
 		if pool := x509.NewCertPool(); pool.AppendCertsFromPEM(id.CACert) {
@@ -84,21 +83,6 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 // issued under is the cluster CA (owner ruling 5).
 func (n *Node) byoTLS() bool {
 	return n.clusterIdentity != nil && n.clusterCAKeyProvider == nil && len(n.clusterCACertPEM) == 0
-}
-
-// clusterIdentityCert is the node's cluster mTLS identity as the key plane
-// presents it: RaftMTLSConfig.Certificate when the composer supplied one --
-// its PrivateKey may be a device-held crypto.Signer -- else the Cert/Key PEM
-// pair, the same precedence the Raft transport applies.
-func clusterIdentityCert(id *RaftMTLSConfig) (*tls.Certificate, error) {
-	if id.Certificate != nil {
-		return id.Certificate, nil
-	}
-	pair, err := tls.X509KeyPair(id.Cert, id.Key)
-	if err != nil {
-		return nil, err
-	}
-	return &pair, nil
 }
 
 // identityCertPEM is the PEM of the node's cluster leaf certificate: the

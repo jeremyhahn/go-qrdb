@@ -134,6 +134,10 @@ type IdentityIndex interface {
 	// claims made by the same tenant for the same id at different times have
 	// different tokens, which is what lets Forget tell one generation from
 	// the next. Callers pass it back verbatim; it is opaque.
+	//
+	// An EMPTY token with a nil error means no claim was taken, because the
+	// tenant keeps no entry in this index (an isolated tenant, whose records
+	// live in its home store). There is nothing to release.
 	Record(ctx context.Context, kind IdentityKind, id, tenantID string) (token string, err error)
 
 	// Forget releases the claim identified by token, and only that claim.
@@ -322,6 +326,9 @@ var _ IdentityIndex = (*kvIdentityIndex)(nil)
 // the same physical keys, which is the point.
 type kvIdentityIndex struct {
 	store func(context.Context) (kvstore.KVStore, error)
+	// home, when set, names the tenants whose records live in their home
+	// store. They take no claim: see Record.
+	home HomeLocator
 }
 
 // NewIdentityIndex returns an IdentityIndex over a store that is ALREADY
@@ -350,14 +357,19 @@ func NewIdentityIndex(store kvstore.KVStore) (IdentityIndex, error) {
 // same footing as every other resolver consumer: it observes the system
 // store the resolver hands out now, not the one it handed out at
 // construction.
+//
+// A resolver that is also a HomeLocator — the one NewStoreResolver returns —
+// decides which tenants take no claim at all (see Record).
 func NewResolvedIdentityIndex(resolver StoreResolver) (IdentityIndex, error) {
 	if resolver == nil {
 		return nil, ErrNilIdentityIndexResolver
 	}
+	home, _ := resolver.(HomeLocator)
 	return &kvIdentityIndex{
 		store: func(ctx context.Context) (kvstore.KVStore, error) {
 			return resolver.Resolve(ctx, tenantid.System)
 		},
+		home: home,
 	}, nil
 }
 
@@ -384,6 +396,13 @@ func identityIndexKey(kind IdentityKind, id string) string {
 // with no record behind it. That id is simply never reused — Snowflakes and
 // UUIDs are not scarce — and refusing is the safe direction: it fails a
 // create rather than producing an inconsistent pair.
+//
+// A tenant whose records live in its home store claims nothing: Record writes
+// no entry and returns an empty token, which every caller already reads as
+// "nothing to release". An isolated tenant's ids are resolved in its own
+// tenant and nowhere else (architecture.md "Identity routing without a global
+// index"), so an entry would only put the id and the tenant in the system
+// shard, which is what isolation keeps out of it.
 func (i *kvIdentityIndex) Record(ctx context.Context, kind IdentityKind, id, tenantID string) (string, error) {
 	if id == "" {
 		return "", &IdentityIndexError{Op: "record", Kind: kind, ID: id, Err: ErrEmptyIdentityID}
@@ -392,6 +411,15 @@ func (i *kvIdentityIndex) Record(ctx context.Context, kind IdentityKind, id, ten
 	// cannot be stored as two different values and route two different ways.
 	if tenantid.IsSystem(tenantID) {
 		tenantID = tenantid.System
+	}
+	if i.home != nil {
+		inHome, herr := i.home.InHome(ctx, tenantID)
+		if herr != nil {
+			return "", &IdentityIndexError{Op: "record", Kind: kind, ID: id, Err: herr}
+		}
+		if inHome {
+			return "", nil
+		}
 	}
 	store, err := i.store(ctx)
 	if err != nil {

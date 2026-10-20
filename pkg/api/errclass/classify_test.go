@@ -613,6 +613,7 @@ func TestClassify_BarrierInit(t *testing.T) {
 		{"guarded writes not active", &barrierinit.GuardedWritesUnavailableError{}, Unavailable},
 		{"raft tenant init without a statement", &tenant.InitStatementRequiredError{TenantID: "t"}, InvalidArgument},
 		{"raft tenant unseal without a statement", &tenant.InitStatementMissingError{TenantID: "t"}, FailedPrecondition},
+		{"platform statement for an owner's barrier", &tenant.BarrierError{TenantID: "t", Op: "unseal", Err: tenant.ErrNotPlatformCustody}, FailedPrecondition},
 		{"unseal strategy is not the sealed one", &tenant.BarrierError{TenantID: "t", Op: "unseal", Err: &seal.UnsealStrategyMismatchError{Sealed: seal.StrategyPassphrase, Requested: seal.StrategyNone}}, FailedPrecondition},
 		{"stored statement no longer verifies", &tenant.BarrierError{TenantID: "t", Op: "init statement", Err: &barrierinit.InitStatementError{Barrier: b, Epoch: 1, Reason: barrierinit.ReasonWrongSigner}}, PermissionDenied},
 		{"per-node barrier keys not active", &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}, Unavailable},

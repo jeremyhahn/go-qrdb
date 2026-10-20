@@ -156,6 +156,17 @@ round, never complete one. `databases:seal`, `databases:unseal` and
 `databases:barrier_status` admit only the tenant that owns the database — the
 `system` tenant included: it seals its own databases and no other tenant's.
 
+**Tenant barrier status names the answering node's key.** While the barrier is
+initialized and unsealed, the status carries `key_fingerprint` on every
+transport (gRPC `TenantBarrierStatusResponse.key_fingerprint`): the hex
+HKDF-SHA-256 of the node's root key under a fixed label, 16 bytes, which names
+the key without revealing it. Two nodes report the same fingerprint exactly
+when they hold the same key, which is how an operator sees that each node
+serving the barrier holds its own
+([architecture.md](architecture.md#per-node-barrier-keys)). It is absent while the
+barrier is sealed or unencrypted. `qrdb tenant barrier-status` prints it as
+`Fingerprint:`.
+
 ## Sealing in a cluster
 
 Once the cluster has activated the `cluster-seal` feature, every seal on this
@@ -416,11 +427,15 @@ gates neither.
 | Tenant barrier unseal: the root key is sealed with another strategy than the init statement names | 409 | `FAILED_PRECONDITION` — `seal.UnsealStrategyMismatchError` (matches `seal.ErrStrategyMismatch`); the barrier stays sealed |
 | Tenant barrier unseal: the recorded init statement no longer verifies against the pinned first admin | 403 | `PERMISSION_DENIED` — `barrierinit.InitStatementError` inside `tenant.BarrierError` |
 | Tenant barrier unseal: a raft-isolated tenant has no recorded init statement | 409 | `FAILED_PRECONDITION` — `tenant.InitStatementMissingError` |
+| Tenant barrier unseal: the statement names `system-barrier` for a tenant its owner keeps custody of | 409 | `FAILED_PRECONDITION` — `tenant.ErrNotPlatformCustody` inside `tenant.BarrierError`; the barrier stays sealed |
 
 A tenant barrier unseal resolves its strategy from the barrier's claimed init
 statement through the node's `BarrierKeyProvider`, so the request carries only
 the credential, never a strategy or key reference; the restart behaviour is in
-[architecture.md](architecture.md#how-a-node-takes-part-tenant-barriers).
+[architecture.md](architecture.md#how-a-node-takes-part-tenant-barriers). A
+platform-custody barrier, whose statement names `system-barrier`, unseals
+with the platform strategy it was initialized under on that node; no provider
+resolves it.
 
 ## Known limitation — share and PIN fields are still text strings
 

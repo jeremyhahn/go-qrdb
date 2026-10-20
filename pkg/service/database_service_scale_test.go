@@ -400,10 +400,9 @@ func (d *orderedKeyDistributor) DistributeTenantKey(
 	p *placement.Placement,
 	lb *seal.StorageBarrier,
 	nodeID string,
-	autoUnseal bool,
 ) error {
 	d.log.record("key-delivery")
-	return d.captureDistributor.DistributeTenantKey(ctx, p, lb, nodeID, autoUnseal)
+	return d.captureDistributor.DistributeTenantKey(ctx, p, lb, nodeID)
 }
 
 // orderingPlacementKV wraps memPlacementKV to additionally record a
@@ -944,7 +943,7 @@ type flakyKeyDistributor struct {
 	cancel    context.CancelFunc
 }
 
-func (f *flakyKeyDistributor) DistributeTenantKey(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string, _ bool) error {
+func (f *flakyKeyDistributor) DistributeTenantKey(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string) error {
 	f.calls++
 	if f.cancel != nil && f.calls == 1 {
 		f.cancel()

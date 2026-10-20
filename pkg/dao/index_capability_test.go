@@ -41,7 +41,7 @@ func (m *capabilityMember) SetEntityID(id uint64) { m.ID = id }
 func newCapabilityMember() *capabilityMember { return &capabilityMember{} }
 
 // refusingIndexStore is a real in-memory store whose INDEX half refuses, the
-// shape seal.tenantSharedKVStore has: data operations work, index operations
+// shape seal.tenantBarrierKVStore has: data operations work, index operations
 // return the typed error.
 type refusingIndexStore struct {
 	kvstore.KVStore

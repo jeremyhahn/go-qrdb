@@ -78,11 +78,13 @@ func raftTenantBootConfig(t *testing.T) TenantInfraConfig {
 // restarting node re-attaches its auto-unseal raft tenant's database shards
 // eagerly, so the data plane serves as soon as the node does; the configured
 // import-session bounds reach those shards (a second concurrent session is
-// refused when the limit is one); the node reports leading the single-replica
+// refused when the limit is one); the system shard's snapshot cadence reaches
+// the factory that starts them; the node reports leading the single-replica
 // group; and with no placement table no reconciler is built.
 func TestBuildTenantInfra_RaftTenantShardsServeAtBoot(t *testing.T) {
 	cfg := raftTenantBootConfig(t)
 	cfg.ImportSession = qrdbconfig.ImportSessionConfig{MaxSessionsPerTenant: 1}
+	cfg.SnapshotEntries, cfg.CompactionOverhead = 40, 10
 
 	ti, err := BuildTenantInfra(cfg)
 	if err != nil {
@@ -94,6 +96,9 @@ func TestBuildTenantInfra_RaftTenantShardsServeAtBoot(t *testing.T) {
 	})
 	if ti.Raft == nil {
 		t.Fatal("BuildTenantInfra built no raft factory with a Host, Manager and volume pool")
+	}
+	if ti.Raft.snapshotEntries != 40 || ti.Raft.compactionOverhead != 10 {
+		t.Fatalf("raft factory snapshot cadence = (%d, %d), want the system shard's (40, 10)", ti.Raft.snapshotEntries, ti.Raft.compactionOverhead)
 	}
 	if ti.Reconciler != nil {
 		t.Fatal("a reconciler was built without a placement table to converge on")

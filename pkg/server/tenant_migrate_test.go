@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // migrateTestTenant registers an UNENCRYPTED (StrategyNone) IsolationVolume
@@ -98,6 +99,70 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToPassphrase(t *testing.T) {
 	}
 	if got, err := svcs.KV.Get(ctx, "kv-key2"); err != nil || string(got) != "after" {
 		t.Fatalf("KV.Get(post-migrate new) = %q, %v; want after", got, err)
+	}
+}
+
+// TestTenantHostRegistry_MigrateEncryption_RecodesStandaloneHomeRecords pins
+// that a standalone tenant's home store -- its IAM records, CA material and
+// DEK keyring, kept in the barrier's own backend by tenant.LocalHomes --
+// reads back under the adopted root key, and that the migration leaves no
+// staged copy behind.
+func TestTenantHostRegistry_MigrateEncryption_RecodesStandaloneHomeRecords(t *testing.T) {
+	ctx := context.Background()
+	reg, hostReg, _ := migrateTestTenant(t, "vt")
+	// The migration recodes the live Host's stores, so the Host must exist.
+	if _, err := hostReg.Services(ctx, "vt"); err != nil {
+		t.Fatalf("Services(pre-migrate): %v", err)
+	}
+	homes, err := tenant.NewLocalHomes(reg)
+	if err != nil {
+		t.Fatalf("NewLocalHomes: %v", err)
+	}
+	records := map[string]string{
+		"iam/users/alice": "alice-record",
+		"ca/root":         "ca-material",
+		"dek/keyring":     "dek-keyring",
+	}
+	home, err := homes.HomeStore(ctx, "vt")
+	if err != nil {
+		t.Fatalf("HomeStore(pre-migrate): %v", err)
+	}
+	for k, v := range records {
+		if err := home.Put(ctx, k, []byte(v)); err != nil {
+			t.Fatalf("home.Put(%q): %v", k, err)
+		}
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(ctx, []byte("tenant-migrate-pw")),
+	}
+	if err := hostReg.MigrateEncryption(ctx, "vt", opts); err != nil {
+		t.Fatalf("MigrateEncryption: %v", err)
+	}
+
+	home, err = homes.HomeStore(ctx, "vt")
+	if err != nil {
+		t.Fatalf("HomeStore(post-migrate): %v", err)
+	}
+	for k, v := range records {
+		got, err := home.Get(ctx, k)
+		if err != nil || string(got) != v {
+			t.Fatalf("home.Get(%q) under the adopted key = %q, %v; want %q", k, got, err, v)
+		}
+	}
+	tb, err := reg.GetTenant("vt")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	staged, err := tb.Barrier().List(ctx, tb.Barrier().RootKeyPath()+migrateStagingSuffix+"/records/")
+	if err != nil {
+		t.Fatalf("List(staging): %v", err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("migration left %d staged records behind: %v", len(staged), staged)
 	}
 }
 

@@ -116,7 +116,7 @@ INTTEST_identity_rbac       := roles_cli_test.go roles_own_permissions_cli_test.
 INTTEST_key_value           := kv_cli_test.go kv_test.go kv_read_permission_test.go kv_restore_cli_test.go kv_restore_default_sm_cli_test.go batch_cli_test.go batch_import_cli_test.go batch_import_session_test.go
 INTTEST_key_wrapping        := key_wrapping_cli_test.go
 INTTEST_leases              := lease_binding_test.go lease_cli_test.go lease_keepalive_test.go
-INTTEST_multi_tenancy       := tenant_cli_test.go tenant_data_root_cli_test.go tenant_deleted_cli_test.go tenant_isolation_cli_test.go isolation_raft_cluster_test.go isolation_raft_dedicated_wal_test.go isolation_raft_rebalance_test.go isolation_raft_scale_test.go isolation_raft_shard_ids_test.go tenant_barrier_init_proof_cli_test.go tenant_undo_reuse_cli_test.go
+INTTEST_multi_tenancy       := tenant_cli_test.go tenant_data_root_cli_test.go tenant_deleted_cli_test.go tenant_isolation_cli_test.go isolation_raft_cluster_test.go isolation_raft_dedicated_wal_test.go isolation_raft_rebalance_test.go isolation_raft_scale_test.go isolation_raft_shard_ids_test.go tenant_barrier_init_proof_cli_test.go strict_home_cluster_test.go tenant_home_test.go tenant_home_dataplane_cli_test.go tenant_undo_reuse_cli_test.go
 INTTEST_rag                 := rag_cli_test.go
 INTTEST_rate_limit          :=
 INTTEST_release             :=
@@ -124,7 +124,7 @@ INTTEST_replica_forwarding  := replica_forwarding_grpc_test.go replica_forwardin
 INTTEST_row_locking         := sql_row_lock_test.go
 INTTEST_run_modes           := run_modes_standalone_cli_test.go qrdbd_cli_test.go completion_cli_test.go
 INTTEST_secondary_indexes   := index_cli_test.go dao_cluster_test.go
-INTTEST_shamir_custody      := barrier_cli_test.go tenant_barrier_officer_cli_test.go
+INTTEST_shamir_custody      := barrier_cli_test.go tenant_barrier_officer_cli_test.go tenant_barrier_shamir_cluster_cli_test.go
 INTTEST_sql                 := sql_alter_rewrite_test.go sql_autoincrement_test.go sql_ddl_test.go sql_pgsql_literals_test.go sql_query_cli_test.go sql_query_tenant_scope_test.go sql_readonly_ddl_test.go sql_test.go entity_bridge_test.go
 # sqlite-vfs: a future feature, not implemented; nothing to select yet.
 INTTEST_sqlite_vfs          :=

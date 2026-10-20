@@ -187,11 +187,14 @@ func TestIssueLeafForKey(t *testing.T) {
 	// runs the standard x509 SAN check against it, with no SPIFFE-aware
 	// substitute, so a leaf with no matching SAN could never be dialed as a
 	// raft peer.
-	if len(cert.DNSNames) != 0 {
-		t.Fatalf("join leaf carries DNS SANs %v, want none (10.0.0.2 is an IP)", cert.DNSNames)
+	// Beside it, the leaf carries the loopback names a founder's certificate
+	// does (node parity): gRPC dials the unix socket as "localhost".
+	if len(cert.DNSNames) != 1 || cert.DNSNames[0] != "localhost" {
+		t.Fatalf("join leaf carries DNS SANs %v, want only localhost (10.0.0.2 is an IP)", cert.DNSNames)
 	}
-	if len(cert.IPAddresses) != 1 || !cert.IPAddresses[0].Equal(net.ParseIP("10.0.0.2")) {
-		t.Fatalf("join leaf IP SANs = %v, want exactly the bound identity's own address 10.0.0.2", cert.IPAddresses)
+	if len(cert.IPAddresses) != 3 || !cert.IPAddresses[0].Equal(net.ParseIP("10.0.0.2")) ||
+		!cert.IPAddresses[1].Equal(net.ParseIP("127.0.0.1")) || !cert.IPAddresses[2].Equal(net.ParseIP("::1")) {
+		t.Fatalf("join leaf IP SANs = %v, want the bound identity's own address 10.0.0.2 and the loopback addresses", cert.IPAddresses)
 	}
 	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://qrdb.cluster/node/10.0.0.2:9000" {
 		t.Fatalf("join leaf URIs = %v, want exactly the bound SPIFFE identity", cert.URIs)

@@ -141,11 +141,13 @@ var testVolumeAllocators sync.Map // *seal.BarrierRegistry -> volume.Allocator
 
 // newTestBarrierRegistry creates a BarrierRegistry with a system barrier
 // and a pool-driven per-tenant Pebble flow for tenant service tests.
-// Barrier-isolated tenants registered through RegisterTenantPooled, and
+// Barrier-isolated tenants registered through RegisterBarrierTenant, and
 // volume/raft tenants reserved via the returned registry's allocator (see
 // testVolumeAllocators), get a durable, independent per-tenant Pebble at a
 // t-scoped temp directory, so crypto/physical isolation can be exercised
-// against a real seal backend without modifying the host system.
+// against a real seal backend without modifying the host system. The system
+// barrier is initialized, as it is on any node that creates tenants: a
+// tenant's posture record lives under it.
 func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierRegistry {
 	t.Helper()
 	store := seal.NewMemoryBackend()
@@ -154,6 +156,10 @@ func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierReg
 	}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier (system): %v", err)
+	}
+
+	if err := system.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize (system): %v", err)
 	}
 
 	reg, _, allocator := sealtest.PooledRegistry(t, system, extra...)

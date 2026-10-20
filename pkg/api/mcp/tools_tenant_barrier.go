@@ -158,19 +158,31 @@ func toolTenantBarrierInit() mcp.Tool {
 		mcp.WithString("init_statement",
 			mcp.Description("Base64 epoch-1 barrier init statement signed by the same key. Required on a clustered node once per-node-barrier-keys is active; every replica initializes its own barrier key from it."),
 		),
+		mcp.WithString("roster",
+			mcp.Description("Base64 encoded holder roster the first request of a Shamir init returned. With unseal_key_check it marks the second request, which completes that prepared split."),
+		),
+		mcp.WithString("unseal_key_check",
+			mcp.Description("Base64 unseal key check value the first request of a Shamir init returned, echoed with roster by the second request."),
+		),
 	)
 }
 
 // initStatementArg decodes the base64 init_statement argument of
 // qrdb_tenant_barrier_init_complete; an absent argument decodes to nil.
 func initStatementArg(req mcp.CallToolRequest) ([]byte, error) {
-	encoded := mcp.ParseString(req, "init_statement", "")
+	return initBytesArg(req, "init_statement")
+}
+
+// initBytesArg decodes the base64 argument name of
+// qrdb_tenant_barrier_init_complete; an absent argument decodes to nil.
+func initBytesArg(req mcp.CallToolRequest, name string) ([]byte, error) {
+	encoded := mcp.ParseString(req, name, "")
 	if encoded == "" {
 		return nil, nil
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, &ToolArgumentError{Argument: "init_statement", Reason: "must be valid base64: " + err.Error()}
+		return nil, &ToolArgumentError{Argument: name, Reason: "must be valid base64: " + err.Error()}
 	}
 	return decoded, nil
 }
@@ -216,6 +228,14 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		splitRoster, err := initBytesArg(req, "roster")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		splitCheck, err := initBytesArg(req, "unseal_key_check")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		if err := authorize(ctx, tenantID, proof); err != nil {
 			return authzToolError(err), nil
 		}
@@ -239,20 +259,26 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 		}
 
 		result, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy), roster,
-			tenant.WithInitStatement(statement))
+			tenant.WithInitStatement(statement),
+			tenant.WithPreparedShamir(splitRoster, splitCheck))
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_complete", Err: err}
 		}
 
 		// INV-1/INV-11: shares are NEVER returned in init responses.
 		// Security Officers claim their individual share via the SO claim flow.
+		// A Shamir split's roster and check value are returned, base64, for
+		// the owner to sign between the two requests of a Shamir init.
 		resp := map[string]any{
-			"tenant_id":    result.TenantID,
-			"strategy":     result.Strategy,
-			"threshold":    result.Threshold,
-			"total_shares": result.TotalShares,
-			"share_count":  result.ShareCount,
-			"holders":      holderwire.TenantBarrierHoldersTo(result.Holders),
+			"tenant_id":        result.TenantID,
+			"strategy":         result.Strategy,
+			"threshold":        result.Threshold,
+			"total_shares":     result.TotalShares,
+			"share_count":      result.ShareCount,
+			"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
+			"roster":           result.Roster,
+			"unseal_key_check": result.UnsealKeyCheck,
+			"admin_pending":    result.AdminPending,
 		}
 		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {

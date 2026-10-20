@@ -34,6 +34,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -302,7 +303,38 @@ func IdentityLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Cert
 	if err != nil {
 		return nil, err
 	}
+	dnsNames, ipAddrs = withLoopbackSANs(dnsNames, ipAddrs)
 	return leafTemplate(validity, dnsNames, ipAddrs, nodeURI...)
+}
+
+// loopbackSANs are the Subject Alternative Names every node's server
+// certificate carries, founder and joiner alike, so that local clients
+// (loopback dials, the CLI over the unix socket, for which gRPC sends
+// "localhost" as the server name, embedded transports) verify the leaf
+// without extra configuration.
+var loopbackSANs = []string{"localhost", "127.0.0.1", "::1"}
+
+// LoopbackSANs returns a copy of the loopback Subject Alternative Names every
+// node's server certificate carries.
+func LoopbackSANs() []string {
+	return slices.Clone(loopbackSANs)
+}
+
+// withLoopbackSANs appends the loopback names to dnsNames and ipAddrs,
+// skipping any already present.
+func withLoopbackSANs(dnsNames []string, ipAddrs []net.IP) ([]string, []net.IP) {
+	for _, san := range loopbackSANs {
+		if ip := net.ParseIP(san); ip != nil {
+			if !slices.ContainsFunc(ipAddrs, ip.Equal) {
+				ipAddrs = append(ipAddrs, ip)
+			}
+			continue
+		}
+		if !slices.Contains(dnsNames, san) {
+			dnsNames = append(dnsNames, san)
+		}
+	}
+	return dnsNames, ipAddrs
 }
 
 // addressSANs recovers the address embedded in a node SPIFFE URI

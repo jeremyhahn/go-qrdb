@@ -83,6 +83,182 @@ func (f *RaftBackendFactory) tenantStartedShards(tenantID string) []shardMigrTar
 	return out
 }
 
+// tenantShardRecode is the share of a tenant barrier's encryption migration
+// that covers the tenant's locally started dedicated raft shards: each shard's
+// state-machine Pebble and, when it opted into one, its dedicated WAL, whose
+// snapshots live in the shared host tree and are staged beside their
+// originals. All of a tenant's shards share its one barrier, so they recode
+// together -- an IsolationRaft tenant's databases, and the home group of an
+// IsolationVolume tenant, which runs beside the tenant's Host. The migration
+// that begins one commits its stores with the same journaled directory swap it
+// commits its own with (StoreDirs), so a crash anywhere is reconciled from the
+// journal alone.
+//
+// Every method of a nil tenantShardRecode is a no-op, so a migration on a node
+// without a raft backend factory needs no special case.
+type tenantShardRecode struct {
+	f        *RaftBackendFactory
+	tenantID string
+	shards   []shardMigrTarget
+	quiesced bool
+	staged   []database.StagedSnapshot
+}
+
+// beginTenantShardRecode blocks lazy (re)starts of tenantID's shards and
+// returns the recode of every one started here. The guard goes up BEFORE the
+// started set is snapshotted, so a shard that starts concurrently cannot slip
+// between the two and escape the recode. Release lowers it again. It returns
+// nil on a nil receiver.
+func (f *RaftBackendFactory) beginTenantShardRecode(tenantID string) *tenantShardRecode {
+	if f == nil {
+		return nil
+	}
+	f.migrating.Store(tenantID, struct{}{})
+	return &tenantShardRecode{f: f, tenantID: tenantID, shards: f.tenantStartedShards(tenantID)}
+}
+
+// Empty reports whether no shard of the tenant is started here.
+func (r *tenantShardRecode) Empty() bool {
+	return r == nil || len(r.shards) == 0
+}
+
+// StoreDirs returns every store directory the recode stages a keyed copy of,
+// for the migration journal and its swap.
+func (r *tenantShardRecode) StoreDirs() []string {
+	if r == nil {
+		return nil
+	}
+	var dirs []string
+	for _, s := range r.shards {
+		dirs = append(dirs, s.smDir)
+		if s.walDir != "" {
+			dirs = append(dirs, s.walDir)
+		}
+	}
+	return dirs
+}
+
+// Quiesce stops every shard, releasing its state-machine Pebble lock and
+// closing its dedicated WAL. The tenant barrier is untouched. A shard stopped
+// here starts again in Release, whether or not every stop succeeded.
+func (r *tenantShardRecode) Quiesce() error {
+	if r == nil {
+		return nil
+	}
+	r.quiesced = true
+	for _, s := range r.shards {
+		if err := r.f.Close(s.key.tenantID, s.key.database); err != nil {
+			return &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-quiesce", Err: err}
+		}
+	}
+	return nil
+}
+
+// Copy stages, beside each shard's stores, a copy re-encrypted from source's
+// key to target's: the state-machine Pebble through recode, the dedicated WAL
+// record by record with each of its snapshots' data files staged beside the
+// original. checkpoint is handed the staged snapshot set each time it grows, so
+// the journal knows every sibling written so far: recovery commits them on a
+// roll-forward and discards them on a roll-back.
+func (r *tenantShardRecode) Copy(ctx context.Context, source, target *seal.StorageBarrier, recode recodeFunc, checkpoint func([]database.StagedSnapshot) error) error {
+	if r == nil {
+		return nil
+	}
+	srcEnc, dstEnc := atrest.New(source), atrest.New(target)
+	snapDest := func(snapDir string) string {
+		return filepath.Join(snapDir, database.SnapshotDataFile) + database.SnapshotKeyedSuffix
+	}
+	for _, s := range r.shards {
+		smKeyed := s.smDir + database.KeyedDirSuffix
+		_ = os.RemoveAll(smKeyed)
+		if _, err := recode(ctx, s.smDir, srcEnc, smKeyed, dstEnc); err != nil {
+			return &RaftBackendError{TenantID: r.tenantID, Database: s.key.database, Op: "migrate-recode-sm", Err: err}
+		}
+		if s.walDir == "" {
+			continue
+		}
+		walKeyed := s.walDir + database.KeyedDirSuffix
+		_ = os.RemoveAll(walKeyed)
+		_, staged, err := database.ReencryptWALStore(s.walDir, source, walKeyed, target, snapDest)
+		if err != nil {
+			return &RaftBackendError{TenantID: r.tenantID, Database: s.key.database, Op: "migrate-recode-wal", Err: err}
+		}
+		r.staged = append(r.staged, staged...)
+		if err := checkpoint(r.staged); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Verify proves every staged state machine holds exactly its source's records.
+// A WAL is proven by the shard's start in Release, which replays it into the
+// keyed state machine.
+func (r *tenantShardRecode) Verify(ctx context.Context, source, target *seal.StorageBarrier) error {
+	if r == nil {
+		return nil
+	}
+	srcEnc, dstEnc := atrest.New(source), atrest.New(target)
+	for _, s := range r.shards {
+		if err := database.VerifyReencryptedStore(ctx, s.smDir, srcEnc, s.smDir+database.KeyedDirSuffix, dstEnc); err != nil {
+			return &RaftBackendError{TenantID: r.tenantID, Database: s.key.database, Op: "migrate-verify-sm", Err: err}
+		}
+	}
+	return nil
+}
+
+// CommitSnapshots renames every staged snapshot data file over its original,
+// once the swapped WALs (which carry the keyed snapshot epochs) are live. It
+// runs past the point of no return, so it retries transient filesystem errors
+// rather than aborting: an abort would leave the live snapshots under the
+// retiring key while the swapped WALs expect the keyed copies. A sibling
+// already committed is skipped.
+func (r *tenantShardRecode) CommitSnapshots(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if err := database.CommitStagedSnapshotsWithRetry(ctx, r.staged, snapshotCommitAttempts, snapshotCommitBackoff); err != nil {
+		return &RaftBackendError{TenantID: r.tenantID, Op: "migrate-commit-snapshots", Err: err}
+	}
+	return nil
+}
+
+// Discard removes every staged snapshot data file, for a migration that failed
+// before its commit. The staged store copies go with the journal's StoreDirs.
+func (r *tenantShardRecode) Discard() {
+	if r != nil {
+		database.RollbackStagedSnapshots(r.staged)
+	}
+}
+
+// Release lowers the guard and starts every quiesced shard again, under
+// whichever barrier the tenant holds by then: the keyed one after a commit,
+// the untouched one after a failure, so the tenant is never left dark. When
+// tolerateSealed is set the installed barrier is sealed pending its holders'
+// quorum, and a shard that cannot start for that reason stays stopped until a
+// later Attach finds it unsealed. Release is idempotent.
+func (r *tenantShardRecode) Release(ctx context.Context, tolerateSealed bool) error {
+	if r == nil {
+		return nil
+	}
+	r.f.migrating.Delete(r.tenantID)
+	if !r.quiesced {
+		return nil
+	}
+	r.quiesced = false
+	var first error
+	for _, s := range r.shards {
+		err := r.f.Attach(ctx, s.key.tenantID, s.key.database)
+		if err == nil || (tolerateSealed && errors.Is(err, seal.ErrSealed)) {
+			continue
+		}
+		if first == nil {
+			first = &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-reattach", Err: err}
+		}
+	}
+	return first
+}
+
 // MigrateTenantEncryption migrates an IsolationRaft tenant's dedicated barrier
 // from none to a keyed strategy, re-encrypting every one of the tenant's local
 // dedicated-raft shards (each shard's state-machine Pebble plus its dedicated WAL
@@ -121,18 +297,22 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		return &RaftBackendError{TenantID: tenantID, Op: "migrate", Err: seal.ErrSealed}
 	}
 
-	// Block lazy shard rebuilds against the stale barrier at TENANT granularity
-	// BEFORE snapshotting the shard set — so a db that starts concurrently cannot
-	// slip between the snapshot and the guard and escape the recode (the
-	// IsolationVolume sibling guards first thing for the same reason). The early
-	// defer is a safety net for the return paths below that precede the finalize
-	// defer; the finalize defer clears the guard again (idempotent) before
-	// re-attaching.
-	f.migrating.Store(tenantID, struct{}{})
-	defer f.migrating.Delete(tenantID)
+	// Block lazy shard rebuilds against the stale barrier, then snapshot the
+	// shard set. keyedSealed is set once a Shamir-target reopen installs a
+	// SEALED keyed barrier (see the ReopenKeyed call below): the shards' start
+	// then fails with seal.ErrSealed, the expected post-migration state pending
+	// the holders' quorum, not a migration failure. The release runs after the
+	// finalize defer below, so a failed migration's shards start under the
+	// rolled-back barrier.
+	shards := f.beginTenantShardRecode(tenantID)
+	keyedSealed := false
+	defer func() {
+		if rerr := shards.Release(ctx, keyedSealed); rerr != nil && err == nil {
+			err = rerr
+		}
+	}()
 
-	shards := f.tenantStartedShards(tenantID)
-	if len(shards) == 0 {
+	if shards.Empty() {
 		return &RaftBackendError{TenantID: tenantID, Op: "migrate", Err: ErrRaftDatabaseUnknown}
 	}
 
@@ -170,59 +350,21 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 	// Record every directory the commit swaps so a crash-recovery pass can roll
 	// the swaps forward (or back) from the journal alone, without re-deriving
 	// the tenant's shard layout.
-	for _, s := range shards {
-		j.StoreDirs = append(j.StoreDirs, s.smDir)
-		if s.walDir != "" {
-			j.StoreDirs = append(j.StoreDirs, s.walDir)
-		}
-	}
+	j.StoreDirs = shards.StoreDirs()
 
-	quiesced := false
-	// keyedSealed is set true once a Shamir-target reopen installs a SEALED
-	// keyed barrier (see the ReopenKeyed call below): it tells the deferred
-	// re-attach that a seal.ErrSealed from f.Attach is the expected, non-fatal
-	// post-migration state (pending Security Officer quorum), not a migration
-	// failure.
-	keyedSealed := false
-	// stagedSnaps accumulates re-encrypted snapshot data files staged beside their
-	// originals in the shared host snapshot tree, which the per-shard dir swaps
-	// below do NOT move (unlike IsolationVolume, whose snapshots ride the smDir
-	// swap). They are renamed into place after the swaps commit, or discarded on
-	// any pre-commit failure.
-	var stagedSnaps []database.StagedSnapshot
 	// Finalize defer — registered immediately after BeginMigration, BEFORE the
 	// first CheckpointMigration, so ANY post-begin failure rolls the journal to a
 	// terminal PhaseFailed. Otherwise a leftover non-terminal journal makes the
 	// next BeginMigration return ErrMigrationInProgress and wedge every retry.
 	defer func() {
 		if err != nil && !j.Committed() {
-			database.RollbackStagedSnapshots(stagedSnaps)
-			for _, s := range shards {
-				_ = os.RemoveAll(s.smDir + database.KeyedDirSuffix)
-				if s.walDir != "" {
-					_ = os.RemoveAll(s.walDir + database.KeyedDirSuffix)
-				}
+			shards.Discard()
+			for _, dir := range j.StoreDirs {
+				_ = os.RemoveAll(dir + database.KeyedDirSuffix)
 			}
 			j.Phase = seal.PhaseFailed
 			_ = source.CheckpointMigration(ctx, j)
 			_ = source.FinishMigration(ctx)
-		}
-		// Clear the guard (idempotent), then re-attach every quiesced shard: after a
-		// successful commit under the keyed barrier, after a failure under the
-		// untouched none barrier. Either way the tenant is never left dark.
-		f.migrating.Delete(tenantID)
-		if quiesced {
-			for _, s := range shards {
-				if aerr := f.Attach(ctx, s.key.tenantID, s.key.database); aerr != nil && err == nil {
-					if keyedSealed && errors.Is(aerr, seal.ErrSealed) {
-						// Expected: a Shamir target reopens sealed, pending quorum. The
-						// shard stays detached; a later Attach (request-driven or
-						// operator-driven) retries and succeeds once unsealed.
-						continue
-					}
-					err = &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-reattach", Err: aerr}
-				}
-			}
 		}
 	}()
 
@@ -231,18 +373,13 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		return err
 	}
 
-	// Quiesce: stop each shard (releasing its SM Pebble lock + closing its
-	// dedicated WAL). The shared tenant barrier stays unsealed throughout.
-	for _, s := range shards {
-		if cerr := f.Close(s.key.tenantID, s.key.database); cerr != nil {
-			err = &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-quiesce", Err: cerr}
-			return err
-		}
+	// Quiesce: stop each shard. The shared tenant barrier stays unsealed
+	// throughout.
+	if qerr := shards.Quiesce(); qerr != nil {
+		err = qerr
+		return err
 	}
-	quiesced = true
 
-	srcEnc := atrest.New(source)
-	dstEnc := atrest.New(target)
 	recode := database.ReencryptPebbleStore
 	if opts.Mechanism == seal.MechanismInPlace {
 		recode = database.ReencryptStoreFiles
@@ -257,38 +394,12 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		err = cerr
 		return err
 	}
-	for _, s := range shards {
-		smKeyed := s.smDir + database.KeyedDirSuffix
-		_ = os.RemoveAll(smKeyed)
-		if _, cerr := recode(ctx, s.smDir, srcEnc, smKeyed, dstEnc); cerr != nil {
-			err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-recode-sm", Err: cerr}
-			return err
-		}
-		if s.walDir != "" {
-			walKeyed := s.walDir + database.KeyedDirSuffix
-			_ = os.RemoveAll(walKeyed)
-			// The dedicated-raft shard's snapshots live in the shared host tree,
-			// not under s.smDir/s.walDir, so re-encrypt each snapshot's data file
-			// into a staging sibling (committed by rename after the swaps).
-			snapDest := func(snapDir string) string {
-				return filepath.Join(snapDir, database.SnapshotDataFile) + database.SnapshotKeyedSuffix
-			}
-			_, staged, cerr := database.ReencryptWALStore(s.walDir, source, walKeyed, target, snapDest)
-			if cerr != nil {
-				err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-recode-wal", Err: cerr}
-				return err
-			}
-			stagedSnaps = append(stagedSnaps, staged...)
-			// Checkpoint the staged snapshot set as it grows so a crash at any
-			// point leaves the journal aware of every sibling written so far —
-			// recovery commits them on roll-forward and discards them on
-			// roll-back.
-			j.StagedSnapshots = stagedSnaps
-			if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
-				err = cerr
-				return err
-			}
-		}
+	if cerr := shards.Copy(ctx, source, target, recode, func(staged []database.StagedSnapshot) error {
+		j.StagedSnapshots = staged
+		return source.CheckpointMigration(ctx, j)
+	}); cerr != nil {
+		err = cerr
+		return err
 	}
 
 	// Verify each SM round-trip (no data loss). WALs are verified implicitly by
@@ -298,52 +409,34 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		err = cerr
 		return err
 	}
-	for _, s := range shards {
-		if verr := database.VerifyReencryptedStore(ctx, s.smDir, srcEnc, s.smDir+database.KeyedDirSuffix, dstEnc); verr != nil {
-			err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-verify-sm", Err: verr}
-			return err
-		}
+	if verr := shards.Verify(ctx, source, target); verr != nil {
+		err = verr
+		return err
 	}
 
-	// Commit (point of no return): swap every dir, then adopt the keyed root key
-	// once for the whole tenant barrier.
+	// Commit (point of no return): swap every dir, commit the staged snapshots,
+	// then adopt the keyed root key once for the whole tenant barrier.
 	j.Phase = seal.PhaseCommitting
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
 		err = cerr
 		return err
 	}
-	for _, s := range shards {
-		if serr := database.SwapStoreDir(s.smDir); serr != nil {
-			err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-swap-sm", Err: serr}
+	for _, dir := range j.StoreDirs {
+		if serr := database.SwapStoreDir(dir); serr != nil {
+			err = &RaftBackendError{TenantID: tenantID, Op: "migrate-swap-store", Err: serr}
 			return err
 		}
-		if s.walDir != "" {
-			if serr := database.SwapStoreDir(s.walDir); serr != nil {
-				err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-swap-wal", Err: serr}
-				return err
-			}
-		}
 	}
-	// Commit the staged snapshot data files now the WALs (which carry the keyed
-	// snapshot epochs) are live: rename each keyed sibling over its original so
-	// the shard recovers its snapshot under the new barrier. Idempotent for crash
-	// recovery — a missing sibling is already committed.
-	// Past the point of no return: roll forward, retrying transient FS errors,
-	// rather than aborting — an abort here would leave the live snapshots
-	// source-encrypted while the swapped WAL metadata expects the keyed copies.
-	if cerr := database.CommitStagedSnapshotsWithRetry(ctx, stagedSnaps, snapshotCommitAttempts, snapshotCommitBackoff); cerr != nil {
-		err = &RaftBackendError{TenantID: tenantID, Op: "migrate-commit-snapshots", Err: cerr}
+	if cerr := shards.CommitSnapshots(ctx); cerr != nil {
+		err = cerr
 		return err
 	}
 	if aerr := source.AdoptMigratedRootKey(ctx, target); aerr != nil {
 		err = aerr
 		return err
 	}
-	for _, s := range shards {
-		database.RemoveStoreBackup(s.smDir)
-		if s.walDir != "" {
-			database.RemoveStoreBackup(s.walDir)
-		}
+	for _, dir := range j.StoreDirs {
+		database.RemoveStoreBackup(dir)
 	}
 
 	// Install the keyed barrier: reopen from the now-keyed canonical root key and
@@ -371,7 +464,7 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 	f.logger.Info("tenant raft-shard encryption migration complete",
 		slog.String("tenant", tenantID),
 		slog.String("strategy", string(opts.TargetStrategy)),
-		slog.Int("shards", len(shards)))
+		slog.Int("shards", len(shards.shards)))
 	// A Shamir target reopens SEALED (see ReopenKeyed): by design it never
 	// auto-unseals from disk. The migration itself is complete and the keyed
 	// barrier is installed; the deferred re-attach below would otherwise

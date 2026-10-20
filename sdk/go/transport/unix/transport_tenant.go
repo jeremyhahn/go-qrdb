@@ -23,13 +23,13 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/peertls"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantinit"
 )
 
 // Compile-time interface assertion.
@@ -273,43 +273,40 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	}
 
 	client := pb.NewTenantBarrierServiceClient(t.conn)
-	var p peer.Peer
-	begin, err := client.InitBegin(ctx, &pb.TenantBarrierInitBeginRequest{TenantId: req.TenantID}, grpc.Peer(&p))
-	if err != nil {
-		return nil, mapGRPCError("TenantBarrierInit", err)
-	}
-	proof, err := transport.ProveTenantBarrierInit(req.Signer, req.TenantID, begin.GetNonce(), peertls.State(&p))
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
-	}
-	statement, err := barrierinit.SignTenantInit(req.Signer, req.TenantID, req.Strategy)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
-	}
-	resp, err := client.InitComplete(ctx, &pb.TenantBarrierInitRequest{
-		TenantId:      req.TenantID,
-		Passphrase:    req.Passphrase,
-		Threshold:     int32(req.Threshold), //nolint:gosec // share threshold is a small count
-		Shares:        int32(req.Shares),    //nolint:gosec // share count is small
-		Strategy:      req.Strategy,
-		Officers:      officers,
-		Policy:        req.Policy,
-		Nonce:         proof.Nonce,
-		PublicKey:     proof.PublicKey,
-		Signature:     proof.Signature,
-		InitStatement: statement,
+	return tenantinit.Run(req, func(round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
+		var p peer.Peer
+		begin, err := client.InitBegin(ctx, &pb.TenantBarrierInitBeginRequest{TenantId: req.TenantID}, grpc.Peer(&p))
+		if err != nil {
+			return nil, mapGRPCError("TenantBarrierInit", err)
+		}
+		proof, err := transport.ProveTenantBarrierInit(req.Signer, req.TenantID, begin.GetNonce(), peertls.State(&p))
+		if err != nil {
+			return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+		}
+		wire := &pb.TenantBarrierInitRequest{
+			TenantId:       req.TenantID,
+			Passphrase:     req.Passphrase,
+			Threshold:      int32(req.Threshold), //nolint:gosec // share threshold is a small count
+			Shares:         int32(req.Shares),    //nolint:gosec // share count is small
+			Strategy:       req.Strategy,
+			Officers:       officers,
+			Policy:         req.Policy,
+			Nonce:          proof.Nonce,
+			PublicKey:      proof.PublicKey,
+			Signature:      proof.Signature,
+			InitStatement:  round.Statement,
+			Roster:         round.Roster,
+			UnsealKeyCheck: round.UnsealKeyCheck,
+		}
+		if round.Complete {
+			wire.Officers, wire.Policy = nil, ""
+		}
+		resp, err := client.InitComplete(ctx, wire)
+		if err != nil {
+			return nil, mapGRPCError("TenantBarrierInit", err)
+		}
+		return holderconv.TenantBarrierInitResponseFromPB(resp), nil
 	})
-	if err != nil {
-		return nil, mapGRPCError("TenantBarrierInit", err)
-	}
-	return &transport.TenantBarrierInitResponse{
-		TenantID:    resp.GetTenantId(),
-		Strategy:    resp.GetStrategy(),
-		Threshold:   int(resp.GetThreshold()),
-		TotalShares: int(resp.GetTotalShares()),
-		ShareCount:  int(resp.GetShareCount()),
-		Holders:     holderconv.TenantBarrierHoldersFromPB(resp.GetHolders()),
-	}, nil
 }
 
 // TenantBarrierUnseal unseals the per-tenant barrier using the provided key
@@ -380,6 +377,8 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ShamirThreshold: int(resp.GetShamirThreshold()),
 		ShamirTotal:     int(resp.GetShamirTotal()),
 		ClusterSeal:     sealconv.FromProto(resp.GetClusterSeal()),
+		KeyFingerprint:  resp.GetKeyFingerprint(),
+		Nodes:           holderconv.TenantBarrierNodesFromPB(resp.GetNodes()),
 	}, nil
 }
 

@@ -115,6 +115,74 @@ func TestIdentityIndex_PhysicalKeyAndPayload(t *testing.T) {
 	}
 }
 
+// A strict tenant's ids are resolved in its own tenant, so it keeps no entry in
+// the system shard: Record takes no claim and writes nothing, while a tenant
+// that is not strict still claims at the physical key.
+func TestIdentityIndex_IsolatedTenantTakesNoClaim(t *testing.T) {
+	shared, svc, _, resolver := newResolverFixture(t)
+	ctx := context.Background()
+	putTenant(t, svc, "vault", IsolationRaft, TenantIsolationPolicyStrict)
+	putTenant(t, svc, "loose", IsolationBarrier, TenantIsolationPolicyInherit)
+	putTenant(t, svc, "shared", IsolationPrefix, TenantIsolationPolicyInherit)
+
+	index, err := NewResolvedIdentityIndex(resolver)
+	if err != nil {
+		t.Fatalf("NewResolvedIdentityIndex: %v", err)
+	}
+	for _, tenantID := range []string{"vault", "loose"} {
+		for _, kind := range []IdentityKind{IdentityUser, IdentityRole} {
+			id := tenantID + "-id"
+			token, err := index.Record(ctx, kind, id, tenantID)
+			if err != nil {
+				t.Fatalf("Record(%s, %s): %v", kind, tenantID, err)
+			}
+			if token != "" {
+				t.Fatalf("Record(%s, %s) token = %q, want none", kind, tenantID, token)
+			}
+			key := "system/__sys:identity_idx/tenant/" + string(kind) + "/" + id
+			if raw, gerr := shared.Get(ctx, key); gerr != nil || raw != nil {
+				t.Fatalf("system store at %q = (%q, %v), want no entry for an isolated tenant", key, raw, gerr)
+			}
+			if _, held, lerr := index.Lookup(ctx, kind, id); lerr != nil || held {
+				t.Fatalf("Lookup(%s, %s) = (%v, %v), want unheld", kind, id, held, lerr)
+			}
+		}
+	}
+
+	if _, err := index.Record(ctx, IdentityUser, "shared-id", "shared"); err != nil {
+		t.Fatalf("Record(shared): %v", err)
+	}
+	if raw, err := shared.Get(ctx, "system/__sys:identity_idx/tenant/user/shared-id"); err != nil || raw == nil {
+		t.Fatalf("shared tenant's claim = (%q, %v), want an entry", raw, err)
+	}
+}
+
+// When whether a tenant is homed cannot be answered, the claim is refused
+// rather than taken: taking it would put an isolated tenant's id in the
+// system shard, and skipping it would drop a shared tenant's capture defence.
+func TestIdentityIndex_UnanswerableHomeRefusesTheClaim(t *testing.T) {
+	_, svc, reg, _ := newResolverFixture(t)
+	readErr := errors.New("registry unreadable")
+	shared := newMemKVStore()
+	resolver, err := NewStoreResolver(shared, reg, &getTenantFailingService{TenantService: svc, err: readErr})
+	if err != nil {
+		t.Fatalf("NewStoreResolver: %v", err)
+	}
+	index, err := NewResolvedIdentityIndex(resolver)
+	if err != nil {
+		t.Fatalf("NewResolvedIdentityIndex: %v", err)
+	}
+
+	_, err = index.Record(context.Background(), IdentityUser, "5", "loose")
+	var ierr *IdentityIndexError
+	if !errors.As(err, &ierr) || !errors.Is(err, readErr) {
+		t.Fatalf("Record = %v, want an *IdentityIndexError wrapping the read error", err)
+	}
+	if len(shared.data) != 0 {
+		t.Fatalf("a refused claim wrote %d keys", len(shared.data))
+	}
+}
+
 // A user id and a role id that happen to be equal must not resolve each
 // other: the kind is a key segment, not a comment.
 func TestIdentityIndex_KindsAreDisjoint(t *testing.T) {

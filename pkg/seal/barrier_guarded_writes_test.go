@@ -29,9 +29,12 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // nonGuardedBackend is a StorageBackend with no guarded SWAP of its own, so
@@ -342,5 +345,198 @@ func TestStorageBarrier_GuardedWrites_ReportUndecryptableStoredBytes(t *testing.
 	var delGetErr *GetError
 	if !errors.As(err, &delGetErr) {
 		t.Errorf("CompareAndDelete error = %T (%v), want *GetError", err, err)
+	}
+}
+
+// rewritingBackend re-stores guardKey's plaintext through the barrier right
+// after the barrier first reads it, so the ciphertext the barrier compared is
+// replaced before its batch reaches the backend. The plaintext is unchanged;
+// only the bytes are new.
+type rewritingBackend struct {
+	*MemoryBackend
+	guardKey string
+	rewrite  func()
+	done     bool
+}
+
+func (r *rewritingBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	v, err := r.MemoryBackend.Get(ctx, key)
+	if key == r.guardKey && !r.done {
+		r.done = true
+		r.rewrite()
+	}
+	return v, err
+}
+
+// TestStorageBarrier_PutAllIfAllUnchanged_GuardsOnCiphertextComparesOnPlaintext
+// is the batch counterpart of the CompareAndSwap property: a plaintext guard
+// that matches is applied, and the writes land encrypted.
+func TestStorageBarrier_PutAllIfAllUnchanged_GuardsOnCiphertextComparesOnPlaintext(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryBackend()
+	b := newGuardedTestBarrier(t, base)
+	if err := b.Put(ctx, "held", []byte("old")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := b.Put(ctx, "gone", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	applied, err := b.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "held", Value: []byte("old")}, {Key: "absent"}},
+		[]kvstore.KV{{Key: "held", Value: []byte("new")}, {Key: "secret", Value: []byte("plaintext")}, {Key: "gone", Delete: true}})
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if got, _ := b.Get(ctx, "held"); string(got) != "new" {
+		t.Errorf("held = %q, want %q", got, "new")
+	}
+	if got, _ := b.Get(ctx, "secret"); string(got) != "plaintext" {
+		t.Errorf("secret = %q, want %q", got, "plaintext")
+	}
+	if raw, _ := base.Get(ctx, "secret"); bytes.Contains(raw, []byte("plaintext")) {
+		t.Error("the backend holds the plaintext: the batch wrote it unencrypted")
+	}
+	if _, err := base.Get(ctx, "gone"); !errors.Is(err, ErrSecretNotFound) {
+		t.Errorf("gone: err = %v, want deleted", err)
+	}
+}
+
+func TestStorageBarrier_PutAllIfAllUnchanged_DeclinesAndWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]kvstore.Guard{
+		"stale plaintext":            {Key: "held", Value: []byte("other")},
+		"absent guard on a present":  {Key: "held"},
+		"present guard on an absent": {Key: "absent", Value: []byte("old")},
+	}
+	for name, guard := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newGuardedTestBarrier(t, NewMemoryBackend())
+			if err := b.Put(ctx, "held", []byte("old")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			applied, err := b.PutAllIfAllUnchanged(ctx, []kvstore.Guard{guard},
+				[]kvstore.KV{{Key: "new", Value: []byte("v")}})
+			if err != nil || applied {
+				t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+			}
+			if _, err := b.Get(ctx, "new"); !errors.Is(err, ErrSecretNotFound) {
+				t.Errorf("new: err = %v, want unwritten", err)
+			}
+		})
+	}
+}
+
+// TestStorageBarrier_PutAllIfAllUnchanged_RefusesWhenTheCiphertextMoved proves
+// the guard handed down is the ciphertext that was read: a rewrite of the same
+// plaintext in between makes the backend refuse.
+func TestStorageBarrier_PutAllIfAllUnchanged_RefusesWhenTheCiphertextMoved(t *testing.T) {
+	ctx := context.Background()
+	base := &rewritingBackend{MemoryBackend: NewMemoryBackend(), guardKey: "held"}
+	b := newGuardedTestBarrier(t, base)
+	if err := b.Put(ctx, "held", []byte("old")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	base.rewrite = func() {
+		if err := b.Put(ctx, "held", []byte("old")); err != nil {
+			t.Errorf("rewrite: %v", err)
+		}
+	}
+
+	applied, err := b.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "held", Value: []byte("old")}},
+		[]kvstore.KV{{Key: "new", Value: []byte("v")}})
+	if err != nil || applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil): the "+
+			"guard was not the ciphertext that was read", applied, err)
+	}
+}
+
+func TestStorageBarrier_PutAllIfAllUnchanged_RefusesWhileSealed(t *testing.T) {
+	b := newGuardedTestBarrier(t, NewMemoryBackend())
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if _, err := b.PutAllIfAllUnchanged(context.Background(), nil, nil); !errors.Is(err, ErrSealed) {
+		t.Fatalf("err = %v, want ErrSealed", err)
+	}
+}
+
+func TestStorageBarrier_PutAllIfAllUnchanged_RefusesOnABackendWithoutIt(t *testing.T) {
+	b := newGuardedTestBarrier(t, nonGuardedBackend{NewMemoryBackend()})
+	_, err := b.PutAllIfAllUnchanged(context.Background(), []kvstore.Guard{{Key: "g"}}, nil)
+	if !errors.Is(err, ErrGuardedBatchUnsupported) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("err = %v, want ErrGuardedBatchUnsupported matching kvstore.ErrAtomicWriteUnsupported", err)
+	}
+}
+
+// failingGetBatchBackend is a MemoryBackend, guarded batch included, whose
+// reads fail once err is set.
+type failingGetBatchBackend struct {
+	*MemoryBackend
+	err error
+}
+
+func (f *failingGetBatchBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.MemoryBackend.Get(ctx, key)
+}
+
+func TestStorageBarrier_PutAllIfAllUnchanged_ReportsReadAndDecryptFailures(t *testing.T) {
+	ctx := context.Background()
+	readErr := errors.New("disk on fire")
+	failing := &failingGetBatchBackend{MemoryBackend: NewMemoryBackend()}
+	b := newGuardedTestBarrier(t, failing)
+	failing.err = readErr
+	if _, err := b.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "g"}}, nil); !errors.Is(err, readErr) {
+		t.Errorf("read failure: err = %v, want %v", err, readErr)
+	}
+
+	base := NewMemoryBackend()
+	b = newGuardedTestBarrier(t, base)
+	if err := base.Put(ctx, "garbage", []byte("not a ciphertext")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	_, err := b.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "garbage", Value: []byte("x")}}, nil)
+	var getErr *GetError
+	if !errors.As(err, &getErr) {
+		t.Errorf("undecryptable guard: err = %v, want *GetError", err)
+	}
+}
+
+func TestMemoryBackend_PutAllIfAllUnchanged(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryBackend()
+	if err := m.Put(ctx, "held", []byte("1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	for name, guard := range map[string]kvstore.Guard{
+		"stale value":                {Key: "held", Value: []byte("2")},
+		"absent guard on a present":  {Key: "held"},
+		"present guard on an absent": {Key: "absent", Value: []byte{}},
+	} {
+		applied, err := m.PutAllIfAllUnchanged(ctx, []kvstore.Guard{guard}, []kvstore.KV{{Key: "new", Value: []byte("v")}})
+		if err != nil || applied {
+			t.Errorf("%s: PutAllIfAllUnchanged = (%v, %v), want (false, nil)", name, applied, err)
+		}
+	}
+	if ok, _ := m.Exists(ctx, "new"); ok {
+		t.Fatal("a declined batch wrote")
+	}
+
+	applied, err := m.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "held", Value: []byte("1")}, {Key: "absent"}},
+		[]kvstore.KV{{Key: "new", Value: []byte("v")}, {Key: "held", Delete: true}})
+	if err != nil || !applied {
+		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+	}
+	if got, _ := m.Get(ctx, "new"); string(got) != "v" {
+		t.Errorf("new = %q, want %q", got, "v")
+	}
+	if ok, _ := m.Exists(ctx, "held"); ok {
+		t.Error("held survived a batched delete")
 	}
 }

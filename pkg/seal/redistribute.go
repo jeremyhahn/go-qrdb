@@ -104,6 +104,20 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 	}
 	defer key.Destroy()
 
+	params := &ShamirInitParams{Threshold: roster.Threshold, TotalShares: roster.Total}
+	if domain == DomainUnseal {
+		if params.Roster, _, err = encodeRoster(roster); err != nil {
+			return nil, err
+		}
+		if err := key.WithBytes(func(k []byte) error {
+			var cerr error
+			params.UnsealKeyCheck, cerr = UnsealKeyCheck(k)
+			return cerr
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	var aead cipher.AEAD
 	if err := key.WithBytes(func(k []byte) error {
 		var aerr error
@@ -148,7 +162,8 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 		map[string]string{"domain": string(domain), "threshold": itoa(roster.Threshold),
 			"total": itoa(roster.Total), "policy": string(roster.Policy), "removed": itoa(len(remove))})
 
-	return &ShamirInitParams{Threshold: roster.Threshold, TotalShares: roster.Total, ShareCount: count}, nil
+	params.ShareCount = count
+	return params, nil
 }
 
 // lockRedistribution waits for domain's redistribution slot and returns the

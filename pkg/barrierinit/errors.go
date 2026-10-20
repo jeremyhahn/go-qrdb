@@ -36,8 +36,15 @@ const (
 	// admin at epoch 1, not the certificate's key at a later one.
 	ReasonWrongSigner Reason = "signer is not the barrier owner"
 	// ReasonUntrustedCertificate: a later epoch's certificate is absent, does
-	// not chain to the tenant CA, or is not valid now.
+	// not chain to the tenant CA, or does not chain to it at the statement's
+	// issue time.
 	ReasonUntrustedCertificate Reason = "signer certificate not trusted"
+	// ReasonIssuedInFuture: the statement's signed issue time is after the
+	// time it is verified at.
+	ReasonIssuedInFuture Reason = "statement issued in the future"
+	// ReasonNotValidAtIssue: the statement's signed issue time lies outside
+	// its signer certificate's validity window.
+	ReasonNotValidAtIssue Reason = "signer certificate not valid at issue time"
 	// ReasonBadSignature: the signature does not verify over the statement.
 	ReasonBadSignature Reason = "signature does not verify"
 	// ReasonMismatch: the statement names another barrier, epoch, strategy or

@@ -15,6 +15,7 @@
 package tenant
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -145,9 +146,8 @@ type createTenantConfig struct {
 }
 
 // WithIsolationPolicy opts the new tenant into TenantIsolationPolicyStrict
-// regardless of the cluster floor. Refused with
-// *StrictRequiresDedicatedStorageError for a prefix tenant: a prefix tenant
-// has no store and no key of its own (owner ruling S2).
+// regardless of the cluster floor. The policy governs isolated tenants only;
+// a shared (prefix) tenant is never refused for asking.
 func WithIsolationPolicy(p TenantIsolationPolicy) CreateTenantOption {
 	return func(c *createTenantConfig) { c.isolationPolicy = p }
 }
@@ -214,9 +214,8 @@ type TenantPatch struct {
 	// IsolationPolicy, when non-empty, changes the tenant's own
 	// isolation-policy opt-in. Tighten-only: TenantIsolationPolicyInherit ->
 	// TenantIsolationPolicyStrict is the only legal transition; the reverse
-	// is refused with *IsolationPolicyChangeError. Requesting strict on a
-	// prefix tenant (or a tenant moving to prefix in the same patch) is
-	// refused with *StrictRequiresDedicatedStorageError.
+	// is refused with *IsolationPolicyChangeError. The policy governs
+	// isolated tenants only, so a shared (prefix) tenant is never refused.
 	IsolationPolicy TenantIsolationPolicy
 }
 
@@ -407,6 +406,18 @@ type TenantBarrierStatus struct {
 	// ClusterSeal is the tenant barrier's cluster seal state as this node
 	// sees it. Never nil.
 	ClusterSeal *clusterseal.Report `json:"cluster_seal"`
+
+	// KeyFingerprint names this node's own key of the barrier without
+	// revealing it (seal.StorageBarrier.KeyFingerprint): every node serving
+	// the barrier holds its own key, so every node reports a different one.
+	// Empty while the barrier is sealed, holds no lasting key, or cannot be
+	// read.
+	KeyFingerprint string `json:"key_fingerprint,omitempty"`
+
+	// Nodes are the nodes serving the barrier, each holding its own key, with
+	// the API endpoints a client fans a barrier init out to. Empty where the
+	// node cannot list them, or serves the barrier alone.
+	Nodes []BarrierNode `json:"nodes,omitempty"`
 }
 
 // TenantBarrierInitResult reports the outcome of a per-tenant barrier
@@ -438,6 +449,22 @@ type TenantBarrierInitResult struct {
 	// Shamir roster, in roster order. Empty when no roster was supplied
 	// (the pre-enrolled-holders path).
 	Holders []TenantBarrierHolderCert `json:"holders,omitempty"`
+
+	// UnsealKeyCheck and Roster are the check value of the Shamir unseal key
+	// and the encoded holder roster it was split to. A Shamir init is two
+	// requests: the first returns them with the barrier still sealed, the
+	// owner signs them into the init statement, and the second, carrying
+	// that statement, keys the barrier. Empty for non-Shamir strategies.
+	UnsealKeyCheck []byte `json:"unseal_key_check,omitempty"`
+	Roster         []byte `json:"roster,omitempty"`
+
+	// AdminPending reports that the init committed but the tenant's first
+	// admin, onboarded before the barrier existed, is not created yet: a
+	// Shamir init unseals only the node that served it, and the tenant's
+	// home group completes the admin once holders have unsealed enough of
+	// the other nodes for it to elect a leader. The pending record stays,
+	// and the next unseal, quorum unseal or status read completes it.
+	AdminPending bool `json:"admin_pending,omitempty"`
 }
 
 // TenantBarrierHolderCert is the certificate issued to one officer of an
@@ -507,6 +534,9 @@ type TenantService struct {
 	// barrierInitClaims claims a tenant barrier's signed init statement before
 	// this node generates its key; see WithBarrierInitBook.
 	barrierInitClaims
+	// barrierFanOut lists the nodes a client fans a barrier init out to;
+	// see SetBarrierNodeSource.
+	barrierFanOut
 	// runtimeCloser stops what this node runs for a tenant before
 	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
 	runtimeCloser atomic.Pointer[runtimeCloserBox]
@@ -535,9 +565,34 @@ type TenantServiceOption func(*TenantService)
 // as this node knows, unsealed: the tenant's identity records -- kept behind
 // that barrier for a dedicated-isolation tenant -- may now be readable. It
 // must be idempotent and cheap when it has nothing to do, and it reports its
-// own failures: the barrier operation that triggered it has already succeeded
-// and is not undone by them.
-type BarrierReadyHook func(ctx context.Context, tenantID string)
+// own failures. It runs inside the request that raised it and returns what
+// failed: a barrier initialization fails with that error, so its caller never
+// proceeds on an init whose follow-up work is missing; an unseal or status
+// read has served its purpose whatever the hook returns, and the next one
+// retries it. The barrier operation itself is never undone. mode says how
+// long the hook may work at it.
+type BarrierReadyHook func(ctx context.Context, tenantID string, mode AdminCompletion) error
+
+// AdminCompletion says how a BarrierReadyHook completes a tenant's pending
+// first admin.
+type AdminCompletion int
+
+const (
+	// AdminCompletionWithin lets the hook retry within its own bounds until
+	// the admin is complete: a non-Shamir barrier init answers only once the
+	// admin is usable, and every node serving the barrier unseals it from
+	// its own key, so the tenant's home group elects a leader unaided. An
+	// unseal, quorum unseal or status read runs the hook this way too.
+	AdminCompletionWithin AdminCompletion = iota
+
+	// AdminCompletionOnce asks for one attempt on the caller's context. A
+	// Shamir barrier init runs the hook this way: it unseals only the node
+	// that served it, so the tenant's home group can elect a leader only
+	// once holders have unsealed the other nodes. The hook returns
+	// ErrTenantAdminPending when the home group cannot complete the admin
+	// yet, and the unseal, quorum unseal and status reads that follow do.
+	AdminCompletionOnce
+)
 
 // WithBarrierReadyHook registers a hook run after a tenant barrier is
 // initialized, after it is unsealed -- by key material (TenantBarrierUnseal)
@@ -552,11 +607,40 @@ func WithBarrierReadyHook(h BarrierReadyHook) TenantServiceOption {
 	return func(s *TenantService) { s.barrierReady = h }
 }
 
-// notifyBarrierReady runs the barrier-ready hook, if any.
+// barrierReadyAfterInit runs the barrier-ready hook, if any, for a barrier
+// initialization and returns its error, which fails the initialization.
+func (s *TenantService) barrierReadyAfterInit(ctx context.Context, tenantID string, mode AdminCompletion) error {
+	if s.barrierReady == nil {
+		return nil
+	}
+	return s.barrierReady(ctx, tenantID, mode)
+}
+
+// notifyBarrierReady runs the barrier-ready hook, if any, after an unseal or
+// a status read. Its error is the hook's to report: the operation succeeded
+// regardless, and the next unseal or status read runs the hook again.
 func (s *TenantService) notifyBarrierReady(ctx context.Context, tenantID string) {
 	if s.barrierReady != nil {
-		s.barrierReady(ctx, tenantID)
+		_ = s.barrierReady(ctx, tenantID, AdminCompletionWithin)
 	}
+}
+
+// HomeLeadershipGained runs the barrier-ready hook, if any, when this node
+// has become ready to lead tenantID's home group and the tenant's barrier is
+// initialized and unsealed here. A pending first admin is completed only on
+// the home group's leader, so an init or unseal served by another node leaves
+// it for this trigger. Like an unseal's, the hook's error is the hook's to
+// report, and the pending record stays for the next trigger. It is a node's
+// own trigger, not a request, so it carries no caller scope.
+func (s *TenantService) HomeLeadershipGained(ctx context.Context, tenantID string) {
+	if s.barrierReady == nil || tenantID == "" {
+		return
+	}
+	st, err := s.registry.TenantStatus(tenantID)
+	if err != nil || st.InitializedAt.IsZero() || st.Sealed {
+		return
+	}
+	s.notifyBarrierReady(ctx, tenantID)
 }
 
 // WithBarrierKeyProvider injects the seam through which this node obtains the
@@ -582,6 +666,46 @@ type tenantBarrierInitOptions struct {
 	keyRef string
 	// statement is the owner's encoded init statement; see WithInitStatement.
 	statement []byte
+	// shamirSplit is the prepared split a Shamir init's second request
+	// completes; see WithPreparedShamir.
+	shamirSplit *preparedShamirSplit
+}
+
+// preparedShamirSplit is the roster and unseal key check value the first
+// request of a Shamir init returned, echoed back by the second.
+type preparedShamirSplit struct {
+	roster []byte
+	check  []byte
+}
+
+// matches refuses an echoed split other than the one the first request
+// prepared, before the owner's statement is claimed for it: a claim spent on
+// a request the barrier then refuses would leave the init unable to finish.
+func (p *preparedShamirSplit) matches(prepared *seal.ShamirInitParams) error {
+	if !bytes.Equal(p.check, prepared.UnsealKeyCheck) {
+		return &seal.PreparedShamirMismatchError{Field: "unseal key check"}
+	}
+	if !bytes.Equal(p.roster, prepared.Roster) {
+		return &seal.PreparedShamirMismatchError{Field: "roster"}
+	}
+	return nil
+}
+
+// WithPreparedShamir marks a Shamir init as its second request: it completes
+// the split the first request prepared on this node, whose encoded roster and
+// unseal key check value it echoes. A split other than the prepared one is
+// refused (seal.PreparedShamirMismatchError). The owner's statement, when the
+// request carries one, must sign the same split; a tenant whose init requires
+// a statement is refused without one (InitStatementRequiredError). Both empty
+// is the first request, which every transport's wire carries the same way,
+// and leaves the init as it was.
+func WithPreparedShamir(roster, check []byte) TenantBarrierInitOption {
+	return func(o *tenantBarrierInitOptions) {
+		if len(roster) == 0 && len(check) == 0 {
+			return
+		}
+		o.shamirSplit = &preparedShamirSplit{roster: roster, check: check}
+	}
 }
 
 // WithBarrierKeyRef passes the barrier owner's opaque key reference to the
@@ -589,6 +713,38 @@ type tenantBarrierInitOptions struct {
 // controls, that wraps this node's barrier key. go-qrdb never interprets it.
 func WithBarrierKeyRef(ref string) TenantBarrierInitOption {
 	return func(o *tenantBarrierInitOptions) { o.keyRef = ref }
+}
+
+// TenantBarrierInitSettings is what a set of TenantBarrierInitOptions
+// resolves to. A TenantServicer implemented outside this package, or a
+// decorator over one, reads the options it was passed through it.
+type TenantBarrierInitSettings struct {
+	// KeyRef is the barrier owner's key reference (WithBarrierKeyRef).
+	KeyRef string
+	// InitStatement is the owner's encoded init statement (WithInitStatement).
+	InitStatement []byte
+	// PreparedRoster and PreparedUnsealKeyCheck are the split a Shamir init's
+	// second request echoes (WithPreparedShamir); both are nil on any other
+	// request.
+	PreparedRoster         []byte
+	PreparedUnsealKeyCheck []byte
+}
+
+// ResolveTenantBarrierInitOptions applies opts in order and returns the
+// settings they make.
+func ResolveTenantBarrierInitOptions(opts ...TenantBarrierInitOption) TenantBarrierInitSettings {
+	var o tenantBarrierInitOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	settings := TenantBarrierInitSettings{KeyRef: o.keyRef, InitStatement: o.statement}
+	if o.shamirSplit != nil {
+		settings.PreparedRoster = o.shamirSplit.roster
+		settings.PreparedUnsealKeyCheck = o.shamirSplit.check
+	}
+	return settings
 }
 
 // WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA,
@@ -747,18 +903,12 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	if isolationType == "" {
 		isolationType = IsolationPrefix
 	}
-	// S2 (owner ruling): a prefix tenant has no store and no key of its own,
-	// so it cannot be strict, whether the cluster floor forces strict or the
-	// caller asked for it directly. Checked before any side effect.
+	// The isolation policy governs isolated tenants only: a shared (prefix)
+	// tenant is never refused by the cluster floor or by its own opt-in, and
+	// an isolated tenant of any type may be strict, since every one has a
+	// home store. Checked before any side effect.
 	if cfg.isolationPolicy != "" && !cfg.isolationPolicy.Valid() {
 		return nil, &InvalidIsolationPolicyError{Value: string(cfg.isolationPolicy)}
-	}
-	floor, err := s.ClusterIsolationPolicy(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := ValidateIsolationModeAgainstPolicy(id, isolationType, EffectiveIsolationPolicy(floor, cfg.isolationPolicy)); err != nil {
-		return nil, err
 	}
 	if err := s.admitIsolated(isolationType); err != nil {
 		return nil, err
@@ -820,8 +970,8 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	// registration — their IAM records are separated logically by the
 	// tenant-scoped key segments the IAM stores already embed. A
 	// barrier-isolated tenant gets a durable, independent backend from the
-	// volume pool (RegisterTenantPooled) and is initialized immediately so
-	// its DEK exists; the barrier is unsealed and ready to serve IAM data.
+	// volume pool (RegisterBarrierTenant); a system-managed one is
+	// initialized immediately so its DEK exists and it is ready to serve.
 	// A system-managed (auto-unseal) barrier is entitlement-gated: the plan
 	// must permit it explicitly. The secure default (self-managed) is always
 	// allowed for any dedicated-isolation tenant.
@@ -912,6 +1062,12 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		held := unhold
 		unhold = nil
 		s.rollbackHeld(ctx, id, isolationType, err, held)
+		return nil, err
+	}
+	// The platform's init statement is claimed only now: every node reads the
+	// custody choice it is trusted by from the record just committed.
+	if err := s.claimPlatformInit(ctx, info); err != nil {
+		s.undoCommittedCreate(ctx, id, err)
 		return nil, err
 	}
 
@@ -1104,20 +1260,36 @@ func (s *TenantService) rollbackHeld(ctx context.Context, id string, isolationTy
 	}
 }
 
+// undoCommittedCreate undoes a create whose record committed but whose
+// platform init statement could not be claimed, so the id is free for the
+// create to be retried rather than left as a tenant no other node can serve.
+// This create won the id, so its barrier and the records naming it are
+// destroyed outright; then the record goes, without a tombstone, since the id
+// was never handed out. Each failure is logged: the caller reports cause.
+func (s *TenantService) undoCommittedCreate(ctx context.Context, id string, cause error) {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.registry.DestroyTenant(ctx, id); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		s.logger.Warn("tenant create undone after its init statement failed; barrier residue not fully destroyed",
+			slog.String("tenant_id", id), slog.Any("cause", cause), slog.Any("error", err))
+	}
+	if err := s.store.Delete(ctx, metadataPrefix+id); err != nil {
+		s.logger.Warn("tenant create undone after its init statement failed; record not removed",
+			slog.String("tenant_id", id), slog.Any("cause", cause), slog.Any("error", err))
+	}
+}
+
 // registerDedicatedBarrier registers an IsolationBarrier tenant's per-tenant
-// barrier in the chosen key-management mode. For a system-managed (auto-unseal)
-// tenant the DEK is wrapped under the system barrier and the barrier is
-// initialized immediately so it is unsealed and ready and re-attaches
-// credential-free at boot. For a self-managed tenant the barrier is registered
+// barrier in the chosen key-management mode, on the volume layout and with
+// its posture persisted, so the boot restore re-attaches it
+// (seal.BarrierRegistry.RegisterBarrierTenant). For a system-managed
+// (auto-unseal) tenant the DEK is wrapped under the system barrier and the
+// barrier is initialized immediately so it is unsealed and ready and
+// re-attaches credential-free at boot. For a self-managed tenant the barrier is registered
 // SEALED and left uninitialized; the tenant admin drives Initialize/Unseal via
 // the TenantBarrier* endpoints. Registration is rolled back on a failed init so
 // no dangling, uninitialized barrier is left behind.
 func (s *TenantService) registerDedicatedBarrier(ctx context.Context, id string, autoUnseal bool) (string, error) {
-	register := s.registry.RegisterTenantPooled
-	if autoUnseal {
-		register = s.registry.RegisterTenantPooledSystemManaged
-	}
-	if _, regErr := register(ctx, id); regErr != nil {
+	if _, regErr := s.registry.RegisterBarrierTenant(ctx, id, autoUnseal); regErr != nil {
 		if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
 			return "", ErrTenantAlreadyExists
 		}
@@ -1177,7 +1349,7 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
 	}
-	if err := checkIsolationPolicyChangeFor(ctx, s, info, patch); err != nil {
+	if err := checkIsolationPolicyChangeFor(info, patch); err != nil {
 		return nil, err
 	}
 
@@ -1386,8 +1558,13 @@ func (s *TenantService) checkLocalResolution(ctx context.Context, info *TenantIn
 //     keyring is a record in the store the resolver no longer hands out.
 //     Neither step destroys anything, so a failure in either aborts with the
 //     tenant INTACT.
-//  4. UNREGISTER AND DESTROY THE BARRIER, including the durable records
-//     behind it. This is the first irreversible step: a dedicated-isolation
+//  4. STOP WHAT RUNS UNDER THE BARRIER, then UNREGISTER AND DESTROY IT,
+//     including the durable records behind it. An isolated tenant's home group
+//     is retired from the placement table and this node's runtimes for the
+//     tenant are closed first, so no replica writes through a sealed
+//     barrier. Retiring the home group is the first irreversible step --
+//     every node removes its replica -- and it is safe because the fence
+//     already made the tenant unresolvable. A dedicated-isolation
 //     tenant's data and keyring are encrypted under that barrier. Leaving
 //     the records behind is not a leak but a defect: the boot path restores
 //     a per-tenant barrier from them, so a deleted tenant's barrier would
@@ -1525,7 +1702,26 @@ func (s *TenantService) finishTeardown(ctx context.Context, tenantID string) err
 		return err
 	}
 
-	// 4. Not-found is success: the registry may never have held this tenant
+	// 4a. Stop what still runs under the barrier before destroying it. A
+	//     isolated tenant's home group outlives the fence -- it is a placement,
+	//     not a database the bottom-up refusal saw dropped -- and a replica
+	//     still writing when its barrier seals takes the node down. The
+	//     placement goes first so no node starts the replica again; then this
+	//     node's own runtimes are closed. Other nodes close theirs on the
+	//     placement delete, and the deleted-tenant reconcile closes them
+	//     before it releases their barrier.
+	if s.homes != nil {
+		if err := s.homes.RetireTenantHome(ctx, tenantID); err != nil {
+			return &TeardownError{TenantID: tenantID, Err: &RuntimeStopError{TenantID: tenantID, Op: "retire-home", Err: err}}
+		}
+	}
+	if closer := s.TenantRuntimeCloser(); closer != nil {
+		if err := closer.CloseTenantRuntime(ctx, tenantID); err != nil {
+			return &TeardownError{TenantID: tenantID, Err: &RuntimeStopError{TenantID: tenantID, Op: "close-runtime", Err: err}}
+		}
+	}
+
+	// 4b. Not-found is success: the registry may never have held this tenant
 	//    (registration failed, or this is a node that never attached it), and
 	//    the delete must stay re-issuable.
 	if err := s.registry.DestroyTenant(ctx, tenantID); err != nil {
@@ -2129,10 +2325,11 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	if _, err := s.registry.GetTenant(tenantID); err != nil {
 		// Register a durable, barrier-isolated tenant that honors the
 		// caller-supplied strategy. RegisterTenantPooledWithStrategy uses
-		// the same Pebble volume-pool backend as the inherit-the-system
-		// default (RegisterTenantPooled) so the per-tenant barrier survives
-		// a restart; the only difference is that the tenant's DEK is sealed
-		// with the resolved per-tenant strategy instead of the system's.
+		// the same Pebble volume-pool layout as the inherit-the-system
+		// default (RegisterBarrierTenant) so the per-tenant barrier store
+		// survives a restart; the only difference is that the tenant's DEK
+		// is sealed with the resolved per-tenant strategy instead of the
+		// system's.
 		if _, regErr := s.registry.RegisterTenantPooledWithStrategy(ctx, tenantID, strategy); regErr != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "register", Err: regErr}
 		}
@@ -2163,7 +2360,9 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	s.logger.Info("tenant barrier initialized",
 		slog.String("tenant_id", tenantID),
 		slog.String("strategy", string(strategyID)))
-	s.notifyBarrierReady(ctx, tenantID)
+	if err := s.barrierReadyAfterInit(ctx, tenantID, AdminCompletionWithin); err != nil {
+		return nil, err
+	}
 
 	return &TenantBarrierInitResult{
 		TenantID: tenantID,
@@ -2207,12 +2406,15 @@ func (s *TenantService) tenantBarrierInitShamir(
 		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrCeremonyDistributorNotConfigured}
 	}
 
-	// Claim the owner's signed init statement before the registry, any
-	// officer or any share is touched, exactly as every other strategy does:
-	// a statement naming another strategy, or another owner's, refuses here.
+	// A Shamir init is two requests. The first carries no statement: it
+	// splits a fresh unseal key to the holders and returns its check value
+	// and roster, leaving the barrier sealed and keyless. The second carries
+	// the owner's statement signing exactly those, and keys the barrier. A
+	// tenant whose init needs no statement completes on the echoed split
+	// alone (WithPreparedShamir).
 	defer s.lockInit(tenantID)()
-	if err := s.claimInit(ctx, info, initOpts.statement, seal.StrategyShamir, initOpts.keyRef); err != nil {
-		return nil, err
+	if len(initOpts.statement) > 0 || initOpts.shamirSplit != nil {
+		return s.completeTenantShamir(ctx, info, initOpts)
 	}
 
 	tb, lookupErr := s.registry.GetTenant(tenantID)
@@ -2284,7 +2486,7 @@ func (s *TenantService) tenantBarrierInitShamir(
 	var res *seal.ShamirInitParams
 	if len(officers) > 0 {
 		var results []*ceremony.RegisterOfficerResult
-		res, results, err = holders.InitializeShamirWithRoster(ctx, tb.Barrier(), officers, enroller, policy)
+		res, results, err = holders.PrepareShamirWithRoster(ctx, tb.Barrier(), officers, enroller, policy)
 		if err != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
 		}
@@ -2301,32 +2503,96 @@ func (s *TenantService) tenantBarrierInitShamir(
 		// the barrier reads the holder set twice, to validate and to
 		// split, and a registration or unenrolment between the two is
 		// refused until it has finished (ceremony.ErrInitializationInProgress).
-		res, err = holders.InitializeShamir(ctx, tb.Barrier(), policy)
+		res, err = holders.PrepareShamir(ctx, tb.Barrier(), policy)
 		if err != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
 		}
 	}
 
-	s.logger.Info("tenant shamir barrier initialized",
+	s.logger.Info("tenant shamir barrier prepared",
 		slog.String("tenant_id", tenantID),
 		slog.Int("threshold", res.Threshold),
 		slog.Int("total", res.TotalShares))
 
 	return &TenantBarrierInitResult{
-		TenantID:    tenantID,
-		Strategy:    string(seal.StrategyShamir),
-		Threshold:   res.Threshold,
-		TotalShares: res.TotalShares,
-		ShareCount:  res.ShareCount,
-		Holders:     holderCerts,
-	}, s.notifyAfter(ctx, tenantID)
+		TenantID:       tenantID,
+		Strategy:       string(seal.StrategyShamir),
+		Threshold:      res.Threshold,
+		TotalShares:    res.TotalShares,
+		ShareCount:     res.ShareCount,
+		Holders:        holderCerts,
+		UnsealKeyCheck: res.UnsealKeyCheck,
+		Roster:         res.Roster,
+	}, nil
 }
 
-// notifyAfter runs the barrier-ready hook and returns nil, so a return
-// statement can carry it.
-func (s *TenantService) notifyAfter(ctx context.Context, tenantID string) error {
-	s.notifyBarrierReady(ctx, tenantID)
-	return nil
+// completeTenantShamir is the second request of a Shamir tenant barrier
+// init. It claims the owner's statement, which must sign exactly the split
+// the first request prepared on this node, and only then keys the barrier
+// under it. A statement for another split is refused before anything is
+// written, and the barrier stays sealed with its prepared split. Without a
+// statement it completes the echoed split (WithPreparedShamir) only for a
+// tenant whose init needs none, as claimInit decides for every strategy.
+func (s *TenantService) completeTenantShamir(ctx context.Context, info *TenantInfo, initOpts tenantBarrierInitOptions) (*TenantBarrierInitResult, error) {
+	tenantID := info.ID
+	tb, err := s.registry.GetTenant(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrShamirNotPrepared}
+	}
+	prepared, ok := tb.Barrier().PreparedShamir()
+	if !ok {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrShamirNotPrepared}
+	}
+	if split := initOpts.shamirSplit; split != nil {
+		if err := split.matches(prepared); err != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+		}
+	}
+	if s.initBook != nil {
+		switch {
+		case len(initOpts.statement) > 0:
+			if err := s.initBook.ClaimTenantShamirInit(ctx, tenantID, prepared, initOpts.statement); err != nil {
+				return nil, err
+			}
+			s.logger.Info("tenant barrier init statement claimed",
+				slog.String("tenant_id", tenantID),
+				slog.String("strategy", string(seal.StrategyShamir)))
+		case info.IsolationType == IsolationRaft:
+			return nil, &InitStatementRequiredError{TenantID: tenantID}
+		}
+	}
+	if err := tb.Barrier().CompleteShamir(ctx, prepared.Roster, prepared.UnsealKeyCheck); err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+	}
+
+	s.logger.Info("tenant shamir barrier initialized",
+		slog.String("tenant_id", tenantID),
+		slog.Int("threshold", prepared.Threshold),
+		slog.Int("total", prepared.TotalShares))
+	// The barrier is keyed and the init committed: a first admin the home
+	// group cannot complete yet is a pending outcome, not a failure, so the
+	// caller keeps this init's holder certificates and the holders unseal
+	// the other nodes, whose unseal and status reads complete the admin.
+	adminPending := false
+	if err := s.barrierReadyAfterInit(ctx, tenantID, AdminCompletionOnce); err != nil {
+		if !errors.Is(err, ErrTenantAdminPending) {
+			return nil, err
+		}
+		adminPending = true
+		s.logger.Info("tenant first admin pending until the tenant's home group can complete it",
+			slog.String("tenant_id", tenantID))
+	}
+
+	return &TenantBarrierInitResult{
+		TenantID:       tenantID,
+		Strategy:       string(seal.StrategyShamir),
+		Threshold:      prepared.Threshold,
+		TotalShares:    prepared.TotalShares,
+		ShareCount:     prepared.ShareCount,
+		UnsealKeyCheck: prepared.UnsealKeyCheck,
+		Roster:         prepared.Roster,
+		AdminPending:   adminPending,
+	}, nil
 }
 
 // resolveStrategy asks the BarrierKeyProvider for the strategy that seals this
@@ -2463,12 +2729,14 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 		// Not registered yet — report a sealed, uninitialized barrier
 		// rather than treating absence as an error. Callers can decide
 		// whether to call TenantBarrierInit based on the Initialized flag.
-		return &TenantBarrierStatus{
+		status := &TenantBarrierStatus{
 			TenantID:    tenantID,
 			Sealed:      true,
 			Initialized: false,
 			ClusterSeal: clusterseal.ReportOf(s.sealer, clusterseal.TenantBarrier(tenantID)),
-		}, nil
+		}
+		s.reportServingNodes(ctx, status)
+		return status, nil
 	}
 
 	// A registered barrier may be initialized (auto-unseal/system-managed, or a
@@ -2488,8 +2756,27 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 	}
 	if status.Initialized && !status.Sealed {
 		s.notifyBarrierReady(ctx, tenantID)
+		status.KeyFingerprint = s.barrierKeyFingerprint(ctx, tenantID)
 	}
+	s.reportServingNodes(ctx, status)
 	return status, nil
+}
+
+// barrierKeyFingerprint reports this node's key fingerprint of tenantID's
+// barrier, or "" when it cannot be read: the status still answers, and the
+// failure is logged.
+func (s *TenantService) barrierKeyFingerprint(ctx context.Context, tenantID string) string {
+	tb, err := s.registry.GetTenant(tenantID)
+	if err != nil {
+		return ""
+	}
+	fp, err := tb.Barrier().KeyFingerprint(ctx)
+	if err != nil {
+		s.logger.Debug("tenant barrier key unfingerprintable",
+			slog.String("tenant_id", tenantID), slog.Any("error", err))
+		return ""
+	}
+	return fp
 }
 
 // TenantIDFromKey extracts the tenant ID from a metadata storage key.
@@ -2578,6 +2865,13 @@ func (s *TenantService) TenantBarrierOfficerRegister(ctx context.Context, tenant
 	}
 	if req == nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "officer-register", Err: ceremony.ErrMissingUsername}
+	}
+	// A prepared split has fixed its roster: a holder registered before the
+	// statement completes it would hold no share of the key.
+	if tb, err := s.registry.GetTenant(tenantID); err == nil {
+		if _, prepared := tb.Barrier().PreparedShamir(); prepared {
+			return nil, &BarrierError{TenantID: tenantID, Op: "officer-register", Err: ceremony.ErrInitializationInProgress}
+		}
 	}
 	r := *req
 	if id := auth.IdentityFromContext(ctx); id != nil {

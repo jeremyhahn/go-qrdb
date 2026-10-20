@@ -16,6 +16,7 @@ package errclass
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
@@ -45,6 +46,10 @@ func TestClassify_HolderConditions(t *testing.T) {
 		{seal.ErrShamirInitializeRequiresHolders, FailedPrecondition},
 		{seal.ErrShamirUnsealRequiresQuorum, Unprocessable},
 		{seal.ErrRestartRequired, FailedPrecondition},
+		// A Shamir init's second request echoed another split than the one
+		// this node prepared, directly or wrapped by the transport.
+		{&seal.PreparedShamirMismatchError{Field: "roster"}, FailedPrecondition},
+		{fmt.Errorf("init: %w", &seal.PreparedShamirMismatchError{Field: "unseal key check"}), FailedPrecondition},
 		// A failed rollback outranks the distribution failure it wraps.
 		{&seal.ShamirInitRollbackError{Distribution: &seal.HolderCountMismatchError{Want: 3, Enrolled: 2}, Rollback: errors.New("x")}, Internal},
 		{ceremony.ErrSelfEnrolment, PermissionDenied},

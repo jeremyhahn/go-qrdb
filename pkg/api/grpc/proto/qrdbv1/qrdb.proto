@@ -5533,13 +5533,20 @@ message TenantBarrierInitRequest {
     bytes  public_key = 9;
     bytes  signature  = 10;
     bytes  init_statement = 11;
+    // roster and unseal_key_check mark a Shamir init's second request: they
+    // echo the split the first request prepared, which this one completes.
+    bytes  roster           = 12;
+    bytes  unseal_key_check = 13;
 }
 
 // TenantBarrierInitResponse carries the init outcome. For the Shamir strategy
 // share_count indicates how many officer shares were sealed into enclaves;
 // share bytes are never returned in the wire response. holders carries the
 // certificate issued to each officer in an inline roster (request.officers),
-// in roster order; empty when no roster was supplied.
+// in roster order; empty when no roster was supplied. A Shamir init is two
+// requests: the first returns the encoded holder roster and the unseal key's
+// check value with the barrier still sealed, the owner signs them into the
+// init statement, and the second, echoing them, keys the barrier.
 message TenantBarrierInitResponse {
     string tenant_id    = 1;
     string strategy     = 2;
@@ -5549,6 +5556,12 @@ message TenantBarrierInitResponse {
     int32  total_shares = 5;
     int32  share_count  = 6;
     repeated CeremonyHolderCert holders = 7;
+    bytes  roster           = 8;
+    bytes  unseal_key_check = 9;
+    // admin_pending reports a committed Shamir init whose tenant first admin
+    // waits on the tenant's home group: holders unseal the other nodes with
+    // the certificates above, and the admin completes once the group elects.
+    bool   admin_pending    = 10;
 }
 
 // TenantBarrierUnsealRequest carries single-key unseal material.
@@ -5578,6 +5591,20 @@ message TenantBarrierStatusResponse {
     int32  shamir_total     = 7;
     // cluster_seal is the tenant barrier's cluster seal state.
     ClusterSealState cluster_seal = 8;
+    // key_fingerprint names this node's own key of the barrier without
+    // revealing it; every node serving the barrier reports a different one.
+    string key_fingerprint = 9;
+    // nodes are the nodes serving the barrier, each with its own key, for a
+    // client fanning a barrier init out to every one.
+    repeated TenantBarrierNode nodes = 10;
+}
+
+// TenantBarrierNode is one node serving a tenant barrier: its Raft address
+// and the address it serves each client API protocol on ("rest", "grpc",
+// "quic", "mcp").
+message TenantBarrierNode {
+    string              node      = 1;
+    map<string, string> endpoints = 2;
 }
 
 // TenantBarrierOfficerRegisterRequest enrolls a Security Officer for a

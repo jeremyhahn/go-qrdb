@@ -58,7 +58,11 @@ func TestBook_ClaimAcceptsTheSameStatementSignedAgain(t *testing.T) {
 	if err := book.Claim(ctx, first, anchors); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	again := signed(t, admin, unsigned(1, "kms://acme/key"))
+	// A retry signs again a second later: the issue time records when, not
+	// what, and does not make it another statement.
+	retry := unsigned(1, "kms://acme/key")
+	retry.IssuedAt++
+	again := signed(t, admin, retry)
 	if bytes.Equal(again.Signature, first.Signature) {
 		t.Fatal("the signer repeated a signature; the retry proves nothing")
 	}

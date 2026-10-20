@@ -17,6 +17,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"log/slog"
 	"maps"
@@ -27,8 +29,12 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -74,17 +80,20 @@ func newOnboardingRoleStore(t *testing.T) role.RoleServicer {
 
 // newOnboardingDeps returns a fully configured TenantOnboardingDeps: every
 // required collaborator present, no audit sink. Individual tests override
-// the fields they need to exercise.
+// the fields they need to exercise. The no-seal tenant service seals nothing,
+// so a pending admin's CSR can be signed by the same CA as any other here.
 func newOnboardingDeps(t *testing.T) TenantOnboardingDeps {
 	t.Helper()
+	certs := newCertEnrollmentProvider(t)
 	return TenantOnboardingDeps{
-		Tenants:     newOnboardingTenantService(t),
-		Users:       newCertEnrollmentUserStore(t),
-		Roles:       newOnboardingRoleStore(t),
-		Certs:       newCertEnrollmentProvider(t),
-		Anchors:     trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
-		TrustDomain: enrollmentTrustDomain,
-		Logger:      slog.New(slog.DiscardHandler),
+		Tenants:            newOnboardingTenantService(t),
+		Users:              newCertEnrollmentUserStore(t),
+		Roles:              newOnboardingRoleStore(t),
+		Certs:              certs,
+		Anchors:            trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore()),
+		TrustDomain:        enrollmentTrustDomain,
+		Logger:             slog.New(slog.DiscardHandler),
+		PendingAdminSigner: &bootstrap.KeyBSigner{Certs: certs},
 	}
 }
 
@@ -157,12 +166,13 @@ type signallingPendingAdmins struct {
 	once    sync.Once
 }
 
-func (s *signallingPendingAdmins) Delete(ctx context.Context, tenantID string) error {
-	if err := s.Store.Delete(ctx, tenantID); err != nil {
-		return err
+func (s *signallingPendingAdmins) Delete(ctx context.Context, tenantID string, read *tenantadmin.Pending) (bool, error) {
+	deleted, err := s.Store.Delete(ctx, tenantID, read)
+	if err != nil {
+		return false, err
 	}
 	s.once.Do(func() { close(s.deleted) })
-	return nil
+	return deleted, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -787,4 +797,141 @@ func TestOnboardTenant_PinsABehindBarrierAdminAsTheBarrierAnchor(t *testing.T) {
 	if isolated.Admin.Thumbprint == "" || !maps.Equal(pins.pins, want) {
 		t.Fatalf("pinned anchors = %v, want %v", pins.pins, want)
 	}
+}
+
+// countingSigner is a firstboot.CertSigner that signs through a real signer
+// and records the tenant of every CSR it was handed, so a test can tell which
+// of the two configured signers the onboarding path actually used.
+type countingSigner struct {
+	inner   firstboot.CertSigner
+	tenants []string
+}
+
+func (s *countingSigner) SignAdminCSR(ctx context.Context, tenantID, subject string, csrPEM []byte) ([]byte, error) {
+	s.tenants = append(s.tenants, tenantID)
+	return s.inner.SignAdminCSR(ctx, tenantID, subject, csrPEM)
+}
+
+// TestOnboardTenant_PendingAdminSignerSignsBehindBarrierAdmins proves the
+// TenantOnboardingDeps.PendingAdminSigner seam reaches bootstrap: an admin
+// whose tenant keeps its IAM behind its own barrier is signed by it, and a
+// prefix tenant's admin is not.
+func TestOnboardTenant_PendingAdminSignerSignsBehindBarrierAdmins(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	deps.Pending = tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	pending := &countingSigner{inner: &bootstrap.KeyBSigner{Certs: deps.Certs}}
+	deps.PendingAdminSigner = pending
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id        string
+		isolation tenant.IsolationType
+	}{
+		{"isolated", tenant.IsolationVolume},
+		{"shared", tenant.IsolationPrefix},
+	} {
+		result, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+			ID: tc.id, AdminUsername: "admin", AdminCSRPEM: csrPEM, IsolationType: tc.isolation,
+		})
+		if err != nil {
+			t.Fatalf("OnboardTenant(%s): %v", tc.id, err)
+		}
+		if len(result.Admin.CertPEM) == 0 {
+			t.Fatalf("OnboardTenant(%s) returned no admin certificate", tc.id)
+		}
+	}
+	if !slices.Equal(pending.tenants, []string{"isolated"}) {
+		t.Fatalf("PendingAdminSigner signed for tenants %v, want only [isolated]", pending.tenants)
+	}
+}
+
+// TestOnboardTenant_SelfManagedCSRWithoutPendingAdminSignerRefused: a node
+// with no cluster CA key composes no PendingAdminSigner, and a self-managed
+// isolated tenant's Key B is sealed at create, so its first-admin CSR is
+// refused as system first boot refuses one, before the tenant exists.
+func TestOnboardTenant_SelfManagedCSRWithoutPendingAdminSignerRefused(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	deps.Pending = tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	deps.PendingAdminSigner = nil
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "isolated", AdminUsername: "admin", AdminCSRPEM: csrPEM, IsolationType: tenant.IsolationVolume,
+	})
+	var requiresCA *ceremony.AdminCredentialRequiresCAError
+	if !errors.As(err, &requiresCA) {
+		t.Fatalf("OnboardTenant = %v, want *ceremony.AdminCredentialRequiresCAError", err)
+	}
+	if _, err := deps.Tenants.GetTenant(ctx, "isolated"); err == nil {
+		t.Fatal("the tenant exists after a refused onboarding, want it never created")
+	}
+}
+
+// TestOnboardTenant_SystemManagedCSRWithoutPendingAdminSignerSignsWithKeyB: on
+// a node with no cluster CA key, a system-managed barrier serves from create,
+// so its pending admin's CSR is signed by the tenant's own Key B CA.
+func TestOnboardTenant_SystemManagedCSRWithoutPendingAdminSignerSignsWithKeyB(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	deps.Pending = tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	deps.PendingAdminSigner = nil
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "isolated", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+		IsolationType: tenant.IsolationVolume, BarrierAutoUnseal: true,
+	})
+	if err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	if len(result.Admin.CertPEM) == 0 {
+		t.Fatal("OnboardTenant returned no admin certificate")
+	}
+	provider := deps.Certs.(*cert.DefaultCertProvider)
+	caPEMs, err := provider.CACertPEMs(ctx)
+	if err != nil {
+		t.Fatalf("CACertPEMs: %v", err)
+	}
+	admin := parseOnboardingPEMCert(t, result.Admin.CertPEM)
+	var issuer *x509.Certificate
+	for _, caPEM := range caPEMs {
+		if ca := parseOnboardingPEMCert(t, caPEM); admin.CheckSignatureFrom(ca) == nil {
+			issuer = ca
+			break
+		}
+	}
+	if issuer == nil {
+		t.Fatal("admin certificate is signed by no registered Key B CA")
+	}
+	if ok, err := provider.IsTenantIssuer(ctx, "isolated", issuer); err != nil || !ok {
+		t.Fatalf("IsTenantIssuer(isolated) = %v, %v; want the admin certificate signed by the tenant's own Key B CA", ok, err)
+	}
+}
+
+// parseOnboardingPEMCert parses the first certificate in pemBytes.
+func parseOnboardingPEMCert(t *testing.T, pemBytes []byte) *x509.Certificate {
+	t.Helper()
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		t.Fatal("no PEM block")
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	return c
 }

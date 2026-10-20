@@ -105,7 +105,16 @@ func (t *ScopedCeremonyService) RegisterOfficer(ctx context.Context, req Registe
 // Shamir initialization of a tenant or database barrier goes through here;
 // one made on the barrier directly is not serialized against them.
 func (t *ScopedCeremonyService) InitializeShamir(ctx context.Context, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
-	return t.holder.initializeShamir(ctx, &t.mu, barrier, policy)
+	return t.holder.initializeShamir(ctx, &t.mu, barrier.InitializeShamir, policy)
+}
+
+// PrepareShamir is InitializeShamir's first half for the two-request
+// initialization (seal.StorageBarrier.PrepareShamir), under the same in-flight
+// marking: it splits a fresh unseal key to the holders and returns its check
+// value and roster for the owner to sign, leaving the barrier sealed and
+// keyless until seal.StorageBarrier.CompleteShamir claims that statement.
+func (t *ScopedCeremonyService) PrepareShamir(ctx context.Context, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+	return t.holder.initializeShamir(ctx, &t.mu, barrier.PrepareShamir, policy)
 }
 
 // InitializeShamirWithRoster validates, registers, and initializes an
@@ -130,6 +139,32 @@ func (t *ScopedCeremonyService) InitializeShamir(ctx context.Context, barrier *s
 func (t *ScopedCeremonyService) InitializeShamirWithRoster(
 	ctx context.Context,
 	barrier *seal.StorageBarrier,
+	roster []OfficerConfig,
+	enroller string,
+	policy seal.FactorPolicy,
+) (*seal.ShamirInitParams, []*RegisterOfficerResult, error) {
+	return t.splitWithRoster(ctx, barrier.InitializeShamir, roster, enroller, policy)
+}
+
+// PrepareShamirWithRoster is InitializeShamirWithRoster with PrepareShamir's
+// split: the roster is validated, registered and rolled back on a failure
+// exactly as there, and the barrier stays sealed and keyless until the
+// owner's signed statement completes it.
+func (t *ScopedCeremonyService) PrepareShamirWithRoster(
+	ctx context.Context,
+	barrier *seal.StorageBarrier,
+	roster []OfficerConfig,
+	enroller string,
+	policy seal.FactorPolicy,
+) (*seal.ShamirInitParams, []*RegisterOfficerResult, error) {
+	return t.splitWithRoster(ctx, barrier.PrepareShamir, roster, enroller, policy)
+}
+
+// splitWithRoster registers roster and runs split, rolling every registered
+// officer back when either fails.
+func (t *ScopedCeremonyService) splitWithRoster(
+	ctx context.Context,
+	split shamirSplit,
 	roster []OfficerConfig,
 	enroller string,
 	policy seal.FactorPolicy,
@@ -164,7 +199,7 @@ func (t *ScopedCeremonyService) InitializeShamirWithRoster(
 	// the same t.mu), exactly like the unrostered InitializeShamir above;
 	// the lock is released first because the barrier calls back into this
 	// service as its distributor.
-	params, err := t.holder.initializeShamir(ctx, &t.mu, barrier, policy)
+	params, err := t.holder.initializeShamir(ctx, &t.mu, split, policy)
 	if err != nil {
 		t.mu.Lock()
 		t.rollbackRosterInit(ctx, registered)

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,6 +48,10 @@ type fakeTenantServicer struct {
 	unsealFn func(ctx context.Context, id string, key []byte) error
 	sealFn   func(ctx context.Context, id string) error
 	statusFn func(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error)
+	// initResults answers successive inits in order, as a Shamir init's
+	// two requests; past its end an init answers with the tenant ID alone.
+	initResults []*tenantpkg.TenantBarrierInitResult
+	initCalls   atomic.Int32
 }
 
 var _ tenantpkg.TenantServicer = (*fakeTenantServicer)(nil)
@@ -90,6 +95,9 @@ func (f *fakeTenantServicer) UpdateEntitlements(ctx context.Context, id string, 
 func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster, _ ...tenantpkg.TenantBarrierInitOption) (*tenantpkg.TenantBarrierInitResult, error) {
 	if err := f.callInitFn(ctx, id, string(passphrase), threshold, shares); err != nil {
 		return nil, err
+	}
+	if n := int(f.initCalls.Add(1)) - 1; n < len(f.initResults) {
+		return f.initResults[n], nil
 	}
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
@@ -219,6 +227,50 @@ func TestTransport_TenantBarrierInit_Success(t *testing.T) {
 	}
 	if captured.id != "acme" || captured.threshold != 3 || captured.shares != 5 {
 		t.Errorf("unexpected captured args: %+v", captured)
+	}
+}
+
+// A Shamir init round-trips its split: the first response's roster and
+// check value reach the SDK, which makes the second request and returns its
+// response with the first's holders.
+func TestTransport_TenantBarrierInit_ShamirRoundTrip(t *testing.T) {
+	svc := &fakeTenantServicer{initResults: []*tenantpkg.TenantBarrierInitResult{
+		{TenantID: "acme", Strategy: "shamir", Threshold: 2, TotalShares: 2,
+			Holders: []tenantpkg.TenantBarrierHolderCert{{Username: "alice"}},
+			Roster:  []byte("roster"), UnsealKeyCheck: []byte("check")},
+		{TenantID: "acme", Strategy: "shamir", Threshold: 2, TotalShares: 2, ShareCount: 2,
+			Roster: []byte("roster"), UnsealKeyCheck: []byte("check")},
+	}}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	resp, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme", Strategy: "shamir"})
+	if err != nil {
+		t.Fatalf("TenantBarrierInit: %v", err)
+	}
+	if got := svc.initCalls.Load(); got != 2 {
+		t.Fatalf("init requests = %d, want 2", got)
+	}
+	if resp.ShareCount != 2 || string(resp.Roster) != "roster" || string(resp.UnsealKeyCheck) != "check" ||
+		len(resp.Holders) != 1 || resp.Holders[0].Username != "alice" {
+		t.Fatalf("resp = %+v, want the completed split with the first response's holders", resp)
+	}
+}
+
+// A first response without the split refuses the init before a second request.
+func TestTransport_TenantBarrierInit_ShamirWithoutSplitRefused(t *testing.T) {
+	svc := &fakeTenantServicer{initResults: []*tenantpkg.TenantBarrierInitResult{{TenantID: "acme", Strategy: "shamir"}}}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme", Strategy: "shamir"})
+	var missing *transport.ShamirSplitMissingError
+	if !errors.As(err, &missing) || svc.initCalls.Load() != 1 {
+		t.Fatalf("TenantBarrierInit = %v after %d requests, want ShamirSplitMissingError after one", err, svc.initCalls.Load())
 	}
 }
 
@@ -399,6 +451,13 @@ func TestTransport_TenantBarrierSeal_ServerError(t *testing.T) {
 // TenantBarrierStatus
 // ---------------------------------------------------------------------------
 
+// servingNodes is a status's serving-node list, and wantServingNodes its
+// conversion.
+var (
+	servingNodes     = []tenant.BarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+	wantServingNodes = []transport.TenantBarrierNode{{Node: "n1:7000", Endpoints: map[string]string{"rest": "n1:8443"}}, {Node: "n2:7000"}}
+)
+
 func TestTransport_TenantBarrierStatus_Success(t *testing.T) {
 	svc := &fakeTenantServicer{
 		statusFn: func(_ context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
@@ -408,6 +467,8 @@ func TestTransport_TenantBarrierStatus_Success(t *testing.T) {
 				Initialized:    true,
 				Strategy:       "shamir",
 				HardwareBacked: true,
+				KeyFingerprint: "0a1b2c",
+				Nodes:          servingNodes,
 			}, nil
 		},
 	}
@@ -423,7 +484,7 @@ func TestTransport_TenantBarrierStatus_Success(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if resp.TenantID != "acme" || resp.Sealed || !resp.Initialized || resp.Strategy != "shamir" || !resp.HardwareBacked {
+	if resp.TenantID != "acme" || resp.Sealed || !resp.Initialized || resp.Strategy != "shamir" || !resp.HardwareBacked || resp.KeyFingerprint != "0a1b2c" || !reflect.DeepEqual(resp.Nodes, wantServingNodes) {
 		t.Errorf("unexpected response: %+v", resp)
 	}
 }

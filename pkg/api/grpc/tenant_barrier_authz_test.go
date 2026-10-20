@@ -35,6 +35,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -139,6 +141,44 @@ func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 	// The nonce was spent: the same request again is a replay.
 	_, err = srv.InitComplete(ctx, req)
 	requireCode(t, err, codes.Unauthenticated)
+}
+
+// pendingAdminTenantSvc answers every barrier init with result, standing in
+// for a committed Shamir init whose first admin is or is not pending.
+type pendingAdminTenantSvc struct {
+	*mockTenantService
+	result *tenant.TenantBarrierInitResult
+}
+
+func (s *pendingAdminTenantSvc) TenantBarrierInitWithStrategy(context.Context, string, []byte, int, int, seal.StrategyID, *tenant.TenantBarrierShamirRoster, ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
+	return s.result, nil
+}
+
+func TestTenantBarrierInitComplete_CarriesAPendingAdmin(t *testing.T) {
+	for _, pending := range []bool{true, false} {
+		srv := newBarrierGateServer(t)
+		srv.svc = &pendingAdminTenantSvc{mockTenantService: newMockTenantService(), result: &tenant.TenantBarrierInitResult{
+			TenantID: "acme", Strategy: "shamir", ShareCount: 2, AdminPending: pending,
+		}}
+		cert := initprooftest.Certificate(t, "acme-admin")
+		conn := initprooftest.Dial(t, cert)
+		ctx := ctxOnConn("acme", conn)
+		begin, err := srv.InitBegin(ctx, &pb.TenantBarrierInitBeginRequest{TenantId: "acme"})
+		if err != nil {
+			t.Fatalf("InitBegin: %v", err)
+		}
+		proof := conn.Prove(t, cert.PrivateKey.(crypto.Signer), "acme", begin.GetNonce())
+		resp, err := srv.InitComplete(ctx, &pb.TenantBarrierInitRequest{
+			TenantId: "acme", Strategy: "shamir",
+			Nonce: proof.Nonce, PublicKey: proof.PublicKey, Signature: proof.Signature,
+		})
+		if err != nil {
+			t.Fatalf("InitComplete: %v", err)
+		}
+		if resp.GetAdminPending() != pending {
+			t.Fatalf("InitComplete = %+v, want admin_pending %v", resp, pending)
+		}
+	}
 }
 
 // TestTenantBarrierGate_InitCompleteWithoutProof_Unauthenticated proves an

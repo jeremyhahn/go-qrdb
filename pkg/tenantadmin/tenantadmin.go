@@ -63,6 +63,10 @@ type Pending struct {
 	// Serial is the certificate's serial when this cluster signed it (a CSR
 	// onboarding), empty for a bring-your-own certificate.
 	Serial string `json:"serial,omitempty"`
+
+	// stored is the record's encoding as Get read it, which Delete compares
+	// against; nil for a record built in memory.
+	stored []byte
 }
 
 // Store reads and writes pending tenant admins.
@@ -77,8 +81,13 @@ type Store interface {
 	// Get returns tenantID's pending admin, or (nil, nil) when it has none.
 	Get(ctx context.Context, tenantID string) (*Pending, error)
 
-	// Delete removes tenantID's pending admin; removing none is not an error.
-	Delete(ctx context.Context, tenantID string) error
+	// Delete removes tenantID's pending admin only while it is still read,
+	// the record the caller read (Get) or recorded (Create), decided
+	// atomically against the replicated store. It reports deleted=false,
+	// with a nil error, when the tenant has no record or a different one:
+	// whoever got there first finished the work, and a record recorded
+	// since is never removed by a caller that never saw it.
+	Delete(ctx context.Context, tenantID string, read *Pending) (deleted bool, err error)
 }
 
 // KVStore is the built-in Store over the replicated system store.
@@ -157,17 +166,33 @@ func (s *KVStore) Get(ctx context.Context, tenantID string) (*Pending, error) {
 	if err := json.Unmarshal(value, &p); err != nil {
 		return nil, &StoreError{Op: "decode", Err: err}
 	}
+	p.stored = value
 	return &p, nil
 }
 
 // Delete implements Store.
-func (s *KVStore) Delete(ctx context.Context, tenantID string) error {
+func (s *KVStore) Delete(ctx context.Context, tenantID string, read *Pending) (bool, error) {
+	if read == nil {
+		return false, &IncompleteError{}
+	}
 	scoped, err := s.scoped(tenantID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := scoped.Delete(ctx, pendingKey); err != nil {
-		return &StoreError{Op: "delete", Err: err}
+	atomic, ok := scoped.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, &StoreError{Op: "delete", Err: kvstore.ErrAtomicWriteUnsupported}
 	}
-	return nil
+	expected := read.stored
+	if expected == nil {
+		// A record built in memory is compared as Create encoded it.
+		if expected, err = json.Marshal(read); err != nil {
+			return false, &StoreError{Op: "encode", Err: err}
+		}
+	}
+	deleted, err := atomic.CompareAndDelete(ctx, pendingKey, expected)
+	if err != nil {
+		return false, &StoreError{Op: "delete", Err: err}
+	}
+	return deleted, nil
 }

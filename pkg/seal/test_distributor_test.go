@@ -254,6 +254,8 @@ type holderFixture struct {
 	b        *StorageBarrier
 	dist     *captureDistributor
 	verifier *testVerifier
+	// params is what the barrier's InitializeShamir returned.
+	params *ShamirInitParams
 }
 
 // holderNames returns h1..hN.
@@ -284,7 +286,7 @@ func newHolderFixture(t testing.TB, threshold, total int) *holderFixture {
 	f := &holderFixture{t: t, b: b, dist: newCaptureDistributor(holderNames(total)...), verifier: newTestVerifier()}
 	b.SetCeremonyDistributor(f.dist)
 	b.SetHolderVerifier(f.verifier)
-	if _, err := b.InitializeShamir(context.Background(), ""); err != nil {
+	if f.params, err = b.InitializeShamir(context.Background(), ""); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
 	return f

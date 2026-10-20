@@ -18,7 +18,6 @@
 package integration_test
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -31,7 +30,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -753,32 +751,16 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 
 	// Create an IsolationVolume tenant with a SELF-MANAGED dedicated barrier
 	// and its first admin: a tenant is created with its first admin, or not
-	// at all. The admin keeps its own key -- only the CSR crosses the wire.
-	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
-	if err != nil {
-		t.Fatalf("certtest.NewCSR: %v", err)
-	}
+	// at all. It brings its own certificate: this BYO-TLS node has no cluster
+	// CA to sign a CSR with, and the tenant's own CA is behind the barrier
+	// that admin has yet to initialize.
+	createReq, admin := adminBYOCFieldsForTenant(t, tenantID, tenantID+"-admin")
+	createReq["id"], createReq["name"] = tenantID, "Acme CLI"
+	createReq["isolation_type"], createReq["barrier_auto_unseal"] = "volume", false
 	tBody, tStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort),
-		map[string]interface{}{
-			"id":                  tenantID,
-			"name":                "Acme CLI",
-			"isolation_type":      "volume",
-			"barrier_auto_unseal": false,
-			"admin_username":      tenantID + "-admin",
-			"admin_csr_pem":       string(adminCSRPEM),
-		},
-	)
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort), createReq)
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tStatus, tBody)
-	}
-	var createResp struct {
-		Admin struct {
-			CertPEM string `json:"cert_pem"`
-		} `json:"admin"`
-	}
-	if err := json.Unmarshal(tBody, &createResp); err != nil || createResp.Admin.CertPEM == "" {
-		t.Fatalf("decode tenant create admin cert: %v body=%s", err, tBody)
 	}
 
 	// The tenant's dedicated barrier must be initialized BEFORE any of its
@@ -788,16 +770,16 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	// tenant's first admin was onboarded with above, never any other
 	// authenticated identity of the tenant — see pkg/api/rest
 	// authorizeTenantBarrierInit.
-	adminTLSCert, err := tls.X509KeyPair([]byte(createResp.Admin.CertPEM), adminKeyPEM)
+	adminTLSCert, err := admin.TLSCertificate()
 	if err != nil {
-		t.Fatalf("X509KeyPair for the onboarded admin: %v", err)
+		t.Fatalf("key pair for the onboarded admin: %v", err)
 	}
 	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
 
 	// Initialize the self-managed dedicated barrier as "none" (unencrypted) --
 	// the source state for enable-encryption.
 	initTenantBarrierAsFirstAdmin(t, fmt.Sprintf("https://127.0.0.1:%d", adminPort), ca.CertPath,
-		[]byte(createResp.Admin.CertPEM), adminKeyPEM, tenantID)
+		admin.CertPEM, admin.KeyPEM, tenantID)
 
 	// The onboarded admin's account carries only the pending-admin
 	// completion's own role, not the data-plane permissions the rest of

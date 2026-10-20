@@ -206,5 +206,8 @@ func (b *Book) load(ctx context.Context, barrier clusterseal.Barrier) ([]InitSta
 // compared -- an ECDSA signer signs the same statement differently every
 // call -- so both must already have verified.
 func sameStatement(a, b InitStatement) bool {
+	// The issue time records when a statement was signed, not what it states:
+	// a retry signs the same statement again, a second or more later.
+	a.IssuedAt, b.IssuedAt = 0, 0
 	return bytes.Equal(a.Message(), b.Message())
 }

@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"math/big"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // Revocation state in go-qrdb
@@ -104,17 +106,23 @@ func FormatSerial(serial *big.Int) string {
 // predicate is "the certificate is already expired", never anything about the
 // caller.
 //
-// RevokeCert calls it on every revocation, so the namespace is bounded without
-// a background sweeper. It is exported so an embedder can also run it
-// directly.
+// RevokeCert reaps the store it wrote its marker to on every revocation, so
+// the namespace is bounded without a background sweeper. This method reaps
+// the system store, and is exported so an embedder can also run it directly;
+// a homed tenant's markers are reaped by its own revocations.
 func (p *DefaultCertProvider) ReapExpiredRevocations(ctx context.Context) (int, error) {
 	if p.barrier.IsSealed() {
 		return 0, &BarrierSealedError{}
 	}
+	return p.reapIn(ctx, p.kvStore)
+}
 
+// reapIn deletes the expired revocation markers in store; see
+// ReapExpiredRevocations.
+func (p *DefaultCertProvider) reapIn(ctx context.Context, store kvstore.KVStore) (int, error) {
 	now := time.Now().UTC()
 	var expired []string
-	if err := p.kvStore.Scan(ctx, prefixCertsRevoked, func(key string, value []byte) error {
+	if err := store.Scan(ctx, prefixCertsRevoked, func(key string, value []byte) error {
 		var entry revocationEntry
 		if err := json.Unmarshal(value, &entry); err != nil {
 			// Unparseable marker: it still revokes, and it carries no expiry
@@ -132,7 +140,7 @@ func (p *DefaultCertProvider) ReapExpiredRevocations(ctx context.Context) (int, 
 
 	reaped := 0
 	for _, key := range expired {
-		if err := p.kvStore.Delete(ctx, key); err != nil {
+		if err := store.Delete(ctx, key); err != nil {
 			return reaped, &StoreError{Op: "delete", Detail: key, Err: err}
 		}
 		reaped++

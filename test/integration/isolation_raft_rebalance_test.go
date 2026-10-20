@@ -254,30 +254,18 @@ func TestStormWatcher_IgnoresLinesBeforeArm(t *testing.T) {
 }
 
 // waitForNShardOwners polls GET /admin/topology on every port in ports until
-// exactly wantOwners of them report ShardCount >= wantCount, returning their
-// indices (into ports). Unlike waitForAllShardOwners (which requires EVERY
-// port to own the shard, correct for RF == len(ports)), this supports
-// RF < len(ports) placements such as this file's RF=2 database on a 3-node
-// cluster.
-func waitForNShardOwners(t *testing.T, client *http.Client, ports []int, wantCount, wantOwners int, timeout time.Duration) []int {
+// exactly wantOwners of them host shardID, returning their indices (into
+// ports). Unlike waitForAllShardOwners (which requires EVERY port to own the
+// shard, correct for RF == len(ports)), this supports RF < len(ports)
+// placements such as this file's RF=2 database on a 3-node cluster.
+func waitForNShardOwners(t *testing.T, client *http.Client, ports []int, shardID uint64, wantOwners int, timeout time.Duration) []int {
 	t.Helper()
 
 	var lastOwners []int
 	if pollUntil(timeout, 300*time.Millisecond, func() bool {
 		var owners []int
 		for i, port := range ports {
-			rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
-			body, status := iraftAPIGetTolerant(t, client, rawURL)
-			if status != http.StatusOK {
-				continue
-			}
-			var topo struct {
-				ShardCount int `json:"shard_count"`
-			}
-			if err := json.Unmarshal(body, &topo); err != nil {
-				continue
-			}
-			if topo.ShardCount >= wantCount {
+			if hosts, _ := nodeHostsShard(t, client, port, shardID); hosts {
 				owners = append(owners, i)
 			}
 		}
@@ -286,8 +274,8 @@ func waitForNShardOwners(t *testing.T, client *http.Client, ports []int, wantCou
 	}) {
 		return lastOwners
 	}
-	t.Fatalf("timed out after %v waiting for exactly %d of %v to reach shard count >= %d (last owners: %v)",
-		timeout, wantOwners, ports, wantCount, lastOwners)
+	t.Fatalf("timed out after %v waiting for exactly %d of %v to host shard %d (last owners: %v)",
+		timeout, wantOwners, ports, shardID, lastOwners)
 	return nil
 }
 
@@ -508,7 +496,7 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	// Discover which 2 of the 3 nodes host the shard (owners), leaving
 	// exactly 1 node (dst) that does not.
 	t.Log("locating the 2 nodes hosting the RF=2 shard")
-	ownerIdx := waitForNShardOwners(t, sysClient, adminPorts, 2, 2, 120*time.Second)
+	ownerIdx := waitForNShardOwners(t, sysClient, adminPorts, shardID, 2, 120*time.Second)
 	var dstIdx int = -1
 	for i := range 3 {
 		isOwner := false
@@ -677,7 +665,7 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	// shard directory was purged.
 	// ---------------------------------------------------------------------
 	t.Log("waiting for source node to stop hosting the dedicated shard")
-	waitForShardCountBelow(t, sysClient, adminPorts[srcIdx], 2, 60*time.Second)
+	waitForShardGone(t, sysClient, adminPorts[srcIdx], shardID, 60*time.Second)
 	t.Logf("source node PASS: no longer hosts the dedicated shard")
 
 	t.Log("verifying source node's on-disk shard directory was purged")

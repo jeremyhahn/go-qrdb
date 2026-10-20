@@ -116,6 +116,19 @@ func (e *BarrierSealedError) Error() string {
 	return "qrdb/cert: encryption barrier is sealed"
 }
 
+// HomeStoreNotGuardedError is returned when an isolated tenant's home store
+// cannot hold its CA: the CA's key and certificate are written together
+// under a guard that both are absent, and the store the resolver returned
+// offers no such write.
+type HomeStoreNotGuardedError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description naming the tenant.
+func (e *HomeStoreNotGuardedError) Error() string {
+	return "qrdb/cert: home store of tenant " + e.TenantID + " does not support guarded writes"
+}
+
 // StoreError wraps an error from a KVStore operation with the operation
 // name and detail context.
 type StoreError struct {

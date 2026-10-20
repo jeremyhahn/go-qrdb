@@ -180,16 +180,6 @@ func TestTenantBarrier_CompareAndDelete(t *testing.T) {
 	}
 }
 
-func TestStorageBarrier_ExportRootKeyContext_Sealed(t *testing.T) {
-	b := newVerifyBarrier(t, NewMemoryBackend(), "export-pass")
-	if err := b.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-	if _, err := b.ExportRootKeyContext(context.Background()); !errors.Is(err, ErrSealed) {
-		t.Fatalf("ExportRootKeyContext(sealed) = %v, want ErrSealed", err)
-	}
-}
-
 func TestStorageBarrier_LoadMigrationJournal_Faults(t *testing.T) {
 	errBackend := errors.New("journal read failed")
 	var syntaxErr *json.SyntaxError

@@ -78,8 +78,12 @@ func (f providerUnsealFixture) restart(t *testing.T) {
 	if err := f.svc.registry.ReleaseTenant(ctx, "acme"); err != nil {
 		t.Fatalf("ReleaseTenant: %v", err)
 	}
-	if _, err := f.svc.registry.RegisterTenantPooled(ctx, "acme"); err != nil {
-		t.Fatalf("RegisterTenantPooled(restart): %v", err)
+	var system []seal.SealingStrategy
+	for _, s := range f.svc.registry.SystemBarrier().Strategies() {
+		system = append(system, s)
+	}
+	if _, err := f.svc.registry.RegisterTenantPooledWithStrategy(ctx, "acme", system...); err != nil {
+		t.Fatalf("RegisterTenantPooledWithStrategy(restart): %v", err)
 	}
 	f.provider.mu.Lock()
 	f.provider.requests = nil

@@ -53,9 +53,6 @@ func TestCreateTenant_Barrier_SystemManaged_AutoUnsealed(t *testing.T) {
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
 	// System-managed strategy requires an unsealed system barrier.
-	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 	svc, err := NewTenantService(store, reg, testLogger(),
 		WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix},

@@ -111,6 +111,7 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 		return err
 	}
 	defer func() { _ = recStrat.Close() }()
+	b.pinKnownEpochs(&sealed)
 	if err := b.barrier.Unseal(ctx, recStrat, Credentials{}); err != nil {
 		return err
 	}
