@@ -23,7 +23,17 @@
 # A requirement is behind when `go list -m -u` reports an Update for it. A
 # behind requirement passes only when its require line carries a `//` comment
 # naming the reason, inline or on the comment lines directly above it; an
-# undocumented pin is a defect. Indirect requirements are the direct ones'
+# undocumented pin is a defect. A held reason is honoured whatever the
+# release's age.
+#
+# An undocumented upgrade published less than MIN_AGE_DAYS ago is reported with
+# its age and does not fail the check: no one could reasonably have adopted a
+# release published hours ago, and it would turn every pull request red. Its age
+# is the Update's publish time as `go list -m -u` reports it (the proxy's
+# .info Time); no other lookup is made. An upgrade whose time cannot be read is
+# treated as old, and fails: an unanswered question does not pass.
+#
+# Indirect requirements are the direct ones'
 # choice and are not checked, and a requirement replaced by a local directory
 # has no release to be behind.
 #
@@ -49,12 +59,19 @@ set -euo pipefail
 
 GO=${GO:-go}
 
+# MIN_AGE_DAYS is the adoption window: an undocumented upgrade younger than this
+# is reported, not failed.
+readonly MIN_AGE_DAYS=7
+min_age_seconds=$((MIN_AGE_DAYS * 86400))
+now=$(date +%s)
+
 # The template prints one line per checked requirement -- direct, and not
 # replaced by a local directory -- that is behind or could not be looked up:
-# `behind PATH VERSION LATEST` or `error PATH VERSION "MESSAGE"` (quoted, so a
+# `behind PATH VERSION LATEST PUBLISHED` (PUBLISHED in Unix seconds, `-` when
+# go reports no time) or `error PATH VERSION "MESSAGE"` (quoted, so a
 # multi-line error stays one line). Every other
 # module prints an empty line.
-tmpl='{{if and (not .Main) (not .Indirect) (not (and .Replace (not .Replace.Version)))}}{{if .Error}}error {{.Path}} {{.Version}} {{printf "%q" .Error.Err}}{{else if .Update}}behind {{.Path}} {{.Version}} {{.Update.Version}}{{end}}{{end}}'
+tmpl='{{if and (not .Main) (not .Indirect) (not (and .Replace (not .Replace.Version)))}}{{if .Error}}error {{.Path}} {{.Version}} {{printf "%q" .Error.Err}}{{else if .Update}}behind {{.Path}} {{.Version}} {{.Update.Version}} {{with .Update.Time}}{{.Unix}}{{else}}-{{end}}{{end}}{{end}}'
 
 # documented GOMOD PATH VERSION succeeds when GOMOD's require line for PATH at
 # VERSION carries a reason: an inline `//` comment, or a `//` comment line
@@ -81,6 +98,18 @@ documented() {
   return 1
 }
 
+# release_age PUBLISHED prints the seconds since PUBLISHED (Unix seconds; a
+# release dated after now is 0 old) and fails when PUBLISHED is not a time, so
+# the caller treats an unreadable time as old.
+release_age() {
+  case $1 in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  local age=$((now - 10#$1))
+  [ "$age" -lt 0 ] && age=0
+  echo "$age"
+}
+
 mods=$(git ls-files -- 'go.mod' '*/go.mod' | tr '\n' ' ')
 mods=${mods% }
 case " $mods " in
@@ -102,10 +131,13 @@ for m in $mods; do
   while read -r kind path version rest; do
     case ${kind:-} in
       behind)
+        read -r latest published _ <<<"$rest"
         if documented "$m" "$path" "$version"; then
-          echo "==> $d: $path $version held below $rest (reason in $m)"
+          echo "==> $d: $path $version held below $latest (reason in $m)"
+        elif age=$(release_age "${published:-}") && [ "$age" -lt "$min_age_seconds" ]; then
+          echo "==> $d: $path $version behind $latest, released $((age / 3600))h ago (under the ${MIN_AGE_DAYS}-day adoption window, not yet required)"
         else
-          bad+=("$d: $path $version, latest $rest")
+          bad+=("$d: $path $version, latest $latest")
         fi
         ;;
       error) unresolved+=("$d: $path $version: $rest") ;;

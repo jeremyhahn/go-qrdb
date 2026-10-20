@@ -207,10 +207,15 @@ fails. `make trivy` (trivy fs) and `make security` never take
 `make deps-check` (`scripts/deps-check.sh`) is the latest-version check
 (`ci-standard.md` §1, `devops.md` §9): every direct requirement of every
 tracked module is at its latest release, or its `go.mod` require line carries a
-`//` comment saying why it is held. A module whose lookup fails, offline or
-without credentials, fails the check: the question was not answered.
+`//` comment saying why it is held. An unheld upgrade published less than seven
+days ago (`MIN_AGE_DAYS`, by the `Update.Time` `go list -m -u` reports) is
+reported with its age and does not fail the check, since no one could yet have
+adopted it; one seven or more days old fails, and one whose time cannot be read
+is treated as old. A module whose lookup fails, offline or without credentials,
+fails the check: the question was not answered.
 `scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `image` job) proves
-each branch with a fake `go`.
+each branch with a fake `go`, and the publish time with the real one over a
+`file://` proxy.
 
 ### Per-run integration images
 

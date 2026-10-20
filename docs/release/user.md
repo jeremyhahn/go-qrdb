@@ -74,7 +74,7 @@ is available; nothing is installed on the host.
 | `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them |
 | `make docker-down-it` | removes an integration run's stack (`IT_PROJECT`) and its hold on the image (`IT_HOLD`, empty off CI), and keeps the image, which later runs of the same tree reuse |
 | `make -s it-image` | prints the integration image's content-addressed name, `qrdb-ci-it:<hash>` (`IT_IMAGE`) |
-| `make deps-check` | fails when a direct requirement is behind its latest release with no reason in its `go.mod` |
+| `make deps-check` | fails when a direct requirement is behind a latest release at least seven days old with no reason in its `go.mod`; a younger release is reported, not failed |
 
 To raise a tool, change its line in `scripts/tool-pins.sh`, the only copy of
 the pin; `make check-tool-versions` fails when ci.yml or the Makefile carries

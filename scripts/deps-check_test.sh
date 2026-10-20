@@ -19,9 +19,9 @@
 # The real check asks the module proxy, so its answer depends on the day; these
 # cases replace `go` with a fake that prints a fixed `go list -m -u` answer per
 # module, and assert BOTH the exit status and the diagnostic for each branch:
-# a behind requirement with no reason, the two places a reason may sit, a
-# failed lookup, and the discovery floor that keeps an empty module set from
-# passing.
+# a behind requirement with no reason, the two places a reason may sit, the
+# adoption window for a young release, a failed lookup, and the discovery floor
+# that keeps an empty module set from passing.
 #
 # Usage: deps-check_test.sh    (no arguments; needs a temp dir and git)
 
@@ -127,6 +127,24 @@ DIR=$(fixture reason-above)
 printf '\nbehind example.com/b v1.2.0 v1.3.0\n\n' >"${DIR}/.fake-list"
 assert "a behind requirement with a reason on the line above passes" 0 "example.com/b v1.2.0 held below v1.3.0" "${DIR}"
 
+# The adoption window: publish times relative to now, one day and eight days
+# old, either side of the check's seven.
+NOW=$(date +%s)
+YOUNG=$((NOW - 86400))
+OLD=$((NOW - 8 * 86400))
+
+DIR=$(fixture young-unheld)
+printf 'behind example.com/a v1.0.0 v1.1.0 %s\n' "${YOUNG}" >"${DIR}/.fake-list"
+assert "a release younger than the window is reported, not failed" 0 "example.com/a v1.0.0 behind v1.1.0, released 24h ago (under the 7-day adoption window" "${DIR}"
+
+DIR=$(fixture young-held)
+printf 'behind example.com/c v0.4.0 v0.5.0 %s\n' "${YOUNG}" >"${DIR}/.fake-list"
+assert "a held reason is honoured for a young release" 0 "example.com/c v0.4.0 held below v0.5.0" "${DIR}"
+
+DIR=$(fixture old-held)
+printf 'behind example.com/c v0.4.0 v0.5.0 %s\n' "${OLD}" >"${DIR}/.fake-list"
+assert "a held reason is honoured for an old release" 0 "example.com/c v0.4.0 held below v0.5.0" "${DIR}"
+
 # ---------------------------------------------------------------------------
 # The rejecting branches.
 # ---------------------------------------------------------------------------
@@ -156,6 +174,26 @@ assert "one run names the findings in every module" 1 "sdk/go: example.com/e v1.
 DIR=$(fixture version-mismatch)
 printf 'behind example.com/c v0.3.0 v0.5.0\n' >"${DIR}/.fake-list"
 assert "a reason on another version's line does not count" 1 "example.com/c v0.3.0, latest v0.5.0" "${DIR}"
+
+DIR=$(fixture old-unheld)
+printf 'behind example.com/a v1.0.0 v1.1.0 %s\n' "${OLD}" >"${DIR}/.fake-list"
+assert "a release older than the window with no reason is rejected" 1 "example.com/a v1.0.0, latest v1.1.0" "${DIR}"
+
+# An upgrade whose time cannot be read is treated as old: missing, go's `-`,
+# and something that is not a time all fail.
+for published in '' '-' '2026-10-20T00:00:00Z'; do
+	DIR=$(fixture "no-time${published}")
+	printf 'behind example.com/a v1.0.0 v1.1.0 %s\n' "${published}" >"${DIR}/.fake-list"
+	assert "an unreadable release time ('${published}') fails closed" 1 "example.com/a v1.0.0, latest v1.1.0" "${DIR}"
+done
+
+# A young and an old upgrade together: the run fails and names only the old one.
+DIR=$(fixture young-and-old)
+printf 'behind example.com/a v1.0.0 v1.1.0 %s\nbehind example.com/d v2.0.0 v2.1.0 %s\n' "${YOUNG}" "${OLD}" >"${DIR}/.fake-list"
+assert "a young and an old upgrade fail on the old one" 1 "with no reason in go.mod:
+  .: example.com/d v2.0.0, latest v2.1.0
+Upgrade each" "${DIR}"
+assert "a young and an old upgrade report the young one" 1 "example.com/a v1.0.0 behind v1.1.0, released 24h ago" "${DIR}"
 
 # ---------------------------------------------------------------------------
 # Unanswered questions fail: a lookup that failed checked nothing.
@@ -188,16 +226,20 @@ assert "a go list line the check cannot read fails the check" 1 "unexpected go l
 
 GO_BIN=$(command -v "${GO:-go}")
 PROXY="${WORK}/proxy"
-# publish <path> <version> <go.mod body>
+# publish <path> <version> <go.mod body> [<time>]
+#
+# <time> defaults to 2026-01-01, older than the adoption window.
 publish() {
 	mkdir -p "${PROXY}/$1/@v"
 	printf '%s\n' "$2" >>"${PROXY}/$1/@v/list"
-	printf '{"Version":"%s","Time":"2026-01-01T00:00:00Z"}\n' "$2" >"${PROXY}/$1/@v/$2.info"
+	printf '{"Version":"%s","Time":"%s"}\n' "$2" "${4:-2026-01-01T00:00:00Z}" >"${PROXY}/$1/@v/$2.info"
 	printf '%s\n' "$3" >"${PROXY}/$1/@v/$2.mod"
 }
 publish example.com/perf v1.0.0 "$(printf 'module example.com/perf\n\ngo 1.21\n\nrequire example.com/parent v0.0.0\n\nreplace example.com/parent => ../..')"
 publish example.com/lib v1.0.0 "$(printf 'module example.com/lib\n\ngo 1.21')"
 publish example.com/lib v1.1.0 "$(printf 'module example.com/lib\n\ngo 1.21')"
+publish example.com/fresh v1.0.0 "$(printf 'module example.com/fresh\n\ngo 1.21')"
+publish example.com/fresh v1.1.0 "$(printf 'module example.com/fresh\n\ngo 1.21')" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # real_fixture <name> <require lines>
 real_fixture() {
@@ -226,6 +268,10 @@ assert "an unpublished v0.0.0 an indirect module brings in does not fail the che
 
 DIR=$(real_fixture parent-v0-behind "$(printf '\texample.com/perf v1.0.0\n\texample.com/lib v1.0.0')")
 assert "a behind direct requirement beside an unpublished v0.0.0 is still found" 1 ".: example.com/lib v1.0.0, latest v1.1.0" "${DIR}" "${REAL_GO}"
+
+# go's own Update.Time reaches the window: a release published now is reported.
+DIR=$(real_fixture fresh-behind "$(printf '\texample.com/fresh v1.0.0')")
+assert "go's publish time of a release made now keeps it under the window" 0 "example.com/fresh v1.0.0 behind v1.1.0, released 0h ago" "${DIR}" "${REAL_GO}"
 
 DIR=$(fixture no-root)
 git -C "${DIR}" rm -q --cached go.mod
