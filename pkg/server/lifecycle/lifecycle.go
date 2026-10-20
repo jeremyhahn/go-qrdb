@@ -191,7 +191,10 @@ type Infra struct {
 	// CeremonyCA is an optional certificate authority used to sign Security
 	// Officer CSRs outside the full initialization ceremony. When non-nil it
 	// is wired into the ceremony service via SetCA, which never overwrites a
-	// CA already established by Initialize. Daemon deployments pass the
+	// CA already set. Nil on a joiner, a founder restart and a BYO-TLS node:
+	// the sealed window then serves only the holder operations that verify,
+	// and BuildServices installs Key A via ReplaceCA once it is readable
+	// after unseal. Daemon deployments pass the
 	// node's cluster CA here so officer certificates chain to the same CA
 	// the server trusts for mTLS client authentication.
 	CeremonyCA ceremony.CeremonyCA
@@ -1586,9 +1589,12 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 					// (Infra.CeremonyCoreSvc), whose SetCA(infra.CeremonyCA)
 					// already ran there and set a bootstrap-window CA.
 					// SetCA's "never overwrite" rule would make that
-					// permanent; ReplaceCA swaps it for ClusterCAProv unless
-					// the ceremony has since become operational (Initialize
-					// ran its own CA, which stays authoritative).
+					// permanent; ReplaceCA swaps it for ClusterCAProv in
+					// every ceremony state, so a joiner and a restarted
+					// founder -- which reach here operational, with no CA
+					// of their own -- serve every CA operation from the
+					// replicated Key A. Holder authorities built earlier
+					// share the core's live CA cell and see it too.
 					coreSvc.ReplaceCA(providerCA)
 				}
 			}

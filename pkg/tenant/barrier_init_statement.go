@@ -76,6 +76,9 @@ type barrierInitClaims struct {
 	// platformSigner signs the platform's init statement for a tenant that
 	// chose platform custody; see SetPlatformInitSigner.
 	platformSigner atomic.Pointer[platformSignerBox]
+	// initDelivery brings this node's barrier up to its latest claimed
+	// statement on demand; see SetBarrierInitDelivery.
+	initDelivery atomic.Pointer[initDeliveryBox]
 	// initLocks holds one *sync.Mutex per tenant, serializing this node's
 	// inits of that tenant's barrier: the owner's call and the watcher's.
 	initLocks sync.Map
@@ -181,6 +184,50 @@ type platformSignerBox struct{ signer PlatformInitSigner }
 func (c *barrierInitClaims) platformInitSigner() PlatformInitSigner {
 	if box := c.platformSigner.Load(); box != nil {
 		return box.signer
+	}
+	return nil
+}
+
+// BarrierInitDelivery delivers a tenant barrier's latest claimed init
+// statement to this node now, as the node's init watcher would on its next
+// poll (barrierinit.Watcher.Deliver). A tenant with no statement, or one this
+// node does not serve, delivers nothing.
+type BarrierInitDelivery interface {
+	DeliverTenantInit(ctx context.Context, tenantID string) error
+}
+
+// BarrierInitDeliveryWiring is how a composition wires the delivery, which
+// is the init watcher and so exists only after the tenant service is built.
+type BarrierInitDeliveryWiring interface {
+	SetBarrierInitDelivery(BarrierInitDelivery)
+}
+
+// Compile-time check.
+var _ BarrierInitDeliveryWiring = (*TenantService)(nil)
+
+// SetBarrierInitDelivery makes a holder quorum request bring this node's
+// barrier up to its latest claimed statement before answering it, so every
+// node serving the tenant gives the answer its creator gives rather than the
+// one its last watcher poll left. A node composed without one answers from
+// its registry as it stands.
+func (s *TenantService) SetBarrierInitDelivery(d BarrierInitDelivery) {
+	s.initDelivery.Store(&initDeliveryBox{delivery: d})
+}
+
+// initDeliveryBox lets the delivery be swapped atomically: it is wired after
+// the service is built, while requests may be reading it.
+type initDeliveryBox struct{ delivery BarrierInitDelivery }
+
+// deliverInit brings tenantID's barrier on this node up to its latest claimed
+// statement; it is a no-op on a node with no delivery wired. The caller must
+// not hold tenantID's init lock: the delivery arms the barrier under it.
+func (c *barrierInitClaims) deliverInit(ctx context.Context, tenantID string) error {
+	box := c.initDelivery.Load()
+	if box == nil || box.delivery == nil {
+		return nil
+	}
+	if err := box.delivery.DeliverTenantInit(ctx, tenantID); err != nil {
+		return &BarrierError{TenantID: tenantID, Op: "init delivery", Err: err}
 	}
 	return nil
 }

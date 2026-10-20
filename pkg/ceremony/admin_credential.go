@@ -554,12 +554,13 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 	// which this call wrongly refused outright before resolving anything,
 	// and would otherwise nil-pointer on deps.CA.CABundle() below -- BYOC
 	// reissue needs no CeremonyCA at all).
-	caBundle, err := s.resolveCABundlePEM(s.deps.CA)
+	ca := s.ca.load()
+	caBundle, err := s.resolveCABundlePEM(ca)
 	if err != nil {
 		return nil, err
 	}
 
-	certPEM, keyPEM, source, aerr := issueAdminCredential(ctx, s.deps.CA, s.deps.TrustDomain, opts, caBundle)
+	certPEM, keyPEM, source, aerr := issueAdminCredential(ctx, ca, s.deps.TrustDomain, opts, caBundle)
 	if aerr != nil {
 		s.logger.Error("bootstrap admin credential reissuance failed", slog.String("error", aerr.Error()))
 		return nil, aerr
@@ -581,11 +582,9 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 // CACertPool returns a pool containing this ceremony's own CA certificate,
 // the default trust anchor firstboot validates the bootstrap admin's
 // certificate against when binding it (go-qrdb#548). Returns ErrCANotInitialized
-// when Initialize has not run.
+// when no ceremony CA is wired.
 func (s *CeremonyService) CACertPool() (*x509.CertPool, error) {
-	s.mu.Lock()
-	ca := s.deps.CA
-	s.mu.Unlock()
+	ca := s.ca.load()
 	if ca == nil {
 		return nil, ErrCANotInitialized
 	}

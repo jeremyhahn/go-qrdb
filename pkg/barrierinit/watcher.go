@@ -122,6 +122,25 @@ func (w *Watcher) Poll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// Deliver hands b's latest statement to Handle now, as the next poll would:
+// the same placement filter, verification and epoch bookkeeping apply, so a
+// statement already delivered is not delivered twice. It lets a node answer a
+// request about b with the state every node reaches eventually, rather than
+// with whatever its last poll left. A barrier with no record delivers nothing.
+func (w *Watcher) Deliver(ctx context.Context, b clusterseal.Barrier) error {
+	key := recordKey(b)
+	raw, found, err := w.cfg.KV.Get(ctx, key)
+	if err != nil {
+		return &StoreError{Op: "read init record", Err: err}
+	}
+	if !found {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.deliver(ctx, key, raw)
+}
+
 // deliver handles one record; w.mu is held.
 func (w *Watcher) deliver(ctx context.Context, key string, raw []byte) error {
 	b, err := clusterseal.ParseBarrier(strings.TrimPrefix(key, Prefix))

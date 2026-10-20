@@ -448,9 +448,16 @@ restructures the boot sequence as follows:
    CSRs signed during the sealed window therefore chain to the same
    CA the server trusts for mTLS client auth, so a registered
    security officer can immediately authenticate to claim their
-   share. With BYO TLS certificates (no CA key available), no
-   `LocalCA` is constructed and officer registration stays gated on
-   the full initialization ceremony (`ErrCANotInitialized`).
+   share. A node that holds no CA key on disk (a joined member, or
+   any member once Key A is replicated) has no ceremony CA in the
+   sealed window. Once the barrier unseals, every node's ceremony
+   signs through a CA over the replicated Key A
+   (`__sys:cluster_ca/`), so every node serves every CA operation
+   from then on, with writes going through the Raft leader. With BYO
+   TLS certificates there is no Key A at all: no ceremony CA is ever
+   constructed, holder enrolment refuses (`ErrCANotInitialized`),
+   and every verify-only holder operation is
+   still served.
    `SetCA` never overwrites a CA established by `Initialize`; the
    ceremony-established CA stays authoritative.
 4. `ServeSealedWindow` polls the probe on a 250ms ticker

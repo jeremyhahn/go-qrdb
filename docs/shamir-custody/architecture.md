@@ -54,7 +54,8 @@ An administrator or a Security Officer enrols a holder by submitting the
 holder's CSR (`barrier officer register`). Nobody may enrol themselves. The
 enrolment:
 
-- has the node's **ceremony CA** issue the holder a certificate whose identity
+- has the **ceremony CA** — on every node, the replicated cluster CA key
+  (Key A) once the barrier is unsealed — issue the holder a certificate whose identity
   comes from the registration, never the CSR: `CN=<username>`,
   `OU=[<scope tenant>, <profile>]` (`security-officer` or `custodian`) and no
   Subject Alternative Name, where the scope tenant is `system` for the node

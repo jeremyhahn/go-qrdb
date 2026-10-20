@@ -98,6 +98,31 @@ func clusterCAReadSettling(err error) bool {
 	return errors.As(err, &notLeader)
 }
 
+// AwaitReplicatedClusterCACertificate is AwaitClusterCACertificate for a
+// node that holds no copy of the cluster CA key: it adopts only the cached
+// certificate, so its provider loads Key A from the replicated store and can
+// never generate one. A founding member other than the CA's issuer reads
+// before the issuer has persisted Key A -- the write needs that member for
+// quorum -- so here a *cakey.NotInitializedError is the write still in
+// flight and is retried within deadline like the settling errors, rather than
+// failing the boot.
+func AwaitReplicatedClusterCACertificate(ctx context.Context, provider cakey.Provider, deadline, baseDelay, maxDelay time.Duration) (*x509.Certificate, error) {
+	return server.RunStartupRead(ctx, server.StartupRead{
+		Op:        "replicated cluster CA certificate",
+		Budget:    deadline,
+		Delay:     baseDelay,
+		MaxDelay:  maxDelay,
+		Retryable: clusterCAReplicating,
+	}, provider.Certificate)
+}
+
+// clusterCAReplicating reports whether err is one clusterCAReadSettling
+// retries, or Key A not yet in the replicated store.
+func clusterCAReplicating(err error) bool {
+	var notInitialized *cakey.NotInitializedError
+	return clusterCAReadSettling(err) || errors.As(err, &notInitialized)
+}
+
 // EstablishClusterCA triggers n.ClusterCAProv's lazy adopt-or-load (a
 // Certificate call is enough; see cakey.SoftwareProvider's "material"
 // accessor) as a DELIBERATE startup action.

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -83,6 +84,54 @@ func TestConfirmClusterCAPersisted_ProviderFailureIsFatal(t *testing.T) {
 
 	// The local key must NOT be deleted when persistence could not be
 	// confirmed -- it is the only remaining copy of the key.
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("ca-key.pem was removed despite a failed persistence check: %v", err)
+	}
+}
+
+// stubReplicatingClusterCAProvider answers *cakey.NotInitializedError for
+// its first pending calls -- Key A not yet in the replicated store -- and a
+// certificate after.
+type stubReplicatingClusterCAProvider struct {
+	stubClusterCAProvider
+	pending int
+	calls   int
+}
+
+func (s *stubReplicatingClusterCAProvider) Certificate(context.Context) (*x509.Certificate, error) {
+	s.calls++
+	if s.calls <= s.pending {
+		return nil, &cakey.NotInitializedError{}
+	}
+	return &x509.Certificate{}, nil
+}
+
+func TestConfirmClusterCAPersisted_KeylessNodeWaitsForKeyA(t *testing.T) {
+	stub := &stubReplicatingClusterCAProvider{pending: 1}
+	if err := confirmClusterCAPersisted(context.Background(), stub, t.TempDir(), false); err != nil {
+		t.Fatalf("confirmClusterCAPersisted: %v", err)
+	}
+	if stub.calls != 2 {
+		t.Errorf("Certificate called %d times, want 2 (1 not-yet-replicated + 1 success)", stub.calls)
+	}
+}
+
+func TestConfirmClusterCAPersisted_KeyHolderDoesNotWaitOnMissingKeyA(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	if err := os.WriteFile(keyPath, []byte("fake key material"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	stub := &stubReplicatingClusterCAProvider{pending: 1}
+	err := confirmClusterCAPersisted(context.Background(), stub, dir, true)
+	var notInitialized *cakey.NotInitializedError
+	if !errors.As(err, &notInitialized) {
+		t.Fatalf("confirmClusterCAPersisted = %v, want it to wrap *cakey.NotInitializedError", err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("Certificate called %d times, want exactly 1", stub.calls)
+	}
 	if _, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("ca-key.pem was removed despite a failed persistence check: %v", err)
 	}

@@ -24,6 +24,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
@@ -81,6 +82,57 @@ type HolderDeps struct {
 	// before they take effect, and under FailClosed -- the zero value -- a
 	// record the trail refuses refuses the operation.
 	AuditPolicy audit.FailurePolicy
+
+	// live is the node's ceremony CA cell when these deps came from
+	// CeremonyService.HolderDeps. Every holder authority built from them
+	// resolves its CA through it at the moment it signs, so a CA the
+	// composer wires after handing the deps out -- Key A once it is
+	// readable after unseal (CeremonyService.ReplaceCA) -- reaches them
+	// all without a rebuild.
+	live *caCell
+}
+
+// ceremonyCA returns the CA holder certificates are issued by: the live
+// cell's when it holds one, else CA. Nil means no CA is wired on this node,
+// which refuses the two signing operations (enrolment and sign-csr) with
+// ErrCANotInitialized and nothing else.
+func (d *HolderDeps) ceremonyCA() CeremonyCA {
+	if d.live != nil {
+		if ca := d.live.load(); ca != nil {
+			return ca
+		}
+	}
+	return d.CA
+}
+
+// caCell holds a node's ceremony CA. Reads are lock-free: a holder
+// operation on any tenant or database scope loads it without taking the
+// ceremony service's mutex.
+type caCell struct {
+	p atomic.Pointer[caBox]
+}
+
+// caBox boxes a CeremonyCA, an interface value, for atomic.Pointer.
+type caBox struct {
+	ca CeremonyCA
+}
+
+// load returns the CA, or nil when none is wired.
+func (c *caCell) load() CeremonyCA {
+	if b := c.p.Load(); b != nil {
+		return b.ca
+	}
+	return nil
+}
+
+// store wires ca, replacing any CA wired before.
+func (c *caCell) store(ca CeremonyCA) {
+	c.p.Store(&caBox{ca: ca})
+}
+
+// storeIfEmpty wires ca only when no CA is wired yet.
+func (c *caCell) storeIfEmpty(ca CeremonyCA) {
+	c.p.CompareAndSwap(nil, &caBox{ca: ca})
 }
 
 // QuorumLimitFunc decides whether one quorum-challenge request may
@@ -528,7 +580,12 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	if err != nil {
 		return nil, err
 	}
-	if d.CA == nil {
+	// Enrolment is one of the two holder operations that sign (sign-csr is
+	// the other); every other one only verifies, so a node with no
+	// ceremony CA -- a BYO-TLS node, or one whose Key A is not readable
+	// yet -- refuses here and nowhere else.
+	ca := d.ceremonyCA()
+	if ca == nil {
 		return nil, ErrCANotInitialized
 	}
 	// The barrier reads the holder set twice during an initialization, the
@@ -570,7 +627,7 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	// its OU and its agreeing SPIFFE ID SAN, whatever the CSR asked for
 	// (signHolderCSR); the holder profile OU makes it a holder certificate,
 	// which authenticates with no roles (auth.HolderProfile).
-	cert, _, err := signHolderCSR(ctx, d.CA, req.CSRPEM, &SignCSROptions{
+	cert, _, err := signHolderCSR(ctx, ca, req.CSRPEM, &SignCSROptions{
 		TenantID:     tenantid.Normalize(h.tenantID),
 		Username:     req.Username,
 		TrustDomain:  d.TrustDomain,

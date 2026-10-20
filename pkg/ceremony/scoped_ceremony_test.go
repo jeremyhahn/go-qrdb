@@ -106,10 +106,116 @@ func TestTenantCeremony_ConstructorRefusals(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEmptyTenantID)
 	_, err = NewTenantCeremonyService("acme", nil, deps, testLogger())
 	assert.ErrorIs(t, err, ErrNilBackend)
+	// A nil CA is accepted: only enrolment and sign-csr need it (CA m829).
 	_, err = NewTenantCeremonyService("acme", backend, HolderDeps{}, testLogger())
-	assert.ErrorIs(t, err, ErrNilCA)
+	assert.NoError(t, err)
 	_, err = NewTenantCeremonyService("acme", backend, deps, nil)
 	assert.ErrorIs(t, err, ErrNilLogger)
+}
+
+// TestTenantCeremony_NilCAServesVerifyOnlyOperations proves a scoped holder
+// authority with no ceremony CA -- a BYO-TLS node, or the sealed window
+// before Key A is readable -- serves the operations that only verify (the
+// roster read and a holder quorum to seal and unseal), and refuses
+// enrolment, which signs, with ErrCANotInitialized (CA m829).
+func TestTenantCeremony_NilCAServesVerifyOnlyOperations(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	barrier := shamirBarrier(t, backend, 2, 2)
+	withCA := HolderDeps{TrustDomain: testTrustDomain, CA: testCA(t), Factors: testFactors(t)}
+	enroller, err := NewTenantCeremonyService("acme", backend, withCA, testLogger())
+	require.NoError(t, err)
+	barrier.SetCeremonyDistributor(enroller)
+
+	a := newHolder(t, "alice", "")
+	b := newHolder(t, "bob", seal.RoleCustodian).withAuthenticator(t)
+	for _, h := range []*testHolder{a, b} {
+		res, err := enroller.RegisterOfficer(ctx, h.request("tenant-admin"))
+		require.NoError(t, err)
+		h.recordCert(t, res.CertPEM)
+	}
+	_, err = barrier.InitializeShamir(ctx, seal.FactorPolicyAnyEnrolled)
+	require.NoError(t, err)
+	// Pending shares live only in the distributing authority's memory, so
+	// the holders claim them there.
+	for _, h := range []*testHolder{a, b} {
+		ch, err := enroller.BeginClaimShare(ctx, h.username, h.thumb)
+		require.NoError(t, err)
+		sig, err := SignShareClaim(h.certKey, ScopeTenant("acme").ClaimLabel(), h.username, ch.Nonce)
+		require.NoError(t, err)
+		res, err := enroller.CompleteClaimShare(ctx, h.username, hex.EncodeToString(ch.Nonce), sig, h.thumb)
+		require.NoError(t, err)
+		h.envelope = res.Envelope
+	}
+	enroller.Cleanup()
+
+	noCA := withCA
+	noCA.CA = nil
+	svc, err := NewTenantCeremonyService("acme", backend, noCA, testLogger())
+	require.NoError(t, err)
+	barrier.SetHolderVerifier(svc)
+
+	_, err = svc.RegisterOfficer(ctx, newHolder(t, "carol", "").request("tenant-admin"))
+	require.ErrorIs(t, err, ErrCANotInitialized, "enrolment signs, so it needs the CA")
+
+	list, err := svc.ListOfficers(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	submit := func(op seal.QuorumOp, h *testHolder, factor string) (*seal.QuorumOutcome, error) {
+		ch, err := svc.BeginQuorum(ctx, barrier, op, h.username, factor)
+		if err != nil {
+			return nil, err
+		}
+		return barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
+			Domain: seal.DomainUnseal, Op: op, Holder: h.username,
+			Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: h.answer(t, ch)},
+			Share: h.openShare(t),
+		})
+	}
+	_, err = submit(seal.OpSeal, a, "")
+	require.NoError(t, err)
+	out, err := submit(seal.OpSeal, b, testFactorName)
+	require.NoError(t, err)
+	require.True(t, out.Complete)
+	require.True(t, barrier.IsSealed())
+
+	_, err = submit(seal.OpUnseal, b, "")
+	require.NoError(t, err)
+	out, err = submit(seal.OpUnseal, a, "")
+	require.NoError(t, err)
+	assert.True(t, out.Complete)
+	assert.False(t, barrier.IsSealed())
+
+	svc.Cleanup()
+}
+
+// TestTenantCeremony_SeesCAWiredAfterConstruction proves a scoped holder
+// authority built from CeremonyService.HolderDeps before any CA is wired
+// signs with the CA ReplaceCA installs later: a joiner or a restarted
+// founder builds its holder authorities sealed and gets Key A after unseal.
+func TestTenantCeremony_SeesCAWiredAfterConstruction(t *testing.T) {
+	ctx := context.Background()
+	core := newBareTestService(t)
+	deps := core.HolderDeps()
+	require.Nil(t, deps.CA)
+	deps.TrustDomain = testTrustDomain
+	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), deps, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(svc.Cleanup)
+
+	_, err = svc.RegisterOfficer(ctx, newHolder(t, "alice", "").request("tenant-admin"))
+	require.ErrorIs(t, err, ErrCANotInitialized)
+
+	keyA := testCA(t)
+	core.ReplaceCA(keyA)
+	res, err := svc.RegisterOfficer(ctx, newHolder(t, "alice", "").request("tenant-admin"))
+	require.NoError(t, err)
+	cert, err := mtls.ParseCertificatePEM(res.CertPEM)
+	require.NoError(t, err)
+	caCert, err := keyA.CACertificate(ctx)
+	require.NoError(t, err)
+	assert.NoError(t, cert.CheckSignatureFrom(caCert), "the holder certificate chains to the CA wired after construction")
 }
 
 // TestScopedCeremonyRegistry covers the per-tenant service registry.

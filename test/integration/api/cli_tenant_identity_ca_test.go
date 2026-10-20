@@ -226,7 +226,8 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 			}
 
 			// Verify the admin certificate carries the expected identity
-			// shape: CN=username, OU=[tenantID].
+			// shape: CN=username, OU=[tenantID, administrator] -- the
+			// tenant first, then the ceremony CA's administrator profile.
 			block, _ := pem.Decode(certPEM)
 			if block == nil {
 				t.Fatalf("[%s] admin-cert.pem is not valid PEM", proto)
@@ -237,9 +238,10 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 			}
 			assertEqual(t, username, cert.Subject.CommonName,
 				fmt.Sprintf("[%s] admin cert CommonName should equal the requested username", proto))
-			if len(cert.Subject.OrganizationalUnit) != 1 || cert.Subject.OrganizationalUnit[0] != tenantID {
-				t.Fatalf("[%s] admin cert OU = %v, want [%s]",
-					proto, cert.Subject.OrganizationalUnit, tenantID)
+			if ou := cert.Subject.OrganizationalUnit; len(ou) != 2 ||
+				ou[0] != tenantID || ou[1] != "administrator" {
+				t.Fatalf("[%s] admin cert OU = %v, want [%s administrator]",
+					proto, ou, tenantID)
 			}
 
 			// Step 3: set-entitlement -- allow the software barrier modes so

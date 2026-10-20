@@ -60,6 +60,11 @@ type CeremonyService struct {
 	deps  HolderDeps
 	pins  pin.PINBackend
 
+	// ca is the node's ceremony CA (Key A, through the composer's
+	// provider), read lock-free; deps.live points at it, so every holder
+	// authority built from HolderDeps sees a CA wired after it was built.
+	ca caCell
+
 	system   *holderScope
 	recovery *holderScope
 
@@ -121,6 +126,7 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 		recovery:          recovery,
 		thresholdRegistry: NewThresholdRegistry(),
 	}
+	s.deps.live = &s.ca
 	barrier.SetCeremonyDistributor(s)
 	barrier.SetHolderVerifier(s)
 	return s, nil
@@ -233,16 +239,21 @@ func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier) {
 
 // SetCA wires the CeremonyCA used to issue holder and login certificates
 // (SignCSRInit issues either, by role).
-// It never overwrites a CA already set: the first CA wired is authoritative.
+// It never overwrites a CA already set; ReplaceCA does.
 func (s *CeremonyService) SetCA(ca CeremonyCA) {
 	if ca == nil {
 		return
 	}
+	s.liveDeps()
+	s.ca.storeIfEmpty(ca)
+}
+
+// liveDeps points s.deps at s.ca, for a CeremonyService not built by
+// NewCeremonyService (NewCeremonyService already has).
+func (s *CeremonyService) liveDeps() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.deps.CA == nil {
-		s.deps.CA = ca
-	}
+	s.deps.live = &s.ca
 }
 
 // SetTrustDomain installs the SPIFFE trust domain every certificate the
@@ -304,44 +315,41 @@ func (s *CeremonyService) SetPINBackend(b pin.PINBackend) {
 }
 
 // HolderDeps returns the holder dependencies, for tenant ceremonies to share.
+// CA is the CA wired now; the holder authorities built from the returned
+// deps resolve it again each time they sign, so a later ReplaceCA reaches
+// them too.
 func (s *CeremonyService) HolderDeps() HolderDeps {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.deps
+	d := s.deps
+	s.mu.Unlock()
+	d.live = &s.ca
+	d.CA = d.ceremonyCA()
+	return d
 }
 
 // CA returns the CeremonyCA, or nil before one is wired.
 func (s *CeremonyService) CA() CeremonyCA {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.deps.CA
+	return s.ca.load()
 }
 
-// ReplaceCA swaps the CeremonyCA used for pre-operational signing with ca,
-// but ONLY while the ceremony has not yet been initialized
-// (State() == StateAwaitingInit). Once Initialize has established its own
-// CA, that CA is authoritative and ReplaceCA is a no-op — the same
-// invariant SetCA protects, generalized to a caller that needs to swap a
-// PREVIOUSLY set convenience CA for a later, better one without waiting for
-// the ceremony to ever run.
-//
-// This is what lets cmd/qrdbd move ceremony-sign-csr off the bootstrap
-// window's cakey.StaticProvider-backed CeremonyCA (the in-memory cluster
-// CA key, held before any store exists) onto the replicated store's
-// cakey.SoftwareProvider (or an injected HSM/TPM/KMS provider) once that
-// store is live: SetCA's own "never overwrite" rule, read literally, would
-// make the bootstrap CA permanent for the life of the process, because it
-// was the first value SetCA ever saw.
+// ReplaceCA wires ca as the node's ceremony CA, replacing any CA wired
+// before, in every ceremony state. The node's ceremony CA is Key A, the
+// cluster CA every node reads from the replicated store once it is
+// unsealed (docs/certificate-authority/architecture.md), so the composer
+// calls this as soon as Key A is reachable through its provider: on the
+// node that bootstrapped the cluster it moves signing off the bootstrap
+// window's in-memory copy of the key (cakey.StaticProvider, which SetCA
+// installed first); on a node that joined, or restarted after the
+// bootstrap copy was deleted, it is the first CA the node has at all. The
+// ceremony state does not gate it: a node that unseals after the ceremony
+// completed signs with the same Key A the ceremony did, and every holder
+// authority already built from HolderDeps picks it up.
 func (s *CeremonyService) ReplaceCA(ca CeremonyCA) {
 	if ca == nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.state != StateAwaitingInit {
-		return
-	}
-	s.deps.CA = ca
+	s.liveDeps()
+	s.ca.store(ca)
 }
 
 // State returns the current ceremony state.
@@ -495,7 +503,13 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, err
 	}
-	s.deps.CA = ca
+	// The officers below are enrolled by the same CA that issues the admin
+	// credential and the server identity. A nil ca (a BYO-TLS node) leaves
+	// whatever the composer wired in place.
+	s.deps.live = &s.ca
+	if ca != nil {
+		s.ca.store(ca)
+	}
 
 	// isMofN is decided once and reused below: the barrier initialization
 	// this call performs branches on it, exactly like the officer
@@ -904,7 +918,8 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	if state != StateEnrolling {
 		return nil, ErrNotInitializedOrEnrolling
 	}
-	if deps.CA == nil {
+	ca := deps.ceremonyCA()
+	if ca == nil {
 		return nil, ErrCANotInitialized
 	}
 	if username == "" {
@@ -929,7 +944,7 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	if !validPrincipalName(username) {
 		return nil, &InvalidHolderNameError{Name: username}
 	}
-	cert, _, err := signHolderCSR(ctx, deps.CA, csrPEM, &SignCSROptions{
+	cert, _, err := signHolderCSR(ctx, ca, csrPEM, &SignCSROptions{
 		TenantID:     tenantid.System,
 		Username:     username,
 		TrustDomain:  deps.TrustDomain,

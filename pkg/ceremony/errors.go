@@ -121,8 +121,10 @@ var (
 	// authenticated listener.
 	ErrEnrollmentClosed = errors.New("ceremony: officer enrollment is closed to unauthenticated callers")
 
-	// ErrCANotInitialized is returned when a CA operation is attempted
-	// before the CA has been set via Initialize.
+	// ErrCANotInitialized is returned when an operation that signs --
+	// holder enrolment, sign-csr -- or reads the CA runs on a node with no
+	// ceremony CA wired: a BYO-TLS node, which has no Key A, or a node
+	// whose Key A is not readable yet (the sealed window).
 	ErrCANotInitialized = errors.New("ceremony: CA not initialized")
 
 	// ErrMissingCSRPEM is returned when a CSR PEM is required but not provided.

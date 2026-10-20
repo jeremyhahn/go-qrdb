@@ -132,8 +132,9 @@ func TestDatabaseCeremony_ConstructorRefusals(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEmptyDatabase)
 	_, err = NewDatabaseCeremonyService("acme", "orders", nil, deps, testLogger())
 	assert.ErrorIs(t, err, ErrNilBackend)
+	// A nil CA is accepted: only enrolment and sign-csr need it (CA m829).
 	_, err = NewDatabaseCeremonyService("acme", "orders", backend, HolderDeps{}, testLogger())
-	assert.ErrorIs(t, err, ErrNilCA)
+	assert.NoError(t, err)
 	_, err = NewDatabaseCeremonyService("acme", "orders", backend, deps, nil)
 	assert.ErrorIs(t, err, ErrNilLogger)
 }

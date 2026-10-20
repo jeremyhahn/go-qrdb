@@ -49,12 +49,24 @@ func TestShamirDatabase_RegistrationFailures(t *testing.T) {
 		t.Fatalf("the first registration after a refused second = %v", err)
 	}
 
+	// A ceremony CA is not needed to register: the holder authority serves
+	// its verify-only operations without one (CA m829).
 	noCA := newTestBarrierManager(t)
 	noCA.SetHolderDeps(ceremony.HolderDeps{})
-	if err := noCA.EnsureBarrier(ctx, "no-ca", "acme", cfg, seal.NewMemoryBackend(), seal.Credentials{}); !errors.As(err, &create) || !errors.Is(err, ceremony.ErrNilCA) {
-		t.Fatalf("registration without a ceremony CA = %v, want *BarrierCreateError wrapping ErrNilCA", err)
+	if err := noCA.EnsureBarrier(ctx, "no-ca", "acme", cfg, seal.NewMemoryBackend(), seal.Credentials{}); err != nil {
+		t.Fatalf("registration without a ceremony CA = %v, want success", err)
 	}
-	if _, err := noCA.registry.GetTenant("no-ca"); err == nil {
+	if _, _, err := noCA.Holders("no-ca"); err != nil {
+		t.Fatalf("the holder authority of a database registered without a CA = %v", err)
+	}
+
+	refused := newTestBarrierManager(t)
+	refused.SetHolderDeps(ceremony.HolderDeps{})
+	refused.logger = nil
+	if err := refused.EnsureBarrier(ctx, "refused", "acme", cfg, seal.NewMemoryBackend(), seal.Credentials{}); !errors.As(err, &create) || !errors.Is(err, ceremony.ErrNilLogger) {
+		t.Fatalf("registration whose holder authority is refused = %v, want *BarrierCreateError wrapping ErrNilLogger", err)
+	}
+	if _, err := refused.registry.GetTenant("refused"); err == nil {
 		t.Fatal("a refused registration left its barrier in the registry")
 	}
 

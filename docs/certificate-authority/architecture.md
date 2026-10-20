@@ -684,6 +684,20 @@ certificate is published to the system store, at
 `__sys:cert_ca_pub/{tenantID}/certificate` (see `engineering.md`, "Storage
 schema", and `docs/multi-tenancy/`).
 
+**Every node serves every CA operation from the replicated Key A.** Key A
+is not the property of the node that generated it: its records under
+`__sys:cluster_ca/` replicate to every member, and once a node's barrier is
+unsealed its `ClusterCAProv` reads them, so holder enrolment, `sign-csr`,
+CSR-signed admin certificates, node leaves and member-side join signing are
+served on any member. Reads are local; a write (the first adoption of the
+key) goes through the Raft leader like every other system-shard record. A
+node started on operator-supplied TLS certificates (`--tls-ca-file`,
+`--tls-cert-file`, `--tls-key-file`) has no Key A and so no CA: it serves
+every operation that only verifies a certificate and refuses only the ones
+that sign. Holder enrolment refuses with `ErrCANotInitialized`
+(`FAILED_PRECONDITION`); `sign-csr` refuses earlier, because such a node's
+ceremony never reaches the `enrolling` state that verb requires.
+
 The key and certificate are now TWO SEPARATE records
 (`{prefix}material` for the private key, `{prefix}certificate` for the
 public CA certificate), written together in ONE atomic batch

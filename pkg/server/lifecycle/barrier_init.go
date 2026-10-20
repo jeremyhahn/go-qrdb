@@ -338,6 +338,9 @@ func runBarrierInitWatcher(n *Node, serves func(context.Context, clusterseal.Bar
 	if err != nil {
 		return err
 	}
+	if wiring, ok := n.Tenant.(tenant.BarrierInitDeliveryWiring); ok {
+		wiring.SetBarrierInitDelivery(watcherDelivery{watcher: w})
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -350,4 +353,17 @@ func runBarrierInitWatcher(n *Node, serves func(context.Context, clusterseal.Bar
 		return nil
 	})
 	return nil
+}
+
+// watcherDelivery is the tenant service's on-demand delivery through this
+// node's init watcher: a holder quorum request reaching a node whose watcher
+// has not yet polled the tenant's statement delivers it first.
+type watcherDelivery struct{ watcher *barrierinit.Watcher }
+
+// Compile-time check.
+var _ tenant.BarrierInitDelivery = watcherDelivery{}
+
+// DeliverTenantInit delivers tenantID's barrier's latest statement now.
+func (d watcherDelivery) DeliverTenantInit(ctx context.Context, tenantID string) error {
+	return d.watcher.Deliver(ctx, clusterseal.TenantBarrier(tenantID))
 }

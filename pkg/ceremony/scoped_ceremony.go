@@ -72,9 +72,10 @@ func newScopedCeremonyService(scope BarrierScope, tenantID string, backend seal.
 	if backend == nil {
 		return nil, ErrNilBackend
 	}
-	if deps.CA == nil {
-		return nil, ErrNilCA
-	}
+	// deps carries no CA on a BYO-TLS node, and none in the sealed window
+	// before Key A is readable: the holder authority is built anyway,
+	// because only enrolment signs. Quorum submission, unseal, claim,
+	// unenrolment, rekey and roster changes verify, and serve without one.
 	if logger == nil {
 		return nil, ErrNilLogger
 	}

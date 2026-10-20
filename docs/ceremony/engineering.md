@@ -396,7 +396,7 @@ durable, replicated state.
 | The caller among the holders | `ErrSelfEnrolment` | **yes** |
 | Empty SO or User PIN | `ErrInvalidSOPIN` / `ErrInvalidUserPIN` | **yes** |
 | No PIN backend | `pin.ErrBackendNotConfigured` | **yes** |
-| No `CeremonyCA` | `ErrNilCA` | **yes** |
+| No ceremony CA (an operator-supplied-TLS node, which has no Key A) | holder enrolment and sign-csr refuse with `ErrCANotInitialized` (FailedPrecondition); every verify-only holder operation is still served | **yes** |
 | Ceremony already performed | `ErrAlreadyInitialized` | **yes** |
 | Node restarts before every holder claims | unclaimed envelopes are lost; a rekey redistributes | **yes** |
 | Wrong SO PIN on sign-csr | `pin.ErrPINInvalid`, from the backend's constant-time hash comparison | **yes** |

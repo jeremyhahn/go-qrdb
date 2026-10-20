@@ -163,11 +163,13 @@ func registerAdminGrants() {
 		TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
 		// Per-tenant barrier management (tenant-only scope: a tenant admin
-		// may init/unseal/seal their OWN tenant's barrier; the system tenant
-		// is structurally denied these by the ScopeTenantOnly rule even
-		// though the perm is present in the role).
+		// may init/unseal/seal their OWN tenant's barrier and read its
+		// status; the system tenant is structurally denied these by the
+		// ScopeTenantOnly rule even though the perm is present in the role).
+		// Status must be granted: once the barrier is unsealed the
+		// sealed-window fallback is closed and RBAC is the only path.
 		TenantBarrierInit, TenantBarrierUnseal,
-		TenantBarrierSeal,
+		TenantBarrierSeal, TenantBarrierStatus,
 		// Per-tenant share-holder management (ScopeTenantOnly: a tenant admin
 		// enrols, lists and revokes holders, and opens rekey rounds, for their
 		// OWN tenant's barrier only).

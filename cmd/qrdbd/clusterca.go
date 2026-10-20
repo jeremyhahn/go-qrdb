@@ -99,7 +99,9 @@ func awaitClusterCACertificate(ctx context.Context, provider cakey.Provider, dea
 //
 // hadLocalKey records whether ca-key.pem existed on disk THIS boot (bundle
 // loaded or just generated it); when false there is nothing to delete; a
-// node past its first successful boot already has none.
+// node past its first successful boot already has none. Such a node only
+// loads Key A, so it waits for the key holder's write to replicate
+// (lifecycle.AwaitReplicatedClusterCACertificate) instead of failing on it.
 //
 // A failure here is fatal: proceeding with the data plane up but no
 // confirmed, durable cluster CA would let this node issue tenant logins
@@ -107,7 +109,11 @@ func awaitClusterCACertificate(ctx context.Context, provider cakey.Provider, dea
 // leaves ca-key.pem (if present) as the only copy of a key this process
 // might not hold in memory on its next restart.
 func confirmClusterCAPersisted(ctx context.Context, provider cakey.Provider, dataDir string, hadLocalKey bool) error {
-	if _, err := awaitClusterCACertificate(ctx, provider,
+	await := awaitClusterCACertificate
+	if !hadLocalKey {
+		await = lifecycle.AwaitReplicatedClusterCACertificate
+	}
+	if _, err := await(ctx, provider,
 		clusterCAPersistRetryDeadline, clusterCAPersistRetryBaseDelay, clusterCAPersistRetryMaxDelay); err != nil {
 		return &ClusterCAPersistError{Err: err}
 	}

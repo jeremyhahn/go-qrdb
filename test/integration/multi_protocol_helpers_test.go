@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -699,19 +700,29 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	founderIdentity, founderPin := nodeIdentityAndPin(t, founderLeaf)
 	bringUp(0)
 
-	node2CertDir := t.TempDir()
-	node2CertPath := filepath.Join(node2CertDir, "node-cert.pem")
-	node2KeyPath := filepath.Join(node2CertDir, "node-key.pem")
-	if err := os.WriteFile(node2CertPath, node2LeafPEM, 0o600); err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: write %s: %v", node2CertPath, err)
+	// Node 2 runs the production cluster-CA path, never BYO TLS: its leaf,
+	// the cluster CA certificate and its joined enrollment role sit in its
+	// data directory, laid out as a member's own enrolled material is, so it
+	// builds the Key A provider and serves every CA operation from the
+	// replicated Key A once it unseals. --tls-ca-file would make it a
+	// BYO-TLS node with no Key A.
+	node2Args := append(baseArgs(1, peers), "--member-identities", fmt.Sprintf("1=%s", founderIdentity))
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: read %s: %v", caPath, err)
 	}
-	if err := os.WriteFile(node2KeyPath, node2KeyPEM, 0o600); err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: write %s: %v", node2KeyPath, err)
+	for name, content := range map[string][]byte{
+		"ca.pem":               caPEM,
+		"node-cert.pem":        node2LeafPEM,
+		"node-key.pem":         node2KeyPEM,
+		clusterenroll.RoleFile: []byte(clusterenroll.RoleJoined),
+	} {
+		path := filepath.Join(dataDirs[1], name)
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("startSelfIssuedCAMultiProtocolCluster: write %s: %v", path, err)
+		}
 	}
-	startNode(t, bin, append(baseArgs(1, peers),
-		"--member-identities", fmt.Sprintf("1=%s", founderIdentity),
-		"--tls-ca-file", caPath, "--tls-cert-file", node2CertPath, "--tls-key-file", node2KeyPath,
-	), "[sicac-node2] ")
+	startNode(t, bin, node2Args, "[sicac-node2] ")
 	bringUp(1)
 	waitForHealthy(t, dataDirs[0], 60*time.Second)
 	waitForHealthy(t, dataDirs[1], 60*time.Second)

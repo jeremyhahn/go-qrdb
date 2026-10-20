@@ -19,7 +19,11 @@ their shares in exactly the same way.
 
 ## Prerequisites
 
-- A ceremony CA on the node (see [../ceremony/user.md](../ceremony/user.md)).
+- A cluster CA. Every node of a cluster whose CA qrdb manages signs with the
+  replicated cluster CA key once unsealed, so any node can enrol a holder. A
+  node started on operator-supplied TLS certificates has no cluster CA: it
+  serves every holder operation that only verifies, and refuses enrolment with
+  `FAILED_PRECONDITION` (see [../ceremony/user.md](../ceremony/user.md)).
 - For each holder: a private key and a CSR for it. The CSR contributes only the
   public key; the CA decides the certificate's name.
 - Optionally, a separate envelope key per holder — for instance an ML-KEM

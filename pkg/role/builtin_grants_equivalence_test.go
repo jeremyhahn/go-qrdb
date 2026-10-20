@@ -104,7 +104,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.TenantsRead, permission.TenantsUpdate,
 	permission.TenantsDelete, permission.TenantsList,
 	permission.TenantBarrierInit, permission.TenantBarrierUnseal,
-	permission.TenantBarrierSeal,
+	permission.TenantBarrierSeal, permission.TenantBarrierStatus,
 	permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
 	permission.TenantBarrierOfficerRevoke, permission.TenantBarrierRekey,
 	permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,

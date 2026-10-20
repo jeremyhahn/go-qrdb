@@ -2935,6 +2935,11 @@ func (s *TenantService) TenantBarrierQuorumBegin(ctx context.Context, tenantID s
 	if err != nil {
 		return nil, err
 	}
+	// Any node serving the tenant answers, so its barrier is first brought up
+	// to the statement the creator claimed (node parity).
+	if err := s.deliverInit(ctx, tenantID); err != nil {
+		return nil, err
+	}
 	tb, err := s.registry.GetTenant(tenantID)
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "quorum-begin", Err: err}
@@ -2959,6 +2964,9 @@ func (s *TenantService) TenantBarrierQuorumSubmit(ctx context.Context, tenantID 
 	}
 	if sub == nil || len(sub.Share) == 0 {
 		return nil, ErrEmptyShare
+	}
+	if err := s.deliverInit(ctx, tenantID); err != nil {
+		return nil, err
 	}
 	sub.Domain = seal.DomainUnseal
 	out, err := s.registry.SubmitTenantHolderShare(ctx, tenantID, sub, func() error { return s.sealTenant(ctx, tenantID) })

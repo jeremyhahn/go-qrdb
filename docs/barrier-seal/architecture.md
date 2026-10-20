@@ -818,6 +818,14 @@ anchors — to the node's barrier initialisation. A statement that does not
 verify is logged and never delivered; a delivery that fails is retried on the
 next poll; one corrupt record does not hold up the others.
 
+A node does not wait for its next poll to answer a holder quorum request.
+`TenantBarrierQuorumBegin` and `TenantBarrierQuorumSubmit` first deliver the
+tenant's latest record through the same watcher (`Watcher.Deliver`), with the
+same placement filter, verification and once-per-epoch bookkeeping. Any node
+serving the tenant then answers from the statement its creator claimed, as
+the creator does, and not from a registry that the last poll left behind. A
+delivery that fails refuses the request.
+
 ### How a node takes part (tenant barriers)
 
 1. **Onboarding pins the anchor.** When a tenant is created with its first

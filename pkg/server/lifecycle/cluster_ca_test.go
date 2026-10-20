@@ -190,6 +190,100 @@ func TestAwaitClusterCACertificate_PermanentErrorReturnsImmediately(t *testing.T
 	}
 }
 
+// TestAwaitClusterCACertificate_NotInitializedIsFatal pins that a node which
+// holds the CA key never waits on missing material: for it, an uninitialized
+// provider is a failure, not a write in flight.
+func TestAwaitClusterCACertificate_NotInitializedIsFatal(t *testing.T) {
+	stub := &flakyClusterCAProvider{permanentErr: &cakey.NotInitializedError{}}
+
+	_, err := AwaitClusterCACertificate(context.Background(), stub, time.Minute, 200*time.Millisecond, time.Second)
+	var notInitialized *cakey.NotInitializedError
+	if !errors.As(err, &notInitialized) {
+		t.Fatalf("AwaitClusterCACertificate = %v, want *cakey.NotInitializedError", err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("Certificate called %d times, want exactly 1", stub.calls)
+	}
+}
+
+func TestAwaitReplicatedClusterCACertificate_WaitsForKeyAToReplicate(t *testing.T) {
+	want := &x509.Certificate{}
+	stub := &flakyClusterCAProvider{cert: want, notLeaderCalls: 2, transientErr: &cakey.NotInitializedError{}}
+
+	got, err := AwaitReplicatedClusterCACertificate(context.Background(), stub, time.Second, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("AwaitReplicatedClusterCACertificate: %v", err)
+	}
+	if got != want {
+		t.Error("expected the certificate returned once Key A replicated")
+	}
+	if stub.calls != 3 {
+		t.Errorf("Certificate called %d times, want 3 (2 not-yet-replicated + 1 success)", stub.calls)
+	}
+}
+
+func TestAwaitReplicatedClusterCACertificate_RetriesSettlingShard(t *testing.T) {
+	want := &x509.Certificate{}
+	stub := &flakyClusterCAProvider{cert: want, notLeaderCalls: 2}
+
+	got, err := AwaitReplicatedClusterCACertificate(context.Background(), stub, time.Second, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("AwaitReplicatedClusterCACertificate: %v", err)
+	}
+	if got != want || stub.calls != 3 {
+		t.Errorf("got %v after %d calls, want the certificate after 3", got, stub.calls)
+	}
+}
+
+func TestAwaitReplicatedClusterCACertificate_NeverReplicatedFailsAtDeadline(t *testing.T) {
+	stub := &flakyClusterCAProvider{notLeaderCalls: 1 << 30, transientErr: &cakey.NotInitializedError{}}
+
+	_, err := AwaitReplicatedClusterCACertificate(context.Background(), stub, 30*time.Millisecond, time.Millisecond, 5*time.Millisecond)
+	var readErr *server.StartupReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("AwaitReplicatedClusterCACertificate = %v, want *server.StartupReadError", err)
+	}
+	var notInitialized *cakey.NotInitializedError
+	if !errors.As(err, &notInitialized) {
+		t.Errorf("AwaitReplicatedClusterCACertificate = %v, want it to unwrap to *cakey.NotInitializedError", err)
+	}
+	if stub.calls < 2 {
+		t.Errorf("Certificate called %d times, want retries before the deadline", stub.calls)
+	}
+}
+
+func TestAwaitReplicatedClusterCACertificate_PermanentErrorReturnsImmediately(t *testing.T) {
+	boom := errors.New("corrupt record")
+	stub := &flakyClusterCAProvider{permanentErr: boom}
+
+	_, err := AwaitReplicatedClusterCACertificate(context.Background(), stub, time.Minute, 200*time.Millisecond, time.Second)
+	if !errors.Is(err, boom) {
+		t.Fatalf("AwaitReplicatedClusterCACertificate = %v, want %v", err, boom)
+	}
+	if stub.calls != 1 {
+		t.Errorf("Certificate called %d times, want exactly 1", stub.calls)
+	}
+}
+
+func TestClusterCAReplicating(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"not initialized":         {err: &cakey.NotInitializedError{}, want: true},
+		"wrapped not initialized": {err: &server.StartupReadError{Err: &cakey.NotInitializedError{}}, want: true},
+		"not leader":              {err: &service.NotLeaderError{}, want: true},
+		"sealed":                  {err: &cakey.BarrierSealedError{}, want: false},
+		"other":                   {err: errors.New("boom"), want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := clusterCAReplicating(tc.err); got != tc.want {
+				t.Errorf("clusterCAReplicating(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEstablishClusterCA_NilProviderIsNoOp proves EstablishClusterCA never
 // errors for a composer with no cluster-CA concept at all (BYO-TLS,
 // Infra.NoClusterCAKey) -- Node.ClusterCAProv stays nil in that
