@@ -137,7 +137,8 @@ type createUndo struct {
 	m    *Manager
 	name string
 
-	// dirs are the directories this Create created, outermost first.
+	// dirs are the directories this Create asked for and made itself, in the
+	// order it made them (see mkdirAll).
 	dirs []string
 
 	// backends are the backends this Create opened.
@@ -147,26 +148,30 @@ type createUndo struct {
 	barrier bool
 }
 
-// mkdirAll creates path and remembers the outermost directory it created,
-// so undo removes exactly that and leaves a pre-existing ancestor alone.
+// mkdirAll creates path and remembers it when this call's own os.Mkdir made
+// it, so undo removes that directory and nothing else. A missing ancestor is
+// created but never recorded: the ancestors are a namespace other creates
+// share -- the catalog's databases directory above all -- and the moment one
+// exists a concurrent create of another name can put its own database in it,
+// so removing it would remove that database too. The Mkdir is atomic, so
+// which call made path is never a guess: a directory that already existed, by
+// whoever's hand, is not this create's to remove.
 func (u *createUndo) mkdirAll(path string) error {
-	created := ""
-	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
-		if _, err := os.Stat(p); err == nil {
-			break
-		}
-		created = p
-		if parent := filepath.Dir(p); parent == p {
-			break
-		}
-	}
-	if err := os.MkdirAll(path, 0o750); err != nil {
+	path = filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	if created != "" {
-		u.dirs = append(u.dirs, created)
+	err := os.Mkdir(path, 0o750)
+	if err == nil {
+		u.dirs = append(u.dirs, path)
+		return nil
 	}
-	return nil
+	if errors.Is(err, fs.ErrExist) {
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			return nil
+		}
+	}
+	return err
 }
 
 // run closes and removes everything the Create made.

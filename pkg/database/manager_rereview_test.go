@@ -172,6 +172,76 @@ func TestManager_Create_FailureKeepsAPreexistingDataDir(t *testing.T) {
 	assert.NoError(t, statErr, "a pre-existing data directory must survive a failed create")
 }
 
+// siblingCreatingFactory creates the database sibling through mgr while the
+// create of any other database is between making its directories and
+// rolling them back, then fails that create: the interleaving of two
+// concurrent first creates, made deterministic.
+type siblingCreatingFactory struct {
+	BackendFactory
+	mgr     *Manager
+	sibling string
+	created error
+}
+
+func (f *siblingCreatingFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
+	if cfg.Name == f.sibling {
+		return f.BackendFactory.Create(cfg, dataDir)
+	}
+	_, f.created = f.mgr.Create(DatabaseConfig{Name: f.sibling, Backend: BackendMemory})
+	return nil, os.ErrClosed
+}
+
+// A create that fails removes only its own directories, never a parent
+// that a concurrent create of another name has put its own database in.
+func TestManager_Create_FailureKeepsAConcurrentSibling(t *testing.T) {
+	factory := &siblingCreatingFactory{BackendFactory: NewEmbeddedBackendFactory(), sibling: "invoices"}
+	mgr := NewManager(nil, filepath.Join(t.TempDir(), "catalog"), WithBackendFactory(factory))
+	t.Cleanup(func() { _ = mgr.Close() })
+	factory.mgr = mgr
+
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
+	require.ErrorIs(t, err, os.ErrClosed)
+	require.NoError(t, factory.created)
+
+	_, statErr := os.Stat(mgr.dbDir("orders"))
+	assert.True(t, os.IsNotExist(statErr), "the failed create left its catalog directory behind")
+	_, statErr = os.Stat(filepath.Join(mgr.dbDir("invoices"), metaFile))
+	assert.NoError(t, statErr, "the failed create removed a concurrent create's meta.json")
+	_, err = mgr.Get("invoices")
+	assert.NoError(t, err)
+}
+
+// The ledger records a directory only when this create made it, and its
+// rollback leaves alone a parent it made that another create now uses.
+func TestCreateUndo_RunRemovesOnlyItsOwnDirectory(t *testing.T) {
+	root := t.TempDir()
+	mine := filepath.Join(root, "databases", "orders", "data")
+	theirs := filepath.Join(root, "databases", "invoices")
+
+	undo := &createUndo{}
+	require.NoError(t, undo.mkdirAll(mine))
+	require.NoError(t, (&createUndo{}).mkdirAll(theirs))
+	undo.run()
+
+	_, statErr := os.Stat(mine)
+	assert.True(t, os.IsNotExist(statErr), "the rollback left the directory it created")
+	_, statErr = os.Stat(theirs)
+	assert.NoError(t, statErr, "the rollback removed another create's directory")
+}
+
+func TestCreateUndo_MkdirAllRecordsNothingThatExisted(t *testing.T) {
+	root := t.TempDir()
+	undo := &createUndo{}
+	require.NoError(t, undo.mkdirAll(root))
+	assert.Empty(t, undo.dirs)
+
+	file := filepath.Join(root, "file")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	assert.Error(t, undo.mkdirAll(file), "a file in the directory's place is not a directory")
+	assert.Error(t, undo.mkdirAll(filepath.Join(file, "child")), "a file in a parent's place is not a directory")
+	assert.Empty(t, undo.dirs)
+}
+
 // Boot provisioning of a configured name this node dropped earlier clears
 // the tombstone the drop left, marking the name live for the shared empty
 // incarnation every node provisions it with.
