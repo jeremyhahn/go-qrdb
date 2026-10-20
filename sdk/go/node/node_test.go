@@ -663,27 +663,6 @@ func TestBarrierRegistry_NonNilAfterSealEnabled(t *testing.T) {
 // attemptAutoUnseal
 // ---------------------------------------------------------------------------
 
-// newTestBarrier creates a minimal sealed StorageBarrier backed by an
-// in-memory PebbleDB instance in a temp directory for use in unit tests.
-func newTestBarrier(t *testing.T) (*seal.StorageBarrier, func()) {
-	t.Helper()
-	dir := t.TempDir()
-	store, err := pebbleStorage.New(pebbleStorage.DefaultConfig(dir))
-	require.NoError(t, err)
-
-	backend := seal.NewStorageAdapter(store)
-	barrier, err := seal.NewStorageBarrier(
-		slog.Default(), backend,
-		seal.BarrierConfig{
-			RootKeyPath:     "root-key",
-			PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase},
-		},
-		seal.NewDeferredSoftwareStrategy(),
-	)
-	require.NoError(t, err)
-	return barrier, func() { _ = store.Close() }
-}
-
 // TestAttemptAutoUnseal_StrategyNone verifies that StrategyNone always
 // auto-unseals the barrier (no credentials required).
 func TestAttemptAutoUnseal_StrategyNone(t *testing.T) {

@@ -279,7 +279,9 @@ it.
 qrdb ca delegate --principal billing --scope kv:get,kv:put --csr billing.csr --out ./billing
 ```
 
-Give `cert.pem` to the application. Then:
+Give `cert.pem` to the application. It presents the certificate either over
+mTLS or, when it runs qrdb in its own process, with `Node.DelegatedContext`;
+both are checked the same way. Then:
 
 - **It can do no more than you delegated, and no more than the application
   itself allows its principal.** Its permissions are the overlap of the two;

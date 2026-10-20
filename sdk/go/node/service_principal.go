@@ -16,11 +16,13 @@ package node
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -103,4 +105,37 @@ func (n *Node) ServiceContext(ctx context.Context) (context.Context, error) {
 		perms[i] = string(p)
 	}
 	return auth.WithIdentity(ctx, auth.NewServicePrincipal(n.servicePrincipal, tenantid.System, perms)), nil
+}
+
+// DelegatedContext returns ctx carrying the identity a tenant-issued
+// delegation certificate (chain, leaf first) grants this node's service
+// principal: the principal acting inside the delegating tenant, holding the
+// delegation's scope intersected with its own grants. Every call made with
+// the returned context through the node's in-process client is authorized
+// as that identity, and audited under it in the delegating tenant's trail.
+//
+// The certificate is verified exactly as one presented over mTLS is: by the
+// node's trust pool, as the delegating tenant's login CA's own issue,
+// carrying the critical delegation extension, within its lifetime,
+// unrevoked, and naming the principal WithServicePrincipal configured. It
+// is verified on every call, so a delegation revoked or expired since the
+// last one is refused.
+//
+// It returns ErrNoServicePrincipal when no service principal is configured,
+// *service.DataPlaneRecyclingError while the data plane is between servers, and
+// otherwise the refusal of whichever check failed: a *auth.DelegationRefusedError
+// (with auth.ErrForeignDelegationPrincipal as its cause when the delegation
+// names another principal, and a crypto/x509 CertificateInvalidError when it
+// does not verify, its Reason x509.Expired once it has expired), or
+// auth.ErrCertificateRevoked. Nothing falls back to the system tenant or
+// to ServiceContext's identity.
+func (n *Node) DelegatedContext(ctx context.Context, chain []*x509.Certificate) (context.Context, error) {
+	if n.servicePrincipal == "" {
+		return nil, ErrNoServicePrincipal
+	}
+	srv := n.srv.Load()
+	if srv == nil {
+		return nil, &service.DataPlaneRecyclingError{Service: "delegated context"}
+	}
+	return srv.AuthenticateDelegation(ctx, chain)
 }

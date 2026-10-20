@@ -795,6 +795,16 @@ signature code of its own.
   leader carries the certificate itself in the signed on-behalf assertion, and
   the leader verifies it again with its own authenticator. See
   [engineering.md](engineering.md#invariants).
+- **In-process, the same certificate and the same check.** An embedder
+  holding a delegation in process presents it with `Node.DelegatedContext`,
+  which hands the certificate to the node's own delegation verifier, the one
+  the mTLS path and forwarding use, and returns a context bound to the
+  delegated identity in the delegating tenant. The embedded transport and the
+  service layer honour that context exactly as they honour a delegated mTLS
+  caller: the same intersection, the same tenant confinement, the same audit
+  to the tenant's trail. Each refusal is typed: no service principal
+  configured, a chain that does not verify, an expired or revoked
+  certificate, or a principal other than the node's.
 
 **Alternatives rejected.**
 
@@ -803,7 +813,12 @@ signature code of its own.
 - **A tenant-scoped `ServiceContext`, or a delegation on/off or scope
   option.** Each is a second way in beside the certificate, granted by the
   host rather than the tenant, unaudited to the tenant's trail and
-  unrevocable by it.
+  unrevocable by it. In process, the credential stays the tenant-issued
+  certificate: `Node.DelegatedContext` takes the certificate, not a tenant
+  name.
+- **A second, in-process verifier.** Checking a delegation the embedder
+  holds by any path but the node's own authenticator would let the two drift;
+  `Node.DelegatedContext` reuses the one verifier rather than restating it.
 - **A new bearer token (JWT, macaroon).** That is a second credential
   format, a second verifier and a second revocation path, beside an mTLS
   chain that already authenticates every transport.

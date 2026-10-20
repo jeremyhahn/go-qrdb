@@ -356,7 +356,7 @@ func TestVerifyDelegation_RefusesEachAdmissionCheck(t *testing.T) {
 		opts   []MTLSOption
 		reason string
 	}{
-		{"node accepts no delegations", delegLeafSpec{}, []MTLSOption{WithDelegatedPrincipal("")}, "does not accept delegations"},
+		{"node accepts no delegations", delegLeafSpec{}, []MTLSOption{WithDelegatedPrincipal("")}, "names principal billing"},
 		{"another principal", delegLeafSpec{}, []MTLSOption{WithDelegatedPrincipal("payroll")}, "names principal billing"},
 		{"lifetime over the maximum", delegLeafSpec{notBefore: now, notAfter: now.Add(delegation.MaxLifetime + time.Hour)}, nil, "lifetime"},
 		{"no revocation checker", delegLeafSpec{}, []MTLSOption{WithRevocationChecker(nil)}, "no revocation checker"},
@@ -380,6 +380,28 @@ func TestVerifyDelegation_RefusesEachAdmissionCheck(t *testing.T) {
 			}
 			requireDelegRefused(t, err, tc.reason)
 		})
+	}
+}
+
+// TestVerifyDelegation_ForeignPrincipalIsTyped proves a delegation naming a
+// principal the node does not accept is refused with
+// ErrForeignDelegationPrincipal as its cause, whether the node accepts
+// another principal or none, so a caller can tell it from every other
+// refusal without reading the reason text.
+func TestVerifyDelegation_ForeignPrincipalIsTyped(t *testing.T) {
+	ca, caKey := testCA(t, "acme-login-ca")
+	leaf := delegLeaf(t, ca, caKey, delegLeafSpec{})
+	for _, accepted := range []string{"payroll", ""} {
+		_, err := delegAuthenticator(ca, WithDelegatedPrincipal(accepted)).VerifyDelegation(context.Background(), leaf.Raw)
+		if !errors.Is(err, ErrForeignDelegationPrincipal) {
+			t.Fatalf("accepting %q: err = %v, want ErrForeignDelegationPrincipal", accepted, err)
+		}
+		requireDelegRefused(t, err, "names principal billing")
+	}
+
+	// The principal the node accepts is never refused as foreign.
+	if _, err := delegAuthenticator(ca).VerifyDelegation(context.Background(), leaf.Raw); errors.Is(err, ErrForeignDelegationPrincipal) {
+		t.Fatalf("accepted principal refused as foreign: %v", err)
 	}
 }
 

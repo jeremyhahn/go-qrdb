@@ -75,6 +75,18 @@ func CheckLifetime(c *x509.Certificate) error     // *LifetimeError
 func WithServicePrincipal(name string) NodeOption // the ONE principal accepted
 // sdk.RegisterPermissionRoleGrant(name, perms...) — the principal's own grants,
 // the upper bound of every delegation's scope.
+//
+// DelegatedContext presents a delegation the embedder holds in process
+// (chain, leaf first) to the node's own delegation verifier and returns a
+// context bound to the delegated identity in the delegating tenant.
+// ErrNoServicePrincipal when none is configured; otherwise the verifier's
+// typed refusal: *auth.DelegationRefusedError (auth.ErrForeignDelegationPrincipal
+// for another principal; an x509.CertificateInvalidError with Reason
+// x509.Expired once it has lapsed) or auth.ErrCertificateRevoked.
+func (n *Node) DelegatedContext(ctx context.Context, chain []*x509.Certificate) (context.Context, error)
+
+// pkg/auth/middleware — the one check both paths run.
+func (m *AuthMiddleware) AuthenticateDelegation(ctx context.Context, chain []*x509.Certificate) (context.Context, *auth.Identity, error)
 
 // sdk/go/transport: CertClient.IssueDelegation(ctx, *IssueDelegationRequest)
 //                   (*IssuedDelegation, error)

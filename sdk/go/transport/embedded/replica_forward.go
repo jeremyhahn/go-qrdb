@@ -79,6 +79,22 @@ type forwardingScope struct {
 	fwd      *replicaForwarding
 }
 
+// callerFor returns the identity a call made on ctx is forwarded as. A
+// context bound to a tenant-issued delegation (sdk/go/node
+// Node.DelegatedContext) is forwarded as that delegated caller: the forwarder
+// carries its certificate (forward.CallerAssertion.Carry), and the receiving
+// node verifies it again -- chain, lifetime, revocation, principal -- and
+// attributes the request to it, never to the configured caller. Every other
+// call is forwarded as the configured caller, as before.
+func (f *replicaForwarding) callerFor(ctx context.Context) (*auth.Identity, error) {
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		if _, delegated := auth.DelegationOf(id); delegated {
+			return id, nil
+		}
+	}
+	return f.caller.Authenticate(ctx)
+}
+
 // forwardTo returns the transport to make a call again with when err is the
 // node's refusal as a non-replica and the call can be forwarded: one that
 // sends each request frame to a replica through the forwarder, as the
@@ -89,7 +105,7 @@ func (s *forwardingScope) forwardTo(ctx context.Context, err error) (*quicsdk.Tr
 	if !errors.As(err, &refusal) {
 		return s.forwardToLeader(ctx, err)
 	}
-	caller, aerr := s.fwd.caller.Authenticate(ctx)
+	caller, aerr := s.fwd.callerFor(ctx)
 	if aerr != nil || caller == nil || caller.Subject == "" {
 		slog.Warn("replicaforward: embedded call not forwarded: the configured caller did not authenticate",
 			"tenant", refusal.TenantID, "database", refusal.Database, "error", aerr)
@@ -121,7 +137,7 @@ func (s *forwardingScope) forwardToLeader(ctx context.Context, err error) (*quic
 	if !errors.As(err, &notLeader) || notLeader.LeaderAddress == "" {
 		return nil, false
 	}
-	caller, aerr := s.fwd.caller.Authenticate(ctx)
+	caller, aerr := s.fwd.callerFor(ctx)
 	if aerr != nil || caller == nil || caller.Subject == "" {
 		slog.Warn("replicaforward: embedded call not forwarded to the leader: the configured caller did not authenticate",
 			"database", s.database, "leader_raft_addr", notLeader.LeaderAddress, "error", aerr)
@@ -148,7 +164,7 @@ func (t *Transport) forwardAdminTo(ctx context.Context, refusal error, leaderAdd
 	if t.forwarding == nil || leaderAddr == "" {
 		return nil, false
 	}
-	caller, aerr := t.forwarding.caller.Authenticate(ctx)
+	caller, aerr := t.forwarding.callerFor(ctx)
 	if aerr != nil || caller == nil || caller.Subject == "" {
 		slog.Warn("admin forwarding: embedded call not forwarded: the configured caller did not authenticate",
 			"leader_raft_addr", leaderAddr, "error", aerr)

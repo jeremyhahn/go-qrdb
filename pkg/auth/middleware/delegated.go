@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"strings"
 
@@ -74,6 +75,62 @@ func (m *AuthMiddleware) authenticateForwardedDelegation(ctx context.Context, as
 	identity.Metadata[authSourceMetadataKey] = authSourceOnBehalf
 	identity.Metadata["forwarder_nodeid"] = assertion.ForwarderNodeID
 	return m.finalizeIdentity(ctx, identity, unknownMethod())
+}
+
+// AuthenticateDelegation authenticates an in-process caller presenting a
+// tenant-issued delegation certificate, chain[0], and returns a context
+// bound to the delegated identity and its tenant, exactly as a request
+// presenting it over mTLS would be. The verification is the delegation
+// verifier's (WithDelegationVerifier), the one a presented and a forwarded
+// delegation both pass: the trust pool, the critical delegation extension,
+// the principal, the lifetime, revocation, the tenant binding and the
+// issuer being that tenant's own login CA. The identity then passes through
+// finalizeIdentity, which grants the delegation's scope intersected with the
+// principal's own grants.
+//
+// The certificates after chain[0] are not consulted: a delegation is valid
+// only when its direct issuer is the delegating tenant's login CA, which the
+// trust pool holds as a root, so no intermediate can take part in it.
+//
+// A node that accepts no delegations, an empty chain, and a certificate that
+// fails any check are refused with a *auth.DelegationRefusedError (a revoked
+// one with auth.ErrCertificateRevoked); nothing falls back to another
+// identity.
+func (m *AuthMiddleware) AuthenticateDelegation(ctx context.Context, chain []*x509.Certificate) (context.Context, *auth.Identity, error) {
+	if m.delegations == nil {
+		return ctx, nil, &auth.DelegationRefusedError{Reason: "this node accepts no delegations", Err: auth.ErrForeignDelegationPrincipal}
+	}
+	if len(chain) == 0 || chain[0] == nil {
+		return ctx, nil, &auth.DelegationRefusedError{Reason: "no certificate"}
+	}
+	identity, err := m.delegations.VerifyDelegation(ctx, chain[0].Raw)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return m.finalizeIdentity(ctx, identity, knownMethod(auth.MethodMTLS))
+}
+
+// revalidateDelegation verifies identity's delegation certificate again,
+// through the same delegation verifier that admitted it, and returns that
+// verifier's typed refusal when it no longer holds. It is a no-op for an
+// identity that carries no delegation.
+//
+// A delegation is verified at every authorization decision, not only when
+// the identity was built: a context bound by AuthenticateDelegation is held
+// by an embedder and reused for as many in-process requests as it likes, so
+// a certificate revoked, or past its lifetime, after the context was built
+// must stop being honoured on the next request, exactly as a request
+// presenting it over mTLS would be refused.
+func (m *AuthMiddleware) revalidateDelegation(ctx context.Context, identity *auth.Identity) error {
+	d, ok := auth.DelegationOf(identity)
+	if !ok {
+		return nil
+	}
+	if m.delegations == nil {
+		return &auth.DelegationRefusedError{Reason: "this node accepts no delegations", Err: auth.ErrForeignDelegationPrincipal}
+	}
+	_, err := m.delegations.VerifyDelegation(ctx, d.Certificate)
+	return err
 }
 
 // finalizeDelegated admits an identity that authenticated with a verified

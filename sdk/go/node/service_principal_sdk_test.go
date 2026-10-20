@@ -22,22 +22,11 @@ package node_test
 import (
 	"context"
 	"errors"
-	"strconv"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
-
-// principalSeq makes every principal name unique to its test: the
-// permission role-grant registry is process-wide and has no unregister.
-var principalSeq atomic.Int64
-
-func uniquePrincipal(prefix string) string {
-	return prefix + "-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatInt(principalSeq.Add(1), 10)
-}
 
 // newServicePrincipalNode boots an auth-enabled, in-memory standalone node
 // with the service principal name and a queryable audit sink, using only the

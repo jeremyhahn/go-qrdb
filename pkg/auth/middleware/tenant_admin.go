@@ -86,6 +86,9 @@ func (m *AuthMiddleware) FilterTenantList(ctx context.Context, tenants []tenant.
 	if caller == nil {
 		return nil, auth.ErrUnauthenticated
 	}
+	if err := m.revalidateDelegation(ctx, caller); err != nil {
+		return nil, err
+	}
 	err := m.decide(tenant.WithTenantID(ctx, tenantid.System), caller, permission.TenantsListCross)
 	if err == nil {
 		return tenants, nil

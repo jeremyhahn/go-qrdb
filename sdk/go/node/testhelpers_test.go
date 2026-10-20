@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -24,7 +25,9 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
@@ -170,4 +173,25 @@ func waitForQueuedTransition(t *testing.T, n *Node) {
 	t.Helper()
 	require.Eventually(t, func() bool { return n.lifeGate.waiting.Load() > 0 },
 		closeRefusalBound, time.Millisecond, "the migration never queued on the lifecycle gate")
+}
+
+// newTestBarrier creates a minimal sealed StorageBarrier backed by an
+// in-memory PebbleDB instance in a temp directory for use in unit tests.
+func newTestBarrier(t *testing.T) (*seal.StorageBarrier, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := pebbleStorage.New(pebbleStorage.DefaultConfig(dir))
+	require.NoError(t, err)
+
+	backend := seal.NewStorageAdapter(store)
+	barrier, err := seal.NewStorageBarrier(
+		slog.Default(), backend,
+		seal.BarrierConfig{
+			RootKeyPath:     "root-key",
+			PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase},
+		},
+		seal.NewDeferredSoftwareStrategy(),
+	)
+	require.NoError(t, err)
+	return barrier, func() { _ = store.Close() }
 }

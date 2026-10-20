@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -287,6 +288,32 @@ func TestDelegation_Expired(t *testing.T) {
 
 	id, err = a.VerifyDelegation(context.Background(), leaf.Raw)
 	assertDelegationRefused(t, id, err)
+}
+
+// TestPool_VerifyPeerChainReadsTheSetClock: a certificate's lifetime is read
+// on the clock SetClock installs, so a delegation valid on the wall clock is
+// expired once that clock passes its NotAfter; clearing the clock returns
+// the pool to wall time.
+func TestPool_VerifyPeerChainReadsTheSetClock(t *testing.T) {
+	f := newDelegationFixture(t)
+	leaf := issueDelegation(t, f.acme, acmeGrant(), nil)
+	clk := clocktest.NewAt(time.Now())
+	f.pool.SetClock(clk)
+	if _, err := f.pool.VerifyPeerChain(context.Background(), leaf, nil); err != nil {
+		t.Fatalf("VerifyPeerChain inside the lifetime = %v; want verified", err)
+	}
+
+	clk.Advance(leaf.NotAfter.Sub(clk.Now()) + time.Second)
+	_, err := f.pool.VerifyPeerChain(context.Background(), leaf, nil)
+	var invalid x509.CertificateInvalidError
+	if !errors.As(err, &invalid) || invalid.Reason != x509.Expired {
+		t.Fatalf("VerifyPeerChain past NotAfter on the set clock = %v; want x509.Expired", err)
+	}
+
+	f.pool.SetClock(nil)
+	if _, err := f.pool.VerifyPeerChain(context.Background(), leaf, nil); err != nil {
+		t.Fatalf("VerifyPeerChain after clearing the clock = %v; want verified on wall time", err)
+	}
 }
 
 // TestDelegation_LifetimeAboveTheCap: a CA that issued past

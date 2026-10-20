@@ -3841,6 +3841,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// this check unenforced" cases (clienttrust.Pool.SetClusterCA/
 	// SetKeyBProvider), not errors.
 	n.trustPool = clienttrust.New()
+	// A certificate's lifetime is read on the node's security clock, the one
+	// every other time gate runs on (WithClock).
+	n.trustPool.SetClock(n.clock)
 	// The cluster CA is what qrdbd resolves it to, through the same code:
 	// the node's own Key A when it holds one, else -- on operator-supplied
 	// TLS (byoTLS) -- the operator's peer CA, the anchor its cluster

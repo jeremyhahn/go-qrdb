@@ -91,6 +91,12 @@ func WithDelegatedPrincipal(name string) MTLSOption {
 	}
 }
 
+// ErrForeignDelegationPrincipal is the cause of the DelegationRefusedError
+// returned for a delegation naming a principal other than the one this node
+// accepts delegations for (WithDelegatedPrincipal), or for any delegation
+// when it accepts none.
+var ErrForeignDelegationPrincipal = errors.New("auth: not the principal this node accepts delegations for")
+
 // DelegationRefusedError reports that a client certificate carrying a
 // delegation was refused. It matches ErrInvalidCertificate under errors.Is,
 // so every transport classifies it as an unusable credential (401), and
@@ -167,7 +173,7 @@ func (a *MTLSAuthenticator) VerifyDelegation(ctx context.Context, der []byte) (*
 func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []*x509.Certificate, g delegation.Grant) (*Identity, error) {
 	leaf := chain[0]
 	if a.delegatedPrincipal == "" || g.Principal != a.delegatedPrincipal {
-		return nil, &DelegationRefusedError{Reason: "names principal " + g.Principal + ", which this node does not accept delegations for"}
+		return nil, &DelegationRefusedError{Reason: "names principal " + g.Principal, Err: ErrForeignDelegationPrincipal}
 	}
 	if err := delegation.CheckLifetime(leaf); err != nil {
 		return nil, &DelegationRefusedError{Reason: "lifetime", Err: err}

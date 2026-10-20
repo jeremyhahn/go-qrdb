@@ -48,12 +48,25 @@ func init() {
 }
 
 // dlgIssuer is an auth.IssuerVerifier plus auth.TenantIssuerVerifier that
-// binds "acme" to one CA. The chain itself arrives verified in the TLS
-// state, so VerifyPeerChain is never reached.
+// binds "acme" to one CA. A presented chain arrives verified in the TLS
+// state; VerifyPeerChain is what every later decision re-verifies the
+// delegation with, and it verifies as clienttrust.Pool does, against the one
+// CA it holds.
 type dlgIssuer struct{ acme *x509.Certificate }
 
-func (d *dlgIssuer) VerifyPeerChain(context.Context, *x509.Certificate, []*x509.Certificate) ([]*x509.Certificate, error) {
-	return nil, errors.New("not reached: the chain arrives verified")
+func (d *dlgIssuer) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
+	roots, inter := x509.NewCertPool(), x509.NewCertPool()
+	roots.AddCert(d.acme)
+	for _, c := range intermediates {
+		inter.AddCert(c)
+	}
+	chains, err := delegation.Verifiable(leaf).Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: inter, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return chains[0], nil
 }
 func (d *dlgIssuer) IsClusterCA(context.Context, *x509.Certificate) bool { return false }
 func (d *dlgIssuer) VerifyIssuer(context.Context, string, []*x509.Certificate) error {
@@ -137,6 +150,11 @@ func dlgMiddleware(t *testing.T, a auth.Authenticator, opts ...Option) *AuthMidd
 	stored := &user.User{Username: auth.ServicePrincipalSubjectPrefix + dlgPrincipal, TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"admin"}}
 	roles := authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)
 	base := []Option{WithAuthenticator(a), WithUserService(&mockUserServicer{user: stored}), WithRoleResolver(roles)}
+	if v, ok := a.(DelegationVerifier); ok {
+		// As wiring.go does: a node that accepts delegations verifies them,
+		// presented or forwarded, with its own mTLS authenticator.
+		base = append(base, WithDelegationVerifier(v))
+	}
 	return New(rbac.New(roles), append(base, opts...)...)
 }
 

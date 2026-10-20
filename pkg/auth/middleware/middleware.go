@@ -941,7 +941,18 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	// explicit per-permission opt-in, not a default, so admin:health and
 	// every other permission behave exactly as before #201 until an owner
 	// declares one.
+	//
+	// A delegated identity's certificate is verified again first: the
+	// identity is not the caller it names once that certificate is revoked
+	// or past its lifetime (revalidateDelegation), and is refused, audited,
+	// before any quota is spent on it.
 	if identity != nil {
+		if err := m.revalidateDelegation(ctx, identity); err != nil {
+			if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+				return auditErr
+			}
+			return err
+		}
 		if err := m.checkRateLimit(identity, perm); err != nil {
 			if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
 				return auditErr
@@ -1064,6 +1075,12 @@ func (m *AuthMiddleware) AuthorizeTenantTarget(ctx context.Context, tenantID str
 		return auth.ErrUnauthenticated
 	}
 	ctx = tenant.WithTenantID(ctx, tenantID)
+	if err := m.revalidateDelegation(ctx, identity); err != nil {
+		if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+			return auditErr
+		}
+		return err
+	}
 	err := m.decide(ctx, identity, perm)
 	if err == nil {
 		return nil

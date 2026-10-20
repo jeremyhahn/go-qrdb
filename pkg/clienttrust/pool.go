@@ -45,6 +45,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
@@ -175,6 +176,7 @@ type Pool struct {
 	anchors    atomic.Pointer[anchorsBox]
 	staticBase atomic.Pointer[x509.CertPool]
 	snapshot   atomic.Pointer[trustSnapshot]
+	clock      atomic.Pointer[clockBox]
 
 	// kick asks Run to rebuild now. Capacity one: any number of Invalidate
 	// calls before Run gets to it collapse into a single rebuild, and
@@ -196,6 +198,7 @@ func (f TenantListerFunc) TenantIDs(ctx context.Context) ([]string, error) { ret
 
 type providerBox struct{ prov cert.CertProvider }
 type clusterCABox struct{ ca ClusterCA }
+type clockBox struct{ clk clock.Clock }
 type anchorsBox struct {
 	src     trustanchor.Source
 	tenants TenantLister
@@ -309,6 +312,28 @@ func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 func (p *Pool) SetClusterCA(ca ClusterCA) {
 	p.clusterCA.Store(&clusterCABox{ca: ca})
 	p.withdraw(true)
+}
+
+// SetClock sets the time VerifyPeerChain checks a certificate's lifetime
+// against: the node's security time source (sdk/go/node WithClock), so a
+// certificate that a request presented, or that a delegated context holds,
+// expires on the same clock as every other security time gate. A nil c
+// keeps the real clock. It does not change the handshake, which crypto/tls
+// verifies on its own clock.
+func (p *Pool) SetClock(c clock.Clock) {
+	if c == nil {
+		p.clock.Store(nil)
+		return
+	}
+	p.clock.Store(&clockBox{clk: c})
+}
+
+// now is the time on the clock SetClock installed, or the real time.
+func (p *Pool) now() time.Time {
+	if b := p.clock.Load(); b != nil {
+		return b.clk.Now()
+	}
+	return time.Now()
 }
 
 // SetTrustAnchors installs the source of every tenant's registered trust
@@ -940,6 +965,7 @@ func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, interm
 	chains, verifyErr := delegation.Verifiable(leaf).Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: inter,
+		CurrentTime:   p.now(),
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if verifyErr != nil {
