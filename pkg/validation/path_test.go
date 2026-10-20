@@ -18,6 +18,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +124,57 @@ func TestIsPathAncestorIsStrict(t *testing.T) {
 	}
 	if IsPathAncestor("/data/foo/bar", "/data/foo") {
 		t.Error("ancestry must not be symmetric")
+	}
+}
+
+func TestIsPathAncestorRejectsUnrelatablePaths(t *testing.T) {
+	// filepath.Rel cannot relate an absolute path to a relative one.
+	if IsPathAncestor("/data/foo", "data/foo/bar") {
+		t.Error("an absolute path must not be an ancestor of a relative one")
+	}
+	// Unequal strings that name the same directory are not strict ancestors.
+	if IsPathAncestor("/data/foo/", "/data/foo") {
+		t.Error("a path with a trailing separator is not a STRICT ancestor of itself")
+	}
+}
+
+func TestRejectSymlinkedPathReportsStatFailure(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// A component under a regular file fails Lstat with ENOTDIR, which is
+	// not a not-exist error and must not be walked past.
+	path := filepath.Join(file, "vol")
+	err := RejectSymlinkedPath(path)
+	var pathErr *PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("RejectSymlinkedPath(%q) = %v, want *PathError", path, err)
+	}
+	if pathErr.Path != path {
+		t.Errorf("PathError.Path = %q, want %q", pathErr.Path, path)
+	}
+	if !strings.HasPrefix(pathErr.Reason, "stat failed: ") {
+		t.Errorf("PathError.Reason = %q, want a stat failure", pathErr.Reason)
+	}
+	want := "validation: invalid path " + strconv.Quote(path) + ": " + pathErr.Reason
+	if got := pathErr.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestRejectSymlinkedPathReportsResolveFailure(t *testing.T) {
+	// A self-referencing link exists to Lstat but cannot be resolved.
+	loop := filepath.Join(t.TempDir(), "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	err := RejectSymlinkedPath(loop)
+	var pathErr *PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("RejectSymlinkedPath(%q) = %v, want *PathError", loop, err)
+	}
+	if !strings.HasPrefix(pathErr.Reason, "resolve symlinks failed: ") {
+		t.Errorf("PathError.Reason = %q, want a resolve failure", pathErr.Reason)
 	}
 }
