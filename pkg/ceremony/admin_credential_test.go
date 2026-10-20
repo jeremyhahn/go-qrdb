@@ -428,6 +428,26 @@ func TestReissueAdminCredential_UnprovisionedBackendRefuses(t *testing.T) {
 	assert.ErrorIs(t, err, pin.ErrPINNotSet)
 }
 
+// TestVerifyReissueSOPIN gates on the provisioned SO PIN alone: the PIN
+// Initialize set is admitted, a wrong one is refused, and a backend that was
+// never provisioned refuses even a PIN it has never seen.
+func TestVerifyReissueSOPIN(t *testing.T) {
+	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+
+	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.VerifyReissueSOPIN(context.Background(), "test-so-pin"))
+	assert.ErrorIs(t, svc.VerifyReissueSOPIN(context.Background(), "wrong-so-pin"), pin.ErrPINInvalid)
+
+	svc.SetPINBackend(pintest.NewBackend(t))
+	assert.ErrorIs(t, svc.VerifyReissueSOPIN(context.Background(), "test-so-pin"), pin.ErrPINNotSet)
+}
+
 // TestReissueAdminCredential_WrongPINRefusedBeforeAnyCredentialWork is the
 // core-gate regression test the re-review asked for alongside the BYO-TLS
 // fix above: the WRONG SO PIN against an ALREADY-provisioned ceremony must
