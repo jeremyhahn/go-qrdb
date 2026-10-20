@@ -146,3 +146,50 @@ func TestSeekableStream_NegativeProbeOffsetIsRefused(t *testing.T) {
 		t.Fatalf("a probe reporting a negative offset was accepted")
 	}
 }
+
+// errAfterSeeker is a seekable stream that serves its data, with no newline,
+// and then fails with err instead of io.EOF.
+type errAfterSeeker struct {
+	*strings.Reader
+	err error
+}
+
+func (e *errAfterSeeker) Read(p []byte) (int, error) {
+	n, rerr := e.Reader.Read(p)
+	if errors.Is(rerr, io.EOF) || e.Reader.Len() == 0 {
+		return n, e.err
+	}
+	return n, rerr
+}
+
+// TestStdinProvider_SeekableReadErrorIsAnError covers the bulk path's failed
+// read: a seekable stream that errors before a newline fails the passphrase
+// rather than returning the partial line.
+func TestStdinProvider_SeekableReadErrorIsAnError(t *testing.T) {
+	sentinel := errors.New("device gone")
+	r := &errAfterSeeker{Reader: strings.NewReader("hunter2"), err: sentinel}
+	buf, err := NewStdinProviderFromReader(r).Passphrase(context.Background(), "")
+	if err == nil {
+		buf.Destroy()
+		t.Fatalf("a read error before the newline must fail the read")
+	}
+	var pe *ProviderError
+	if !errors.As(err, &pe) || !errors.Is(err, sentinel) {
+		t.Fatalf("Passphrase = %v (%T), want *ProviderError wrapping the read error", err, err)
+	}
+}
+
+// TestReadLineSeekable_ReadErrorDiscardsPartialLine pins that a failed read
+// reports no bytes and no newline, so no caller copies a partial line.
+func TestReadLineSeekable_ReadErrorDiscardsPartialLine(t *testing.T) {
+	sentinel := errors.New("device gone")
+	r := &errAfterSeeker{Reader: strings.NewReader("abc"), err: sentinel}
+	line := make([]byte, 16)
+	n, sawNewline, err := readLineSeekable(r, 0, line)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("readLineSeekable err = %v, want the read error", err)
+	}
+	if n != 0 || sawNewline {
+		t.Fatalf("readLineSeekable = (%d, %v), want (0, false) on error", n, sawNewline)
+	}
+}
