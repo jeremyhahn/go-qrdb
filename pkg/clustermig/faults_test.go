@@ -131,6 +131,49 @@ func TestReconciler_PutStatusErrorSwallowed(t *testing.T) {
 	}
 }
 
+func TestStore_CorruptRecordsRejected(t *testing.T) {
+	ctx := context.Background()
+	kv := newMemKV()
+	s := NewStore(kv)
+	kv.m[migrationKey(tid, db)] = []byte("{not json")
+	kv.m[nodeStatusKey(tid, db, "n1")] = []byte("{not json")
+
+	checks := []struct {
+		name string
+		op   string
+		fn   func() error
+	}{
+		{"GetMigration", "unmarshal-migration", func() error { _, e := s.GetMigration(ctx, tid, db); return e }},
+		{"ListMigrations", "unmarshal-migration", func() error { _, e := s.ListMigrations(ctx); return e }},
+		{"GetNodeStatus", "unmarshal-status", func() error { _, e := s.GetNodeStatus(ctx, tid, db, "n1"); return e }},
+		{"ListNodeStatuses", "unmarshal-status", func() error { _, e := s.ListNodeStatuses(ctx, tid, db); return e }},
+	}
+	for _, c := range checks {
+		var se *StoreError
+		if err := c.fn(); !errors.As(err, &se) || se.Op != c.op {
+			t.Errorf("%s error = %v, want StoreError op %q", c.name, err, c.op)
+		}
+	}
+}
+
+func TestStore_ListNodeStatuses_SkipsNestedKeys(t *testing.T) {
+	ctx := context.Background()
+	kv := newMemKV()
+	s := NewStore(kv)
+	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{NodeID: "n1"}); err != nil {
+		t.Fatalf("PutNodeStatus: %v", err)
+	}
+	kv.m[nodeStatusKey(tid, db, "n1")+"/nested"] = []byte("{not json")
+
+	got, err := s.ListNodeStatuses(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("ListNodeStatuses: %v", err)
+	}
+	if len(got) != 1 || got[0].NodeID != "n1" {
+		t.Fatalf("ListNodeStatuses = %+v, want only n1", got)
+	}
+}
+
 // readOKWriteErrKV reads from an inner KV but fails all writes, to prove the
 // reconciler swallows status-write errors after a successful recycle.
 type readOKWriteErrKV struct {
