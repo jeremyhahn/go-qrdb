@@ -44,8 +44,9 @@ import (
 )
 
 // credentialJobs are the jobs the runner injects the forge credentials into
-// and that run a step which could print them.
-var credentialJobs = []string{"image", "integration-standalone", "integration-features"}
+// and that run a step which could print them. changes (v1.24) is not one: it
+// prints only the changed file names.
+var credentialJobs = []string{"image", "integration-standalone", "integration-features", "soak"}
 
 const maskStepName = "Mask the forge credentials"
 

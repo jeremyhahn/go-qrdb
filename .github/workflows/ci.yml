@@ -1,5 +1,70 @@
-# ci-template: v1.22.1 — canonical CI for all first-party Go repos.
-# The concurrency block alone is ci-template v1.23's (Company Agent m701).
+# ci-template: v1.25 — canonical CI for all first-party Go repos.
+# v1.25 (Company Agent m857, 2026-10-20): main has one concurrency group per
+# event, so a newer push to main cancels the older in-progress main push run.
+# At 20:00Z go-qrdb had three main-push runs in progress on three commits and
+# 148 jobs waited fleet-wide. The main group is `main-{event}` (m774 option
+# (i), on go-qrdb main since m772), not the ref alone, so a workflow_dispatch
+# or schedule run on main never cancels a push run. This reverses v1.22.1 and
+# v1.23 (m636, m695): an older main commit no longer keeps its own run, and
+# the newest run validates every merge under it. cancel-in-progress stays a
+# literal `true`. A PR ref is one group, as before. Only the group changes.
+# v1.24.1 (2026-10-20): the changelog and comments cite no internal
+# repository and no internal issue number, so a repository that publishes its
+# workflows passes its releasability scan. One job change: the `changes`
+# job's diff takes --no-renames, so a file moved from code into docs/ lists
+# its old path too and the PR is not docs-only.
+# v1.24 (owner ruling 2026-10-19, Company Agent m749 and m751 (a), (e)):
+# a PR whose every changed file is markdown or under docs/ (DOCS_ONLY_PATTERN,
+# the new `changes` job) runs lint alone: build, the build-tag assertion and
+# make coverage skip. Soak moves off main pushes and ci:full to the nightly
+# schedule and workflow_dispatch, a `nightly` job in the Gate (ci-standard.md
+# §8, §10).
+# v1.23.1 (2026-10-19): ships reap-stale-ci-stacks.sh v3, which
+# ages an integration image from the later of its creation and its last tag,
+# so a parallel job's reaper no longer removes an image just rebuilt from
+# cache (go-quicraft main runs 57389 and 57484). No job changes.
+# v1.23 (owner item 101 as approved, Company Agent m650 item 3, 2026-10-18):
+# two tiers. A pull request runs the PR tier only: lint (with
+# assert-build-tags and arch-gates), build, and the unit suite under -race
+# (`make coverage`, so unit test and race are one step). Integration, Soak,
+# security, deps-check and trivy image do not run on a PR. The full tier runs
+# on main after every merge (push), nightly (a new `schedule:` trigger), on
+# workflow_dispatch, and on a PR labelled ci:full (kept as the opt-in). A new
+# `soak` job loops the integration suite in the integration image for
+# SOAK_MINUTES. CI Gate stays the one required check; integration and soak are
+# `full` in it. A red full tier on main is reverted through a PR by the new
+# revert-red-main.yml (ships beside this file; ci-standard.md §8). A repo's
+# CUSTOMIZE race job joins the PR tier (`pr` in CI Gate, no tier `if:`); its
+# other CUSTOMIZE suites take CI_FULL_TIER's expression and are `full`.
+# v1.23 also (Company Agent m674 item 3, 2026-10-18: per-run image tags filled
+# a runner host's disk at 100G per 17 minutes): one image tag per family,
+# keyed by content. The integration image is <repo>-ci-it:<hash> (`make -s
+# it-image`, the go-qrdb #814 pattern), built once per runner and reused by
+# every job and run with that tree; no job removes it, and
+# reap-stale-ci-stacks.sh v2 removes one older than REAP_IMAGE_MIN_AGE that no
+# container uses (ci-standard.md §9).
+# v1.23 also (Company Agent m695, 2026-10-18): the concurrency block keeps
+# cancel-in-progress a literal `true` and gives main one group per event and
+# commit, so main runs never cancel or queue behind each other; v1.22.1's
+# expression left go-qrdb main run 57063 waiting with no task.
+# v1.22.2 (Company Agent m641 item 2 and m646 item 3, 2026-10-18): each stage
+# runs at the job slot's CPU bound. in-toolchain-image.sh v3 reads the job
+# container's cgroup cpu.max and gives the stage container that --cpus, with
+# GOMAXPROCS and GOFLAGS=-p from it; golangci-lint follows the quota. No
+# number is hardcoded. No job changes.
+# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.25, and why.
+#   - No `schedule:` trigger (owner ruling 2026-10-11, Company Agent m433: no
+#     new timers; test/buildgates/ci_tiers_test.go refuses one). The full tier
+#     runs on push to main, workflow_dispatch and a ci:full PR; the nightly
+#     soak runs on workflow_dispatch alone (see `on:` below).
+#   - No revert-red-main.yml beside this file: not adopted here.
+#   - The integration image is held by the job's IT_HOLD container (#813, run
+#     57540), not the template's `<prefix>lease-` steps, and named in the
+#     build step, not a separate "Name the integration image" step: one hold
+#     per job, not two.
+#   - Integration is two jobs, integration-standalone and the per-feature
+#     integration-features matrix, both full tier.
+# CUSTOMIZE (go-qrdb) end.
 # v1.22.1 (Company Agent m636 item 2, 2026-10-18, after go-quicbaas main
 # fe167500f was left with no completed run): the concurrency block is
 # canonical. A newer push to a PR ref still cancels that ref's older run, but
@@ -56,7 +121,7 @@
 # .trivyignore for it. The github.com gosec install builds the latest gosec
 # tag against the latest x/tools in the one form of devcontainer.md §2.
 #
-# v1.18 (dept-infra, 2026-10-12): a CUSTOMIZE integration job that starts
+# v1.18 (2026-10-12): a CUSTOMIZE integration job that starts
 # containers on the runner host runs scripts/reap-stale-ci-stacks.sh first
 # (ships beside this file). Its `if: always()` teardown dies with the job when
 # the host or the Docker daemon goes down, and nothing removed the stack after:
@@ -64,14 +129,14 @@
 # runner hosts after the 2026-10-11/12 restarts. See the CUSTOMIZE note above
 # ci-gate.
 #
-# v1.17 (handbook#44, #40): third-party actions pinned by commit, the tag in a
+# v1.17: third-party actions pinned by commit, the tag in a
 # trailing comment (devops.md §9 "Actions are pinned by commit").
 #
-# v1.16 (dept-software#64, go-libsignal#42): gosec, govulncheck and actionlint
+# v1.16: gosec, govulncheck and actionlint
 # install only on github.com; Gitea jobs use the runner image's baked, pinned
 # tools.
 #
-# v1.15 (2026-10-05, automatethethings#211; go-enclave#122): push runs on main
+# v1.15 (2026-10-05): push runs on main
 # only again. automerge.yml v7 opens each merge train as a PR from
 # merge-train/* into main, so the train gets its CI from the pull_request
 # trigger like any PR, and block_on_outdated_branch stays on (owner,
@@ -79,7 +144,7 @@
 # sure we are requiring the latest from main in all branches before they get
 # merged in"). The parallel stages of v1.14 stay.
 #
-# v1.14 (2026-10-04, automatethethings#207; go-enclave#118): every job starts
+# v1.14 (2026-10-04): every job starts
 # at once, so a run takes as long as its slowest job. security, test and any
 # CUSTOMIZE integration job no longer wait on lint + build; CI Gate, the one
 # required check, still needs every job and fails closed on any result but
@@ -90,7 +155,7 @@
 # ordering: a broken push now spends the heavy tier too, in exchange for the
 # shortest wall-clock to a green gate, which is what a train waits on.
 #
-# v1.13 (2026-09-27, automatethethings#189): GO_VERSION 1.26.7 -> 1.27.1, in
+# v1.13 (2026-09-27): GO_VERSION 1.26.7 -> 1.27.1, in
 # lockstep with nightly-template v1.6.
 #
 # v1.12 (2026-08-28, go-blockstore #22 round 2): refresh install-shellcheck.sh to
@@ -238,7 +303,7 @@
 # 2026-08-14). `ghcr.io` likewise does not exist on Gitea — use the Gitea
 # registry (lessons.md).
 # Source of truth: software/templates/github-actions/ci.yml in the
-# automatethethings repo. Copied into each repo (never workflow_call: the
+# handbook. Copied into each repo (never workflow_call: the
 # template lives inside the security boundary and cannot be referenced from
 # github.com). Blocks marked CUSTOMIZE are the only expected divergence;
 # everything else drifting from the template is a defect (devops.md §8).
@@ -269,15 +334,21 @@ on:
   workflow_dispatch:                    # re-fire a whole workflow; also the
                                         # only retry when a run was never
                                         # created (see v1.3 correction above)
+  # CUSTOMIZE (go-qrdb, Company Agent m433): no `schedule:`. v1.23's nightly
+  # cron is not adopted: the owner ruled no new timers (2026-10-11), and m433
+  # keeps the nightly run a dispatch, not a cron. Main's full tier runs after
+  # every merge (push), on workflow_dispatch and on a ci:full PR; the
+  # `nightly` soak job runs on workflow_dispatch alone, so the Gate passes
+  # its skip on every other event. test/buildgates/ci_tiers_test.go refuses
+  # a `schedule:` here.
 
-# v1.23 concurrency (Company Agent m701, from ci-template v1.23): a literal
-# cancel-in-progress and a main-specific group. A PR ref is one group, so its
-# newer run cancels the older. On main the group carries the event only
-# (Company Agent m772, m774 option (i)), so a newer push on main cancels the
-# main run of the same event in flight, started jobs included. This
-# deliberately reverses m636 (2), which gave each main commit its own group.
-# cancel-in-progress is a literal because Gitea 1.27.1 never released go-qrdb
-# main runs 57063 and 57200 while it was an expression.
+# v1.25: on main the group is the workflow and the event, so a push to main
+# cancels the in-progress main push run of an older commit, and a schedule or
+# workflow_dispatch run cancels only an older run of its own event (Company
+# Agent m857, m774 option (i)). Every other ref is one group, so a PR's newer
+# run cancels the older. No expression reaches cancel-in-progress: Gitea
+# 1.27.1 never released go-qrdb main run 57063, the first run after v1.22.1
+# set it to an expression (Company Agent m695).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
   cancel-in-progress: true
@@ -293,14 +364,61 @@ env:
   # tool's own form. Leave EMPTY if no package is tag-gated. Every analysis step
   # below derives its own form from this ONE value; never write the tag list
   # twice. A tag-gated package that is not named here is analysed by NOTHING
-  # while the gate still reports green (automatethethings#7: go-signal had eight
+  # while the gate still reports green (one repository had eight
   # such packages, including its whole WebAuthn implementation).
   # CUSTOMIZE (go-qrdb): exactly `make -s print-build-tags`, the default feature
   # set the coverage baseline was measured under (its `# build-tags:` line), in
   # the same order; the Makefile adopts it as BUILD_TAGS when it is set.
   GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+  # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
+  # (here push to main and workflow_dispatch: no schedule, see `on:`), and a
+  # PR labelled ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:`
+  # cannot read env, so each full-tier job repeats this expression. Keep them
+  # equal (test/buildgates/ci_tiers_test.go).
+  CI_FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  # v1.24 (CA m749, m751 (a)): the files a docs-only PR may touch. CUSTOMIZE: narrow it
+  # in a repo that embeds or generates from docs/ (go:embed, OpenAPI, protos).
+  # CUSTOMIZE (go-qrdb): kept as the template's. Nothing embeds or generates
+  # from docs/ or markdown. The gates that read docs/ are lint-class and run
+  # in `make lint-gates`, which a docs-only PR still runs:
+  # check-publication-bound, check-integration-feature-coverage (a feature
+  # folder without its features.mk entry) and check-no-alias-language.
+  DOCS_ONLY_PATTERN: '(\.md$|^docs/)'
 
 jobs:
+  # v1.24 (CA m749, m751 (a)): a PR whose every changed file matches DOCS_ONLY_PATTERN
+  # runs lint only; build and make coverage are skipped. Off pull_request, or
+  # on a ci:full PR, docs_only is always false. Any doubt (a failed diff, an
+  # empty list) reads as false, so the tier fails toward running the tests.
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        if: ${{ github.event_name == 'pull_request' && env.CI_FULL_TIER != 'true' }}
+        with:
+          fetch-depth: 0
+      - name: Is every changed file docs or markdown?
+        id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          docs_only=false
+          if [ "$EVENT" = pull_request ] && [ "$CI_FULL_TIER" != true ]; then
+            if files=$(git diff --name-only --no-renames "$BASE...$HEAD") && [ -n "$files" ]; then
+              if ! printf '%s\n' "$files" | grep -qvE "$DOCS_ONLY_PATTERN"; then
+                docs_only=true
+              fi
+              printf '%s\n' "$files"
+            fi
+          fi
+          echo "docs only: $docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   # v1.21: every stage runs in the project's own devcontainer image and no
   # other (ci-standard.md §2, devcontainer.md §7). One image job (Company Agent
   # m601 (a)) builds the images once from build/docker/devcontainer/Dockerfile
@@ -318,6 +436,10 @@ jobs:
   # still written once. build, test and lint run with no network, on the
   # image's module cache; security and deps-check get one (IN_IMAGE_NETWORK=
   # bridge) for the vulnerability databases and the module proxy.
+  #
+  # v1.23: lint, assert-build-tags, build and coverage are the PR tier and run
+  # on every event. security, deps-check and trivy image are full tier only
+  # (env.CI_FULL_TIER): main after every merge, dispatch, ci:full.
   #
   # v1.22: every stage mounts the build and golangci-lint cache volumes, and a
   # bridge stage the module cache volume, from the runner's Docker host
@@ -338,6 +460,7 @@ jobs:
   image:
     name: Devcontainer image [lint, build, test, security, deps-check, trivy image]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    needs: changes             # v1.24 (CA m749, m751 (a))
     timeout-minutes: 90       # CUSTOMIZE: give the stages honest headroom
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -348,7 +471,9 @@ jobs:
       IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
       # v1.22: the cache volumes' trust class. Only a push to main writes the
       # caches main's build reads; every other event, pull requests included,
-      # gets the `pr` set (ci-standard.md §6).
+      # gets the `pr` set (ci-standard.md §6). CUSTOMIZE (go-qrdb, m433):
+      # v1.23 adds `schedule` to the `main` class for its nightly cron; this
+      # workflow has no schedule (see `on:`), so push alone writes main's set.
       CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -430,7 +555,7 @@ jobs:
       # (tests included), it is misspelled or dead. Compares files, not
       # packages, and a tag may swap files (a `!foo` stub for a `foo` body).
       - name: Assert every build tag selects code
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.GO_BUILD_TAGS != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.GO_BUILD_TAGS != '' && needs.changes.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "GO_BUILD_TAGS='$GO_BUILD_TAGS' sh scripts/assert-build-tags.sh"
 
       # CUSTOMIZE: nested modules (sdk/go, xkey) and variants (FIPS) are built
@@ -441,7 +566,7 @@ jobs:
       # every package untagged, the sdk/go module, and builds qrdbd and the
       # headless qrdb CLI under the feature set.
       - name: make build-server build-cli-headless
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "go build ./... && (cd sdk/go && go build ./...) && make build-server build-cli-headless GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # CUSTOMIZE (go-qrdb): the release publishes linux/arm64 binaries
@@ -449,16 +574,17 @@ jobs:
       # fails here on the pull request rather than on the tag. A cgo-free
       # cross-compile: nothing runs on arm64 and nothing is emulated.
       - name: make release-cross (linux/arm64, plain and FIPS)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make release-cross PLATFORM=linux/arm64 GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # The test stage (m601 (c)): make coverage runs the whole unit suite with
-      # -race (make test's flags) and fails when total coverage is below
+      # -race (make test's flags), the PR tier's unit test and race checks in
+      # one run (v1.23), and fails when total coverage is below
       # COVERAGE_THRESHOLD (testing-guidelines.md), so the suite runs once.
       # Tags matter here too: without them tag-gated packages are neither
       # tested nor counted. The integration stage is its own job below.
       - name: make coverage (unit tests and the threshold)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage GO_BUILD_TAGS='$GO_BUILD_TAGS' COVERAGE_THRESHOLD=$COVERAGE_THRESHOLD"
 
       # CUSTOMIZE (go-qrdb): the suites `make coverage` does not reach.
@@ -467,8 +593,9 @@ jobs:
       # against test/coverage-baseline-fts.txt (#610); test-tags RUNS the CLI
       # suites under the reduced protocol-family rungs; test-sdk is the sdk/go
       # module's race suite (#132), which `./...` at the root never crosses.
+      # They are unit suites, so the PR tier, and skip on a docs-only PR (v1.24).
       - name: make test-clusterproof coverage-fts test-tags test-sdk
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-clusterproof coverage-fts test-tags test-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # make security: gosec, govulncheck, go mod verify (devops.md §8), with
@@ -477,7 +604,7 @@ jobs:
       # reports a kill by signal as a kill, not a finding. Nothing is uploaded
       # to code scanning (m601 (d): CI runs on Gitea).
       - name: make security
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make security GO_BUILD_TAGS='$GO_BUILD_TAGS'"
@@ -485,7 +612,7 @@ jobs:
       # Fails when a library, first-party or third-party, is behind its latest
       # release without devops.md §9's documented reason (ci-standard.md §1).
       - name: make deps-check
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
@@ -497,8 +624,9 @@ jobs:
       # this image's module cache (/gomodcache, not the template's
       # /opt/go/mod), and certifies the database's age before it scans with
       # --skip-db-update, so a stale database fails rather than passes.
+      # A PR builds no image for a registry, so the scan is full tier (v1.23).
       - name: trivy image (integration image)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: |
@@ -519,6 +647,7 @@ jobs:
   # compose stack on the runner host started by `make integration-test`. The
   # stack is named per run under the repo's prefix, the job reaps stale stacks
   # first (v1.18) and keeps its own teardown last under `if: always()`.
+  # v1.23: full tier only (CI_FULL_TIER's expression); never on a plain PR.
   #
   # CUSTOMIZE (go-qrdb): the template's one `integration` job is two jobs
   # here, both on the full tier (#674) and both needing the whole PR tier --
@@ -559,7 +688,7 @@ jobs:
   integration-features:
     name: Integration (${{ matrix.feature }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [image, test-typescript, arch-gates]
     timeout-minutes: 45
     env:
@@ -613,7 +742,7 @@ jobs:
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [image, test-typescript, arch-gates]
     timeout-minutes: 90
     steps:
@@ -677,11 +806,85 @@ jobs:
       - name: TypeScript SDK and desktop frontend
         run: make test-typescript
 
+  # Soak (v1.23, owner item 101): the integration suite looped in the
+  # integration image until SOAK_MINUTES have passed, each iteration its own
+  # compose stack, torn down before the next; the first red iteration fails
+  # the job. v1.24 (owner ruling 2026-10-19, Company Agent m751 (e)): nightly
+  # and workflow_dispatch only, off main pushes and off ci:full; the Gate marks
+  # it `nightly`. It replaces nothing in batch.yml, whose soak stays a dispatch.
+  #
+  # CUSTOMIZE (go-qrdb, Company Agent m433): this workflow has no schedule
+  # trigger (see `on:`), so the soak runs on workflow_dispatch alone. The
+  # iteration is one feature's suite, SOAK_FEATURE, not the whole suite: the
+  # whole suite is forty legs of up to 45 minutes run in parallel, and one
+  # iteration of it would not fit the job's limit. clustering runs real
+  # 3-node Raft clusters, the suite most sensitive to load. The image hold is
+  # IT_HOLD (#813), not the template's lease: `make integration-test` builds
+  # or resolves qrdb-ci-it:<hash>, holds it and downs its own stack each
+  # iteration, and `make docker-down-it` releases the hold at the teardown;
+  # the module credentials reach the build through the Makefile's
+  # $(stage-gomodauth), so there is no credential file.
+  soak:
+    name: Soak [integration image]
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90       # CUSTOMIZE: SOAK_MINUTES plus one iteration
+    env:
+      SOAK_MINUTES: 30        # CUSTOMIZE
+      SOAK_FEATURE: clustering   # CUSTOMIZE (go-qrdb): the suite each iteration runs
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-soak
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-soak
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1: mask the forge credentials before any other step (as above).
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Soak (integration suite, looped)
+        run: |
+          deadline=$(( $(date +%s) + SOAK_MINUTES * 60 ))
+          i=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            i=$((i + 1))
+            p="$IT_PROJECT-$i"
+            echo "$p" > "$RUNNER_TEMP/soak-project"
+            echo "soak iteration $i"
+            rc=0
+            make integration-test IT_FEATURE="$SOAK_FEATURE" IT_PROJECT="$p" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::soak iteration $i failed (exit $rc)"
+              exit "$rc"
+            fi
+          done
+          echo "soak: $i iterations in $SOAK_MINUTES min, all green"
+
+      # integration-test downs each iteration's stack; this covers a cancelled
+      # iteration and releases the hold, keeping the image.
+      - name: Tear down
+        if: always()
+        run: |
+          p="$IT_PROJECT"
+          if [ -s "$RUNNER_TEMP/soak-project" ]; then read -r p < "$RUNNER_TEMP/soak-project"; fi
+          make docker-down-it IT_PROJECT="$p"
+          rm -f "$RUNNER_TEMP/soak-project"
+
   # CUSTOMIZE: further stages run in the image job as steps of the same
   # shape (one `make` target in the toolchain image, `if: !cancelled()`). A
   # suite that needs its own runner or stack (tagged suites, cross-arch,
   # contrib modules) is a job of the integration job's shape and joins CI
-  # Gate's needs list and check lines.
+  # Gate's needs list and check lines. v1.23: such a suite is full tier (the
+  # integration job's `if:`, `full` in CI Gate) unless it is lint, build,
+  # unit or race, which stay on the PR tier.
 
   # Architecture gate (v1.20, Company Agent m270 item 9; go-xkms arch-gates).
   # go-objstore owns every blob backend (docs/00), and a repo reaches it only
@@ -691,6 +894,7 @@ jobs:
   # empty means none may. CUSTOMIZE: the repo's own layering rules (go-xkms:
   # xkmsctl and xkey depend only on sdk/go) are further steps in this job.
   # A source check with grep, not a stage: it runs on the runner's shell.
+  # v1.23: a lint-class check, so it stays on the PR tier.
   arch-gates:
     name: Architecture Gates
     runs-on: ubuntu-latest
@@ -755,34 +959,44 @@ jobs:
     # needs AND has a check line reading its result from an env var
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [image, test-typescript, arch-gates, integration-standalone, integration-features]
+    needs: [changes, image, test-typescript, arch-gates, integration-standalone, integration-features, soak]
     steps:
       - name: Fail closed on any non-success
         env:
+          RESULT_CHANGES: ${{ needs.changes.result }}
           RESULT_IMAGE: ${{ needs.image.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
-          # The full tier (go-quicraft's form): push, workflow_dispatch and a PR
-          # labelled ci:full. A job marked `full` may be skipped below it; a
-          # `pr` job may never be skipped.
-          FULL_TIER: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          RESULT_SOAK: ${{ needs.soak.result }}
+          # The full tier is CI_FULL_TIER (v1.23): every event but a PR, and a
+          # PR labelled ci:full. A job marked `full` may be skipped below only
+          # when it is not selected; a `pr` job may never be skipped.
+          FULL_TIER: ${{ env.CI_FULL_TIER }}
+          # v1.24: a `nightly` job runs on schedule and workflow_dispatch only.
+          NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: |
           BAD=0
-          echo "full tier selected: ${FULL_TIER}"
-          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER cannot say which skips
-          # to excuse, so it fails closed.
+          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}"
+          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER or NIGHTLY cannot say
+          # which skips to excuse, so it fails closed.
           case "${FULL_TIER}" in
             true|false) ;;
             *) echo "FAIL: FULL_TIER is unreadable ('${FULL_TIER}')"; BAD=1;;
           esac
-          check() { # <job> <result> <pr|full>
+          case "${NIGHTLY}" in
+            true|false) ;;
+            *) echo "FAIL: NIGHTLY is unreadable ('${NIGHTLY}')"; BAD=1;;
+          esac
+          check() { # <job> <result> <pr|full|nightly>
             case "$2" in
               success) echo "OK   $1";;
               skipped)
                 if [ "$3" = full ] && [ "${FULL_TIER}" != true ]; then
                   echo "SKIP $1 (full tier not selected)"
+                elif [ "$3" = nightly ] && [ "${NIGHTLY}" != true ]; then
+                  echo "SKIP $1 (nightly and dispatch only)"
                 else
                   echo "FAIL $1 (skipped)"; BAD=1
                 fi;;
@@ -790,11 +1004,14 @@ jobs:
             esac
           }
           # CUSTOMIZE: one line per job in needs above. A job gated to the
-          # full tier by its `if:` is marked full; every other job is pr.
+          # full tier by its `if:` is marked full, one gated to schedule and
+          # workflow_dispatch is nightly; every other job is pr.
+          check changes "$RESULT_CHANGES" pr
           check image "$RESULT_IMAGE" pr
           check test-typescript "$RESULT_TEST_TYPESCRIPT" pr
           check arch-gates "$RESULT_ARCH_GATES" pr
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
           # A matrix job's result is success only when every leg succeeded.
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
+          check soak "$RESULT_SOAK" nightly
           exit $BAD

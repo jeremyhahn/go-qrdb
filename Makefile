@@ -2294,7 +2294,8 @@ vet-sdk:
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
 	test-cluster-cpus check-action-pins check-integration-feature-coverage \
-	check-no-deprecated-credential-retrieve check-lean-standalone \
+	check-no-deprecated-credential-retrieve check-no-alias-language \
+	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
 	check-publication-bound test-publication-bound test-public-releasable \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
@@ -2481,6 +2482,14 @@ check-integration-feature-coverage:
 .PHONY: check-no-deprecated-credential-retrieve
 check-no-deprecated-credential-retrieve:
 	$(GOTEST) -run '^(TestNoInRepoCallerOfDeprecatedCredentialRetrieve|TestRetrieveSelectors_)' ./test/buildgates/...
+
+# The one gate in the unit suite that reads docs/*.md (the no-compatibility-
+# surface ruling: no legacy or deprecated alias language). It is here as well
+# because a docs-only pull request runs lint and skips the unit suite
+# (ci-template v1.24's `changes` job, ci.yml). Scoped with -run to that gate.
+.PHONY: check-no-alias-language
+check-no-alias-language:
+	$(GOTEST) -run '^TestNoLegacyOrDeprecatedAliasLanguage$$' ./test/buildgates/...
 
 # A lean standalone embedder -- sdk/go/node on the file backend, the embedded
 # transport and an entity DAO (sdk/go/examples/leanstandalone) -- must not

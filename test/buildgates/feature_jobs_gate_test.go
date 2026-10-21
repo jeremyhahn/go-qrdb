@@ -404,9 +404,11 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 }
 
 // holdDocker is a stub docker that keeps its images and containers as files
-// under $STUB_DIR (an image file holds its .Created; a container file its
-// image, then its .Created) and, as dockerd does, refuses `image rm` of an
-// image any container uses, in any state. buildx builds $STUB_IMAGE. A
+// under $STUB_DIR (an image file holds its .Created and its
+// .Metadata.LastTagTime.Unix, the reaper's inspect format; a container file
+// its image, then its .Created) and, as dockerd does, refuses `image rm` of an
+// image any container uses, in any state. buildx builds and tags
+// $STUB_IMAGE, so a build sets both times to now. A
 // $STUB_DIR/vanish file makes the next `create` find the image gone, as a
 // reaper running between docker-build-it's check and its hold would.
 const holdDocker = `#!/bin/sh
@@ -414,7 +416,7 @@ img=$STUB_DIR/images ctr=$STUB_DIR/containers
 mkdir -p "$img" "$ctr"
 case "$1 $2" in
 "buildx version") exit 0 ;;
-"buildx build") : > "$STUB_DIR/built"; date -u +%Y-%m-%dT%H:%M:%SZ > "$img/$STUB_IMAGE"; exit 0 ;;
+"buildx build") : > "$STUB_DIR/built"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" > "$img/$STUB_IMAGE"; exit 0 ;;
 "image inspect")
 	eval ref=\${$#}
 	[ -f "$img/$ref" ] || exit 1
@@ -455,9 +457,13 @@ echo "stub docker: unexpected $*" >&2
 exit 99
 `
 
+// neverTagged is .Metadata.LastTagTime.Unix of an image never tagged since it
+// was created: Go's zero time.
+const neverTagged = "-62135596800"
+
 // holdStub writes holdDocker to a new directory holding image, created at
-// created, and returns the directory.
-func holdStub(t *testing.T, image, created string) string {
+// created and last tagged at tagged (Unix seconds), and returns the directory.
+func holdStub(t *testing.T, image, created, tagged string) string {
 	t.Helper()
 	stub := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(holdDocker), 0o700); err != nil { // #nosec G306 -- the stub must be executable
@@ -466,7 +472,7 @@ func holdStub(t *testing.T, image, created string) string {
 	if err := os.MkdirAll(filepath.Join(stub, "images"), 0o700); err != nil {
 		t.Fatalf("mkdir stub images: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(stub, "images", image), []byte(created+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(stub, "images", image), []byte(created+" "+tagged+"\n"), 0o600); err != nil {
 		t.Fatalf("seed stub image: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(stub, "module.env"), []byte("GIT_CONFIG_KEY_0=stub\n"), 0o600); err != nil {
@@ -480,10 +486,17 @@ func holdStub(t *testing.T, image, created string) string {
 // returns the combined output.
 func runHoldStub(t *testing.T, root, stub, image, name string, args ...string) string {
 	t.Helper()
+	return runHoldStubAged(t, root, stub, image, "0", name, args...)
+}
+
+// runHoldStubAged is runHoldStub with the reaper's image age at minAge
+// seconds (REAP_IMAGE_MIN_AGE).
+func runHoldStubAged(t *testing.T, root, stub, image, minAge, name string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command(name, args...) // #nosec G204 -- this file's own make targets and script
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"STUB_DIR="+stub, "STUB_IMAGE="+image, "REAP_IMAGE_MIN_AGE=0")
+		"STUB_DIR="+stub, "STUB_IMAGE="+image, "REAP_IMAGE_MIN_AGE="+minAge)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -510,7 +523,7 @@ func TestIntegrationFeatureCoverage_HeldImageSurvivesTheReaper(t *testing.T) {
 		{name: "the image reaped between the check and the hold", vanish: true, wantBuild: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := holdStub(t, image, "2000-01-01T00:00:00Z")
+			stub := holdStub(t, image, "2000-01-01T00:00:00Z", neverTagged)
 			if tc.vanish {
 				if err := os.WriteFile(filepath.Join(stub, "vanish"), nil, 0o600); err != nil {
 					t.Fatalf("write vanish: %v", err)
@@ -554,7 +567,7 @@ func TestIntegrationFeatureCoverage_DeadJobsHoldIsReaped(t *testing.T) {
 		{name: "live job", created: time.Now().UTC().Format(time.RFC3339), wantKept: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := holdStub(t, image, "2000-01-01T00:00:00Z")
+			stub := holdStub(t, image, "2000-01-01T00:00:00Z", neverTagged)
 			if err := os.MkdirAll(filepath.Join(stub, "containers"), 0o700); err != nil {
 				t.Fatalf("mkdir stub containers: %v", err)
 			}
@@ -571,6 +584,34 @@ func TestIntegrationFeatureCoverage_DeadJobsHoldIsReaped(t *testing.T) {
 	}
 }
 
+// TestIntegrationFeatureCoverage_RetaggedImageAgesFromItsTag is ci-template
+// v1.23.1 (reaper v3; go-quicraft main runs 57389 and 57484): a rebuild from a
+// full cache keeps an image's old .Created but tags it again, so the reaper
+// ages an unheld image from the later of the two. An image re-tagged within
+// REAP_IMAGE_MIN_AGE stays; one neither created nor tagged within it goes,
+// and so does one never tagged since an old build.
+func TestIntegrationFeatureCoverage_RetaggedImageAgesFromItsTag(t *testing.T) {
+	root := repoRoot(t)
+	const image = "qrdb-ci-it:test"
+	for _, tc := range []struct {
+		name     string
+		tagged   string
+		wantKept bool
+	}{
+		{name: "re-tagged a minute ago", tagged: strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10), wantKept: true},
+		{name: "re-tagged long ago", tagged: strconv.FormatInt(time.Now().Add(-3*time.Hour).Unix(), 10), wantKept: false},
+		{name: "never tagged since an old build", tagged: neverTagged, wantKept: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := holdStub(t, image, "2000-01-01T00:00:00Z", tc.tagged)
+			reaped := runHoldStubAged(t, root, stub, image, "7200", "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+			if _, err := os.Stat(filepath.Join(stub, "images", image)); (err == nil) != tc.wantKept {
+				t.Fatalf("%s kept: %v; want %v:\n%s", image, err == nil, tc.wantKept, reaped)
+			}
+		})
+	}
+}
+
 const featureJobFixture = `on:
   push:
     branches: [main]
@@ -579,7 +620,7 @@ const featureJobFixture = `on:
 jobs:
   integration-features:
     name: Integration (${{ matrix.feature }})
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
     timeout-minutes: 45
     env:
@@ -632,7 +673,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "no limit", old: "    timeout-minutes: 45\n", new: ""},
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},
 		{name: "fail-fast true", old: "fail-fast: false", new: "fail-fast: true"},
-		{name: "left the full tier", old: "    if: github.event_name == 'push' || ", new: "    if: "},
+		{name: "left the full tier", old: "    if: github.event_name != 'pull_request' || ", new: "    if: "},
 		{name: "a fixed target", old: "IT_FEATURE=${{ matrix.feature }}", new: "IT_FEATURE=cluster"},
 		{name: "the whole suite", old: " IT_FEATURE=${{ matrix.feature }}", new: ""},
 		{name: "on the host", old: "run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"", new: "run: make integration-test-${{ matrix.feature }}"},

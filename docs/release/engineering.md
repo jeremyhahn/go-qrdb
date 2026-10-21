@@ -90,8 +90,9 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
 | `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a `gate` job missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate`, a hardcoded `github.com` instead of `github.api_url`, a reintroduced `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
-| `test/buildgates/ci_tiers_test.go` | ci.yml's two tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr` or `full`; a `full` job carries exactly the full-tier `if:` and FULL_TIER is the same expression; a PR-tier job carries no `if:` and needs no full-tier job; every `integration*` job (and a `trivy` job, should one return) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run, #853). Both tiers' jobs are pinned by name (`prTierJobs`: `image`, `test-typescript`, `arch-gates`; `fullTierJobs`: `integration-standalone`, `integration-features`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, and `cancelled`, `failure`, an unreadable result or an unreadable FULL_TIER fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml` has a group which on `main` carries the event only, with a literal `cancel-in-progress: true` (a newer push to `main` cancels the `main` run of the same event in flight; an expression, a `main` group that also carries the sha, or v1.22.1's group reddens it, Company Agent m701); every other workflow on pull_request has the ref-keyed group with v1.22.1's `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` or v1.23's block reddens it), and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
-| `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: in every job that holds one (`image`, `integration-standalone`, `integration-features`) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_tiers_test.go` | ci.yml's tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr`, `full` or `nightly`; a `full` job carries exactly the full-tier `if:`, ci.yml's `CI_FULL_TIER` is the same expression and `ci-gate`'s FULL_TIER is `${{ env.CI_FULL_TIER }}`; a `nightly` job carries exactly the schedule-or-dispatch `if:` and NIGHTLY is the same expression; a PR-tier job carries no `if:` and needs no full-tier or nightly job; every `integration*` job (and a `trivy` job, should one return) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run, #853). Every tier's jobs are pinned by name (`prTierJobs`: `changes`, `image`, `test-typescript`, `arch-gates`; `fullTierJobs`: `integration-standalone`, `integration-features`; `nightlyTierJobs`: `soak`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run or a `nightly` job outside a dispatch, and `cancelled`, `failure`, an unreadable result, an unreadable FULL_TIER or an unreadable NIGHTLY fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml` has ci-template v1.25's group, which on `main` carries the event only, with a literal `cancel-in-progress: true` (a newer push to `main` cancels the `main` run of the same event in flight; an expression, a `main` group that also carries the sha, or v1.22.1's group reddens it, Company Agent m701); every other workflow on pull_request has the ref-keyed group with v1.22.1's `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` or v1.23's block reddens it), and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/no_deprecated_test.go` (`TestNoLegacyOrDeprecatedAliasLanguage` alone is `make check-no-alias-language`, in `make lint-gates`) | no Go source, proto, CLI command or `docs/*.md` file carries a deprecated declaration, a redirect stub or legacy-alias language (the no-compatibility-surface ruling). The `docs/` scan is in `make lint-gates` as well as `make test` because a docs-only pull request runs lint and skips the unit suite |
+| `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: in every job that holds one (`image`, `integration-standalone`, `integration-features`, `soak`; `changes` holds one but prints only file names) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
 
 ## Test tooling this feature folder also owns
 
@@ -144,7 +145,7 @@ command line and no log line holds them: the recipe is silent, printing only
 which source it used.
 
 **Every job that holds a forge credential masks it first.** The `image`,
-`integration-features` and `integration-standalone` jobs open with "Mask the
+`integration-features`, `integration-standalone` and `soak` jobs open with "Mask the
 forge credentials", which registers each credential value with the runner's
 log masker before any other step can print it (ci-template v1.21.1). No step
 prints the environment. `test/buildgates/ci_logs_test.go` fails when the mask
@@ -159,7 +160,16 @@ repeats the value a scanner exists to keep out of the tree.
 
 The `image` job, in the PR tier, builds both stages (`make docker-build`;
 `make -s toolchain-image` prints the toolchain tag), then runs each stage in a
-toolchain container through `scripts/in-toolchain-image.sh`. A runner reaches
+toolchain container through `scripts/in-toolchain-image.sh`. That container
+holds the job's CPU bound (ci-template v1.22.2): the job container's cgroup
+`cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
+becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
+number. It needs the `changes` job (ci-template v1.24): on a docs-only pull
+request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
+or under `docs/`), it runs lint and the lint gates and skips the build-tag
+assertion, the builds, `make coverage` and the other unit suites; the job
+still succeeds. `changes` is never docs-only off a pull request or under
+`ci:full`. A runner reaches
 its Docker daemon through a socket, so the script copies the checkout into the
 container rather than bind-mounting it. Its files sit where a host's do:
 `/tmp`, which holds `HOME`, go's `$WORK` and every `t.TempDir`, is on the
@@ -169,7 +179,8 @@ network: the container joins the network namespace of a holder container that
 has only loopback, which the holder (granted `NET_ADMIN` and nothing else)
 marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
 discovery tests join their group as they do on a host and nothing leaves the
-namespace. `make security` and `make deps-check` run on the bridge network, because
+namespace. `make security` and `make deps-check`, full tier only (ci-template
+v1.23), run on the bridge network, because
 govulncheck reads the vulnerability database and deps-check asks the module
 proxy.
 
@@ -189,7 +200,8 @@ to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job.
 volumes, never these. `CI_CACHE=off` mounts none; a bridge stage then takes a
 writable copy of the image's module cache instead.
 
-Last, `make trivy-image TRIVY_IMAGE_INPUT=it-image.tar` scans the
+Last, in the full tier only (a pull request builds no image for a registry,
+ci-template v1.23), `make trivy-image TRIVY_IMAGE_INPUT=it-image.tar` scans the
 integration image, saved to `it-image.tar`, and fails on a fixable HIGH or
 CRITICAL finding; the job removes the tarball and releases its hold on the
 image (`make docker-release-it`) under `always()`, and keeps the image, which
@@ -291,8 +303,10 @@ registers every `GIT_CONFIG_*` value, and the token inside any URL among them,
 with `::add-mask::` before any step can print one. It then runs
 `scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
 projects older than the longest job can live (about three hours), and
-`qrdb-ci-it` images no job holds that were created more than two hours ago
-(`REAP_IMAGE_MIN_AGE`, 7200 s). It ends with a teardown step under
+`qrdb-ci-it` images no job holds that were created or last tagged more than
+two hours ago (`REAP_IMAGE_MIN_AGE`, 7200 s; the tag time since ci-template
+v1.23.1, because a rebuild from a full cache keeps the old `.Created` but
+re-tags the image). It ends with a teardown step under
 `if: always()`, `make docker-down-it`, which removes that leg's project and
 its hold, and never the image, on a pass, a failure or a cancellation.
 Removing names nobody created is not an error. No workflow runs `docker
@@ -306,7 +320,7 @@ unchanged tree builds nothing, so the image a job has just resolved keeps its
 first build's `.Created` and can be any age. Run 57540's image job lost
 `qrdb-ci-it:<hash>` to another job's reaper between its build and the trivy
 step's `docker save`. What protects it is a hold: every job that uses the
-image (the image job and each leg) names one in its `IT_HOLD` environment,
+image (the image job, each leg and the soak) names one in its `IT_HOLD` environment,
 `qrdb-ci-hold-<run>-<attempt>-<job or feature>`, and `make docker-build-it`
 creates a container of that name from the image, never started, before it
 returns; `make docker-release-it` (the image job's teardown, and

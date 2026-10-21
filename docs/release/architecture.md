@@ -180,17 +180,28 @@ which publishes, has no such group.
 ## CI tiers
 
 "CI green" above means `ci-gate` on the commit's **push to `main`**, which
-always runs the full tier. CI runs in two tiers:
+always runs the full tier. CI runs in two tiers (ci-template v1.24), and a
+third, nightly, for the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `image`, `test-typescript`, `arch-gates`, `ci-gate` |
-| Full | push to `main`, `workflow_dispatch`, a pull request labelled `ci:full` | the PR tier, plus `integration-standalone` and `integration-features` (one leg per feature) |
+| PR | every run | `changes`, `image` (lint, build and the unit suites), `test-typescript`, `arch-gates`, `ci-gate` |
+| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR tier, plus security, deps-check and the trivy image scan in `image`, and `integration-standalone` and `integration-features` (one leg per feature) |
+| Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
-`ci-gate` is the one required check in both. It fails on any result other
-than `success`, with one exception: a job tagged `full` that was skipped
-because the run did not select the full tier. In a full-tier run a skipped
-job fails it as before. The pull-request trigger has no `labeled` type
+ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
+environment variable, which the steps it gates and `ci-gate` read; a job-level
+`if:` cannot read the environment, so each full-tier job repeats the
+expression. The nightly tier's condition is a scheduled run or a
+`workflow_dispatch`, and ci.yml has no `schedule:` (Company Agent m433), so it
+is a dispatch alone: `soak` loops the `clustering` integration suite, a fresh
+stack each iteration, for 30 minutes and fails on the first red iteration.
+
+`ci-gate` is the one required check in every tier. It fails on any result
+other than `success`, with two exceptions: a job tagged `full` that was
+skipped because the run did not select the full tier, and a job tagged
+`nightly` that was skipped because the run was not a dispatch. In a run that
+selected the tier a skipped job fails it as before. The pull-request trigger has no `labeled` type
 (Gitea maps every label change to it, so each one started a run that
 cancelled the PR's run in progress), so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
@@ -198,7 +209,7 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 
 The full-tier jobs wait on the PR tier: `integration-standalone` and
 `integration-features` each need `image`, which runs lint, the build, every
-unit suite and the security stages, and `test-typescript` and `arch-gates`
+unit suite and, in the full tier, the security stages, and `test-typescript` and `arch-gates`
 beside it, so neither starts until the whole PR tier has passed, and
 a pull request that fails lint or a unit suite never holds the shared runners
 for the long legs. A full-tier run on a tree whose PR tier is red therefore
@@ -214,17 +225,28 @@ never on a pull request, whose pipeline is held to one hour. `release.yml`
 runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 
+A pull request whose every changed file is markdown or under `docs/`
+(`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and `image`
+then runs lint and the lint gates and skips the build-tag assertion, the
+builds, `make coverage` and the other unit suites. The job still succeeds, so
+`ci-gate` needs no exception for it. The gates that read `docs/` --
+`check-publication-bound`, `check-integration-feature-coverage` and
+`check-no-alias-language` -- are in `make lint-gates`, so a docs-only pull
+request runs every one of them. `changes` decides nothing off a pull request
+or under `ci:full`: those runs are never docs-only.
+
 The `ci:full` label goes on a pull request once, when it is green on the PR
 tier and ready to merge, never earlier and never twice; a `workflow_dispatch`
 of the full tier on the PR branch is the accepted alternative.
 
-`ci.yml` takes ci-template v1.23's concurrency block (Company Agent m701): a
-literal `cancel-in-progress: true` and a `main`-specific group. A pull
+`ci.yml` takes ci-template v1.25's concurrency block (Company Agent m701,
+m857): a literal `cancel-in-progress: true` and a `main`-specific group. A pull
 request's ref is one group, so a newer push to it cancels that ref's older
 run. On `main` the group carries the event only, so a newer push to `main`
 cancels the `main` run of the same event in flight, started jobs included,
 and the newer commit's run validates the tree that contains the cancelled one.
-This reverses v1.22.1's rule, which gave each `main` commit its own group.
+This reverses v1.22.1's and v1.23's rule, which gave each `main` commit its
+own group.
 No expression reaches `cancel-in-progress`; Gitea 1.27.1 never released two
 `main` runs while it was one. The other workflows on pull requests keep
 v1.22.1's one group per ref (handbook `devops.md` §9), whose
@@ -233,14 +255,16 @@ v1.22.1's one group per ref (handbook `devops.md` §9), whose
 
 No workflow runs on a schedule. `nightly.yml` (FIPS 140-3, trivy's full
 report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
-with `ci.yml`.
+with `ci.yml`, whose dispatch also runs the soak.
 
 `image` runs every stage of the handbook CI standard (`ci-standard.md`) in the
 one image built from `build/docker/devcontainer/Dockerfile` at the commit under
-test (ci-template v1.22.1): lint and the lint gates, the server and headless
+test (ci-template v1.24): lint and the lint gates, the server and headless
 CLI build and the linux/arm64 release cross-build, `make coverage` with the
-other unit suites and `test-sdk`, security and deps-check in its `toolchain`
-stage, then `trivy image` over its `integration` stage, all in one job.
+other unit suites and `test-sdk`, and, in the full tier, security and
+deps-check in its `toolchain` stage, then `trivy image` over its
+`integration` stage, all in one job. Each stage container is bounded to the
+job's CPU quota (`scripts/in-toolchain-image.sh`, v1.22.2).
 `test-typescript` (the TypeScript SDK and the desktop frontend) and
 `arch-gates` (the import-boundary, public-releasable and compose-target
 gates) run on the runner beside it.
