@@ -148,6 +148,13 @@ are not reconstructed here — their history is in the git log.
     replaces go-qrdb with the build context, and moving both to the newest
     tag waits on a build of the module against that tag's published source.
 
+### Security
+
+- **Go 1.27.2 → 1.27.3**, the release that fixes the `crypto/x509`
+  vulnerability `govulncheck` reported as GO-2026-6809. The `go` directive of
+  every module, the CI image's `GO_IMAGE` pin in `scripts/tool-pins.sh` and
+  the Dockerfiles move to it. No dependency version changes.
+
 ## [0.50.0-alpha] - 2026-10-16
 
 ### Added

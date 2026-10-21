@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Go 1.27.2 (the latest release) is required: go-enclave declares `go 1.27.x`
+# Go 1.27.3 (the latest release) is required: go-enclave declares `go 1.27.x`
 # and go-quicraft consumes it, and the official golang images pin
 # GOTOOLCHAIN=local so an older base cannot satisfy that requirement (and
 # cannot auto-upgrade). This must stay >= the highest `go` directive across
 # the workspace modules.
-FROM golang:1.27.2-bookworm AS toolchain
+FROM golang:1.27.3-bookworm AS toolchain
 
 # Fleet dev-cache passthrough (handbook software/conventions/devops.md §2a).
 # Unset, empty or unreachable means no proxy -- identical to the behaviour

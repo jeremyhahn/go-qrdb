@@ -24,7 +24,7 @@
 // module unbuildable (the Makefile exports GOWORK=off).
 module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/go-sql-driver/mysql v1.10.1

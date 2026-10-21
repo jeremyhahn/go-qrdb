@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/test/performance/cmd/kvcompare
 
-go 1.27.2
+go 1.27.3
 
 // go-quicraft/test/performance: the newest tag, in lockstep with the root
 // module's go-quicraft (#659).
