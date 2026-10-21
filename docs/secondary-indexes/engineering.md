@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -15,38 +15,36 @@ func (c *Client) KVStore() KVStore   // routes index ops to IndexClient
 // PutIfAbsent (take), CompareAndSwap (edit) and CompareAndDelete (release).
 // Discovered by RUNTIME type assertion, so an implementation missing any one
 // of them fails at run time rather than at build time — widening this
-// interface means implementing it everywhere in the same change (#56).
+// interface means implementing it everywhere in the same change.
 type AtomicKVStore = kvstore.AtomicKVStore
 var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
 var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 
-// The store Client.KVStore() returns now satisfies AtomicKVStore for real:
-// it forwards PutIfAbsent/CompareAndSwap/CompareAndDelete to the
-// transport's GuardedKVClient capability, which every production
-// transport (REST, gRPC, QUIC, Unix, MCP, embedded) already carries.
-// Before this the adapter implemented only the base KVStore, so
-// DAO.SaveIfAbsent always refused with AtomicWriteUnsupportedError
-// regardless of transport.
+// The store Client.KVStore() returns satisfies AtomicKVStore: it forwards
+// PutIfAbsent/CompareAndSwap/CompareAndDelete to the transport's
+// GuardedKVClient capability, which every production transport (REST, gRPC,
+// QUIC, Unix, MCP, embedded) carries.
 //
 // CompareAndSwapWithCurrent composes CompareAndSwap with a follow-up Get on
 // a failed compare, so a contended counter (a PIN-lockout attempt count)
 // learns the value it should have compared against without a second,
 // separately-written round trip. The read is NOT part of the same atomic
 // step -- see the function's own doc for the window that leaves open.
-func CompareAndSwapWithCurrent(ctx context.Context, store AtomicKVStore, key string, expected, next []byte) (swapped bool, current []byte, err error)
+var CompareAndSwapWithCurrent = kvstore.CompareAndSwapWithCurrent
+// func(ctx context.Context, store AtomicKVStore, key string, expected, next []byte) (swapped bool, current []byte, err error)
 
 // FencedCreator is kvstore.FencedCreator's alias, for an embedder holding a
 // kvstore.KVStore it did not get from Client.KVStore() (a custom
 // seal.StorageBackend composition, for one) and needs to assert for the
 // same capability AtomicKVStore above is exported for. It has no
-// wire-level implementation on any sdk/go/transport client today, so the
+// wire-level implementation on any sdk/go/transport client, so the
 // type alias does not make the capability newly reachable through
 // Client.KVStore() -- only through a store the caller built or received
 // some other way.
 //
 // kvstore.MultiGuardedBatchKVStore (the real atomic multi-key write
 // primitive pkg/dao.UnitOfWork REQUIRES, with no fallback) is different:
-// the store Client.KVStore() returns now satisfies it too, by composing
+// the store Client.KVStore() returns satisfies it too, by composing
 // the transport's TransactionClient -- see
 // ../transactions/engineering.md#kvstoremultiguardedbatchkvstore-over-clientkvstore.
 type FencedCreator = kvstore.FencedCreator
@@ -106,8 +104,8 @@ type DAODatabaseStoreUnresolvedError
 // guarded batch proposal (unconditional -- no guards -- but still atomic).
 // A store that does not offer the capability is refused with
 // *DAOAtomicBatchUnsupportedError -- there is no sequential
-// apply-and-compensate fallback; that path was removed because it was NOT
-// atomic against a concurrent reader. This closes the move/rename case: a
+// apply-and-compensate fallback, because one is NOT atomic against a
+// concurrent reader. A move or rename is therefore safe: a
 // delete and a put in the same UnitOfWork commit together or not at all,
 // never partially. NewDAOUnitOfWork, RegisterDAOSave and RegisterDAODelete
 // are the generic functions a DAOUnitOfWork needs to be constructed and
@@ -117,23 +115,21 @@ type DAODatabaseStoreUnresolvedError
 // FieldHashGenerator and DynamicFieldHashGenerator hash a natural key with
 // FNV-1a, which has no resistance to a deliberately engineered collision.
 // CryptoFieldHashGenerator and CryptoDynamicFieldHashGenerator hash with
-// SHA-256 instead, truncated to 64 bits (the standard construction -- not
-// XOR-folded, which an earlier version of this code did on the mistaken
-// belief that folding resists a chosen-collision attack truncation does
-// not; it does not). Both families land in the same 64-bit ID space and
+// SHA-256 instead, truncated to 64 bits (the standard construction;
+// XOR-folding resists no chosen-collision attack truncation does not).
+// Both families land in the same 64-bit ID space and
 // share its bounds: roughly 2^32 attempts to find any colliding PAIR when
 // the attacker controls both natural-key values (the birthday bound), and
 // roughly 2^64 to hit one FIXED victim ID (a generic preimage search).
 // SHA-256 does not change either bound; it closes FNV-1a's direct-
 // construction attack, which needs no search at all. The FNV-1a generators
-// are unchanged, since swapping their hash function in place would orphan
+// keep FNV-1a, since swapping their hash function in place would orphan
 // every entity already persisted under it.
 //
 // GenericDAO closes the write- and read-side gaps a collision leaves open,
 // for every generator that implements DeterministicIDGenerator (all four).
 // Save and DAOUnitOfWork's queued saves route a NEW entity's hash-derived
-// ID through the store's atomic conditional write and apply the
-// coordinator ruling on what an occupied ID means: a
+// ID through the store's atomic conditional write. An occupied ID means: a
 // record carrying the SAME natural-key value is the SAME logical entity --
 // an update, via CompareAndSwap against the record just read so it stays
 // atomic -- and only a record carrying a DIFFERENT natural-key value is a
@@ -340,8 +336,8 @@ significant** — the first field is the leading prefix field.
 - **Every index records its OWNER, and creation is idempotent only for it.**
   `index.IndexConfig.Owner` names the object whose lifecycle created the index
   — `index.CollectionOwner(database, collection, incarnation)` for a
-  collection's, the empty string for the explicit API and for every index
-  created before owners existed. It travels as a trailing extension of the
+  collection's, the empty string for the explicit API and for an index with
+  no recorded owner. It travels as a trailing extension of the
   index-create command, and every state machine that applies index commands
   keeps it beside the index. Re-creating a name under the SAME owner succeeds
   without reconciling the definition — the existing definition wins — with one
@@ -350,8 +346,8 @@ significant** — the first field is the leading prefix field.
   [architecture.md](architecture.md#numeric-order)), so a field declared
   numeric after it was indexed as text gets numeric terms. Creating
   a name another owner holds is **refused** (`index.OwnershipError`, reported
-  as an application error so the apply advances; 409 / `ALREADY_EXISTS` on the
-  wire) instead of silently adopting an index somebody else made. Any other
+  as an application error so the apply advances; 409 / `FAILED_PRECONDITION` on
+  the wire) instead of silently adopting an index somebody else made. Any other
   divergent same-owner re-create must still be refused, or the previous index
   dropped, *before* the proposal. This is why an index left behind by a teardown is a
   correctness problem and not a space leak: the survivor silently overrides
@@ -364,14 +360,14 @@ significant** — the first field is the leading prefix field.
   removes an index only when the recorded owner matches, decided on the apply
   path in the same step as the removal, and otherwise leaves it and returns
   `index.OwnershipError`. The explicit index API drops with the explicit owner
-  (`index.ExplicitOwner`), so it removes explicit and pre-ownership indexes and
+  (`index.ExplicitOwner`), so it removes an index with no recorded owner and
   refuses one a collection owns — 409 / `FAILED_PRECONDITION` — rather than
   remove a collection's `unique` constraint out from under it.
   `IndexServicer.DropIndex` removes an index whoever owns it; it is the drop
   whole-scope teardowns (`DROP DATABASE`, deleting a tenant) issue, since a
   scope owns everything in it, and no transport reaches it. The owner-checked drop is a trailing extension of the
-  index-drop command; a drop command without it is the unconditional drop every
-  existing log entry already is. An embedder-supplied
+  index-drop command; a drop command without it is unconditional. An
+  embedder-supplied
   `statemachine.IndexManager` receives the owner on `CreateIndex` (in its
   options) and the drop options on `DropIndex`, and must enforce both.
 - **An index created as part of another object's lifecycle is dropped by that
@@ -445,7 +441,7 @@ then matching entities stream through in-memory accumulators. **Memory is
 proportional to the number of groups, not the number of entities** — 10,000
 unread messages across 50 conversations allocates 50 accumulators.
 
-Aggregation limitations, all current:
+Aggregation limitations:
 
 - Values are `float64` except `Count`, which is `int64`. **Integer precision is
   lost above 2^53.**
@@ -565,7 +561,7 @@ copies and so proves the measurement can fail).
 | Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
 | `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |
 | `Save`/`UnitOfWork.Commit` for a NEW entity (`EntityID() == 0`) whose `DeterministicIDGenerator`-derived ID already names a DIFFERENT stored record (a confirmed collision) | `*dao.IDCollisionError` | **yes** — routed through the store's atomic conditional write, never an unconditional `Put` |
-| `Save`/`UnitOfWork.Commit` for a NEW entity whose derived ID already names a record with the SAME natural-key value (the same logical entity) | applied as an update (`CompareAndSwap` against the record just read), no error | n/a — not a collision; the coordinator ruling |
+| `Save`/`UnitOfWork.Commit` for a NEW entity whose derived ID already names a record with the SAME natural-key value (the same logical entity) | applied as an update (`CompareAndSwap` against the record just read), no error | n/a — not a collision |
 | `Save`'s same-key update path exhausts its bounded retry budget under sustained concurrent writers | `*dao.SaveContentionExhaustedError` | **yes** — never `*dao.IDCollisionError`, which is reserved for a confirmed different natural key |
 | `Save` of a NEW entity with a `DeterministicIDGenerator` configured, over a store with no atomic write | `*dao.AtomicWriteUnsupportedError` | **yes** — the same refusal `SaveIfAbsent` gives; `Save` does not silently fall back to an unconditional `Put` for this case |
 | `GetByNaturalKey` where the configured `IDGenerator` is not a `DeterministicIDGenerator` | `*dao.UnsupportedIDGeneratorError` | **yes** — there is no deterministic way to derive an ID from a bare value |
@@ -582,9 +578,9 @@ Every layer that refuses a guarded write for want of the capability — the
 kvstore implementations, `dao.AtomicWriteUnsupportedError`, the database
 backends, the service layer, the custodian service and the invitation store —
 returns it or matches it under `errors.Is`
-(`sdk.ErrInviteAtomicWriteUnsupported` is an alias of it). The package-local
-sentinels that used to exist beside it are gone: five spellings of one
-condition meant a caller testing one missed a refusal carrying another. The
+(`sdk.ErrInviteAtomicWriteUnsupported` is an alias of it). No package defines
+a sentinel of its own beside it: a second spelling of the condition would let
+a caller testing one miss a refusal carrying the other. The
 marker also matches `kvstore.ErrNotApplied`: a capability refusal happens
 before anything commits, so it proves nothing was written and a caller need
 not read back to reconcile.
@@ -595,7 +591,7 @@ into a silent performance cliff on a production dataset.
 ## Configuration
 
 Indexes are declared per entity (struct tags) or created through the API. There
-is **no per-index configuration through the config file today** — per-index
+is **no per-index configuration through the config file** — per-index
 settings are API-only. The index itself is storage-backed
 (`index.StoragePebbleIndex`) over whatever `storage.Storage` the database's
 engine was built on — memory, file, pebble or objstore — so `storage.backend`
@@ -620,16 +616,10 @@ selects the database's store but never a separate index implementation.
 - **Compatibility**: the key encoding is part of the on-disk format. Changing it
   requires an index rebuild, not a migration in place.
 - **`OpIndexCreate` carries the key scope as a trailing
-  `[prefixLen:2 LE][prefix]` block.** A command written before that block
-  existed ends at the flag byte and decodes as an empty declared prefix, so a
-  Raft log holding both shapes replays without a migration. An index recorded
-  in such a log still gets the namespace half of its scope, because that half
-  is read back off the name the log already carries.
-- **An index PERSISTED before key scoping keeps the out-of-scope entries it
-  already accumulated.** Maintenance no longer adds any, and a memory-backed
-  index is rebuilt scoped on the next replay, but entries already written into
-  a Pebble-backed index are only removed by dropping and recreating it — which
-  backfills inside the scope.
+  `[prefixLen:2 LE][prefix]` block.** A command that ends at the flag byte
+  decodes as an empty declared prefix. An index created by such a command
+  still gets the namespace half of its scope, because that half is read back
+  off the index name.
 
 ## Test strategy
 

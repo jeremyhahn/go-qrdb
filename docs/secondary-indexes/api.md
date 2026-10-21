@@ -1,6 +1,6 @@
 # Secondary Indexes — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -31,11 +31,12 @@ call returns `embedded.NilServiceError` naming `IndexServicer`.
 
 ## Schemas
 
-`IndexCreate` request: index `name`, `field_name`, and `IndexConfig`:
+`IndexCreate` request: index `name`, `field_name`, and the flags `unique`,
+`sparse`, `numeric` and `case_insensitive`, all at the top level:
 
 ```json
 { "name": "qrdb.User.Email", "field_name": "Email",
-  "config": { "unique": true, "sparse": false, "numeric": false } }
+  "unique": true, "sparse": false, "numeric": false, "case_insensitive": false }
 ```
 
 Index names are `{database}.{entityType}.{FieldName}`.
@@ -43,7 +44,7 @@ Index names are `{database}.{entityType}.{FieldName}`.
 `numeric: true` builds the index with order-preserving numeric terms: values
 compare as numbers, and a value that is not a decimal number, or is `NaN`, is
 not indexed. Every transport carries the flag (the REST and MCP `numeric`
-field, the gRPC / Unix `IndexConfig.numeric`, the QUIC and embedded
+field, the gRPC / Unix `IndexCreateRequest.numeric`, the QUIC and embedded
 `transport.IndexConfig.Numeric`). The order is specified in
 [architecture.md](architecture.md#numeric-order).
 
@@ -54,11 +55,14 @@ field, the gRPC / Unix `IndexConfig.numeric`, the QUIC and embedded
 ```
 
 `IndexScan` request: `index_name`, `start`, `end` (half-open `[start, end)`).
-Either bound may be omitted for an unbounded side. Response:
+Either bound may be omitted for an unbounded side. REST response, a map from
+index value to keys:
 
 ```json
-{ "entries": [ { "value": "shipped", "keys": ["orders/3", "orders/9"] } ] }
+{ "entries": { "shipped": ["orders/3", "orders/9"] } }
 ```
+
+gRPC / Unix returns `IndexScanResponse.entries`, a list of `IndexScanEntry { value, keys }`.
 
 On a numeric index each bound must be a decimal number (`2`, `-1.5`, `6.02e23`,
 `Inf`); `NaN` or any other text is a malformed request. A bound ending in one
@@ -67,6 +71,9 @@ how a caller asks for an exclusive lower or an inclusive upper bound. Each
 entry's `value` is the number's canonical decimal text (`1.50` → `1.5`).
 
 `IndexList` response: `{ "names": ["qrdb.User.Email", "qrdb.Order.Status"] }`.
+
+The MCP query, scan and list tools return the same JSON without the
+`keys`, `entries` or `names` wrapper.
 
 `IndexCreate` and `IndexDrop` return `google.protobuf.Empty` on gRPC and an
 empty body on REST.
