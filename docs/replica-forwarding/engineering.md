@@ -2,9 +2,6 @@
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
 > Scope: go-qrdb · Last verified: 2026-10-06
->
-> Rulings 6 (member records on every raft node), 7 (the leader cache) and 8
-> (the embedded caller) are in [architecture.md](architecture.md#rulings).
 
 ## Exported surface
 
@@ -88,16 +85,16 @@ const MetadataServedBy = "x-qrdb-served-by"       // gRPC: the target's own answ
 
 ### `pkg/auth/forward`
 
-The assertion's `Method`/`Path`/`BodySHA256` fields keep their names and
-serialization. A non-HTTP binding stores `"<protocol>:<method>"` in `Method`
-and an empty `Path`, so a REST assertion is byte-identical to one made before
-bindings were generalized.
+A binding is the assertion's `Method`, `Path` and `BodySHA256` fields. An
+HTTP binding stores the HTTP method, the request URI and the body digest; a
+non-HTTP binding stores `"<protocol>:<method>"` in `Method` and an empty
+`Path`, so every protocol shares one serialization.
 
 ```go
 type Binding struct{ Method, Path, BodySHA256 string }
 func HTTPBinding(method, requestURI string, body []byte) Binding
 func RPCBinding(protocol, method string, payload []byte) Binding
-func VerifyBinding(assertionB64, sigB64 string, peer *x509.Certificate, trustDomain string, now time.Time, b Binding) (*CallerAssertion, error)
+func VerifyBinding(assertionB64, sigB64 string, peerCert *x509.Certificate, pinnedTrustDomain string, now time.Time, b Binding) (*CallerAssertion, error)
 
 // SignCaller signs that caller made the bound request, as the node nodeID
 // holding key; a holder caller's assertion carries its profile. No caller or
@@ -196,9 +193,8 @@ cache is cleared rather than trusted. The placement table's feed is
 `lifecycle.Node.PlacementChanges`, a placement store over the system KV
 whose `Watch` reads the node's watch service. It is a feed only: every write
 goes through `Node.PlacementStore`, which keeps no feed, so the tenant shard
-reconciler converges on its poll exactly as before. (Giving the reconciler
-the feed made it react inside a rebalance MOVE's own steps, and the MOVE
-failed. Its watch path stays unused until that interplay is designed.)
+reconciler converges on its poll. The reconciler must not take the feed: it
+would react inside a rebalance MOVE's own steps and fail the MOVE.
 
 ## Invariants
 
@@ -247,7 +243,7 @@ failed. Its watch path stays unused until that interplay is designed.)
 
 | Error | When | Class |
 |---|---|---|
-| `*placement.NotAReplicaError` | no target served: none reachable, every one refused, forwarding off, no caller, or a stream | `Unavailable` (503), unchanged |
+| `*placement.NotAReplicaError` | no target served: none reachable, every one refused, forwarding off, no caller, or a stream | `Unavailable` (503) |
 | `*replicaforward.NoTargetServedError` | the Locator found no target that served | internal to the forwarding layer, which answers the refusal |
 | `*replicaforward.MemberLookupError` | the member records could not be read, including a read the forward timeout cut off -- the lookup runs under that timeout on every path, the leader hop included | as above; on the leader hop, the follower's own refusal (`*service.NotLeaderError` or `*service.AdminCredentialNotLeaderError`, `Unavailable`) |
 | `*replicaforward.SendError` | the forward failed after it may have reached a target | `Unavailable` (`DeadlineExceeded` when the caller's deadline passed) |
@@ -270,7 +266,7 @@ the contract.
 The leader cache is in memory, per node, and holds addresses only. Nothing
 about it is persisted or replicated. The feature reads the placement table
 and the member records (`__sys:cluster/members/{node}`), both replicated;
-every raft node publishes its member record under a lease (ruling 6).
+every raft node publishes its member record under a lease.
 
 ## Test strategy
 
@@ -282,7 +278,7 @@ every raft node publishes its member record under a lease (ruling 6).
   `Reconnect` making a failed attempt again until one reaches, stopping at
   the first that does, at the budget and at the context's end.
 - `pkg/auth/forward`: binding round trips per protocol, every binding field
-  tamper-checked, REST assertions byte-identical, `SignCaller`,
+  tamper-checked, an HTTP binding is the assertion REST signs, `SignCaller`,
   `NodeIdentity`.
 - `pkg/auth/middleware`: on-behalf verification for gRPC, QUIC and the HTTP
   path MCP uses.
@@ -334,7 +330,7 @@ set over every network transport -- REST, gRPC, QUIC, MCP and the Unix socket:**
 The network-transport suite runs on a BYO-TLS cluster: every node is given
 the operator's CA, certificate and key (`--tls-ca-file`, `--tls-cert-file`,
 `--tls-key-file`), so its cluster CA is the operator's peer CA and every
-forward it makes passes `IsClusterCA` (ruling 5). `pkg/auth/middleware`'s
+forward it makes passes `IsClusterCA`. `pkg/auth/middleware`'s
 `TestOnBehalf_OnlyTheClusterCAsNodeMayForward` proves the other half on REST,
 gRPC and QUIC: a node certificate the cluster CA issued forwards, and a leaf a
 tenant CA issued with a forged node SAN is refused before the request is

@@ -38,8 +38,8 @@ the payload. An assertion bound to one request verifies for no other.
 | Unary call on a `raft`-isolated database | yes |
 | Server-streaming or bidirectional call (gRPC and Unix `Watch`, REST `GET /watch`, QUIC `watch.Watch` and `watch.WatchPrefix`) | **no**: refused with `NotAReplicaError` and the replica set |
 | MCP `qrdb_watch` (a bounded request, not a stream) | yes |
-| Call on the shared system shard | no: unchanged (each transport's own existing write forwarding to the system leader still applies) |
-| A leader-only call on a follower -- a membership change (`admin member add`, `add-observer`, `promote`, `remove`), a system-shard write, or ceremony-initialize's admin-credential step -- on every transport: REST, gRPC, Unix, QUIC, MCP, embedded | yes, single hop, to the leader the refusal names, not through this feature's per-database path: REST's `tryForwardWrite`, gRPC's `forwardAdminWrite`, QUIC's `ForwardToLeader`, MCP's `forwardToLeader` each recognize `*service.NotLeaderError` and `*service.AdminCredentialNotLeaderError` (node parity). A membership change first waits, up to 10s, until the node knows a leader, so an election in progress ends in a refusal naming the leader rather than one naming none. The leader's answer is relayed; a refusal naming no resolvable leader is the answer |
+| Call on the shared system shard | no: each transport's own write forwarding to the system leader applies |
+| A leader-only call on a follower -- a membership change (`admin member add`, `add-observer`, `promote`, `remove`), a system-shard write, or ceremony-initialize's admin-credential step -- on every transport: REST, gRPC, Unix, QUIC, MCP, embedded | yes, single hop, to the leader the refusal names, not through this feature's per-database path: REST's `tryForwardWrite`, gRPC's `forwardAdminWrite`, QUIC's `ForwardToLeader`, MCP's `forwardToLeader` each recognize `*service.NotLeaderError` and `*service.AdminCredentialNotLeaderError`. A membership change first waits, up to 10s, until the node knows a leader, so an election in progress ends in a refusal naming the leader rather than one naming none. The leader's answer is relayed; a refusal naming no resolvable leader is the answer |
 | Call that arrived forwarded (carries an assertion) | no: hop limit 1 |
 
 ## Status mapping
@@ -137,7 +137,7 @@ leases, locks, indexes, time series, vectors, collections). A stream --
 
 ## Permissions
 
-None new. Ingress authorizes the caller for the capability as it does today.
+None new. Ingress authorizes the caller for the capability.
 The target authorizes the same caller again, through the assertion, with the
 permission the capability already requires. For the embedded client the
 target authorizes the configured caller: its roles are resolved on the
@@ -147,6 +147,5 @@ target, never taken from the forwarding node.
 
 No wire version changes. The error details, the REST `code`/`metadata` fields
 and the MCP `reason`/`metadata` fields are additive; a client that ignores
-them behaves as before, except that it now gets an answer instead of a
-refusal. `forward.OnBehalf` is a new QUIC method; the frame format is
-unchanged.
+them reads the answer or the error message alone. `forward.OnBehalf` uses the
+frame format of every other QUIC method.

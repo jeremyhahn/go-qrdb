@@ -2,16 +2,14 @@
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
 > Scope: go-qrdb · Last verified: 2026-10-06
->
-> The owner's rulings are recorded under [Rulings](#rulings).
 
 ## The problem
 
 A database with its own Raft group (`raft` isolation) lives on the nodes its
 placement record names: its **replicas**. A request for that database can
 arrive at any node, through any of six transports. A node that holds no
-replica must not serve the database from its own catalog. That started a
-single-node shard whose acknowledged writes the real replicas never saw.
+replica must not serve the database from its own catalog: that would start a
+single-node shard whose acknowledged writes the real replicas never see.
 Without forwarding, such a node refuses with `*placement.NotAReplicaError`
 (`UNAVAILABLE`, 503), which carries the replica set, and the client must
 redial a replica itself.
@@ -24,7 +22,7 @@ connect to one address and never learn the cluster's shape.
 **A node that holds no replica forwards the request to a replica of the
 database, on the original caller's behalf, and returns that replica's
 answer.** The caller sees one request and one answer. When no replica serves
-it, the caller gets the typed `NotAReplicaError`, exactly as before.
+it, the caller gets the typed `NotAReplicaError`.
 
 ```
 client ──► node C (no replica of acme/orders)
@@ -71,10 +69,10 @@ replica's answer. The wait is bounded by the caller's context as well.
 (`cluster.Member`, keyed by node, carrying `APIEndpoints` per protocol). The
 forward uses the endpoint for the node-to-node protocol of the ingress
 transport (below). A member that does not advertise that protocol is skipped.
-Every raft-mode node publishes its member record, with or without dynamic
-membership (ruling 6).
+Every raft-mode node publishes its lease-backed member record through
+`cluster.Advertiser`, with or without dynamic membership.
 
-**A per-shard leader cache** (ruling 7) remembers, for each database shard,
+**A per-shard leader cache** remembers, for each database shard,
 the replica the last successful forward reached and its resolved member
 endpoints. A hit skips the member lookup. (The refusal that starts a forward
 has already read the placement.) The cache never decides correctness, only
@@ -97,7 +95,7 @@ member records, then the one bounded retry. The cache is per node and in
 memory. It holds no data and no identity, only addresses, and it is read
 lock-free (a copy-on-write map behind an atomic pointer).
 
-**Identity** travels as the existing signed on-behalf assertion
+**Identity** travels as the signed on-behalf assertion
 (`pkg/auth/forward.CallerAssertion`). The forwarding node has already
 authenticated and authorized the caller at ingress. It signs an assertion
 carrying the caller's identity (subject and tenant, never roles), bound to the
@@ -105,9 +103,9 @@ exact request and time-boxed. The target verifies the signature against the
 forwarding node's mTLS certificate, checks that certificate is a cluster node
 certificate, re-resolves the caller's roles from its own data, and authorizes
 the request as the caller. REST's write forwarding to the system leader
-already worked this way. This feature extends it to every network transport,
-and binds a non-HTTP request by protocol, method name and payload digest
-instead of HTTP method, path and body digest. A request with no authenticated
+uses the same assertion. Every network transport carries it; a non-HTTP
+request is bound by protocol, method name and payload digest instead of HTTP
+method, path and body digest. A request with no authenticated
 caller is never forwarded: a node identity alone authorizes nothing.
 
 **The embedded caller.** An in-process embedded call carries no credential:
@@ -138,7 +136,9 @@ returns its own refusal.
 | MCP | MCP | opens an MCP session to the target's MCP endpoint and calls the same tool with the same arguments; every HTTP request of the session carries an assertion bound to it |
 | Embedded | QUIC | a database-scoped embedded client makes the call on the node; when the node refuses it as a non-replica, it makes the same call on a QUIC client transport whose request frame is handed to the node's QUIC forwarder instead of a connection -- the `forward.OnBehalf` request a QUIC caller's forward sends, signed for the configured caller. Streams are not forwarded |
 
-Node-to-node forwarding speaks REST, gRPC and QUIC at minimum (owner ruling).
+Node-to-node forwarding speaks REST, gRPC and QUIC at minimum. QUIC is
+always present (it is Raft's transport), so the embedded transport forwards
+over QUIC.
 MCP forwards MCP-to-MCP. A target that does not advertise the protocol is
 skipped, and with no target left the caller gets the refusal, never a
 translated call.
@@ -167,8 +167,8 @@ holds no data for it.
 1. Ingress authenticates and authorizes the caller as usual. Forwarding never
    bypasses a check: a request the ingress node would refuse is refused there.
 2. The handler resolves the database's services. `RaftBackendFactory.Services`
-   returns `*placement.NotAReplicaError`, which now also carries the
-   placement's `LeaderReplicaID`.
+   returns `*placement.NotAReplicaError`, which carries the replica set and
+   the placement's `LeaderReplicaID`.
 3. The transport's forwarding layer recognizes the refusal -- by its type, or
    by the structured reason its own error mapping attached -- and signs the
    assertion. `replicaforward.Locator.Forward` drives the forward: the cached
@@ -189,8 +189,8 @@ holds no data for it.
   (`onBehalfPeerGate`) that refuses a revoked leaf, a leaf without a node
   SAN, and -- with an issuer verifier wired -- a chain the cluster CA did not
   issue (`IssuerVerifier.IsClusterCA`). On a node with operator-supplied TLS
-  (BYO-TLS), the operator's peer CA is the cluster CA for this check (owner
-  ruling 5); an embedded node handed its cluster identity and no cluster CA
+  (BYO-TLS), the operator's peer CA is the cluster CA for this check, on
+  every transport; an embedded node handed its cluster identity and no cluster CA
   key is a BYO-TLS node, and `lifecycle.TrustPoolClusterCA` resolves its
   cluster CA as it does `qrdbd`'s. A tenant's per-tenant CA is trusted on the same listener, so a
   leaf it issued with a forged node SAN would otherwise speak as the cluster.
@@ -200,12 +200,12 @@ holds no data for it.
   at the target directly, and nothing more.
 - **Binding and TTL.** The assertion is bound to the protocol, method and
   payload digest and expires after `forward.DefaultTTL` (30 s). A captured
-  assertion replays only the identical request within that window, as today.
+  assertion replays only the identical request within that window.
 - **A forwarded request is marked.** The assertion's presence is the hop
   marker: a target never replica-forwards a request that arrived with one.
-  REST's existing write forwarding to the system leader keeps its own bounded
-  hop counter, unchanged.
-- **Tenant scope is unchanged.** The forwarding node resolves the placement
+  REST's write forwarding to the system leader keeps its own bounded hop
+  counter.
+- **Tenant scope holds.** The forwarding node resolves the placement
   only for the tenant the caller is authorized for. A caller cannot use
   forwarding to learn another tenant's replica set.
 - **The embedded caller is authenticated, not asserted.** The embedder hands
@@ -229,7 +229,7 @@ holds no data for it.
 | The embedded caller's authentication, the node's in-process forwarder | `pkg/server` (`AuthenticateCertificate`, `ReplicaForwarder`), composed by `sdk/go/node` (`WithEmbeddedCaller`) |
 | The placement table's change feed | `pkg/server/lifecycle` |
 | Composition | `cmd/qrdbd`, `sdk/go/node`, through `server.WithReplicaForwarding` |
-| Endpoint advertisement | `pkg/cluster` (ruling 6) |
+| Endpoint advertisement | `pkg/cluster` (`Advertiser`) |
 
 ## Alternatives rejected
 
@@ -241,8 +241,8 @@ holds no data for it.
 - **Translate every ingress into one node-to-node protocol** (say, everything
   over QUIC). Rejected: REST and MCP would need a per-route mapping onto QUIC
   methods. Each transport forwarding its own wire is method-agnostic. The
-  embedded transport is the exception: it has no wire of its own, and the
-  ruling gives it QUIC.
+  embedded transport is the exception: it has no wire of its own, so it
+  forwards over QUIC.
 - **Redirect the client** (HTTP 307 or a gRPC "go there" status). Rejected:
   the client still has to redial a node it may not be able to reach (another
   network, another certificate), and five of the six transports have no
@@ -257,114 +257,49 @@ holds no data for it.
 
 - It does not forward streams.
 - It does not forward requests for the shared system shard through the
-  per-database path above. Those keep each transport's own single-hop
-  leader-forwarding instead: REST's existing write forwarding
-  (`tryForwardWrite`/`forwardToLeader`, keyed on `*service.NotLeaderError`)
-  now also recognizes `*service.AdminCredentialNotLeaderError` -- the
-  ceremony-initialize admin-credential step's own leader-only refusal
-  (`service.CeremonyServiceWithLeaderGate`, see
-  [../clustering/architecture.md](../clustering/architecture.md)) -- so a
-  follower forwards it to the leader instead of answering 503 for a request
-  the leader would have served (node parity: every node is equal). Node parity extends this past REST, and to
-  every leader-only refusal rather than the ceremony's alone: on gRPC, QUIC
-  and MCP, any unary call or tool a follower refuses with
-  `*service.NotLeaderError` -- a membership change (`admin member add`,
-  `add-observer`, `promote`, `remove`), a system-shard write -- or with
-  `*service.AdminCredentialNotLeaderError` is relayed to the leader that
-  refusal names (`service.LeaderAddress` reads it from either). gRPC's
-  forwarding interceptor acts on the `NOT_LEADER` refusal metadata of any
-  unary call; `qrdbServiceServer.CeremonyInitialize` forwards the ceremony
-  refusal itself, because that refusal carries no such metadata. QUIC's
-  `handleStream` and MCP's tool middleware recognize both errors centrally.
-  All of them send through one leader method on their existing per-transport
-  forwarder (`grpc.ReplicaForwarder.forwardAdminWrite`,
-  `quic.FrameForwarder.ForwardToLeader`, `mcp`'s
-  `replicaForwarder.forwardToLeader`) -- `MemberByAddress` on the shared
-  `replicaforward.Locator` resolves the leader's address to its member record
-  exactly as the per-database path does, so no new resolution logic was
-  added, only a single-hop send that skips placement and the bounded retry
-  (a leader is one node, not a set to retry across). The leader's own answer,
-  error or not, is the final result; a forward that never reached the leader,
-  or a refusal naming no leader or one with no member record, answers with
-  the follower's own refusal. `replica_forwarding.timeout` bounds that
-  single hop from the leader lookup on -- the member records are a
-  system-shard read, and one that cannot complete falls back to the
-  follower's own typed refusal (`Unavailable`) when the timeout expires,
-  rather than holding the caller's request open. A membership change reaches
-  its transport naming no leader only when none was elected for 10s:
-  `AdminService` waits for a known leader before it proposes
-  (`waitForShardLeaderKnown`, the wait the scale path makes), answering
-  `*service.ShardLeaderTimeoutError` (Unavailable) when none is, and it waits
-  rather than re-proposing, because a change that timed out may still have
-  committed. The Unix socket forwards through the same gRPC
-  interceptor its per-database path uses. The embedded transport forwards
-  through its QUIC client transport exactly as it does for a per-database
-  refusal. REST resolves the leader through its own `auth.peer_admin_urls`
-  registry rather than the `Locator`; when the nodes share a host, the
-  registry must name every node, or the fallback (the leader's Raft host
-  with this node's own admin port) resolves to the follower itself.
+  per-database path above. A follower's leader-only refusal is relayed
+  instead, single hop, to the leader the refusal names, on every transport:
+  `*service.NotLeaderError` (a membership change -- `admin member add`,
+  `add-observer`, `promote`, `remove` -- or a system-shard write) and
+  `*service.AdminCredentialNotLeaderError` (the ceremony-initialize
+  admin-credential step's refusal, from `service.CeremonyServiceWithLeaderGate`,
+  see [../clustering/architecture.md](../clustering/architecture.md)).
+  `service.LeaderAddress` reads the leader from either.
+  - REST: `tryForwardWrite`/`forwardToLeader`. REST resolves the leader
+    through its own `auth.peer_admin_urls` registry rather than the
+    `Locator`; when the nodes share a host, the registry must name every
+    node, or the fallback (the leader's Raft host with this node's own admin
+    port) resolves to the follower itself.
+  - gRPC and the Unix socket: the forwarding interceptor acts on the
+    `NOT_LEADER` refusal metadata of any unary call;
+    `qrdbServiceServer.CeremonyInitialize` forwards the ceremony refusal
+    itself, because that refusal carries no such metadata. The send is
+    `grpc.ReplicaForwarder.forwardAdminWrite`.
+  - QUIC: `handleStream` recognizes both errors; the send is
+    `quic.FrameForwarder.ForwardToLeader`.
+  - MCP: the tool middleware recognizes both errors; the send is `mcp`'s
+    `replicaForwarder.forwardToLeader`.
+  - Embedded: through its QUIC client transport, as for a per-database
+    refusal.
+
+  gRPC, QUIC and MCP resolve the leader's address to its member record with
+  `MemberByAddress` on the shared `replicaforward.Locator`, as the
+  per-database path does, and send one hop that skips placement and the
+  bounded retry: a leader is one node, not a set to retry across. The
+  leader's answer, error or not, is the final result; a forward that never
+  reached the leader, or a refusal naming no leader or one with no member
+  record, answers with the follower's own refusal.
+  `replica_forwarding.timeout` bounds that hop from the leader lookup on: the
+  member records are a system-shard read, and one that cannot complete falls
+  back to the follower's typed refusal (`Unavailable`) when the timeout
+  expires. A membership change reaches its transport naming no leader only
+  when none was elected for 10s: `AdminService` waits for a known leader
+  before it proposes (`waitForShardLeaderKnown`, the wait the scale path
+  makes), answers `*service.ShardLeaderTimeoutError` (Unavailable) when none
+  is, and waits rather than re-proposing, because a change that timed out may
+  still have committed.
 - It does not change who may do what. Authorization happens at ingress and
   again at the target, as the caller both times.
-- It does not cache anything but the per-shard leader hint (ruling 7), and
+- It does not cache anything but the per-shard leader hint, and
   it never serves from that cache: a cached target is only where the forward
   goes first.
-
-## Rulings
-
-From the owner, recorded verbatim in substance:
-
-1. Leader discovery: the placement record's `LeaderReplicaID` → the member's
-   `APIEndpoints`, one bounded retry, `NotAReplicaError` if no leader is known.
-   The retry is spent by a target that answered; a replica that could not be
-   reached is skipped (see [Leader discovery](#the-shape)). That reading is
-   what the integration requirement to reach the new leader right after the
-   old one is killed needs, and it never sends a request that may have
-   applied a second time.
-2. Identity: the original caller, through the signed on-behalf
-   `CallerAssertion`, on every network transport. Hop limit 1. Reads and
-   writes both forward.
-3. Node-to-node forwarding works over REST, gRPC and QUIC at minimum. QUIC is
-   always present (it is Raft's transport), so embedded forwards over QUIC by
-   default. (The forward reaches a replica's QUIC API listener; a replica that
-   does not advertise one is skipped, as on every transport.)
-4. Streams are refused with the typed `NotAReplicaError`, carrying the replica
-   set; the client redials.
-5. On BYO-TLS nodes the operator's peer CA counts as the cluster CA for
-   on-behalf verification (`IsClusterCA`), on every transport.
-6. (D1, option a) Every raft-mode node always publishes its lease-backed member
-   record -- API endpoints and liveness -- through the existing
-   `cluster.Advertiser`, without the dynamic-membership reconfiguration loop.
-7. A per-shard leader cache, keyed by shard ID, holding the leader's replica
-   ID and its resolved member endpoints, lock-free where practical:
-   - updated by a `NotLeader` naming a new leader;
-   - evicted by a transport error, `NotAReplica` or an unknown leader;
-   - invalidated on every node by placement changes (move, rebalance, replica
-     add and remove) and by member-record changes.
-8. (Embedded identity, option b) The embedder configures the embedded
-   client's caller: an mTLS identity, or an identity the node's pluggable
-   authentication chain derives -- the attested-host authenticator among them.
-   Forwarded embedded calls carry that identity in the signed on-behalf
-   assertion, over QUIC. An embedded call with no configured identity is
-   refused with the typed `NotAReplicaError` and is never forwarded as the
-   node.
-
-   A miss resolves again from placement, then member records, then the one
-   bounded retry.
-
-## Decisions taken
-
-- **D1 → ruling 6.** Option (a): every raft-mode node publishes its member
-  record. The alternatives (endpoints in the feature-gate advertisement;
-  forwarding only under dynamic membership) were rejected.
-- **D2.** Build against the existing cluster-CA check, then gate every
-  transport's on-behalf path on `IsClusterCA` once the issuer verifier
-  existed; the BYO-TLS suite is the network-transport suite, whose nodes run
-  on operator-supplied TLS.
-- **D3 → ruling 8.** Option (b) for the embedded caller: embedder-configured.
-  The alternatives -- forwarding only calls whose context carries an identity,
-  or signing as the node -- were rejected; the second contradicts ruling 2.
-- **D4.** The embedded client forwards with the QUIC client transport's own
-  encoding of each call (`quic.NewFrameTransport`) and the QUIC listener's own
-  forwarder (`quic.FrameForwarder`), so there is no per-method forwarding code
-  beyond a generated delegate per data-plane method, and nothing a QUIC
-  forward does that an embedded one does not.
