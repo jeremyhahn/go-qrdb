@@ -12,8 +12,8 @@ documented in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 ## `qrdb admin health`
 
-Check node health status. No flags. Backed by the one public route in the
-system, so a load balancer can probe an unauthenticated node.
+Check node health status. No flags. Over REST it calls `GET /health`, which
+needs no credential.
 
 ```bash
 qrdb admin health
@@ -414,8 +414,7 @@ An admitted, unsealed member signs CSRs for joining nodes when started with:
 | `--cluster-join-listen-host` | `--host` | bind host for the Noise_NK join listener |
 | `--cluster-join-listen-port` | `63007` | TCP port for the Noise_NK join listener |
 
-There is no admission-token flag on this side any more. A signing member
-validates a presented token against the single-use, identity-bound join
+A signing member validates a presented token against the single-use, identity-bound join
 tokens an admin mints into the replicated store — see "Minting a join
 token" below — not a static shared secret it was configured with.
 
@@ -560,7 +559,6 @@ feature the cluster has activated exits with an error naming the feature; see
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite. The
-3-node behaviour they drive is exercised by `make integration-test-clustering`,
+The 3-node behaviour these verbs drive is exercised by `make integration-test-clustering`,
 which runs in CI as the `clustering` leg of the `integration-features` job
 (`.github/workflows/ci.yml`), required by `ci-gate`.

@@ -102,9 +102,7 @@ joining node:
 
 Configuring only the first half (an anchor-fetch method with none of the
 join-transport flags) is refused at startup with `EnrollmentUnavailableError`,
-before any dial or write — that error is this repository's own history: it is
-the full "joining is unavailable" refusal from the release where only the
-anchor-fetch half existed.
+before any dial or write.
 
 **On the member doing the signing**, start it with `--cluster-join-enabled`.
 This runs the Noise_NK join listener (`--cluster-join-listen-host` /
@@ -230,8 +228,8 @@ qrdb admin join-token retire node-7 --reason "decommissioned 2026-10-06"
 ```
 
 A later `admin join-token mint node-7` is refused permanently. Retiring
-requires permission `cluster:join_identity_retire`, held by `Owner` by
-default, the same precedent `cluster:join_token` sets.
+requires permission `cluster:join_identity_retire`, held only by `Owner` by
+default.
 
 **You can still add a node by issuing its certificate out of band**, without
 either member running a join listener: generate an ECDSA P-256 key and a
@@ -242,12 +240,11 @@ SAN (`spiffe://<trust-domain>/node/<raft-address>`, both `serverAuth` and
 `ca-key.pem` — and start it with `--tls-ca-file`, `--tls-cert-file` and
 `--tls-key-file` instead of any bootstrap flag.
 
-### If your cluster was formed by an earlier release, rotate its CA
+### Rotating the cluster CA
 
-Treat the existing cluster CA key as **compromised**. It was readable without
-authentication from every first node's admin port, and every node that joined
-over SPKI, DANE or direct HTTPS holds a copy in `ca-key.pem`. Until the CA is
-rotated, restrict network access to every node's admin port.
+Rotate the cluster CA when its key may have been exposed, for example when a
+copy of `ca-key.pem` exists on more than one node. Until the CA is rotated,
+restrict network access to every node's admin port.
 
 Rotate the cluster CA:
 
@@ -288,7 +285,7 @@ one they serve in FIPS mode.
 - **Outside FIPS mode you may give both keys**; Noise is preferred where it is
   usable and P-256 otherwise.
 
-`--bootstrap-noise-port` and `--bootstrap-noise-host` apply as before. The
+`--bootstrap-noise-port` and `--bootstrap-noise-host` apply in FIPS mode too. The
 SPKI/Direct join transport (`--bootstrap-join-url`, with `--bootstrap-spki-pin`
 or `--bootstrap-direct-url` for the anchor) is TLS only and also carries no FIPS
 restriction of its own.
@@ -302,8 +299,8 @@ qrdb admin peers             # who is in this shard?
 qrdb admin topology --output json
 ```
 
-`admin health` is served on the one public route in the system, so a load
-balancer can probe a node without credentials.
+Over REST, `admin health` calls `GET /health`, which needs no credential, so a
+load balancer can probe a node without one.
 
 ### Checking that replicas agree
 
@@ -496,8 +493,7 @@ for _, r := range resp.Replicas {
 ## Upgrading a cluster
 
 Upgrade one node at a time, as for any rolling upgrade. A release that
-introduces a new replicated command -- guarded writes, which make a database
-drop atomic with every write, are the first -- does not use it anywhere in the
+introduces a new replicated command does not use it anywhere in the
 cluster until every node, not just a given Raft group's current members, runs
 a release that advertises it. A group whose current members all advertise the
 feature is not enough on its own: a later membership change could still bring
@@ -511,8 +507,8 @@ activation is permanent. **After activation, no node may be started or added on
 an older release** -- neither an existing node rolled back nor a new one. A
 release that knows about feature activation refuses to start with an error
 naming the feature, and the cluster refuses to add a replica on a node that does
-not advertise it (see below), but a release from before activation existed can
-do neither; roll forward instead.
+not advertise it (see below), but a release without feature activation can do
+neither; roll forward instead.
 
 A new node is added only once it advertises every feature the cluster uses.
 Membership changes, scale-ups and rebalances that would place a replica on a
@@ -534,13 +530,11 @@ withdraws its advertisement at once. After a crash its advertisement lapses
 only when its lease expires, so **after a crash, wait out the lease TTL (10
 seconds by default) before starting the node on an older release**.
 
-### The bootstrap wire is version-skewed across this release
+### Bootstrap wire compatibility
 
-This release puts a `version || suite` header on the first frame of both the
-trust-anchor fetch and the CSR join exchange, so one listener can serve the
-Noise NK and the P-256 suites. A node on this release cannot complete either
-handshake against a node on an earlier one, in either direction: **finish
-rolling every node forward before adding a member.**
+The first frame of both the trust-anchor fetch and the CSR join exchange
+carries a `version || suite` header, so one listener can serve the Noise NK and
+the P-256 suites.
 
 Every admitted, unsealed member runs the bootstrap **server**, serving both
 the Noise NK and the P-256 suites
@@ -549,10 +543,9 @@ that generates the cluster CA, on every other member once it has joined or
 restarted from its data directory) that a joining node's enrollment dials as a **client**.
 Both halves are this codebase's own call into `go-truststrap`, so a bump to
 `go-truststrap` that changes the wire format is a qrdb-to-qrdb compatibility
-question, not a question about an external service. A release whose
-`go-truststrap` adds a suite-negotiation header to the first bootstrap frame
-cannot complete a handshake against a peer running the pre-negotiation wire,
-in either direction: **a mixed-version cluster cannot enroll a new member
+question, not a question about an external service. Two peers on different
+`go-truststrap` bootstrap wires cannot complete a handshake, in either
+direction: **a mixed-version cluster cannot enroll a new member
 until every node that might advertise is on the same `go-truststrap` wire.**
 This is independent of, and checked separately from, the replicated-command
 feature-gating described above — a bootstrap wire mismatch fails before any
@@ -619,7 +612,7 @@ Kubernetes **Secret volume mount**: every file under a mounted Secret is
 actually a symlink into a `..data/<timestamp>` directory the kubelet swaps
 on rotation, not a plain file. qrdb writes `ca.pem`, `node-cert.pem`,
 `node-key.pem`, `ca-key.pem` and its enrollment/role files into the data
-directory, and now refuses rather than silently replacing the kubelet's
+directory, and refuses rather than silently replacing the kubelet's
 symlink itself with a plain file, which severs that path from the
 Secret's rotation from then on. Point `--data-dir` at a writable volume
 (an `emptyDir` or a
