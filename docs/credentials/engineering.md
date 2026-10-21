@@ -22,7 +22,7 @@ type CredentialServicer interface {
     CredentialDelete(ctx context.Context, name string) error
     CredentialStrategy() string
 
-    // Versioned rotation (the new 5 methods added in Phase 8e)
+    // Versioned rotation
     CredentialList(ctx context.Context) ([]string, error)
     CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
     CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error)
@@ -31,19 +31,14 @@ type CredentialServicer interface {
 }
 ```
 
-`CredentialService` (`pkg/service/credential_service.go:75-145`) is the canonical implementation; it is a thin pass-through to `credentials.CredentialService`.
-
 `CredentialService` (`pkg/service/credential_service.go`) is the canonical
 implementation and a thin pass-through to `credentials.CredentialService`.
 
 `transport.CredentialClient` (the SDK surface) carries the same pair:
 `CredentialRetrieveBuffer(ctx, name)` and
 `CredentialRetrieveVersionBuffer(ctx, req)`, each returning a
-`*secure.Buffer` the caller must `Destroy`. The OWNER ruled on 2026-10-07 that
-the `[]byte` forms (`CredentialRetrieve`, `CredentialRetrieveVersion`, and the
-`credentials.CredentialService` `RetrieveCredential` /
-`RetrieveCredentialVersion`) are removed now, with no compatibility code; the
-wire contract does not change.
+`*secure.Buffer` the caller must `Destroy`. Neither it nor
+`credentials.CredentialService` has a `[]byte` retrieve method.
 
 `make check-no-deprecated-credential-retrieve`
 (`test/buildgates/no_deprecated_credential_retrieve_test.go`, in CI's `image` job)
@@ -51,7 +46,8 @@ fails if any Go file reintroduces a deleted credential retrieval declaration
 that returns `[]byte`, or uses the unambiguous removed store-level selectors.
 The protobuf `QRDBService` methods of the same names are allowed because they
 return protobuf response messages, not heap credential bytes. A test that needs
-the bytes uses its package's `retrieveBytes` helper, which goes through the
+the bytes uses its package's `retrieveBytes` helper (`retrieveBytesFrom` in
+`pkg/service`), which goes through the
 Buffer method and copies out.
 
 **Protected-memory handle, end to end.** Retrieval returns a go-enclave-backed
@@ -77,9 +73,9 @@ is the contract for where bytes may leave it. The rules a contributor works to:
   copy through a heap slice.
 - The embedded SDK transport passes the Buffer through untouched. Its Buffer
   methods are declared in the embedded authorization registry under their own
-  names, mapped to the same `credentials:retrieve` /
-  `credentials:retrieve_version` permissions as the `[]byte` forms, so an
-  embedded caller is authorized identically whichever form it calls.
+  names, mapped to the `credentials:retrieve` /
+  `credentials:retrieve_version` permissions that guard the wire retrieve
+  operations, so an embedded caller is authorized as a remote one is.
 - A test double that wraps a `[]byte` hook must clone it before
   `secure.NewBufferFromBytes`, which wipes its source; the real service never
   returns an empty value, and a double must not either.
@@ -94,17 +90,16 @@ is the contract for where bytes may leave it. The rules a contributor works to:
 | `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; plaintext materialized transiently (`Open → copy → Destroy`) |
 | `barrier` | encrypt-then-store through `seal.StorageBarrier` | the production default; unreadable while sealed |
 
-`CredentialStrategy()` reports which is active. A future HSM-only strategy will
-return `ErrEnumerationNotSupported` from `ListCredentials` rather than change
-the interface.
+`CredentialStrategy()` reports which is active. A strategy that cannot
+enumerate returns `ErrEnumerationNotSupported` from `ListCredentials` rather
+than change the interface.
 
 ## Invariants
 
 - **Credentials never live in the user KV store.** They are distinct from the
   KEK/DEK custody in the barrier and from the Raft data plane.
 - **`pkg/credentials` is the only secret-bearing store in qrdb.** There is no
-  `secrets` or `kms` package; the old `secrets-envelope` was removed in the
-  single-KEK/DEK refactor and was not replaced.
+  `secrets` or `kms` package.
 - **`manual` values are never raw heap bytes.** They live in enclaves;
   plaintext exists only transiently during a read; the enclave is destroyed on
   delete and on rotation.

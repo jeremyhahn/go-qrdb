@@ -56,10 +56,11 @@ unknown key — the schema always declares it — and surfaces only through
 
 ## Secret references
 
-Configuration fields may carry `credential://` or `literal://` references,
-resolved at boot into enclave-backed values rather than plain strings. **A
-protected field must reference a secret, and resolution fails closed.** This is
-a composition-plane (Tier 2) surface with no wire endpoint — see
+`qrdbd`'s configuration has no field that takes a secret reference. An
+application embedding qrdb resolves `credential://` and `literal://`
+references in its own configuration at boot, into enclave-backed values rather
+than plain strings; **a protected field whose reference cannot be resolved
+fails the boot.** This is a composition-plane (Tier 2) surface with no wire endpoint — see
 [../credentials/api.md](../credentials/api.md#secret-resolution-spi).
 
 ## Versioning

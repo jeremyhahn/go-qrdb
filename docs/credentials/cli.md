@@ -136,4 +136,6 @@ qrdb credential delete smtp-password
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`TestCredential_CLI_Lifecycle_PerProtocol` in
+`test/integration/credential_cli_test.go` runs every verb here over REST, gRPC,
+QUIC, MCP and Unix.

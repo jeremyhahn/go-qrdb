@@ -40,7 +40,7 @@ qrdb credential list
 scrollback or your pipe from that point; that is the one place the value leaves
 protected memory on your side. Inside a Go program, use the SDK's
 `CredentialRetrieveBuffer` and `Destroy` the returned buffer when you are done
-with it; the former `[]byte` retrieve methods were removed on 2026-10-07.
+with it.
 
 ## Common tasks
 
@@ -94,13 +94,15 @@ qrdb credential submit ceremony-seed --value "$SEED"
 
 ## Referencing credentials from configuration
 
-Configuration fields can point at a credential rather than embedding the value:
+An application that embeds qrdb can point a field of its own configuration at a
+credential rather than embedding the value; `qrdbd`'s own configuration has no
+such field:
 
 ```yaml
-some_secret_field: "credential://smtp-password"
+smtp_password: "credential://smtp-password"
 ```
 
-At boot these resolve into protected in-memory values, not plain strings. A
+At the application's boot these resolve into protected in-memory values, not plain strings. A
 field marked protected **must** reference a secret; if the reference cannot be
 resolved, startup fails rather than continuing with nothing. `literal://` exists
 for the cases where an inline value is genuinely intended.
@@ -122,7 +124,7 @@ that the old value stops existing.
 **Your credentials vanished after a restart.** You are on `manual`. Values live
 only in memory for the life of the process.
 
-**You cannot find a credential in `kv list`.** Credentials are never in the user
+**You cannot find a credential in `qrdb kv list`.** Credentials are never in the user
 KV store. They are a separate store, distinct from both the data plane and the
 barrier's key custody.
 

@@ -61,8 +61,7 @@ flags alone.
   build tags a binary carries.
 - **Precedence is build tag > run mode > config.** Config narrows only; asking
   for more is a validation error, never a silent no-op.
-- **`mode` absent means `raft`** — full backward compatibility with configs
-  written before run modes existed.
+- **`mode` absent means `raft`.**
 - **No infrastructure literal on a configuration path.** Bind hosts, ports and
   advertised addresses come from the load order above. The one permitted
   literal is the defaults-layer value that path overrides — `DefaultServerHost`,
@@ -88,18 +87,21 @@ flags alone.
   got; `Start` returns `*rest.ListenerHostMismatchError` if they land on
   different bind hosts, and `*rest.HTTP3StartError` if the QUIC socket cannot
   bind at all.
-- **Protected fields must reference a secret.** `credential://` and `literal://`
-  references resolve at boot into enclave-backed values; a protected field with
-  no reference, or an unresolvable one, **fails the boot**.
+- **An unresolved protected field fails the boot.** `pkg/config` declares no
+  `SecretValue` field, so `qrdbd` resolves no secret reference. An embedder
+  runs `secret.ConfigProcessor` over its own configuration; a protected field
+  whose `credential://` or `literal://` reference does not resolve fails
+  `Process` with `ErrUnresolvedSecretURI`. See
+  [../credentials/engineering.md](../credentials/engineering.md).
 
 ## Validation rules worth knowing
 
 | Rule | Consequence |
 |---|---|
-| `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error — `requires mode: raft` (`mvcc`/`watch`/`lease.enabled` are valid in both modes since 2026-10-01) |
+| `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error — `requires mode: raft` (`mvcc`/`watch`/`lease.enabled` are valid in both modes) |
 | A wire protocol enabled without its build tag | boot-time error **naming the tag** (`ValidateCapabilities`) |
 | MySQL or PostgreSQL enabled with TLS or auth disabled | refused |
-| etcd enabled on a database | any backend serves etcd; there is no longer an `engine` constraint (Lane 1C deleted `database.EtcdEngineUnsupportedError` along with the `engine` concept, OD-12/OD-13) |
+| etcd enabled on a database | any backend serves etcd |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
 | Per-database barrier on a database sharing the default store | refused |
@@ -116,6 +118,7 @@ Viper-bound, equivalent to their flags:
 | `QRDB_SO_PIN` | `--so-pin` |
 | `QRDB_USER_PIN` | `--user-pin` |
 | `QRDB_BARRIER_STRATEGY` | `--barrier-strategy` |
+| `QRDB_PASSPHRASE` | `--passphrase` |
 | `QRDB_SHARES` | `--shares` |
 | `QRDB_THRESHOLD` | `--threshold` |
 | `QRDB_HOSTNAME` | `--hostname` |
@@ -161,40 +164,24 @@ Viper-bound, equivalent to their flags:
 | `--debug-raft`                  | N/A (forces `logging.level: debug`)|
 | `--auth-enabled`                | `auth.enabled`                     |
 
-*(Corrected: the table had no header row, and the paragraph below sat inside
-it, so every row from `--sm` down rendered as text. The rows for `--member-identities`, `--sm-backend`,
-`--sm-storage`, `--lease-read` and `--check-quorum` were missing.)* Each Raft flag's type, default
-and bounds are in [cli.md](cli.md#raft-flags).
+Each Raft flag's type, default and bounds are in [cli.md](cli.md#raft-flags).
 
 go-quicraft's `TransportConfig` carries other resource knobs (snapshot
 receive rate/memory, connection caps, the inbound message-receive budget);
 `buildHostConfig` sets only `MTLSConfig` on it, so those run at go-quicraft's
-defaults and have no entry in this table. See `../configuration/cli.md` for
-the 0.18.0 message-receive-budget default change
-(`DefaultMaxMessageReceiveMemory` removed; now derived from
-`MessageReceiveBudgetFrames`).
+defaults and have no entry in this table.
 
 ---
 
 ## Sections
 
-`server`, `protocols`, `raft`, `storage`, `tls`, `logging`, `discovery`,
-`mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `cors`,
-`databases` (with per-database `mysql`, `postgresql` and `sql.concurrency`),
-`embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`,
-`transport`, `import_session`, `observability`, `mode`.
-There is no `audit:` section (audit logging is always on) and no per-database
-etcd key (etcd is enabled through `qrdb database create --etcd`, not YAML).
+The sections are listed in [architecture.md](architecture.md#sections).
 
 No compaction policy is configuration. A database's scheduled compaction and
 the platform's node-keyspace policy are replicated records set through the
 API, so they apply on every node and survive a node's loss; see
 [../key-value/engineering.md](../key-value/engineering.md) "Scheduled
-compaction" and "Node-keyspace compaction". *(Corrected: `mvcc.node_compaction`
-and `databases[].compaction` were configuration keys. Neither is read any
-more. The loader used to ignore an unknown key, so a file that still carried
-one loaded and the key had no effect; it is now refused at load with
-`*UnknownFieldError` instead.)*
+compaction" and "Node-keyspace compaction".
 
 **The complete field-by-field reference with every default lives in
 [12-configuration.md](../12-configuration.md)**, which also carries worked
@@ -223,8 +210,6 @@ Per-section detail also appears in the owning feature's folder — `seal` in
   shipped and documented example config loads strictly.
 - **`ValidateCapabilities` is tested independently of build tags** — that
   separation is the property it exists for.
-- **The `software` → `passphrase` canonicalization is its own test**, since a
-  consumer seeing the alias would be a live bug.
 - **Error tests** for `*LoadError` (unreadable and unparseable YAML) including
   `errors.Is`/`errors.As` through its `Unwrap()`.
 
