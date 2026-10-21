@@ -1,6 +1,6 @@
 # SQL — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 SQL reaches callers two ways, and they are genuinely different surfaces:
@@ -29,8 +29,10 @@ the capability it guards. Recorded as a gap rather than presented as a design �
 the correct vocabulary is an owner decision. See
 [engineering.md](engineering.md#known-authorization-gap).
 
-Without a `qrdb_sql` build, **every transport answers `/sql/query` with its
-nil-service error** — the route exists, the service behind it does not.
+Without a `qrdb_sql` build no SQL service is wired: REST does not attach the
+route and answers **404**, MCP does not register the tool, and gRPC, the Unix
+socket and QUIC answer with their not-configured error (`UNIMPLEMENTED` on
+gRPC).
 
 ## Wire protocol endpoints
 
@@ -67,7 +69,7 @@ return the protocol's own codes directly.
 | Missing `kv:range` | 403 | `PERMISSION_DENIED` | connection refused at auth |
 | Barrier sealed | 503 | `UNAVAILABLE` | connection refused |
 | Seal state unconfirmed (the node cannot read the cluster seal records; the barrier is not sealed — retry) | 503 `SEAL_STATE_UNCONFIRMED` | `UNAVAILABLE`, reason `SEAL_STATE_UNCONFIRMED` | MySQL **1105** `sql/mysql: seal state unconfirmed: …` / SQLSTATE **57P03** `sql/pgsql: seal state unconfirmed: …` |
-| Built without `qrdb_sql` | 501 | `UNIMPLEMENTED` | listener not started |
+| Built without `qrdb_sql` | 404 | `UNIMPLEMENTED` | listener not started |
 
 Statement-level ceilings surface as their own errors before any proposal is
 made: 65535 bytes for an encoded key, 4 MB for an encoded row, 8 MiB for one

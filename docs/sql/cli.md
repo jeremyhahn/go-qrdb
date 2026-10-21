@@ -1,6 +1,6 @@
 # SQL — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Two surfaces: the `qrdb sql` client verb group, and the `qrdbd` flags that turn
@@ -92,8 +92,8 @@ does not list them, and passing either is cobra's `unknown flag`, not a
 silently accepted no-op; the same applies to `--enable-pgsql` /
 `--pgsql-port` and `WITH_QRDB_PGSQL=0`. The config-file path is refused
 instead of rejected at parse time, since YAML has no notion of "unknown
-flag": starting the daemon with `protocols.mysql: true` (or the CLI flag, on
-a build that still compiles it) on a binary built with `WITH_QRDB_MYSQL=0`
+flag": starting the daemon with `protocols.mysql: true` on a binary built with
+`WITH_QRDB_MYSQL=0`
 is refused at startup, before any listener is attempted, with a typed
 configuration error naming the missing build tag (`protocols.mysql: not
 compiled in: requires build tag qrdb_mysql`); the same applies to

@@ -1,6 +1,6 @@
 # SQL — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 You can talk to the store with `mysql`, `psql`, a `database/sql` program, GORM,
@@ -101,8 +101,8 @@ COMMIT;
 `ROLLBACK` is free — nothing was sent until `COMMIT`. A statement that fails
 inside a transaction — a duplicate key on its third row, say — is undone whole
 and the transaction carries on with its earlier statements intact. Outside a
-transaction a multi-row statement is not all-or-nothing: the rows written before
-the failure stay committed.
+transaction a statement on a relational table is its own transaction: all of
+its rows commit, or none do.
 
 **Re-create tables from v0.20.0 through v0.21.0.** A relational table created
 by one of those releases is refused with **MySQL error 1459** (SQLSTATE 55000
@@ -242,12 +242,6 @@ cache and a retry re-parses.
 anything else the type mapper cannot represent are refused at DDL time rather
 than surfacing later as a decode failure.
 
-**An `INSERT` into a collection table now fails with a duplicate key where it
-used to succeed.** It was previously discarding the `_id` you supplied and
-storing the document under a generated one, which is why it never collided —
-so nothing that statement inserted landed where you asked. Re-check the IDs
-before assuming the new error is wrong.
-
 **A collection table's `PRIMARY KEY` under two concurrent writers.** It holds:
 the insert behind it is a guarded write, so one writer is told it stored and
 the other gets the duplicate-key error. `REPLACE`, `ON DUPLICATE KEY UPDATE` and
@@ -263,7 +257,8 @@ collection write applies at once and cannot be rolled back with the
 relational rows, so one statement may not write both. Split it into two
 statements.
 
-**A write inside `BEGIN` failed with "non-transactional table".** The `kv`,
+**A write inside `BEGIN` failed with "does not support interactive
+transactions (autocommit only)".** The `kv`,
 entity and collection tables are autocommit-only — they have no write buffer.
 The failure is loud on purpose: silently escaping the transaction's atomicity
 boundary and surviving a later `ROLLBACK` would be worse.
@@ -271,12 +266,13 @@ boundary and surviving a later `ROLLBACK` would be worse.
 **Your DDL committed a transaction you did not mean to end.** DDL implicitly
 commits, exactly as in MySQL.
 
-**"cross-database transaction" error.** One commit targets one Raft shard, so a
+**"transaction already bound to database" error.** One commit targets one Raft shard, so a
 transaction cannot span two databases. Split it.
 
-**A long-running transaction failed with "snapshot expired".** Its pinned MVCC
-revision was compacted before it committed. It fails rather than silently
-re-reading at a newer revision. Shorten the transaction.
+**A long-running transaction failed with "transaction snapshot revision … has
+been compacted".** Its pinned MVCC revision was compacted before it committed.
+It fails rather than silently re-reading at a newer revision. Roll back and
+retry, and shorten the transaction.
 
 **A multi-row statement failed and none of its rows are there.** That is
 the contract: outside a transaction a statement is its own transaction, so
@@ -308,7 +304,7 @@ subset covers `pg_type`, `pg_class`, `pg_namespace`, `pg_description` and
 what clients compare against. Anything outside that subset is not served, and
 `pg_catalog` is never served to MySQL clients.
 
-**Something works on MySQL and not on PostgreSQL.** PostgreSQL is the newer
-path and translation is targeted rather than exhaustive. Check
+**Something works on MySQL and not on PostgreSQL.** PostgreSQL translation is
+targeted rather than exhaustive. Check
 [upstream-gaps.md](upstream-gaps.md) for known engine defects before assuming
 it is your query.

@@ -1,6 +1,6 @@
 # SQL — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** `qrdb_sql` compiles the shared SQL core; `qrdb_mysql`
@@ -16,11 +16,10 @@ doing something else — is worse than not serving it.
 
 ## Shape chosen
 
-One SQL engine, two wire protocols, plus an in-process path. Both wire
-protocols share the engine and reuse the store's existing mTLS auth, RBAC,
-multi-tenancy and audit rather than inventing SQL-shaped versions of each.
-
-Both protocols share a single SQL engine ([go-mysql-server](https://github.com/dolthub/go-mysql-server)) and reuse the existing mTLS auth, RBAC, multi-tenancy, and audit systems.
+One SQL engine ([go-mysql-server](https://github.com/dolthub/go-mysql-server)),
+two wire protocols, plus an in-process path. Both wire protocols share the
+engine and reuse the store's existing mTLS auth, RBAC, multi-tenancy and audit
+rather than inventing SQL-shaped versions of each.
 
 ```
 SQL client --> Wire protocol layer --> Shared SQL engine --> KV service --> Raft
@@ -71,9 +70,7 @@ introspection reads — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
 (`pg_catalog.pg_class`) and bare (`pg_type`), as PostgreSQL's implicit search
 path allows. The relations are computed per query, read-only (they implement no
 write-capability interface, so DDL against them fails during analysis), and
-scoped to the session's tenant. They are served only to PostgreSQL clients: a
-MySQL client has no more business resolving `pg_type` than a PostgreSQL client
-has resolving MySQL's grant tables.
+scoped to the session's tenant. They are served only to PostgreSQL clients.
 
 `pg_indexes` reports a table's primary key under PostgreSQL's `<table>_pkey`
 name rather than go-mysql-server's MySQL spelling `PRIMARY`, because that is
@@ -141,23 +138,16 @@ enabled, since both are engines over the shared `pkg/sql` core, so this is
 the only configuration where the SQL engine's own dependencies are absent.
 With SQL on and PG off and MySQL off, `qrdb_sql` alone still compiles the
 ad-hoc `/sql/query` service and the in-process driver, both backed by the
-same go-mysql-server engine; every transport answers `/sql/query` with its
-nil-service error only once `qrdb_sql` itself is off.
+same go-mysql-server engine. Only with `qrdb_sql` off is the ad-hoc query
+unserved (see [api.md](api.md#capability-matrix--ad-hoc-query)).
 
 **`WITH_QRDB_SQL=0` alone is sufficient** — the Makefile forces
 `WITH_QRDB_MYSQL` and `WITH_QRDB_PGSQL` to `0` as well, whatever either was
-set to, including their own default of `1`. That is the fix for a
-footgun the override direction above creates on its own: without it,
-`make build WITH_QRDB_SQL=0` with no other flags named left `WITH_QRDB_MYSQL`
-and `WITH_QRDB_PGSQL` at their default of `1`, which then forced
-`WITH_QRDB_SQL` straight back to `1` — so removing the SQL layer required
-naming all three flags, silently, with no error telling the caller their
-one flag had no effect. The alternative considered was documenting that
-trap instead of fixing it; this was rejected because a build flag that
-needs two companion flags to do what its name says is the trap, not
-whatever paragraph could have explained it. Naming
-`WITH_QRDB_MYSQL=0 WITH_QRDB_PGSQL=0` alongside `WITH_QRDB_SQL=0` is still
-accepted — harmless, not required.
+set to, including their own default of `1`. Naming
+`WITH_QRDB_MYSQL=0 WITH_QRDB_PGSQL=0` alongside it is accepted and changes
+nothing. The alternative, documenting that removing the SQL layer takes all
+three flags, was rejected: a build flag that needs two companion flags to do
+what its name says is a trap.
 
 `test/buildgates` (`mysql_dependency_test.go` and its PostgreSQL mirror,
 `pgsql_dependency_test.go`) checks this with `go list -deps` over
@@ -218,7 +208,7 @@ by the same code — the tenant-scoped `service.DatabaseServicer`:
   and left intact.
 - `HasDatabase`, `USE` and every database lookup answer only for the session
   tenant's databases: another tenant's database looks exactly like a missing
-  one, as it already did in `SHOW DATABASES`.
+  one, as in `SHOW DATABASES`.
 
 The privilege plane permits both statements (their target is server-level)
 precisely because RBAC decides them; the provider asks the authorizer, not a
@@ -230,7 +220,7 @@ listener keeps the operator's direct path.
 
 ### Table privileges
 
-`GRANT`, `REVOKE`, and `SHOW GRANTS` are real MySQL statements, parsed by the real parser and rewritten by an analyzer post-analyze rule onto QRDB's own per-`(tenant, database)` privilege catalog. QRDB does not implement MySQL's `mysql` grant tables; the `mysql` schema is served as an empty stand-in purely because go-mysql-server's plan builder resolves it while building these statements.
+`GRANT`, `REVOKE`, and `SHOW GRANTS` are real MySQL statements, parsed by the real parser and rewritten by an analyzer post-analyze rule onto QRDB's own per-`(tenant, database)` privilege catalog, not MySQL's `mysql` grant tables (see [Alternatives rejected](#alternatives-rejected)).
 
 ```sql
 GRANT SELECT, INSERT ON shop.orders TO 'alice'@'%';
@@ -280,16 +270,19 @@ All three move together in a single Raft compare-and-swap. The prefix lies under
 
 ## Multi-Tenancy
 
-Tenant isolation is enforced at the storage level. Keys are automatically prefixed with the tenant ID from the client certificate:
+Tenant isolation is enforced at the storage level. Keys are composed under the
+`<tenant>/<db>/` namespace every other protocol uses
+(`tenant.ComposeNamespace`), with the tenant ID taken from the client
+certificate:
 
 ```sql
--- Client cert: CN=alice, OU=acme-corp
+-- Client cert: CN=alice, OU=acme-corp; database shop
 INSERT INTO kv (key, value) VALUES ('config/db', x'...');
--- Stored as: acme-corp/config/db
+-- Stored as: acme-corp/shop/config/db
 
 SELECT * FROM kv WHERE key = 'config/db';
--- Reads: acme-corp/config/db
--- Returns: key='config/db' (prefix stripped)
+-- Reads: acme-corp/shop/config/db
+-- Returns: key='config/db' (namespace stripped)
 ```
 
 ### Catalog visibility
@@ -300,16 +293,13 @@ side by side, so `SHOW DATABASES`, `information_schema`, and
 `pg_catalog.pg_namespace`/`pg_class` enumerate only the databases belonging to
 the tenant on the connection's certificate.
 
-Data access was never reachable across tenants — `service.Registry` resolves
-every read and write against the session's own tenant, so another tenant's
-database name simply is not found — but the *names* were, and through
-`pg_class` their table names with them. A tenant's schema is its own business.
+Data access is scoped the same way: `service.Registry` resolves every read and
+write against the session's own tenant, so another tenant's database name is
+not found.
 
-A database created before any tenant existed carries no tenant ID; those are
-system-owned, visible to the system tenant and to no one else. That is the only
-reading that is both safe and true: treating them as ownerless would hide them
-from the operator, and treating them as everyone's is the disclosure this
-prevents.
+A database that carries no tenant ID is system-owned: visible to the system
+tenant and to no one else. Treating it as ownerless would hide it from the
+operator; treating it as everyone's would disclose it.
 
 
 ## Package Structure
@@ -328,38 +318,26 @@ pkg/sql/
   pgcatalog/      # pg_catalog subset (qrdb_sql build tag)
   query/          # ad-hoc /sql/query service (qrdb_sql build tag)
   internal/sqltest/ # SQL test harness, used only by the packages above (qrdb_sql build tag)
+  internal/sessionguard/ # closes a SQL wire connection when a seal reaches it (qrdb_sql build tag)
   mysql/          # MySQL wire server (qrdb_mysql build tag)
   pgsql/          # PostgreSQL wire server (qrdb_pgsql build tag)
 ```
 
-Every file under `pkg/sql/` — production and test alike, in all nine
+Every file under `pkg/sql/` — production and test alike, in all ten
 packages above `mysql/` and `pgsql/` — carries `//go:build qrdb_sql`
 directly, so the whole SQL core is absent from a build without the tag at
-its own declaration, not merely at its callers'. This supersedes an earlier
-version of this section, which left those nine packages untagged on the
-strength of an import-site audit: every outside importer was itself behind
-`qrdb_sql` (directly, or transitively through `qrdb_mysql` / `qrdb_pgsql`,
-both of which imply it), so the binary-level guarantee held either way. The
-owner's ruling was to make the guarantee structural at the package's own
-declaration as well — retagging every file, including each package's own
-tests, rather than relying solely on the audit. Every consumer outside
+its own declaration, not merely at its callers'. Every consumer outside
 `pkg/sql` — the server's ad-hoc `/sql/query` service
 (`pkg/server/server_sql.go`), the desktop SQL binding
 (`cmd/qrdb/bindings_sql.go`), the SDK's embedded SQL transport
 (`sdk/go/transport/embedded/transport_sql.go`), and the `sdk/go/driver` /
-`sdk/go/gorm` packages — still compiles only under `qrdb_sql`, so a build
-without the tag links none of the SQL layer from either direction now.
+`sdk/go/gorm` packages — compiles only under `qrdb_sql` too, so a build
+without the tag links none of the SQL layer from either direction.
 
-A separate audit of this tree, run while closing the MySQL build-tag
-boundary, found exactly one real leak, and it was outside `pkg/sql`
-entirely: `pkg/api/errclass` — reached by every transport — imported
-`github.com/dolthub/vitess/go/mysql` directly, with no build constraint of
-its own, to build two SQL-error samples for a parity test. That linked
-vitess into every binary regardless of `qrdb_sql`, caught only by
-`test/buildgates`' dependency-graph gate (below), not by any check scoped
-to the package itself. It is fixed by a dependency-free local sample type
-(`numberedSampleError`) carrying just the `Number() int` shape the
-classifier matches on.
+`pkg/api/errclass`, reached by every transport, imports no vitess package:
+its SQL-error parity samples use a local `numberedSampleError` carrying the
+`Number() int` shape the classifier matches on. `test/buildgates`'
+dependency-graph gate (above) is what catches a leak of this kind.
 
 For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN schemes (`node://` and `embedded://`), which differ in exactly whether the relational catalog is reachable.
 
@@ -417,8 +395,8 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
   table — no catalog change can land while an `ALTER` rewrite is open and be
   undone by its write-back — so `RENAME INDEX` moves no data and a dropped
   index's keyspace can never become a live one's. **Tables created by v0.20.0 through v0.21.0 must
-  be dropped and re-created**: they were written under the previous key layout
-  and there is no migration. Such a table is refused (MySQL 1459 /
+  be dropped and re-created**: they were written under a key layout this
+  version does not read, and there is no migration. Such a table is refused (MySQL 1459 /
   SQLSTATE 55000) rather than read as empty; `DROP TABLE` still works.
   See [engineering.md](engineering.md#truncate-table-generation-scoped-keys-o1-regardless-of-table-size).
 - **No read-set conflict detection by default** — see the isolation model in
