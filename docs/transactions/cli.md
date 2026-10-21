@@ -1,6 +1,6 @@
 # Transactions and Batch — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command groups: `qrdb tx` and `qrdb batch`. Both accept the root persistent
@@ -88,9 +88,7 @@ chunked import session underneath (`ImportBegin`, as many `ImportAppend`
 calls as the file needs, `ImportCommit`) — the file is split into pieces no
 larger than the transport's pre-auth message cap
 (`transport.max_message_bytes`, default 4 MiB) before any of it is sent,
-identically on every `--transport`. The command's flags, output, and exit
-behavior are exactly what they were when a single message carried the
-whole file; only the wire underneath changed.
+identically on every `--transport`.
 
 ```bash
 qrdb batch import --file data.csv --key-field id --value-mode row

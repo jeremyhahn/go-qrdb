@@ -1,6 +1,6 @@
 # Transactions and Batch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -27,6 +27,12 @@ type BatchClient interface {
 	// transparently: the caller never sees a session ID or a sequence
 	// number. data is read and split into transport-cap-sized chunks.
 	ImportFile(ctx context.Context, filename string, data io.Reader, opts ImportOptions) (*ImportResult, error)
+
+	// The four session methods, for a caller that drives the lifecycle itself.
+	ImportBegin(ctx context.Context, opts ImportOptions) (string, error)
+	ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
+	ImportCommit(ctx context.Context, sessionID string) (*ImportResult, error)
+	ImportAbort(ctx context.Context, sessionID string) error
 }
 ```
 
@@ -49,15 +55,11 @@ reading `TransactionResponse.Succeeded` back as `applied`:
 This is the identical translation `pkg/server/lifecycle.ExecuteGuardedBatch`
 performs on the node side of the same `service.TransactionServicer.Execute`
 call (`guardCompares`), so the guard/write encoding cannot drift between the
-two ends of the wire. **No new RPC, proto message, or per-transport wire
-plumbing was added for this**: `ExecuteTransaction` already carries
-arbitrary compares plus put/delete ops as one atomic Raft/MVCC transaction on
-every transport (REST, gRPC, QUIC, Unix, MCP, embedded) and every
-`raft.sm_type`, which is exactly what `PutAllIfAllUnchanged`'s contract
-needs. Adding a second, parallel verb that expressed the identical
-guarantee under a different name would duplicate this RPC rather than reach
-anywhere it cannot, so the capability is reached by composition at the SDK
-boundary instead. `pkg/dao.UnitOfWork.Commit` (re-exported as
+two ends of the wire. There is no separate RPC or proto message for this:
+`ExecuteTransaction` carries arbitrary compares plus put/delete ops as one
+atomic transaction on every transport (REST, gRPC, QUIC, Unix, MCP, embedded)
+and every `raft.sm_type`, which is what `PutAllIfAllUnchanged`'s contract
+needs, so the capability is composed at the SDK boundary. `pkg/dao.UnitOfWork.Commit` (re-exported as
 `sdk.NewDAOUnitOfWork`) requires this capability unconditionally and refuses
 with `*dao.AtomicBatchUnsupportedError` otherwise -- there is no sequential,
 non-atomic fallback -- so an embedder's cross-DAO move or rename reaches
@@ -67,19 +69,14 @@ whole, and a failed guard applies neither write — on every engine, mode and
 transport cell, through `sdk.NewKVStoreAdapter` exactly as a consumer
 reaches it.
 
-**BREAKING: `UnitOfWork.Commit` now requires `transaction:execute`, not
-`kv:put`/`kv:delete`.** The removed sequential apply-and-compensate
-fallback applied each queued operation through the DAO's own `Save`/`Delete`,
-which over the SDK is a plain `kv.Put`/`kv.Delete` call -- gated by
-`kv:put`/`kv:delete` on every transport (the proto's
-`option (qrdb.v1.permission)` on `rpc Put`/`rpc Delete`). `Commit` now
-always goes through the SAME `ExecuteTransaction` RPC `PutAllIfAllUnchanged`
-does, gated by `transaction:execute` (`rpc Transaction`'s own proto option,
-identical on REST/QUIC/MCP's route tables and the etcd shim). A role or a
-caller that held `kv:put`/`kv:delete` but not `transaction:execute` could
-commit a `UnitOfWork` before; it is refused with `PermissionDenied` now.
-The built-in `Operator` role holds both and is unaffected; a caller running
-under a narrower, hand-authored role needs `transaction:execute` added.
+**`UnitOfWork.Commit` requires `transaction:execute`, not
+`kv:put`/`kv:delete`.** It always goes through the same `ExecuteTransaction`
+RPC `PutAllIfAllUnchanged` does, gated by `transaction:execute` (`rpc
+Transaction`'s proto option, and the same permission on REST, QUIC and MCP's
+route tables and the etcd shim). A caller holding `kv:put`/`kv:delete` but
+not `transaction:execute` is refused with `PermissionDenied`. The built-in
+`Operator` role holds both; a narrower, hand-authored role needs
+`transaction:execute` added.
 
 ### Types
 
@@ -200,7 +197,7 @@ type BatchServicer interface {
 
 	// ImportBegin starts a chunked import session scoped to the caller's
 	// (tenant, database) and (tenant, identity). opts configures the
-	// import exactly as a single-message import always has.
+	// import.
 	ImportBegin(ctx context.Context, opts ImportOptions) (sessionID string, err error)
 
 	// ImportAppend stages chunk as sequence seq of sessionID and renews
@@ -210,9 +207,8 @@ type BatchServicer interface {
 	// (tenant, identity) must match the session's.
 	ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
 
-	// ImportCommit applies every staged chunk of sessionID atomically,
-	// exactly as a single-message import applied its one file, and
-	// releases the session. The caller's (tenant, identity) must match
+	// ImportCommit applies every staged chunk of sessionID atomically
+	// and releases the session. The caller's (tenant, identity) must match
 	// the session's.
 	ImportCommit(ctx context.Context, sessionID string) (*ImportResult, error)
 
@@ -231,9 +227,11 @@ per-call service resolution) needs to wrap all seven together — splitting
 import into its own interface would not reduce how many types implement
 it, only how many `var _ Xxx = (*T)(nil)` lines prove they still do.
 
-Note the enum ordering: `CompareTarget` and `CompareResult` are `iota` enums, so
-the JSON wire form carries **integers**, not names. A client that hardcodes
-`"target": 3` is asking for `CompareValue`.
+Note the enum ordering: `CompareTarget`, `CompareResult` and `OpType` are
+`iota` enums, so these types' JSON form (what `qrdb tx execute --file` and
+`qrdb batch execute --file` read) carries **integers**, not names. A client that
+hardcodes `"target": 3` is asking for `CompareValue`. The REST `POST /tx` and
+`POST /batch` bodies take names instead ([api.md](api.md)).
 
 ## Invariants
 
@@ -272,9 +270,8 @@ the JSON wire form carries **integers**, not names. A client that hardcodes
   different identity is refused; same identity shape, different tenant is
   refused. A session ID grants no authority of its own.
 - **`ImportCommit` applies all staged chunks as one atomic unit** — the
-  combined bytes feed the SAME parse-and-apply path a single-message
-  import always used, so `--transactional` and per-row semantics are
-  identical to the pre-session behavior. A failure partway through commit
+  combined bytes feed one parse-and-apply path, with the `--transactional`
+  and per-row semantics above. A failure partway through commit
   (a chunk whose concatenation cannot be parsed, a proposal that is
   refused) applies nothing: the staged chunks and the session survive a
   failed commit so the caller can inspect and retry, and are released only
@@ -294,7 +291,7 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | Empty key in a compare or an op | refused before proposal (`service.InvalidKeyError` inside `EncodeRequestError`, invalid-argument); a state machine that receives one anyway refuses it as an application result and keeps applying | **yes** |
 | Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
 | Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`) | the key is bound to the lease in the same commit; a lease the state machine does not hold refuses the whole transaction or batch with lease-not-found, nothing written | **yes** |
-| Lease-bearing op on the legacy `regular` `sm_type` | whole transaction or batch refused as an unsupported capability, nothing written | **yes** |
+| Lease-bearing op on the `regular` `sm_type` | whole transaction or batch refused as an unsupported capability, nothing written | **yes** |
 | A chunk, or any other single call, exceeds the transport's pre-auth cap | refused before parsing, before authentication on every transport | **yes** |
 | `ImportBegin`'s format cannot be inferred and none given | refused | **yes** |
 | `--transactional` commit, any row fails | whole import rolled back, `ImportResult.Failed > 0` | **yes** |
@@ -308,7 +305,7 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | Same, but the chunk's proposal commits and is refused ON ITS MERITS (a result-level `AppError` — `checkResultError`'s path, provably nothing stored) | that chunk's rows are recorded failed; later chunks are still attempted (non-transactional) or the whole commit is refused (transactional) | **yes** |
 | `ImportCommit` reaches a replica that knows no leader for the shard: mid-election, or right after a leader change when the new leader steps down on losing quorum | every session read and chunk proposal is held by the Raft host adapter until a leader is known, then reissued — the leader-wait contract in [../clustering/engineering.md](../clustering/engineering.md) — and a read the new leader cannot serve yet (`quicraft.ErrReadIndexNotReady`: nothing committed in its term) is retried for up to 5 s on top. A session read a leadership change stranded is reissued to the new leader; a proposal refused naming a leader returns at once, for the transport to forward. At the 10 s bound a refused session read fails the call with `UNAVAILABLE` / REST 503 `NOT_LEADER` before anything is applied, leaving the session retryable; a refused chunk proposal stored nothing and is handled like the refusal on its merits above | **yes** |
 | Missing `transaction:execute` / `batch:execute` | permission denied | **yes** |
-| `UnitOfWork.Commit` by a caller holding `kv:put`/`kv:delete` but not `transaction:execute` | permission denied (**BREAKING**: the removed compensating fallback needed only `kv:put`/`kv:delete`) | **yes** |
+| `UnitOfWork.Commit` by a caller holding `kv:put`/`kv:delete` but not `transaction:execute` | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
 
 ## Configuration
@@ -345,8 +342,9 @@ the SAME parse-and-apply path, and therefore the same per-write quota
 accounting, as every other write — a session is invisible to
 `MaxStorageBytes` right up to the commit that makes it real.
 
-Group commit for `batched` writes is the batch aggregator's job, which is a
-storage-layer concern rather than part of this API.
+No write mode aggregates transactions or batches: the Raft host adapter
+(`raft.HostAdapter.ProposeWithMode`) proposes a `wal_durable` or `batched`
+write through consensus exactly as it does a `sync` one.
 
 ## Persistence
 
@@ -369,9 +367,10 @@ never replays it over its own result.
   happy path and an error path.
 - **Integration**: `make integration-test-standalone` covers transaction and
   batch parity across transports; the multi-node atomicity cases live in the
-  cluster stage (`make integration-test-cluster`), which runs in CI as the
-  three legs of the `integration-cluster` job (`.github/workflows/ci.yml`),
-  required by `ci-gate`.
+  self-spawned suites under `test/integration` (`make integration-test-cluster`
+  runs them all), which CI runs one feature per leg in the
+  `integration-features` job (`.github/workflows/ci.yml`), required by
+  `ci-gate`.
 - **Fault injection**: the import path takes an `io.Reader`, so a truncated or
   malformed stream is injected directly rather than staged on disk. A
   multi-chunk `ImportCommit` is covered separately: a fake host's
@@ -423,9 +422,6 @@ longer value is refused rather than truncated, that encoders return
 error mapping to `InvalidArgument`/400 — is one rule for the whole extended wire
 protocol and is stated once, in
 [../key-value/engineering.md](../key-value/engineering.md#wire-field-bounds--the-owning-contract-for-every-plane).
-
-It is not restated here on purpose: four copies of a bound is how the four drift
-apart.
 
 ## Integration testing
 

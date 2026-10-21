@@ -1,6 +1,6 @@
 # Transactions and Batch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -19,19 +19,15 @@ gRPC wire over a UDS, so its methods match the gRPC column exactly.
 | Import a whole file (SDK/CLI convenience) | — | — | — | — | `Client.Batch().ImportFile` | `batch:execute` |
 | List import formats | derived — static list | derived | derived | derived | client-side | `batch:execute` |
 
-`batch import-formats` is answered from a compiled-in list rather than a wire
-call. Recorded here so the absence of an endpoint is not read as a gap.
-`ImportFile` is not its own RPC on any transport — it is the Go SDK driving
+`batch import-formats` is answered from a compiled-in list, not a wire call.
+`ImportFile` is not its own RPC on any transport: it is the Go SDK driving
 `ImportBegin`/`ImportAppend`*/`ImportCommit` for a caller that would rather
-hand over an `io.Reader` than manage sequence numbers itself; `qrdb batch
-import` is built on it, so the CLI surface is unchanged even though the wire
-underneath is now four small calls instead of one large one.
+hand over an `io.Reader` than manage sequence numbers itself. `qrdb batch
+import` is built on it.
 
-There is no single-message import RPC on any transport. One existed
-(`BatchImport`) and was removed outright, no compat, because it required
-accepting a message far larger than the universal pre-auth cap any other
-RPC is held to — see [architecture.md](architecture.md)'s "Alternatives
-rejected".
+There is no single-message import RPC on any transport: a whole file in one
+message would exceed the pre-auth cap every other RPC is held to. See
+[architecture.md](architecture.md)'s "Alternatives rejected".
 
 ## Request schemas
 
@@ -40,19 +36,23 @@ rejected".
 ```json
 {
   "compares": [
-    { "key": "<base64>", "target": 3, "result": 0, "value": "<base64>" }
+    { "key": "k1", "target": "value", "result": "equal", "value": "v0" }
   ],
-  "success_ops": [ { "type": 0, "key": "<base64>", "value": "<base64>", "lease_id": 0 } ],
-  "failure_ops": [ { "type": 2, "key": "<base64>" } ]
+  "success_ops": [ { "type": "put", "key": "k1", "value": "v1", "lease_id": 0 } ],
+  "failure_ops": [ { "type": "delete", "key": "k2" } ]
 }
 ```
 
-`target`: `0` version · `1` create_revision · `2` mod_revision · `3` value.
-`result`: `0` equal · `1` greater · `2` less · `3` not_equal.
-op `type`: `0` put · `2` delete. `1` get and `3` range are values of the
-shared `OpType` enum but are refused in a transaction or batch branch
-(`UnsupportedTransactionOpError`: REST 400, gRPC/Unix/QUIC/MCP
-`INVALID_ARGUMENT`); read the keys after the transaction commits.
+Keys and values are JSON strings, sent as their bytes.
+`target`: `version` · `create_revision` · `mod_revision` · `value`; the
+compare reads the field of the same name (`version`, `create_revision`,
+`mod_revision` or `value`).
+`result`: `equal` · `greater` · `less` · `not_equal`.
+op `type`: `put` · `delete`. `get` and `range` parse but are refused in a
+transaction or batch branch (`UnsupportedTransactionOpError`: REST 400,
+gRPC/Unix/QUIC/MCP `INVALID_ARGUMENT`); read the keys after the transaction
+commits. An unrecognised string is not refused: `target` falls back to
+`version`, `result` to `equal`, and `type` to `put`.
 
 Response — `TransactionResponse`:
 
@@ -85,8 +85,7 @@ parameter rather than a JSON field so the body stays raw bytes end to end,
 with no base64 or envelope overhead counted against the pre-auth cap.
 Response is empty on success (`204`).
 
-`POST /batch/import/{session}/commit` — no body. Response `ImportResult`,
-identical in shape to the old single-message import's response:
+`POST /batch/import/{session}/commit` — no body. Response `ImportResult`:
 
 ```json
 {
@@ -104,7 +103,7 @@ identical in shape to the old single-message import's response:
 |---|---|---|
 | Success (including `succeeded: false`) | 200 | `OK` |
 | `ImportAppend`/`ImportCommit`/`ImportAbort` success with no body | 204 | `OK` |
-| Malformed request or unknown enum value | 400 | `INVALID_ARGUMENT` |
+| Malformed request | 400 | `INVALID_ARGUMENT` |
 | `ImportBegin`'s format not inferable and not given | 400 | `INVALID_ARGUMENT` |
 | A call's body (a chunk, or any other) exceeds the transport's pre-auth cap | 413 | `RESOURCE_EXHAUSTED` |
 | `ImportAppend`'s `seq` is a gap, a regression, or a replay with different bytes | 400 | `INVALID_ARGUMENT` |
