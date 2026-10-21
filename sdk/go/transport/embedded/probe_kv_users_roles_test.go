@@ -212,14 +212,16 @@ func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsRole(t *testing.T) {
 	} else if !errors.As(err, new(*role.RoleNotFoundError)) {
 		t.Errorf("GetRole(globex): err = %v, want *role.RoleNotFoundError", err)
 	}
-	// roles:update and roles:delete are SO-exclusive (builtin_role_grants.go):
-	// the built-in Admin holds neither, in any tenant, so these are refused
-	// at the entry check itself regardless of which role is named.
+	// roles:update is granted to the built-in Admin too, so the refusal for
+	// globex-role comes from the routed role service, exactly as for read.
 	if _, err := tr.UpdateRole(acmeAdmin, &transport.UpdateRoleRequest{ID: "globex-role", Name: "pwned"}); err == nil {
 		t.Error("acme's Admin updated globex's role")
-	} else if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("UpdateRole(globex): err = %v, want an authorization denial", err)
+	} else if !errors.As(err, new(*role.RoleNotFoundError)) {
+		t.Errorf("UpdateRole(globex): err = %v, want *role.RoleNotFoundError", err)
 	}
+	// roles:delete is SO-exclusive (builtin_role_grants.go): the built-in
+	// Admin does not hold it in any tenant, so it is refused at the entry
+	// check itself regardless of which role is named.
 	if err := tr.DeleteRole(acmeAdmin, "globex-role"); err == nil {
 		t.Error("acme's Admin deleted globex's role")
 	} else if !errors.Is(err, auth.ErrUnauthorized) {
@@ -228,5 +230,8 @@ func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsRole(t *testing.T) {
 
 	if _, err := tr.GetRole(acmeAdmin, "acme-role"); err != nil {
 		t.Fatalf("acme's Admin must be able to read its own tenant's role: %v", err)
+	}
+	if _, err := tr.UpdateRole(acmeAdmin, &transport.UpdateRoleRequest{ID: "acme-role", Name: "renamed"}); err != nil {
+		t.Fatalf("acme's Admin must be able to update its own tenant's role: %v", err)
 	}
 }

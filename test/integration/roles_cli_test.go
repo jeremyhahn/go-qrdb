@@ -30,9 +30,12 @@ package integration_test
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // roleCLIJSON mirrors transport.Role, decoded from the unwrapped JSON
@@ -454,9 +457,10 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] no registered admin credential for tenant %s", proto.name, tenantID)
 	}
 	tenantConn := tenantCLIArgsForProto(node, proto, cred.certPath, cred.keyPath)
-	// Reconciling a tenant's built-in roles needs roles:create, which is
-	// Security Officer-exclusive.
-	selfAssignTenantSO(t, node.restPort, tenantID,
+	// Reconciling a tenant's built-in roles needs roles:create, which the
+	// tenant's built-in Admin holds in its own tenant: no other role is
+	// assigned. The wait only outlasts the admin account's completion.
+	awaitTenantAdminID(t, node.restPort, tenantID,
 		mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second))
 
 	out, err = runQRDB(t, node.cli, tenantConn, "--output", "json", "roles", "list", "--tenant-id", tenantID)
@@ -510,5 +514,149 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	}
 	if len(second.Roles) != 0 {
 		t.Fatalf("[%s] second, immediate roles reconcile reported changes, want none: %+v", proto.name, second.Roles)
+	}
+}
+
+// TestRolesTenantAdmin_CLI_PerProtocol drives `roles create` and `roles
+// update` as a tenant's own built-in Admin holding no other role. The Admin
+// creates and updates custom roles in its own tenant; it is refused in
+// another tenant and in the system tenant, and the built-in roles stay out
+// of its hands.
+func TestRolesTenantAdmin_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testRolesTenantAdminOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// tenantAdminConn creates a prefix tenant and returns the CLI connection
+// arguments of its own built-in Admin, once that account is accepted.
+func tenantAdminConn(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) []string {
+	t.Helper()
+	createTenant(t, node, proto, tenantID, "Role Admin "+tenantID, "prefix", false)
+	cred, ok := lookupTenantAdminCred(tenantID)
+	if !ok {
+		t.Fatalf("[%s] no registered admin credential for tenant %s", proto.name, tenantID)
+	}
+	awaitTenantAdminID(t, node.restPort, tenantID,
+		mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second))
+	return tenantCLIArgsForProto(node, proto, cred.certPath, cred.keyPath)
+}
+
+// runRoleCLI runs a roles subcommand with JSON output and decodes the role it
+// prints.
+func runRoleCLI(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, args ...string) roleCLIJSON {
+	t.Helper()
+	out, err := runQRDB(t, node.cli, conn, append([]string{"--output", "json", "roles"}, args...)...)
+	if err != nil {
+		t.Fatalf("[%s] roles %v: %v\noutput: %s", proto.name, args, err, out)
+	}
+	var r roleCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &r); jerr != nil || r.ID == "" {
+		t.Fatalf("[%s] decode roles %v JSON: %v\noutput: %s", proto.name, args, jerr, out)
+	}
+	return r
+}
+
+// roleNamesIn lists the role names a connection sees in tenantID.
+func roleNamesIn(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, tenantID string) []string {
+	t.Helper()
+	args := []string{"--output", "json", "roles", "list"}
+	if tenantID != "" {
+		args = append(args, "--tenant-id", tenantID)
+	}
+	out, err := runQRDB(t, node.cli, conn, args...)
+	if err != nil {
+		t.Fatalf("[%s] roles list --tenant-id %q: %v\noutput: %s", proto.name, tenantID, err, out)
+	}
+	var listed roleListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode roles list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	names := make([]string, len(listed.Roles))
+	for i, r := range listed.Roles {
+		names[i] = r.Name
+	}
+	return names
+}
+
+func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	tenantA, tenantB := "tra-"+suffix, "trb-"+suffix
+	connA := tenantAdminConn(t, node, proto, tenantA)
+	connB := tenantAdminConn(t, node, proto, tenantB)
+
+	// Own tenant: create, with no --tenant-id and naming the tenant, then
+	// update the name and the grant.
+	created := runRoleCLI(t, node, proto, connA, "create",
+		"--name", "app-reader-"+suffix, "--permissions", "kv:get")
+	if created.TenantID != tenantA || created.System {
+		t.Fatalf("[%s] created role = tenant %q system %v, want tenant %s, not system", proto.name, created.TenantID, created.System, tenantA)
+	}
+	named := runRoleCLI(t, node, proto, connA, "create",
+		"--name", "app-named-"+suffix, "--permissions", "kv:get", "--tenant-id", tenantA)
+	if named.TenantID != tenantA {
+		t.Fatalf("[%s] role created naming tenant %s landed in %q", proto.name, tenantA, named.TenantID)
+	}
+	updated := runRoleCLI(t, node, proto, connA, "update", created.ID,
+		"--name", "app-writer-"+suffix, "--permissions", "kv:get,kv:put")
+	if updated.ID != created.ID || updated.Name != "app-writer-"+suffix ||
+		!stringSliceEqualUnordered(updated.Permissions, []string{"kv:get", "kv:put"}) {
+		t.Fatalf("[%s] updated role = %+v, want %s renamed app-writer-%s with [kv:get kv:put]", proto.name, updated, created.ID, suffix)
+	}
+	if names := roleNamesIn(t, node, proto, connA, tenantA); !slices.Contains(names, "app-writer-"+suffix) {
+		t.Fatalf("[%s] tenant %s roles lack the updated role: %v", proto.name, tenantA, names)
+	}
+
+	// Another tenant: tenant B's own Admin creates a role there; tenant A's
+	// Admin can neither create in B nor update B's role.
+	victim := runRoleCLI(t, node, proto, connB, "create",
+		"--name", "b-reader-"+suffix, "--permissions", "kv:get")
+	intruder := "intruder-" + suffix
+	assertCrossTenantIAMForbidden(t, node, proto, connA, victim.Name,
+		"roles", "create", "--name", intruder, "--permissions", "kv:get", "--tenant-id", tenantB)
+	if out, err := runQRDB(t, node.cli, connA, "roles", "update", victim.ID,
+		"--name", intruder, "--permissions", "kv:get,kv:put"); err == nil {
+		t.Fatalf("[%s] tenant A admin updated tenant B's role %s: %s", proto.name, victim.ID, out)
+	} else if strings.Contains(out, victim.Name) {
+		t.Fatalf("[%s] refused update leaked tenant B's role name %q: %s", proto.name, victim.Name, out)
+	}
+	unchanged := runRoleCLI(t, node, proto, connB, "get", victim.ID)
+	if unchanged.Name != victim.Name || !stringSliceEqualUnordered(unchanged.Permissions, []string{"kv:get"}) {
+		t.Fatalf("[%s] tenant B's role after refused writes = %+v, want %s with [kv:get]", proto.name, unchanged, victim.Name)
+	}
+	if names := roleNamesIn(t, node, proto, connB, tenantB); slices.Contains(names, intruder) {
+		t.Fatalf("[%s] tenant B holds %q after a refused create: %v", proto.name, intruder, names)
+	}
+
+	// The system tenant: refused the same way, and nothing lands there.
+	assertCrossTenantIAMForbidden(t, node, proto, connA, "",
+		"roles", "create", "--name", intruder, "--permissions", "kv:get", "--tenant-id", "system")
+	if out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "list"); err != nil {
+		t.Fatalf("[%s] system roles list: %v\noutput: %s", proto.name, err, out)
+	} else if strings.Contains(out, intruder) {
+		t.Fatalf("[%s] the system tenant holds %q after a refused create: %s", proto.name, intruder, out)
+	}
+
+	// The built-in roles: the name is reserved, and the record is immutable.
+	if out, err := runQRDB(t, node.cli, connA, "roles", "create",
+		"--name", role.RoleNameAdmin, "--permissions", "kv:get"); err == nil {
+		t.Fatalf("[%s] tenant admin created a role named %q: %s", proto.name, role.RoleNameAdmin, out)
+	}
+	adminID := role.SystemRoleID(tenantA, role.RoleNameAdmin)
+	if out, err := runQRDB(t, node.cli, connA, "roles", "update", adminID,
+		"--permissions", "kv:get"); err == nil {
+		t.Fatalf("[%s] tenant admin re-permissioned the built-in admin role: %s", proto.name, out)
+	}
+	builtIn := runRoleCLI(t, node, proto, connA, "get", adminID)
+	if builtIn.Name != role.RoleNameAdmin || !builtIn.System ||
+		!slices.Contains(builtIn.Permissions, "roles:create") {
+		t.Fatalf("[%s] built-in admin role after refused update = %+v", proto.name, builtIn)
 	}
 }

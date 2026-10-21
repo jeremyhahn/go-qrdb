@@ -332,7 +332,8 @@ that build keeps the old set and its administrators get a 403 on the new verb
 with nothing explaining it.
 
 Requires `roles:create` — the same grant as seeding, because reconciliation is
-seeding applied to an existing tenant.
+seeding applied to an existing tenant. A tenant's built-in Admin holds it, so
+the tenant's own Admin reconciles the tenant without taking another role.
 
 `qrdb roles get` prints a `Retired:` line when a role carries permissions this
 build no longer defines. That is the drift this command repairs; seeing it is
@@ -345,6 +346,13 @@ Admin, Operator, User, Auditor. Their identifiers are deterministic,
 so they are the same on every node. Their permissions are fixed too — the one
 supported way to change them is `qrdb roles reconcile`, which converges them
 onto the build's own definitions rather than onto anything a caller supplies.
+
+A tenant's Admin creates and updates its tenant's custom roles (`roles create`,
+`roles update`); deleting a role stays with the Security Officer. Both verbs
+act in the caller's own tenant only: `--tenant-id` naming another tenant, or
+`system`, is refused, and another tenant's role id is not found. A built-in
+role's name is reserved, so `roles create --name admin` is refused, and
+`roles update` refuses a built-in role.
 See [../firstboot/cli.md](../firstboot/cli.md).
 
 ## Delegating to an application's service principal

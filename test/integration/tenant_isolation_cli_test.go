@@ -209,21 +209,15 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 		certPath)
 }
 
-// selfAssignTenantSO grants tenantID's own, already-seeded SO role
-// (role.BuiltInRoles/pkg/bootstrap.seedTenantRoles create one for every
-// tenant) to the identity authenticating as adminClient -- which must be
-// that tenant's own admin, looked up by its well-known username. Purely
-// test setup: the tenant's built-in Admin role cannot create NEW roles
-// (RolesCreate is SO-exclusive, pkg/permission/builtin_role_grants.go), but
-// roles:assign IS in Admin's grants, and self-assignment is not restricted
-// beyond it.
-func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
+// awaitTenantAdminID waits until tenantID's own admin, authenticating as
+// adminClient, is accepted, and returns that admin's user id. A
+// system-managed tenant's admin account is completed just after the create
+// answers (docs/multi-tenancy/api.md), and until it exists the admin's
+// certificate is refused: 401 under the default binding policy, 403
+// otherwise. Only that refusal is waited out; any other status fails.
+func awaitTenantAdminID(t *testing.T, restPort int, tenantID string, adminClient *http.Client) string {
 	t.Helper()
 	adminUsername := tenantID + "-admin"
-	// A system-managed tenant's admin account is completed just after the
-	// create answers (docs/multi-tenancy/api.md), and until it exists the
-	// admin's certificate is refused: 401 under the default binding policy,
-	// 403 otherwise. Only that refusal is waited out; any other status fails.
 	lookupURL := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, adminUsername, tenantID)
 	var lookupBody []byte
 	var lookupStatus int
@@ -232,18 +226,32 @@ func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient
 		return lookupStatus != http.StatusUnauthorized && lookupStatus != http.StatusForbidden
 	})
 	if lookupStatus != http.StatusOK {
-		t.Fatalf("selfAssignTenantSO: look up tenant admin %s: status %d, body: %s", adminUsername, lookupStatus, lookupBody)
+		t.Fatalf("awaitTenantAdminID: look up tenant admin %s: status %d, body: %s", adminUsername, lookupStatus, lookupBody)
 	}
 	var adminResp struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(lookupBody, &adminResp); err != nil || adminResp.ID == "" {
-		t.Fatalf("selfAssignTenantSO: decode tenant admin id: %v body=%s", err, lookupBody)
+		t.Fatalf("awaitTenantAdminID: decode tenant admin id: %v body=%s", err, lookupBody)
 	}
+	return adminResp.ID
+}
+
+// selfAssignTenantSO grants tenantID's own, already-seeded SO role
+// (role.BuiltInRoles/pkg/bootstrap.seedTenantRoles create one for every
+// tenant) to the identity authenticating as adminClient -- which must be
+// that tenant's own admin, looked up by its well-known username. Purely
+// test setup, for a test whose admin then acts as the tenant's Security
+// Officer: roles:assign is in the Admin's grants, and self-assignment is not
+// restricted beyond it.
+func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
+	t.Helper()
+	adminUsername := tenantID + "-admin"
+	adminID := awaitTenantAdminID(t, restPort, tenantID, adminClient)
 	assignBody, assignStatus := iraftAPIPost(t, adminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles/assign", restPort),
 		map[string]interface{}{
-			"user_id": adminResp.ID,
+			"user_id": adminID,
 			"role_id": role.SystemRoleID(tenantID, role.RoleNameSO),
 		},
 	)
@@ -701,17 +709,17 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 
 	// Direction 2 (succeeds when unsealed): the OPEN tenant's own admin,
 	// authenticating as itself, resolves to that tenant's own unsealed
-	// barrier-backed store and succeeds. Its built-in Admin role cannot create
-	// NEW roles (RolesCreate is SO-exclusive), so it self-assigns its
-	// pre-seeded SO role before the "roles create" call, the same way
-	// provisionTenantIdentityFor does.
+	// barrier-backed store and succeeds. Its built-in Admin role holds
+	// roles:create, users:create and roles:list in its own tenant, so it
+	// needs no other role; the wait only outlasts the admin account's
+	// completion after the tenant create.
 	openCred, ok := lookupTenantAdminCred(openID)
 	if !ok {
 		t.Fatalf("[%s] no registered admin credential for open tenant %s", proto.name, openID)
 	}
 	openConn := tenantCLIArgsForProto(node, proto, openCred.certPath, openCred.keyPath)
 	openClient := mtlsHTTPClientFromFiles(t, node.ca, openCred.certPath, openCred.keyPath, 15*time.Second)
-	selfAssignTenantSO(t, node.restPort, openID, openClient)
+	awaitTenantAdminID(t, node.restPort, openID, openClient)
 
 	openRole := "role-open-" + suffix
 	if out, err := runQRDB(t, node.cli, openConn, "roles", "create",

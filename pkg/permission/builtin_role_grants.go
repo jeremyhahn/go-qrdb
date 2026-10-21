@@ -59,7 +59,8 @@ func registerSOGrants() {
 		CertsList, CertsRead,
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
-		// Role management (SO-exclusive)
+		// Role management (roles:delete is SO-exclusive; the tenant Admin
+		// also creates and updates roles in its own tenant)
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
@@ -183,8 +184,15 @@ func registerAdminGrants() {
 		UsersDelete, UsersList, UsersEnable,
 		UsersDisable, UsersSuspend, UsersUnsuspend,
 		UsersAddCertBinding, UsersInvite,
-		// Role management (read/assign — cannot create/delete system roles)
-		RolesRead, RolesList, RolesAssign,
+		// Role management in the Admin's own tenant (ScopeSelf, and the role
+		// router resolves every create and update to the caller's tenant, so
+		// another tenant and the system tenant are out of reach). An Admin
+		// seeds and reconciles its tenant's custom roles; the built-in roles
+		// stay out of its hands either way, because their names are reserved
+		// and their names and grants are immutable (pkg/role). roles:delete
+		// stays with the Security Officer.
+		RolesCreate, RolesRead, RolesUpdate,
+		RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
 		// Admin service
 		AdminHealth, AdminStatus, AdminPeers,

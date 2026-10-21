@@ -124,7 +124,7 @@ func registerGovernanceDuties() {
 		CertsList, CertsRead,
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
-		// Role and permission administration (SO-exclusive).
+		// Role and permission administration.
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
