@@ -1,6 +1,6 @@
 # TypeScript SDK — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 No QRDB CLI command is owned by the TypeScript SDK. The package is built and
@@ -37,6 +37,6 @@ npm run test:e2e
 
 ## Parity
 
-`make integration-test-typescript-sdk` is present as the feature target and runs
-zero Go CLI tests by design. The SDK is not a cobra command surface, so there is
-no `CommandDefinition` row for it.
+`make integration-test-typescript-sdk` resolves through the feature pattern rule
+and runs zero Go CLI tests by design: the SDK is not a cobra command surface,
+and `test/integration/features.mk` maps no test file to it.

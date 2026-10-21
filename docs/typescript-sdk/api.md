@@ -1,6 +1,6 @@
 # TypeScript SDK — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Capability Matrix
@@ -35,4 +35,4 @@ and embedded or remote Go client path.
 ## Versioning
 
 The package version is `0.1.0` in `sdk/typescript/package.json`. The package is
-an in-repository dependency today; npm publication is not yet implemented.
+consumed from this repository and is not published to npm.

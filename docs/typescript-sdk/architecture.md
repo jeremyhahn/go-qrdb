@@ -1,6 +1,6 @@
 # TypeScript SDK — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -54,5 +54,4 @@ mode.
 
 ## Not In Scope
 
-Publishing to npm is not part of this repository feature yet. The shipped
-consumer is the in-repository frontend using the local file dependency.
+Publishing to npm is not part of this feature. The shipped consumer is the in-repository frontend using the local file dependency.
