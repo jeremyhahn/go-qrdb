@@ -1,6 +1,6 @@
 # etcd Compatibility — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-etcd-compatibility`; coverage row: `test/integration/COVERAGE.md` `[etcd-compatibility](../../docs/etcd-compatibility/)`.
@@ -23,8 +23,7 @@ Create a database with etcd enabled, on a node running in mode `raft`; any
 backend serves it.
 
 ```bash
-qrdb database create --name k8s \
-     --etcd --etcd-listen-addr :2379
+qrdb database create k8s --etcd --etcd-listen-addr :2379
 ```
 
 Then talk to it as etcd:
@@ -45,8 +44,8 @@ etcdctl --endpoints=https://db.example.com:2379 \
 **Turn etcd on or off for an existing database.**
 
 ```bash
-qrdb database update-etcd --name k8s --enabled --listen-addr :2379
-qrdb database update-etcd --name k8s --disabled
+qrdb database update-etcd k8s --enabled --listen-addr :2379
+qrdb database update-etcd k8s --disabled
 ```
 
 **Use it as the Kubernetes backing store.**
@@ -61,7 +60,7 @@ kube-apiserver \
 
 The `kube-apiserver` client certificate's role needs `kv:range`, `kv:put`,
 `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and the
-`lease:*` permissions, and must belong to the tenant that owns the database. The daemon's `sm_type` must be `mvcc` — Kubernetes depends on
+`lease:*` permissions, and must belong to the tenant that owns the database. The daemon's `raft.sm_type` must be `mvcc` — Kubernetes depends on
 revisions, watches, leases and transactions. On a state machine without MVCC
 revision history (the default `pebble`) the etcd server refuses to start
 (`etcd.RevisionHistoryRequiredError`), and a put that reached one would be
@@ -77,8 +76,7 @@ tenant if it needs a revision counter of its own.
 
 **The etcd listener never came up.** The listener refuses to start rather than
 fail later. Check that the node runs in mode `raft`, that TLS and auth are both
-enabled, and that the database is not sealed. (A database of an engine other
-than `kv` cannot have etcd enabled at all.)
+enabled, that `raft.sm_type` is `mvcc`, and that the database is not sealed.
 
 **`etcdctl user` or `etcdctl role` returns "permission denied".** That is
 permanent. Authentication is mTLS and authorization is qrdb RBAC; etcd's own
@@ -88,14 +86,13 @@ auth RPCs are not served. Use `qrdb roles` to grant permissions.
 without authentication".** The node has no TLS or no authentication configured.
 The listener never serves an unauthenticated port.
 
-**Every RPC fails with "unauthenticated" or "may not access database".** Present
+**Every RPC fails with "unauthenticated" or "etcd: permission denied".** Present
 a client certificate, issued to a user of the tenant that owns the database.
 
 **Operations fail with permission errors partway through a workload.**
 Authorization is per RPC, mapped from the etcd operation to a qrdb permission.
 Your certificate's role is missing one of them — the mapping table is in
-[api.md](api.md).
-
+[api.md](api.md#rpc-coverage).
 
 **`kube-apiserver` reports compacted revisions.** `kube-apiserver` calls
 `Compact` periodically; that is normal, and it discards this database's

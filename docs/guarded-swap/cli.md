@@ -1,6 +1,6 @@
 # Guarded Swap — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 **There is no CLI surface for guarded swap, and there is deliberately no plan
@@ -29,8 +29,3 @@ Integration coverage: the feature-gate activation of guarded writes is driven
 over every remote transport by `make integration-test-guarded-swap`
 (`feature_gate_cluster_test.go`); see the `guarded-swap` row of
 [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).
-
-Operators looking for contention should read the transaction plane's existing
-metrics rather than expect a swap-specific verb: a swap that loses its guard is
-an ordinary refused transaction from the store's point of view, and is already
-counted as one.

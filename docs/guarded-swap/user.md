@@ -1,6 +1,6 @@
 # Guarded Swap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Use `GuardedSwap` whenever a record must move from one state to another and more
@@ -14,7 +14,7 @@ gone.
 
 ```go
 res, err := sdk.GuardedSwap(ctx, client, sdk.GuardedSwapRequest{
-	Key: []byte("__sys:claim/task-1"),
+	Key: []byte("claim/task-1"),
 	Decide: func(current []byte, exists bool) ([]byte, sdk.SwapDecision, error) {
 		if exists {
 			return nil, sdk.SwapLose, nil // someone else holds it
@@ -41,7 +41,7 @@ once a higher one is installed. Every writer terminates.
 
 ```go
 _, err := sdk.GuardedSwap(ctx, client, sdk.GuardedSwapRequest{
-	Key:         []byte("__sys:lease/resource-1"),
+	Key:         []byte("lease/resource-1"),
 	MaxAttempts: 16,
 	Decide: func(current []byte, exists bool) ([]byte, sdk.SwapDecision, error) {
 		if exists {

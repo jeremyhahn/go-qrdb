@@ -1,6 +1,6 @@
 # etcd Compatibility — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 etcd compatibility has **no `qrdb etcd` command group.** It is a per-database
@@ -10,27 +10,36 @@ that matter here:
 
 ```bash
 # Create a database with etcd protocol enabled
-qrdb database create --name k8s --etcd --etcd-listen-addr :2379
+qrdb database create k8s --etcd --etcd-listen-addr :2379
 
 # Enable etcd on an existing database
-qrdb database update-etcd --name k8s --enabled --listen-addr :2379
+qrdb database update-etcd k8s --enabled --listen-addr :2379
 
 # Disable etcd on a database
-qrdb database update-etcd --name k8s --disabled
+qrdb database update-etcd k8s --disabled
 ```
+
+`database create <name>` flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--etcd` | `false` | Enable etcd protocol on database creation |
 | `--etcd-listen-addr` | `localhost:2379` | etcd gRPC listen address (loopback by default; set `:2379` or a routable address for remote clients) |
-| `--etcd-advertise-client-urls` | (none) | Advertised client URLs for etcd endpoint discovery |
+| `--etcd-advertise-urls` | (none) | Advertised client URLs for etcd endpoint discovery |
 
+`database update-etcd <name>` flags (`--enabled` and `--disabled` are mutually
+exclusive):
 
-The other `qrdb database` flags apply as normal: any `--backend`, the node
-must run in mode `raft`, and for Kubernetes the daemon's `sm_type` must be
-`mvcc`. *(Corrected: the database no longer needs to be `--engine kv` --
-Lane 1C deleted the `engine` concept entirely, OD-12/OD-13, so etcd now
-serves any database regardless of what it stores.)*
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enabled` | `false` | Enable the etcd listener |
+| `--disabled` | `false` | Disable the etcd listener |
+| `--listen-addr` | (none) | etcd gRPC listen address |
+| `--advertise-urls` | (none) | Advertised client URLs |
+
+The other `qrdb database` flags apply as normal: any `--backend` serves etcd.
+The node must run in mode `raft` and the daemon's `raft.sm_type` must be
+`mvcc`, or the listener refuses to start.
 
 **All three etcd flags, and `database update-etcd` itself, exist only on a
 `qrdb` built with `WITH_QRDB_ETCD=1` (the default).** A build with
@@ -92,14 +101,12 @@ etcdctl member list
 etcdctl endpoint status
 ```
 
-
-Set the client environment for mTLS as `etcdctl` normally expects
-(`ETCDCTL_API=3` plus `--cacert`, `--cert`, `--key`); there is no username or
-password, and `etcdctl user`/`role` commands are refused with "permission denied".
+There is no username or password: `etcdctl user` and `etcdctl role` commands
+are refused with `PERMISSION_DENIED`.
 
 ## Parity
 
-The `qrdb database` verbs that configure etcd have `CommandDefinition`s in the
-integration parity suite. The etcd protocol itself is exercised by
-`make test-etcd` and by real `etcdctl` / `clientv3` flows in the integration
-suite, not by CLI parity — it has no `qrdb` verb of its own.
+`qrdb database update-etcd` is driven on every transport by the Docker-based
+`test/integration/api` suite. The etcd protocol itself is covered by
+`make test-etcd` (unit) and by the `clientv3` flows in
+`test/integration/etcd_test.go`; it has no `qrdb` verb of its own.
