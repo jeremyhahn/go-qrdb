@@ -1,6 +1,6 @@
 # Shamir Custody — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 M-of-N custody of a barrier's key material by named **share holders**: who
@@ -268,11 +268,11 @@ distinct, authenticated holders present.
 - **Returning shares from initialization or rekey.** It puts every share in one
   response, in one process, at one moment. Shares leave the node only as
   envelopes sealed to one holder each.
-- **A separate custodian subsystem.** An earlier design kept custodians in
-  their own registry, envelope format, claim protocol and unseal accumulator,
-  with shares entered at enrolment by an officer. It broke split knowledge (the
-  enrolling officer handled raw shares) and gave the store two quorum paths to
-  secure. It has been removed; custodians are holders with a role.
+- **A separate custodian subsystem** — custodians in their own registry,
+  envelope format, claim protocol and unseal accumulator, with shares entered
+  at enrolment by an officer. It breaks split knowledge (the enrolling officer
+  handles raw shares) and gives the store two quorum paths to secure.
+  Custodians are holders with a role.
 - **Counting shares instead of people.** An unauthenticated share endpoint
   lets one person who has seen M shares act as M people. Every submission is
   bound to a holder, a factor proof and that holder's share index.
@@ -347,23 +347,17 @@ distinct, authenticated holders present.
   the `mtls` factor and opens the envelope in process). A sealed Shamir
   barrier's web view says which command its holders run and waits for them.
 
-## Decided: not in the browser
+## Not in the browser
 
-Claiming an envelope and submitting a share are **not** offered in the browser,
-by the owner's decision. A browser path was designed, using the JavaScript HPKE
-library `@hpke/core` over WebCrypto, and rejected for two reasons:
+Claiming an envelope and submitting a share are **not** offered in the
+browser:
 
-- **The library is unaudited.** `@hpke/core` passes the RFC 9180 test vectors
-  and is widely adopted, but it has not been formally audited, and the envelope
+- **No audited JavaScript HPKE.** `@hpke/core` over WebCrypto passes the
+  RFC 9180 test vectors but has not been formally audited, and the envelope
   is the only thing standing between a share and its holder.
 - **Cross-site scripting would become key disclosure.** Holder private keys in
   a browser tab can be reached by anything that runs script in the page, so an
   XSS bug would expose keys, not just a session.
-
-Claims and submissions go through the qrdb CLI or the desktop app, where the
-holder's keys stay in Go. The web UI administers holders and shows which
-command they run. This will be revisited when an audited JavaScript HPKE
-implementation exists.
 
 ## Companion documents
 

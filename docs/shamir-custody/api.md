@@ -1,6 +1,6 @@
 # Shamir Custody — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Every capability below is served on all six transports with the same
@@ -55,11 +55,7 @@ carries the grant. The operations that change the node barrier
 `seal:initialize_shamir`) are cross-scope for the same reason. `seal:status`
 is not cross-scope.
 
-**This changed.** These permissions were self-scoped, and because none of
-these routes names a tenant, the self-scope check compared the caller's tenant
-with itself and admitted any tenant's holder. A tenant role that relied on that
-can no longer register, list or revoke node holders; a tenant's own holders
-are registered through `POST /v1/tenants/{id}/barrier/officers`
+A tenant's own holders are registered through `POST /v1/tenants/{id}/barrier/officers`
 (`tenant_barrier:officer_register`).
 
 First-boot registration is not affected. On the boot-time sealed-window
@@ -262,6 +258,4 @@ wrong PIN and 412 when no PIN backend is configured — it fails closed.
 
 ## Versioning
 
-All custody REST paths are under `/v1/`. The routes, RPCs, QUIC methods and
-MCP tools of the earlier custodian and batch-share model were removed, not
-deprecated; see the CHANGELOG.
+All custody REST paths are under `/v1/`.

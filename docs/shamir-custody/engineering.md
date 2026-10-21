@@ -1,6 +1,6 @@
 # Shamir Custody — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 ## Exported surface
 
@@ -55,8 +55,7 @@ value. A holder whose envelope key is held on a device builds the decrypter
 with `keydelivery.NewDecrypter(kem, kx, pq)`: `kx` is an `ecdh.KeyExchanger`
 and `pq`, for the hybrid suite, a `crypto.Decapsulator`, each of which sends
 its operation to the device. The private key is never in the process.
-`OpenWithKey` is the software path for a key file. (Corrected 2026-10-07: this
-listing gave `Open` a `*hpke.PrivateKey` pointer, which never existed.)
+`OpenWithKey` is the software path for a key file.
 
 Composition (Tier 2), through the server and node options:
 `WithCeremonyCA`, `WithFactorRegistry` (hardware factors from go-xkms),
@@ -496,7 +495,6 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `ErrShamirBarrierRequiresQuorum` | a single-caller seal of a Shamir barrier |
 | `ErrCeremonyDistributorNotConfigured` | a distribution with no distributor |
 | `ErrRecoveryKeysExist` | recovery generation when a recovery key exists; rekey it |
-| `ErrRecoveryKeysNotFound` | no recovery key |
 | `HolderNotInRosterError`, `HolderRevokedError`, `HolderAlreadySubmittedError`, `ShareIndexMismatchError`, `FactorNotAdmittedError`, `HolderAuthenticationError` | admission refusals |
 | `QuorumOpInvalidError` | op not valid in the domain or state |
 | `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
@@ -532,7 +530,7 @@ and policy are per distribution, not configuration.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-shamir-custody` (no Docker; selection in `test/integration/features.mk`). It runs the tenant barrier holder CLI suite per protocol; the system barrier's holder flows run under `make integration-test-barrier-seal` and `make integration-test-ceremony`. Per-transport accounting is the `shamir-custody` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-shamir-custody` (no Docker; selection in `test/integration/features.mk`). It runs `barrier_cli_test.go`, `tenant_barrier_officer_cli_test.go`, `tenant_barrier_shamir_cluster_cli_test.go` and `operator_tls_holder_cli_test.go`; the rest of the system barrier's holder flows run under `make integration-test-barrier-seal` and `make integration-test-ceremony`. Per-transport accounting is the `shamir-custody` row of `test/integration/COVERAGE.md`.
 
 - **Unit** (`pkg/seal`, `pkg/ceremony`): roster validation and tamper
   detection, each admission refusal, factor policies, round expiry (swept eagerly,
@@ -566,9 +564,7 @@ and policy are per distribution, not configuration.
 - No `time.Sleep`: quorum round expiry is driven through the clock seam.
   `StorageBarrier.SetClock` installs the clock rounds are dated and expired
   on (the real clock by default), and the expiry tests advance a
-  `clocktest.Fake` past the round TTL. The one remaining sleep is the
-  `copyEnclaveToBuffer` race child, which holds a real enclave borrow against
-  a real `WipeAll` timeout and so cannot run on virtual time.
+  `clocktest.Fake` past the round TTL.
 
 ## Observability
 
@@ -591,7 +587,6 @@ The barrier records its own events -- `distribute`, `quorum-complete`,
 `initialize`, `unseal` and `seal` among them -- on the same trail
 ([../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability)).
 Each event has one emitter: a submission is `holder-quorum-submit` and a rekey
-opening `holder-rekey-start`, from the holder engine; the barrier no longer
-emits `quorum-share` or `rekey-start`. The ceremony service logs enrolment (holder, role,
+opening `holder-rekey-start`, from the holder engine. The ceremony service logs enrolment (holder, role,
 designated factor, KEM) and claims.
 Holder status is available from the list operation and never includes a share.
