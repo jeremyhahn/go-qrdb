@@ -150,3 +150,14 @@ func TestAuthConfig_EffectiveTrustDomainsWithoutLoad(t *testing.T) {
 		t.Fatalf("EffectiveSPIFFETrustDomain = %q, want cluster.example.com", got)
 	}
 }
+
+func TestAuthConfig_EffectiveClusterTrustDomain(t *testing.T) {
+	var zero AuthConfig
+	if got := zero.EffectiveClusterTrustDomain(); got != DefaultClusterTrustDomain {
+		t.Errorf("default trust domain = %q, want %q", got, DefaultClusterTrustDomain)
+	}
+	a := AuthConfig{ClusterTrustDomain: "db.example.com"}
+	if got := a.EffectiveClusterTrustDomain(); got != "db.example.com" {
+		t.Errorf("configured trust domain = %q, want db.example.com", got)
+	}
+}
