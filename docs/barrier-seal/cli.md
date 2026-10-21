@@ -1,12 +1,12 @@
 # Barrier and Seal — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
 `platformctl`). The verbs are `status`, `init`, `init-shamir`, `unseal`,
-`seal`, `rekey`, `enable-encryption`, `recovery`, `officer` and `quorum`.
+`seal`, `cluster-unseal`, `rekey`, `enable-encryption`, `recovery`, `officer` and `quorum`.
 
 A Shamir barrier is unsealed, sealed, rekeyed and recovered only by a quorum
 of authenticated share holders. `officer`, `quorum`, `rekey`, `init-shamir`
@@ -215,8 +215,7 @@ qrdb barrier enable-encryption --strategy shamir \
 
 A non-raft database with its own `--data-dir`, created by the system tenant,
 can have its own barrier; every other shape is refused because the barrier
-would not be on its data path. Until per-database storage bindings land, a
-non-system tenant cannot create one — see
+would not be on its data path. A non-system tenant cannot create one — see
 [../databases/cli.md](../databases/cli.md):
 
 ```bash

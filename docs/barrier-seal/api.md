@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -14,13 +14,13 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Barrier()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Status | `GET /v1/barrier/status` | `BarrierStatus` | `barrier.Status` | `qrdb_barrier_status` | `Status` | `seal:status` |
-| Initialize | `POST /v1/barrier/initialize` | `BarrierInitialize` | `barrier.Initialize` | `qrdb_barrier_initialize` | `Initialize` | `seal:bootstrap` |
+| Status | `GET /v1/barrier/status` | `BarrierStatus` | `barrier.Status` | `qrdb_barrier_status` | `BarrierStatus` | `seal:status` |
+| Initialize | `POST /v1/barrier/initialize` | `BarrierInitialize` | `barrier.Initialize` | `qrdb_barrier_initialize` | `BarrierInitialize` | `seal:bootstrap` |
 | Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `BarrierInitializeShamir` | `seal:initialize_shamir` |
-| Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `Unseal` | `seal:unseal` |
-| Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `Seal` | `seal:seal` + SO PIN |
-| Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
-| Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `ClusterUnseal` | `seal:unseal` |
+| Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `BarrierUnseal` | `seal:unseal` |
+| Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `BarrierSeal` | `seal:seal` + SO PIN |
+| Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `BarrierEnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
+| Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `BarrierClusterUnseal` | `seal:unseal` |
 
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
@@ -101,17 +101,13 @@ already in progress, `StatusPermissionDenied` for a shared-barrier tenant —
 rather than its generic `StatusError`. A tenant-scope request that arrives
 while a system-scope migration has the data plane torn down gets
 `service.DataPlaneRecyclingError`: `503` / `Unavailable`, retry once the
-system migration finishes. REST previously gated route
-*registration itself* on a barrier service also being present, which made a
-seal-disabled node with the migrator configured 404 instead of returning that
-typed refusal — the one transport that behaved differently for the exact same
-condition.
+system migration finishes.
 
 Embedded (`sdk/go/transport/embedded`) reaches the same refusal through the
 same sentinel rather than a route: `sdk/go/node` wires its
 `EncryptionMigrator` into the embedded transport the same way the daemon
 wires one into the network transports (`server.NewScopedEncryptionMigrator`),
-so `EnableEncryption` migrates when one is available and refuses with
+so `BarrierEnableEncryption` migrates when one is available and refuses with
 `service.ErrMigrationProviderUnavailable` only when it truly isn't. An
 embedder can also drive system-scope enable-encryption directly through
 `sdk/go/node`'s `Node.EnableEncryption(ctx, scope, opts)` API instead of going
@@ -132,11 +128,12 @@ of them stub the call locally.
 | Database barrier config | `PATCH /v1/databases/{name}/barrier` | `databases:update` |
 | Tenant barrier init | `POST /v1/tenants/{id}/barrier/init/begin` · `/init/complete`, on one connection, with proof of possession of the first admin's key ([../multi-tenancy/api.md](../multi-tenancy/api.md#barrier-init-proof-of-possession)) | identity-gated |
 | Tenant barrier status | `GET /v1/tenants/{id}/barrier/status` | identity-gated |
-| Tenant barrier seal | `POST /v1/tenants/{id}/barrier/seal` | `TenantBarrierSeal` |
+| Tenant barrier seal | `POST /v1/tenants/{id}/barrier/seal` | `tenant_barrier:seal` |
 | Tenant barrier unseal | `POST /v1/tenants/{id}/barrier/unseal` | identity-gated |
 
 Tenant barrier operations are served by the dedicated gRPC service
-`qrdb.v1.TenantBarrierService` (`Init`, `Unseal`, `Seal`, `Status`, plus the
+`qrdb.v1.TenantBarrierService` (`InitBegin`, `InitComplete`, `Unseal`, `Seal`,
+`Status`, plus the
 share-holder methods). A Shamir tenant barrier is unsealed and sealed through
 its holder quorum. See
 [../multi-tenancy/api.md](../multi-tenancy/api.md).
@@ -481,29 +478,13 @@ platform-custody barrier, whose statement names `system-barrier`, unseals
 with the platform strategy it was initialized under on that node; no provider
 resolves it.
 
-## Known limitation — share and PIN fields are still text strings
+## Known limitation — PIN fields are text strings
 
-The wipeable-bytes rule above covers the **wrapping credential**. It does not
-yet cover every secret on this surface:
-
-- `so_pin` and `user_pin` are text strings.
-
-Quorum submissions carry the share as bytes, and every transport wipes the
-decoded share after the call.
-
-Those are secrets too, and a Go string is no more wipeable for a share than it
-is for a passphrase. They are named here so the gap is visible rather than
-implied by the absence of a sentence, and so a reader does not conclude from
-the section above that the whole surface is covered.
+The wipeable-bytes rule above covers the **wrapping credential** and the
+shares. `so_pin` and `user_pin` are text strings: they are secrets, and a Go
+string cannot be wiped. Quorum submissions carry the share as bytes, and every
+transport wipes the decoded share after the call.
 
 ## Versioning
 
 Barrier REST paths are under `/v1/`. Nothing here is deprecated.
-
-**Breaking change — credential fields moved from string to bytes.** The
-credential fields listed under *Schemas* were text strings in earlier
-pre-publication releases and are byte strings now. A REST client that sends the
-plaintext gets a `400`; a Go SDK caller assigning a string literal gets a
-compile error. Both failures are loud, which is why the field was changed in
-place rather than duplicated: a parallel byte-typed field would have left the
-unwipeable one reachable, and the whole point is that it is not.
