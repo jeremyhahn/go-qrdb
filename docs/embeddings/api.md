@@ -1,6 +1,6 @@
 # Embedding Service — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -64,7 +64,7 @@ field. Sub-batch results are aggregated **in input order**.
 |---|---|---|
 | Success | 200 | `OK` |
 | Unknown provider | 404 | `NOT_FOUND` — `*EmbeddingProviderNotFoundError`, never substituted |
-| Provider unreachable after `max_retries` | 502 | `UNAVAILABLE` — no partial embeddings |
+| Provider unreachable after `max_retries` | 503 | `UNAVAILABLE` — no partial embeddings |
 | Malformed request (empty `texts`) | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | No embedding service configured | 404 (route unregistered) | `UNIMPLEMENTED` |
