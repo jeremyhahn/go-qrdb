@@ -1,6 +1,6 @@
 # SQL — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Design and boundaries are in [architecture.md](architecture.md). This file is
@@ -10,15 +10,19 @@ test surface.
 ## Exported surface
 
 ```go
-// sdk/go — ad-hoc query
-func (c *Client) ...  // reached through the transport's SQLClient
+// sdk/go — ad-hoc query (sdk/go/sql.go)
+func (c *Client) SQL() transport.SQLClient
 ```
 
-`sdk/go/transport`:
+`sdk/go/transport` (`sql_types.go`):
 
 ```go
-type SQLClient interface { /* ad-hoc SQL query */ }
-type SQLProvider interface { /* transport capability probe */ }
+type SQLClient interface {
+	Query(ctx context.Context, database, query string) (*SQLQueryResult, error)
+}
+type SQLProvider interface { // transport capability probe
+	SQLClient() SQLClient
+}
 ```
 
 In-process paths, both gated on `qrdb_sql`:
@@ -88,7 +92,7 @@ extended-protocol statement executed at Parse (no parameters), and each
 Bind/Execute of a parameterized statement's portal; a statement past it is
 answered SQLSTATE `57014` (`query_canceled`), the code PostgreSQL's own
 `statement_timeout` raises. `pg_sleep(seconds)` is served (by the engine's
-`SLEEP`, returning 0 rather than void) and ends with the statement. **A client that disconnects no longer cancels its
+`SLEEP`, returning 0 rather than void) and ends with the statement. **A client that disconnects does not cancel its
 statement before the timeout:** the listener runs with go-mysql-server's
 connection watcher off, because the watcher reads the socket while a cursor's
 statement runs and vitess reads the client's `COM_STMT_FETCH` from the same
@@ -104,8 +108,7 @@ re-arms a read (write) deadline before every `Read` (`Write`) on the
 connection, so a connection that issues no command for `wait_timeout` --
 **including one holding an open server-side cursor whose client stopped
 issuing `COM_STMT_FETCH`** -- fails its next read and is closed, which
-releases that cursor's statement the same way closing the connection always
-has. This is the half of the server-side cursor limitation below that QRDB
+releases that cursor's statement the same way closing the connection does. This is the half of the server-side cursor limitation below that QRDB
 fixes; it is independent of `sql.query_timeout`, which never bounds an idle
 cursor, and of `DisableConnectionWatcher` (always on; see below), because the
 deadline is armed on the listener's own blocking read for the next command,
@@ -143,8 +146,8 @@ package is unreachable from `cmd/qrdbd` / `cmd/qrdb` under
 this file compiles only under `qrdb_mysql`.
 
 GMS exposes one hook over that construction: `server.Config.ProtocolListenerFactory`,
-left nil today so GMS defaults it to its own `MySQLProtocolListenerFactory`.
-Any future listener-level option is a `(*Server).Start` change through that
+left nil so GMS defaults it to its own `MySQLProtocolListenerFactory`.
+A listener-level option is a `(*Server).Start` change through that
 field, not a new construction site. `server.Config.ConnReadTimeout` /
 `ConnWriteTimeout` (`sql.wait_timeout` / `sql.write_timeout`) are set in that
 same `cfg` literal, so every caller of `(*Server).Start` gets the idle bound
@@ -189,9 +192,8 @@ CREATE TABLE events (
 `_id` is the document's identity, not one of its fields, so a field of that
 name discovered in the collection's stored schema is **skipped** when the
 columns are built (`pkg/sql/provider.buildCollectionSchema`): the identity is
-declared exactly once. Collections written before the service stopped storing
-`_id` as a field still carry the key in their metadata, which is why the
-projection guards it rather than assuming.
+declared exactly once. A collection's stored schema can still carry `_id` as a
+field, which is why the projection guards it rather than assuming.
 
 | SQL | Service call |
 |-----|--------------|
@@ -211,7 +213,7 @@ transport: it reserves an `increment` collection's counter and is **refused**
 if another document already holds it. A zero or omitted `_id` is not a claim —
 the collection allocates from its own ID strategy, which is what the column's
 `DEFAULT 0` expresses (MySQL's convention for an `AUTO_INCREMENT` column, and
-already how the service reads a zero `_id`).
+how the service reads a zero `_id`).
 
 The refusal is reported as `sql.NewUniqueKeyErr("PRIMARY", true, existingRow)`,
 so it reaches a client as **MySQL 1062** / **PostgreSQL `SQLSTATE 23505`** /
@@ -231,16 +233,12 @@ relational table's uniqueness, which rides on a `TransactionServicer.Execute`
 compare in the same proposal as the row (see *Relational Tables* below),
 reached by a different mechanism.
 
-It was a read followed by an unguarded write until the backend behind a
-database with its own store gained the guarded verbs; every other engine
-already had them. A backend that still lacks them — the remote proxy, whose
-wire protocol does not carry the verbs — refuses the insert rather than
-degrading to the weaker shape.
+A backend that lacks the guarded verbs — the remote proxy, whose wire protocol
+does not carry them — refuses the insert rather than degrading to a read
+followed by an unguarded write.
 
-**`REPLACE` and `ON DUPLICATE KEY UPDATE` are guarded writes too.** Each used
-to be an insert, a refusal and a second statement-level write with no lock
-across the three, on a table that is autocommit-only. `REPLACE INTO` is now one
-`CollectionService.UpsertDocument` per row — insert or replace decided and
+**`REPLACE` and `ON DUPLICATE KEY UPDATE` are guarded writes too.**
+`REPLACE INTO` is one `CollectionService.UpsertDocument` per row — insert or replace decided and
 written in the same guarded write — and still reports the primary-key
 violation, carrying exactly the document it displaced, so go-mysql-server
 counts two affected rows for a replacement; the delete and re-insert it issues
@@ -329,7 +327,7 @@ Relational tables shadow a same-named collection: if both a relational table and
 
 **`AUTO_INCREMENT` is Raft-committed and block-allocated.** Values come from `service.SequenceServicer` under `service.TableAutoIncrementSequenceName(TableID)`, handed out in blocks so a multi-row `INSERT` costs one proposal per block rather than one per row. Nothing about the allocation is process-local, so two nodes can never hand out the same value. **Gaps are permitted; duplicates are not** — which is exactly MySQL's own `innodb_autoinc_lock_mode=2` (interleaved) behaviour. The "consecutive values within a single multi-row `INSERT`" guarantee of modes 0/1 is *not* offered (`AcquireAutoIncrementLock` is a no-op, since block allocation already prevents collisions). An explicitly supplied value at or above the counter advances the sequence past it (`SequenceServicer.Advance`), so a later generated value can never collide with one a caller supplied. `ALTER TABLE ... AUTO_INCREMENT = N` is implemented, but — unlike InnoDB — it can only ever raise the counter, never lower it below a value already committed.
 
-**A reset fences every block reserved before it, by epoch.** Two statements restart the counter at 1: `ALTER TABLE ... AUTO_INCREMENT = 0` (`SequenceServicer.Reset`) and a MySQL-dialect `TRUNCATE TABLE` (below). A session that reserved a block before the reset would otherwise keep handing out its unconsumed values — which the post-reset counter hands out again — so two sessions would each generate the same key and one of them would fail with 1062. `SequenceServicer` therefore stores an **epoch** beside the counter, in the same value and so under the same compare-and-swap: a reset's epoch advance is exactly as replicated and failover-safe as the counter it zeroes, and no reader on any node sees one without the other. A reset advances the epoch whenever it actually changes the counter (a counter already at 0 has nothing reserved against it); `Advance` never does. `Allocate` reports the epoch a block was reserved under, and `sequenceBlock` (`relational_sequence.go`) compares it with `SequenceServicer.Epoch` — a linearizable read, not a proposal — the first time a statement draws a cached value from a block that statement did not reserve itself, discarding a stale block and refilling from the post-reset counter. A statement is identified by its `*sql.Context`'s pid and start time, which every context derived from it keeps. The check runs **once per statement, not once per value**: a 10,000-row `INSERT` pays at most one read, not 10,000, and a statement drawing only from blocks it reserved itself pays none, because `Allocate` reported their epoch. Checking more often would buy nothing, because what fencing cannot reach is a value taken before the reset whose row has not yet committed — a reset between any check and the row's commit is indistinguishable from one just after it — and within one statement that is the only window there is. After `TRUNCATE` such a row fails the generation fence and the statement is retried; after `ALTER TABLE ... AUTO_INCREMENT = 0` it is the same case as a row already written, which `Reset`'s contract leaves to the caller. The counter is stored as 16 bytes — the 8-byte counter, then the 8-byte epoch — so the leading 8 bytes are the counter-only value earlier releases wrote; such a value is read as that counter at epoch 0, and a sequence allocated from by an earlier release keeps counting rather than restarting. **The reverse is not true, so finish a rolling upgrade before resetting a sequence.** A node still running an earlier release rewrites the value as 8 bytes whenever it allocates, which drops the epoch back to 0; a later reset can then bring the epoch back to a value a block reserved before the first reset still carries, and that block is wrongly accepted as current. Run `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE` only once every node runs this release. **Neither statement touches a keyless table's hidden row id counter** — that is a separate sequence (`TableRowIDSequenceName`) the reset never names; see the ruling under [Tables with no PRIMARY KEY](#tables-with-no-primary-key).
+**A reset fences every block reserved before it, by epoch.** Two statements restart the counter at 1: `ALTER TABLE ... AUTO_INCREMENT = 0` (`SequenceServicer.Reset`) and a MySQL-dialect `TRUNCATE TABLE` (below). A session that reserved a block before the reset would otherwise keep handing out its unconsumed values — which the post-reset counter hands out again — so two sessions would each generate the same key and one of them would fail with 1062. `SequenceServicer` therefore stores an **epoch** beside the counter, in the same value and so under the same compare-and-swap: a reset's epoch advance is exactly as replicated and failover-safe as the counter it zeroes, and no reader on any node sees one without the other. A reset advances the epoch whenever it actually changes the counter (a counter already at 0 has nothing reserved against it); `Advance` never does. `Allocate` reports the epoch a block was reserved under, and `sequenceBlock` (`relational_sequence.go`) compares it with `SequenceServicer.Epoch` — a linearizable read, not a proposal — the first time a statement draws a cached value from a block that statement did not reserve itself, discarding a stale block and refilling from the post-reset counter. A statement is identified by its `*sql.Context`'s pid and start time, which every context derived from it keeps. The check runs **once per statement, not once per value**: a 10,000-row `INSERT` pays at most one read, not 10,000, and a statement drawing only from blocks it reserved itself pays none, because `Allocate` reported their epoch. Checking more often would buy nothing, because what fencing cannot reach is a value taken before the reset whose row has not yet committed — a reset between any check and the row's commit is indistinguishable from one just after it — and within one statement that is the only window there is. After `TRUNCATE` such a row fails the generation fence and the statement is retried; after `ALTER TABLE ... AUTO_INCREMENT = 0` it is the same case as a row already written, which `Reset`'s contract leaves to the caller. The counter is stored as 16 bytes — the 8-byte counter, then the 8-byte epoch — and an 8-byte counter-only value is read as that counter at epoch 0. **Finish a rolling upgrade before resetting a sequence.** A node whose release writes the 8-byte form rewrites the value at every allocation, which drops the epoch back to 0; a later reset can then bring the epoch back to a value a block reserved before the first reset still carries, and that block is wrongly accepted as current. Run `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE` only once every node writes the 16-byte form. **Neither statement touches a keyless table's hidden row id counter** — that is a separate sequence (`TableRowIDSequenceName`) the reset never names; see [Tables with no PRIMARY KEY](#tables-with-no-primary-key).
 
 `REPLACE INTO` composes for free from the same writer: go-mysql-server's insert loop calls `Insert`, and on the duplicate-key error above calls `Delete` with the *existing* conflicting row before retrying — so the old row and its index entries are removed atomically, then the new row and its own entries are written atomically.
 
@@ -345,14 +343,14 @@ The table's `TableDef.Generation` (populated fresh on every `GetTable`/`AlterTab
 
 **Index entries are keyed by incarnation, not name.** Every secondary index carries a `TableIndex.Incarnation`, allocated from the table's own `IndexIncarnations` counter in the same compare-and-swap that adds the index. The counter lives in the metadata record and only ever moves forward through a compare-and-swap on that record; the one write that replaces the record wholesale from an earlier copy — a rewrite's `CompleteRewrite` — is refused if the record moved since that copy was taken, and every index change is refused while a rewrite is open, so an incarnation is never handed out twice within a table. A name can be renamed, dropped and created again; an incarnation cannot — so the keyspace a reclaim job deletes can never become a live index's, and the numeric segment, terminated by `/`, can never be a prefix of another index's (`a` against `a/b` cannot arise). `RENAME INDEX` is therefore a single catalog compare-and-swap (`TableService.RenameIndex`) that moves, copies and reclaims nothing: the renamed index keeps its incarnation, and DML running concurrently keeps maintaining the same keyspace under either name. `DROP INDEX` removes the index from the catalog and, in the same transaction and fenced on the generation, publishes a `ReclaimJob` for its incarnation's entries (`TableService.DropIndex`) — they are not deleted inline, because a statement that resolved the index may still be reading them.
 
-**Tables created by v0.20.0 through v0.21.0 must be dropped and re-created; there is no migration.** Those releases shipped the previous layout, whose row and index-entry keys carried neither a generation nor an index incarnation, and whose catalog records carry no incarnations for their indexes. Every catalog record now states the layout its keys were written under (`TableDef.Layout`, `service.TableLayoutCurrent`), and a record without one is refused with `*service.TableLayoutUnsupportedError` by every operation that would address its keys (`GetTable`, `TruncateTable`, index DDL, `AlterTable`, the rewrite journal). Opening such a table anyway would read keys that were never written — an empty table — and would make all of its indexes share incarnation 0's keyspace. The SQL layer resolves the table to a stand-in (`legacyLayoutTable`) whose every read, write and `TRUNCATE` fails with MySQL error **1459** (`ER_TABLE_NEEDS_UPGRADE`, SQLSTATE HY000; PostgreSQL SQLSTATE **55000**, `object_not_in_prerequisite_state`), with a message naming the table and the remedy. `DROP TABLE` is the one operation it supports: the same one-transaction drop as any table, whose reclaim job also names the old layout's prefixes (`service.LegacyTableKeyPrefixes`), after which the name can be re-created. The layout is checked before the rewrite journal, so a legacy table whose v0.20.x rewrite was interrupted still resolves as a legacy table and can be dropped. `information_schema` lists it with the refusal as its table comment; `ALTER`, `CREATE INDEX` and `ADD FOREIGN KEY` refuse with 1459. The stand-in lists no indexes and declares no constraints — go-mysql-server treats `GetIndexes` as infallible and panics on its error on `DROP TABLE`'s own path — so `SHOW INDEX` shows none and `DROP`/`RENAME INDEX` and `DROP FOREIGN KEY` are refused by the engine before they reach the table. Every non-SQL transport classifies the refusal the same way (`service.IsTableLayoutUnsupported`): gRPC, the Unix socket and MCP as `FAILED_PRECONDITION`, QUIC as `StatusFailedPrecondition`, REST as 412.
+**A table in the legacy layout must be dropped and re-created; there is no migration.** Its row and index-entry keys carry neither a generation nor an index incarnation, and its catalog record carries no incarnations for its indexes; tables created by v0.20.0 through v0.21.0 are in this layout. Every catalog record states the layout its keys were written under (`TableDef.Layout`, `service.TableLayoutCurrent`), and a record without one is refused with `*service.TableLayoutUnsupportedError` by every operation that would address its keys (`GetTable`, `TruncateTable`, index DDL, `AlterTable`, the rewrite journal). Opening such a table anyway would read keys that were never written — an empty table — and would make all of its indexes share incarnation 0's keyspace. The SQL layer resolves the table to a stand-in (`legacyLayoutTable`) whose every read, write and `TRUNCATE` fails with MySQL error **1459** (`ER_TABLE_NEEDS_UPGRADE`, SQLSTATE HY000; PostgreSQL SQLSTATE **55000**, `object_not_in_prerequisite_state`), with a message naming the table and the remedy. `DROP TABLE` is the one operation it supports: the same one-transaction drop as any table, whose reclaim job also names the old layout's prefixes (`service.LegacyTableKeyPrefixes`), after which the name can be re-created. The layout is checked before the rewrite journal, so a legacy table whose rewrite was interrupted still resolves as a legacy table and can be dropped. `information_schema` lists it with the refusal as its table comment; `ALTER`, `CREATE INDEX` and `ADD FOREIGN KEY` refuse with 1459. The stand-in lists no indexes and declares no constraints — go-mysql-server treats `GetIndexes` as infallible and panics on its error on `DROP TABLE`'s own path — so `SHOW INDEX` shows none and `DROP`/`RENAME INDEX` and `DROP FOREIGN KEY` are refused by the engine before they reach the table. Every non-SQL transport classifies the refusal the same way (`service.IsTableLayoutUnsupported`): gRPC, the Unix socket and MCP as `FAILED_PRECONDITION`, QUIC as `StatusFailedPrecondition`, REST as 412.
 
 **Every DML commit is fenced on what its statement resolved, in the SAME Raft transaction as its row and index writes — autocommit and buffered (interactive) transactions alike.** Two Compares ride in that proposal (`RelationalTable.resolutionCompares`):
 
 - **The generation.** `generationCompare` builds a `CompareValue` precondition against the generation key: generation 0 (never truncated — the common case) compares against an *empty* value, matching `CompareValue`'s absent-key semantics (`pkg/mvcc.Evaluate`, `pebbleEvaluateCompare`), rather than a literal encoded zero, which the generation key does not hold until its first write.
 - **The definition.** `metadataCompare` compares the metadata record's ModRevision against `TableDef.MetadataRevision`. Every DDL rewrites that record — `CREATE`/`DROP`/`RENAME INDEX`, `ALTER`, `RENAME TABLE`, `DROP TABLE` — so a statement planned against an index set the table no longer has fails instead of committing index maintenance for the wrong one: an index created meanwhile would otherwise permanently lack the row's entry, and a dropped one would gain entries after its reclamation. This is also what makes `CREATE INDEX`'s build complete: DML resolved before the index existed cannot commit after it.
 
-Both ride in the proposal the row/index write already makes, so they add no read on the successful path — resolving the table once per **statement** (`TableService.GetTable`) is the only read, and a multi-row `INSERT` resolves the table once and calls `Insert` once per row on that SAME handle. Only on a CAS **failure** does `checkResolutionStale` read the generation (and, if needed, the metadata revision) to tell "the table moved" apart from "a genuine duplicate-key collision," which is the one case a bulk insert's hot path never takes.
+Both ride in the proposal the row/index write already makes, so they add no read on the successful path — resolving the table once per **statement** (`TableService.GetTable`) is the only read, and a multi-row `INSERT` resolves the table once and calls `Insert` once per row on that SAME handle. Only on a CAS **failure** does `WriteSet.staleResolution` read the generation (and, if needed, the metadata revision) to tell "the table moved" apart from "a genuine duplicate-key collision," which is the one case a bulk insert's hot path never takes.
 
 An interactive (`BEGIN`...`COMMIT`) transaction registers the same fence once per relational table it touches (`WriteSet.RequireResolution`, called from `RelationalTable.activeWriteSet`), independent of the session's `qrdb_isolation` level: `IsolationNone` otherwise attaches no preconditions at all, but these fences are a distinct correctness concern from the user-selectable conflict-detection `IsolationLevel` controls. `WriteSet.commit` folds every registered fence into its proposal regardless of level, and on commit failure `WriteSet.staleResolution` reports which one moved. `activeWriteSet` also refuses, at resolution:
 
@@ -365,11 +363,11 @@ A stale generation surfaces as a **typed, retryable** `*service.TableGenerationS
 
 **`DROP TABLE` is one transaction** (`TableService.DropTable`): the definition, the rewrite journal, the generation counter and both sequence counters are deleted, the catalog epoch is bumped, and a `ReclaimJob` names the current generation's data and whole index keyspace (older generations already have their `TRUNCATE` jobs). It compares the generation key as well as the metadata key: a `TRUNCATE` landing between the drop's reads and its commit fails the attempt, which re-reads. Deleted separately, a crash between the counters and the definition would either strand the counters forever (TableID is never reused) or — counter first — leave a resolvable table reading "generation 0" again, writing into a keyspace an earlier `TRUNCATE`'s job may still be deleting. The SQL layer passes the definition it resolved (`DropTableRequest.Resolution`), so a `TRUNCATE` or DDL landing between the statement's resolution and the drop refuses it with the retryable stale error rather than dropping a state the statement never saw. The rows are deleted by the sweeper, after quiescence, never inline: a statement that resolved the table before the drop may still be reading them.
 
-**A catalog read that could not run is not an absent table.** Every `TableService` read of a table definition or a rewrite journal answers `*service.TableNotFoundError` or `*service.TableNoRewriteInProgressError` only when the store reports the key absent (`absentAs`). A read that could not run — the shard between leaders, a `ReadIndex` that timed out under load — is returned as its own error, which `service.LeadershipTransient` reports as retryable. Answered as absent, it refused a `DROP TABLE` of a table that existed with "table not found", was memoized as "no such table" for the rest of the statement, and would have let `CompleteRewrite`'s caller take an unfinished rewrite for a completed one.
+**A catalog read that could not run is not an absent table.** Every `TableService` read of a table definition or a rewrite journal answers `*service.TableNotFoundError` or `*service.TableNoRewriteInProgressError` only when the store reports the key absent (`absentAs`). A read that could not run — the shard between leaders, a `ReadIndex` that timed out under load — is returned as its own error, which `service.LeadershipTransient` reports as retryable, so it is never memoized as "no such table" and `CompleteRewrite`'s caller never takes an unfinished rewrite for a completed one.
 
 #### Reclaiming orphaned keyspace
 
-`service.ReclaimSweeper`, constructed once at `pkg/server/lifecycle.BuildServices` alongside the pre-existing `KeyspaceReclaimService`, drains pending `ReclaimJob` records. The job shape (an ID, the (tenant, database) whose store it lives in, and a list of key prefixes — nothing table-specific) is deliberately generic, so a future "cannot delete inline" reclamation can publish into the same machinery.
+`service.ReclaimSweeper`, constructed once at `pkg/server/lifecycle.BuildServices` beside `KeyspaceReclaimService`, drains pending `ReclaimJob` records. The job shape (an ID, the (tenant, database) whose store it lives in, and a list of key prefixes — nothing table-specific) is generic: any reclamation that cannot delete inline publishes into the same machinery.
 
 **Discovery.** A job lives in its table's own store — composite-namespaced `<tenant>/<db>/` in the shared store, or a dedicated store — which the sweeper cannot list cheaply. Every job therefore has a `ReclaimIndexEntry` in the SYSTEM store, un-namespaced, under `__reclaim:index/` (an internal-key prefix, hidden from user `List`/`Scan` and MVCC restore like `__reclaim:job/`). The entry is always written FIRST, as its own transaction through the system store's own `TransactionServicer` (`WithReclaimIndex`), strictly before the operation's own transaction publishes the job: the two stores cannot share one compare-and-swap, and this order means a crash between them leaves at worst an entry with nothing behind it — never a job nothing points to. Every publishing ATTEMPT gets a fresh job ID (`<tenant>:<label>:<128 random bits>`), so two tenants' dedicated stores that allocate the same TableID never collide on one index key, and an attempt that definitely lost its compare-and-swap withdraws its own entry without any chance of withdrawing another's.
 
@@ -421,7 +419,7 @@ SELECT COUNT(*) FROM hits;          -- 2
 - **Row ids are allocated from a Raft-committed sequence** (`service.SequenceServicer`, under `TableRowIDSequenceName`), in growing blocks so a multi-row `INSERT` costs one proposal per block rather than one per row. Nothing about the allocation is process-local, so two nodes can never hand out the same row id. Gaps are acceptable; duplicates are not.
 - **A keyless table may still declare an `AUTO_INCREMENT` column** (backed by a `UNIQUE` index, as MySQL requires). The two counters are separate sequences and never consume each other's values.
 - **The row id is not stored in the row.** It *is* the storage key, so a keyless table's encoded row bytes are identical to the same values in a keyed table; the row id is injected back into the hidden slot on read.
-- **`TRUNCATE TABLE` does not reset the row id counter (ruling).** MySQL has no hidden row id to document behaviour for, so there is no compatibility answer to copy the way there is for `AUTO_INCREMENT` (below). The ruling is to leave it alone: a keyless table's row id is never exposed to SQL, so nothing observes a "reset" except the storage layer itself, and resetting it would mean a future row could be allocated the same id an earlier, already-reclaimed generation's row once held — internal identity reused is a sharper edge than internal identity that only grows, matching the never-reused design this package already gives index incarnations (see "Index entries are keyed by incarnation, not name" below). `TableService.TruncateTable`'s `resetSequence` parameter therefore names only `TableAutoIncrementSequenceName`; `TableRowIDSequenceName` is never part of its compare-and-swap, truncated or not, MySQL dialect or PostgreSQL. Pinned by `TestRelationalTable_Truncate_DoesNotResetHiddenRowID` (`pkg/sql/provider`) and `TestTableService_TruncateTable_RowIDSequenceUntouched` (`pkg/service`).
+- **`TRUNCATE TABLE` does not reset the row id counter.** MySQL has no hidden row id to document behaviour for, so there is no compatibility answer to copy the way there is for `AUTO_INCREMENT`. A keyless table's row id is never exposed to SQL, so nothing observes a "reset" except the storage layer itself, and resetting it would mean a future row could be allocated the same id an earlier, already-reclaimed generation's row once held — internal identity reused is a sharper edge than internal identity that only grows, matching the never-reused design this package already gives index incarnations (see "Index entries are keyed by incarnation, not name" above). `TableService.TruncateTable`'s `resetSequence` parameter therefore names only `TableAutoIncrementSequenceName`; `TableRowIDSequenceName` is never part of its compare-and-swap, truncated or not, MySQL dialect or PostgreSQL. Pinned by `TestRelationalTable_Truncate_DoesNotResetHiddenRowID` (`pkg/sql/provider`) and `TestTableService_TruncateTable_RowIDSequenceUntouched` (`pkg/service`).
 
 One upstream restriction applies: go-mysql-server's `assign_update_join` analyzer rule refuses `UPDATE ... JOIN` when a target table's schema reports no primary key column, so that statement is rejected on a keyless table (`keyless tables unsupported for UPDATE JOIN`). `DELETE ... JOIN` is unaffected.
 
@@ -474,18 +472,16 @@ table's row count several times while it plans **every** statement — index
 costing (`uniformDistStatisticsForIndex`), table-scan statistics
 (`uniformDistStatsticForTableScan`), `Catalog.RowCount`, and once more through
 `DataLength` — and `information_schema.tables` asks again for every table it
-lists. When `RowCount` was an exact keys-only count of the table, a
-primary-key point `SELECT`, `UPDATE` or `DELETE` cost time proportional to the
-table's size: about 1.7 µs per row, 110 ms at 64,000 rows.
-
-`RowCount` now returns an **estimate** and reports it as **not exact**:
+lists. An exact count on each of those calls would make a primary-key point
+`SELECT`, `UPDATE` or `DELETE` cost time proportional to the table's size, so
+`RowCount` returns an **estimate** and reports it as **not exact**:
 
 | Property | Value |
 |---|---|
 | Unit | one generation of one table in one (tenant, database) store — `rowEstimateKey{scope, tableID, generation}` |
 | Where it lives | one `rowEstimates` cache per `Provider`, shared by every table it serves (`pkg/sql/provider/row_estimate.go`) |
 | How it is counted | a keys-only, count-only range over the generation's data prefix, read **locally** — `MVCCKVServicer.RangeWithConsistency` at `consistency.Eventual` (a stale read of this node's state machine, no Raft round trip) |
-| First request | counts synchronously; a failed count fails the statement, as before, and caches nothing |
+| First request | counts synchronously; a failed count fails the statement and caches nothing |
 | Freshness | served from the cache for `rowEstimateTTL` (10 s); the first request after that starts **one** background recount (detached from the statement, bounded by 30 s) and is served the previous value meanwhile. A failed recount keeps the previous value and is retried a TTL later |
 | `TRUNCATE` (through this provider) | the old generation's estimate is dropped and the new generation's is stored as 0 — no count needed |
 | `DROP TABLE` / `DROP DATABASE` (through this provider) | the table's, or the database's, estimates are dropped |
@@ -527,7 +523,7 @@ statistics for any table kind.
 go-mysql-server resolves a table by name several times while it plans and runs
 one statement — the view check, the table itself, foreign-key handling — and
 `information_schema` resolves every table in the database. Each resolution
-asked the service registry for the table's servicers (catalog, KV, MVCC,
+asks the service registry for the table's servicers (catalog, KV, MVCC,
 transaction, sequence), and the registry resolves the session's tenant with a
 linearizable read for each; the definition itself costs three more reads.
 
@@ -549,8 +545,8 @@ resolved. So the provider memoizes, for the duration of one statement:
 | A failed resolution is never memoized | the next lookup reports its own outcome |
 | Nothing outlives the command | DDL committed by any session is seen by this session's next statement — the invalidation is the statement boundary, so there is no revision to compare and nothing to go stale |
 
-The tenant is still resolved once per servicer kind per statement, where
-before it was resolved again for every servicer of every table resolution.
+The tenant is resolved once per servicer kind per statement, not once for every
+servicer of every table resolution.
 
 ### Known limits
 
@@ -667,12 +663,12 @@ given a number it does not have. It stays typed inside `*driver.QueryExecError`
 `errors.As` against QRDB's error types keep working. Over the wire those same
 failures can only arrive as a 1105 message.
 
-The REST and gRPC `database/sql` transports are unchanged: they report the
-server's response through `*driver.QueryExecError`.
+The REST and gRPC `database/sql` transports report the server's response
+through `*driver.QueryExecError`.
 
 ### What is *not* transactional
 
-- **The `kv`, entity, and collection tables are autocommit-only.** They have no write-set to buffer into, so a write to one of them while a transaction is open fails loudly with `NonTransactionalTableError` rather than silently escaping the transaction's atomicity boundary and surviving a later `ROLLBACK`. Outside a transaction they write at once, as before — but **one statement cannot write both a relational table and one of these**: the statement is atomic, and their write could not be undone with its rows. Such a statement (a multi-table `UPDATE`/`DELETE` joining the two, say) is refused before it writes either, with `MixedTransactionalWriteError`; write the two in separate statements. Each table editor notes which kind it writes on the session's write-set as the statement opens it, and the note belongs to that statement alone: it is cleared at every command boundary and every commit -- including a commit that fails and keeps its write-set for a retry -- and a new transaction starts without one, so a later statement is never refused for an earlier one's writes, whether or not its caller brackets statements as commands.
+- **The `kv`, entity, and collection tables are autocommit-only.** They have no write-set to buffer into, so a write to one of them while a transaction is open fails loudly with `NonTransactionalTableError` rather than silently escaping the transaction's atomicity boundary and surviving a later `ROLLBACK`. Outside a transaction they write at once — but **one statement cannot write both a relational table and one of these**: the statement is atomic, and their write could not be undone with its rows. Such a statement (a multi-table `UPDATE`/`DELETE` joining the two, say) is refused before it writes either, with `MixedTransactionalWriteError`; write the two in separate statements. Each table editor notes which kind it writes on the session's write-set as the statement opens it, and the note belongs to that statement alone: it is cleared at every command boundary and every commit -- including a commit that fails and keeps its write-set for a retry -- and a new transaction starts without one, so a later statement is never refused for an earlier one's writes, whether or not its caller brackets statements as commands.
 - **DDL implicitly commits**, exactly as in MySQL. `CREATE`/`DROP`/`RENAME TABLE`, `ADD COLUMN`, `CREATE`/`DROP`/`RENAME INDEX`, `ADD`/`DROP FOREIGN KEY`, `TRUNCATE` and `ALTER TABLE ... AUTO_INCREMENT = N` all flush any pending write-set before mutating the catalog, and that commit cannot be undone by a later `ROLLBACK`.
 - **Isolation levels are accepted, not differentiated.** `sdk/go/driver` maps `database/sql`'s four levels onto `SET TRANSACTION ISOLATION LEVEL` statements the engine accepts, but what a relational table actually provides is the snapshot / first-committer-wins model above.
 
@@ -701,7 +697,7 @@ Only atomicity changes. An implicit transaction:
 | Property | Value |
 |---|---|
 | Reads | the latest committed version, overlaid by the statement's own writes — no snapshot is pinned, so binding costs no read |
-| Commit preconditions | what an autocommit row write always carried: absence of every primary key and UNIQUE value the statement newly occupies, the grant-time revision of a row it locked (pessimistic mode), and the tables' resolution fences. A row it merely rewrites or deletes is not compared (last-writer-wins for optimistic autocommit DML, as before) |
+| Commit preconditions | absence of every primary key and UNIQUE value the statement newly occupies, the grant-time revision of a row it locked (pessimistic mode), and the tables' resolution fences. A row it merely rewrites or deletes is not compared (last-writer-wins for optimistic autocommit DML) |
 | `qrdb_isolation` | does not apply; it is a transaction setting |
 | Duplicates | reported at the row (1062), because the candidate keys are checked before the row is buffered — which is what `INSERT IGNORE` and `ON DUPLICATE KEY UPDATE` rely on. A key a concurrent statement commits between that check and this commit is reported as the same 1062 |
 | Commit failure | reported to the client: closing the result is the commit, so every surface returns the close error |
@@ -750,7 +746,7 @@ load-bearing:
 `standard_conforming_strings` on (its default since 9.1), treats a backslash
 inside `'...'` as an ordinary character; MySQL treats it as an escape
 introducer, and go-mysql-server does not honour the `NO_BACKSLASH_ESCAPES`
-`sql_mode` that would turn that off. Left untranslated, `'C:\temp'` reached
+`sql_mode` that would turn that off. Untranslated, `'C:\temp'` would reach
 storage as `C:<tab>emp`. The rewrite doubles each backslash inside plain
 literals so the MySQL lexer reproduces PostgreSQL's bytes exactly. `E'...'`
 literals are excluded — PostgreSQL's escape-string syntax already processes
@@ -892,8 +888,8 @@ The ad-hoc query endpoint is authorized with **`permission.KVRange`**
 (`kv:range`) on every transport — there is no dedicated `sql:query` permission
 constant. Since a single ad-hoc statement can reach relational tables and
 collections, not only the `kv` table, `kv:range` is a weaker grant than the
-capability it is guarding. Recorded here rather than silently accepted; the
-right permission vocabulary is an owner decision.
+capability it is guarding. The permission it should require is not yet
+decided.
 
 ## Makefile Targets
 
@@ -902,19 +898,25 @@ make test-sql-provider     # Provider unit tests
 make test-sql-engine       # Engine + translator tests
 make test-sql-mysql        # MySQL server tests
 make test-sql-pgsql        # PgSQL server tests
+make test-sql-query        # Ad-hoc query service tests
+make test-sql-catalog      # Schema, row and key codec tests
 make test-sql-privilege    # Table privilege tests (enforcement + GRANT/REVOKE)
+make test-sql-pgcatalog    # pg_catalog tests
 make test-sql              # All SQL tests
 
-make coverage-sql-provider # Provider coverage (91%+ required)
+make coverage-sql-provider # Provider coverage
 make coverage-sql-engine   # Engine coverage
 make coverage-sql-mysql    # MySQL coverage
 make coverage-sql-pgsql    # PgSQL coverage
+make coverage-sql-query    # Ad-hoc query coverage
+make coverage-sql-catalog  # Codec coverage
 make coverage-sql-privilege # Table privilege coverage
+make coverage-sql-pgcatalog # pg_catalog coverage
 make coverage-sql          # All SQL coverage
 ```
 
-Coverage floors are enforced by those targets, not by convention:
-`coverage-sql-provider` requires 91%+.
+Coverage floors are enforced by those targets, not by convention: every
+`coverage-sql-*` target fails below `COVER_MIN` (91%).
 
 ## Observability
 

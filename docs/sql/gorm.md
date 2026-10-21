@@ -1,6 +1,6 @@
 # GORM
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 QRDB runs under [GORM](https://gorm.io) through the **stock**
@@ -110,9 +110,7 @@ relational feature "doesn't work embedded", the answer is the wrong scheme, not
 a missing feature. See `sdk/go/driver/node/node.go`'s package comment.
 
 `node://` is a separate, side-effect-imported package because `sdk/go/node`
-pulls in roughly 175 more packages than `sdk/go/driver` alone (915 against 741,
-measured with `go list -deps` under the full build-tag set on 2026-08-13):
-Raft, Pebble, the seal subsystem, the volume-pool subsystem, the whole service
+pulls in far more packages than `sdk/go/driver` alone: Raft, Pebble, the seal subsystem, the volume-pool subsystem, the whole service
 graph. Making every `embedded://` and `rest://` user link all of that to reach a
 scheme they will never open would be an unreasonable tax.
 
@@ -154,7 +152,7 @@ To reach a running `qrdbd` over its MySQL wire port, use
 not `qrdbgorm.Open`, which serves only the in-process schemes. It is the same
 dialector either way. QRDB's MySQL listener
 speaks MySQL, and its authentication is mTLS-only (CN maps to the username, OU
-to the tenant); see [architecture.md](architecture.md#authentication). The same applies to
+to the tenant); see [architecture.md](architecture.md#trust-boundaries). The same applies to
 `gorm.io/driver/postgres` against the PostgreSQL listener.
 
 ## Configuration
@@ -257,7 +255,7 @@ The whole transaction is buffered and committed as **one** MVCC compare-and-swap
 against the Raft group. Reads inside it are served from a pinned snapshot
 overlaid with the transaction's own writes; conflicts are resolved
 first-committer-wins. The full model, including savepoint semantics and the
-write-set size ceilings, is in [architecture.md](architecture.md#transaction-control).
+write-set size ceilings, is in [engineering.md](engineering.md#transaction-control).
 
 **Nested transactions use savepoints.** The stock dialector implements
 `gorm.SavePointerDialectorInterface`, so a nested `db.Transaction(...)` issues
@@ -318,9 +316,8 @@ See
 [engineering.md](engineering.md#what-the-in-process-driver-returns-for-an-engine-error)
 for which failures are classified.
 
-**3819 (check constraint violated) is not translated.** QRDB's own dialector
-used to map it to `gorm.ErrCheckConstraintViolated`; the stock dialector does
-not. It surfaces as a `*mysql.MySQLError` with `Number == 3819`, and you match
+**3819 (check constraint violated) is not translated.** The stock dialector
+does not map it to `gorm.ErrCheckConstraintViolated`. It surfaces as a `*mysql.MySQLError` with `Number == 3819`, and you match
 on the number. It rarely matters in practice: QRDB's relational tables refuse
 `ADD CONSTRAINT ... CHECK`, so a relational table has no CHECK constraint to
 violate.
@@ -403,7 +400,7 @@ confirmed in code, not a list of "not tested yet".
 | The `kv`, entity, and collection tables are autocommit-only | A write to one of them inside an open transaction fails with `NonTransactionalTableError` rather than silently escaping the transaction. Ordinary GORM models are relational tables and are unaffected. |
 | A collection table's upsert is two statements, not one | Claiming a taken `_id` returns `gorm.ErrDuplicatedKey` like any other duplicate, and that claim **does** hold under concurrent writers — `CollectionService.InsertDocument` writes with a guarded write. What does not hold is `clause.OnConflict` and `Save` on a collection table: each is an insert, a refusal and a second write with no lock across the three, and a collection table is autocommit-only so neither can be wrapped in a transaction. Ordinary GORM models are relational tables and are unaffected. |
 | Mixed-case `IlIkE` is not rewritten (PostgreSQL wire) | Only the exact-case `ILIKE`/`ilike` spellings are normalized. |
-| `UPDATE ... RETURNING`, `DELETE ... RETURNING` (PostgreSQL wire) | Rejected with a typed error; the embedded vitess grammar carries `RETURNING` on the `INSERT` production only. `INSERT ... RETURNING` works. |
+| `UPDATE ... RETURNING`, `DELETE ... RETURNING` outside the PostgreSQL wire | The vitess grammar carries `RETURNING` on the `INSERT` production only. The PostgreSQL wire reattaches the clause to the parsed statement, so both forms work there; any other path that translates PostgreSQL syntax refuses them with `*engine.UnsupportedSyntaxError`. See [upstream-gaps.md](upstream-gaps.md). |
 
 ## Conformance
 
@@ -437,23 +434,14 @@ something:
   fails the shared tables stay dropped. These are exempt from the stale-pass
   check because a passing run says nothing about them either.
 
-Measurements, by date:
-
-| target | measured | pass | expected-fail | skip | excluded |
-|---|---|---:|---:|---:|---:|
-| node (stock MySQL dialector, in process) | 2026-10-01 | 382 | 0 | 18 | 0 |
-| mysql wire | 2026-08-14 | 373 | 6 | 18 | 1 |
-| pgsql wire | 2026-08-14 | 255 | 119 | 17 | 7 |
-
 The harness runs every target in pessimistic SQL concurrency
 ([row locking](../row-locking/)): the node target through its DSN
 (`concurrency=pessimistic`), the wire targets by creating their database with
 `--sql-concurrency pessimistic`. Under it `TestConcurrentMany2ManyAssociation`
-passes on all three, where the default optimistic mode failed it 30 times in
-30 on the node target, so it is no longer allowlisted.
+passes on all three and is not allowlisted.
 
-Over half the PostgreSQL failures are two defects in go-mysql-server's
-RETURNING support; see [upstream-gaps.md](upstream-gaps.md).
+The go-mysql-server defects the suite exposes are registered in
+[upstream-gaps.md](upstream-gaps.md).
 
 **This harness is infrastructure, not a gate**, and a tracked fraction of the
 suite is expected to fail. For the current numbers, the tracked failure list,
