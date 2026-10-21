@@ -1,6 +1,6 @@
 # Coordination — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -117,9 +117,8 @@ behaviour below is measured against:
   first missing one. **All six shipped transports implement all four**, so this
   error is reachable in practice only from a third-party transport.
 - `NewCoordinator` rejects a nil argument with the same error, naming it.
-- **Construction says nothing about the run mode.** Every transport implements
-  the interfaces in both modes; the mode-dependent refusal comes from the
-  individual call. See *Capability split* below.
+- **Construction says nothing about what the node serves.** Every transport
+  implements the interfaces in both modes. See *Availability* below.
 
 ### `Get`
 
@@ -189,7 +188,7 @@ behaviour below is measured against:
 - Opens a **live** prefix watch: `transport.WatchOptions{}` — no start
   revision, no previous values, no progress notifications. **There is no replay
   from this surface.**
-- Because no start revision is requested, `Event.PrevValue` is populated only if
+- Because `PrevKV` is not requested, `Event.PrevValue` is populated only if
   the server sends a previous value unasked. Treat it as best-effort and do not
   build on it; a consumer that needs previous values uses
   [../watch/](../watch/) directly with `PrevKV`.
@@ -239,8 +238,8 @@ Exactly three things, and no others:
 
 **What does not close `Done`:** a liveness lookup that timed out, a connection
 reset, or a lookup reporting a truncated remaining TTL of zero. None of those
-proves anything, and treating them as loss told holders on a perfectly good
-cadence that they had lost a lease the server still held. Uncertainty does not
+proves anything: treating them as loss would tell a holder on a good cadence
+that it lost a lease the server still holds. Uncertainty does not
 end a lease — but neither does it postpone the signal past the deadline: a
 holder that cannot reach the server cannot renew either, so its lease really is
 running out.
@@ -331,10 +330,8 @@ which is the condition to renew safely, and rearranged is the cadence rule:
 ```
 
 **Both round trips are in the budget.** A rule built on the sleep alone omits
-the previous round trip, which is exactly the part that eats the slack; on a
-loaded host the round trips have been measured two orders of magnitude larger
-than the sleep overshoot, so a sleep-based rule reports a cadence as comfortable
-right up until it loses the lease.
+the previous round trip, which is the part that eats the slack, so it reports a
+cadence as comfortable right up until it loses the lease.
 
 #### It is not enough to survive one cycle
 
@@ -403,7 +400,6 @@ every one of those keepalives is a consensus proposal.
 | `*LeaseLostError` | `Renew` | the keepalive was acknowledged after the deadline | **no** — a correct report of lost ownership; fence |
 | `*LeaseExpiredBeforeBindError` | `AcquireLease` | the grant-to-bind round trips outlasted the TTL, and the sweep revoked the grant before the bind landed; the key was not bound | **no** — acquire again, with a TTL longer than a round trip |
 | `*transport.KeyNotFoundError` | never surfaced by `Get` | translated to `(nil, nil)` | n/a |
-| `*transport.CapabilityUnsupportedError` | `AcquireLease` on a backend that keeps no leases (standalone file/objstore) | the engine cannot hold a lease | design-time, not runtime |
 | `*transport.WatchCanceledError` | `WatchStream.Err` | the server terminated the watch; reason carried verbatim | depends on the reason — see below |
 | `context.Canceled` / `context.DeadlineExceeded` | `WatchStream.Err` | the caller ended it | no |
 
@@ -421,31 +417,19 @@ compare-and-swap.
 - **A failed revoke fails closed.** It reports failure rather than claiming a
   cleanup that did not happen.
 - **A late ack fails closed.** `LeaseLostError`, not `nil`.
-- **A backend that keeps no leases fails closed.** `AcquireLease` on a
-  standalone file or objstore node is a typed refusal, never a lease nothing
-  expires.
 
 ### Availability — how a caller discovers what it has
 
-| Verb | Standalone, pebble/memory | Standalone, file/objstore | Raft |
-|---|---|---|---|
-| `Get`, `Put`, `CompareAndSwap` | serves | serves | serves |
-| `AcquireLease` | serves | `CapabilityUnsupportedError` | serves |
-| `Watch` | serves | serves | serves |
-
-Ask, do not probe:
+Every verb serves in both run modes and on every storage backend: a standalone
+node composes the same MVCC engine over any storage
+(`pkg/server/lifecycle/local.go`). What can switch lease or watch off is
+configuration (`lease.enabled`, `watch.enabled`). Ask, do not probe:
 
 ```go
 caps, err := client.Admin().Capabilities(ctx)
 // caps.Mode is "standalone" or "raft"
-// caps.Lease, caps.Watch, caps.MVCC and caps.KV are true in both modes
+// caps.Lease and caps.Watch are false where the configuration turns them off
 ```
-
-The capability report is mode-level; the backend boundary is answered per
-call, with `*transport.CapabilityUnsupportedError` on every transport.
-*(Corrected: this section described a standalone node refusing
-`AcquireLease` and `Watch` with `requires mode: raft`, with an untyped error on
-REST and MCP. Both are served in both modes since 2026-10-01.)*
 
 ## The `WatchStream` terminal contract
 
@@ -460,12 +444,10 @@ nil and means nothing.
 | `*transport.WatchCompactedError` | a requested start revision was compacted | **not reachable from this surface** |
 | `*transport.WatchStartRevisionUnsupportedError` | replay requested on a store with no history | **not reachable from this surface** |
 
-**The last two rows are honest about their reachability.** Both conditions are
-raised only for a *positive* start revision, and `Coordinator.Watch` always
-sends `WatchOptions{}` with `StartRevision` zero, which the hub treats as a
-live-only watch. They are listed because `errors.As` against them is harmless
-and because a future change that adds a start revision would make them live —
-not because a consumer of this surface will see one.
+Both conditions in the last two rows are raised only for a *positive* start
+revision, and `Coordinator.Watch` always sends `WatchOptions{}` with
+`StartRevision` zero, which the hub treats as a live-only watch. Matching them
+with `errors.As` is harmless.
 
 **The condition that IS reachable, and that does mean you missed changes, is
 watcher overflow.** The hub must never block the state-machine apply loop on
@@ -494,26 +476,11 @@ elsewhere.
 
 ## Known limitations
 
-**None specific to a transport.** Two were recorded here — an eviction reaching
-an embedded consumer as a clean close, and a watch cancelled mid-hand-over
-parking the embedded transport's forwarding goroutine — and both were properties
-of `embedded.Transport.WatchPrefix` alone. Both are fixed, and the coordination
-layer needs no transport-specific caveat as a result: an eviction now arrives
-with its reason on every transport, and cancelling a watch releases everything
-behind it.
-
-That second guarantee is stated over the whole forwarding chain rather than
-over the transport, because the chain is longer than one hop: a namespaced
-(tenant, database) watch passes through a server-side wrapper with forwarding
-goroutines of its own, and it parked on exactly the same unguarded handover
-after the transport had stopped. Every hop selects on the caller's context now.
-See the invariants in [../watch/engineering.md](../watch/engineering.md).
-
-What remains is not a limitation but the design above: `Err()` is meaningful
-only after `Events()` has closed, and a consumer whose correctness depends on
-seeing every change should still reconcile against current state when a watch
-ends with a non-nil, non-context error — that is what the terminal reason is
-*for*.
+**None specific to a transport.** An eviction arrives with its reason on every
+transport, and cancelling a watch releases every hop of the forwarding chain,
+including the server-side wrapper of a namespaced (tenant, database) watch:
+every hop selects on the caller's context. See the invariants in
+[../watch/engineering.md](../watch/engineering.md).
 
 ## Configuration
 
@@ -522,7 +489,6 @@ variables, no flags. What governs it:
 
 | Gate | Effect |
 |---|---|
-| the storage backend | whether `AcquireLease` serves: the file and objstore backends keep no leases |
 | `lease.enabled`, `watch.enabled`, `mvcc.enabled` | narrow the profile in either mode; config can only narrow |
 | the granted TTL | passed per call, rounded up to whole seconds, floor 1 s |
 
@@ -574,9 +540,8 @@ a watch opened before the acquire delivers the leased key.
 **Parity, on every transport** (`sdk/go/conformance/coordination_parity_test.go`):
 one lease, watch and lock suite against a standalone memory, file and pebble
 node and a raft node on REST, gRPC, Unix, QUIC, MCP and embedded, and a
-standalone objstore node on embedded. Every backend composes the lease-keeping
-engine, so no row refuses the lease *(corrected: this described a file/objstore
-row where the lease was refused)*. The expiry case attaches its key under a
+standalone objstore node on embedded. Every backend composes the MVCC
+engine, so no row refuses the lease. The expiry case attaches its key under a
 one-second lease and, if the host is too loaded for the put to land inside it
 (the server proves the lease gone), retries under twice the TTL; the reap is
 then bounded by that TTL plus one sweep interval plus the revoke's own write.
@@ -588,7 +553,7 @@ cancelled; exclusivity; a sub-TTL renewal cadence that must keep `Done` open
 across several cycles; watch delivery and the caller's own cancellation reading
 as exactly that.
 
-Two rules that apply to anyone adding tests here:
+Three rules that apply to anyone adding tests here:
 
 - **Assert the reap against the store, not against a lease getter.** The
   lessor's list filters expired leases, so asserting on it passes whether or not
@@ -627,4 +592,4 @@ non-nil `WatchStream.Err()` by type.
 
 ## Integration testing
 
-`make integration-test-coordination` is mapped to no test files, so it runs zero tests and says so. The feature is covered by `TestCoordinator_SameOnEveryTransport` in `sdk/go/conformance`. The per-transport accounting, including every gap, is the `coordination` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).
+`make integration-test-coordination` runs `coordination_sdk_test.go`, which drives `Client.Coordination()` over a multi-protocol node. `TestCoordinator_SameOnEveryTransport` in `sdk/go/conformance` covers the surface on every transport and backend. The per-transport accounting, including every gap, is the `coordination` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

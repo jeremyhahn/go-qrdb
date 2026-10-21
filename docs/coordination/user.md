@@ -1,6 +1,6 @@
 # Coordination — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -23,30 +23,19 @@ Use this surface when several copies of your program must agree on something:
 which one is in charge, what the current configuration is, or who owns a piece
 of work.
 
-## Before you start: which half can this node serve?
+## Before you start: can this node serve it?
 
-Two of the five verbs need consensus and two do not. **Check, do not
-discover it at an election.**
+Every verb is served in both run modes and on every storage backend. A
+standalone node runs the same lease, watch and lock machinery in process, and
+expires leases itself. What can turn a verb off is the node's configuration:
+**check, do not discover it at an election.**
 
 ```bash
 qrdb admin capabilities --output json
 ```
 
-| Node | `Get`, `Put`, `CompareAndSwap` | `AcquireLease` | `Watch` |
-|---|---|---|---|
-| raft | yes | yes | yes |
-| standalone, pebble or memory backend | yes | yes | yes |
-| standalone, file or objstore backend | yes | **refused** | yes |
-
-Every verb works the same on a raft node and a standalone node: a standalone
-node runs the same lease, watch and lock machinery in process, and expires
-leases itself. The one gap is the storage backend, not the mode: the file and
-objstore backends keep no leases, so `AcquireLease` there returns
-`*transport.CapabilityUnsupportedError` rather than a lease that would never
-expire. A primitive that silently does nothing is worse than one that says no.
-
-*(Corrected: this section said a standalone node refuses `AcquireLease` and
-`Watch` with `requires mode: raft`. It serves both since 2026-10-01.)*
+`lease` and `watch` must both be `true`; a node with `lease.enabled` or
+`watch.enabled` set to `false` reports `false` there.
 
 ## Getting the surface
 
@@ -185,7 +174,7 @@ a 30-second TTL, a 250 ms round trip and 100 ms of timer slack:
 expensive; the cost is linear in traffic and each renewal is a consensus round
 trip.
 
-Two more things about the TTL itself:
+Three more things about the TTL itself:
 
 - It is **rounded up to whole seconds**, with a floor of one second. Asking for
   1500 ms grants 2 s; asking for 10 ms grants 1 s.
@@ -194,10 +183,9 @@ Two more things about the TTL itself:
   a single failure.
 - **Expiry deletes the key.** The TTL is a durability parameter, not a hint.
 
-## Task 3 — claim something exactly once (works in either mode)
+## Task 3 — claim something exactly once
 
-`CompareAndSwap` needs no lease, so this is the pattern to reach for when your
-program must also run on a backend that keeps no leases.
+`CompareAndSwap` needs no lease, so a claim made this way never expires.
 
 ```go
 // Claim: create only if absent. The first caller wins.
@@ -304,7 +292,6 @@ Two limits to plan around:
 | `Done` closed and you have no idea why | either the deadline passed without an acknowledged renewal, or the server said the lease is gone | fence first, diagnose second. Check renewal round-trip times against the TTL |
 | `Done` closes while you were renewing on time | the round trips, not your sleep, ate the budget — or the host stalled past the TTL | measure the keepalive round trip; if it is large, lengthen the TTL or shorten the interval |
 | `Release` returns an error | the revoke was not acknowledged, so the key may still be held | the lease is unchanged and `Done` is still open — **retry the release** |
-| `AcquireLease` fails with `CapabilityUnsupportedError` ("unsupported") | the node's storage backend is file or objstore, which keeps no leases | run the node on the pebble or memory backend (either mode), or use `CompareAndSwap` instead |
 | `CompareAndSwap` returns `(false, nil)` | the precondition lost | this is an outcome, not an error — handle it |
 | A watch ends with a non-nil, non-context `Err()` | the server dropped you; you may have missed changes | reconcile with `Get`, then re-establish. If it recurs, your consumer is too slow |
 | `Watch` events stop arriving but the channel stays open | there is simply nothing to report | idle is not dead. Only a closed channel means the watch is over |
