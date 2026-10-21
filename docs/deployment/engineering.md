@@ -1,6 +1,6 @@
 # Deployment — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -143,4 +143,4 @@ standard output.
 
 ## Integration Target
 
-Run `make integration-test-deployment` for this feature. The target intentionally selects zero Go integration tests today because locked-memory enforcement is a host/kernel property; the gap is recorded in `test/integration/COVERAGE.md` under `deployment`.
+Run `make integration-test-deployment` for this feature. The target intentionally selects zero Go integration tests because locked-memory enforcement is a host/kernel property; the gap is recorded in `test/integration/COVERAGE.md` under `deployment`.

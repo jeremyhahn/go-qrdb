@@ -1,6 +1,6 @@
 # Clustering — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 **Raft mode only.** In standalone every capability here refuses with
 `requires mode: raft`.
@@ -86,11 +86,11 @@ override, else a typed refusal. An override is validated and checked against
 any committed identity. A transport-less host reads nothing and commits none.
 Every add then goes through go-quicraft's `*WithIdentity` API
 (`service.Host.RequestAddNodeWithIdentity`, `RequestAddObserverWithIdentity`);
-the identity-less forms are no longer called anywhere. The dedicated-shard
+the identity-less forms are not called. The dedicated-shard
 factory builds a founder's `MemberIdentities` for every placement replica the
 same way (a joiner keeps whichever anchors resolve).
 
-go-quicraft (0.13 and later) admits a member of a shard on a host with a
+go-quicraft admits a member of a shard on a host with a
 transport by its node identity alone, and refuses a founding `StartShard` whose
 `Config.MemberIdentities` omits a member, or a joining one that names no anchor.
 Both composers — `sdk/go/node.buildClusteredRaftConfigs` and `qrdbd`'s
@@ -172,7 +172,7 @@ holds, and record it in `{DataDir}/enrollment-role`:
 **The role is recorded because it cannot be recovered from the material.** A
 data directory left by a first node whose listener started and served, and one
 left by a first node whose listener failed to start, are identical file for
-file — measured 2026-09-03, both
+file: both hold
 `[ca-key.pem ca.pem enrollment-role node-cert.pem node-key.pem noise-key.hex]`.
 So no ordering of generate/persist/start lets a later boot tell them apart;
 once the process exits the two leave the same bytes. The role is written
@@ -183,12 +183,10 @@ badly timed crash. That ordering is what makes the refusal below defensible —
 if an interrupted first boot could reach the same state, the refusal would be
 turning an ordinary crash into a node that will not start.
 
-Reading the role is what makes the cached-material path able to restart the
-listener. Before it, the listener was started on exactly one boot in a node's
-life — the boot that generated the CA — so **every** later boot of a first
-node came up healthy, reported healthy, and served no enrollment at all, with
-nothing logging a problem. The failure was visible only to a peer trying to
-join, from a different machine.
+Reading the role is what lets the cached-material path restart the listener.
+Without it the listener starts only on the boot that generated the CA, and
+**every** later boot of a first node comes up healthy, reports healthy, and
+serves no enrollment, with nothing logging a problem.
 
 **A data directory with CA material and no recorded role refuses to boot**, with
 a `*MissingRoleError`. It is the state a directory written before the role file
@@ -196,7 +194,7 @@ existed presents, and the node in it cannot know whether it owes the cluster an
 enrollment listener. Coming up anyway and serving none is the defect itself: a
 first node in that state is silently unjoinable for as long as it runs, nothing
 on the node reports it, and the only symptom is a peer's join failing on another
-machine — possibly weeks later, during an unrelated operation. Refusing puts the
+machine. Refusing puts the
 report on the node that has the defect, at the moment it has it.
 
 The refusal covers every such directory, not only a first node's, because the
@@ -215,13 +213,12 @@ differ from the value the node was first started with, and inferring a
 cluster-wide enrollment decision from it at read time would be a guess wearing
 the clothes of a recovery.
 
-Nor is it derived from the material, which was measured rather than assumed.
-Releases before the CA key stopped being distributed enrolled a **joining**
-node by handing it the CA certificate *and the CA private key* — that is how it
-minted its own leaf — and it persisted both: `[ca-key.pem ca.pem
-enrollment-role node-cert.pem node-key.pem]`. This release never hands out the
-key and refuses joins through enrollment (`*EnrollmentUnavailableError`, before
-any dial or write), but data directories written that way still exist. "Holds
+Nor is it derived from the material. A **joined** node's directory can hold the
+CA private key: an enrollment that handed the joiner the CA certificate *and
+the CA private key*, to mint its own leaf, left `[ca-key.pem ca.pem
+enrollment-role node-cert.pem node-key.pem]`. Enrollment never hands out the
+key and refuses joins (`*EnrollmentUnavailableError`, before any dial or
+write), but directories written that way exist. "Holds
 the CA key and is not single-node" therefore does not
 mean "generated the CA", and acting on it would give every joined node in the
 cluster the first node's role, each opening an enrollment listener nobody asked
@@ -241,24 +238,21 @@ back the listener.** "Material present" is four files written one at a time.
 `LoadFromDir` treats `ca-key.pem` as optional, since a node holding only a leaf
 legitimately has none. `ca.pem` goes last, and `PersistCA` writes the key
 before it too, so a visible `ca.pem` means every key written with it is already
-durable: an interrupted write can no longer leave a CA certificate whose key was
+durable: an interrupted write cannot leave a CA certificate whose key was
 lost, which `LoadFromDir` would accept as a CA that cannot sign. Anything that
 watches the directory for `ca.pem` may rely on the rest of the set being in
 place.
 
-The resume's own completeness check requires **only `ca.pem`**, now that the
+The resume's own completeness check requires **only `ca.pem`**, because the
 cluster CA (Key A) is persisted in the replicated store
 (`pkg/clusterca`, `cakey.SoftwareProvider`) rather than in `ca-key.pem`: the
 advertiser serves an anchor-only bundle — the CA **certificate**, never the
 private key (`StartAnchorAdvertiser`'s own doc comment) — so `ca.pem` is the
-one file its resumed listener cannot do without. Requiring `ca-key.pem` here
-was itself a standing defect, not a safeguard: `cmd/qrdbd` deletes
-`ca-key.pem` from disk once Key A's persistence to the replicated store is
-confirmed (`confirmClusterCAPersisted`), which is **every** boot after the
-first successful one, so a check that required it made the first node's own
-second restart fail closed with `*IncompleteFirstNodeMaterialError`
-forever — the opposite of what this function exists to close for every other
-first-node restart case. A missing `ca.pem` still refuses with
+one file its resumed listener cannot do without. It must not require
+`ca-key.pem`: `cmd/qrdbd` deletes it from disk once Key A's persistence to the
+replicated store is confirmed (`confirmClusterCAPersisted`), which is
+**every** boot after the first successful one, so requiring it would fail
+every later restart of the first node. A missing `ca.pem` still refuses with
 `*IncompleteFirstNodeMaterialError`, naming the **first node's** directory
 and the missing file. The node's own leaf (`node-cert.pem`, `node-key.pem`)
 is not served by the advertiser either and is already required by
@@ -295,29 +289,28 @@ can recover a set of files in an order the writer never wrote them in — the CA
 material, written later, surviving while the role entry it was supposed to
 follow is gone. The node then reads as a directory written before the role
 existed and comes up with no enrollment listener, which is exactly what the
-ordering exists to prevent. `securefile.WriteFileAtomic` (moved out of this
-package to `pkg/util/securefile` and re-exported from `sdk/go`) therefore
+ordering exists to prevent. `securefile.WriteFileAtomic` (`pkg/util/securefile`,
+re-exported from `sdk/go`) therefore
 fsyncs the directory after the rename and does not report success until
 that succeeds. Every caller gets this, so `PersistMaterial` and `PersistCA`
 are crash-durable too.
 
 **`WriteFileAtomic` refuses a pre-existing symlink at its target
 (`*securefile.SymlinkRefusedError`), checked with `os.Lstat` before the
-temporary file is even created — a BREAKING change from the pre-move
-implementation, which called `rename(tmpFile, path)` unconditionally.**
-`rename(2)` does not dereference its destination: when `path` was already
-a symlink, the old code silently replaced the SYMLINK ITSELF with an
-ordinary file holding the new material -- it did not write through the
-symlink to whatever it pointed at, and the distinction matters for exactly
+temporary file is even created.**
+`rename(2)` does not dereference its destination: when `path` is a symlink,
+an unconditional `rename(tmpFile, path)` replaces the SYMLINK ITSELF with an
+ordinary file holding the new material -- it does not write through the
+symlink to whatever it points at, and the distinction matters for exactly
 the case this refusal protects. A **Kubernetes Secret volume mount is a
 symlink**: each file `kubectl` shows under the mount point is actually a
 symlink into a `..data/<timestamp>` directory the kubelet atomically swaps
 on rotation, not a plain file. A deployment that points `--data-dir` (or
 any path `PersistMaterial`/`PersistCA`/`clusterenroll`'s key/role writes
-land in) AT a Secret-mounted directory now gets `*SymlinkRefusedError` on
-every boot that writes cluster material — where the pre-move code would
-have silently severed the kubelet's symlink, replacing it with a plain
-file the kubelet's next rotation can no longer swap. Mount a Secret for
+land in) AT a Secret-mounted directory gets `*SymlinkRefusedError` on
+every boot that writes cluster material, rather than silently severing the
+kubelet's symlink and leaving a plain file the kubelet's next rotation cannot
+swap. Mount a Secret for
 material qrdb only ever READS (a bootstrap anchor bundle, a BYO-TLS CA);
 for a directory qrdb WRITES into (the data directory itself, or any parent
 of `ca.pem`/`node-cert.pem`/`node-key.pem`/`ca-key.pem`/an enrollment
@@ -335,13 +328,8 @@ widens the certificate's stated identity and verifies nothing.
 
 The test harness that mints certificates for the integration and conformance
 suites — `sdk/go/testutil/qrdbdharness` — calls that same function rather than
-keeping its own. It used to keep a copy, and the copy drifted: it retained the
-two unspecified addresses after `clustertls` dropped them. Nothing disagreed
-with the drift, because the exclusion was documented in prose and asserted by no
-test, so an assertion written against the harness copy (`len(ips) >= 4`) was
-copied into `cmd/qrdbd`, where it was wrong and reddened every container gate
-for three weeks. Both halves of the contract are now pinned by tests in
-`pkg/clustertls` — the inclusion half and the exclusion half.
+keeping its own, so a copy cannot drift. Both halves of the contract are pinned
+by tests in `pkg/clustertls` — the inclusion half and the exclusion half.
 
 The harness is not a special case in need of wildcards. Every suite that uses
 it binds `qrdbd` to `0.0.0.0` and then connects to `127.0.0.1` or `localhost`;
@@ -374,8 +362,7 @@ What takes its place is the second suite of the bootstrap handshake,
 which is always available. A listener serves both suites and picks per
 connection from the first frame; under FIPS it serves only the P-256 one.
 
-**The ruling has three parts, and what separates them is the operator's stated
-intent.**
+**What separates the cases is the operator's stated intent.**
 
 | Situation | Behaviour |
 |---|---|
@@ -539,8 +526,7 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   so no node claims while another may still allocate per node. Its activation
   also applies the downgrade rule: once every node claims, a binary that
   allocates shard IDs per node, or accepts a caller's shard ID, can neither
-  start nor be admitted as a replica. *(Corrected: this said nothing is gated
-  on `Enabled` before activation.)*
+  start nor be admitted as a replica.
 - Invariants: an undecidable group (membership unreadable, empty) is not
   enabled; an unknown feature is never enabled; activation counts witnesses and
   is recorded with `PutIfAbsent` -- only the node whose claim created the record
@@ -587,7 +573,7 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   configured at all (a state machine type with no lease support, see
   `joinadvertise.New`'s own doc comment). A node that registers through
   **dynamic membership** from a client of the running cluster, with its
-  features in the registration, has never had this gap: its registration
+  features in the registration, does not need this: its registration
   record is exactly the live advertisement `Supports` reads, published
   before the leader ever proposes `AddMember`.
 
@@ -614,6 +600,10 @@ type AdminClient interface {
 	// answering node (or shardID's alone when non-zero), its applied index
 	// and state-machine hash. It is never forwarded to a leader.
 	ReplicaStates(ctx context.Context, shardID uint64) (*ReplicaStatesResponse, error)
+	// NodeCompaction and SetNodeCompaction read and set the node-keyspace
+	// compaction policy (admin:node_compaction, system tenant only).
+	NodeCompaction(ctx context.Context) (*DatabaseCompactionConfig, error)
+	SetNodeCompaction(ctx context.Context, policy *DatabaseCompactionConfig) (*DatabaseCompactionConfig, error)
 	// RetireJoinIdentity permanently refuses any future admission for a
 	// node identity -- a fresh join-token mint, or a renewal of one whose
 	// admission has lapsed -- after it is removed from the cluster or its
@@ -642,10 +632,9 @@ reason: it adds a replica as a non-voting observer through `host.
 RequestAddObserverWithIdentity` (go-quicraft's own observer-add primitive)
 rather than `RequestAddNodeWithIdentity`, with every other check
 (`admitReplica`'s feature-gate admission, `ResolveMemberIdentity`'s
-committed-identity resolution) shared verbatim with `AddMember`. It exists
-because `PromoteMember`'s success path had no way to be exercised before
-it: a plain `AddMember` always produces a voter, so there was never a
-cluster-created observer to promote.
+committed-identity resolution) shared verbatim with `AddMember`. A plain
+`AddMember` always produces a voter, so this is the one way to create an
+observer for `PromoteMember` to promote.
 
 `ListPendingJoinRequests`/`ApproveJoinRequest`/`RejectJoinRequest` are
 `service.JoinRequestReviewer`, a third capability interface over the SAME
@@ -756,7 +745,7 @@ proposal:
 | State machine | How the read is pinned |
 |---|---|
 | `pebble`, `mvcc` | takes the read lock `Update` excludes, opens a Pebble snapshot, and releases the lock. The applied index and every record are read from that one snapshot. The applied index commits in the same batch as each entry's writes, so the snapshot holds both or neither. Apply waits only while the snapshot is opened, not for the scan. |
-| `memory`, `standard`, `concurrent`, `highperf`, `fast`, `disk` | holds the batch lock exclusively for the whole read (the lock `GetHash` already takes), so no entry applies mid-scan. The applied index is the reserved applied-index record. The `disk` state machine has always stamped it. Every other KV state machine now stamps it at the end of each applied batch, so it travels in snapshots and survives recovery. |
+| `memory`, `standard`, `concurrent`, `highperf`, `fast`, `disk` | holds the batch lock exclusively for the whole read (the lock `GetHash` already takes), so no entry applies mid-scan. The applied index is the reserved applied-index record, which every KV state machine stamps at the end of each applied batch, so it travels in snapshots and survives recovery. |
 | any other (`regular`, the vector state machine, a witness) | no digest; that entry's `error` says why |
 
 **Identical across `sm_storage`.** For the storage-generic types (`disk`,
@@ -933,8 +922,7 @@ type ImbalanceReport struct {
   leader was elected, `*server.ShardReadWaitError` (wraps
   `server.ErrShardNotReadReady`) when a leader was but never served a read --
   each reporting probe errors, a starved poller, or the genuine failure. Do not
-  widen the budget to make either go away. `qrdbd`'s earlier best-effort
-  ReadIndex warm-up is gone: the wait replaces it.
+  widen the budget to make either go away.
 - **Every startup read is bounded per attempt, and a boot it fails is logged.**
   A boot-time read of the replicated store runs through
   `server.RunStartupRead`: each attempt gets its own context, ending after
@@ -962,8 +950,8 @@ type ImbalanceReport struct {
   `seal.WithStartupReadRetry`): the catalog listing, each tenant's barrier
   posture, and the Assignment each re-attach resolves, each step waited out on
   its own. The restore is the only pass that re-registers a tenant barrier this
-  node did not create, so a read it lost to a leaderless window left that
-  tenant unrestored until the next restart. It does not fail the boot: a
+  node did not create, so a read it loses to a leaderless window would leave
+  that tenant unrestored until the next restart. It does not fail the boot: a
   listing that outlasts the wait is logged, a posture read restores the tenant
   self-managed (sealed), and a re-attach leaves the tenant unrestored. The
   re-attach opens the tenant's store and persists its posture, so it keeps the
@@ -986,7 +974,7 @@ type ImbalanceReport struct {
   so a retry after a cut-off attempt writes the same record again, and an
   orphaned lease expires with its TTL. Nor does the deleted-tenant reconcile:
   it is a startup read (15s) with each attempt bounded, because on the boot's
-  context one read that never answered held a restarted node past the
+  context one read that never answers would hold a restarted node past the
   reconcile's budget. A cut-off pass is safe to retry: every read it makes
   fails closed, and the records that name a retired tenant's directories are
   dropped last, so the retry finds whatever the cut-off pass left.
@@ -1021,9 +1009,7 @@ type ImbalanceReport struct {
   shard-serving wait -- and the next round begins: each node is unsealed by
   its own operator, so a quorum can form long after this node is ready, and a
   node that gave up would exit and leave its peers waiting on it. Only the
-  caller's ctx ends the wait, so a signal ends it at once. It used to give up
-  after 30 polls on a capped backoff, about 13s of wall time whatever the
-  election timeout. However long the wait, the node's ports stay held:
+  caller's ctx ends the wait, so a signal ends it at once. However long the wait, the node's ports stay held:
   `cmd/qrdbd` binds the REST, HTTP/3, gRPC, QUIC transport and MCP sockets
   once, before the sealed-window listener, and hands them on to the node's
   own server (`serverSockets` in `cmd/qrdbd/server_sockets.go`), so none is
@@ -1042,8 +1028,8 @@ type ImbalanceReport struct {
   anchor-only Noise listener for any member `clusterenroll.Resolve`'s
   first-node path did not already start one for, from the same cached
   certificate — see [architecture.md](architecture.md#every-admitted-unsealed-member-serves-the-anchor).
-  The node that generated Key A being gone for good no longer strands the
-  rest of the cluster's enrollment surface.
+  Losing the node that generated Key A does not strand the rest of the
+  cluster's enrollment surface.
 - **In FIPS 140-3 mode a first node still advertises, over the approved methods
   only.** The Noise NK suite is excluded — its X25519 handshake is not
   approved — and the node comes up with a P-256-only enrollment listener, also
@@ -1107,7 +1093,7 @@ type ImbalanceReport struct {
 **Cross** is `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): only a
 `system`-tenant identity may exercise it. These routes address shards by id
 and name no tenant, and the admin service does no tenant check, so as
-`ScopeSelf` they admitted any tenant's Admin or SO -- both built-in roles grant
+`ScopeSelf` they would admit any tenant's Admin or SO -- both built-in roles grant
 add_member, remove_member, drain and snapshot in every tenant -- who could
 remove replicas from the system shard and break quorum for every tenant.
 `TestClusterAdminScope` proves the refusal on REST, gRPC, Unix, QUIC, MCP and
@@ -1128,23 +1114,23 @@ database's owning tenant.
 | A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
 | A shard opened or reopened whose leader is elected but never commits in its term within 15s | `*server.ShardReadWaitError` (wraps `server.ErrShardNotReadReady`); the host is not handed out. `qrdbd` refuses to start with `*SystemShardServingError` | **yes** |
 | `qrdbd`'s system shard knows no leader within a round of `leaderWaitBudget` (120 election timeouts) | `*server.ShardLeaderWaitError` (wraps `server.ErrTenantShardNoLeader`), naming the shard, the budget, the time spent and whether the poller was starved, is logged and the next round begins; the wait ends only with the boot context, and a signal returns the context's error as the `wait for leader` step of `*AuthBootstrapError` or `*DatabaseProvisionError` | **yes** |
-| A proposal, a linearizable/follower read, or a committed-membership read (`SyncGetShardMembership`, which admitting a member starts with and which resolves a new member's identity) on a node that knows no leader for the shard (mid-election, or not yet reached by the new leader) | Held by the Raft host adapter (`throughElection` for a proposal, `readThroughLeaderChange` for a read, both in `pkg/backend/raft/leader_wait.go`): it polls `GetLeaderID` with backoff (10 ms doubling to 250 ms) and re-runs the request once a leader is known. At 10 s or the caller's deadline it returns `*raft.LeaderWaitError` wrapping the last `*quicraft.NotLeaderError`, which the service layer's translations (`translateProposeError`, `translateReadError`) still find with `errors.As` and map to `*service.NotLeaderError`: `UNAVAILABLE` / REST 503 `NOT_LEADER` (a membership read's wraps into `*cluster.MembershipReadError`, the member-identity `UNAVAILABLE` refusal). A proposal refused naming a leader, and every other error, is returned at once; a read refused naming a leader, a committed-membership read included, is reissued (the stranded-read row below). Previously the refusal reached the client immediately, so a follower's write right after a leader change failed although a leader was moments away | **yes** (retry) |
-| A leader steps down with a proposal or membership change already in its log | go-quicraft fails the request with `*quicraft.MaybeAppliedError` around a `*quicraft.NotLeaderError` naming no leader. `throughElection` returns it at once without proposing again, and `translateProposeError` / `translateMembershipError` keep it a `ProposeError` / `MembershipError` (outcome unknown, not `ErrNotStored`), so it is neither forwarded nor un-accounted; errclass answers it `UNAVAILABLE` / REST 503. Previously it was held and re-proposed, then reported as a `NOT_LEADER` refusal marked not stored, though the entry could still commit | **yes** (idempotent retry) |
-| A linearizable/follower read in flight when leadership changes hands | go-quicraft fails every request the change strands (`failLeaderChangeRequests`) with a `*quicraft.NotLeaderError` naming the new leader. A `ReadIndex` is otherwise refused only while no leader is known, so for a read that refusal means "stranded", never "served elsewhere": the adapter reissues it (`readThroughLeaderChange`) within the same 10 s bound, and go-quicraft forwards the reissued `ReadIndex` to the new leader. A read has no effect to repeat; a stranded proposal may still commit through the old leader's log and is never reissued. Previously the stranded read reached callers with nowhere to forward it — a MySQL statement inside a transaction failed with 1105 | **yes** (reissue) |
-| A linearizable/follower read or a committed-membership read reaching a leader that has not yet committed an entry in its term (just elected; its no-op is in flight) | go-quicraft refuses the `ReadIndex` with the retryable `quicraft.ErrReadIndexNotReady`. The adapter holds the read through it (`readThroughLeaderChange`, `firstCommitPending`) within the same 10 s bound and the caller's deadline, as etcd holds a linearizable read until the new leader's first commit; at the bound it returns `*raft.LeaderWaitError` ("leader had not committed in its term") wrapping the sentinel, still `UNAVAILABLE` / REST 503. A proposal is not held for it. Previously the refusal reached the caller at once: an admin `member add-observer` right after `remove_member` triggered a check-quorum election failed its member-identity read `UNAVAILABLE` | **yes** (retry) |
+| A proposal, a linearizable/follower read, or a committed-membership read (`SyncGetShardMembership`, which admitting a member starts with and which resolves a new member's identity) on a node that knows no leader for the shard (mid-election, or not yet reached by the new leader) | Held by the Raft host adapter (`throughElection` for a proposal, `readThroughLeaderChange` for a read, both in `pkg/backend/raft/leader_wait.go`): it polls `GetLeaderID` with backoff (10 ms doubling to 250 ms) and re-runs the request once a leader is known. At 10 s or the caller's deadline it returns `*raft.LeaderWaitError` wrapping the last `*quicraft.NotLeaderError`, which the service layer's translations (`translateProposeError`, `translateReadError`) still find with `errors.As` and map to `*service.NotLeaderError`: `UNAVAILABLE` / REST 503 `NOT_LEADER` (a membership read's wraps into `*cluster.MembershipReadError`, the member-identity `UNAVAILABLE` refusal). A proposal refused naming a leader, and every other error, is returned at once; a read refused naming a leader, a committed-membership read included, is reissued (the stranded-read row below) | **yes** (retry) |
+| A leader steps down with a proposal or membership change already in its log | go-quicraft fails the request with `*quicraft.MaybeAppliedError` around a `*quicraft.NotLeaderError` naming no leader. `throughElection` returns it at once without proposing again, and `translateProposeError` / `translateMembershipError` keep it a `ProposeError` / `MembershipError` (outcome unknown, not `ErrNotStored`), so it is neither forwarded nor un-accounted; errclass answers it `UNAVAILABLE` / REST 503 | **yes** (idempotent retry) |
+| A linearizable/follower read in flight when leadership changes hands | go-quicraft fails every request the change strands (`failLeaderChangeRequests`) with a `*quicraft.NotLeaderError` naming the new leader. A `ReadIndex` is otherwise refused only while no leader is known, so for a read that refusal means "stranded", never "served elsewhere": the adapter reissues it (`readThroughLeaderChange`) within the same 10 s bound, and go-quicraft forwards the reissued `ReadIndex` to the new leader. A read has no effect to repeat; a stranded proposal may still commit through the old leader's log and is never reissued | **yes** (reissue) |
+| A linearizable/follower read or a committed-membership read reaching a leader that has not yet committed an entry in its term (just elected; its no-op is in flight) | go-quicraft refuses the `ReadIndex` with the retryable `quicraft.ErrReadIndexNotReady`. The adapter holds the read through it (`readThroughLeaderChange`, `firstCommitPending`) within the same 10 s bound and the caller's deadline, as etcd holds a linearizable read until the new leader's first commit; at the bound it returns `*raft.LeaderWaitError` ("leader had not committed in its term") wrapping the sentinel, still `UNAVAILABLE` / REST 503. A proposal is not held for it | **yes** (retry) |
 | The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
 | An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | Admin `StartShard` naming a member no committed membership names (founder) | `*service.MemberIdentityError`, coded as for member add; the shard does not start. A joiner leaves the member out and keeps the anchors it can resolve | **yes** |
 | Rebalance move of the system shard | `*service.RebalanceSystemShardMoveError`, logged; the move counts as failed | **yes** |
-| Rebalance execute on a node that cannot read the placement records (e.g. mid-election) | `*service.RebalancePlacementReadError`; the whole plan is refused before any move, `UNAVAILABLE` / REST 503. The records are what tell a dedicated tenant shard (tenant-aware MOVE) from a generic one, so an unread index is never treated as an empty one. Previously the read error was swallowed and every dedicated move fell through to the generic voter add: refused on a non-member as a failed move behind a 200, and on a member an add that skipped the observer, key delivery and placement steps | **yes** (retry) |
-| Rebalance MOVE submitted (or forwarded) to a node holding no replica of the dedicated group at all | `resolveMoveLeader` (`pkg/service/rebalance_service.go`) picks any OTHER replica, never the MOVE's own source, as the forwarding target — so the chain is bounded at 3 hops, deterministically: guessed member (never the source) → the group's actual current leader, if different → the post-transfer new leader, only if that leader was also the source. `forwardToLeader`'s `maxForwardHops` (`pkg/api/rest/server.go`) is sized for exactly this chain. Previously, guessing the source outright could need a hop `forwardToLeader`'s guard rejected as a false `*rest.LeaderForwardLoopError`, observed in practice | **yes** |
+| Rebalance execute on a node that cannot read the placement records (e.g. mid-election) | `*service.RebalancePlacementReadError`; the whole plan is refused before any move, `UNAVAILABLE` / REST 503. The records are what tell a dedicated tenant shard (tenant-aware MOVE) from a generic one, so an unread index is never treated as an empty one | **yes** (retry) |
+| Rebalance MOVE submitted (or forwarded) to a node holding no replica of the dedicated group at all | `resolveMoveLeader` (`pkg/service/rebalance_service.go`) picks any OTHER replica, never the MOVE's own source, as the forwarding target — so the chain is bounded at 3 hops, deterministically: guessed member (never the source) → the group's actual current leader, if different → the post-transfer new leader, only if that leader was also the source. `forwardToLeader`'s `maxForwardHops` (`pkg/api/rest/server.go`) is sized for exactly this chain; guessing the source outright could need a hop that guard rejects as a false `*rest.LeaderForwardLoopError` | **yes** |
 | Rebalance move to a host the shard's committed membership already names (voter, observer or witness) | `*service.RebalanceTargetHostsReplicaError`, logged; the move counts as failed. The new replica ID is past every ID the membership has used, removed ones included | **yes** |
 | Rebalance move to a host with no committed identity | `*service.MemberIdentityError`, logged; the move counts as failed | **yes** |
 | Founding a dedicated database whose placement names a host the system shard never committed | `*service.MemberIdentityError` from the factory; the shard does not start | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
-| Any bootstrap join (bootstrap flags set), this release | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that still dials. | **yes** |
+| Any bootstrap join (bootstrap flags set) | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that dials. | **yes** |
 | `/v1/ca/bootstrap` or the Noise advertiser handed key material | filtered to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`, `ValidateAnchorBundle`); the CA private key is never served | **yes** |
 | FIPS 140-3 mode, anchor fetch configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
 | FIPS 140-3 mode, anchor fetch configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the fetch | n/a |
@@ -1209,12 +1195,10 @@ suite is not served there — the listener still opens, for the P-256 suite — 
   *the default 63006*, not as the `":0"` a Go reader expects, so the natural
   spelling of "give me any free port" is in fact the spelling of "give me the
   one port every other copy of this package is also asking for". CI runs
-  pull-request pipelines on five runners sharing one host, so concurrent copies
-  are the normal case; a fixed port there is a scheduled failure rather than a
-  race. The reservation probes at `resolveNoiseHost(f)` and not at a hardcoded
-  loopback, because a port proven free at one address says nothing about the
-  same number at another. This has reddened CI three times — see
-  `reserveNoisePort` in `cmd/qrdbd/noise_port_test.go` for the history.
+  several runners on one host, so concurrent copies are the normal case. The
+  reservation (`reserveNoisePort` in `cmd/qrdbd/noise_port_test.go`) probes at
+  `resolveNoiseHost(f)` and not at a hardcoded loopback, because a port proven
+  free at one address says nothing about the same number at another.
   The listener is not only the first node's: every node that serves the CA
   anchor (`startMemberAnchorAdvertiser`) opens it too, so any `runStart` test
   that gets past TLS on generated material reaches it, and a test driving
@@ -1246,8 +1230,8 @@ suite is not served there — the listener still opens, for the P-256 suite — 
   the assertion becomes "the fixture was not reached, and the advertiser came up
   without Noise" — which is strictly stronger than a skip, because a regression
   that started reading the key file in FIPS mode fails it. `assertAdvertises`
-  and `assertNoiseFaultUnreachable` in `pkg/clusterenroll`, and
-  `assertAdvertisesWithoutNoise` in `cmd/qrdbd`, express this once each.
+  and `assertNoiseFaultUnreachable` in `pkg/clusterenroll` express this once
+  each.
 - **State digests are proven equal where they must be and different where
   they must not be.** `TestStateDigest_BackendEquivalence` applies one log to
   the `disk` and `fast` state machines over each `sm_storage` backend and
@@ -1267,8 +1251,9 @@ suite is not served there — the listener still opens, for the P-256 suite — 
 - **Integration**: the 3-node Raft suites — `isolation_raft_cluster_test.go`,
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,
-  `cluster_enable_encryption_test.go` — live in `make integration-test-cluster`.
-  **Those tests run in CI** in the `integration-features` job
+  `cluster_enable_encryption_test.go` — run under
+  `make integration-test-<feature>` for the feature `test/integration/features.mk`
+  maps each file to. **Those tests run in CI** in the `integration-features` job
   (`.github/workflows/ci.yml`), one leg per feature (`clustering`,
   `multi-tenancy`, `barrier-seal`), required by the `ci-gate` job in CI's full
   tier, so cluster behaviour is
