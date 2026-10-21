@@ -1,7 +1,7 @@
-# Storage Engines and Volume Pools — User Guide
+# Storage Engines — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-06
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-storage-engines`; coverage row: `test/integration/COVERAGE.md` `[storage-engines](../../docs/storage-engines/)`.
@@ -32,10 +32,8 @@ storage:
   max_open_files: 0
 ```
 
-**There is no `qrdb` storage backend here.** A networked adapter that stores
-through another go-qrdb node exists, but it is go-xkms's own
-`pkg/storage/qrdb/` wrapper over the go-qrdb SDK, not a value `storage.backend`
-accepts in this daemon's own config.
+**There is no `qrdb` storage backend here.** `qrdbd` does not store through
+another go-qrdb node.
 
 In raft mode the state machines pick their own backend:
 
@@ -63,7 +61,7 @@ Each database chooses its own backend at creation:
 qrdb database create app    --backend pebble
 qrdb database create cache  --backend memory
 qrdb database create secure --backend raft --data-dir /var/lib/qrdb/secure
-qrdb database info app --output json      # shows engine, backend, dataDir
+qrdb database info app --output json      # shows backend, dataDir
 ```
 
 This is fixed at creation. Changing it means a new database and a data
@@ -114,28 +112,7 @@ is involved. See [../seal/multi-tenant.md](../seal/multi-tenant.md).
 ## Volume pools
 
 A volume pool is a named set of local filesystem paths a database or tenant can
-draw a dedicated store from. There is **no CLI** — use the SDK:
-
-```go
-pools := client.VolumePools()
-if pools == nil {
-	// this transport does not support volume pools
-}
-
-_ = pools.RegisterPool(ctx, transport.RegisterVolumePoolRequest{
-	Name:  "fast-nvme",
-	Paths: []string{"/mnt/nvme0", "/mnt/nvme1"},
-})
-
-backend, _ := pools.Pick(ctx, "fast-nvme", transport.VolumePoolHint{
-	TenantID: "acme", SizeHint: 50 << 30,
-})
-// backend.LocalPath is a path on the serving node
-```
-
-**Pools are local-only, on purpose.** The consumer is PebbleDB and it needs a
-real filesystem path, which a remote object store cannot give it. This is a
-documented invariant rather than an unfinished feature.
+draw a dedicated store from. See [../volume-pools/user.md](../volume-pools/user.md).
 
 ## Troubleshooting
 
@@ -146,14 +123,6 @@ state machine carries its own storage and rejects a non-pebble `sm_storage`.
 
 **Everything vanished after a restart.** The engine is `memory`. That is what it
 does.
-
-**`client.VolumePools()` panicked.** It returns **nil** when the transport does
-not support volume pools — the nil is not an error value, so it has to be
-checked before use.
-
-**A volume pool path does not exist on the node you are on.**
-`VolumePoolBackend.LocalPath` is a filesystem path on the *serving* node. It is
-not portable.
 
 **A `file` store refused to open, saying it "was written plaintext and cannot
 be opened encrypted"** (or the reverse). The data directory was written with
@@ -166,14 +135,11 @@ or path problem shows up immediately rather than at the first busy moment.
 
 **An objstore backend refused to open with "carries no qrdb-objstore-format
 marker".** The bucket or directory already holds objects that this
-engine's current layout did not write. Usually they come from a release
-that named each object with its key verbatim. The engine now stores each
-key under an encoded name, so that any key can be stored, and it refuses
-the old layout rather than read it with keys missing. There is no in-place
-migration. Point the backend at an empty bucket or directory and copy the
-data across with a release from before the change, or start empty. Give
-the engine a bucket or prefix of its own: any object it did not write
-causes the same refusal.
+engine's layout did not write. The engine refuses a foreign layout rather
+than read it with keys missing; there is no in-place migration. Point the
+backend at an empty bucket or directory, or start empty. Give the engine a
+bucket or prefix of its own: any object it did not write causes the same
+refusal.
 
 **You want an S3 or GCS backend.** Those come from go-objstore and are
 build-tag gated — rebuild with `WITH_AWS_S3=1`, `WITH_GCP_STORAGE=1` and so on.
@@ -200,10 +166,7 @@ database and migrate — see [../backup-restore/user.md](../backup-restore/user.
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
 for the full design — **nothing in this section is implemented yet.**
 
-Today, `backend: objstore` is accepted at database creation and then refused
-when the store is actually opened (see
-[../databases/user.md](../databases/user.md)). The owner has ruled that it
-moves instead to the same sorted-segment layout Pebble already uses for the
+`backend: objstore` moves to the same sorted-segment layout Pebble already uses for the
 `pebble` engine, with the segments themselves living in an object-storage
 bucket rather than on local disk. When this ships:
 
@@ -216,6 +179,6 @@ bucket rather than on local disk. When this ships:
   reached through `qrdb backup create`, never a live `objstore` provider —
   their retrieval delays are measured in hours, which is incompatible with
   serving reads.
-- Whether this also becomes available as `raft.sm_storage`/`state_storage` (a
+- Whether this also becomes available as `raft.sm_storage` (a
   hot Raft apply path, not only a standalone database backend) is an open
   question the design defers to a later, separately gated phase.

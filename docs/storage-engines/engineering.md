@@ -1,8 +1,8 @@
-# Storage Engines and Volume Pools — Engineering Contract
+# Storage Engines — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner ruling —
-> for the object-storage LSM target design (see "Target design" at the end).**
-> · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the object-storage
+> LSM target design (see "Target design" at the end).**
+> · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -19,6 +19,7 @@ type Storage interface {
 	Reader
 	Set(key, value []byte) error
 	Delete(key []byte) error
+	DeleteRange(start, end []byte) error
 	List(prefix []byte) ([][]byte, error)
 	Exists(key []byte) (bool, error)
 	Batch() Batch
@@ -26,13 +27,6 @@ type Storage interface {
 	Close() error
 }
 ```
-
-> **Correction.** This block previously named a six-method `Engine` interface
-> with `string` keys and a `Put` method. No such interface exists; the contract
-> is `storage.Storage` above, keyed by `[]byte`, with `Set` rather than `Put`,
-> plus `Batch` and `Snapshot`. `file.Engine` is the file backend's concrete
-> type, which is where the name came from. The invariant below is restated
-> against the real name.
 
 The closed-store vocabulary, shared by every backend:
 
@@ -120,50 +114,8 @@ re-sealed under the new one. A copy failure, cancellation included, is
 count is `ReencryptVerifyMismatchError`. The node migration journals every
 directory of both lists and swaps them together.
 
-`pkg/storage/pool`:
-
-```go
-func NewPebbleStateStore(storage *pebblestore.PebbleStorage) (*PebbleStateStore, error)
-func NewReplicatedStateStore() *ReplicatedStateStore
-func NewBoundReplicatedStateStore(kv ReplicatedKV) (*ReplicatedStateStore, error)
-```
-
-The pool manager is constructed wrapped: `objpool.LocalOnly(innerMgr)`
-(`pkg/storage/pool/volumepool.go`).
-
-`sdk/go/transport` — the volume pool SDK surface:
-
-```go
-type VolumePoolClient interface {
-	List(ctx context.Context) ([]VolumePool, error)
-	Pick(ctx context.Context, poolName string, hint VolumePoolHint) (*VolumePoolBackend, error)
-	RegisterPool(ctx context.Context, req RegisterVolumePoolRequest) error
-}
-
-type VolumePool struct {
-	Name         string   `json:"name"`
-	Strategy     string   `json:"strategy"`
-	BackendCount int      `json:"backendCount"`
-	LocalPaths   []string `json:"localPaths,omitempty"`
-}
-type VolumePoolHint struct {
-	TenantID string `json:"tenantID,omitempty"`
-	SizeHint int64  `json:"sizeHint,omitempty"`
-	Region   string `json:"region,omitempty"`
-}
-type VolumePoolBackend struct {
-	PoolName  string `json:"poolName"`
-	LocalPath string `json:"localPath,omitempty"`
-}
-type RegisterVolumePoolRequest struct {
-	Name     string   `json:"name"`
-	Paths    []string `json:"paths"`
-	Strategy string   `json:"strategy,omitempty"`
-}
-```
-
-Reached from the client with `Client.VolumePools()`, which returns nil when the
-transport does not implement `VolumePoolProvider` — **nil-check it**.
+The volume pool surface is in
+[../volume-pools/engineering.md](../volume-pools/engineering.md).
 
 ## Invariants
 
@@ -180,8 +132,7 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
   build if an apply seam does not route through it. The full contract is in
   [key-value/engineering.md](../key-value/engineering.md#refusal-and-fault-at-the-apply-seam).
 - **`Storage` is a cross-repo contract.** go-xkms imports
-  `go-qrdb/pkg/storage` for all its storage operations and wraps the go-qrdb
-  SDK client into this interface for distributed mode. Changing the signature
+  `go-qrdb/pkg/storage` for its storage operations. Changing the signature
   breaks go-xkms.
 - **An operation issued THROUGH a closed engine returns an error; it never
   panics.** Every backend answers every post-`Close` operation with an error
@@ -195,8 +146,8 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
   different case, and the boundary is deliberate.** The gate makes handle
   *creation* atomic with respect to `Close`; it does not wrap each `Next` on an
   iterator already in flight, which would put a gate acquisition on every
-  element of every scan to police a caller lifetime bug. Measured on the
-  PebbleDB backend: such an iterator does **not** panic — it holds a reference
+  element of every scan to police a caller lifetime bug. On the PebbleDB
+  backend such an iterator does **not** panic — it holds a reference
   to the LSM version it was created against and keeps serving that pinned,
   internally consistent view. It does not report the closure. The leak is not
   silent either way: `Close` returns an error naming the leaked handle, which
@@ -216,11 +167,6 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
   agreement, and there is no compiler check across the repo boundary.
 - **No engine isolates tenants.** Isolation is a database and barrier per
   tenant, above this layer; a key prefix is not a boundary.
-- **Volume pools are local-only.** `objpool.LocalOnly` wraps the manager because
-  the consumer is PebbleDB, which needs a real filesystem path. This is a
-  documented invariant, not debt — do not remove the wrapper.
-- **`VolumePoolBackend.LocalPath` is a filesystem path on the serving node.**
-  It is not portable across nodes.
 - **Engines store what they are given.** Encryption is the barrier's layer;
   revisions are the state machine's.
 - **One at-rest mechanism for every on-disk backend.** Under the seal,
@@ -241,15 +187,18 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
 
 ```yaml
 storage:
-  engine: pebble    # file | memory | pebble | qrdb
-  file:
-    dir: /var/lib/qrdb/data
-  pebble:
-    dir: /var/lib/qrdb/pebble
-  qrdb:
-    address: "db.example.com:63003"
-    transport: grpc
+  backend: pebble        # pebble | memory | file | objstore
+  cache_size: 0          # pebble block cache bytes; 0 = pebble default
+  wal_dir: ""            # separate pebble WAL directory; empty = data dir
+  max_open_files: 0      # 0 = pebble default
+  objstore:              # used when a backend is objstore
+    provider: local      # local | memory | s3 | gcs | azure
+    settings: {}         # passed verbatim to the go-objstore factory
 ```
+
+`pkg/config.StorageConfig` also carries `volume_pools` and
+`allow_degraded_volume_boot`; see
+[../volume-pools/engineering.md](../volume-pools/engineering.md).
 
 A composer can replace the configured backend of a **standalone** node's data
 plane: `server.WithStorageFactory` / `node.WithStorageFactory` take a
@@ -257,7 +206,7 @@ plane: `server.WithStorageFactory` / `node.WithStorageFactory` take a
 node closes what it returns. A factory that writes files must route its I/O
 through the `vfs.FS` it is given so the data stays under the barrier. A
 clustered replica's storage is chosen by its state machine, which node options
-do not reach yet, and the seal store is node-local by design and not behind the
+do not reach, and the seal store is node-local by design and not behind the
 factory. See [release/extension-seams.md](../release/extension-seams.md).
 
 Raft-mode state machines select their backend separately with
@@ -286,7 +235,7 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
-| Objstore `local` store holding a commit journal inside its data tree (an interrupted batch of the earlier in-tree layout; the journal now lives in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
+| Objstore `local` store holding a commit journal inside its data tree (the journal belongs in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
 | A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
@@ -297,13 +246,8 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | `file` store opened in the other at-rest posture (written plaintext, opened under the seal, or the reverse) | refused at open (`file.AtRestMismatchError`), nothing read | **yes** |
 | Read or write on an encrypted store while the barrier is sealed | `seal.ErrSealed` from the encrypting file system | **yes** |
 | Node encryption migration whose re-encrypted `file` store differs from its source | `ReencryptVerifyMismatchError`, wrapped in `MigrateStoreDirError` naming the directory; the migration rolls back before any swap and the store stays under the old key | **yes** |
-| `VolumePools()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
-| Pool `Pick` with an unknown pool name | not-found | yes |
 | Opcode an engine has no handler for | refused in the result payload; the apply loop keeps advancing | **yes** |
 | Engine write fault under a committed entry | returned from `Update`, halting Apply on that replica | **yes** |
-
-The nil return from `Client.VolumePools()` is the one sharp edge here: it is not
-an error value, so an unchecked call panics rather than failing cleanly.
 
 ## Persistence
 
@@ -314,9 +258,8 @@ an error value, so an unchecked call panics rather than failing cleanly.
   directory's parent fsynced too, and an all-or-nothing commit journal
   replayed at open (`pkg/storage/file/journal.go`), plus the
   `storage.Syncer` seam. That durability is why it is permitted as a hot
-  apply path. The layout — replacing the one shipped layout before it, and
-  an intermediate design that never shipped, and why — is a breaking
-  on-disk format change with no migration; see
+  apply path. The layout is an on-disk format with no migration from any
+  other; see
   [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
   Writes are serialized across processes by an advisory OS lock on
   `.qrdb-file-lock` (`pkg/util/filelock`, a thin wrapper over `flock(2)` /
@@ -333,9 +276,7 @@ an error value, so an unchecked call panics rather than failing cleanly.
   enabled encryptor every record and the journal are written through the
   barrier's encrypting file system; the marker (`3/encrypted`) is the one
   plaintext file. The layout has
-  no key-length or path-depth dependency at all, so `KeySegmentTooLongError`
-  — a refusal the previous, one-directory-per-key layout needed — no longer
-  exists; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
+  no key-length or path-depth dependency at all; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
   bytes) is a client-input policy enforced before and at Apply, independent
   of any particular backend's constraints.
 - **File engine commit cost**: a batch commit publishes its journal durably,
@@ -369,7 +310,7 @@ an error value, so an unchecked call panics rather than failing cleanly.
   bytes), whatever its bytes, round-trips on every provider. `New` refuses a
   non-empty store lacking the `qrdb-objstore-format` marker for version `2`
   (`FormatMarkerMissingError`, `FormatVersionMismatchError`), so a store
-  written by the previous verbatim-name layout is refused, not misread.
+  written in any other layout is refused, not misread.
   There is no migration. See
   [architecture.md](architecture.md#the-objstore-engine-encoded-object-names-breaking).
   A batch commits through a single journal object (publish, apply, clear;
@@ -398,7 +339,7 @@ an error value, so an unchecked call panics rather than failing cleanly.
   failing with `seal.ErrSealed` while sealed, including on a store reopened
   sealed; the posture marker refusing the other posture in both directions.
   End to end through every node composition: the embedded server over
-  `pebble` and `file` (`sdk/go/transport/embedded/server_encfs_test.go`: no
+  `pebble` and `file` (`sdk/go/standalone/server_encfs_test.go`: no
   plaintext on disk, sealed boot refused, a reseal failing record reads with
   `seal.ErrSealed` and an unseal restoring them), `lifecycle`
   (`TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor`), raft
@@ -453,8 +394,7 @@ an error value, so an unchecked call panics rather than failing cleanly.
 - **File engine hashed layout** (`pkg/storage/file/hashed_layout_test.go`):
   the format marker refusing an old-layout or mismatched-version directory
   and accepting a fresh or empty one; a key nested thousands of segments
-  deep (the shape that exceeded `PATH_MAX` under the previous layout)
-  applying cleanly; `commitBufferedOps` refusing a batch's invalid op BEFORE
+  deep applying cleanly; `commitBufferedOps` refusing a batch's invalid op BEFORE
   writing the commit journal, so the batch leaves neither a journal nor a
   partial write and the engine reopens cleanly afterward; a seeded property
   test over random Put/Delete sequences with arbitrary `/` nesting; and a
@@ -463,7 +403,7 @@ an error value, so an unchecked call panics rather than failing cleanly.
   through `Update`, on every storage-generic state machine over both `file`
   and `pebble` `sm_storage` (`pkg/statemachine/prefix_property_test.go`) and
   on `pebble`/`mvcc` (`pkg/store/prefix_property_test.go`), at the disk
-  state machine level for the original two-key-pair report
+  state machine level for two keys where one is a prefix of the other
   (`pkg/statemachine/disk_prefix_collision_test.go`), and end to end through
   a real daemon and the CLI, including the deep-key case, in
   `test/integration/sm_storage_file_test.go`.
@@ -477,8 +417,6 @@ an error value, so an unchecked call panics rather than failing cleanly.
   skipped; corrupt and misplaced hashed records refused; the format marker
   refusing an unmarked or mismatched store; and provider read, list,
   exists and delete faults surfacing as themselves.
-- **Volume pool**: `LocalOnly` refusing a non-local backend, and `Pick`
-  returning a usable local path.
 - **Error tests** per function, happy path plus error path.
 
 ## Observability
@@ -493,14 +431,13 @@ with `sdk.IsStorageClosed`, never by comparing the message.
 win however deeply the condition is wrapped, so the wrapper rows
 (`ReadError`, `ProposeError`, `BatchError`) cannot claim it first. A
 `GET` meeting a dying node and a `PUT` meeting one are the same fact and get
-the same status. Volume pool composition is visible through
-`VolumePool.BackendCount` and `LocalPaths`.
+the same status.
 
 ## Target design: `objstore` as Pebble remote storage
 
 > See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-> for the shape, the owner ruling it implements, and the decisions (OS-1..OS-7)
-> this contract assumes. **Nothing below is implemented.**
+> for the shape and the decisions this contract assumes. **Nothing below is
+> implemented.**
 
 ### Exported surface (target)
 
@@ -509,7 +446,7 @@ It exports a `remote.Storage` adapter and nothing else that is KV-shaped:
 
 ```go
 // NewRemote constructs a Pebble remote.Storage backed by a go-objstore
-// provider. enc is the barrier-driven encrypting wrapper (OS-4); a nil or
+// provider. enc is the barrier-driven encrypting wrapper; a nil or
 // disabled encryptor is a no-op, matching pkg/atrest.Encryptor's convention.
 func NewRemote(provider string, settings map[string]string, enc *atrest.Encryptor) (remote.Storage, error)
 
@@ -526,13 +463,13 @@ func Locator(provider, prefix string) remote.Locator
 // levels are remote (CreateOnSharedAll for a local binding — every level
 // remote; CreateOnSharedLower is available but not used by phase 1).
 // The local dir passed to pebble.New still roots the WAL, MANIFEST and
-// block cache (OS-2) — WithRemote narrows what the local dir holds, it does
+// block cache — WithRemote narrows what the local dir holds, it does
 // not replace it.
 func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option
 ```
 
-A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`
-(OS-3): one per owning instance, generated once and persisted as a small local
+A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`:
+one per owning instance, generated once and persisted as a small local
 marker file beside the WAL/MANIFEST directory — never derived from a qrdb
 key, never shared between instances.
 
@@ -551,7 +488,7 @@ key, never shared between instances.
   on this path is a defect.
 - **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
   `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
-  SSTables exactly as today; it does **not** reach objects written through
+  SSTables; it does **not** reach objects written through
   `WithRemote`. The adapter encrypts the whole object payload with the same
   `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
   `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
@@ -560,7 +497,7 @@ key, never shared between instances.
 - **One prefix, one `CreatorID`, one owning instance — never shared.** A
   replacement instance (replacement Raft replica, or a reassigned local-binding
   owner) never reopens a previous instance's prefix; it gets a fresh one. This
-  is OS-3's answer and is a correctness invariant, not a cost optimization: two
+  is a correctness invariant, not a cost optimization: two
   live Pebble instances writing under one `CreatorID`/prefix would corrupt each
   other's manifest.
 - **`glacier` and `azurearchive` are refused at construction.** `NewRemote`
@@ -568,31 +505,29 @@ key, never shared between instances.
   go-objstore registers only as an `Archiver`, before any attempt to open a
   Pebble store against it. These stay backup/archive destinations only (see
   [../backup-restore/architecture.md](../backup-restore/architecture.md)).
-- **No ranged read yet (OS-6).** Until go-objstore exposes one, `ReadObject`
-  fetches the whole object once per open and serves `ReadAt` from a local
-  cache keyed by object name. This is a documented performance limitation of
-  phase 1, not a silent one: the adapter's doc comment says so, and a
-  follow-up Gitea issue against go-objstore tracks the real fix.
+- **No ranged read.** Until go-objstore exposes one, `ReadObject` fetches the
+  whole object once per open and serves `ReadAt` from a local cache keyed by
+  object name. This is a performance limitation of phase 1, stated in the
+  adapter's doc comment.
 
 ### Configuration (target)
 
 ```yaml
 storage:
-  engine: objstore
+  backend: objstore
   objstore:
     provider: s3          # local | memory | s3 | gcs | azure
     settings:
       bucket: qrdb-data
       prefix: "node-a/db-1"   # qrdb-controlled; never a key
-    local_dir: /var/lib/qrdb/objstore   # WAL, MANIFEST, block cache (OS-2)
+    local_dir: /var/lib/qrdb/objstore   # WAL, MANIFEST, block cache
     create_on_shared: all    # all | lower | none (default: all for a local binding)
 ```
 
-`local_dir` is resolved from the same local-only volume pool
-(`objpool.LocalOnly`) the `pebble` engine already uses — this design adds no
-second local-path mechanism. `provider`/`settings` reuse
-`storage.objstore` provider profiles exactly as the node-level config
-documents them today (see "Configuration" above and
+`local_dir` is resolved from the same local volume pool the `pebble` engine
+uses (see [../volume-pools/engineering.md](../volume-pools/engineering.md)) —
+this design adds no second local-path mechanism. `provider`/`settings` reuse
+`storage.objstore` exactly as the node-level config documents them (see "Configuration" above and
 [../databases/architecture.md](../databases/architecture.md#what-stays-node-level)).
 
 ### Error semantics (target, additive)
@@ -602,24 +537,23 @@ documents them today (see "Configuration" above and
 | `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
 | Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, nothing written | **yes** |
 | A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
-| go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |
-| `raft.sm_storage`/`state_storage: objstore` before the phase-3 gate accepts it | refused, as today | **yes** |
+| go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (one prefix per instance); if it does, a corruption-class error, not silently served | **yes** |
+| `raft.sm_storage: objstore` before the phase-3 gate accepts it | refused | **yes** |
 
 ### Test strategy (target, additive)
 
 - The existing per-engine conformance suite runs over `pebble+remote`
   (local-provider go-objstore) exactly as it runs over `memory`/`file`/
-  `pebble` today.
+  `pebble`.
 - **Encryption round trip**: barrier on, write, restart, read — object bytes
   on the local-provider backing directory are not the plaintext; barrier off,
-  same round trip, object bytes equal the plaintext (today's documented
-  behavior for `pebble`'s local files, now asserted for remote objects too).
+  same round trip, object bytes equal the plaintext, as for `pebble`'s local
+  files.
 - **Provider refusal**: `NewRemote("glacier", ...)` and
   `NewRemote("azurearchive", ...)` return `ArchiveTierUnsupportedError` before
   any network call.
 - **Crash safety**: kill `-9` mid-compaction and mid-flush; reopen must
-  succeed with no corruption, matching the existing `pebble` engine's crash
-  test, parametrized onto `pebble+remote`.
+  succeed with no corruption on `pebble+remote`.
 - **Name hygiene (build gate)**: a test asserting no object name
   `pkg/storage/objstore` sends to go-objstore's `Put`/`CreateObject`
   round-trips through anything shaped like a qrdb key — a regression guard for

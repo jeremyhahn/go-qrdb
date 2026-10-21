@@ -1,11 +1,11 @@
-# Storage Engines and Volume Pools — CLI
+# Storage Engines — CLI
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-06
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 **No dedicated CLI verb group.** Storage engines are a server configuration
-concern, and volume pools have an SDK surface but no `qrdb` verbs.
+concern.
 
 ## Selecting an engine — `qrdbd` configuration
 
@@ -29,10 +29,8 @@ storage:
       region: "us-east-1"
 ```
 
-There is no `qrdb` storage backend in `qrdbd`'s own config -- a networked
-adapter that stores through another go-qrdb node exists, but it is
-go-xkms's own `pkg/storage/qrdb/` wrapper over the go-qrdb SDK, not a value
-`storage.backend` accepts here.
+`storage.backend` has no `qrdb` value: `qrdbd` does not store through another
+go-qrdb node.
 
 In raft mode the state machines select their backend separately:
 
@@ -93,33 +91,15 @@ verbs:
 qrdb database create app --backend pebble
 qrdb database create cache --backend memory
 qrdb database create secure --backend raft --data-dir /var/lib/qrdb/secure
-qrdb database info app --output json      # reports engine, backend, dataDir
+qrdb database info app --output json      # reports backend, dataDir
 ```
 
 See [../databases/cli.md](../databases/cli.md).
 
 ## Volume pools
 
-Volume pools have **no CLI verbs**. They are reachable through the SDK:
-
-```go
-pools := client.VolumePools()   // nil if the transport does not support them
-if pools == nil { /* handle */ }
-
-list, err := pools.List(ctx)
-backend, err := pools.Pick(ctx, "fast-nvme", transport.VolumePoolHint{
-	TenantID: "acme", SizeHint: 50 << 30,
-})
-err = pools.RegisterPool(ctx, transport.RegisterVolumePoolRequest{
-	Name: "fast-nvme", Paths: []string{"/mnt/nvme0", "/mnt/nvme1"},
-})
-```
-
-`Client.VolumePools()` returns **nil** on a transport that does not implement
-`VolumePoolProvider`. Nil-check it — the nil is not an error value.
-
-Volume pools are **local-only** by design: the paths are filesystem paths on the
-serving node, because the consumer is PebbleDB and it needs a real path.
+The `qrdb` volume pool verbs are documented in
+[../volume-pools/cli.md](../volume-pools/cli.md).
 
 ## Build-time backend selection
 
@@ -132,8 +112,9 @@ make build WITH_AWS_S3=1 WITH_GCP_STORAGE=1 \
 
 ## Parity
 
-Nothing in this feature has a `CommandDefinition`, because nothing here has a
-`qrdb` verb. The database verbs that select a backend are covered in
+Nothing in this feature has a `CommandDefinition`, because storage engines have
+no `qrdb` verb. The volume pool verbs are covered in
+[../volume-pools/cli.md](../volume-pools/cli.md); the database verbs that select a backend are covered in
 [../databases/cli.md](../databases/cli.md).
 
 ## Target design: configuring the LSM segment layout
@@ -144,7 +125,7 @@ itself does not change; what changes is what the node does with it:
 
 ```yaml
 storage:
-  engine: objstore
+  backend: objstore
   objstore:
     provider: s3          # local | memory | s3 | gcs | azure
     settings:
@@ -155,8 +136,8 @@ storage:
 ```
 
 `local_dir` is drawn from the same local-only volume pool the `pebble` engine
-already uses (see "Volume pools" above) — there is still no CLI verb for
-volume pools, and this design adds none. `glacier` and `azurearchive` remain
+already uses (see [../volume-pools/cli.md](../volume-pools/cli.md)); this design adds
+no verb. `glacier` and `azurearchive` remain
 build-tag-gated archive destinations reachable only through
 `qrdb backup create` (see [../backup-restore/cli.md](../backup-restore/cli.md)),
-never through `storage.engine: objstore`.
+never through `storage.backend: objstore`.
