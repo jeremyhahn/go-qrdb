@@ -1,7 +1,7 @@
 # Vector Database — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" notes describe the vector half of the multi-model database program
@@ -45,28 +45,28 @@ authority.
 
 ## Schemas
 
-Namespace creation:
+The examples are REST bodies. Namespace creation:
 
 ```json
 { "namespace": "docs", "dimension": 768,
   "distance_metric": "cosine", "index_type": "hnsw", "shard_id": 0 }
 ```
 
-`distance_metric`: `cosine` (default) · `euclidean` · `dot-product`.
-`index_type`: `hnsw` (default) · `flat` · `ivf-flat`. Both immutable after
+`distance_metric`: `cosine` · `euclidean` (alias `l2`) · `dot_product`; the
+server uses `euclidean` when it is omitted. `index_type`: `hnsw` · `flat` ·
+`ivf_flat`; the server uses `hnsw` when it is omitted. Both are immutable after
 creation.
 
 Upsert:
 
 ```json
-{ "namespace": "docs", "id": "1",
+{ "namespace": "docs", "id": 1,
   "vector": [0.12, 0.98, -0.44],
   "metadata": { "source": "manual.pdf", "page": 3 },
   "shard_id": 0 }
 ```
 
-Vector IDs are `uint64`; they travel as JSON strings so large values survive
-JavaScript clients. `vector` length must equal the namespace `dimension`.
+Vector IDs are `uint64` JSON numbers. `vector` length must equal the namespace `dimension`.
 
 **`shard_id` selects nothing today** (see architecture.md "Current state").
 Target: it is removed from all twenty requests on every transport (OD-14 A);
@@ -78,13 +78,14 @@ not implemented today.
 Similarity search:
 
 ```json
-{ "namespace": "docs", "vector": [0.1, 0.2, 0.3],
+{ "namespace": "docs", "query_vector": [0.1, 0.2, 0.3],
   "k": 10, "min_score": 0.75, "ef_search": 200, "shard_id": 0 }
 ```
 
-`ef_search` applies to HNSW indexes only. `min_score` is a post-filter.
+`ef_search` applies to HNSW indexes only. `min_score` is a post-filter. gRPC
+and MCP name the query vector `vector`.
 
-Hybrid search adds `filters` (a JSON metadata filter object). Metadata search
+Hybrid search adds `metadata_filter` (a JSON metadata filter object). Metadata search
 takes `filters` plus `limit`/`offset` and no vector.
 
 Asynchronous maintenance: `RebuildIndex` returns a job ID, `CompactNamespace`
@@ -105,9 +106,7 @@ progress state.
 Every vector error is one of the service layer's typed errors, and every
 transport classifies it through the one table in `pkg/api/errclass`, so the
 answer below is the same on REST, gRPC, the unix socket, QUIC and MCP; the
-embedded transport returns the typed error itself. The service used to report
-these conditions through an untyped error code that no transport mapped, so
-all but the internal ones answered 500.
+embedded transport returns the typed error itself.
 
 | Condition | REST | gRPC / Unix | Typed error |
 |---|---|---|---|
@@ -126,7 +125,7 @@ all but the internal ones answered 500.
 | Barrier sealed | 503 | `UNAVAILABLE` | `service.BarrierSealedError` |
 | Storage or index fault | 500 | `INTERNAL` | `service.VectorOperationError` |
 | Built without `qrdb_vector` | 404 (route not registered) | `UNIMPLEMENTED` | — |
-| Target: namespace index still loading after a restart | 503 | `UNAVAILABLE` | `service.VectorIndexWarmingError` (new), retryable |
+| Target: namespace index still loading after a restart | 503 | `UNAVAILABLE` | `service.VectorIndexWarmingError`, retryable |
 | Target: write after the database's drop fence | as the drop-fence contract defines | as the drop-fence contract defines | the guard refusal |
 
 ## Versioning
