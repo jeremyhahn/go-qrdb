@@ -1,6 +1,6 @@
 # Key-Value Store — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Six transports, one capability set. The gRPC service is `qrdb.v1.QRDBService`;
@@ -21,7 +21,7 @@ Go call on the SDK client.
 | Put if absent | `POST /kv/put-if-absent` | `PutIfAbsent` | `kv.PutIfAbsent` | `qrdb_put_if_absent` | `Client.KV().(GuardedKVClient).PutIfAbsent` | `kv:put` |
 | Compare and delete | `POST /kv/compare-and-delete` | `CompareAndDelete` | `kv.CompareAndDelete` | `qrdb_compare_and_delete` | `Client.KV().(GuardedKVClient).CompareAndDelete` | `kv:delete` |
 | Compare and swap | `POST /kv/compare-and-swap` | `CompareAndSwap` | `kv.CompareAndSwap` | `qrdb_compare_and_swap` | `Client.KV().(GuardedKVClient).CompareAndSwap` | `kv:put` |
-| Put with lease | `PUT /kv/{key}` + lease field | `PutWithLease` | `mvcc.PutWithLease` | `qrdb_mvcc_put_with_lease` | `Client.MVCC().PutWithLease` | `mvcc:put_with_lease` |
+| Put with lease | `PUT /kv/{key}?lease-id=N` | `PutWithLease` | `mvcc.PutWithLease` | `qrdb_mvcc_put_with_lease` | `Client.MVCC().PutWithLease` | `mvcc:put_with_lease` |
 | Get with revision metadata | `GET /kv/{key}?revision=true` | `GetRevision` | `mvcc.GetRevision` | `qrdb_mvcc_get_revision` | `Client.MVCC().GetRevision` | `mvcc:get_revision` |
 | Get at revision | `GET /kv/{key}?at-revision=N` | `GetAtRevision` | `mvcc.GetAtRevision` | `qrdb_mvcc_get_at_revision` | `Client.MVCC().GetAtRevision` | `mvcc:get_at_revision` |
 | Range | `GET /kv/range` | `Range` | `mvcc.Range` | `qrdb_mvcc_range` | `Client.MVCC().Range` | `kv:range` / `mvcc:range` |
@@ -39,10 +39,7 @@ lacks it is refused with the transport's typed denial (403 /
 `auth.ErrUnauthorized`). The KV service is never reached, so a refused read is
 never answered as an empty result. Listing returns keys only and needs
 `kv:list`; every read that returns values -- `Get`, `Scan`, `Range` -- needs
-its own permission. *(Corrected: `GET /kv` was documented as a `Get` alias
-under `kv:get`, and `Scan` under `kv:list`; `GET /kv` lists keys under
-`kv:list`, and `Scan` returns values under `kv:range`, on REST as on every
-other transport.)*
+its own permission.
 
 **The node-keyspace policy is the platform's.** It governs the keys outside
 every database namespace, so no tenant may read or set it: the permission is
@@ -87,7 +84,7 @@ contract carries them, and a transport that answered the assertion while
 emulating a guarded write with a read and a write would be strictly worse than
 one that declined it — the consumer would build a distributed lock on top of
 something that never arbitrated anything. **Every transport listed in the matrix
-above now carries them natively**, MCP included: its three tools each make one
+above carries them natively**, MCP included: its three tools each make one
 call to the atomic service method, with no tool call before and no fallback
 after.
 
@@ -174,8 +171,7 @@ than at the state machine, which is the one visible difference.
 **`Exists` has no wire operation on any network transport.** The REST, gRPC,
 QUIC and MCP transports each derive it from `Get` client side. This is
 deliberate — a boolean is exactly the information `Get` already carries — and
-the `kv:exists` permission is still checked. It is recorded here rather than
-omitted so the next reader does not go looking for the missing endpoint.
+the `kv:exists` permission is still checked.
 
 ## Authentication and scoping
 
@@ -186,32 +182,39 @@ omitted so the next reader does not go looking for the missing endpoint.
   field on QUIC/MCP. Absent, the server's default database (`system`) is used.
 - **Consistency** travels as the `consistency` query parameter on REST and as a
   request field elsewhere: `strong`, `linearizable`, `lease_read`, `eventual`.
-- **Write mode** travels as a request field: `sync`, `wal_durable`, `batched`.
+- **Write mode** travels as the `write_mode` query parameter on REST and as a
+  request field elsewhere: `sync`, `wal_durable`, `batched`.
 
 ## Request and response schemas
 
-`MVCCKeyValue` (the shape returned by every revision-aware read):
+`MVCCKeyValue` (the shape returned by every revision-aware read; on REST
+`key` and `value` are base64):
 
 ```json
 {
-  "key": "app/config/timeout",
+  "key": "YXBwL2NvbmZpZy90aW1lb3V0",
   "value": "MzBz",
   "create_revision": 12,
   "mod_revision": 47,
   "version": 3,
-  "lease": 0
+  "lease_id": 0
 }
 ```
 
 `RangeOptions` fields, mirrored across transports: `limit`, `revision`,
-`keys_only`, `count_only`, `sort_by` (`key|value|version|create|mod`),
-`sort_order` (`asc|desc`). Range is the only unbounded result set in this
+`keys_only`, `count_only`, `sort_target`
+(`key|value|version|create_revision|mod_revision`), `sort_order`
+(`ascend|descend`). On REST they are the query parameters `start`, `end`,
+`limit`, `revision`, `keys-only`, `count-only`, `sort-target` and
+`sort-order`. Range is the only unbounded result set in this
 feature and `limit` is how it is paginated; a range without a limit returns
 everything in `[start, end)`.
 
 `RestoreRevisionRequest`: `revision`, and exactly one of `prefix` or `keys`,
-plus `dry_run` and `force`. The response carries the plan entries
-(`action`, `key`, `from_rev`, `to_rev`, `value_size`) and the conflict list.
+plus `dry_run` and `force`. The response carries the plan entries in
+`changes` (`action`, `key`, `from_revision`, `to_revision`, `value_bytes`), the
+same entries for conflicts in `conflicts`, and the counts `applied`, `skipped`
+and `conflicted`.
 
 ## Status and error mapping
 
@@ -221,16 +224,16 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Key not found | 404 | `NOT_FOUND` | distinct from an empty value. QUIC answers `StatusNotFound`; the SDK reconstitutes `transport.KeyNotFoundError` from the status, never from the message |
 | Bad parameter (`at-revision` unparseable, bad sort key) | 400 | `INVALID_ARGUMENT` | |
 | Revision above current | 400 | `INVALID_ARGUMENT` | fails closed, never approximated |
-| Revision at or below the database's compaction floor | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; fails closed, never approximated. QUIC answers `StatusOutOfRange` and MCP `OUT_OF_RANGE`; every SDK transport's `GetAtRevision` reconstitutes the refusal as `transport.RevisionCompactedError` carrying the revision asked for, from the status, never from the message, so a caller can tell it from a transient failure. *(Corrected: this row said 400 / `INVALID_ARGUMENT`; the classification has been `OUT_OF_RANGE` since it was introduced -- see [../api-server/api.md](../api-server/api.md). Only the embedded and REST clients used to type the refusal; the gRPC, Unix, QUIC and MCP clients returned a generic request error despite their documented contract, and now type it too.)* |
+| Revision at or below the database's compaction floor | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; fails closed, never approximated. QUIC answers `StatusOutOfRange` and MCP `OUT_OF_RANGE`; every SDK transport's `GetAtRevision` reconstitutes the refusal as `transport.RevisionCompactedError` carrying the revision asked for, from the status, never from the message, so a caller can tell it from a transient failure. |
 | `Compact` to a revision below 1, or above the current revision | 400 | `INVALID_ARGUMENT` | `service.CompactRevisionInvalidError`, `service.CompactRevisionFutureError` |
 | `Compact` to a revision the database is already compacted to | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; nothing changes |
 | `Compact` on a server with no database scope (raw service) | 422 | `FAILED_PRECONDITION` | `service.CompactScopeRequiredError`; there is no store-wide compaction |
-| `Compact` before every replica of the group supports per-database compaction | 503 | `UNAVAILABLE` | `featuregate.NotActiveError` naming `prefix-compaction`; nothing proposed, and a retry succeeds once the feature is active. *(Corrected: this row said 422 / `FAILED_PRECONDITION`, `service.FeatureNotEnabledError`; the condition clears by itself, and every feature-gated refusal is now one type.)* |
+| `Compact` before every replica of the group supports per-database compaction | 503 | `UNAVAILABLE` | `featuregate.NotActiveError` naming `prefix-compaction`; nothing proposed, and a retry succeeds once the feature is active. |
 | `SetNodeCompaction` with an invalid policy | 400 | `INVALID_ARGUMENT` | `compaction.InvalidPolicyError` |
 | `SetNodeCompaction` before every replica of the shared store supports the compaction-state command | 503 | `UNAVAILABLE` | `featuregate.NotActiveError` naming `prefix-compaction` |
 | `NodeCompaction` / `SetNodeCompaction` on a node whose shared store keeps no MVCC history | 422 | `FAILED_PRECONDITION` | `service.NodeCompactionUnavailableError` |
 | `NodeCompaction` / `SetNodeCompaction` by a caller of any tenant but the system tenant | 403 | `PERMISSION_DENIED` | the `ScopeCross` refusal; in process, `tenant.CrossTenantDeniedError` |
-| Non-MVCC state machine asked for an MVCC operation | 400 | `FAILED_PRECONDITION` | `service: requires raft.sm_type: mvcc` |
+| Non-MVCC state machine asked for an MVCC operation | 501 | `UNIMPLEMENTED` | `service.MVCCBackendRequiredError`, whose message says to configure `raft.sm_type: mvcc` |
 | Guarded request body over the endpoint's encoded byte bound | 413 | — | REST only; the coarse pre-decode guard |
 | Guarded request key and values, SUMMED, over what one proposal can carry | 413 | — | REST only; the precise limit, derived from the Raft entry ceiling |
 | Guarded request key over what the command encoding can frame (65535 bytes) | 413 | `INVALID_ARGUMENT` | the key length prefix is two bytes; REST reports it at the edge, the other transports at encode time |
@@ -245,9 +248,9 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Restore scope empty, ambiguous, or over `MaxRestoreKeys` | 400 | `INVALID_ARGUMENT` | refused whole |
 | Missing permission | 403 | `PERMISSION_DENIED` | |
 | Barrier sealed | 503 | `UNAVAILABLE` | fail closed |
-| Not the leader, no resolver configured | 503 | `UNAVAILABLE` | otherwise routed to the leader. QUIC answers `StatusUnavailable`, not the generic `StatusError` it used to |
-| Raft timed out the proposal or read: an election, or a leader still committing the first entry of its term | 503 | `UNAVAILABLE` | `quicraft.ErrTimeout`, whatever wrapper carried it. Retryable once a leader serves; a timed-out write may still have committed, so retry only a write made idempotent. *(Corrected: this answered 500 / `INTERNAL`, which reported an election as a server fault.)* |
-| The leader stepped down with the write already in its log | 503 | `UNAVAILABLE` | `quicraft.ErrNotLeader` under `*quicraft.MaybeAppliedError`. The write may still commit under the next leader, so it is not a `NOT_LEADER` refusal and is never forwarded; retry only a write made idempotent. *(Corrected: this was held and re-proposed, then answered as a `NOT_LEADER` refusal.)* |
+| Not the leader, no resolver configured | 503 | `UNAVAILABLE` | otherwise routed to the leader. QUIC answers `StatusUnavailable` |
+| Raft timed out the proposal or read: an election, or a leader still committing the first entry of its term | 503 | `UNAVAILABLE` | `quicraft.ErrTimeout`, whatever wrapper carried it. Retryable once a leader serves; a timed-out write may still have committed, so retry only a write made idempotent. |
+| The leader stepped down with the write already in its log | 503 | `UNAVAILABLE` | `quicraft.ErrNotLeader` under `*quicraft.MaybeAppliedError`. The write may still commit under the next leader, so it is not a `NOT_LEADER` refusal and is never forwarded; retry only a write made idempotent. |
 
 Every condition in this table has a QUIC status; the whole vocabulary is in
 [the API server's status mapping](../api-server/api.md#common-status-mapping).
@@ -257,9 +260,7 @@ fail an apply for a deterministic consequence of client input — that halts the
 Raft group — so it encodes the refusal into its result instead. The encoding
 carries a KIND (`protocol.AppErrorKind`: capability, invalid, conflict,
 unavailable, fault, corrupt), and the service layer turns each kind into its
-own typed error. Before, every refusal but the capability one shared a single
-type, so an invalid TTL and a missing lease subsystem reached a caller as the
-same condition: 501 over REST, `INTERNAL` over gRPC and QUIC.
+own typed error.
 
 ## Versioning
 

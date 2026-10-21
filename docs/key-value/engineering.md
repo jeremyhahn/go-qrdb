@@ -1,6 +1,6 @@
 # Key-Value Store — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 ## Exported surface
 
@@ -72,7 +72,7 @@ linearizable to mean anything, so it is always synchronous.
 | `Linearizable` | `linearizable` | Raft ReadIndex — **the default** | 1–5 ms |
 | `LeaseRead` | `lease_read` | leader serves locally under a valid leadership lease | sub-ms |
 | `Eventual` | `eventual` | local state machine, no coordination | <1 ms |
-| `FollowerRead` | — | follower confirms applied index via ReadIndex, then reads locally | between `Eventual` and `Strong` |
+| `FollowerRead` | `follower_read` | follower confirms applied index via ReadIndex, then reads locally | between `Eventual` and `Strong` |
 
 `LeaseRead` has no staleness window. The raft adapter
 (`pkg/backend/raft/adapter.go`) maps `LeaseRead` and `Linearizable` to the same
@@ -108,8 +108,9 @@ func IsInternalKey(key string) bool
 func SkipInternalKeyFilter(prefix string) bool
 ```
 
-Reserved prefixes: `__sys:`, `__tbl:`, `__idx:`, the table-sequence prefix,
-`ts:`, `idx:metric:`, `idx:tag:`, `retention:`.
+Reserved prefixes: `__sys:`, `__tbl:`, `__idx:`, `__seq:`, `__tblgen:`,
+`__reclaim:job/`, `__reclaim:index/`, `ts:`, `idx:metric:`, `idx:tag:`,
+`retention:`, `__vec:`.
 
 `InternalKeyPrefixes` returns a **copy** so no caller can widen the user
 keyspace by mutating the backing array.
@@ -160,8 +161,7 @@ sweep becoming an enumeration of the internal keyspace.
   which a client listing at a revision just above the compaction point
   (`kube-apiserver`) relies on. A kept entry that is a tombstone goes too
   when the key has a newer entry, since it records only that the key did not
-  exist. *(Corrected: compaction kept only each key's newest entry, so a read
-  above the floor but below a key's newest write answered "not found".)*
+  exist.
 - **Compaction validates its revision.** `r < 1` is
   `service.CompactRevisionInvalidError`; `r` above the store's current
   revision is `service.CompactRevisionFutureError`; `r` at or below the floor
@@ -172,8 +172,7 @@ sweep becoming an enumeration of the internal keyspace.
 - **Nothing compacts implicitly.** A database is compacted only when its
   owning tenant asks: an explicit `Compact`, or the scheduled-compaction policy
   that tenant configured on the database (below). There is no node-wide
-  retention setting; `mvcc.compaction_retention`, which nothing read, is
-  removed.
+  retention setting.
 - **Restore is a logical undo, never a Raft rewind.** Every change is proposed
   as an ordinary forward write. Committed history is never discarded.
 - **Restore is not atomic across keys.** Each key is an independent Raft
@@ -222,8 +221,7 @@ sweep becoming an enumeration of the internal keyspace.
   `GetHash` does, for the same reason and at the same cost.
 - **Every KV state machine records its applied index.** The reserved
   applied-index record (`diskMetaKeyLastApplied`) is stamped at the end of
-  every applied batch: by `DiskAdapter` directly on its storage, as it always
-  has been, and by `KVStateMachine.Update` through the backend for every
+  every applied batch: by `DiskAdapter` directly on its storage, and by `KVStateMachine.Update` through the backend for every
   other KV state machine. It is replicated state like any record, so it
   travels in snapshots and is restored with them. A client can neither read
   nor write it (`isStateMachineKey`), and the state digest reports it as the
@@ -258,7 +256,7 @@ storage fault and a diverged replica serving wrong data. Under the rule as
 written, a forgotten declaration costs availability on one shard and is loud;
 the alternative costs correctness and is silent.
 
-Two consequences worth stating, because both have been defects here:
+Two consequences:
 
 - **The classification is a property of the error, not a list kept elsewhere.**
   A new compiled-out subsystem declares its own refusal type beside the code
@@ -275,8 +273,7 @@ Two consequences worth stating, because both have been defects here:
 
 **A refused batch or transaction stages nothing.** Opcodes are validated before
 any operation in the set is applied. Applying until the unrecognised one is
-reached would commit half the batch while telling the caller it was refused —
-which, while a refusal was fatal, was masked by the shard dying anyway.
+reached would commit half the batch while telling the caller it was refused.
 
 ### Point reads and absence
 
@@ -294,13 +291,10 @@ queries that forwards to `sm.NALookup` and returns its result directly, which
 boxes a `[]byte(nil)` into a NON-NIL `interface{}`. The two state machines that
 implement `sm.NALookup` for their zero-allocation read path are `DiskAdapter`
 and `HighPerfAdapter`, so on `raft.sm_type: disk` and `highperf` a missing key
-arrived at the service layer as a non-nil interface holding a nil slice and was
-served as a successful read of an empty value: `Exists` answered true for every
-key ever asked about, including keys never written and keys just deleted
-(measured 2026-09-02 on `sm_type: disk` / `sm_storage: file`, single-replica
-raft). The state machines without `sm.NALookup` took the generic `Lookup` path,
-which returns an untyped nil, and were always correct — which is why the defect
-was confined to some `sm_type`s.
+reaches the service layer as a non-nil interface holding a nil slice; tested
+on the interface alone it would be served as a successful read of an empty
+value, and `Exists` would answer true for every key. The state machines without
+`sm.NALookup` take the generic `Lookup` path, which returns an untyped nil.
 
 `service.keyIsAbsent` (`pkg/service/service.go`) therefore treats a nil `[]byte`
 as not-found as well as a nil interface. That compensates for the upstream
@@ -315,7 +309,7 @@ the tracker reference.
 The user and role stores do not talk to the KV service directly. They talk to
 `kvstore.KVStore`, and something adapts one to the other — `kvStoreAdapter` in
 `pkg/server/lifecycle` for the server, `serverKVAdapter` in
-`sdk/go/transport/embedded` for the embedded transport.
+`sdk/go/standalone` for the in-process server.
 
 **The two interfaces disagree about how absence is spelled, which is what makes
 the adapter a seam rather than a pass-through.** The service reports a missing
@@ -332,7 +326,7 @@ is then load-bearing without saying so, and the failure is that every absent key
 becomes a hard error at a caller that was testing `if data == nil`. Both
 adapters use the type, and a test drives each with an absence whose message
 deliberately contains no recognisable wording, so the message cannot become
-load-bearing again without that test going red.
+load-bearing without that test going red.
 
 **An error that is not absence still propagates.** The opposite mistake — a too
 eager adapter reporting a failed read as "the key is not there" — is the same
@@ -357,12 +351,9 @@ also foreclose an implementation that has a legitimate reason to be
 non-comparable. Instead, `kvstore.UsableAsMapKey(s KVStore) bool` is the
 predicate every caller that caches per-store state must consult before using a
 `KVStore` value as a cache key; a `false` result means "skip the cache," not
-"refuse the store." Multiple routing layers have needed this judgement, and it
-was missing from more than one of them until review caught it — a caller who
-writes the next per-store cache has no way to learn the rule except by finding
-one of those.
+"refuse the store."
 
-### The single-key guarded verbs — available on every state machine but `fast`
+### The single-key guarded verbs — available on every state machine
 
 `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are one primitive:
 acquire a claim, edit it under the claim, release it under the claim. They are
@@ -384,11 +375,7 @@ middle decided nowhere.
   | `pebble` (default) | yes | yes | yes | refused |
   | `memory`, `standard`, `concurrent`, `highperf`, `fast`, `disk`, `regular` | yes | yes | yes | refused |
 
-  There is no row that declines a guarded verb. `fast` refused the guarded delete and
-  swap for one release, while its backend could not carry what their result
-  promised — see the durability bullet below for what changed, and why the fix
-  went into the `Backend` interface rather than into that backend's ordinary
-  write path.
+  There is no row that declines a guarded verb.
 - **Every state machine runs transactions against its OWN keyspace.** The
   `pkg/statemachine` state machines have no MVCC store; `OpTransaction` and
   `OpBatch` are decided against, and committed to, the same keyspace `Put`,
@@ -485,33 +472,19 @@ middle decided nowhere.
   asynchronous: that contract is what the backend exists to provide, and making
   them synchronous was rejected for that reason.
 
-  **What this replaced.** `sm_type: fast` is a `KVStateMachine` over
-  `FastBackend`, which reaches storage only through this seam. Before the
-  interface change there was no way to ask it for a synchronous write, so a
-  caller told "you won the claim" could be contradicted by the disk: an
-  acknowledged `PutIfAbsent` that never landed leaves the key absent after a
-  restart and a second caller wins the same claim. For one release the guarded
-  delete and swap **refused** there rather than answering wrongly, while
-  `PutIfAbsent` kept executing with the hole open. Both are now answered
-  properly, and the refusal machinery is deleted rather than left disarmed — a
-  mechanism that can no longer fire is an invitation to re-arm it, and the
-  re-arming would look like a fix.
+  `sm_type: fast` is a `KVStateMachine` over `FastBackend`, which reaches
+  storage only through this seam: without the durable pair, an acknowledged
+  `PutIfAbsent` that never landed would leave the key absent after a restart
+  and let a second caller win the same claim.
 
-  The narrative used to carry a third defect, and it was the worst of the
-  three: those background writes were ordered against nothing, so an older
-  pending write could land after a newer one. Measured on the pre-fix code with
-  **ordinary unguarded writes** and no guarded verb involved, `Put(k,"old")`
-  then `Put(k,"new")` left durable state holding `"old"`, and `Put(k,"v")` then
-  `Delete(k)` left the key **present**, holding `"v"` — a lost write and a
-  resurrected key on the default path. That is fixed independently:
-  `FastBackend` now draws a `persistOrder` ticket under the same lock
-  acquisition as its cache write, the discipline the sharded state machine
-  has always had.
+  `FastBackend` orders its background writes: it draws a `persistOrder` ticket
+  under the same lock acquisition as its cache write, so an older pending write
+  never lands after a newer one, guarded or not.
 
-  The verification is that the durability battery in
-  `pkg/statemachine/guarded_persist_test.go` — written for `FastStateMachine` — now runs
-  over `KVStateMachine` + `FastBackend` as a second target, unchanged. The promises are the same promises, not a
-  weaker set written for a weaker backend.
+  The durability battery in `pkg/statemachine/guarded_persist_test.go` runs over
+  `FastStateMachine` and over `KVStateMachine` + `FastBackend`, unchanged
+  between them: the promises are the same, not a weaker set for a weaker
+  backend.
 
 - **They cannot appear inside a batch.** The batch encoding carries no expected
   value, so a batched operation cannot express a guard. Multi-key atomicity is
@@ -533,16 +506,12 @@ middle decided nowhere.
   could overwrite what a `PutIfAbsent` had just decided and the verb would be
   advisory — which is worse than the refusal below, because a refusal is
   honest and an advisory guarantee is not. `Batch` keeps its own all-or-nothing
-  property unchanged; what it gains is that it can no longer commit inside a
-  guarded operation's window.
+  property, and it cannot commit inside a guarded operation's window.
 
-  **One write mutex, not per-key lock striping.** Striping was measured against
-  it before the choice was made: on `pebble` the two were inside each other's
-  noise, and on `memory` striping was roughly 20% **worse**, because that engine
-  serializes internally already and the extra lock buys nothing while costing
-  two more atomics. The simpler construction is therefore also the faster one
-  here, and it is the one `seal.StorageAdapter` and
-  `database.BackendStorageAdapter` already use. A lock-free form is not
+  **One write mutex, not per-key lock striping.** Striping is no faster on
+  `pebble` and slower on `memory`, which serializes internally and gains
+  nothing from the extra lock. It is the construction `seal.StorageAdapter` and
+  `database.BackendStorageAdapter` use. A lock-free form is not
   available at all: `storage.Storage` exposes no compare-and-set, so a
   check-then-write over an arbitrary engine has nothing to CAS on.
 
@@ -552,7 +521,7 @@ middle decided nowhere.
   on the same engine measures within a few per cent on `memory` and under ten
   per cent on `pebble`.
 
-  **The remote proxy still refuses**, with
+  **The remote proxy refuses**, with
   `kvstore.ErrAtomicWriteUnsupported`, because its wire protocol carries no
   guarded operation. That refusal is why the capability is discovered by type
   assertion instead of living on `database.Backend`: widening the interface
@@ -583,9 +552,7 @@ must not drift into four.
   write that stores under the wrong key; on a delete it removes a different
   record than the caller named — from input a caller can craft, inside a
   replicated state machine.
-- **Every encoder returns `([]byte, error)`.** This is source-breaking for an
-  external consumer calling `pkg/protocol` directly; SDK consumers are
-  unaffected.
+- **Every encoder returns `([]byte, error)`.**
 - **Validation completes before allocation.** An encoder validates the whole
   request, including every nested field of a batch, before sizing its buffer,
   so an unencodable request costs no allocation proportional to itself.
@@ -606,7 +573,7 @@ summary: [../01-architecture.md](../01-architecture.md).
 Errors are typed values in `pkg/errors` and the per-transport error packages
 (`pkg/api/errors*.go`); `fmt.Errorf` is not used. Every error crosses the SDK
 boundary as a typed value and is mapped per transport by
-[../../conventions](../api-server/engineering.md).
+[../api-server/engineering.md](../api-server/engineering.md).
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
@@ -619,7 +586,7 @@ boundary as a typed value and is mapped per transport by
 | `Compact` to a revision above the current one | `service.CompactRevisionFutureError` | **yes** |
 | `Compact` to a revision the database is already compacted to | `service.RevisionCompactedError`; the floor is unchanged | **yes** |
 | `Compact` before every replica of the group supports per-database compaction | `featuregate.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
-| As-of read against a non-MVCC state machine | `service: requires raft.sm_type: mvcc` | **yes** |
+| As-of read against a non-MVCC state machine | `service.MVCCBackendRequiredError` (501 / `UNIMPLEMENTED`) | **yes** |
 | Restore naming a reserved prefix or key | refused, HTTP 403 equivalent, **no override** | **yes** |
 | Restore with no scope or both scopes | refused | **yes** |
 | Restore matching more than `MaxRestoreKeys` | refused whole | **yes** |
@@ -672,7 +639,7 @@ if err := kv.Put(ctx, key, value); err != nil {
 | Key | Values | Default | Effect |
 |---|---|---|---|
 | `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Every value supports the single-key guarded verbs, batches and transactions. Only `mvcc` keeps revisions, so only `mvcc` supports as-of reads, watch replay, selective restore and create/mod-revision compares. |
-| `storage.backend` | `pebble`, `file`, `memory` | `pebble` | Underlying storage engine. |
+| `storage.backend` | `pebble`, `file`, `memory`, `objstore` | `pebble` | Underlying storage engine. |
 
 ```yaml
 raft:
@@ -708,9 +675,6 @@ it, and only when it has set a policy. Off by default.
   ("Scheduled compaction" below), written through `OpCompactionState` like a
   database's policy: every replica holds it, a snapshot or backup carries it,
   and the shared store's leader runs it, with no node-local copy anywhere.
-  *(Corrected: the policy was `mvcc.node_compaction` in each node's
-  configuration file, with no API verb, run by every node that had it
-  configured. That key is no longer read.)*
 - **It never touches a tenant prefix, by construction.** A key is in a
   database namespace when it has the shape `tenant.ComposeNamespace` produces
   -- a non-empty segment, `/`, a non-empty segment, `/`
@@ -750,9 +714,6 @@ same pass: every change is a data entry and a change-log entry at the same
 change-log record deleted as it is visited. The revision-ordered change log,
 which interleaves every database's changes, is never walked.
 `TestCompactPrefix_WorkIsBoundedByTheCompactedDatabase` pins this.
-*(Corrected: the change log was collected by walking every change on the
-shard in the compacted window and filtering by prefix -- every database's,
-from revision 1 on a database's first compaction.)*
 
 ### Scheduled compaction
 
@@ -768,7 +729,8 @@ explicit `Compact` from that tenant.
 
 A field that does not belong to the mode is refused
 (`compaction.InvalidPolicyError`) rather than ignored. The policy is
-set with `UpdateDatabaseCompaction` (`mvcc:compact`, owning tenant only); see
+set with `DatabaseService.UpdateCompactionForTenant` (gRPC
+`DatabaseUpdateCompaction`; `mvcc:compact`, owning tenant only); see
 [../databases/](../databases/). There is no configuration-file form.
 
 **The policy and its samples are replicated state in the database's own
@@ -813,29 +775,23 @@ consumes no revision, fires no watch and is never itself compacted.
   the dropped incarnation set -- never one bound to another incarnation, which
   a database created again under the name wrote and a re-issued drop of the
   old one must leave alone -- and a policy bound to another incarnation
-  replaces the record outright, samples included. *(Corrected: the drop
-  cleared the name's record whatever incarnation had set it.)*
-- **Read back** through `database info`/`GetDatabase`
-  (`DatabaseInfo.compaction`), from the same record. A sealed database's
+  replaces the record outright, samples included.
+- **Read back** through `database info` (`DatabaseService.GetForTenant`,
+  gRPC `DatabaseGet`; `DatabaseInfo.compaction`), from the same record. A sealed database's
   policy is not reported while it is sealed -- its views are refused by
   design -- and `list` does not report policies. A store that cannot be
   read -- a degraded raft database -- does not fail the call: the rest of
   the information is reported, `compaction` is absent and
-  `compactionUnavailable` is true (gRPC `compaction_unavailable`), meaning
+  `compaction_unavailable` is true, meaning
   unknown rather than off; the service logs the cause
   (`service.CompactionPolicyReadError`). An update that committed is
-  reported as done the same way. *(Corrected: a failed read failed the
-  whole `GetDatabase`, and every `Update*` reported a failure after its
-  change had committed.)* The read is bounded
+  reported as done the same way. The read is bounded
   (`DatabaseService.boundedInfoRead`, 5 s, or the caller's own deadline if
   shorter), as is the placement refresh that fills in `replicas` and
   `shardId`: both are linearizable, and on a raft database just created the
   policy read reaches a shard still electing its leader, where a ReadIndex
   waits for as long as its ctx lives. A read that outlives the bound is
-  reported the way an unreadable store is. *(Corrected: the read took the
-  request's ctx, which on REST has no deadline, so a `GET
-  /v1/databases/{name}` made right after the create waited on the election
-  past its client's timeout.)*
+  reported the way an unreadable store is.
 
 The compaction scheduler (`pkg/server`, every
 `server.DefaultCompactionInterval`, one minute) runs on every node and holds
@@ -873,10 +829,7 @@ each store's compaction table and, for each enabled policy:
 
 Exactly one node runs a policy at a time: the group's leader. A leadership
 change hands the schedule to the new leader with its samples; nothing is
-duplicated and nothing restarts. *(Corrected: the policy lived in the node's
-catalog and its samples in memory, then in a file in the node's data
-directory -- run by whichever node's catalog held the database, lost with
-that node, and reset by a restart. It is now replicated state.)*
+duplicated and nothing restarts.
 
 The scheduler stamps and ages samples by the wall clock unless the server is
 given `server.WithCompactionClock`, a `clock.Clock` for this schedule alone;
@@ -922,8 +875,8 @@ not by how often leadership moves.
 
 - **Unit**: `pkg/kv`, `pkg/mvcc`, `pkg/service` — happy path plus error path per
   function, 90%+ coverage goal.
-- **Integration, standalone stage**: `make integration-test-standalone`. Runs in
-  CI today.
+- **Integration, standalone stage**: `make integration-test-standalone`; CI runs it
+  in the `integration-standalone` job.
 - **Integration, cluster stage**: `make integration-test-cluster` — the 3-node
   Raft suites (`isolation_raft_cluster_test.go`, `cluster_test.go`,
   `drain_test.go`, `backup_restore_test.go` and siblings). CI runs those

@@ -1,6 +1,6 @@
 # Key-Value Store — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb kv`. Three top-level aliases exist for the most common
@@ -45,7 +45,7 @@ Retrieve a value by key.
 
 | Flag | Type | Default | Required |
 |---|---|---|---|
-| `--consistency` | string | `linearizable` | no — `strong`, `linearizable`, `eventual` |
+| `--consistency` | string | server default | no — `strong`, `linearizable`, `eventual` |
 | `--revision` | bool | false | no — include MVCC revision metadata |
 | `--at-revision` | int | none | no — read at a historical revision |
 
@@ -92,7 +92,7 @@ omitted, returns all keys `>= start`.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--consistency` | string | `linearizable` | read consistency |
+| `--consistency` | string | server default | read consistency |
 | `--limit` | int | unlimited | maximum keys returned |
 | `--revision` | int | current | query at a specific MVCC revision |
 | `--keys-only` | bool | false | omit values |
@@ -170,7 +170,9 @@ partially applied restore reporting exit 0 reads as a complete undo. Conflicting
 keys are listed in the output; re-run with `--force`, or re-run once the
 conflicting writers have quiesced.
 
-Plan output columns: `ACTION`, `KEY`, `FROM-REV`, `TO-REV`, `VALUE-SIZE`.
+Plan output columns: `ACTION`, `KEY`, `FROM-REV`, `TO-REV`, followed by a
+`Revision`, `Mode`, `Applied`, `Skipped`, `Conflicted` summary line and, when
+any key conflicted, a `CONFLICTS` table in the same columns.
 Actions are `revert` (value differs), `recreate` (key deleted since) and
 `delete` (key added since).
 
@@ -178,9 +180,7 @@ Actions are `revert` (value differs), `recreate` (key deleted since) and
 
 `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` — the conditional writes
 that let exactly one of several callers win a race — are **not** `qrdb kv`
-subcommands. There is no `qrdb kv put-if-absent`. This is recorded here rather
-than omitted so the next reader does not go looking for a missing verb, the
-same way api.md records that `Exists` has no wire operation.
+subcommands. There is no `qrdb kv put-if-absent`.
 
 The reason is what the verbs are for. Each answers a boolean — did I store,
 did I swap, did I delete — and `false` is a normal outcome, not a failure. A
@@ -216,5 +216,4 @@ or the reverse, is a defect in whichever is behind. Run them with
 `make integration-test-key-value`; the per-transport accounting is the
 `key-value` row of [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).
 The guarded verbs are outside that correspondence by the section above: they
-have no command, so they have no row, and adding one to satisfy the suite would
-be inventing a command to make a document true.
+have no command, so they have no row.

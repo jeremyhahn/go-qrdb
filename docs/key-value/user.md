@@ -1,6 +1,6 @@
 # Key-Value Store — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Prerequisites
@@ -168,11 +168,11 @@ not yet committed the first entry of its term. Retry after a short wait. A
 write that timed out may still have committed, so retry it only when writing
 the same value again is harmless, or use one of the guarded write verbs above.
 
-**"requires raft.sm_type: mvcc"** — the server keeps no revision history.
+**"requires an MVCC-backed shard (configure raft.sm_type: mvcc)"** — the server keeps no revision history.
 As-of reads, `kv restore` and watch replay all need it. This is a server
 configuration change, not something you can pass as a flag.
 
-**A revision you asked for is "below the compaction floor"** — that history has
+**A revision you asked for "has been compacted"** — that history has
 been discarded by `kv compact` on this database and cannot come back. Restore
 from a backup instead ([../backup-restore/user.md](../backup-restore/user.md)).
 Compaction is per database: compacting one database never discards another
@@ -202,8 +202,8 @@ apply, so they were left alone rather than clobbered. The conflicting keys are
 listed. Re-run once the other writer has stopped, or re-run with `--force` if
 you are certain you want to overwrite.
 
-**"scope is required" / "scope is ambiguous"** — `kv restore` needs exactly one
-of `--prefix` or `--keys`. Passing neither would restore everything; passing
+**`kv restore` refuses neither or both of `--prefix` and `--keys`** — it needs
+exactly one of them. Passing neither would restore everything; passing
 both is undecidable.
 
 **A restore of a `__sys:` key was refused** — that is deliberate and has no
@@ -211,8 +211,9 @@ override. Rolling back `__sys:roles/` or `__sys:users/` would undo a permission
 revocation.
 
 **Keys you know exist do not appear in `kv list`** — you are probably looking at
-a reserved prefix. Internal namespaces (`__sys:`, `__tbl:`, `__idx:`, `ts:`,
-`idx:metric:`, `idx:tag:`, `retention:`) are filtered out of bulk enumeration.
+a reserved prefix. Internal namespaces (`__sys:`, `__tbl:`, `__idx:`, `__seq:`,
+`__tblgen:`, `__reclaim:job/`, `__reclaim:index/`, `ts:`, `idx:metric:`,
+`idx:tag:`, `retention:`, `__vec:`) are filtered out of bulk enumeration.
 
 **Everything returns "unavailable"** — check whether the barrier is sealed
 (`qrdb barrier status`) and whether the node is healthy (`qrdb admin health`).
@@ -222,9 +223,9 @@ not a fault. For `put-if-absent` the key is already held; for the compare verbs
 the stored value is no longer the one you expected. Read the key to see who
 holds it and what it says now. Retrying unchanged will answer `false` forever.
 
-**A client says it has no guarded verbs** — `client.KV().(GuardedKVClient)`
+**A client says it has no guarded verbs** — `client.KV().(transport.GuardedKVClient)`
 reporting false means the client is talking to a server that does not carry
-them, and a call made anyway returns a "capability unsupported" error rather
-than a wrong answer. Every transport carries them as of this release; a false
-here means the server is older than the client. Upgrade the server, or fall
-back to a transaction.
+them, and a call made anyway returns an "unsupported capability" error rather
+than a wrong answer. Every transport carries them, so a false here means the
+server is older than the client. Upgrade the server, or fall back to a
+transaction.
