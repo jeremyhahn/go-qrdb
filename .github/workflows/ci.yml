@@ -390,6 +390,14 @@ jobs:
   # runs lint only; build and make coverage are skipped. Off pull_request, or
   # on a ci:full PR, docs_only is always false. Any doubt (a failed diff, an
   # empty list) reads as false, so the tier fails toward running the tests.
+  #
+  # CUSTOMIZE (go-qrdb, DS-3160): docs_only also selects the `code` tier, the
+  # jobs that run on every event but a docs-only PR. Each carries exactly
+  # `if: needs.changes.outputs.docs_only != 'true'` and lists changes in
+  # needs; CI Gate excuses its skip only when DOCS_ONLY is true. A docs-only
+  # PR runs changes, docker-build (the toolchain image alone), image (make
+  # lint and make lint-gates), arch-gates (make check-public-releasable
+  # alone) and CI Gate; test-typescript, the code tier, is skipped.
   changes:
     name: Changed files
     runs-on: ubuntu-latest
@@ -421,10 +429,14 @@ jobs:
 
   # CUSTOMIZE (go-qrdb, DS-3044): `make docker-build` is its own job, so the
   # integration legs wait on the two-minute image build, not on the image
-  # job's stages (about 52 minutes), and run beside them. It needs nothing:
-  # lint runs on a docs-only PR too, so every run builds the images. The
-  # build step is the image job's as it was, and the image names go out as
-  # job outputs.
+  # job's stages (about 52 minutes), and run beside them. Lint runs in the
+  # toolchain image on a docs-only PR too, so every run builds that image;
+  # it needs `changes` only to know whether the run is a docs-only PR
+  # (DS-3160). A docs-only PR builds the toolchain image alone and outputs an
+  # empty it_image: no step of such a run uses the integration image, so it
+  # builds none and takes no hold, and the hold's release below and in the
+  # image job's Tear down remove nothing. Any other docs_only value builds
+  # both. The image names go out as job outputs.
   #
   # The hold: this job takes the image job's hold on the integration image
   # (IT_HOLD, the same name in both jobs) and leaves it in place on success.
@@ -443,6 +455,7 @@ jobs:
   docker-build:
     name: Devcontainer images
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    needs: [changes]
     timeout-minutes: 45       # CUSTOMIZE (DS-3044): a cold build of both images
     outputs:
       toolchain_image: ${{ steps.build.outputs.toolchain_image }}
@@ -474,15 +487,23 @@ jobs:
 
       - name: Build the devcontainer images
         id: build
+        env:
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: |
           ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
             done )
-          make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+          if [ "$DOCS_ONLY" = true ]; then
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            it_image=
+          else
+            make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            it_image=$(make -s it-image)
+          fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
-          echo "it_image=$(make -s it-image)" >> "$GITHUB_OUTPUT"
+          echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
 
       - name: Tear down
         if: always()
@@ -588,13 +609,17 @@ jobs:
       # (from cache at best), so it runs only when the daemon lacks the
       # toolchain tag, which is content-hashed; `make docker-build-it` skips a
       # held tag itself and takes this job's hold (IT_HOLD) or keeps
-      # docker-build's.
+      # docker-build's. A docs-only PR (DS-3160) has no integration image:
+      # an empty it_image is accepted then and only then, and no step of the
+      # run reads IT_IMAGE (the trivy image scan is full tier).
       - name: Ensure the devcontainer images
         env:
           BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           BUILT_IT_IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: |
-          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}" "${BUILT_IT_IMAGE:?docker-build output no integration image}"
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          [ "$DOCS_ONLY" = true ] || : "${BUILT_IT_IMAGE:?docker-build output no integration image}"
           ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
@@ -604,7 +629,11 @@ jobs:
           else
             make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
           fi
-          make docker-build-it MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" IT_IMAGE="$BUILT_IT_IMAGE"
+          if [ "$DOCS_ONLY" = true ]; then
+            echo "==> docs-only pull request: no integration image"
+          else
+            make docker-build-it MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" IT_IMAGE="$BUILT_IT_IMAGE"
+          fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
           echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
           echo "IT_IMAGE=$BUILT_IT_IMAGE" >> "$GITHUB_ENV"
@@ -876,10 +905,13 @@ jobs:
   # SDK's types to the REST handler's output) and build, then svelte-check on
   # the frontend against the built SDK, then the MOCKED Playwright tier. A job
   # of its own because the toolchain image carries no Node. The real-backend
-  # Playwright tiers run through `make test-e2e`, not here.
+  # Playwright tiers run through `make test-e2e`, not here. Code tier
+  # (DS-3160): a docs-only PR changes nothing it builds or tests.
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
     runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    needs: [changes]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -993,9 +1025,13 @@ jobs:
   # xkmsctl and xkey depend only on sdk/go) are further steps in this job.
   # A source check with grep, not a stage: it runs on the runner's shell.
   # v1.23: a lint-class check, so it stays on the PR tier.
+  # CUSTOMIZE (go-qrdb, DS-3160): make check-public-releasable scans the whole
+  # tracked tree, docs included, so a docs-only PR runs this job; its two
+  # code-only steps skip there.
   arch-gates:
     name: Architecture Gates
     runs-on: ubuntu-latest
+    needs: [changes]
     env:
       # go-qrdb: the objstore storage backend, and the embedded transport's
       # volume pool, which is go-objstore's pool type.
@@ -1004,6 +1040,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: No direct go-objstore import outside the storage seam
+        if: needs.changes.outputs.docs_only != 'true'
         run: |
           if [ "$(sed -n 's/^module //p' go.mod)" = github.com/jeremyhahn/go-objstore ]; then
             echo "OK: this is go-objstore"; exit 0
@@ -1037,6 +1074,7 @@ jobs:
       # `docker compose config` (client-side, no daemon). The toolchain image
       # carries no Docker CLI, so the check runs on the runner's.
       - name: make check-compose-targets test-compose-targets
+        if: needs.changes.outputs.docs_only != 'true'
         run: make check-compose-targets test-compose-targets
 
   # The single required check (devops.md §1). Every job above must appear in
@@ -1055,7 +1093,8 @@ jobs:
     #
     # go-qrdb: test/buildgates/ci_tiers_test.go asserts that every job is in
     # needs AND has a check line reading its result from an env var
-    # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier. A matrix
+    # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
+    # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
     needs: [changes, docker-build, image, test-typescript, arch-gates, integration-standalone, integration-features, soak]
     steps:
@@ -1075,11 +1114,20 @@ jobs:
           FULL_TIER: ${{ env.CI_FULL_TIER }}
           # v1.24: a `nightly` job runs on schedule and workflow_dispatch only.
           NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          # CUSTOMIZE (go-qrdb, DS-3160): a `code` job runs on every event but
+          # a docs-only PR (the changes job's docs_only, false off
+          # pull_request and on ci:full).
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: |
           BAD=0
-          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}"
-          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER or NIGHTLY cannot say
-          # which skips to excuse, so it fails closed.
+          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}"
+          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY
+          # cannot say which skips to excuse, so it fails closed. DOCS_ONLY is
+          # empty only when changes did not succeed, which fails the gate too.
+          case "${DOCS_ONLY}" in
+            true|false) ;;
+            *) echo "FAIL: DOCS_ONLY is unreadable ('${DOCS_ONLY}')"; BAD=1;;
+          esac
           case "${FULL_TIER}" in
             true|false) ;;
             *) echo "FAIL: FULL_TIER is unreadable ('${FULL_TIER}')"; BAD=1;;
@@ -1088,7 +1136,7 @@ jobs:
             true|false) ;;
             *) echo "FAIL: NIGHTLY is unreadable ('${NIGHTLY}')"; BAD=1;;
           esac
-          check() { # <job> <result> <pr|full|nightly>
+          check() { # <job> <result> <pr|code|full|nightly>
             case "$2" in
               success) echo "OK   $1";;
               skipped)
@@ -1096,6 +1144,8 @@ jobs:
                   echo "SKIP $1 (full tier not selected)"
                 elif [ "$3" = nightly ] && [ "${NIGHTLY}" != true ]; then
                   echo "SKIP $1 (nightly and dispatch only)"
+                elif [ "$3" = code ] && [ "${DOCS_ONLY}" = true ]; then
+                  echo "SKIP $1 (docs-only pull request)"
                 else
                   echo "FAIL $1 (skipped)"; BAD=1
                 fi;;
@@ -1104,11 +1154,12 @@ jobs:
           }
           # CUSTOMIZE: one line per job in needs above. A job gated to the
           # full tier by its `if:` is marked full, one gated to schedule and
-          # workflow_dispatch is nightly; every other job is pr.
+          # workflow_dispatch is nightly, one skipped on a docs-only PR
+          # (go-qrdb, DS-3160) is code; every other job is pr.
           check changes "$RESULT_CHANGES" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check image "$RESULT_IMAGE" pr
-          check test-typescript "$RESULT_TEST_TYPESCRIPT" pr
+          check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check arch-gates "$RESULT_ARCH_GATES" pr
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
           # A matrix job's result is success only when every leg succeeded.

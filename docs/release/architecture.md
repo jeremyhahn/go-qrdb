@@ -178,13 +178,14 @@ which publishes, has no such group.
 ## CI tiers
 
 "CI green" above means `ci-gate` on the commit's **push to `main`**, which
-always runs the full tier. CI runs in two tiers, and a third, nightly, for
-the soak:
+always runs the full tier. CI runs in two tiers, a code tier that a docs-only
+pull request skips, and a fourth, nightly, for the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `image` (lint, build and the unit suites), `test-typescript`, `arch-gates`, `ci-gate` |
-| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR tier, plus security, deps-check and the trivy image scan in `image`, and `integration-standalone` and `integration-features` (one leg per feature) |
+| PR | every run | `changes`, `docker-build` (the devcontainer images), `image` (lint, build and the unit suites), `arch-gates`, `ci-gate` |
+| Code | every run but a docs-only pull request | `test-typescript` |
+| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, and `integration-standalone` and `integration-features` (one leg per feature) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
@@ -195,10 +196,12 @@ expression. The nightly tier's condition is a scheduled run or a
 stack each iteration, for 30 minutes and fails on the first red iteration.
 
 `ci-gate` is the one required check in every tier. It fails on any result
-other than `success`, with two exceptions: a job tagged `full` that was
-skipped because the run did not select the full tier, and a job tagged
-`nightly` that was skipped because the run was not a dispatch. In a run that
-selected the tier a skipped job fails it. The pull-request trigger has no
+other than `success`, with three exceptions: a job tagged `full` that was
+skipped because the run did not select the full tier, a job tagged
+`nightly` that was skipped because the run was not a dispatch, and a job
+tagged `code` that was skipped because the `changes` job said the pull request
+is docs-only (its DOCS_ONLY is `true`). In a run that selected the tier a
+skipped job fails it, and an unreadable DOCS_ONLY fails the gate. The pull-request trigger has no
 `labeled` type, because a label-triggered run would cancel the PR's run in
 progress, so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
@@ -226,10 +229,19 @@ runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 
 A pull request whose every changed file is markdown or under `docs/`
-(`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and `image`
-then runs lint and the lint gates and skips the build-tag assertion, the
-builds, `make coverage` and the other unit suites. The job still succeeds, so
-`ci-gate` needs no exception for it. The gates that read `docs/` --
+(`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
+`changes`, `docker-build`, `image`, `arch-gates` and `ci-gate`.
+`docker-build` builds the toolchain image alone: no step of a docs-only run
+uses the integration image, so it builds none and takes no hold on one.
+`image` runs `make lint` and `make lint-gates` and skips the build-tag
+assertion, the builds, `make coverage` and the other unit suites.
+`arch-gates` runs `make check-public-releasable`, which scans the whole
+tracked tree, docs included, and skips its two code-only steps (the
+go-objstore import check and the compose-target check). Those jobs still
+succeed, so `ci-gate` needs no exception for them. Every job of the code tier
+(`test-typescript`) carries exactly
+`if: needs.changes.outputs.docs_only != 'true'`, needs `changes`, and is
+skipped. The gates that read `docs/` --
 `check-publication-bound`, `check-integration-feature-coverage` and
 `check-no-alias-language` -- are in `make lint-gates`, so a docs-only pull
 request runs every one of them. `changes` decides nothing off a pull request
