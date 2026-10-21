@@ -1,6 +1,6 @@
 # RAG — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -84,7 +84,7 @@ live.
 |---|---|---|---|
 | `fixed` | character count with overlap | prose, unstructured text | may split sentences awkwardly; overlap repeats content |
 | `sentence` | sentence boundaries, `chunk_size` as a guideline | preserving semantic units matters | chunk sizes vary more; needs sentence detection |
-| `paragraph` | paragraph boundaries, merging below `min_size` | clear paragraph structure (essays, articles) | paragraph size variation may exceed `chunk_size` |
+| `paragraph` | paragraph boundaries, merging below `chunk_min_size` | clear paragraph structure (essays, articles) | a paragraph over `chunk_size` is split into fixed-size windows |
 
 ## Trust boundaries
 
@@ -110,8 +110,6 @@ live.
   refused (`service.RAGTenantRequiredError`, `PERMISSION_DENIED`) rather than
   resolved for the system tenant; only a node without request authentication,
   where no call carries a tenant, acts for the system tenant.
-  *(Corrected: chunk text used to be keyed `rag:{namespace}:{document}:{chunk}`
-  with no tenant at all, and vectors were scoped by tenant only.)*
 - **Ingest sends document text to the configured embedding provider**, which may
   be external. That is a data-egress decision — see
   [../embeddings/architecture.md](../embeddings/architecture.md#trust-boundaries).

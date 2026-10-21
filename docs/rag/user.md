@@ -1,6 +1,6 @@
 # RAG — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Put documents in, get the most relevant passages back. What you do with those
@@ -11,13 +11,16 @@ stops at ranked results.
 
 - An embedding provider configured on the daemon
   ([../embeddings/user.md](../embeddings/user.md)).
-- A vector namespace sized for that model's dimension.
 - A reachable server, client certificates, an unsealed barrier, and the `rag:*`
   permissions.
 
+The first ingest into a namespace creates it, with the model's dimension and
+the cosine metric. To use another metric, create the namespace first:
+
 ```bash
 qrdb embedding models --output json         # what dimension does the model emit?
-qrdb vector namespace create --namespace docs --dimension 1024
+qrdb vector namespace create --namespace docs --dimension 1024 \
+     --distance-metric euclidean
 ```
 
 ## First run
@@ -35,8 +38,8 @@ from, and where in that document it sat.
 | Strategy | Good for | Watch out for |
 |---|---|---|
 | `fixed` (default) | prose, unstructured text | splits mid-sentence; overlap duplicates content |
-| `sentence` | anything where sentence integrity matters | chunk sizes vary |
-| `paragraph` | essays, articles, structured docs | a long paragraph can far exceed `chunk-size` |
+| `sentence` | anything where sentence integrity matters | chunk sizes vary; a sentence over `--chunk-size` is split mid-sentence |
+| `paragraph` | essays, articles, structured docs | a paragraph over `--chunk-size` is split into fixed windows |
 
 ```bash
 qrdb rag ingest --namespace docs --id essay-1 --text "$(cat essay.txt)" \
@@ -52,7 +55,8 @@ models often do better at 1024.
 
 **Overlap.** None risks missing a passage that straddles a boundary. 50
 characters is the recommended default. 100+ costs storage for diminishing
-returns. For sentence chunking, 2–3 sentences is usually enough.
+returns. Sentence and paragraph chunking repeat nothing between chunks; overlap
+applies only where they split an oversized sentence or paragraph.
 
 **TopK.** 5 is fast and fine for interactive queries; 10 gives good coverage;
 20+ is for exploratory search or a large context window. Retrieving more and
@@ -71,9 +75,12 @@ curl --cert client.pem --key client-key.pem --cacert ca.pem \
 
 ## Common tasks
 
-**Replace a document.** Ingest the same `--id` again.
+**Replace a document.** Delete it, then ingest the same `--id` again. Ingesting
+over it without the delete overwrites its chunks by index but keeps any extra
+chunks the old version had, and they stay searchable.
 
 ```bash
+qrdb rag delete --namespace docs --id manual-v2
 qrdb rag ingest --namespace docs --id manual-v2 --text "$(cat manual-updated.txt)"
 ```
 
@@ -99,8 +106,9 @@ models live in different spaces; the maths still produces numbers. Pass the same
 `--provider` and `--model` you ingested with, and re-ingest the corpus if you
 have changed models — there is no automatic re-embedding.
 
-**"namespace not found".** Create the vector namespace first; RAG never creates
-one for you. Check the dimension matches your model.
+**"namespace not found" on a query.** Nothing has been ingested into that
+namespace in this database yet. Check the `--namespace` and the database the
+query targets match the ones you ingested into.
 
 **Ingest failed partway and the document is half in.** Re-ingest the same
 document ID; that is the recovery path.

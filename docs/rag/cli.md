@@ -1,14 +1,15 @@
 # RAG — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb rag` — ingest documents, run semantic queries, and manage
 the document store. All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).
 
-Requires an embedding provider configured on the daemon and an existing vector
-namespace.
+Requires an embedding provider configured on the daemon. Ingest creates the
+vector namespace on first use; a query on a namespace that does not exist is a
+not-found.
 
 ## `qrdb rag ingest`
 
@@ -16,9 +17,9 @@ Chunk, embed and store a document.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--id` | string | — | unique document identifier |
-| `--text` | string | — | document content |
-| `--namespace` | string | — | vector namespace to store embeddings in |
+| `--id` | string | — | unique document identifier; required |
+| `--text` | string | — | document content; required |
+| `--namespace` | string | — | vector namespace to store embeddings in; required |
 | `--provider` | string | configured default | embedding provider |
 | `--model` | string | provider default | embedding model |
 | `--chunk-strategy` | string | `fixed` | `fixed \| sentence \| paragraph` |
@@ -33,8 +34,10 @@ qrdb rag ingest --namespace docs --id essay-1 --text "$(cat essay.txt)" \
      --chunk-strategy paragraph --chunk-min-size 200
 ```
 
-The response reports `chunk_count`. Re-ingesting the same `--id` replaces the
-document.
+The response reports `chunk_count`. Re-ingesting the same `--id` overwrites its
+chunks by index and its document record. Chunks past the new chunk count are
+not removed and stay searchable, so delete the document before re-ingesting
+shorter text.
 
 ## `qrdb rag query <query>`
 
@@ -42,8 +45,8 @@ Retrieve the most semantically similar passages.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--namespace` | string | — | vector namespace to search |
-| `--top-k` | int | 0 (uses `default_top_k`, 10) | maximum results |
+| `--namespace` | string | — | vector namespace to search; required |
+| `--top-k` | int | 0 (server default, 5) | maximum results |
 | `--provider` | string | configured default | embedding provider for the query |
 | `--model` | string | provider default | embedding model for the query |
 
@@ -78,8 +81,8 @@ Remove a document and all of its chunk vectors.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--id` | string | document identifier to remove |
-| `--namespace` | string | vector namespace the document is stored in |
+| `--id` | string | document identifier to remove; required |
+| `--namespace` | string | vector namespace the document is stored in; required |
 
 ```bash
 qrdb rag delete --namespace docs --id manual-v1
@@ -96,4 +99,8 @@ The response reports `chunks_removed`.
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`TestRAG_CLI_PerProtocol` (`test/integration/rag_cli_test.go`) runs every verb
+here over REST, gRPC, QUIC, MCP and the Unix socket against a node with no
+embedding provider: flag validation and the not-configured refusal. The
+configured path runs in the Docker `test/integration/api` suite
+(`TestRAGIngestQueryE2E`, `TestRAGListDeleteDocumentE2E`).
