@@ -1,6 +1,6 @@
 # Watch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -11,15 +11,14 @@ gRPC wire over a UDS, so its method matches the gRPC column.
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
 | Watch a key | `GET /watch?key=<k>` | `Watch` (server-streaming) | `watch.Watch` | `qrdb_watch` | `Client.Watch().Watch` | `watch:watch` |
-| Watch a prefix | `GET /watch?key=<p>&prefix=true` | `Watch` (server-streaming, prefix field) | `watch.WatchPrefix` | `qrdb_watch` | `Client.Watch().WatchPrefix` | `watch:watch_prefix` |
+| Watch a prefix | `GET /watch?key=<p>&prefix=true` | `Watch` (server-streaming, non-empty `range_end`) | `watch.WatchPrefix` | `qrdb_watch` (`prefix: true`) | `Client.Watch().WatchPrefix` | `watch:watch` |
 
 REST query parameters: `key` (required), `prefix=true`, `start-revision=<n>`,
 `prev-kv=true`.
 
-Key and prefix watches are one gRPC method distinguished by a request field, and
-one MCP tool distinguished by an argument; QUIC exposes them as two methods.
-The permission checked differs in every case — a prefix watch is the broader
-grant and is authorized as such.
+Key and prefix watches are one gRPC method distinguished by `range_end`, and
+one MCP tool distinguished by the `prefix` argument; QUIC exposes them as two
+methods. Every transport checks `watch:watch` for both.
 
 ## Request
 

@@ -1,15 +1,15 @@
 # Watch — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Prerequisites
 
 A reachable server, client certificates, an unsealed barrier, and the
-`watch:watch` permission (or `watch:watch_prefix` to watch a whole prefix).
+`watch:watch` permission, which covers key and prefix watches alike.
 
-To replay history rather than only watch live, the server must run
-`raft.sm_type: mvcc`.
+To replay history rather than only watch live, a raft node must run
+`raft.sm_type: mvcc`; a standalone node replays on every backend.
 
 ## First run
 
@@ -17,8 +17,9 @@ To replay history rather than only watch live, the server must run
 qrdb watch app/config/timeout
 ```
 
-The command blocks and prints an event every time the key changes. In another
-terminal:
+The command blocks and prints an event every time the key changes, until you
+stop it or the root `--timeout` (default `10s`) elapses; add `--timeout 0` to
+watch with no bound. In another terminal:
 
 ```bash
 qrdb kv put app/config/timeout 45s
@@ -64,33 +65,32 @@ see every change in order, including two changes to the same key.
 restarts a process when its config key moves:
 
 ```bash
-qrdb watch app/config/myservice | while read -r _; do
+qrdb --timeout 0 watch app/config/myservice | while read -r _; do
   systemctl reload myservice
 done
 ```
 
 ## Troubleshooting
 
-**The command exits immediately with "start revision has been compacted".**
+**The command exits immediately with "required start revision has been compacted".**
 The history you asked for has been discarded by compaction. There is no way to
 recover it through a watch — re-read the current state with `kv get` or
 `kv range`, note the revision, and start a live watch from there.
 
 **"start revision replay is not supported by this store".** The server keeps no
 revision history. Drop `--start-revision` and watch live; getting replay is a
-server configuration change (`raft.sm_type: mvcc`), not a client flag.
+server configuration change (`raft.sm_type: mvcc` on a raft node), not a
+client flag.
 
 **Nothing ever prints.** Check that you are watching the key you think you are:
 a prefix watch needs `--prefix`, and without it `app/config/` is an exact key
 that probably does not exist. Also confirm the database scope — `--database`
 must match where the writes are going.
 
-**Permission denied when adding `--prefix`.** Prefix watching is a separate,
-broader permission (`watch:watch_prefix`) from single-key watching. Ask for it
-explicitly.
-
-**The watch stopped on its own.** Look at the exit status and the message on
-stderr. A server-side cancellation always says why; a clean Ctrl-C exits zero.
+**The watch stopped on its own.** A watch the server refused at open exits
+non-zero with the reason on stderr. A cancellation after the stream opened
+prints `watch canceled: <reason>` and exits zero. A watch that reached
+`--timeout`, or that you stopped with Ctrl-C, exits zero with no message.
 
 **You need guaranteed delivery over hours or days.** A watch replays only as far
 back as compaction retains. If you need durability beyond that window, record
