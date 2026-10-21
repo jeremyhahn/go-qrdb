@@ -181,6 +181,13 @@ func rollingAway(r barrierStatusReading) bool {
 // new passphrase, which is what lets its step become serving and hands the
 // turn to the next owner.
 //
+// While each node is held sealed, `qrdb barrier status` on the other two,
+// over every transport, shows the migration's steps: the earlier turns
+// serving, this one recycling, the rest pending. Once the last owner -- the
+// node that accepted the request, which recycles with the credential it held
+// and has no file -- acknowledges, the record is reaped and every node, over
+// every transport, reports no migration in progress.
+//
 // It fails on a coordinator that writes no steps: every owner holds its
 // credential before the request, so all three recycle at once and the
 // monitor sees two or three nodes away.
@@ -297,10 +304,12 @@ func TestClusterEnableEncryption_Rolling_RF3(t *testing.T) {
 			t.Errorf("node %d post-migration barrier: %s, want unsealed passphrase", i+1, got)
 		}
 	}
-	// Once every owner acked, the system leader reaps the completed record
-	// (Coordinator.Reap), so every node, over every transport, comes to
-	// report no migration. The hand-on log below proves each owner took its
-	// turn.
+	// Three distinct owners took the three turns, and once the last of them
+	// acknowledged the leader reaped the record: every node, over every
+	// transport, reports no migration in progress.
+	if len(recycled) != 3 {
+		t.Errorf("owners recycling across the three turns: %v, want three distinct", recycled)
+	}
 	for _, node := range c.nodes {
 		for _, proto := range multiProtocols {
 			waitForCLIMigrationReaped(t, cli, c, node, proto, 90*time.Second)
@@ -345,6 +354,150 @@ func TestClusterEnableEncryption_Rolling_RF3(t *testing.T) {
 	}
 	if !t.Failed() {
 		t.Logf("rolling enable-encryption: %d writes committed throughout, never two owners away", len(committed))
+	}
+}
+
+// TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange retries the
+// request on a new leader while the owner whose turn it is has not yet
+// recycled. The new leader is that owner, the one leader whose rebuilt order
+// never puts it first whatever the owner order, so a record built from
+// scratch always authorizes a second owner: two of three away. The
+// superseding generation instead keeps the owner in turn first and alone
+// recycling, and no other owner awaits a credential until it is back.
+func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T) {
+	cli := buildCLIBinary(t)
+	c := startNoneSealSystemRF3(t, "rollre")
+	ca, adminPorts := c.ca, c.adminPorts
+	waitForFeatureActive(t, c.logs, featuregate.RollingMigration, 90*time.Second)
+
+	// No node has a credential file, so the first owner in turn holds it,
+	// authorized and not yet recycled, until the test hands it one.
+	const newPassphrase = "cluster-rolling-retry-pass"
+	client := mtlsHTTPClient(t, ca, 15*time.Second)
+	request := func(port int) {
+		t.Helper()
+		var body []byte
+		var status int
+		if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
+			body, status = iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", port),
+				map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)})
+			return status == http.StatusOK || status == http.StatusAccepted
+		}) {
+			t.Fatalf("enable-encryption on admin port %d: status %d, body: %s", port, status, body)
+		}
+	}
+	leaderIdx := adminPortIndex(t, adminPorts, c.leaderPort)
+	request(c.leaderPort)
+
+	inTurn := -1
+	if !pollUntil(120*time.Second, 250*time.Millisecond, func() bool {
+		for i, l := range c.logs {
+			if awaitingCredentialIn(l.String(), "scope=system") {
+				inTurn = i
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("no owner awaited its credential within 120s")
+	}
+	first := waitForCLIMigration(t, cli, c, c.nodes[leaderIdx], multiProtocols[0], 60*time.Second, "naming the owner in turn",
+		func(m *transport.ClusterMigration) bool {
+			_, recycling, _, _ := rollingStepCounts(m)
+			return recycling == 1
+		})
+	if first == nil {
+		t.FailNow()
+	}
+	_, _, _, owner := rollingStepCounts(first)
+
+	// Leadership moves to the owner in turn, and the client retries there.
+	// Rebuilt from scratch, its record would order every other owner ahead
+	// of itself and authorize one of them while it still holds the turn.
+	out, err := runQRDB(t, cli, c.nodes[leaderIdx].cliArgsFor(ca, c.adminCert, c.adminKey, multiProtocols[0]),
+		"admin", "member", "transfer-leadership", strconv.Itoa(inTurn+1), "--shard-id", "1")
+	if err != nil || !strings.Contains(out, "OK") {
+		t.Fatalf("qrdb admin member transfer-leadership %d: %v: %s", inTurn+1, err, out)
+	}
+	waitForLeaderViaAdmin(t, ca, []int{adminPorts[inTurn]}, 60*time.Second)
+	request(adminPorts[inTurn])
+
+	// Every node, over every transport: the superseding generation keeps the
+	// owner in turn first and alone recycling.
+	for _, node := range c.nodes {
+		for _, proto := range multiProtocols {
+			m := waitForCLIMigration(t, cli, c, node, proto, 60*time.Second,
+				fmt.Sprintf("superseding generation %d", first.Generation),
+				func(m *transport.ClusterMigration) bool { return m.Generation > first.Generation })
+			if m == nil {
+				continue
+			}
+			serving, recycling, pending, id := rollingStepCounts(m)
+			if len(m.Nodes) != 3 || m.Nodes[0].NodeID != owner || id != owner || serving != 0 || recycling != 1 || pending != 2 {
+				t.Errorf("[%s] admin port %d: generation %d steps %+v, want %s first and alone recycling", proto.name, node.admin, m.Generation, m.Nodes, owner)
+			}
+		}
+	}
+
+	// The owner in turn now leads and holds the retry's credential, so it
+	// recycles first with no file while the other two wait unauthorized.
+	// Their logs never named a credential they awaited before this point.
+	settle := func(i int) {
+		t.Logf("node %d migrated", i+1)
+		unsealRolling(t, client, adminPorts[i], newPassphrase)
+	}
+	if !pollUntil(180*time.Second, 250*time.Millisecond, func() bool {
+		for i, l := range c.logs {
+			if i != inTurn && awaitingCredentialIn(l.String(), "scope=system") {
+				t.Fatalf("node %d awaits its credential while node %d still holds the turn", i+1, inTurn+1)
+			}
+		}
+		return readBarrierStatus(t, ca, adminPorts[inTurn]).Sealed
+	}) {
+		t.Fatalf("node %d did not migrate with the retry's credential within 180s", inTurn+1)
+	}
+	settle(inTurn)
+
+	// Then the other two, one at a time, each on its own credential.
+	done := map[int]bool{inTurn: true}
+	for turn := 2; turn <= 3; turn++ {
+		idx := -1
+		if !pollUntil(180*time.Second, 250*time.Millisecond, func() bool {
+			var waiting []int
+			for i, l := range c.logs {
+				if !done[i] && awaitingCredentialIn(l.String(), "scope=system") {
+					waiting = append(waiting, i)
+				}
+			}
+			if len(waiting) > 1 {
+				t.Fatalf("turn %d: nodes %v await their credentials at once; owners recycle one at a time", turn, waiting)
+			}
+			if len(waiting) == 1 {
+				idx = waiting[0]
+			}
+			return idx >= 0
+		}) {
+			t.Fatalf("turn %d: no node awaited its credential within 180s", turn)
+		}
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[idx], 30*time.Second); got.Sealed || got.Strategy != "none" {
+			t.Fatalf("turn %d: node %d migrated before it had its own credential: barrier %s", turn, idx+1, got)
+		}
+		writeMigrationCredential(t, c.credDirs[idx], "system", newPassphrase)
+		if !pollUntil(180*time.Second, 250*time.Millisecond, func() bool { return readBarrierStatus(t, ca, adminPorts[idx]).Sealed }) {
+			t.Fatalf("turn %d: node %d did not migrate within 180s of getting its credential", turn, idx+1)
+		}
+		settle(idx)
+		done[idx] = true
+	}
+	for i := range 3 {
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 60*time.Second); got.Sealed || got.Strategy != "passphrase" {
+			t.Errorf("node %d post-migration barrier: %s, want unsealed passphrase", i+1, got)
+		}
+	}
+	for _, node := range c.nodes {
+		for _, proto := range multiProtocols {
+			waitForCLIMigrationReaped(t, cli, c, node, proto, 90*time.Second)
+		}
 	}
 }
 

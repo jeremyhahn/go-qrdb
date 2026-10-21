@@ -405,8 +405,9 @@ func LeaderAddress(err error) (string, bool) {
 // moving it: a request that timed out while no leader answered, was aborted
 // by the leadership change, reached a replica that is not, or not yet, the
 // leader, reached a leader still inside its ReadIndex warm-up, or reached a
-// leader handing its leadership to another replica, which refuses the request
-// before it enters the log.
+// leader handing its leadership to another replica. quicraft refuses a
+// request during a transfer before it enters the log, so the identical
+// request is safe to repeat once the transfer ends.
 var leadershipTransient = []error{
 	quicraft.ErrTimeout,
 	quicraft.ErrAborted,

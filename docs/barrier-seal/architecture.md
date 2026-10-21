@@ -369,8 +369,8 @@ shard's log up to the commit index seen at that ack. So the shard is never
 short of two replicas' logs at once. The step is advanced by the leader of the
 scope's own Raft shard, the one node that knows how far each replica has
 replicated. While that shard has no leader, no node advances the step. Every
-write of the record is guarded on the record as read, so a node that has lost
-leadership cannot undo a newer step. The detail is
+write of the record is a compare-and-swap on the record as read, so a node
+that has lost leadership cannot undo a newer step. The detail is
 [engineering.md](engineering.md#owners-recycle-one-at-a-time).
 
 

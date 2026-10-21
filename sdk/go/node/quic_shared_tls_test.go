@@ -29,6 +29,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
@@ -79,10 +80,8 @@ func TestNode_NativeQUICUnderSharedHookedTLS(t *testing.T) {
 		return perConn, nil
 	}
 
-	restLn, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	h3, err := net.ListenPacket("udp", restLn.Addr().String())
-	require.NoError(t, err, "bind HTTP/3 beside the REST listener")
+	restLn, h3, err := netport.ListenPair("127.0.0.1:0")
+	require.NoError(t, err, "bind the REST listener and HTTP/3 on one port")
 	quicPC, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
 

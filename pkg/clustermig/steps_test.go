@@ -19,20 +19,28 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // rollingOn reports the rolling-migration feature activated.
 func rollingOn() bool { return true }
 
-// failingKV is a memKV whose Put and Get fail on demand.
+// failingKV is a memKV whose writes (Put and CompareAndSwap) and Get fail on
+// demand.
 type failingKV struct {
 	*memKV
 	putErr, getErr error
+}
+
+func (k *failingKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if k.putErr != nil {
+		return false, k.putErr
+	}
+	return k.memKV.CompareAndSwap(ctx, key, expected, next)
 }
 
 func (k *failingKV) Put(ctx context.Context, key string, v []byte) error {
@@ -40,13 +48,6 @@ func (k *failingKV) Put(ctx context.Context, key string, v []byte) error {
 		return k.putErr
 	}
 	return k.memKV.Put(ctx, key, v)
-}
-
-func (k *failingKV) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
-	if k.putErr != nil {
-		return false, k.putErr
-	}
-	return k.memKV.PutAllIfUnchanged(ctx, guardKey, guardValue, writes)
 }
 
 func (k *failingKV) Get(ctx context.Context, key string) ([]byte, error) {
@@ -77,7 +78,7 @@ func requireSteps(t *testing.T, s *Store, want ...NodeStep) {
 func step(node string, state StepState) NodeStep { return NodeStep{NodeID: node, State: state} }
 
 func TestRollingSteps_CoordinatorLast(t *testing.T) {
-	got := rollingSteps([]string{"n1", "n2", "n3"}, "n2")
+	got := rollingSteps([]string{"n1", "n2", "n3"}, "n2", "")
 	want := []NodeStep{step("n1", StepRecycling), step("n3", StepPending), step("n2", StepPending)}
 	if !slices.Equal(got, want) {
 		t.Fatalf("rollingSteps = %+v, want %+v", got, want)
@@ -85,13 +86,32 @@ func TestRollingSteps_CoordinatorLast(t *testing.T) {
 }
 
 func TestRollingSteps_CoordinatorNotAnOwner(t *testing.T) {
-	got := rollingSteps([]string{"n1", "n2"}, "n9")
+	got := rollingSteps([]string{"n1", "n2"}, "n9", "")
 	want := []NodeStep{step("n1", StepRecycling), step("n2", StepPending)}
 	if !slices.Equal(got, want) {
 		t.Fatalf("rollingSteps = %+v, want %+v", got, want)
 	}
-	if got := rollingSteps(nil, "n9"); len(got) != 0 {
+	if got := rollingSteps(nil, "n9", ""); len(got) != 0 {
 		t.Fatalf("rollingSteps(no owners) = %+v, want none", got)
+	}
+}
+
+func TestRollingSteps_InFlightOwnerKeepsTheTurn(t *testing.T) {
+	owners := []string{"n1", "n2", "n3"}
+	for name, tc := range map[string]struct {
+		inFlight string
+		want     []NodeStep
+	}{
+		"another owner": {"n2", []NodeStep{step("n2", StepRecycling), step("n1", StepPending), step("n3", StepPending)}},
+		"self":          {"n3", []NodeStep{step("n3", StepRecycling), step("n1", StepPending), step("n2", StepPending)}},
+		"not an owner":  {"n9", []NodeStep{step("n1", StepRecycling), step("n2", StepPending), step("n3", StepPending)}},
+		"none":          {"", []NodeStep{step("n1", StepRecycling), step("n2", StepPending), step("n3", StepPending)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := rollingSteps(owners, "n3", tc.inFlight); !slices.Equal(got, tc.want) {
+				t.Fatalf("rollingSteps(inFlight %q) = %+v, want %+v", tc.inFlight, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -200,11 +220,9 @@ func TestCoordinator_Advance_LeavesOtherRecordsAlone(t *testing.T) {
 	if wrote, err := leader.Advance(ctx, tid, db); wrote || err != nil {
 		t.Fatalf("Advance(no steps) = %v, %v; want false, nil", wrote, err)
 	}
-	m, raw, _ := s.readMigration(ctx, tid, db)
+	m, _ := s.GetMigration(ctx, tid, db)
 	m.Steps = []NodeStep{step("n1", StepRecycling)}
-	if err := s.swapMigration(ctx, raw, m); err != nil {
-		t.Fatalf("swapMigration: %v", err)
-	}
+	putMigration(t, s, m)
 	if wrote, err := follower.Advance(ctx, tid, db); wrote || err != nil {
 		t.Fatalf("Advance(follower) = %v, %v; want false, nil", wrote, err)
 	}
@@ -215,11 +233,9 @@ func TestCoordinator_Advance_StartsAPendingFirstStep(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1", "n2"})
-	m, raw, _ := s.readMigration(ctx, tid, db)
+	m, _ := s.GetMigration(ctx, tid, db)
 	m.Steps = []NodeStep{step("n1", StepPending), step("n2", StepPending)}
-	if err := s.swapMigration(ctx, raw, m); err != nil {
-		t.Fatalf("swapMigration: %v", err)
-	}
+	putMigration(t, s, m)
 	c := NewCoordinator(s, fixedOwners{}, func() bool { return true }, nil)
 	if wrote, err := c.Advance(ctx, tid, db); !wrote || err != nil {
 		t.Fatalf("Advance = %v, %v; want true, nil", wrote, err)
@@ -338,4 +354,131 @@ func TestRolling_ThreeOwnersNeverTwoAwayAtOnce(t *testing.T) {
 	if reaped, err := c.Reap(ctx, tid, db); !reaped || err != nil {
 		t.Fatalf("Reap = %v, %v; want true, nil", reaped, err)
 	}
+}
+
+// TestCoordinator_Request_SupersedingKeepsTheRecyclingOwner is a request
+// retried after a leader change while the owner whose turn it was is still
+// sealed: that owner keeps the turn, and no owner still serving is sent to
+// recycle beside it.
+func TestCoordinator_Request_SupersedingKeepsTheRecyclingOwner(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	owners := fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}}
+	leader := func() bool { return true }
+	if _, err := NewCoordinator(s, owners, leader, nil, WithRollingSteps(rollingOn, "n1")).Request(ctx, tid, db, validOpts()); err != nil {
+		t.Fatalf("Request at n1: %v", err)
+	}
+	ack(t, s, "n2", 1, seal.PhaseCopying) // n2 is sealed, mid-recycle
+
+	n3 := NewCoordinator(s, owners, leader, nil, WithRollingSteps(rollingOn, "n3"))
+	m, err := n3.Request(ctx, tid, db, validOpts())
+	if err != nil {
+		t.Fatalf("Request at n3: %v", err)
+	}
+	if m.Generation != 2 {
+		t.Fatalf("generation %d, want 2", m.Generation)
+	}
+	requireSteps(t, s, step("n2", StepRecycling), step("n1", StepPending), step("n3", StepPending))
+
+	var (
+		mu             sync.Mutex
+		inFlight, peak int
+		order          []string
+	)
+	reconciler := func(node string) *Reconciler {
+		return NewReconciler(s, node, inFlightRecycler{mu: &mu, inFlight: &inFlight, peak: &peak, order: &order, node: node}, nil, nil, nil)
+	}
+	for _, node := range []string{"n1", "n3"} {
+		if recycled, err := reconciler(node).ReconcileOnce(ctx); recycled != 0 || err != nil {
+			t.Fatalf("%s ReconcileOnce = %d, %v while n2 is away; want 0, nil", node, recycled, err)
+		}
+	}
+
+	// n2 finishing the generation it was sent under does not hand the turn
+	// on: it serves the new generation only once it acks that one.
+	ack(t, s, "n2", 1, seal.PhaseComplete)
+	if wrote, err := n3.Advance(ctx, tid, db); wrote || err != nil {
+		t.Fatalf("Advance(n2 acked the superseded generation) = %v, %v; want false, nil", wrote, err)
+	}
+	if recycled, err := reconciler("n2").ReconcileOnce(ctx); recycled != 1 || err != nil {
+		t.Fatalf("n2 ReconcileOnce = %d, %v; want 1, nil", recycled, err)
+	}
+	if wrote, err := n3.Advance(ctx, tid, db); !wrote || err != nil {
+		t.Fatalf("Advance(n2 acked) = %v, %v; want true, nil", wrote, err)
+	}
+	requireSteps(t, s, step("n2", StepServing), step("n1", StepRecycling), step("n3", StepPending))
+	if recycled, err := reconciler("n1").ReconcileOnce(ctx); recycled != 1 || err != nil {
+		t.Fatalf("n1 ReconcileOnce = %d, %v; want 1, nil", recycled, err)
+	}
+	if want := []string{"n2", "n1"}; !slices.Equal(order, want) {
+		t.Fatalf("recycle order = %v, want %v", order, want)
+	}
+}
+
+// TestCoordinator_Request_SupersedingWithNoRecycleInFlight orders a
+// superseding request as a first one whenever nothing the old record
+// authorized is still away.
+func TestCoordinator_Request_SupersedingWithNoRecycleInFlight(t *testing.T) {
+	fresh := []NodeStep{step("n1", StepRecycling), step("n2", StepPending), step("n3", StepPending)}
+	for name, seed := range map[string]func(t *testing.T, s *Store){
+		"the recycling owner acked": func(t *testing.T, s *Store) {
+			if _, err := rollingCoordinator(s, rollingOn).Request(context.Background(), tid, db, validOpts()); err != nil {
+				t.Fatalf("Request at n1: %v", err)
+			}
+			ack(t, s, "n2", 1, seal.PhaseComplete)
+		},
+		"rolled out": func(t *testing.T, s *Store) {
+			putMigration(t, s, &ClusterMigration{TenantID: tid, Database: db, Target: seal.StrategyPassphrase, Owners: []string{"n1", "n2", "n3"}, Generation: 1,
+				Steps: []NodeStep{step("n2", StepServing), step("n3", StepServing), step("n1", StepServing)}})
+		},
+		"every owner at once": func(t *testing.T, s *Store) {
+			seedMigration(t, s, 1, []string{"n1", "n2", "n3"})
+		},
+		"the recycling node is no longer an owner": func(t *testing.T, s *Store) {
+			putMigration(t, s, &ClusterMigration{TenantID: tid, Database: db, Target: seal.StrategyPassphrase, Owners: []string{"n9", "n1"}, Generation: 1,
+				Steps: []NodeStep{step("n9", StepRecycling), step("n1", StepPending)}})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := NewStore(newMemKV())
+			seed(t, s)
+			n3 := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}},
+				func() bool { return true }, nil, WithRollingSteps(rollingOn, "n3"))
+			if _, err := n3.Request(context.Background(), tid, db, validOpts()); err != nil {
+				t.Fatalf("Request at n3: %v", err)
+			}
+			requireSteps(t, s, fresh...)
+		})
+	}
+}
+
+// TestCoordinator_Request_InFlightOwnerStatusError fails the request rather
+// than guess whether the old record's recycling owner is away.
+func TestCoordinator_Request_InFlightOwnerStatusError(t *testing.T) {
+	kv := &statusErrKV{memKV: newMemKV()}
+	s := NewStore(kv)
+	c := rollingCoordinator(s, rollingOn)
+	if _, err := c.Request(context.Background(), tid, db, validOpts()); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	kv.err = errBoom
+	if _, err := c.Request(context.Background(), tid, db, validOpts()); !errors.Is(err, errBoom) {
+		t.Fatalf("Request = %v, want %v", err, errBoom)
+	}
+	if m, _ := s.GetMigration(context.Background(), tid, db); m.Generation != 1 {
+		t.Fatalf("stored generation %d, want 1: a failed request writes nothing", m.Generation)
+	}
+}
+
+// statusErrKV fails every read of a per-node status record, and nothing else.
+type statusErrKV struct {
+	*memKV
+	err error
+}
+
+func (k *statusErrKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if k.err != nil && strings.Contains(key, nodesSegment) {
+		return nil, k.err
+	}
+	return k.memKV.Get(ctx, key)
 }

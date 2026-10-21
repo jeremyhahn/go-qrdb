@@ -35,7 +35,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -50,16 +49,31 @@ const Prefix = "__sys:encmig/"
 //	__sys:encmig/{tenant}/{db}/nodes/{nodeID}          -> NodeMigrationStatus
 const nodesSegment = "/nodes/"
 
+// GenerationPrefix holds, per scope, the highest Generation a reap has
+// removed: __sys:encmig-gen/{tenant}/{db} -> generationFloor. It lies outside
+// Prefix so no scan of intent records meets it. A request started after the
+// reap numbers itself above it, so an ack a node writes late for the reaped
+// generation can never count toward the next one.
+const GenerationPrefix = "__sys:encmig-gen/"
+
 // KV is the minimal replicated system-KV substrate the store needs; the shared
 // system KVStore satisfies it directly (same substrate as placement/tenant).
-// PutAllIfUnchanged is kvstore.GuardedBatchKVStore's guarded write, the one
-// the migration record is written and deleted through (swapMigration,
-// deleteGuarded).
+// The intent record is only ever written conditionally; Put serves the
+// per-node status records, each written by its own node alone.
 type KV interface {
 	Put(ctx context.Context, key string, value []byte) error
 	Get(ctx context.Context, key string) ([]byte, error)
 	Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error
-	PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (applied bool, err error)
+
+	// PutIfAbsent, CompareAndSwap and CompareAndDelete each write only while
+	// the key still holds what its caller read, and the replicated store
+	// decides that inside its state machine. They are the fence between two
+	// coordinators: the Raft host forwards a deposed leader's proposal, so no
+	// leadership check on the writing node can stop it overwriting the
+	// record its successor accepted.
+	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
 }
 
 // ClusterMigration is the replicated intent record written once by the leader
@@ -160,57 +174,133 @@ func nodeStatusKey(tenantID, database, nodeID string) string {
 	return Prefix + tenantID + "/" + database + nodesSegment + nodeID
 }
 
-// swapMigration writes the intent record for m's scope only while the stored
-// record still holds prev, the bytes readMigration returned (nil: there is no
-// record). The guard is the record as its writer read it, so it compares the
-// Generation and every step, and the record never returns to bytes it held
-// before: every write either bumps the Generation or moves a step on. A
-// writer that read an older record -- a former leader still finishing its
-// tick after the leadership moved -- is refused with ErrMigrationMoved and
-// the record is unchanged.
-func (s *Store) swapMigration(ctx context.Context, prev []byte, m *ClusterMigration) error {
-	if m == nil {
-		return ErrNilMigration
-	}
-	if m.Target == "" {
-		return ErrEmptyTarget
-	}
-	b, err := json.Marshal(m)
+// generationFloorKey returns the reaped-generation high-water key for a scope.
+func generationFloorKey(tenantID, database string) string {
+	return GenerationPrefix + tenantID + "/" + database
+}
+
+// generationFloor is the record at generationFloorKey.
+type generationFloor struct {
+	Generation uint64 `json:"generation"`
+}
+
+// ReapedGeneration returns the highest Generation reaped for the scope, or 0
+// when none has been. A new request numbers itself above both it and any
+// record still present.
+func (s *Store) ReapedGeneration(ctx context.Context, tenantID, database string) (uint64, error) {
+	f, _, err := s.getGenerationFloor(ctx, tenantID, database)
+	return f.Generation, err
+}
+
+func (s *Store) getGenerationFloor(ctx context.Context, tenantID, database string) (generationFloor, []byte, error) {
+	raw, err := s.kv.Get(ctx, generationFloorKey(tenantID, database))
 	if err != nil {
-		return &StoreError{Op: "marshal-migration", Err: err}
+		return generationFloor{}, nil, &StoreError{Op: "get-generation-floor", Err: err}
 	}
-	key := migrationKey(m.TenantID, m.Database)
-	applied, err := s.kv.PutAllIfUnchanged(ctx, key, prev, []kvstore.KV{{Key: key, Value: b}})
+	var f generationFloor
+	if len(raw) == 0 {
+		return f, nil, nil
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return generationFloor{}, nil, &StoreError{Op: "unmarshal-generation-floor", Err: err}
+	}
+	return f, raw, nil
+}
+
+// raiseGenerationFloor raises the scope's reaped-generation high-water mark
+// to gen, conditionally on the value read, and never lowers it.
+func (s *Store) raiseGenerationFloor(ctx context.Context, tenantID, database string, gen uint64) error {
+	key := generationFloorKey(tenantID, database)
+	next, err := json.Marshal(generationFloor{Generation: gen})
 	if err != nil {
-		return &StoreError{Op: "put-migration", Err: err}
+		return &StoreError{Op: "marshal-generation-floor", Err: err}
 	}
-	if !applied {
-		return ErrMigrationMoved
+	for {
+		f, raw, err := s.getGenerationFloor(ctx, tenantID, database)
+		if err != nil {
+			return err
+		}
+		if f.Generation >= gen {
+			return nil
+		}
+		var raised bool
+		if raw == nil {
+			raised, err = s.kv.PutIfAbsent(ctx, key, next)
+		} else {
+			raised, err = s.kv.CompareAndSwap(ctx, key, raw, next)
+		}
+		if err != nil {
+			return &StoreError{Op: "raise-generation-floor", Err: err}
+		}
+		if raised {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return &StoreError{Op: "raise-generation-floor", Err: err}
+		}
 	}
-	return nil
+}
+
+// MigrationVersion is one stored state of a scope's intent record as a reader
+// saw it: the exact encoded bytes, which a conditional write compares against
+// inside the replicated store. The zero value is "no record".
+type MigrationVersion struct {
+	raw []byte
+}
+
+// CompareAndSwapMigration writes next as its scope's intent record only while
+// the stored record is still expected: it creates the record when expected is
+// the zero MigrationVersion and the scope has none, and otherwise replaces the
+// exact record expected names. It reports false with a nil error when the
+// record changed since it was read, leaving the store as it is; the caller
+// re-reads and decides again from what is there now.
+func (s *Store) CompareAndSwapMigration(ctx context.Context, expected MigrationVersion, next *ClusterMigration) (bool, error) {
+	if next == nil {
+		return false, ErrNilMigration
+	}
+	if next.Target == "" {
+		return false, ErrEmptyTarget
+	}
+	b, err := json.Marshal(next)
+	if err != nil {
+		return false, &StoreError{Op: "marshal-migration", Err: err}
+	}
+	key := migrationKey(next.TenantID, next.Database)
+	if expected.raw == nil {
+		stored, perr := s.kv.PutIfAbsent(ctx, key, b)
+		if perr != nil {
+			return false, &StoreError{Op: "create-migration", Err: perr}
+		}
+		return stored, nil
+	}
+	swapped, err := s.kv.CompareAndSwap(ctx, key, expected.raw, b)
+	if err != nil {
+		return false, &StoreError{Op: "swap-migration", Err: err}
+	}
+	return swapped, nil
 }
 
 // GetMigration returns the intent record for a scope, or (nil, nil) when absent.
 func (s *Store) GetMigration(ctx context.Context, tenantID, database string) (*ClusterMigration, error) {
-	m, _, err := s.readMigration(ctx, tenantID, database)
+	m, _, err := s.GetMigrationVersion(ctx, tenantID, database)
 	return m, err
 }
 
-// readMigration returns the intent record for a scope and the exact bytes it
-// was decoded from, which swapMigration guards on. Both are nil when absent.
-func (s *Store) readMigration(ctx context.Context, tenantID, database string) (*ClusterMigration, []byte, error) {
+// GetMigrationVersion returns the intent record for a scope with the version
+// a conditional write of it compares against; (nil, zero, nil) when absent.
+func (s *Store) GetMigrationVersion(ctx context.Context, tenantID, database string) (*ClusterMigration, MigrationVersion, error) {
 	raw, err := s.kv.Get(ctx, migrationKey(tenantID, database))
 	if err != nil {
-		return nil, nil, &StoreError{Op: "get-migration", Err: err}
+		return nil, MigrationVersion{}, &StoreError{Op: "get-migration", Err: err}
 	}
 	if len(raw) == 0 {
-		return nil, nil, nil
+		return nil, MigrationVersion{}, nil
 	}
 	var m ClusterMigration
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, nil, &StoreError{Op: "unmarshal-migration", Err: err}
+		return nil, MigrationVersion{}, &StoreError{Op: "unmarshal-migration", Err: err}
 	}
-	return &m, raw, nil
+	return &m, MigrationVersion{raw: raw}, nil
 }
 
 // PutNodeStatus writes one node's status for the scope.
@@ -293,56 +383,76 @@ func (s *Store) ListMigrations(ctx context.Context) ([]*ClusterMigration, error)
 	return out, nil
 }
 
-// Delete removes the intent record and all per-node statuses for the scope. It
-// is called once the migration is complete (or to clear an aborted one). The
-// delete is guarded on the record it read, so a request written since is
-// refused with ErrMigrationMoved rather than deleted.
-func (s *Store) Delete(ctx context.Context, tenantID, database string) error {
-	_, raw, err := s.readMigration(ctx, tenantID, database)
-	if err != nil {
-		return err
+// CompareAndDeleteMigration removes a finished migration: the intent record
+// expected names, and the per-node statuses for its generation or an earlier
+// one. It first raises the scope's reaped-generation floor to the record's
+// generation (ReapedGeneration), so the scope's next request is numbered
+// above it. Every delete is conditional on the bytes it read, so nothing a newer
+// request wrote is removed -- neither its record nor an ack for its
+// generation. It reports false with a nil error, leaving the record, when the
+// record is no longer the one expected.
+func (s *Store) CompareAndDeleteMigration(ctx context.Context, expected MigrationVersion) (bool, error) {
+	if expected.raw == nil {
+		return false, ErrNilMigration
 	}
-	return s.deleteGuarded(ctx, tenantID, database, raw)
+	var m ClusterMigration
+	if err := json.Unmarshal(expected.raw, &m); err != nil {
+		return false, &StoreError{Op: "unmarshal-migration", Err: err}
+	}
+	// The floor goes first: a request that finds the intent gone has also
+	// found the floor raised, and numbers itself past the reaped generation.
+	if err := s.raiseGenerationFloor(ctx, m.TenantID, m.Database, m.Generation); err != nil {
+		return false, err
+	}
+	prefix := Prefix + m.TenantID + "/" + m.Database + nodesSegment
+	stale := make(map[string][]byte)
+	err := s.kv.Scan(ctx, prefix, func(key string, value []byte) error {
+		if !strings.Contains(strings.TrimPrefix(key, prefix), "/") {
+			stale[key] = value
+		}
+		return nil
+	})
+	if err != nil {
+		return false, &StoreError{Op: "scan-status", Err: err}
+	}
+	for key, raw := range stale {
+		if err := s.deleteStatusThrough(ctx, key, raw, m.Generation); err != nil {
+			return false, err
+		}
+	}
+	deleted, err := s.kv.CompareAndDelete(ctx, migrationKey(m.TenantID, m.Database), expected.raw)
+	if err != nil {
+		return false, &StoreError{Op: "delete-migration", Err: err}
+	}
+	return deleted, nil
 }
 
-// deleteIfComplete deletes a scope's migration record and its acks if the
-// record is complete, deciding completion and guarding the delete on one read
-// of the record. It reports whether it deleted.
-func (s *Store) deleteIfComplete(ctx context.Context, tenantID, database string) (bool, error) {
-	m, raw, err := s.readMigration(ctx, tenantID, database)
-	if err != nil || m == nil {
-		return false, err
-	}
-	if done, err := s.complete(ctx, m); err != nil || !done {
-		return false, err
-	}
-	if err := s.deleteGuarded(ctx, tenantID, database, raw); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// deleteGuarded deletes the record and every ack in one write, applied only
-// while the record is still prev (nil: still absent). A refusal is
-// ErrMigrationMoved: a newer request replaced the record this delete was
-// decided on, and it and its acks are left alone.
-func (s *Store) deleteGuarded(ctx context.Context, tenantID, database string, prev []byte) error {
-	statuses, err := s.ListNodeStatuses(ctx, tenantID, database)
-	if err != nil {
-		return err
-	}
-	key := migrationKey(tenantID, database)
-	writes := make([]kvstore.KV, 0, len(statuses)+1)
-	for _, st := range statuses {
-		writes = append(writes, kvstore.KV{Key: nodeStatusKey(tenantID, database, st.NodeID), Delete: true})
-	}
-	writes = append(writes, kvstore.KV{Key: key, Delete: true})
-	applied, err := s.kv.PutAllIfUnchanged(ctx, key, prev, writes)
-	if err != nil {
-		return &StoreError{Op: "delete-migration", Err: err}
-	}
-	if !applied {
-		return ErrMigrationMoved
+// deleteStatusThrough deletes the status record at key while it acks gen or
+// an earlier generation, starting from raw, the value last read there. A
+// record rewritten in between is read again and judged afresh; an ack for a
+// later generation is kept.
+func (s *Store) deleteStatusThrough(ctx context.Context, key string, raw []byte, gen uint64) error {
+	for len(raw) > 0 {
+		var st NodeMigrationStatus
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return &StoreError{Op: "unmarshal-status", Err: err}
+		}
+		if st.Generation > gen {
+			return nil
+		}
+		deleted, err := s.kv.CompareAndDelete(ctx, key, raw)
+		if err != nil {
+			return &StoreError{Op: "delete-status", Err: err}
+		}
+		if deleted {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return &StoreError{Op: "delete-status", Err: err}
+		}
+		if raw, err = s.kv.Get(ctx, key); err != nil {
+			return &StoreError{Op: "get-status", Err: err}
+		}
 	}
 	return nil
 }
@@ -357,13 +467,17 @@ func (s *Store) deleteGuarded(ctx context.Context, tenantID, database string, pr
 // Coordinator has recorded it serving.
 func (s *Store) IsComplete(ctx context.Context, tenantID, database string) (bool, error) {
 	m, err := s.GetMigration(ctx, tenantID, database)
-	if err != nil || m == nil {
+	if err != nil {
 		return false, err
+	}
+	if m == nil {
+		return false, nil
 	}
 	return s.complete(ctx, m)
 }
 
-// complete reports whether m, as read, is complete (see IsComplete).
+// complete reports whether m, a record already read, is complete in the
+// sense IsComplete documents.
 func (s *Store) complete(ctx context.Context, m *ClusterMigration) (bool, error) {
 	if len(m.Steps) > 0 {
 		return m.rolledOut(), nil

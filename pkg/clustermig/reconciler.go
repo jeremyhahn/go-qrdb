@@ -190,21 +190,18 @@ func (r *Reconciler) recycleScope(ctx context.Context, m *ClusterMigration) erro
 		slog.String("target", string(m.Target)),
 		slog.Uint64("generation", m.Generation))
 
+	// A recycle that already ran is acknowledged without a credential: after
+	// the system scope's in-process reboot the node that accepted the request
+	// no longer holds the request's credential, and has no file for it.
+	if r.recycler.AtTarget(m) {
+		r.complete(ctx, m)
+		return nil
+	}
+
 	current := r.currentStatus(ctx, m)
 	prevAttempts := 0
 	if current != nil {
 		prevAttempts = current.Attempts
-	}
-
-	// A barrier already at the target owes only its ack: write it without
-	// asking for a credential the recycle no longer needs.
-	if r.recycler.AtTarget(m) {
-		r.putStatus(ctx, m, seal.PhaseComplete, "", 0)
-		r.release(m)
-		r.logger.Info("local barrier already at target; acked",
-			slog.String("scope", scopeLabel(m.TenantID, m.Database)),
-			slog.Uint64("generation", m.Generation))
-		return nil
 	}
 
 	// Take this node's own credential for the recycle; a Shamir target needs
@@ -242,12 +239,18 @@ func (r *Reconciler) recycleScope(ctx context.Context, m *ClusterMigration) erro
 		}
 		return err
 	}
+	r.complete(ctx, m)
+	return nil
+}
+
+// complete acknowledges m's generation for this node and releases its
+// credential.
+func (r *Reconciler) complete(ctx context.Context, m *ClusterMigration) {
 	r.putStatus(ctx, m, seal.PhaseComplete, "", 0)
 	r.release(m)
 	r.logger.Info("local encryption recycle complete",
 		slog.String("scope", scopeLabel(m.TenantID, m.Database)),
 		slog.Uint64("generation", m.Generation))
-	return nil
 }
 
 // currentStatus returns this node's recorded status for m's CURRENT

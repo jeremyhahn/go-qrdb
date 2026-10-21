@@ -344,6 +344,19 @@ func (e *ShardClaimerError) Error() string {
 
 func (e *ShardClaimerError) Unwrap() error { return e.Err }
 
+// ClusterMigStoreError reports that the cluster-migration coordination store
+// could not be built over the replicated system store. Its intent record is
+// written only by compare-and-swap, so a store without one is refused.
+type ClusterMigStoreError struct {
+	Err error
+}
+
+func (e *ClusterMigStoreError) Error() string {
+	return "lifecycle: build cluster migration store: " + e.Err.Error()
+}
+
+func (e *ClusterMigStoreError) Unwrap() error { return e.Err }
+
 // DEKServiceError is returned when the tenant DEK keyring service cannot be
 // constructed.
 type DEKServiceError struct {

@@ -92,6 +92,29 @@ func TestDataPathFailure_RaftTimeoutIsServiceUnavailable(t *testing.T) {
 	}
 }
 
+// A write or read that reaches a leader mid-way through handing its
+// leadership off is refused before it enters the log, and the identical
+// request succeeds once the transfer ends: 503, never the 500 that tells a
+// client the request itself is at fault.
+func TestDataPathFailure_TransferInProgressIsServiceUnavailable(t *testing.T) {
+	for name, tc := range map[string]struct {
+		write func(http.ResponseWriter, error)
+		err   error
+	}{
+		"write": {writeProposeFailure, &service.ProposeError{Err: quicraft.ErrTransferInProgress}},
+		"read":  {writeReadFailure, &service.ReadError{Err: quicraft.ErrTransferInProgress}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tc.write(rec, tc.err)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+			}
+		})
+	}
+}
+
 // The wrapper still says which path failed.
 func TestDataPathFailure_LeadershipTransientKeepsItsWrapper(t *testing.T) {
 	for name, tc := range dataPathFailures {

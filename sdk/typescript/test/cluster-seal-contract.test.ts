@@ -137,4 +137,76 @@ describe('wails seal client – cluster sealing', () => {
         expect(status.clusterSeal?.local).toBe('held');
         expect(status.clusterSeal?.principalTenant).toBe('system');
     });
+
+    it('status() camel-cases the desktop binding cluster migration', async () => {
+        const Status = vi.fn(async () => ({ sealed: false, initialized: true, strategy: 'none', clusterMigration: rollingMigration }));
+        vi.stubGlobal('window', { go: { main: { SealBinding: { Status } } } });
+        const status = await new WailsClient().seal.status();
+        expect(status.clusterMigration).toEqual(rollingMigrationCamel);
+    });
+
+    it('status() reports no cluster migration when the binding sends none', async () => {
+        const Status = vi.fn(async () => ({ sealed: false, initialized: true, strategy: 'none', clusterMigration: null }));
+        vi.stubGlobal('window', { go: { main: { SealBinding: { Status } } } });
+        const status = await new WailsClient().seal.status();
+        expect(status.clusterMigration ?? undefined).toBeUndefined();
+    });
+});
+
+/** A rolling migration as the server sends it: the second owner's turn. */
+const rollingMigration = {
+    target: 'passphrase',
+    generation: 2,
+    acked: 1,
+    total: 3,
+    nodes: [
+        { node_id: '192.0.2.11:5000', step: 'serving', phase: 'complete' },
+        { node_id: '192.0.2.12:5000', step: 'recycling', phase: 'failed', attempts: 2, detail: 'credential missing' },
+        { node_id: '192.0.2.13:5000', step: 'pending' },
+    ],
+};
+
+const rollingMigrationCamel = {
+    target: 'passphrase',
+    generation: 2,
+    acked: 1,
+    total: 3,
+    nodes: [
+        { nodeId: '192.0.2.11:5000', step: 'serving', phase: 'complete' },
+        { nodeId: '192.0.2.12:5000', step: 'recycling', phase: 'failed', attempts: 2, detail: 'credential missing' },
+        { nodeId: '192.0.2.13:5000', step: 'pending' },
+    ],
+};
+
+describe('rest seal client – cluster migration', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+
+    it('status() carries the node barrier cluster migration, camel-cased', async () => {
+        const client = await connectedRest();
+        installRouter({
+            'GET /v1/barrier/status': {
+                body: { sealed: false, initialized: true, strategy: 'none', hardware_backed: false, cluster_migration: rollingMigration },
+            },
+        });
+        const status = await client.seal.status();
+        expect(status.clusterMigration).toEqual(rollingMigrationCamel);
+    });
+
+    it('status() reports no cluster migration when none is in progress', async () => {
+        const client = await connectedRest();
+        installRouter({ 'GET /v1/barrier/status': { body: { sealed: false, initialized: true, strategy: 'none', hardware_backed: false } } });
+        const status = await client.seal.status();
+        expect(status.clusterMigration).toBeUndefined();
+    });
+
+    it('status() reports an unreadable record as unconfirmed, not absent', async () => {
+        const client = await connectedRest();
+        installRouter({
+            'GET /v1/barrier/status': {
+                body: { sealed: false, initialized: true, strategy: 'none', hardware_backed: false, cluster_migration: { unconfirmed: true, acked: 0, total: 0 } },
+            },
+        });
+        const status = await client.seal.status();
+        expect(status.clusterMigration).toEqual({ unconfirmed: true, acked: 0, total: 0 });
+    });
 });

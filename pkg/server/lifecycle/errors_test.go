@@ -353,3 +353,22 @@ func TestCertStoreError_ErrorAndUnwrap(t *testing.T) {
 		t.Error("Unwrap did not return inner error")
 	}
 }
+
+func TestClusterMigStoreError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("no atomic verbs")
+	err := &lifecycle.ClusterMigStoreError{Err: inner}
+	if !strings.Contains(err.Error(), "build cluster migration store") || !strings.Contains(err.Error(), inner.Error()) {
+		t.Errorf("unexpected message: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Error("Unwrap did not return inner error")
+	}
+}
+
+func TestClusterMigStoreError_ErrorsAs(t *testing.T) {
+	err := errors.Join(errors.New("build services"), &lifecycle.ClusterMigStoreError{Err: errors.New("x")})
+	var target *lifecycle.ClusterMigStoreError
+	if !errors.As(err, &target) || target.Err.Error() != "x" {
+		t.Errorf("errors.As through a wrap = %v, %+v", errors.As(err, &target), target)
+	}
+}

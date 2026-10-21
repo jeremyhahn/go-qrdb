@@ -253,12 +253,13 @@ func (b *SealBinding) Status() (*SealStatus, error) {
 	}
 
 	status := &SealStatus{
-		Sealed:         resp.Sealed,
-		Initialized:    resp.Initialized,
-		Strategy:       resp.Strategy,
-		SharesRequired: resp.ShamirThreshold,
-		SharesTotal:    resp.ShamirTotal,
-		ClusterSeal:    resp.ClusterSeal,
+		Sealed:           resp.Sealed,
+		Initialized:      resp.Initialized,
+		Strategy:         resp.Strategy,
+		SharesRequired:   resp.ShamirThreshold,
+		SharesTotal:      resp.ShamirTotal,
+		ClusterSeal:      resp.ClusterSeal,
+		ClusterMigration: resp.ClusterMigration,
 	}
 	b.logger.Debug("Status completed", "sealed", status.Sealed, "initialized", status.Initialized, "strategy", status.Strategy)
 	return status, nil

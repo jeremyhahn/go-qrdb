@@ -98,6 +98,30 @@ func (e *NoFreePortError) Error() string {
 // Unwrap returns the last bind failure.
 func (e *NoFreePortError) Unwrap() error { return e.Err }
 
+// ListenPairError reports that ListenPair could not hold a TCP listener and a
+// UDP socket on one port. Network says which half refused, so a server can
+// report a failed HTTP/2 bind and a failed HTTP/3 bind as the different
+// failures they are.
+type ListenPairError struct {
+	// Network is the protocol whose bind failed: NetworkTCP or NetworkUDP.
+	Network string
+	// Addr is the address that bind was asked for.
+	Addr string
+	// Attempts is how many pairs were tried, the failed one included.
+	Attempts int
+	// Err is that bind's failure.
+	Err error
+}
+
+// Error implements error.
+func (e *ListenPairError) Error() string {
+	return "netport: listen " + e.Network + " " + e.Addr + " (attempt " +
+		strconv.Itoa(e.Attempts) + "): " + e.Err.Error()
+}
+
+// Unwrap returns the bind failure.
+func (e *ListenPairError) Unwrap() error { return e.Err }
+
 // EphemeralRangeError reports that the kernel's ephemeral port range, which
 // the reservation window must sit below, could not be determined.
 type EphemeralRangeError struct {

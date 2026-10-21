@@ -76,6 +76,11 @@ type SealStatus struct {
 	// sealing is active, the record, and this node's own state -- held, cut
 	// off or serving. Nil from a server that does not report it.
 	ClusterSeal *transport.ClusterSeal `json:"clusterSeal"`
+	// ClusterMigration is the node barrier's cluster-wide enable-encryption
+	// while one is in progress: the target, how many owners are done, and
+	// each owner's step and own report. Nil when none is in progress, on a
+	// sealed node, or from a server that does not report it.
+	ClusterMigration *transport.ClusterMigration `json:"clusterMigration"`
 }
 
 // BootstrapResult contains the share-free result of a barrier

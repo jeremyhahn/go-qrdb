@@ -344,11 +344,13 @@ func TestCoordinator_Advance_RefusesAFormerLeadersWrite(t *testing.T) {
 	ack(t, s, "n2", 1, seal.PhaseComplete)
 
 	// The current leader re-requests (generation 2) while the former one is
-	// between reading generation 1 and handing n2's turn on.
+	// between reading generation 1 and handing n2's turn on. The former's
+	// conditional write loses, and the record it reads again is a newer
+	// request's, not its own to act on.
 	kv.between = func() { requestRolling(t, current) }
 	wrote, err := former.Advance(ctx, tid, db)
-	if wrote || !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("former Advance = %v, %v; want false, ErrMigrationMoved", wrote, err)
+	if wrote || err != nil {
+		t.Fatalf("former Advance = %v, %v; want false, nil", wrote, err)
 	}
 	m, _ := s.GetMigration(ctx, tid, db)
 	if m.Generation != 2 {
@@ -367,34 +369,37 @@ func TestCoordinator_Advance_RefusesAFormerLeadersCatchUpTarget(t *testing.T) {
 
 	// A former leader, whose view of the log is older, read the record
 	// before the current leader recorded n2's target; the lower target it
-	// would record must not replace the current one.
+	// would record must not replace the current one. Its write loses, and on
+	// the record it reads again the target is already set, so it waits.
 	kv.between = func() { advance(t, current, true, "current leader records the target") }
 	wrote, err := catchUpCoordinator(s, newFakeProgress(10)).Advance(ctx, tid, db)
-	if wrote || !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("former Advance = %v, %v; want false, ErrMigrationMoved", wrote, err)
+	if wrote || err != nil {
+		t.Fatalf("former Advance = %v, %v; want false, nil", wrote, err)
 	}
 	requireSteps(t, s, catchUpStep("n2", StepRecycling, 40), step("n3", StepPending), step("n1", StepPending))
 }
 
-func TestCoordinator_Request_RefusesAFormerLeadersWrite(t *testing.T) {
+func TestCoordinator_Request_SupersedesARequestThatLandedFirst(t *testing.T) {
 	ctx := context.Background()
 	kv := &interleavedKV{memKV: newMemKV()}
 	s := NewStore(kv)
 	former, current := rollingCoordinator(s, rollingOn), rollingCoordinator(s, rollingOn)
 	undone := false
 	kv.between = func() { requestRolling(t, current) }
-	_, err := former.Request(ctx, tid, db, validOpts(), WithPrepare(func(*ClusterMigration) (func(), error) {
+	m, err := former.Request(ctx, tid, db, validOpts(), WithPrepare(func(*ClusterMigration) (func(), error) {
 		return func() { undone = true }, nil
 	}))
-	if !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("former Request = %v, want ErrMigrationMoved", err)
+	if err != nil {
+		t.Fatalf("former Request = %v, want nil", err)
 	}
 	if !undone {
-		t.Fatal("the refused request's prepare was not undone")
+		t.Fatal("the lost write's prepare was not undone")
 	}
-	m, _ := s.GetMigration(ctx, tid, db)
-	if m.Generation != 1 {
-		t.Fatalf("Generation = %d, want the current leader's 1", m.Generation)
+	if m.Generation != 2 {
+		t.Fatalf("returned Generation = %d, want 2, past the request that landed first", m.Generation)
+	}
+	if got, _ := s.GetMigration(ctx, tid, db); got.Generation != 2 {
+		t.Fatalf("Generation = %d, want 2", got.Generation)
 	}
 }
 
@@ -417,31 +422,33 @@ func TestCoordinator_Reap_RefusesAFormerLeadersDelete(t *testing.T) {
 		}
 	}
 	reaped, err := former.Reap(ctx, tid, db)
-	if reaped || !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("Reap = %v, %v; want false, ErrMigrationMoved", reaped, err)
+	if reaped || err != nil {
+		t.Fatalf("Reap = %v, %v; want false, nil", reaped, err)
 	}
 	m, _ := s.GetMigration(ctx, tid, db)
 	if m == nil || m.Generation != 2 {
 		t.Fatalf("migration = %+v, want the new request's generation 2 kept", m)
 	}
-	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil {
-		t.Fatal("the refused reap deleted n1's ack")
+	// n1's generation-1 ack is the reaped generation's and may go with it;
+	// it never counts for the new request.
+	if done, err := s.IsComplete(ctx, tid, db); err != nil || done {
+		t.Fatalf("IsComplete = %v, %v; want the new request incomplete", done, err)
 	}
 }
 
-func TestStore_SwapMigration_RefusesAStaleRead(t *testing.T) {
+func TestStore_CompareAndSwapMigration_RefusesAStaleRead(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1"})
-	_, stale, _ := s.readMigration(ctx, tid, db)
+	_, stale, _ := s.GetMigrationVersion(ctx, tid, db)
 	seedMigration(t, s, 2, []string{"n1"})
 
-	err := s.swapMigration(ctx, stale, &ClusterMigration{TenantID: tid, Database: db, Target: seal.StrategyPassphrase, Generation: 9})
-	if !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("swapMigration(stale) = %v, want ErrMigrationMoved", err)
+	next := &ClusterMigration{TenantID: tid, Database: db, Target: seal.StrategyPassphrase, Generation: 9}
+	if swapped, err := s.CompareAndSwapMigration(ctx, stale, next); swapped || err != nil {
+		t.Fatalf("CompareAndSwapMigration(stale) = %v, %v; want false, nil", swapped, err)
 	}
-	if err := s.swapMigration(ctx, nil, &ClusterMigration{TenantID: tid, Database: db, Target: seal.StrategyPassphrase, Generation: 9}); !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("swapMigration(absent guard over a record) = %v, want ErrMigrationMoved", err)
+	if swapped, err := s.CompareAndSwapMigration(ctx, MigrationVersion{}, next); swapped || err != nil {
+		t.Fatalf("CompareAndSwapMigration(absent over a record) = %v, %v; want false, nil", swapped, err)
 	}
 	m, _ := s.GetMigration(ctx, tid, db)
 	if m.Generation != 2 {
@@ -449,25 +456,26 @@ func TestStore_SwapMigration_RefusesAStaleRead(t *testing.T) {
 	}
 }
 
-func TestStore_Delete_RefusesAStaleRead(t *testing.T) {
+func TestStore_CompareAndDeleteMigration_RefusesAStaleRead(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1"})
 	ack(t, s, "n1", 1, seal.PhaseComplete)
-	_, stale, _ := s.readMigration(ctx, tid, db)
+	_, stale, _ := s.GetMigrationVersion(ctx, tid, db)
 	seedMigration(t, s, 2, []string{"n1"})
 
-	if err := s.deleteGuarded(ctx, tid, db, stale); !errors.Is(err, ErrMigrationMoved) {
-		t.Fatalf("deleteGuarded(stale) = %v, want ErrMigrationMoved", err)
+	if deleted, err := s.CompareAndDeleteMigration(ctx, stale); deleted || err != nil {
+		t.Fatalf("CompareAndDeleteMigration(stale) = %v, %v; want false, nil", deleted, err)
 	}
 	if m, _ := s.GetMigration(ctx, tid, db); m == nil || m.Generation != 2 {
 		t.Fatalf("migration = %+v, want generation 2 kept", m)
 	}
-	if err := s.Delete(ctx, tid, db); err != nil {
-		t.Fatalf("Delete: %v", err)
+	_, current, _ := s.GetMigrationVersion(ctx, tid, db)
+	if deleted, err := s.CompareAndDeleteMigration(ctx, current); !deleted || err != nil {
+		t.Fatalf("CompareAndDeleteMigration(current) = %v, %v; want true, nil", deleted, err)
 	}
 	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
-		t.Fatalf("migration = %+v after Delete, want none", m)
+		t.Fatalf("migration = %+v after the delete, want none", m)
 	}
 }
 

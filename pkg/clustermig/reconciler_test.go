@@ -33,8 +33,11 @@ type recordingRecycler struct {
 	lastCred  []byte
 	failFirst int
 	failErr   error
-	atTarget  bool
+	// atTarget is what AtTarget answers: the recycle already ran.
+	atTarget bool
 }
+
+var _ LocalRecycler = (*recordingRecycler)(nil)
 
 func (r *recordingRecycler) AtTarget(*ClusterMigration) bool {
 	r.mu.Lock()
@@ -189,12 +192,10 @@ func TestReconciler_MultipleScopes(t *testing.T) {
 	// Scope 1: tenant/db (this node owns).
 	seedMigration(t, s, 1, []string{"n1"})
 	// Scope 2: system (this node owns).
-	if err := s.swapMigration(ctx, nil, &ClusterMigration{
+	putMigration(t, s, &ClusterMigration{
 		Target: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
 		Owners: []string{"n1"}, Generation: 1,
-	}); err != nil {
-		t.Fatalf("swapMigration(system): %v", err)
-	}
+	})
 	rec := &recordingRecycler{}
 	r := NewReconciler(s, "n1", rec, nil, nil, nil)
 
@@ -372,12 +373,10 @@ func TestReconciler_AwaitingOwnerAcksOnceAtTarget(t *testing.T) {
 func TestReconciler_ShamirTargetNeedsNoCredential(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.swapMigration(ctx, nil, &ClusterMigration{
+	putMigration(t, s, &ClusterMigration{
 		TenantID: tid, Database: db, Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
 		ShamirThreshold: 2, ShamirTotal: 3, Owners: []string{"n1"}, Generation: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	rec := &recordingRecycler{}
 	src := &staticSource{err: ErrCredentialAwaited}
 	r := NewReconciler(s, "n1", rec, src, nil, nil)
@@ -562,10 +561,63 @@ func TestReconciler_BoundedRetry_NewGenerationResetsAttempts(t *testing.T) {
 // the Recycle call rather than merely record its arguments.
 type recycleFunc func(ctx context.Context, m *ClusterMigration, credential []byte) error
 
-func (recycleFunc) AtTarget(*ClusterMigration) bool { return false }
-
 func (f recycleFunc) Recycle(ctx context.Context, m *ClusterMigration, credential []byte) error {
 	return f(ctx, m, credential)
+}
+
+func (recycleFunc) AtTarget(*ClusterMigration) bool { return false }
+
+// TestReconciler_AcknowledgesAtTargetWithoutACredential pins the system
+// scope's reboot path: the node that accepted the request recycles with the
+// credential it held, comes back from the in-process reboot with a new
+// reconciler and no held credential, and has no file for it. Its barrier is
+// already at the target, so it acknowledges without asking for one, rather
+// than waiting in awaiting-credential forever and holding the migration
+// short of completion.
+func TestReconciler_AcknowledgesAtTargetWithoutACredential(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	// The pass before the reboot: credential held, recycle started, no ack.
+	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{NodeID: "n1", Generation: 1, Phase: seal.PhaseCopying}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingRecycler{atTarget: true}
+	src := &staticSource{err: ErrCredentialAwaited}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
+
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("ReconcileOnce = %d, %v; want 1, nil", n, err)
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil || st.Phase != seal.PhaseComplete || st.Generation != 1 {
+		t.Fatalf("status = %+v, want generation 1 complete", st)
+	}
+	if src.asked != 0 || rec.count() != 0 {
+		t.Fatalf("asked for a credential %d times and recycled %d times; an owner at target does neither", src.asked, rec.count())
+	}
+	if len(src.released) != 1 || src.released[0] != 1 {
+		t.Fatalf("released = %v, want [1]", src.released)
+	}
+	requireComplete(t, ctx, s, true, "the only owner acknowledged")
+}
+
+// TestReconciler_NotAtTargetStillWaitsForItsCredential proves the at-target
+// check does not let an owner that has not recycled acknowledge: without its
+// credential it waits, and nothing is acknowledged.
+func TestReconciler_NotAtTargetStillWaitsForItsCredential(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	rec := &recordingRecycler{}
+	r := NewReconciler(s, "n1", rec, &staticSource{err: ErrCredentialAwaited}, nil, nil)
+
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 0 {
+		t.Fatalf("ReconcileOnce = %d, %v; want 0, nil", n, err)
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil || st.Phase != PhaseAwaitingCredential {
+		t.Fatalf("status = %+v, want awaiting-credential", st)
+	}
+	requireComplete(t, ctx, s, false, "the owner has not recycled")
 }
 
 // TestReconciler_CopyingCheckpoint_CarriesPriorAttempts pins the L1 fix: the

@@ -40,6 +40,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpcweb"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
@@ -1283,12 +1284,24 @@ func (s *Server) Start() error {
 		s.closePrebound()
 		return &PacketConnWithoutListenerError{}
 	}
-	ln := s.preboundListener
-	if ln == nil {
-		var err error
-		if ln, err = net.Listen("tcp", s.addr); err != nil {
-			return &StartError{Addr: s.addr, Err: err}
-		}
+	ln, h3Conn, err := s.bindSockets()
+	if err != nil {
+		return err
+	}
+	// The kernel, not this process, decides what a bind string resolves
+	// to: a dual-stack or resolver difference between the TCP and UDP
+	// stacks would widen the QUIC surface past what the TCP listener
+	// accepted, which is exactly the #165 exposure and is invisible from
+	// configuration. Refuse to serve it. A pre-bound socket is held to the
+	// same rule, and to the same port, which is the one Alt-Svc advertises.
+	mismatch := sameBindHost(ln.Addr(), h3Conn.LocalAddr())
+	if mismatch == nil && portOfAddr(h3Conn.LocalAddr()) != portOfAddr(ln.Addr()) {
+		mismatch = &ListenerPortMismatchError{TCPPort: portOfAddr(ln.Addr()), UDPPort: portOfAddr(h3Conn.LocalAddr())}
+	}
+	if mismatch != nil {
+		_ = h3Conn.Close()
+		_ = ln.Close()
+		return mismatch
 	}
 
 	// Per-peer connection cap: without it, a single remote IP can open
@@ -1310,65 +1323,13 @@ func (s *Server) Start() error {
 	s.listener = ln
 
 	// Add Alt-Svc header middleware to advertise HTTP/3 availability.
-	if s.tlsConfig != nil {
-		_, port, _ := net.SplitHostPort(ln.Addr().String())
-		altSvc := fmt.Sprintf(`h3=":%s"; ma=86400`, port)
-		origHandler := s.server.Handler
-		s.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Alt-Svc", altSvc)
-			origHandler.ServeHTTP(w, r)
-		})
-	}
-
-	// Bind HTTP/3 on the SAME host and port as the TCP listener via QUIC,
-	// BEFORE either transport starts serving.
-	//
-	// The host is read back from the bound TCP listener rather than
-	// re-derived, so the two transports cannot disagree: they serve the
-	// same handler with the same TLS config, and a bind address is a
-	// containment decision that has to hold on both or it holds on
-	// neither. go-qrdb#165 measured the previous behaviour on a live node
-	// -- `ss` showed `udp UNCONN *:18443` beside `tcp LISTEN
-	// 127.0.0.1:18443`, i.e. a REST server deliberately rebound to
-	// loopback still accepted QUIC datagrams on every interface.
-	//
-	// The UDP socket is opened here rather than inside ListenAndServe on
-	// a goroutine for three reasons: a bind failure becomes a Start error
-	// the operator sees instead of one log line nobody reads; the address
-	// the kernel actually assigned can be compared with the TCP listener's
-	// before any datagram is served; and a rejected QUIC bind leaves the
-	// REST server unstarted rather than half-started.
-	var h3Conn net.PacketConn
-	if s.tlsConfig != nil {
-		pc := s.preboundPacketConn
-		if pc == nil {
-			h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
-			var h3Err error
-			if pc, h3Err = net.ListenPacket("udp", h3Addr); h3Err != nil {
-				_ = ln.Close()
-				s.listener = nil
-				return &HTTP3StartError{Addr: h3Addr, Err: h3Err}
-			}
-		}
-		// The kernel, not this process, decides what a bind string
-		// resolves to: a dual-stack or resolver difference between the
-		// TCP and UDP stacks would widen the QUIC surface past what the
-		// TCP listener accepted, which is exactly the #165 exposure and
-		// is invisible from configuration. Refuse to serve it. A
-		// pre-bound socket is held to the same rule, and to the same
-		// port, which is the one Alt-Svc advertises.
-		mismatch := sameBindHost(ln.Addr(), pc.LocalAddr())
-		if mismatch == nil && portOfAddr(pc.LocalAddr()) != portOfAddr(ln.Addr()) {
-			mismatch = &ListenerPortMismatchError{TCPPort: portOfAddr(ln.Addr()), UDPPort: portOfAddr(pc.LocalAddr())}
-		}
-		if mismatch != nil {
-			_ = pc.Close()
-			_ = ln.Close()
-			s.listener = nil
-			return mismatch
-		}
-		h3Conn = pc
-	}
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	altSvc := fmt.Sprintf(`h3=":%s"; ma=86400`, port)
+	origHandler := s.server.Handler
+	s.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Alt-Svc", altSvc)
+		origHandler.ServeHTTP(w, r)
+	})
 
 	proto := "HTTP"
 	if s.tlsConfig != nil {
@@ -1458,6 +1419,56 @@ func http3QUICConfig() *quicgo.Config {
 // WithPacketConn when Start refuses before serving on them: the server owns
 // them from Start on, so a refusal must not leak them to a caller that has
 // already given them up.
+// bindSockets returns the TCP listener HTTP/2 serves on and the UDP socket
+// HTTP/3 serves on, on one host and port, BEFORE either transport starts
+// serving: the pair handed over with WithListener and WithPacketConn; the
+// handed-over listener with a UDP socket bound on its port; or a pair bound at
+// the server's address by netport.ListenPair.
+//
+// The UDP host is read back from the bound TCP listener rather than
+// re-derived, so the two transports cannot disagree: they serve the same
+// handler with the same TLS config, and a bind address is a containment
+// decision that has to hold on both or it holds on neither. go-qrdb#165
+// measured the previous behaviour on a live node -- `ss` showed
+// `udp UNCONN *:18443` beside `tcp LISTEN 127.0.0.1:18443`, i.e. a REST
+// server deliberately rebound to loopback still accepted QUIC datagrams on
+// every interface.
+//
+// The UDP socket is opened here rather than inside ListenAndServe on a
+// goroutine for three reasons: a bind failure becomes a Start error the
+// operator sees instead of one log line nobody reads; the address the kernel
+// actually assigned can be compared with the TCP listener's before any
+// datagram is served; and a rejected QUIC bind leaves the REST server
+// unstarted rather than half-started.
+//
+// At port 0 the kernel draws the TCP number without looking at UDP, a
+// separate namespace, so the same number can already be held on UDP;
+// ListenPair then redraws the pair rather than failing Start (go-qrdb#824).
+// On failure every socket this server was given or bound is closed.
+func (s *Server) bindSockets() (net.Listener, net.PacketConn, error) {
+	if ln := s.preboundListener; ln != nil {
+		if s.preboundPacketConn != nil {
+			return ln, s.preboundPacketConn, nil
+		}
+		h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
+		pc, err := net.ListenPacket("udp", h3Addr)
+		if err != nil {
+			_ = ln.Close()
+			return nil, nil, &HTTP3StartError{Addr: h3Addr, Err: err}
+		}
+		return ln, pc, nil
+	}
+	ln, pc, err := netport.ListenPair(s.addr)
+	if err != nil {
+		var pairErr *netport.ListenPairError
+		if errors.As(err, &pairErr) && pairErr.Network == netport.NetworkUDP {
+			return nil, nil, &HTTP3StartError{Addr: pairErr.Addr, Err: err}
+		}
+		return nil, nil, &StartError{Addr: s.addr, Err: err}
+	}
+	return ln, pc, nil
+}
+
 func (s *Server) closePrebound() {
 	if s.preboundListener != nil {
 		_ = s.preboundListener.Close()

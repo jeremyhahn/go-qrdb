@@ -21,12 +21,12 @@ package integration_test
 // real 3-node cluster: a system barrier that boots UNENCRYPTED (strategy "none")
 // is migrated to a passphrase strategy cluster-wide via a single
 // POST /v1/barrier/enable-encryption to the leader. The leader writes a
-// replicated migration intent that carries no credential and rolls the nodes
-// one at a time, the leader last: every other node waits in
+// replicated migration intent that carries no credential, and the owners
+// recycle one at a time: each other node, in its turn, waits in
 // awaiting-credential until its own credential file appears under
 // seal.migration_credentials_dir, then recycles its local at-rest stores in
-// place, and the leader recycles with the request's passphrase, held in
-// memory. After each node comes back up keyed-and-sealed and is unsealed with
+// place; the leader goes last, with the request's passphrase held in memory.
+// After each node comes back up keyed-and-sealed and is unsealed with
 // the new passphrase, ALL pre-migration data survives on every node and the
 // barrier reports the passphrase strategy — proving rolling, per-node,
 // zero-data-loss cluster encryption with no secret in the Raft log and none
@@ -155,8 +155,8 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 		}
 	}
 
-	// The rolling gate activates once every member advertises the feature; a
-	// request made before then has no steps and would not run in turn.
+	// The rolling-migration gate is active before the request, so the
+	// coordinator writes the owners' steps and recycles them one at a time.
 	waitForFeatureActive(t, c.logs, featuregate.RollingMigration, 90*time.Second)
 
 	// Trigger the cluster-wide system enable-encryption on the LEADER. The
@@ -174,45 +174,27 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	}
 	t.Logf("cluster enable-encryption requested on leader (status %d)", status)
 
-	// The migration rolls one node at a time, and the node that accepted the
-	// request -- the holder of its credential -- goes last. Every other node
-	// waits for its own credential, so no node can migrate yet: each must
-	// still be serving the none barrier. Then each receives its own file; the
-	// holder never gets one, and recycles with the request's credential once
-	// the others are done.
-	holderIdx := adminPortIndex(t, adminPorts, leaderPort)
-	for i := range 3 {
-		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "none" {
-			t.Fatalf("node %d migrated before any node had its own credential: %s", i+1, got)
-		}
-		if i != holderIdx {
-			writeMigrationCredential(t, credDirs[i], "system", newPassphrase)
-		}
-	}
-
-	// Each node's reconciler picks up the intent, opens its sealed credential, and
-	// recycles its data plane in process — coming back up keyed-and-SEALED. Wait
-	// for every node to reach the sealed state, then unseal it with the new
-	// passphrase so it resumes serving. The steps run in turn, so the last
-	// node's wait spans every turn before it, as in the rolling test.
-	var unsealWg sync.WaitGroup
-	unsealWg.Add(3)
-	for i := range 3 {
-		go func(idx int) {
-			defer unsealWg.Done()
-			waitForBarrierSealedAgain(t, ca, adminPorts[idx], 420*time.Second)
-			t.Logf("node %d barrier sealed (migrated); unsealing with new passphrase", idx+1)
-			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
-			unsealBody, unsealStatus := iraftAPIPost(t, sysClient,
-				fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", adminPorts[idx]),
-				map[string]interface{}{"secret": []byte(newPassphrase)},
-			)
-			if unsealStatus != http.StatusNoContent && unsealStatus != http.StatusConflict {
-				t.Errorf("node %d post-migration unseal: status %d, body: %s", idx+1, unsealStatus, unsealBody)
+	// Each owner in its turn: a node with no credential file waits for it,
+	// still serving the none barrier, until it gets its own; the node that
+	// accepted the request recycles last with the request's credential and
+	// never gets one. Each recycled node comes back keyed-and-SEALED and is
+	// unsealed with the new passphrase, which completes its turn.
+	holderIdx := walkCredentialTurns(t, credentialTurns{
+		logs:  c.logs,
+		scope: "scope=system",
+		migrated: func(i int) bool {
+			return readBarrierStatus(t, ca, adminPorts[i]).Sealed
+		},
+		untouched: func(i int) error {
+			if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 30*time.Second); got.Sealed || got.Strategy != "none" {
+				return fmt.Errorf("barrier %s, want unsealed none", got)
 			}
-		}(i)
-	}
-	unsealWg.Wait()
+			return nil
+		},
+		credit: func(i int) { writeMigrationCredential(t, credDirs[i], "system", newPassphrase) },
+		settle: func(i int) { unsealRolling(t, sysClient, adminPorts[i], newPassphrase) },
+	}, 180*time.Second)
+	t.Logf("node %d recycled last with the request's held credential", holderIdx+1)
 
 	// Cluster re-forms; data must survive on every node, and the barrier must now
 	// report the passphrase strategy.
@@ -255,12 +237,11 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 //
 // The second tenant's self-managed UNENCRYPTED (none) barrier and RF=3
 // database are migrated to a passphrase barrier cluster-wide via a single
-// POST /v1/barrier/enable-encryption{tenant_id} to the leader. The replicas
-// recycle their own shards ONLINE one at a time, the leader last (no reboot —
-// the tenant barrier reopens keyed-and-unsealed), each with its own
-// credential -- the request's on the leader, its own file on every other
-// node -- and all tenant data survives on every replica. The system barrier
-// is untouched.
+// POST /v1/barrier/enable-encryption{tenant_id} to the leader. Every replica
+// recycles its own shard ONLINE in its turn (no reboot — the tenant barrier
+// reopens keyed-and-unsealed), with its own credential -- its own file on
+// every other node, then the request's on the leader, last -- and all tenant
+// data survives on every replica. The system barrier is untouched.
 func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	const tenantID = "rt1"
 	const dbName = "tdb1"
@@ -410,8 +391,8 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		}
 	}
 
-	// The rolling gate activates once every member advertises the feature; a
-	// request made before then has no steps and would not run in turn.
+	// The rolling-migration gate is active before the request, so the
+	// coordinator writes the replicas' steps and recycles them one at a time.
 	waitForFeatureActive(t, logs, featuregate.RollingMigration, 90*time.Second)
 
 	// Trigger the cluster-wide TENANT enable-encryption on the leader. A
@@ -432,31 +413,28 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	}
 	t.Log("tenant cluster enable-encryption requested on leader")
 
-	// The migration rolls one replica at a time, and the node that accepted
-	// the request recycles last, with the request's credential and no file.
-	// Every other replica waits for its own file, so none can migrate before
-	// the files land.
-	tenantHolderIdx := adminPortIndex(t, adminPorts, leaderPort)
-	for i := range 3 {
-		if strategy, _, ok := tenantBarrierStatusJSON(t, migTenantClient, adminPorts[i], migTenantID); !ok || strategy != "none" {
-			t.Fatalf("node %d tenant strategy = %q (ok=%v) before any replica had its own credential, want none", i+1, strategy, ok)
-		}
-		if i != tenantHolderIdx {
-			writeMigrationCredential(t, credDirs[i], "tenant-"+migTenantID, tenantPass)
-		}
-	}
-
-	// Every node's reconciler recycles its tenant shard ONLINE; the tenant barrier
-	// transitions to passphrase and stays UNSEALED (no re-unseal needed).
-	for i := range 3 {
-		if !pollUntil(180*time.Second, 500*time.Millisecond, func() bool {
+	// Each replica in its turn: a node with no credential file waits for it,
+	// its tenant barrier still none, until it gets its own; the node that
+	// accepted the request recycles last with the request's credential and
+	// never gets one. Every node recycles its tenant shard ONLINE: the tenant
+	// barrier transitions to passphrase and stays UNSEALED (no re-unseal).
+	tenantHolderIdx := walkCredentialTurns(t, credentialTurns{
+		logs:  logs,
+		scope: "tenant=" + migTenantID + " ",
+		migrated: func(i int) bool {
 			strategy, sealed, ok := tenantBarrierStatusJSON(t, migTenantClient, adminPorts[i], migTenantID)
 			return ok && strategy == "passphrase" && !sealed
-		}) {
-			t.Fatalf("node %d tenant barrier did not migrate to unsealed passphrase within timeout", i+1)
-		}
-		t.Logf("node %d tenant barrier migrated to passphrase (online)", i+1)
-	}
+		},
+		untouched: func(i int) error {
+			if strategy, _, ok := tenantBarrierStatusJSON(t, migTenantClient, adminPorts[i], migTenantID); !ok || strategy != "none" {
+				return fmt.Errorf("tenant barrier strategy %q (ok=%v), want none", strategy, ok)
+			}
+			return nil
+		},
+		credit: func(i int) { writeMigrationCredential(t, credDirs[i], "tenant-"+migTenantID, tenantPass) },
+		settle: func(i int) { t.Logf("node %d tenant barrier migrated to passphrase (online)", i+1) },
+	}, 180*time.Second)
+	t.Logf("node %d recycled last with the request's held credential", tenantHolderIdx+1)
 
 	// The system barrier is untouched on every node (still none, unsealed).
 	for i := range 3 {
@@ -792,6 +770,91 @@ func migrationCredentialsDir(t *testing.T) string {
 		t.Fatalf("migrationCredentialsDir: %v", err)
 	}
 	return dir
+}
+
+// credentialTurns is what walkCredentialTurns needs to know about one
+// migration scope on a cluster whose nodes have no credential file yet.
+type credentialTurns struct {
+	// logs are the nodes' logs, indexed like every func below.
+	logs []*nodeLog
+	// scope is the reconciler's scope label in its log lines: "scope=system",
+	// or "tenant=<id> " for a tenant.
+	scope string
+	// migrated reports whether node i has recycled onto the new barrier.
+	migrated func(i int) bool
+	// untouched returns an error unless node i still serves its old barrier.
+	untouched func(i int) error
+	// credit gives node i its own credential file.
+	credit func(i int)
+	// settle completes node i's turn once it has migrated.
+	settle func(i int)
+}
+
+// walkCredentialTurns walks a rolling migration requested while no node had a
+// credential file, one owner per turn. In its turn a node without a credential
+// logs that it awaits its own: it must not have migrated, and is given its
+// file and waited for. The node that accepted the request holds its credential
+// in memory and migrates with no file; any other node doing so, or that node
+// before the last turn, fails the test, as do two nodes awaiting at once. It
+// returns the index of that node.
+func walkCredentialTurns(t *testing.T, w credentialTurns, timeout time.Duration) int {
+	t.Helper()
+	done := make([]bool, len(w.logs))
+	holder := -1
+	for turn := 1; turn <= len(w.logs); turn++ {
+		idx, awaiting := -1, false
+		if !pollUntil(timeout, 250*time.Millisecond, func() bool {
+			var waiting []int
+			for i, l := range w.logs {
+				if done[i] {
+					continue
+				}
+				if awaitingCredentialIn(l.String(), w.scope) {
+					waiting = append(waiting, i)
+				} else if idx < 0 && w.migrated(i) {
+					idx = i
+				}
+			}
+			if len(waiting) > 1 {
+				t.Fatalf("turn %d: nodes %v await their credentials at once; owners recycle one at a time", turn, waiting)
+			}
+			if len(waiting) == 1 {
+				idx, awaiting = waiting[0], true
+			}
+			return idx >= 0
+		}) {
+			t.Fatalf("turn %d: no node awaited its credential or migrated within %v", turn, timeout)
+		}
+		if awaiting {
+			if err := w.untouched(idx); err != nil {
+				t.Fatalf("turn %d: node %d migrated before it had its own credential: %v", turn, idx+1, err)
+			}
+			w.credit(idx)
+			if !pollUntil(timeout, 250*time.Millisecond, func() bool { return w.migrated(idx) }) {
+				t.Fatalf("turn %d: node %d did not migrate within %v of getting its credential", turn, idx+1, timeout)
+			}
+		} else {
+			if holder >= 0 || turn != len(w.logs) {
+				t.Fatalf("turn %d: node %d migrated with no credential file; only the node holding the request's credential may, and last", turn, idx+1)
+			}
+			holder = idx
+		}
+		t.Logf("turn %d: node %d migrated", turn, idx+1)
+		w.settle(idx)
+		done[idx] = true
+	}
+	return holder
+}
+
+// awaitingCredentialIn reports whether a node log holds the reconciler's line
+// that it awaits its own credential for the migration scope labelled scope.
+func awaitingCredentialIn(log, scope string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "local encryption recycle awaiting this node's credential") && strings.Contains(line, scope) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeMigrationCredential writes a node's own enable-encryption credential

@@ -15,6 +15,8 @@
 
 package clustermig
 
+import "slices"
+
 // StepState is where one owner stands in a rolling migration.
 type StepState string
 
@@ -46,10 +48,24 @@ type NodeStep struct {
 // does: every other owner in placement order, then self (the coordinating
 // leader) last, so the migration costs one leader change rather than one per
 // step. The first step starts recycling at once.
-func rollingSteps(owners []string, self string) []NodeStep {
+//
+// inFlight names the owner a superseded generation authorized to recycle and
+// that has not acknowledged it: that owner may be sealed or rebooting right
+// now, so it keeps the turn and goes first, and no other owner recycles until
+// it serves again. Ordering self last would otherwise hand the first turn to
+// an owner that is still serving, and with the in-flight one that is two
+// owners away at once. An inFlight that is no longer an owner is left out: it
+// no longer votes in the shard, so its absence costs no quorum.
+func rollingSteps(owners []string, self, inFlight string) []NodeStep {
 	steps := make([]NodeStep, 0, len(owners))
+	if inFlight != "" && slices.Contains(owners, inFlight) {
+		steps = append(steps, NodeStep{NodeID: inFlight, State: StepPending})
+	}
 	last := false
 	for _, o := range owners {
+		if o == inFlight {
+			continue
+		}
 		if o == self {
 			last = true
 			continue

@@ -1789,6 +1789,53 @@ export interface SealStatus {
      * state. Absent from a server that does not report it.
      */
     readonly clusterSeal?: ClusterSeal;
+    /**
+     * The node barrier's cluster-wide enable-encryption while one is in
+     * progress (docs/barrier-seal). Absent when none is in progress -- a
+     * finished one is removed -- on a sealed node, and from a server that
+     * does not report it. Tenant and database barrier status never carry it.
+     */
+    readonly clusterMigration?: ClusterMigration;
+}
+
+/**
+ * A cluster-wide enable-encryption in progress, read from the replicated
+ * record. When `unconfirmed` is true the record could not be read just now
+ * and every other field is empty; it is never a claim that none is running.
+ */
+export interface ClusterMigration {
+    /** The record could not be read just now. */
+    readonly unconfirmed?: boolean;
+    /** The strategy every owner converges to. */
+    readonly target?: string;
+    /** The request the nodes below report against. */
+    readonly generation?: number;
+    /** Owners that have confirmed the target. */
+    readonly acked: number;
+    /** Owners of the barrier. */
+    readonly total: number;
+    /** Every owner, in rolling order when the request has steps. */
+    readonly nodes?: readonly ClusterMigrationNode[];
+}
+
+/** One owner of a cluster migration: its turn and its own report. */
+export interface ClusterMigrationNode {
+    /** The owner, by Raft address. */
+    readonly nodeId: string;
+    /**
+     * The owner's turn: "pending", "recycling" or "serving". Absent for a
+     * request where every owner recycles at once.
+     */
+    readonly step?: string;
+    /**
+     * The owner's own phase for this generation: "awaiting-credential",
+     * "copying", "complete" or "failed". Absent until it reports.
+     */
+    readonly phase?: string;
+    /** Consecutive failed recycles for this generation. */
+    readonly attempts?: number;
+    /** Why the last attempt failed, or what it waits for. */
+    readonly detail?: string;
 }
 
 /**

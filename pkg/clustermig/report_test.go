@@ -40,13 +40,11 @@ func TestStore_Report_NoMigration(t *testing.T) {
 func TestStore_Report_RollingOrderStepsAndPhases(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.swapMigration(ctx, nil, &ClusterMigration{
+	putMigration(t, s, &ClusterMigration{
 		TenantID: tid, Database: db, Target: seal.StrategyPassphrase,
 		Owners: []string{"n1", "n2", "n3"}, Generation: 2,
 		Steps: []NodeStep{{NodeID: "n3", State: StepServing}, {NodeID: "n1", State: StepRecycling}, {NodeID: "n2", State: StepPending}},
-	}); err != nil {
-		t.Fatalf("swapMigration: %v", err)
-	}
+	})
 	ack(t, s, "n3", 2, seal.PhaseComplete)
 	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{NodeID: "n1", Generation: 2, Phase: seal.PhaseFailed, Attempts: 2, Detail: "credential missing"}); err != nil {
 		t.Fatalf("PutNodeStatus: %v", err)

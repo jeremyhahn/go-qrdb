@@ -220,6 +220,50 @@ every transport, and cluster unseal returns one:
 | `principal`, `principal_tenant`, `node`, `at` | who wrote the record, from which tenant, through which node, and when |
 | `local` | this node's state for the barrier: `serving`, `sealed`, `held` (unsealed here, but the record is sealed — node barrier only), `cut_off` (lease expired), or `unconfirmed` (no successful read since this node started) |
 
+### The `cluster_migration` status object
+
+Node barrier status (`BarrierStatus`, `GET /v1/barrier/status`) carries a
+`cluster_migration` object, next to `cluster_seal`, on every transport —
+REST, gRPC, native QUIC, embedded, MCP and unix — while a cluster-wide
+`enable-encryption` of the node barrier is in progress. It is read from the
+replicated migration record, so every node that serves answers the same. Tenant
+and database barrier status do not carry it.
+
+```json
+"cluster_migration": {
+  "target": "passphrase",
+  "generation": 2,
+  "acked": 1,
+  "total": 3,
+  "nodes": [
+    {"node_id": "192.0.2.13:5000", "step": "serving",   "phase": "complete"},
+    {"node_id": "192.0.2.11:5000", "step": "recycling", "phase": "failed", "attempts": 2, "detail": "credential missing"},
+    {"node_id": "192.0.2.12:5000", "step": "pending"}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `unconfirmed` | `true` when the record could not be read just now (no leader, a store error). Every other field is then empty, and it is never a claim that no migration was requested |
+| `target` | the strategy every owner converges to |
+| `generation` | the request the steps and phases belong to; a new request increments it |
+| `acked`, `total` | `acked` of the `total` owners have reported `complete` for `generation`. Both are always present |
+| `nodes` | every owner, in rolling order when the request has steps |
+| `nodes[].node_id` | the owner, by its Raft address |
+| `nodes[].step` | its turn: `pending`, `recycling` or `serving`. Absent for a request made before the `rolling-migration` cluster feature was activated, where every owner recycles at once |
+| `nodes[].phase`, `attempts`, `detail` | the owner's own report for `generation` (`awaiting-credential`, `copying`, `complete` or `failed`); absent until it reports. A report for an older generation is not shown |
+
+The object is absent when no migration of the node barrier is in progress, and
+on a node that is itself sealed, which does not read the record. A finished
+migration is not kept: once every owner has reported `complete` the leader
+deletes the record on its next pass, so the object goes absent rather than
+showing `acked` equal to `total`. A migration an owner abandoned (`failed`
+with its retries exhausted) is not finished, and stays in status until a new
+request replaces it with a higher `generation`. The read is bounded, so a status call does not wait
+on a missing leader: past the bound the object reads `{"unconfirmed": true}`
+and the call still succeeds.
+
 ## Schemas
 
 ### The barrier credential is bytes, and therefore base64 in REST JSON

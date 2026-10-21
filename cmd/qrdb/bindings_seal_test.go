@@ -19,10 +19,12 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -644,5 +646,62 @@ func TestSealBinding_Status_CarriesTheClusterSeal(t *testing.T) {
 	}
 	if st.ClusterSeal == nil || !st.ClusterSeal.Sealed || st.ClusterSeal.Local != "held" {
 		t.Fatalf("ClusterSeal = %+v, want the held record", st.ClusterSeal)
+	}
+}
+
+// TestSealBinding_Status_CarriesTheClusterMigration proves the desktop status
+// shows a cluster-wide enable-encryption in progress, each owner's step and
+// own report included.
+func TestSealBinding_Status_CarriesTheClusterMigration(t *testing.T) {
+	b := newSealTestBinding(t, &mockBarrierService{
+		statusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{Strategy: "none", Initialized: true, InitializedAt: time.Now(),
+				ClusterMigration: &clustermig.Report{Target: "passphrase", Generation: 2, Acked: 1, Total: 2,
+					Nodes: []clustermig.NodeReport{
+						{NodeID: "n2", Step: clustermig.StepServing, Phase: "complete"},
+						{NodeID: "n1", Step: clustermig.StepRecycling, Phase: "failed", Attempts: 2, Detail: "credential missing"},
+					}}}, nil
+		},
+	})
+	st, err := b.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &transport.ClusterMigration{Target: "passphrase", Generation: 2, Acked: 1, Total: 2,
+		Nodes: []transport.ClusterMigrationNode{
+			{NodeID: "n2", Step: "serving", Phase: "complete"},
+			{NodeID: "n1", Step: "recycling", Phase: "failed", Attempts: 2, Detail: "credential missing"},
+		}}
+	if !reflect.DeepEqual(st.ClusterMigration, want) {
+		t.Fatalf("ClusterMigration = %+v, want %+v", st.ClusterMigration, want)
+	}
+}
+
+// TestSealBinding_Status_NoClusterMigration proves the desktop status carries
+// no migration when none is in progress, and reports one that could not be
+// read as unconfirmed rather than absent.
+func TestSealBinding_Status_NoClusterMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *clustermig.Report
+		want *transport.ClusterMigration
+	}{
+		{"none in progress", nil, nil},
+		{"unconfirmed", &clustermig.Report{Unconfirmed: true}, &transport.ClusterMigration{Unconfirmed: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newSealTestBinding(t, &mockBarrierService{
+				statusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
+					return &service.BarrierStatusInfo{Strategy: "none", Initialized: true, InitializedAt: time.Now(), ClusterMigration: tc.in}, nil
+				},
+			})
+			st, err := b.Status()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(st.ClusterMigration, tc.want) {
+				t.Fatalf("ClusterMigration = %+v, want %+v", st.ClusterMigration, tc.want)
+			}
+		})
 	}
 }

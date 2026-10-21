@@ -30,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -167,6 +166,8 @@ type faultCMKV struct {
 	writeErr error
 }
 
+var _ clustermig.KV = faultCMKV{}
+
 func (k faultCMKV) Get(ctx context.Context, key string) ([]byte, error) {
 	if k.getErr != nil {
 		return nil, k.getErr
@@ -181,11 +182,32 @@ func (k faultCMKV) Scan(ctx context.Context, prefix string, fn func(string, []by
 	return k.cmMemKV.Scan(ctx, prefix, fn)
 }
 
-func (k faultCMKV) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+func (k faultCMKV) Put(ctx context.Context, key string, value []byte) error {
+	if k.writeErr != nil {
+		return k.writeErr
+	}
+	return k.cmMemKV.Put(ctx, key, value)
+}
+
+func (k faultCMKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	if k.writeErr != nil {
 		return false, k.writeErr
 	}
-	return k.cmMemKV.PutAllIfUnchanged(ctx, guardKey, guardValue, writes)
+	return k.cmMemKV.PutIfAbsent(ctx, key, value)
+}
+
+func (k faultCMKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if k.writeErr != nil {
+		return false, k.writeErr
+	}
+	return k.cmMemKV.CompareAndSwap(ctx, key, expected, next)
+}
+
+func (k faultCMKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if k.writeErr != nil {
+		return false, k.writeErr
+	}
+	return k.cmMemKV.CompareAndDelete(ctx, key, expected)
 }
 
 // TestCoordinateMigrations_LeavesRecordsItCannotReap proves the reaper

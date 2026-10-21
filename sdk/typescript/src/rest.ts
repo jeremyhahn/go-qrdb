@@ -176,6 +176,7 @@ import type {
     Role,
     SealStatus,
     ClusterSeal,
+    ClusterMigration,
     SearchByIDRequest,
     SearchByMetadataRequest,
     SearchByMetadataResponse,
@@ -2052,6 +2053,8 @@ export class RestClient implements Client {
                     readonly shamirTotal?: number;
                     // The node barrier's cluster seal state; camel-cased by fetchJSON.
                     readonly clusterSeal?: ClusterSeal;
+                    // The node barrier's cluster migration while one is in progress.
+                    readonly clusterMigration?: ClusterMigration;
                 }
                 try {
                     const resp = await this.fetchJSON<BarrierStatusResponse>('/v1/barrier/status',
@@ -2067,6 +2070,7 @@ export class RestClient implements Client {
                         sharesProvided: 0,
                         sharesTotal: resp.shamirTotal ?? 0,
                         ...(resp.clusterSeal ? { clusterSeal: resp.clusterSeal } : {}),
+                        ...(resp.clusterMigration ? { clusterMigration: resp.clusterMigration } : {}),
                     };
                 } catch (err: unknown) {
                     if (err instanceof TransportError && err.statusCode === 404) {

@@ -192,6 +192,28 @@ node waits until you do. The cluster keeps its quorum, and keeps taking
 writes, throughout. A node that never comes back holds the rest at its turn
 rather than taking a second node away.
 
+`qrdb barrier status`, against any node that serves, shows where the rollout
+is: every owner by its Raft address in turn order, its step and its own
+report.
+
+```text
+Migration:       to passphrase, generation 1, 1 of 3 owners done
+  192.0.2.11:5000 serving    complete
+  192.0.2.12:5000 recycling  awaiting-credential: clustermig: this node's migration credential is not available yet
+  192.0.2.13:5000 pending    not reported
+```
+
+`awaiting-credential` there means that node's credential file is missing or
+refused; put it in place and the node carries on. With `--output json` the
+same data is the `cluster_migration` object
+([api.md](api.md#the-cluster_migration-status-object)). Once the last owner is
+done, the cluster removes the record and the line reads
+`Migration:       none in progress`. `unconfirmed` means the node could not
+read the record just now, for example during an election; ask again. A node
+that is itself sealed shows no migration: ask another node. Only the node
+barrier's status carries the line; `qrdb tenant barrier status` and the
+database barrier status do not.
+
 **Dual control on the system barrier moved to `qrdb init`, not lost.**
 `barrier init --so-pin/--user-pin` was always the system barrier only
 (`POST /v1/barrier/initialize` carries no tenant scope), and now refuses it

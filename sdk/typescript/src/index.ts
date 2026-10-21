@@ -336,6 +336,8 @@ export type {
     // Seal
     SealStatus,
     ClusterSeal,
+    ClusterMigration,
+    ClusterMigrationNode,
     BootstrapResult,
     UnsealProgress,
     EnableEncryptionRequest,

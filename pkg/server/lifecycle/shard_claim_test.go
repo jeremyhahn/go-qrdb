@@ -17,9 +17,12 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
@@ -50,5 +53,34 @@ func TestNewShardClaimer_ClaimsOverTheReplicatedStore(t *testing.T) {
 	}
 	if raw, _ := store.Get(context.Background(), shard.HighWaterKey); raw == nil {
 		t.Fatal("the claim was not recorded in the store it was made over")
+	}
+}
+
+func TestNewClusterMigStore_RefusesAStoreWithoutAtomicVerbs(t *testing.T) {
+	s, err := newClusterMigStore(plainKV{KVStore: kvstore.NewMemoryKVStore()})
+	var migErr *ClusterMigStoreError
+	if s != nil || !errors.As(err, &migErr) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("newClusterMigStore over a non-atomic store = %v, %v; want nil, *ClusterMigStoreError wrapping ErrAtomicWriteUnsupported", s, err)
+	}
+	if !strings.Contains(migErr.Error(), "cluster migration store") || !strings.Contains(migErr.Error(), kvstore.ErrAtomicWriteUnsupported.Error()) {
+		t.Fatalf("unexpected message: %q", migErr.Error())
+	}
+}
+
+func TestNewClusterMigStore_WritesOverTheReplicatedStore(t *testing.T) {
+	ctx := context.Background()
+	store := kvstore.NewMemoryKVStore()
+	s, err := newClusterMigStore(store)
+	if err != nil {
+		t.Fatalf("newClusterMigStore: %v", err)
+	}
+	created, err := s.CompareAndSwapMigration(ctx, clustermig.MigrationVersion{}, &clustermig.ClusterMigration{
+		TenantID: "t", Database: "d", Target: seal.StrategyPassphrase, Generation: 1,
+	})
+	if err != nil || !created {
+		t.Fatalf("CompareAndSwapMigration(create) = %v, %v; want true, nil", created, err)
+	}
+	if m, err := s.GetMigration(ctx, "t", "d"); err != nil || m == nil || m.Generation != 1 {
+		t.Fatalf("GetMigration = %+v, %v; want generation 1", m, err)
 	}
 }

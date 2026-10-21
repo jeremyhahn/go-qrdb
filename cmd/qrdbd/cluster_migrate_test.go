@@ -16,12 +16,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -34,57 +31,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// cmMemKV is an in-memory clustermig.KV for the daemon adapter tests.
-type cmMemKV struct {
-	mu sync.Mutex
-	m  map[string][]byte
-}
+// cmMemKV is an in-memory clustermig.KV for the daemon adapter tests, with
+// the replicated store's compare-and-swap semantics.
+type cmMemKV struct{ *kvstore.MemoryKVStore }
 
-func newCMMemKV() *cmMemKV { return &cmMemKV{m: map[string][]byte{}} }
-
-func (k *cmMemKV) Put(_ context.Context, key string, v []byte) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.m[key] = append([]byte(nil), v...)
-	return nil
-}
-func (k *cmMemKV) Get(_ context.Context, key string) ([]byte, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	return k.m[key], nil
-}
-func (k *cmMemKV) PutAllIfUnchanged(_ context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	cur, ok := k.m[guardKey]
-	if guardValue == nil && ok || guardValue != nil && (!ok || !bytes.Equal(cur, guardValue)) {
-		return false, nil
-	}
-	for _, w := range writes {
-		if w.Delete {
-			delete(k.m, w.Key)
-			continue
-		}
-		k.m[w.Key] = bytes.Clone(w.Value)
-	}
-	return true, nil
-}
-func (k *cmMemKV) Scan(_ context.Context, prefix string, fn func(string, []byte) error) error {
-	k.mu.Lock()
-	snap := map[string][]byte{}
-	for key, v := range k.m {
-		if strings.HasPrefix(key, prefix) {
-			snap[key] = v
-		}
-	}
-	k.mu.Unlock()
-	for key, v := range snap {
-		if err := fn(key, v); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+func newCMMemKV() *cmMemKV { return &cmMemKV{kvstore.NewMemoryKVStore()} }
 
 // recordingMigrator records the scope + credential + full options it received.
 type recordingMigrator struct {
@@ -184,9 +135,10 @@ func TestDaemonLocalRecycler_CarriesShamirFields(t *testing.T) {
 }
 
 // TestDaemonLocalRecycler_AtTarget proves the idempotency check the reconciler
-// asks before it takes a credential: only a local barrier that already reports
-// the target strategy is at target, and an unavailable barrier fails open — the
-// post-reboot/re-issue resume path.
+// asks before it takes a credential: the local barrier already reporting the
+// target strategy is at target -- the post-reboot/re-issue resume path -- any
+// other target is not, and runs the migrator, and an unavailable barrier
+// fails open.
 func TestDaemonLocalRecycler_AtTarget(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.DiscardHandler)
@@ -208,22 +160,28 @@ func TestDaemonLocalRecycler_AtTarget(t *testing.T) {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	r := &daemonLocalRecycler{migrator: &recordingMigrator{}, barrierReg: reg}
+	mig := &recordingMigrator{}
+	r := &daemonLocalRecycler{migrator: mig, barrierReg: reg}
 	// Target == the barrier's current strategy → at target.
-	if !r.AtTarget(&clustermig.ClusterMigration{Target: sb.Status().Strategy}) {
-		t.Fatal("system barrier at the target strategy must report AtTarget")
+	target := sb.Status().Strategy
+	if !r.AtTarget(&clustermig.ClusterMigration{Target: target}) {
+		t.Fatalf("AtTarget(%s) = false on a barrier sealed by %s", target, target)
 	}
-	// A DIFFERENT target → not at target.
-	if r.AtTarget(&clustermig.ClusterMigration{Target: seal.StrategyShamir}) {
-		t.Fatal("a different target strategy must not report AtTarget")
+	// A DIFFERENT target → not at target → the recycle runs the migrator.
+	other := &clustermig.ClusterMigration{Target: seal.StrategyShamir}
+	if r.AtTarget(other) {
+		t.Fatal("AtTarget(shamir) = true on a passphrase barrier")
 	}
-	// A tenant scope with no tenant barrier → not at target (fails open).
-	if r.AtTarget(&clustermig.ClusterMigration{TenantID: "absent", Database: "db", Target: sb.Status().Strategy}) {
-		t.Fatal("a missing tenant barrier must not report AtTarget")
+	r.Recycle(ctx, other, []byte("x"))
+	if mig.scope.Kind != service.ScopeSystem {
+		t.Fatal("migrator should run when the target differs from the current strategy")
 	}
-	// No registry → not at target (fails open).
-	if (&daemonLocalRecycler{}).AtTarget(&clustermig.ClusterMigration{Target: sb.Status().Strategy}) {
-		t.Fatal("a recycler without a registry must not report AtTarget")
+	// No registry, or a tenant scope with no barrier, fails open.
+	if (&daemonLocalRecycler{migrator: mig}).AtTarget(&clustermig.ClusterMigration{Target: target}) {
+		t.Fatal("AtTarget = true with no barrier registry")
+	}
+	if r.AtTarget(&clustermig.ClusterMigration{TenantID: "absent", Target: target}) {
+		t.Fatal("AtTarget = true for a tenant with no barrier")
 	}
 }
 
@@ -559,7 +517,15 @@ type failingPutKV struct{ *cmMemKV }
 
 func (failingPutKV) Put(context.Context, string, []byte) error { return errors.New("no quorum") }
 
-func (failingPutKV) PutAllIfUnchanged(context.Context, string, []byte, []kvstore.KV) (bool, error) {
+func (failingPutKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, errors.New("no quorum")
+}
+
+func (failingPutKV) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, errors.New("no quorum")
+}
+
+func (failingPutKV) CompareAndDelete(context.Context, string, []byte) (bool, error) {
 	return false, errors.New("no quorum")
 }
 

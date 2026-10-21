@@ -21,7 +21,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -31,12 +30,14 @@ type errKV struct{ err error }
 
 func (k errKV) Put(context.Context, string, []byte) error   { return k.err }
 func (k errKV) Get(context.Context, string) ([]byte, error) { return nil, k.err }
-func (k errKV) PutAllIfUnchanged(context.Context, string, []byte, []kvstore.KV) (bool, error) {
-	return false, k.err
-}
 func (k errKV) Scan(context.Context, string, func(string, []byte) error) error {
 	return k.err
 }
+func (k errKV) PutIfAbsent(context.Context, string, []byte) (bool, error) { return false, k.err }
+func (k errKV) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, k.err
+}
+func (k errKV) CompareAndDelete(context.Context, string, []byte) (bool, error) { return false, k.err }
 
 var errBoom = errors.New("kv unavailable")
 
@@ -62,7 +63,14 @@ func TestStore_KVErrorsWrapped(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"swapMigration", func() error { return s.swapMigration(ctx, nil, m) }},
+		{"CompareAndSwapMigration(create)", func() error {
+			_, e := s.CompareAndSwapMigration(ctx, MigrationVersion{}, m)
+			return e
+		}},
+		{"CompareAndSwapMigration(swap)", func() error {
+			_, e := s.CompareAndSwapMigration(ctx, MigrationVersion{raw: []byte("{}")}, m)
+			return e
+		}},
 		{"GetMigration", func() error { _, e := s.GetMigration(ctx, tid, db); return e }},
 		{"PutNodeStatus", func() error {
 			return s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{NodeID: "n1"})
@@ -72,7 +80,10 @@ func TestStore_KVErrorsWrapped(t *testing.T) {
 		{"ListMigrations", func() error { _, e := s.ListMigrations(ctx); return e }},
 		{"IsComplete", func() error { _, e := s.IsComplete(ctx, tid, db); return e }},
 		{"Progress", func() error { _, _, e := s.Progress(ctx, tid, db); return e }},
-		{"Delete", func() error { return s.Delete(ctx, tid, db) }},
+		{"CompareAndDeleteMigration", func() error {
+			_, e := s.CompareAndDeleteMigration(ctx, MigrationVersion{raw: []byte(`{"tenant_id":"t"}`)})
+			return e
+		}},
 	}
 	for _, c := range checks {
 		if err := c.fn(); !errors.Is(err, errBoom) {
@@ -135,8 +146,11 @@ func TestStore_CorruptRecordsRejected(t *testing.T) {
 	ctx := context.Background()
 	kv := newMemKV()
 	s := NewStore(kv)
-	kv.m[migrationKey(tid, db)] = []byte("{not json")
-	kv.m[nodeStatusKey(tid, db, "n1")] = []byte("{not json")
+	for _, key := range []string{migrationKey(tid, db), nodeStatusKey(tid, db, "n1")} {
+		if err := kv.Put(ctx, key, []byte("{not json")); err != nil {
+			t.Fatalf("Put(%s): %v", key, err)
+		}
+	}
 
 	checks := []struct {
 		name string
@@ -163,7 +177,9 @@ func TestStore_ListNodeStatuses_SkipsNestedKeys(t *testing.T) {
 	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{NodeID: "n1"}); err != nil {
 		t.Fatalf("PutNodeStatus: %v", err)
 	}
-	kv.m[nodeStatusKey(tid, db, "n1")+"/nested"] = []byte("{not json")
+	if err := kv.Put(ctx, nodeStatusKey(tid, db, "n1")+"/nested", []byte("{not json")); err != nil {
+		t.Fatalf("Put(nested): %v", err)
+	}
 
 	got, err := s.ListNodeStatuses(ctx, tid, db)
 	if err != nil {
@@ -185,9 +201,15 @@ func (k *readOKWriteErrKV) Put(context.Context, string, []byte) error { return k
 func (k *readOKWriteErrKV) Get(ctx context.Context, key string) ([]byte, error) {
 	return k.inner.Get(ctx, key)
 }
-func (k *readOKWriteErrKV) PutAllIfUnchanged(context.Context, string, []byte, []kvstore.KV) (bool, error) {
-	return false, k.putErr
-}
 func (k *readOKWriteErrKV) Scan(ctx context.Context, prefix string, fn func(string, []byte) error) error {
 	return k.inner.Scan(ctx, prefix, fn)
+}
+func (k *readOKWriteErrKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, k.putErr
+}
+func (k *readOKWriteErrKV) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, k.putErr
+}
+func (k *readOKWriteErrKV) CompareAndDelete(context.Context, string, []byte) (bool, error) {
+	return false, k.putErr
 }

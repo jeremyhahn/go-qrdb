@@ -953,7 +953,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// at create time; the store is also exposed on the Node so the daemon can
 	// make it the RaftBackendFactory's source of truth.
 	// Cluster-migration coordination plane over the same replicated system KV.
-	n.ClusterMigStore = clustermig.NewStore(authStore)
+	migStore, err := newClusterMigStore(authStore)
+	if err != nil {
+		return nil, err
+	}
+	n.ClusterMigStore = migStore
 
 	var placementOpts []service.DatabaseServiceOption
 	if feed, ferr := placement.NewStore(newPlacementKV(n.KV, n.Index, n.Watch)); ferr == nil {

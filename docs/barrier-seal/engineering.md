@@ -883,10 +883,12 @@ other migration is advanced by the system shard's leader, which also runs
 `Request` and `Reap`. While the shard has no leader, no node advances the
 migration, and the turn stays where it is. A node that has stopped leading but
 has not yet heard so cannot undo a newer write: every write and delete of the
-record is a guarded transaction on the record as it was read, and a record
-that has moved since then refuses it with `ErrMigrationMoved`. Each call also
+record is conditional on the record as it was read
+(`Store.CompareAndSwapMigration`, `Store.CompareAndDeleteMigration`). A write
+that loses reads the record again and decides afresh, and stops, writing
+nothing, once the record carries a newer request's generation. Each call also
 holds a lock on its own node, so `Request` and `Advance` on one node do not
-refuse each other's writes.
+contend with each other.
 
 Each hand-on is logged once, by the node that wrote it, as
 `cluster-migration step handed on` with `scope`, `generation`, `node` (the
@@ -914,17 +916,50 @@ func WithRollingSteps(rolling func() bool, self string) CoordinatorOption // rol
 func WithCatchUp(p ReplicationProgress) CoordinatorOption
 func WithLogger(logger *slog.Logger) CoordinatorOption
 func (c *Coordinator) Advance(ctx context.Context, tenantID, database string) (bool, error) // true: it wrote the record
-var ErrMigrationMoved error // the record changed since it was read; the write was refused
 ```
+
+The node that accepted the request is the one owner holding the request
+credential in memory, and its own recycle is an in-process reboot that
+discards it along with the reconciler. Its new reconciler therefore asks the
+`LocalRecycler` first: `AtTarget` reports the node's barrier already under the
+target strategy, and the reconciler writes `PhaseComplete` without asking for a
+credential. Asking first would leave that owner in `awaiting-credential` for
+good, since it has no credential file, and the migration would never complete.
+
+```go
+type LocalRecycler interface {
+	Recycle(ctx context.Context, m *ClusterMigration, credential []byte) error
+	AtTarget(m *ClusterMigration) bool // true: acknowledge without a credential
+}
+```
+
+Node barrier status reports the system-scope migration (#775).
+`Store.Report` joins the intent record with the per-node statuses of its
+current generation: owners in step order (owner order for a request written
+before the gate), each with its step and its own phase, attempts and detail,
+and `Acked` counted over the owners at `PhaseComplete`. The service layer reads
+it under its own bound, `migrationReportTimeout`, so a read that fails or times out
+reports `unconfirmed` and the status call itself succeeds. Every transport
+carries it as `cluster_migration` (gRPC and QUIC through one proto mapping,
+`ClusterMigrationToProto`), as does the `qrdb barrier status` line. Tenant and
+database barrier status do not carry it. A completed migration does not stay
+in status: on its next pass the leader's `Coordinator.Reap` deletes the record
+and every status under it, and `cluster_migration` is absent again. A
+migration whose owner has given up is never complete, so it stays visible
+until a new request supersedes it.
 
 `TestClusterEnableEncryption_Rolling_RF3` (`test/integration`) runs a rolling
 system-scope `enable-encryption` on three nodes with a writer putting keys
 throughout. It fails the first time two nodes are away together, holds each
 recycled node sealed until writes have committed without it, and reads back
-every acknowledged write afterwards. It also reads the nodes' logs for the
-three hand-on lines: each turn's `catch_up_index` must be above zero and above
-the previous turn's. The refusal of a stale coordinator's write, and a shard
-with no leader, are unit-tested in `pkg/clustermig`. A write is retried only in the class the
+every acknowledged write afterwards. At every turn it asks
+`qrdb barrier status` on each serving node, over every transport, for the
+step counts it expects, and it ends when every node, over every transport,
+reports no migration: the record was reaped. It also reads the nodes' logs for
+the three hand-on lines: each turn's `catch_up_index` must be above zero and
+above the previous turn's. A stale coordinator's conditional write, which
+loses and is decided again on the record it re-reads, and a shard with no
+leader, are unit-tested in `pkg/clustermig`. A write is retried only in the class the
 key-value API documents as retryable: `503 UNAVAILABLE`, or a node that does
 not answer, retried on another node.
 

@@ -16,87 +16,36 @@
 package clustermig
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"sort"
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// memKV is an in-memory KV implementing the package KV interface for tests.
+// memKV is the package KV over kvstore.MemoryKVStore, whose PutIfAbsent,
+// CompareAndSwap and CompareAndDelete are the real compare-then-write a
+// replicated store evaluates in its state machine, so a test of a lost race
+// sees the store's own verdict rather than a double's opinion of it.
 type memKV struct {
-	mu sync.Mutex
-	m  map[string][]byte
+	*kvstore.MemoryKVStore
 }
 
-func newMemKV() *memKV { return &memKV{m: map[string][]byte{}} }
+func newMemKV() *memKV { return &memKV{kvstore.NewMemoryKVStore()} }
 
-func (k *memKV) Put(_ context.Context, key string, v []byte) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	cp := make([]byte, len(v))
-	copy(cp, v)
-	k.m[key] = cp
-	return nil
-}
-
-// PutAllIfUnchanged applies writes only while guardKey holds guardValue (nil:
-// absent), as kvstore.GuardedBatchKVStore does.
-func (k *memKV) PutAllIfUnchanged(_ context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	cur, ok := k.m[guardKey]
-	if guardValue == nil && ok || guardValue != nil && (!ok || !bytes.Equal(cur, guardValue)) {
-		return false, nil
+// putMigration writes m over whatever record its scope holds, through the
+// conditional write the store offers, for tests that seed a record.
+func putMigration(t *testing.T, s *Store, m *ClusterMigration) {
+	t.Helper()
+	ctx := context.Background()
+	_, ver, err := s.GetMigrationVersion(ctx, m.TenantID, m.Database)
+	if err != nil {
+		t.Fatalf("GetMigrationVersion: %v", err)
 	}
-	for _, w := range writes {
-		if w.Delete {
-			delete(k.m, w.Key)
-			continue
-		}
-		k.m[w.Key] = bytes.Clone(w.Value)
+	if ok, err := s.CompareAndSwapMigration(ctx, ver, m); err != nil || !ok {
+		t.Fatalf("CompareAndSwapMigration = %v, %v; want true, nil", ok, err)
 	}
-	return true, nil
-}
-
-func (k *memKV) Get(_ context.Context, key string) ([]byte, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	return k.m[key], nil
-}
-
-func (k *memKV) Delete(_ context.Context, key string) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	delete(k.m, key)
-	return nil
-}
-
-func (k *memKV) Scan(_ context.Context, prefix string, fn func(string, []byte) error) error {
-	k.mu.Lock()
-	keys := make([]string, 0, len(k.m))
-	for key := range k.m {
-		if strings.HasPrefix(key, prefix) {
-			keys = append(keys, key)
-		}
-	}
-	snapshot := make(map[string][]byte, len(keys))
-	for _, key := range keys {
-		snapshot[key] = k.m[key]
-	}
-	k.mu.Unlock()
-	sort.Strings(keys)
-	for _, key := range keys {
-		if err := fn(key, snapshot[key]); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 const (
@@ -176,18 +125,11 @@ func requireNodeStatusAbsent(t *testing.T, ctx context.Context, s *Store, nodeID
 
 func seedMigration(t *testing.T, s *Store, gen uint64, owners []string) {
 	t.Helper()
-	ctx := context.Background()
-	_, prev, err := s.readMigration(ctx, tid, db)
-	if err != nil {
-		t.Fatalf("readMigration: %v", err)
-	}
-	if err := s.swapMigration(ctx, prev, &ClusterMigration{
+	putMigration(t, s, &ClusterMigration{
 		TenantID: tid, Database: db, ShardID: 7,
 		Target: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
 		Owners: owners, Generation: gen,
-	}); err != nil {
-		t.Fatalf("swapMigration: %v", err)
-	}
+	})
 }
 
 func ack(t *testing.T, s *Store, node string, gen uint64, phase seal.MigrationPhase) {
@@ -262,23 +204,78 @@ func TestStore_GenerationGuard(t *testing.T) {
 }
 
 // TestStore_Delete clears the intent + all node statuses.
-func TestStore_Delete(t *testing.T) {
+func TestStore_CompareAndDeleteMigration(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1", "n2"})
 	ack(t, s, "n1", 1, seal.PhaseComplete)
 	ack(t, s, "n2", 1, seal.PhaseComplete)
 
-	if err := s.Delete(ctx, tid, db); err != nil {
-		t.Fatalf("Delete: %v", err)
+	_, ver, err := s.GetMigrationVersion(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("GetMigrationVersion: %v", err)
 	}
-	requireMigrationAbsent(t, ctx, s, "after Delete")
+	deleted, err := s.CompareAndDeleteMigration(ctx, ver)
+	if err != nil || !deleted {
+		t.Fatalf("CompareAndDeleteMigration = %v, %v; want true, nil", deleted, err)
+	}
+	requireMigrationAbsent(t, ctx, s, "after CompareAndDeleteMigration")
 	st, err := s.ListNodeStatuses(ctx, tid, db)
 	if err != nil {
-		t.Fatalf("ListNodeStatuses after Delete: %v -- the scan failed, so it never established that the statuses were gone", err)
+		t.Fatalf("ListNodeStatuses after CompareAndDeleteMigration: %v -- the scan failed, so it never established that the statuses were gone", err)
 	}
 	if len(st) != 0 {
-		t.Fatalf("statuses after Delete = %d, want 0", len(st))
+		t.Fatalf("statuses after CompareAndDeleteMigration = %d, want 0", len(st))
+	}
+}
+
+// TestStore_CompareAndDeleteMigration_KeepsANewerRecord deletes against a
+// version that a newer generation has replaced: neither the newer intent nor
+// a status reported for it may go, and the stale status does.
+func TestStore_CompareAndDeleteMigration_KeepsANewerRecord(t *testing.T) {
+	ctx := context.Background()
+	kv := newMemKV()
+	s := NewStore(kv)
+	seedMigration(t, s, 1, []string{"n1", "n2"})
+	_, stale, err := s.GetMigrationVersion(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("GetMigrationVersion: %v", err)
+	}
+	ack(t, s, "n1", 1, seal.PhaseComplete)
+	ack(t, s, "n2", 2, seal.PhaseComplete)
+	seedMigration(t, s, 2, []string{"n1", "n2"})
+	before, err := kv.Get(ctx, migrationKey(tid, db))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	deleted, err := s.CompareAndDeleteMigration(ctx, stale)
+	if err != nil || deleted {
+		t.Fatalf("CompareAndDeleteMigration(stale) = %v, %v; want false, nil", deleted, err)
+	}
+	after, err := kv.Get(ctx, migrationKey(tid, db))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("newer intent changed:\n got %s\nwant %s", after, before)
+	}
+	st, err := s.ListNodeStatuses(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("ListNodeStatuses: %v", err)
+	}
+	if len(st) != 1 || st[0].NodeID != "n2" || st[0].Generation != 2 {
+		t.Fatalf("statuses = %+v, want only n2 at generation 2", st)
+	}
+}
+
+func TestStore_CompareAndDeleteMigration_ZeroVersion(t *testing.T) {
+	s := NewStore(newMemKV())
+	if _, err := s.CompareAndDeleteMigration(context.Background(), MigrationVersion{}); !errors.Is(err, ErrNilMigration) {
+		t.Fatalf("CompareAndDeleteMigration(zero) = %v, want ErrNilMigration", err)
+	}
+	if _, err := s.CompareAndDeleteMigration(context.Background(), MigrationVersion{raw: []byte("{")}); err == nil {
+		t.Fatal("CompareAndDeleteMigration(corrupt) = nil, want an unmarshal error")
 	}
 }
 
@@ -286,11 +283,22 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_Validation(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.swapMigration(ctx, nil, nil); !errors.Is(err, ErrNilMigration) {
-		t.Fatalf("swapMigration(nil) = %v, want ErrNilMigration", err)
+	if _, err := s.CompareAndSwapMigration(ctx, MigrationVersion{}, nil); !errors.Is(err, ErrNilMigration) {
+		t.Fatalf("CompareAndSwapMigration(nil) = %v, want ErrNilMigration", err)
 	}
-	if err := s.swapMigration(ctx, nil, &ClusterMigration{TenantID: tid}); !errors.Is(err, ErrEmptyTarget) {
-		t.Fatalf("swapMigration(no target) = %v, want ErrEmptyTarget", err)
+	if _, err := s.CompareAndSwapMigration(ctx, MigrationVersion{}, &ClusterMigration{TenantID: tid}); !errors.Is(err, ErrEmptyTarget) {
+		t.Fatalf("CompareAndSwapMigration(no target) = %v, want ErrEmptyTarget", err)
+	}
+	// A create against an existing record stores nothing.
+	seedMigration(t, s, 1, []string{"n1"})
+	created, err := s.CompareAndSwapMigration(ctx, MigrationVersion{}, &ClusterMigration{
+		TenantID: tid, Database: db, Target: seal.StrategyPassphrase, Generation: 9,
+	})
+	if err != nil || created {
+		t.Fatalf("CompareAndSwapMigration(create over existing) = %v, %v; want false, nil", created, err)
+	}
+	if m, err := s.GetMigration(ctx, tid, db); err != nil || m.Generation != 1 {
+		t.Fatalf("GetMigration after refused create = %+v, %v; want generation 1", m, err)
 	}
 	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{}); !errors.Is(err, ErrNilStatus) {
 		t.Fatalf("PutNodeStatus(no node) = %v, want ErrNilStatus", err)
@@ -302,7 +310,7 @@ func TestStore_Validation(t *testing.T) {
 }
 
 // TestStore_ShamirFieldsRoundTrip proves ShamirThreshold/ShamirTotal survive a
-// PutMigration/GetMigration round trip through the replicated KV (JSON
+// CompareAndSwapMigration/GetMigration round trip through the replicated KV (JSON
 // marshal/unmarshal), which is what every owner's reconciler relies on to
 // rebuild seal.MigrationOptions for a Shamir-target migration. Before this
 // field existed on ClusterMigration, every reconciler tick reconstructed
@@ -311,14 +319,12 @@ func TestStore_Validation(t *testing.T) {
 func TestStore_ShamirFieldsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	if err := s.swapMigration(ctx, nil, &ClusterMigration{
+	putMigration(t, s, &ClusterMigration{
 		TenantID: "", Database: "",
 		Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
 		ShamirThreshold: 2, ShamirTotal: 3,
 		Owners: []string{"n1"}, Generation: 1,
-	}); err != nil {
-		t.Fatalf("swapMigration: %v", err)
-	}
+	})
 	got, err := s.GetMigration(ctx, "", "")
 	if err != nil || got == nil {
 		t.Fatalf("GetMigration = %v, %v", got, err)

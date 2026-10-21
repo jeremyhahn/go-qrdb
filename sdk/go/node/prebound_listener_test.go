@@ -36,6 +36,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -72,10 +73,8 @@ func TestNode_TwoNodesFromPreboundListeners(t *testing.T) {
 		h3         net.PacketConn
 	}
 	bind := func() sockets {
-		rest, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		h3, err := net.ListenPacket("udp", rest.Addr().String())
-		require.NoError(t, err, "bind HTTP/3 beside the REST listener")
+		rest, h3, err := netport.ListenPair("127.0.0.1:0")
+		require.NoError(t, err, "bind the REST listener and HTTP/3 on one port")
 		grpc, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		return sockets{rest: rest, grpc: grpc, h3: h3}
@@ -195,10 +194,8 @@ const staleH3TimerWindow = 1500 * time.Millisecond
 // the very same port afterwards. Node.Close then really closes them.
 func TestNode_PreboundListenersSurviveMigration(t *testing.T) {
 	tlsCfg, pool := preboundServerTLS(t)
-	restLn, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	h3, err := net.ListenPacket("udp", restLn.Addr().String())
-	require.NoError(t, err, "bind HTTP/3 beside the REST listener")
+	restLn, h3, err := netport.ListenPair("127.0.0.1:0")
+	require.NoError(t, err, "bind the REST listener and HTTP/3 on one port")
 	grpcLn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 

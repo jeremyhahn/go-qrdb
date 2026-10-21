@@ -21,7 +21,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -29,6 +28,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -40,10 +40,8 @@ import (
 func bootstrapNode(t *testing.T, extra ...server.ServerOption) (string, *x509.CertPool, error) {
 	t.Helper()
 	tlsCfg, pool := preboundServerTLS(t)
-	restLn, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	h3, err := net.ListenPacket("udp", restLn.Addr().String())
-	require.NoError(t, err)
+	restLn, h3, err := netport.ListenPair("127.0.0.1:0")
+	require.NoError(t, err, "bind the REST listener and HTTP/3 on one port")
 	cfg := preboundNodeConfig(t)
 	cfg.Protocols.GRPC = false
 	opts := append([]server.ServerOption{

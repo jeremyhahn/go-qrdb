@@ -38,6 +38,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"testing"
@@ -154,10 +155,10 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err != nil {
-			t.Fatalf("BarrierRekeyStart with the SO PIN: %v", err)
+			t.Fatalf("BarrierRekeyStart with the SO PIN: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Barrier.Rekeys(); got != 1 {
-			t.Fatalf("rekeys = %d, want 1", got)
+			t.Fatalf("rekeys = %d, want 1; %s", got, f.reached())
 		}
 	})
 	t.Run("SO deletes recovery keys with the PIN", func(t *testing.T) {
@@ -166,10 +167,10 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if err := c.BarrierDeleteRecoveryKeys(ctx); err != nil {
-			t.Fatalf("BarrierDeleteRecoveryKeys with the SO PIN: %v", err)
+			t.Fatalf("BarrierDeleteRecoveryKeys with the SO PIN: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Barrier.RecoveryDeletes(); got != 1 {
-			t.Fatalf("deletes = %d, want 1", got)
+			t.Fatalf("deletes = %d, want 1; %s", got, f.reached())
 		}
 	})
 	t.Run("SO without the PIN is refused", func(t *testing.T) {
@@ -179,7 +180,7 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 			t.Fatal("BarrierRekeyStart without the SO PIN succeeded")
 		}
 		if f.Barrier.Rekeys() != 0 {
-			t.Fatal("a refused rekey reached the service")
+			t.Fatalf("a refused rekey reached the service: %s", f.reached())
 		}
 	})
 	t.Run("BarrierSeal carries the bound PIN in so_pin", func(t *testing.T) {
@@ -189,10 +190,10 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if err := c.BarrierSeal(ctx); err != nil {
-			t.Fatalf("BarrierSeal with the SO PIN bound: %v", err)
+			t.Fatalf("BarrierSeal with the SO PIN bound: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Barrier.Seals(); got != 1 {
-			t.Fatalf("seals = %d, want 1", got)
+			t.Fatalf("seals = %d, want 1; %s", got, f.reached())
 		}
 	})
 	t.Run("BarrierSeal without the bound PIN is refused", func(t *testing.T) {
@@ -208,7 +209,7 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 			t.Fatal("BarrierSeal with the wrong SO PIN bound succeeded")
 		}
 		if f.Barrier.Seals() != 0 {
-			t.Fatal("a refused seal reached the service")
+			t.Fatalf("a refused seal reached the service: %s", f.reached())
 		}
 	})
 	t.Run("BarrierRekeyStart fills so_pin from the bound PIN", func(t *testing.T) {
@@ -218,10 +219,10 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err != nil {
-			t.Fatalf("BarrierRekeyStart with the SO PIN bound: %v", err)
+			t.Fatalf("BarrierRekeyStart with the SO PIN bound: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Barrier.Rekeys(); got != 1 {
-			t.Fatalf("rekeys = %d, want 1", got)
+			t.Fatalf("rekeys = %d, want 1; %s", got, f.reached())
 		}
 	})
 	t.Run("BarrierGenerateRecoveryKeys fills so_pin from the bound PIN", func(t *testing.T) {
@@ -231,10 +232,10 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if _, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2}); err != nil {
-			t.Fatalf("BarrierGenerateRecoveryKeys with the SO PIN bound: %v", err)
+			t.Fatalf("BarrierGenerateRecoveryKeys with the SO PIN bound: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Barrier.RecoveryGenerations(); got != 1 {
-			t.Fatalf("generations = %d, want 1", got)
+			t.Fatalf("generations = %d, want 1; %s", got, f.reached())
 		}
 	})
 	t.Run("a conflicting explicit SOPin is refused before sending", func(t *testing.T) {
@@ -268,11 +269,11 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		for method, call := range calls {
 			var conflict *transport.SOPINConflictError
 			if err := call(); !errors.As(err, &conflict) || conflict.Method != method {
-				t.Fatalf("%s: err = %v, want *transport.SOPINConflictError", method, err)
+				t.Fatalf("%s: got %s, want a *transport.SOPINConflictError naming it; %s", method, describe(err), f.reached())
 			}
 		}
 		if f.Barrier.Rekeys()+f.Barrier.RecoveryGenerations()+f.Barrier.ShamirInits() != 0 || len(f.Ceremony.SOPINs()) != 0 {
-			t.Fatal("a conflicting request reached the service")
+			t.Fatalf("a conflicting request reached the service: %s", f.reached())
 		}
 	})
 	t.Run("BarrierInitializeShamir fills so_pin from the bound PIN", func(t *testing.T) {
@@ -283,13 +284,13 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if _, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3}); err != nil {
-			t.Fatalf("BarrierInitializeShamir with the SO PIN bound: %v", err)
+			t.Fatalf("BarrierInitializeShamir with the SO PIN bound: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Barrier.ShamirInits(); got != 1 {
-			t.Fatalf("shamir inits = %d, want 1", got)
+			t.Fatalf("shamir inits = %d, want 1; %s", got, f.reached())
 		}
 		if err := f.PINs.VerifySOPIN(PIN); err != nil {
-			t.Fatalf("the barrier SO PIN is not the bound PIN: %v", err)
+			t.Fatalf("the barrier SO PIN is not the bound PIN: %s; %s", describe(err), f.reached())
 		}
 	})
 	t.Run("the ceremony fills so_pin from the bound PIN", func(t *testing.T) {
@@ -298,13 +299,13 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if _, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{}); err != nil {
-			t.Fatalf("CeremonyInitialize with the SO PIN bound: %v", err)
+			t.Fatalf("CeremonyInitialize with the SO PIN bound: %s; %s", describe(err), f.reached())
 		}
 		if _, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", CSRPEM: "csr", Role: "officer"}); err != nil {
-			t.Fatalf("CeremonySignCSR with the SO PIN bound: %v", err)
+			t.Fatalf("CeremonySignCSR with the SO PIN bound: %s; %s", describe(err), f.reached())
 		}
 		if got := f.Ceremony.SOPINs(); len(got) != 2 || got[0] != PIN || got[1] != PIN {
-			t.Fatalf("the ceremony saw %d SO PINs, not the bound PIN twice", len(got))
+			t.Fatalf("the ceremony saw %d SO PINs, want the bound PIN twice; %s", len(got), f.reached())
 		}
 	})
 	t.Run("a released PIN is no longer sent", func(t *testing.T) {
@@ -316,7 +317,7 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 			t.Fatal("BarrierRekeyStart after release succeeded")
 		}
 		if f.Barrier.Rekeys() != 0 {
-			t.Fatal("a refused rekey reached the service")
+			t.Fatalf("a refused rekey reached the service: %s", f.reached())
 		}
 	})
 }
@@ -330,6 +331,23 @@ func BindPIN(t *testing.T, pin string) (context.Context, func()) {
 		t.Fatalf("WithSOPIN: %v", err)
 	}
 	return ctx, release
+}
+
+// reached lists every call that reached the fixture's service doubles, so an
+// assertion on one count also says what the server did instead.
+func (f *Fixture) reached() string {
+	return fmt.Sprintf("service saw rekeys=%d recovery generations=%d recovery deletes=%d seals=%d shamir inits=%d ceremony SO PINs=%d",
+		f.Barrier.Rekeys(), f.Barrier.RecoveryGenerations(), f.Barrier.RecoveryDeletes(),
+		f.Barrier.Seals(), f.Barrier.ShamirInits(), len(f.Ceremony.SOPINs()))
+}
+
+// describe renders err with its dynamic type and quoted message, so an error
+// whose message is empty still says what came back.
+func describe(err error) string {
+	if err == nil {
+		return "no error"
+	}
+	return fmt.Sprintf("%T %q", err, err.Error())
 }
 
 // tlsPair returns a self-signed TLS 1.3 server config for localhost that

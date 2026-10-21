@@ -16,6 +16,7 @@ package lifecycle
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -46,4 +47,16 @@ func newShardClaimer(store kvstore.KVStore, host service.Host) (*shard.Claimer, 
 		return nil, &ShardClaimerError{Err: err}
 	}
 	return claimer, nil
+}
+
+// newClusterMigStore builds the cluster-migration coordination store over the
+// replicated system store. The intent record is written only conditionally,
+// so two coordinators never overwrite each other's generation; a store
+// without the atomic verbs is refused rather than written unconditionally.
+func newClusterMigStore(store kvstore.KVStore) (*clustermig.Store, error) {
+	kv, ok := store.(clustermig.KV)
+	if !ok {
+		return nil, &ClusterMigStoreError{Err: kvstore.ErrAtomicWriteUnsupported}
+	}
+	return clustermig.NewStore(kv), nil
 }

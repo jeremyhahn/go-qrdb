@@ -21,6 +21,8 @@ import (
 	"errors"
 	"net"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 )
 
 // listenLoopbackTCP binds a kernel-assigned loopback TCP port.
@@ -99,11 +101,9 @@ func TestWithListener_ServesOnTheHandedOverSocket(t *testing.T) {
 
 // TestWithPacketConn_ServesHTTP3OnTheHandedOverSocket pins the UDP half.
 func TestWithPacketConn_ServesHTTP3OnTheHandedOverSocket(t *testing.T) {
-	ln := listenLoopbackTCP(t)
-	pc, err := net.ListenPacket("udp", ln.Addr().String())
+	ln, pc, err := netport.ListenPair("127.0.0.1:0")
 	if err != nil {
-		_ = ln.Close()
-		t.Fatalf("bind udp beside the listener: %v", err)
+		t.Fatalf("bind tcp and udp on one port: %v", err)
 	}
 	tlsCfg, _ := generateTestTLSConfig(t)
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "256.0.0.1:1", WithTLS(tlsCfg), WithListener(ln), WithPacketConn(pc))

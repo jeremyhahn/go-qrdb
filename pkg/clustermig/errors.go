@@ -33,12 +33,6 @@ var (
 	// ErrNoOwners is returned when a migration is requested for a scope whose
 	// owner set resolves empty (no placed replicas / no cluster members).
 	ErrNoOwners = errors.New("clustermig: migration scope has no owners")
-
-	// ErrMigrationMoved refuses a migration record write whose writer read a
-	// record that has since changed: a former leader's Advance or Request
-	// racing the new leader's. Nothing was written; the writer re-reads on
-	// its next pass, if it is still the leader.
-	ErrMigrationMoved = errors.New("clustermig: migration record changed since it was read")
 	// ErrCredentialAwaited is returned by a CredentialSource when this node's
 	// credential is not there yet: no request credential is held for the
 	// migration and no credential file exists. The owner waits in phase
