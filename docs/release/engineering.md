@@ -137,15 +137,15 @@ values to the Dockerfile as build arguments, the Makefile includes it, and
 `make check-tool-versions` holds `.devcontainer/`'s ARG defaults to it and
 fails on a tool pin in ci.yml or an assignment in the Makefile, either of
 which would be a second pin. Module credentials reach the build only as the
-`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `image` job
-writes the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, passes
+`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build`
+and `image` jobs each write the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, passes
 it as `MODULE_ENV_FILE` (handbook `devcontainer.md` §7) and removes it after
 the build; outside CI the recipe reads them from the environment. No layer, no
 command line and no log line holds them: the recipe is silent, printing only
 which source it used.
 
-**Every job that holds a forge credential masks it first.** The `image`,
-`integration-features`, `integration-standalone` and `soak` jobs open with "Mask the
+**Every job that holds a forge credential masks it first.** The
+`docker-build`, `image`, `integration-features`, `integration-standalone` and `soak` jobs open with "Mask the
 forge credentials", which registers each credential value with the runner's
 log masker before any other step can print it (ci-template v1.21.1). No step
 prints the environment. `test/buildgates/ci_logs_test.go` fails when the mask
@@ -158,13 +158,19 @@ golangci-lint (`--output.text.print-issued-lines=false`) and actionlint
 (`-oneline`) name a finding without quoting the line it is in, so a log never
 repeats the value a scanner exists to keep out of the tree.
 
-The `image` job, in the PR tier, builds both stages (`make docker-build`;
-`make -s toolchain-image` prints the toolchain tag), then runs each stage in a
-toolchain container through `scripts/in-toolchain-image.sh`. That container
+The `docker-build` job, in the PR tier, builds both stages (`make docker-build`;
+`make -s toolchain-image` prints the toolchain tag) and passes both image
+names to the jobs after it as job outputs. The `image` job, in the PR tier,
+needs it and first runs the idempotent builds: `make docker-build-toolchain`
+only when its daemon lacks the content-hashed toolchain tag, since that target
+rebuilds whenever it runs, and `make docker-build-it`, which skips a held tag
+itself. On the runner `docker-build` used both are cache hits; on another
+they build, so a daemon without the images never fails the job. One job then
+runs each stage in a toolchain container through `scripts/in-toolchain-image.sh`. That container
 holds the job's CPU bound (ci-template v1.22.2): the job container's cgroup
 `cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
-number. It needs the `changes` job (ci-template v1.24): on a docs-only pull
+number. The `image` job also needs the `changes` job (ci-template v1.24): on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
 or under `docs/`), it runs lint and the lint gates and skips the build-tag
 assertion, the builds, `make coverage` and the other unit suites; the job
@@ -324,7 +330,13 @@ image (the image job, each leg and the soak) names one in its `IT_HOLD` environm
 `qrdb-ci-hold-<run>-<attempt>-<job or feature>`, and `make docker-build-it`
 creates a container of that name from the image, never started, before it
 returns; `make docker-release-it` (the image job's teardown, and
-`make docker-down-it`) removes it. `docker image rm` without force refuses an
+`make docker-down-it`) removes it. The `docker-build` job takes the image
+job's hold under the image job's name and leaves it on success; the image
+job's `docker-build-it` finds it already holding this tree's image, and its
+`always()` teardown releases it. A `docker-build` that fails or is cancelled
+releases the hold itself, and a hold the image job never reaches (the run was
+cancelled between the two, or the image job ran on another runner) is a stale
+created container the reaper removes. `docker image rm` without force refuses an
 image any container uses, so the reaper cannot remove a held image. If the
 reaper removes the image between `docker-build-it`'s check and its hold,
 `docker create --pull never` fails and the recipe builds and holds it once
@@ -370,10 +382,10 @@ cancelled and a skipped leg. The job is in the full tier (architecture.md, "CI
 tiers"): every leg shares its full-tier `if:`, so a plain pull request skips
 them together and `ci-gate` excuses that skip; a push to `main`, a dispatch or
 a `ci:full` pull request runs all of them from its next push, update-branch or dispatch (a label change alone starts no run).
-No leg starts before the whole PR tier (`image`, `test-typescript` and
-`arch-gates`) has passed: the job needs all three, as does
-`integration-standalone`, so a tree the PR tier fails holds no runner for the
-legs. The label goes on once, when the pull
+No leg starts before `docker-build`, `test-typescript` and `arch-gates` have
+passed: the job needs those three, as does `integration-standalone`, and not
+`image`, so the legs start once the images are built and run beside the
+`image` job's checks; `ci-gate` still fails the run on any red check. The label goes on once, when the pull
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 

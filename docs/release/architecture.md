@@ -207,13 +207,16 @@ cancelled the PR's run in progress), so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
 `workflow_dispatch`.
 
-The full-tier jobs wait on the PR tier: `integration-standalone` and
-`integration-features` each need `image`, which runs lint, the build, every
-unit suite and, in the full tier, the security stages, and `test-typescript` and `arch-gates`
-beside it, so neither starts until the whole PR tier has passed, and
-a pull request that fails lint or a unit suite never holds the shared runners
-for the long legs. A full-tier run on a tree whose PR tier is red therefore
-reports those jobs `skipped`, which `ci-gate` fails.
+The full-tier jobs wait on the image build, not on the checks:
+`integration-standalone` and `integration-features` each need `docker-build`,
+which builds the devcontainer images in about two minutes, and
+`test-typescript` and `arch-gates`. They run beside `image`, which needs
+`docker-build` too and runs lint, the build, every unit suite and, in the full
+tier, the security stages in those images, so the long legs no longer wait
+the hour that job takes. A full-tier run whose `image` job fails still runs
+the legs, and `ci-gate`, which needs every job, fails on that result; a run
+whose `docker-build`, `test-typescript` or `arch-gates` fails reports the
+legs `skipped`, which `ci-gate` fails as well.
 
 Within the `image` job, one step depends on the trigger. `make lint-gates`
 runs on every run and holds `make vet` over the default tag set and the

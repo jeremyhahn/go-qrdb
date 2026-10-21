@@ -419,6 +419,81 @@ jobs:
           echo "docs only: $docs_only"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
 
+  # CUSTOMIZE (go-qrdb, DS-3044): `make docker-build` is its own job, so the
+  # integration legs wait on the two-minute image build, not on the image
+  # job's stages (about 52 minutes), and run beside them. It needs nothing:
+  # lint runs on a docs-only PR too, so every run builds the images. The
+  # build step is the image job's as it was, and the image names go out as
+  # job outputs.
+  #
+  # The hold: this job takes the image job's hold on the integration image
+  # (IT_HOLD, the same name in both jobs) and leaves it in place on success.
+  # The image job's `make docker-build-it` finds it holding this tree's image
+  # and keeps it, and the image job's `if: always()` Tear down releases it, on
+  # every outcome of the last consumer on bigdisk. The integration legs run on
+  # ubuntu-latest and take their own holds, from their own docker-build-it,
+  # before they use the image. On a failure or a cancel this job releases the
+  # hold itself; when the image job never runs on this daemon (the run is
+  # cancelled between the two, or it lands on another bigdisk runner and builds
+  # and holds there), the hold is a created, never-started qrdb-ci- container
+  # and the reaper removes it once stale, then the image after it. A release at
+  # the end of this job would leave the image unheld until the image job
+  # starts, and a reaper in that gap removes a cache-hit image whose last tag
+  # is over two hours old.
+  docker-build:
+    name: Devcontainer images
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    timeout-minutes: 45       # CUSTOMIZE (DS-3044): a cold build of both images
+    outputs:
+      toolchain_image: ${{ steps.build.outputs.toolchain_image }}
+      it_image: ${{ steps.build.outputs.it_image }}
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1 (Company Agent m605 item 8): mask the forge credentials before
+      # any other step. The runner injects them as plain environment
+      # (dependency-resolution.md §6), which the log does not mask by itself,
+      # and the token sits inside GIT_CONFIG_KEY_0's URL, so it is masked alone
+      # as well.
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # CUSTOMIZE (go-qrdb, #813): the integration image is qrdb-ci-it:<content
+      # hash> on every job, so this job also reaps under qrdb-ci-.
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Build the devcontainer images
+        id: build
+        run: |
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
+          echo "it_image=$(make -s it-image)" >> "$GITHUB_OUTPUT"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+      # On success the hold stays for the image job (above); on a failure or
+      # a cancel the image job does not run, so nobody else would release it.
+      - name: Release the hold
+        if: failure() || cancelled()
+        run: make docker-release-it
+
   # v1.21: every stage runs in the project's own devcontainer image and no
   # other (ci-standard.md §2, devcontainer.md §7). One image job (Company Agent
   # m601 (a)) builds the images once from build/docker/devcontainer/Dockerfile
@@ -460,14 +535,18 @@ jobs:
   image:
     name: Devcontainer image [lint, build, test, security, deps-check, trivy image]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    needs: changes             # v1.24 (CA m749, m751 (a))
+    # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
+    # docker-build, which builds the images this job's stages run in.
+    needs: [changes, docker-build]
     timeout-minutes: 90       # CUSTOMIZE: give the stages honest headroom
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
-      # image (Makefile IT_HOLD), from `make docker-build` to the teardown,
+      # image (Makefile IT_HOLD), from docker-build to this job's teardown,
       # so another job's reaper cannot remove the image before the trivy
       # step saves it. Under qrdb-ci-, so a dead job's hold is reaped.
+      # DS-3044: docker-build takes it under this name and leaves it to this
+      # job (see the docker-build job).
       IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
       # v1.22: the cache volumes' trust class. Only a push to main writes the
       # caches main's build reads; every other event, pull requests included,
@@ -502,16 +581,33 @@ jobs:
       # sudo sysctl -w net.core.rmem_max=7340032 net.core.wmem_max=7340032)
       # goes here; the container shares the runner's kernel.
 
-      - name: Build the devcontainer images
+      # CUSTOMIZE (go-qrdb, DS-3044): docker-build built both images, on this
+      # daemon when this job landed on its runner. Each build here is the
+      # idempotent one, so a daemon that lacks an image builds it and never
+      # fails for want of it: `make docker-build-toolchain` always rebuilds
+      # (from cache at best), so it runs only when the daemon lacks the
+      # toolchain tag, which is content-hashed; `make docker-build-it` skips a
+      # held tag itself and takes this job's hold (IT_HOLD) or keeps
+      # docker-build's.
+      - name: Ensure the devcontainer images
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          BUILT_IT_IMAGE: ${{ needs.docker-build.outputs.it_image }}
         run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}" "${BUILT_IT_IMAGE:?docker-build output no integration image}"
           ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
             done )
-          make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          make docker-build-it MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" IT_IMAGE="$BUILT_IT_IMAGE"
           rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)" >> "$GITHUB_ENV"
-          echo "IT_IMAGE=$(make -s it-image)" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$BUILT_IT_IMAGE" >> "$GITHUB_ENV"
 
       # v1.22: bound this repo's cache volumes on the host before the stages
       # add to them (ci-standard.md §6). It never fails the job.
@@ -636,7 +732,8 @@ jobs:
 
       # The integration image stays: it is named by its content, so the
       # integration legs on this daemon reuse it, and the reap step removes it
-      # once no job holds it (#813). This releases this job's hold.
+      # once no job holds it (#813). This releases this job's hold, which
+  # docker-build took (DS-3044).
       - name: Tear down
         if: always()
         run: |
@@ -650,11 +747,12 @@ jobs:
   # v1.23: full tier only (CI_FULL_TIER's expression); never on a plain PR.
   #
   # CUSTOMIZE (go-qrdb): the template's one `integration` job is two jobs
-  # here, both on the full tier (#674) and both needing the whole PR tier --
-  # image (lint, build, the unit suites), test-typescript and arch-gates -- so
-  # no long leg starts on a tree the PR tier has already failed (#785), never
-  # on `build` alone. `ci:full` goes on once, when the PR is green on the PR
-  # tier and ready to merge.
+  # here, both on the full tier (#674). DS-3044: both need docker-build,
+  # test-typescript and arch-gates, not the image job (lint, build, the unit
+  # suites, about 52 minutes), so the legs start once the images are built
+  # and run beside the image job's stages; CI Gate still needs every job.
+  # `ci:full` goes on once, when the PR is green on the PR tier and ready to
+  # merge.
   #
   # integration-features runs the self-spawned qrdbdharness suites
   # (./test/integration: single-node and real 3-node Raft clusters), one leg
@@ -689,7 +787,7 @@ jobs:
     name: Integration (${{ matrix.feature }})
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [image, test-typescript, arch-gates]
+    needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 45
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
@@ -743,7 +841,7 @@ jobs:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [image, test-typescript, arch-gates]
+    needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -959,11 +1057,12 @@ jobs:
     # needs AND has a check line reading its result from an env var
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [changes, image, test-typescript, arch-gates, integration-standalone, integration-features, soak]
+    needs: [changes, docker-build, image, test-typescript, arch-gates, integration-standalone, integration-features, soak]
     steps:
       - name: Fail closed on any non-success
         env:
           RESULT_CHANGES: ${{ needs.changes.result }}
+          RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
           RESULT_IMAGE: ${{ needs.image.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
@@ -1007,6 +1106,7 @@ jobs:
           # full tier by its `if:` is marked full, one gated to schedule and
           # workflow_dispatch is nightly; every other job is pr.
           check changes "$RESULT_CHANGES" pr
+          check docker-build "$RESULT_DOCKER_BUILD" pr
           check image "$RESULT_IMAGE" pr
           check test-typescript "$RESULT_TEST_TYPESCRIPT" pr
           check arch-gates "$RESULT_ARCH_GATES" pr
