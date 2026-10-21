@@ -1,6 +1,6 @@
 # Document Collections — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 A collection is a named box for JSON documents inside a database. You create the
@@ -106,19 +106,20 @@ INSERT INTO events (_id, kind) VALUES (42, 'redeploy')
 UPDATE events SET _id = 99 WHERE _id = 42;
 ```
 
-Two things to know before you lean on it:
+Three things to know before you lean on it:
 
 - **A collection table is autocommit-only.** Any of these inside `BEGIN` fails
   rather than silently escaping the transaction.
 - **The primary key holds under concurrent writers.** Two clients claiming `42`
   at the same instant get one success and one duplicate-key error; the insert
   is a guarded write, so it is not possible for both to be told they succeeded.
-- **`REPLACE` and `ON DUPLICATE KEY UPDATE` are still not atomic.** Each is an
-  insert, a refusal and a second write, with no lock across the three, so two
-  of them racing on `42` can interleave. Neither can lose a document to the
-  other's *insert*, which is the case the guarded write closed. If you need a
-  read-modify-write that holds end to end, use a relational table
-  ([../sql/user.md](../sql/user.md)), which can run it inside a transaction.
+- **`REPLACE` and `ON DUPLICATE KEY UPDATE` are one guarded write per row.**
+  Two `REPLACE`s racing on `42` never both report an insert. An
+  `ON DUPLICATE KEY UPDATE` never overwrites a document another writer changed
+  after the statement read it; it fails with 1213 (`SQLSTATE 40001`), which
+  clients retry on. If you need a multi-row
+  read-modify-write inside a transaction, use a relational table
+  ([../sql/user.md](../sql/user.md)).
 
 ## Common tasks
 
@@ -204,11 +205,11 @@ name and the same collection name without seeing, overwriting or blocking each
 other — the names are yours, not the cluster's. That extends to the `increment`
 counter above: it is your collection's, not the name's.
 
-If you are upgrading a deployment that already had collections, read
-[engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)
-first: collections written before the tenant namespace existed are not listed
-after the upgrade, and nothing moves them for you. Export them with the older
-binary and re-import them as the tenant that should own them.
+Collection keys that carry no tenant namespace are not listed, and nothing
+moves them for you; see
+[engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change).
+Export them with a binary that still reads them and re-import them as the
+tenant that should own them.
 
 ## Troubleshooting
 
@@ -243,15 +244,15 @@ read both, and delete the old one if it is still there.
 implicitly. Check the spelling and the `--database` — a typo would otherwise
 have quietly produced a second collection that then diverges from the first.
 
-**Your collections vanished after an upgrade.** If they were created before the
-tenant namespace existed, they are still on disk but no longer reachable, for
-the reason above. Nothing deleted them. Roll back to the previous binary,
-export, upgrade, re-import.
+**Your collections are not listed after an upgrade.** Collections whose keys
+carry no tenant namespace are still on disk but unreachable, for the reason
+above. Nothing deleted them. Export them with a binary that still reads them,
+then re-import them as the owning tenant.
 
-**"database not found" on a collection command that used to work.** A
-collection request resolves the database you name, so a database that was never
-created is now refused rather than silently used. Create it
-(`qrdb database create <name>`) or correct the `--database` value.
+**"database not found" on a collection command.** A collection request
+resolves the database you name, and a database that was never created is
+refused rather than silently used. Create it (`qrdb database create <name>`)
+or correct the `--database` value.
 
 **`--id-strategy field_hash` was rejected.** It needs `--field-hash <field>`
 naming which document field to hash. Without it there is nothing to derive the
@@ -265,17 +266,9 @@ an `increment` collection that should be impossible. Over SQL the same refusal
 arrives as a duplicate-key error: MySQL 1062, PostgreSQL `SQLSTATE 23505`,
 `gorm.ErrDuplicatedKey`.
 
-**An `INSERT` into a collection table used to succeed and now fails with a
-duplicate key.** It was previously discarding the `_id` you supplied and
-storing the document under a generated one, which is why it never collided.
-Whatever that statement inserted did not land where you asked. Re-check the
-IDs; the document you thought you were writing to `42` is somewhere else.
-
-**Documents inserted over SQL have lost an `_id` field.** They never had one to
-lose — `_id` names the document rather than being one of its fields, on every
-transport. If a client was reading `document._id`, read the document's `id`
-instead. (Older documents may still carry the key; it is not written any more,
-and the SQL table no longer emits a second `_id` column for it.)
+**A document read back has no `_id` field.** `_id` names the document rather
+than being one of its fields, on every transport. If a client was reading
+`document._id`, read the document's `id` instead.
 
 **Your `increment` collection skipped a range of IDs.** Something was inserted
 with an explicit `_id` above the counter, and the counter moved up to clear it.

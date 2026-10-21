@@ -1,6 +1,6 @@
 # Coordination — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -54,7 +54,7 @@ Three things go wrong when each consumer wires it itself:
 ## Shape chosen
 
 **One small consumer-facing interface over the sub-clients the `Client`
-already exposes.** No new consensus, no new server-side behaviour, no new wire
+exposes.** No new consensus, no new server-side behaviour, no new wire
 verb.
 
 ```
@@ -71,7 +71,7 @@ verb.
         one transport: embedded, REST, gRPC, Unix, QUIC or MCP
 ```
 
-Every capability is expressed in terms the store already serves:
+Every capability is expressed in terms the store serves:
 
 | Coordination verb | Expressed as |
 |---|---|
@@ -137,7 +137,7 @@ call site:
 | Consensus, leader election | — | **go-quicraft** |
 
 The surface **introduces no server-side code**. Everything it does is a
-composition of calls the transports already carry, which is why it is
+composition of calls the transports carry, which is why it is
 documented as its own feature rather than as an addition to any of them: what
 is normative here is the composition and its failure semantics, not the
 primitives.
@@ -215,17 +215,13 @@ every transport. Constructing the `Coordinator` tells you nothing about it —
 every transport implements all four sub-client interfaces — and a backend
 refusal surfaces from the individual call.
 
-*(Corrected: this section was "the capability split" and said a standalone node
-refuses `AcquireLease` and `Watch` with `requires mode: raft`, so lease-based
-leadership required raft. Since 2026-10-01 both are served in both modes.)*
-
 ## Trust boundaries
 
 - Coordination objects are scoped per (tenant, database) like every other
   data-plane object. A lease ID from one tenant is not resolvable in another.
 - Each underlying verb carries its own permission — `kv:get`, `kv:put`,
   `transaction:execute`, `lease:grant`, `lease:keepalive`, `lease:revoke`,
-  `lease:ttl`, `watch:watch_prefix`. The surface adds no permission of its own
+  `lease:ttl`, `watch:watch`. The surface adds no permission of its own
   and **cannot widen** what the caller's credential already allows. See
   [api.md](api.md).
 - **The lease has no holder identity.** The value written under a leased key is

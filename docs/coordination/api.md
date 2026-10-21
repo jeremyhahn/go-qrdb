@@ -1,6 +1,6 @@
 # Coordination — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -22,7 +22,7 @@ limitations under the License.
 **The coordination surface is an SDK-level composition, not a wire protocol.**
 It adds no endpoint, no RPC, no QUIC method, no MCP tool and no route to any
 transport. Each of its five verbs is one or two calls on verbs the transports
-already carry, so it is available over **all six transports** without any of
+carry, so it is available over **all six transports** without any of
 them knowing it exists.
 
 That is why the matrix below shows, per coordination verb, **which existing
@@ -76,7 +76,7 @@ UDS, so its methods match the gRPC column), **REST**, **gRPC**, **QUIC**,
 | `Lease.Renew` | lease keep-alive | `POST /lease/keepalive` | `LeaseKeepAlive` | `lease.KeepAlive` | `qrdb_lease_keepalive` | `Client.Lease().LeaseKeepAlive` | `lease:keepalive` |
 | `Lease.Release` | lease revoke | `POST /lease/revoke` | `LeaseRevoke` | `lease.Revoke` | `qrdb_lease_revoke` | `Client.Lease().LeaseRevoke` | `lease:revoke` |
 | `Lease.Done` — liveness observer | lease time-to-live | `GET /lease/ttl` | `LeaseTimeToLive` | `lease.TimeToLive` | `qrdb_lease_ttl` | `Client.Lease().LeaseTimeToLive` | `lease:ttl` |
-| `Watch` | watch a prefix | `GET /watch?key=<p>&prefix=true` | `Watch` (server-streaming, prefix field) | `watch.WatchPrefix` | `qrdb_watch` | `Client.Watch().WatchPrefix` | `watch:watch_prefix` |
+| `Watch` | watch a prefix | `GET /watch?key=<p>&prefix=true` | `Watch` (server-streaming, prefix field) | `watch.WatchPrefix` | `qrdb_watch` | `Client.Watch().WatchPrefix` | `watch:watch` |
 
 **`CompareAndSwap` uses the transaction plane, not the KV guarded-write
 verbs.** `POST /kv/compare-and-swap` (`kv.CompareAndSwap`) is a different
@@ -91,7 +91,7 @@ credential. A consumer using the whole surface needs, at minimum:
 ```
 kv:get  kv:put  transaction:execute
 lease:grant  lease:keepalive  lease:revoke  lease:ttl
-watch:watch_prefix
+watch:watch
 ```
 
 A consumer that uses only `Get`, `Put` and `CompareAndSwap` needs only

@@ -1,6 +1,6 @@
 # Document Collections — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -132,9 +132,8 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
 `__col:{database}:{collection}#{incarnation}/{id}` (`CollectionInfo.documentPrefix`),
 and an `increment` collection's counter is the sequence
 `__collection:{collection}#{incarnation}` (`collectionSequenceName`). Metadata
-written before incarnations existed has none, and keeps the unsuffixed
-`__col:{database}:{collection}/{id}` and `__collection:{collection}` its data
-already has — no migration. All of them are relative to the
+with no incarnation keeps the unsuffixed `__col:{database}:{collection}/{id}`
+and `__collection:{collection}` its data already has, with no migration. All of them are relative to the
 `<tenant>/<database>/` namespace the resolved servicer applies — see
 [Tenant scoping](#tenant-scoping).
 
@@ -166,10 +165,12 @@ already has — no migration. All of them are relative to the
   exception is a `field_hash`-**generated** ID, whose collision is the
   documented idempotent re-insert. An explicit `_id` that is already taken is
   refused on every strategy, as is a generated ID on `increment` or
-  `unix_nano`. The check is a read, and a read that FAILS fails the insert
+  `unix_nano`. The refusal is the write itself: the document is written with
+  `PutIfAbsent`, and a write that did not store returns
+  `CollectionDocumentExistsError`. Where the insert may overwrite, its
+  guarded upsert reads first, and a read that FAILS fails the insert
   (`CollectionMetadataError{Op: "check-document"}`) rather than being treated
-  as absence — reporting a failed read as "nothing there" would wave through
-  the overwrite the check exists to prevent.
+  as absence.
 - **`UpdateDocument` replaces the whole document.** There is no partial update
   or merge. It is also the verb for "replace whatever is stored under this ID";
   `InsertDocument` is not, and will not do it. Its ID comes from the request,
@@ -247,8 +248,7 @@ already has — no migration. All of them are relative to the
 - **Index definitions are refused before anything is stored** when a
   definition names no field, when two name the same field, or when the service
   has no index service to build them with
-  (`service.CollectionInvalidIndexError`). Definitions used to be
-  recorded and silently not built on the second path.
+  (`service.CollectionInvalidIndexError`).
 - **Every per-incarnation piece of state is in an incarnation-scoped
   keyspace.** `CollectionInfo.Incarnation` is a random identifier drawn by every
   create. The document prefix, the `increment` sequence name, the process-local
@@ -328,7 +328,7 @@ already has — no migration. All of them are relative to the
   `service.CollectionMetadataError{Op: "unmarshal-metadata"}`. The index
   definitions live in that metadata, so a drop that cannot read it does not know
   what the collection owns; proceeding would leave the orphan the ordering rule
-  exists to prevent. Every other verb on the service already refuses a
+  exists to prevent. Every other verb on the service also refuses a
   collection in that state.
 - **A collection's secondary indexes are named
   `{database}.{collection}.{field}`** — the same database-scoped hierarchical
@@ -340,9 +340,9 @@ already has — no migration. All of them are relative to the
   creates. A name another owner holds refuses the create
   (`*index.OwnershipError`, reached through the `create-index` error); the drop
   removes indexes with `DropOwnedIndex` and leaves one owned elsewhere in
-  place. Metadata with no `IndexOwner` predates ownership; its declared
-  indexes were created ownerless and are dropped with `DropOwnedIndex(name,
-  index.ExplicitOwner)`, so no collection drop is unconditional.
+  place. Metadata with no `IndexOwner` has ownerless declared indexes, and
+  the drop removes them with `DropOwnedIndex(name, index.ExplicitOwner)`, so no
+  collection drop is unconditional.
 - **Stuck collections are finished by the sweeper.**
   `CollectionService.SweepStuckCollections(ctx, database, staleAfter)` tears
   down every collection `dropping` for at least `staleAfter` and unwinds every
@@ -412,7 +412,7 @@ already has — no migration. All of them are relative to the
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Creating a collection that exists | `service.CollectionAlreadyExistsError` | yes |
-| A document field named `id`, or an object-valued `fields` as a document's only field | `service.CollectionReservedFieldError` — 400 / `INVALID_ARGUMENT`; nothing is stored. The stored layout keeps a document's identity under `id` and reads a lone `fields` object as the legacy wrapper, so either would be stored as something other than what was sent | **yes** |
+| A document field named `id`, or an object-valued `fields` as a document's only field | `service.CollectionReservedFieldError` — 400 / `INVALID_ARGUMENT`; nothing is stored. The stored layout keeps a document's identity under `id` and reads a lone `fields` object as the `{"id", "fields"}` wrapper layout, so either would be stored as something other than what was sent | **yes** |
 | Creating a collection whose name contains `#` | `service.CollectionInvalidNameError` — 400 / `INVALID_ARGUMENT`; nothing is stored. An existing collection with such a name keeps working | **yes** |
 | Operating on an unknown collection | not-found | **yes** — never auto-created |
 | `id_strategy: field_hash` without `field_hash` | invalid-argument | **yes** |
@@ -492,24 +492,22 @@ dedicated-store one documented in `buildDedicatedStoreServices`.
 **Configuration set on a bundle's own collection service is not inherited by
 the composite one** — `WithDatabaseCodecLookup` and
 `WithCollectionQuotaChecker` — because the composite is built from the bundle's
-ENGINES rather than cloned from its collection service. No composer sets either
-today; one that starts to must teach the builder about it.
+ENGINES rather than cloned from its collection service. No composer sets
+either; a composer that sets one must teach the builder about it.
 
 **Collection document bytes are counted against `MaxStorageBytes`, per call.**
-They were not: the collection service writes documents through the KV
-servicer it was built over, and the composite one is built — and cached, for
-its process-local increment generators — before `applyQuota` wraps the
-bundle's KV. `applyQuota` now also wraps the bundle's collection service
-(`quotaCollectionService`), on every resolve and with the tenant's CURRENT
-limit, so a changed limit is never pinned by the cache and every transport,
-the SQL surface included, is metered.
+The composite collection service is built, and cached for its process-local
+increment generators, before `applyQuota` wraps the bundle's KV, so the KV
+wrapper does not see its writes. `applyQuota` therefore wraps the bundle's
+collection service too (`quotaCollectionService`), on every resolve and with
+the tenant's CURRENT limit, so a changed limit is never pinned by the cache and
+every transport, the SQL surface included, is metered.
 
 - **The cost of a document is its body**: the JSON encoding of its fields,
   `_id` excluded. The metadata a write touches (schema discovery) and an
   `increment` collection's counter are not counted — a stated undercount.
-- **Enforcement is immediate.** A tenant already over its limit through
-  documents written before this accounting existed has its next document
-  write refused.
+- **Enforcement is immediate.** A tenant already over its limit has its next
+  document write refused.
 - **Releases follow the KV wrapper's three-way rule.** A write refused or
   failed before it could store anything releases its reservation; a write
   whose outcome is unknown (`CollectionMetadataError.OutcomeUnknown`) retains
@@ -551,20 +549,20 @@ the SQL surface included, is metered.
   For a `prefix` or `raft` tenant nothing re-measures it: **the over-count is
   permanent for prefix/raft tenants** until an operator raises the limit or
   the tenant is recreated.
-- `MaxCollections` is enforced by the service itself and is unchanged.
+- `MaxCollections` is enforced by the service itself.
 
 ## Persistence
 
 - Metadata: `__sys:collections/{database}/{name}` → `CollectionInfo`, including
   its lifecycle `state` and `state_since` and, for a collection with indexes,
-  its `index_owner`. A record without them predates them and reads as an
-  `active` collection whose indexes were created ownerless.
+  its `index_owner`. A record without them reads as an `active` collection
+  whose indexes are ownerless.
 - Documents: `__col:{database}:{collection}#{incarnation}/{id}`, encoded with
   the collection's storage codec; `__col:{database}:{collection}/{id}` for a
-  collection created before incarnations existed.
+  collection whose metadata has no incarnation.
 - Increment counters: `__seq:{database}:__collection:{name}#{incarnation}`;
-  `__seq:{database}:__collection:{name}` for a collection created before
-  incarnations existed.
+  `__seq:{database}:__collection:{name}` for a collection whose metadata has no
+  incarnation.
 - All three are relative to the resolved servicer's `<tenant>/<database>/`
   namespace.
 - **Compatibility**: the storage codec is recorded on the collection, so a
@@ -573,60 +571,43 @@ the SQL surface included, is metered.
 
 ### Upgrading across the tenant-namespace change
 
-**Collections written before the collection surface was tenant-scoped are not
-visible after the upgrade, and nothing moves them.** This is a decision, stated
-plainly rather than deferred.
+**Collection keys that carry no tenant are not visible, and nothing moves
+them.** Such a key is `__col:{database}:{collection}/{id}` with no
+`<tenant>/<database>/` namespace: the database is in it and the tenant is not,
+so nothing in the store, the Raft log or the metadata says which tenant owns
+it. A migration would have to guess a tenant, and the only guess available
+("it all belongs to the system tenant") would hand another tenant's documents
+to the system tenant with a durable write.
 
-The tenant dimension was never written down. A legacy key is
-`__col:{database}:{collection}/{id}` — the database is in it, the tenant is
-not — so there is nothing in the store, the Raft log, or the metadata from
-which the owning tenant can be READ. Any migration must therefore GUESS a
-tenant, and the only available guess ("it all belongs to the system tenant") is
-the same guess the defect made. Worse, it would be guessed with a durable write:
-a deployment where a non-system tenant had written collections — exactly the
-deployment the defect exposed — would have that tenant's documents handed to the
-system tenant permanently.
+A read-through fallback, where a servicer looks in its namespace and then in
+the bare keyspace, is rejected: it makes the bare keyspace shared by every
+tenant again.
 
-Read-through fallback is worse still and is rejected outright: a servicer that
-looks in its namespace and then in the bare keyspace reinstates the shared
-keyspace for every tenant, which is the vulnerability itself, written down as a
-feature.
+So these keys are **left in place, inert**. Nothing reads them, because every
+transport's KV surface is namespaced, so no caller can compose the bare key.
+Nothing deletes them, because the server does not delete data it cannot
+attribute. An operator with such collections exports them with a binary that
+still reads them and re-imports them per tenant.
 
-So the legacy keys are **left in place, inert**. Nothing deletes them, because
-the server cannot attribute data it cannot attribute; nothing reads them,
-because every transport's KV surface is namespaced too, so no caller can compose
-the bare key. An operator upgrading a deployment with existing collections
-exports them with the previous binary and re-imports them per tenant.
+**"Nothing deletes them" includes `DROP DATABASE` and `DELETE TENANT`.** A drop
+reclaims the namespaced collection keys a collection writes, and must. It does
+not reclaim `__col:{database}:` keys with no tenant: one tenant's drop of a
+database named `X` would destroy every tenant's tenant-less records for a
+database named `X`, and with them the export above.
+`service.LegacyCollectionKeyPrefixes` is the one place that shape is named, and
+it is passed to no reclamation.
 
-**"Nothing deletes them" includes `DROP DATABASE` and `DELETE TENANT`**, and it
-is spelled out because leaving it implicit was enough to lose it. A keyspace
-reclamation added afterwards read `__col:{db}:` as database-scoped — which it
-is — and deleted it on a drop, which made any tenant's drop of a database named
-`X` destroy **every** tenant's legacy records for a database named `X`. Nothing
-was exposed, because that data is unreadable by design; what was destroyed was
-the export above, the only migration this document offers for it. The rule is
-not "a drop may not delete collections" — a drop reclaims the namespaced
-collection keys a collection writes today, and must. The rule is the sentence
-this section already contained: **the server does not delete data it cannot
-attribute**, and a key with a database in it and no tenant cannot be attributed
-by a call one tenant issues. `service.LegacyCollectionKeyPrefixes` is the one
-place that shape is named, and it is passed to no reclamation.
+**There is no interrupted-migration state, because nothing moves.** A migration
+that rewrote `__col:` keys through Raft would have a half-state that no
+ordering makes safe: moving the metadata first strands a resolvable collection
+with no documents, and moving the documents first strands documents no name
+reaches.
 
-**There is no interrupted-migration state, because nothing moves.** That is the
-decisive property, not a convenience: a migration that rewrote `__col:` keys
-through Raft would have a half-state, and no ordering makes that half-state
-safe — the metadata key is what makes a collection resolvable and the documents
-are what it resolves to, so moving the metadata first strands a resolvable
-collection with no documents and moving the documents first strands documents no
-name reaches. The single atomic step here is the code change itself.
-
-A narrower, correct-by-measurement migration is available if the owner wants
-one: in a deployment whose tenant list contains ONLY the system tenant, every
-legacy key provably belongs to the system tenant, so moving them under
-`system/{database}/` is a fact rather than a guess. It is deliberately not
-shipped here — it is a replicated, restartable, leader-only boot-time job with
-its own interrupted state (partially moved keyspace, idempotent on retry), which
-is a separate capability rather than part of closing the isolation hole.
+In a deployment whose tenant list holds only the system tenant, every
+tenant-less key belongs to the system tenant, so moving it under
+`system/{database}/` would be a fact rather than a guess. It is not
+implemented: it needs a replicated, restartable, leader-only boot-time job with
+its own interrupted state.
 
 ## Test strategy
 
@@ -634,23 +615,19 @@ is a separate capability rather than part of closing the isolation hole.
   CRUD, each ID strategy (including `field_hash` determinism and the missing
   `field_hash` refusal), and pagination token round-trip.
 - **Error tests** per function: happy path plus error path, per the repo rule.
-- **JSON round-trip test for the `id,string` encoding** — this is exactly the
-  kind of detail that regresses silently.
+- **JSON round-trip test for the `id,string` encoding.**
 - **Integration**: collection parity across transports in the standalone stage.
 - **Cross-tenant isolation**: two tenants under `prefix` isolation, the same
   database name and the same collection name, over ONE shared store — neither
   may read, list, overwrite or deny the other's collection, and every key
-  written must carry its own tenant's namespace. `prefix` is covered first
-  because it is the exposed mode; `volume` and `raft` bound the blast radius at
-  the shard.
-- **Cross-tenant teardown**: the same two tenants, plus legacy (tenant-less)
-  collection records naming that database. One tenant drops it; the other's
-  records — and the legacy pile as a whole, which belongs to neither as far as
-  the server can tell — must survive, while the dropping tenant's own
-  namespaced collection data is still reclaimed. Both halves are asserted,
-  because a teardown that stops deleting everything by also stopping the
-  legitimate reclamation is not a fix. The same is asserted one scope up, for
-  a tenant delete.
+  written must carry its own tenant's namespace. `prefix` is the mode where
+  tenants share one store; `volume` and `raft` bound the blast radius at the
+  shard.
+- **Cross-tenant teardown**: the same two tenants, plus tenant-less collection
+  records naming that database. One tenant drops it; the other's records and
+  the tenant-less records must survive, and the dropping tenant's own
+  namespaced collection data must be reclaimed. Both halves are asserted. The
+  same is asserted one scope up, for a tenant delete.
 - **Per-transport resolution**: each transport resolves its collection servicer
   from the registry using the database the request names, and does not reach the
   process-wide singleton when a registry is configured. Asserted per transport,
@@ -664,18 +641,15 @@ is a separate capability rather than part of closing the isolation hole.
   refused by every document verb; a drop landing between a write and its
   fence retracts the write; a schema merge racing a drop does not revert the
   mark; the sweeper finishes a stale `dropping` collection, unwinds a stale
-  `creating` one and leaves fresh and active ones alone. Each is
-  mutation-checked: disabling the fix makes its test fail.
+  `creating` one and leaves fresh and active ones alone.
 - **Ownership**, on every index-applying state machine and at the service: a
   foreign owner's create is refused, an owner-checked drop by a stranger
   removes nothing, a dotted-name collision is refused, a recreated collection
   gets a new incarnation.
 - **The guarded upsert under concurrency**: N writers on one ID, and every
   value written is displaced exactly once by a replace that reported it, or
-  survives. Over SQL, a forced interleaving that the three-call `REPLACE`
-  failed — the second statement reporting an insert over an existing document —
-  and N concurrent `REPLACE INTO`s that must all report a replacement or 1213.
-  Both fail against the previous writer.
+  survives. Over SQL, a forced interleaving in which a `REPLACE` issued as
+  separate calls would report an insert over an existing document, and N concurrent `REPLACE INTO`s that must all report a replacement or 1213.
 - **Quota**: a tenant at its limit is refused a document write of the size a KV
   write is refused; a document's lifecycle is charged its body bytes exactly.
 - **Transports**: the index definitions and the state survive a round trip on
