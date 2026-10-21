@@ -1,6 +1,6 @@
 # Certificate Authority — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -13,12 +13,13 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Issue a client certificate from a CSR | `POST /certs/issue` | `IssueCert` | `cert.Issue` | `qrdb_cert_issue` | `IssueCert` | `certs:issue` |
 | Enrol a bring-your-own certificate | `POST /certs/enroll` | `EnrollCert` | `cert.Enroll` | `qrdb_cert_enroll` | `EnrollCert` | `certs:enroll` |
 | Issue a delegation to a service principal | `POST /certs/delegate` | `IssueDelegation` | `cert.Delegate` | `qrdb_cert_delegate` | `IssueDelegation` | `certs:delegate` |
-| Export PKCS#12 | `POST /certs/export` | `ExportCert` | `cert.Export` | `qrdb_cert_export` | `ExportCert` | `certs:export` |
 | Revoke certificate | `POST /certs/revoke` | `RevokeCert` | `cert.Revoke` | `qrdb_cert_revoke` | `RevokeCert` | `certs:revoke` |
 | List certificates | `GET /certs/list` | `ListCerts` | `cert.List` | `qrdb_cert_list` | `ListCerts` | `certs:list` |
-| Fetch the CA bootstrap certificate | `GET /v1/ca/bootstrap` | MISSING | MISSING | MISSING | `CACertPEM()` in process | **public**, conditionally registered |
+| Fetch the CA bootstrap certificate | `GET /v1/ca/bootstrap` | MISSING | MISSING | MISSING | MISSING | **public**, conditionally registered |
 
-Six capabilities on all six transports, plus the public bootstrap route.
+Five capabilities on all six transports, plus the public bootstrap route.
+PKCS#12 export is not a server capability: `qrdb ca export-bundle` builds the
+archive locally ([cli.md](cli.md#qrdb-ca-export-bundle)).
 
 **No verb generates a client's private key.** Issue and delegate sign a
 certificate signing request the requester made with its own key; enrol binds a
@@ -27,9 +28,6 @@ caller's own tenant and bind the certificate's public key to it in the same
 call. The trust anchors that enrolment verifies against are their own feature:
 [../trust-anchors/api.md](../trust-anchors/api.md).
 
-**BREAKING:** `POST /certs/generate` (`GenerateCert`, `cert.Generate`,
-`qrdb_cert_generate`) and the `certs:generate` permission are removed. They
-generated the client's private key on the server and returned it.
 
 ### The permission column is only half the authorization
 
@@ -45,10 +43,8 @@ tenant. A second check establishes the target:
 | List | the request's `tenantID` / `tenant_id` | — (`certs:list` re-checked against the target) |
 | Revoke, serial **known** to this node | the owning tenant, resolved from the serial | — (`certs:revoke` re-checked against the owner) |
 | Revoke, serial **unknown** to this node | none — deny-by-serial | **`certs:revoke:cross`** (system tenant only) |
-| Export | none named | — |
 
-A caller acting inside its own tenant sees no change. A caller naming another
-tenant is refused — **every** caller, the system tenant included: the `certs:*`
+A caller naming another tenant is refused — **every** caller, the system tenant included: the `certs:*`
 permissions are `ScopeSelfStrict`, which the system-tenant rule does not lift.
 The refusal is 403 on REST, `PERMISSION_DENIED` on gRPC and the unix socket,
 `StatusPermissionDenied` on QUIC, the permission-denied tool code on MCP, and
@@ -61,8 +57,7 @@ when omitted; that default is gated exactly like an explicit cross-tenant
 request, so a tenant caller names its own tenant.
 
 **Note the path prefix.** These are `/certs/...`, unversioned, even though the
-CLI group is `qrdb ca`. The CLI was renamed (`certs` → `ca`); the routes were
-not. `qrdb certs` has been removed outright (no redirect stub).
+CLI group is `qrdb ca`.
 
 **`ca info` and `ca bundle` have no distinct endpoint.** Both are CLI aliases
 for `list`: CA-only metadata (DN, fingerprint, validity) and a standalone
@@ -105,7 +100,7 @@ offered as intermediates too.
 Both return `201` with the bound certificate — never a key:
 
 ```json
-{ "userID": 42, "username": "alice", "tenantID": "acme",
+{ "userID": "42", "username": "alice", "tenantID": "acme",
   "certPEM": "<PEM>", "serial": "3f2a9c…", "thumbprint": "<SPKI SHA-256>",
   "notAfter": "2027-10-03T10:00:00Z" }
 ```
@@ -159,8 +154,8 @@ A delegation is revoked like any certificate this CA issued, by serial with
 `POST /certs/revoke`, and appears in `GET /certs/list`. It is refused within
 `auth.revocation_cache_ttl` of revocation, and outright at `notAfter`.
 
-`GET /certs/list` — `tenantID` query parameter. Response elements are
-`CertRecord`:
+`GET /certs/list` — `tenantID` query parameter, required. The response is
+`{ "certs": [...] }`, each element a `CertRecord`:
 
 ```json
 { "serial": "3f2a9c…", "username": "alice", "tenantID": "acme",
@@ -177,11 +172,7 @@ A delegation is revoked like any certificate this CA issued, by serial with
 `recordFound` distinguishes a certificate this node holds a `CertRecord` for
 (`true`) from a deny-by-serial revocation of one it does not (`false`) —
 both are successes, reflected in `status`. gRPC and Unix carry the same
-distinction in `RevokeCertResponse.record_found`; the RPC previously
-returned `google.protobuf.Empty`.
-
-`POST /certs/export` — certificate PEM, key PEM and a passphrase; returns the
-PKCS#12 archive.
+distinction in `RevokeCertResponse.record_found`.
 
 ## Certificate properties
 
@@ -200,8 +191,8 @@ The CA private key is destroyed in memory when the barrier seals. While sealed:
 
 | Operation | Behaviour |
 |---|---|
-| Issue, delegate, export, revoke, `IsRevoked`, list | `BarrierSealedError` |
-| `CACertPEM()` / `GET /v1/ca/bootstrap` | **still works** — the CA certificate is public data served from cache |
+| Issue, delegate, revoke, `IsRevoked`, list | `BarrierSealedError` |
+| `GET /v1/ca/bootstrap` | **still works** — the CA certificate is public data served from cache |
 
 That asymmetry is deliberate: a client needs the CA certificate to connect at
 all, so refusing it while sealed would make a sealed server unreachable rather
@@ -214,8 +205,7 @@ than merely inert.
 | Success | 200 (201 for issue and enrol) | `OK` |
 | Barrier sealed | 503 | `UNAVAILABLE` — `BarrierSealedError` |
 | CA key not loaded or destroyed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
-| Serial not found — declared and mapped, currently **produced by nothing**: `RevokeCert` is deny-by-serial by design and never returns it | 404 | `NOT_FOUND` — `CertNotFoundError` |
-| Export targets a revoked certificate | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
+| Serial not found — declared and mapped, **produced by nothing**: `RevokeCert` is deny-by-serial by design and never returns it | 404 | `NOT_FOUND` — `CertNotFoundError` |
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError`, `service.CertEnrollmentFieldError` |
 | CSR does not parse, its signature does not verify, or its key is not accepted | 400 | `INVALID_ARGUMENT` — `cert.InvalidCSRError` |
 | Delegation names a malformed or built-in-role principal, an unregistered or duplicate permission, or a lifetime over 24 hours | 400 | `INVALID_ARGUMENT` — `service.DelegationRequestError` |
@@ -225,7 +215,7 @@ than merely inert.
 | Enrolled certificate authenticates as another account or tenant | 400 | `INVALID_ARGUMENT` — `certenroll.IdentityMismatchError` |
 | Enrolment attempted with no trust anchor registered | 409 | `FAILED_PRECONDITION` — `trustanchor.NoAnchorsError` |
 | Issue or enrol not configured on this node | 501 | `UNIMPLEMENTED` — `service.CertEnrollmentNotConfiguredError` |
-| Signing or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
+| Signing failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Target tenant is not the caller's — for every caller, the system tenant included | 403 | `PERMISSION_DENIED` |
 | Deny-by-serial attempted without `certs:revoke:cross` | 403 | `PERMISSION_DENIED` |
@@ -309,5 +299,4 @@ which adds CRL and OCSP — see [architecture.md](architecture.md).
 ## Versioning
 
 Certificate routes are unversioned (`/certs/...`); the bootstrap route is under
-`/v1/`. The `qrdb certs` **CLI group** has been removed in favour of `qrdb ca`;
-the REST paths were not renamed with it.
+`/v1/`.

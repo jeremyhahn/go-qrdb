@@ -1,9 +1,9 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
-Issuing, exporting and revoking the client certificates that authenticate every
+Issuing, enrolling and revoking the client certificates that authenticate every
 caller. Authentication is mTLS throughout the store, so this is the feature that
 mints identity.
 
@@ -22,12 +22,13 @@ implementation**, and a composition seam for a real one.
 type CertProvider interface {
 	// IssueClientCert certifies req.PublicKey; it never generates a key.
 	IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error)
-	// ExportPKCS12 refuses with *CertRevokedError when certPEM's serial is revoked.
-	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
 	// RevokeCert reports what it found through RevokeResult, not the error
 	// return: both a record match and a deny-by-serial revocation succeed.
 	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 	IsRevoked(ctx context.Context, serial string) (bool, error)
+	// TenantForSerial reports the tenant owning a serial's record; found ==
+	// false is the deny-by-serial case.
+	TenantForSerial(ctx context.Context, serial string) (tenantID string, found bool, err error)
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
 }
 ```
@@ -36,8 +37,7 @@ type CertProvider interface {
 standard library, stores the CA key like every other replicated system
 record — no additional per-record encryption of its own; this node's own
 at-rest storage encryption, when configured, protects the on-disk copy,
-exactly as for the cluster CA (Key A) — wipes client key material
-(`secure.Wipe`) as soon as it is no longer needed in plaintext, and
+exactly as for the cluster CA (Key A) — never holds a client's private key, and
 enforces revocation from replicated state on every authenticated request.
 
 **go-xkms provides the production alternative** — full CRL generation, OCSP,
@@ -66,9 +66,7 @@ the certificate's SPKI thumbprint to it in the same call, so an issued
 certificate is never left bound to nobody: if the binding fails after a
 certificate was signed, that serial is revoked.
 
-**BREAKING:** this replaces `GenerateClientCert` and `certs:generate`, which
-generated the client's private key on the server and returned it alongside the
-certificate. A server that generates keys holds every key it hands out, if only
+The server never generates a client's private key. A server that generates keys holds every key it hands out, if only
 for an instant, and a response that carries one is a credential in transit.
 
 ### Alternatives rejected
@@ -176,9 +174,8 @@ Where such a gate is missing, what a revoked node retains is participation
 rather than another node's keys — the placement gate still requires it to be
 the assigned replica, recipient-binding still confines an envelope to its
 intended target, and the freshness guard still bounds replay. Those residual
-protections are why the cluster-key gap was ranked high rather than critical.
-They are not a reason to leave an authorization sequence that cannot see a
-withdrawn identity.
+protections are not a reason to leave an authorization sequence that cannot see
+a withdrawn identity.
 
 Three outcomes, and the two failure modes are deliberately different:
 
@@ -266,7 +263,6 @@ the target comes from differs per verb:
 | `certs:delegate` | **the caller's own tenant**, never the system tenant | authorized against it; refused for a delegated caller |
 | `certs:list` | the request's `tenantID` | authorized against that tenant |
 | `certs:revoke` | **resolved from the serial** | authorized against the owning tenant |
-| `certs:export` | nowhere — none is named | none needed (see below) |
 
 `certs:list` is checked against the tenant the request names, not the tenant
 the caller is in. Issuance takes no tenant at all: the tenant becomes the
@@ -275,10 +271,6 @@ tenant from exactly that OU, so a cross-tenant mint would hand the caller a
 CA-signed credential for another tenant rather than merely misfiling a record.
 `certs:issue` and `certs:enroll` therefore always act on the caller's own
 tenant, and the account they name must exist there.
-
-**BREAKING:** `certs:generate` took the target tenant from the request
-(`tenantID`, `--tenant-id`) and re-checked the permission against it. That
-field and flag are gone with the verb.
 
 **The target must be the caller's own tenant, for every caller.** The `certs:*`
 verbs are `ScopeSelfStrict` (see
@@ -292,10 +284,6 @@ certificate (see [../multi-tenancy/](../multi-tenancy/architecture.md)); after
 that, each tenant's own Admin issues its own users' certificates. The embedded
 transport, which runs no authorization middleware, applies the same rule to the
 caller in its context (`tenant.Confine`).
-
-**BREAKING:** before this rule, `certs:generate`, `certs:list` and
-`certs:revoke` were `ScopeSelf`, and a system-tenant identity could act on any
-tenant's certificates.
 
 **Issuance is not the only layer that has to hold.** The gate above is what
 stops the certificate being minted; the certificate-binding gate in
@@ -324,11 +312,9 @@ described in [../identity-rbac/api.md](../identity-rbac/api.md). The two are
 separate operations answering separate questions, and an operator cleaning up
 after a key compromise performs both.
 
-`certs:export` needs no gate and deliberately has none: the caller supplies
-both the certificate and the private key, the server holds neither, and the
-archive that comes back contains only what the caller already had. There is
-nothing for a tenancy check to protect. (The revocation check inside the export
-is an operator signal for the same reason — it withholds nothing.)
+PKCS#12 packaging has no server verb and so no gate: `qrdb ca export-bundle`
+runs locally on a certificate and key the caller already holds, and contacts no
+server.
 
 ### Revoke resolves its target, and the two authorities that follow
 
@@ -351,9 +337,9 @@ names no tenant, so no tenant-local caller can show the certificate is theirs �
 "revoke another tenant's serial" and "revoke a serial a peer issued" are the
 **same request on the wire**, and the marker written is read by every tenant.
 Admitting that on a self-scope permission means there is no cross-tenant
-revocation the system can refuse. Deny-by-serial is retained in full; what
-changed is that it is now recognised as the **CA-operator** capability it
-always was, and the CA is a platform asset held by a single provider.
+revocation the system can refuse. Deny-by-serial is retained in full, as the
+**CA-operator** capability it is, and the CA is a platform asset held by a
+single provider.
 
 A resolution failure is **not** treated as "no owner". The tenancy of the
 operation is unknown, and an unknown target is not an absent one, so the
@@ -407,7 +393,7 @@ Decisions, and why:
 - **Withdrawn through ordinary revocation.** A delegation is an issued
   certificate with a record like any other, listed by `certs:list` and revoked
   by serial through `certs:revoke`; the per-request revocation check above
-  applies to it unchanged.
+  applies to it as to any other certificate.
 - **No new token format and no new crypto.** The extension is DER read and
   written with `golang.org/x/crypto/cryptobyte`; signing is `crypto/x509` through the same
   `cakey.Provider` every other issuance uses.
@@ -422,12 +408,12 @@ Decisions, and why:
 | Default client validity | 1 year |
 | Client `ExtKeyUsage` | **ClientAuth only** |
 | Serial number | 128-bit random |
-| PKCS#12 export | `software.sslmate.com/src/go-pkcs12` |
+| PKCS#12 encoding (client-side `ca export-bundle`) | `software.sslmate.com/src/go-pkcs12` |
 
 **A serial is unguessable, not secret.** 128 bits of randomness puts it beyond
 enumeration, but it travels in the peer certificate of every mTLS connection
 and in any CRL that carries it, and `certs:list` serves a tenant's serials on
-request. So confidentiality of the serial is not, and was never, what keeps one
+request. So confidentiality of the serial is not what keeps one
 tenant from acting on another's certificate. The tenancy gates above are.
 
 Client certificates carry `ClientAuth` and nothing else — a certificate issued
@@ -444,8 +430,8 @@ $ grep -rho "pkcs12\.[A-Za-z_0-9]*" $(find . -name '*.go' -not -path './.git/*')
       1 pkcs12.Modern2023
 ```
 
-`pkcs12.Modern2023` is the **encoder**, at `pkg/cert/pkcs12.go`, and
-`ExportPKCS12` is its only caller. There is no `Decode`, `DecodeChain`,
+`pkcs12.Modern2023` is the **encoder**, used only by `EncodePKCS12` in
+`pkg/cert/pkcs12.go`, which only the `qrdb` client calls, locally. There is no `Decode`, `DecodeChain`,
 `DecodeTrustStore` or `ToPEM` anywhere in this repository. **Nothing here ever
 reads a PKCS#12 archive back**, so no attacker-supplied `.p12` bytes reach a
 parser through this code path: the CA writes bundles, and the consumer that
@@ -454,14 +440,12 @@ imports one is somebody else's software.
 That matters because the library's advisories are largely about the parsing
 half. `GHSA-mpwr-8vm7-h73f` — "authentication bypass in Decode functions",
 fixed in v0.7.2 — is the worked example: read against a caller that only
-encodes it is **hygiene rather than exposure**, and the dependency is kept
-current for the ordinary reason rather than because this repository was
-exposed to that bug. The scanners disagreed about it for a measurable reason
-and both were right: trivy flagged the package VERSION, govulncheck was silent
-because the affected SYMBOLS are not in the call graph.
+encodes it is **hygiene rather than exposure**. A version scanner (trivy) flags
+the package VERSION; govulncheck stays silent because the affected SYMBOLS are
+not in the call graph. Both are right.
 
 **Re-measure the grep rather than citing this paragraph.** The claim is about
-the call graph on the day it was taken, and the first `DecodeChain` added to a
+the call graph as it stands, and the first `DecodeChain` added to a
 truststore-import feature invalidates it silently. The direction of use is a
 property to check, not one to inherit. In particular, a clean `govulncheck` is
 not in general evidence about a `trivy` finding — the call-graph argument above
@@ -535,14 +519,6 @@ that differs
 (`*ceremony.CertSubjectError`), so a CA composed in from outside qrdb is held
 to the same contract.
 
-**BREAKING:** before this, `SignCSR` copied the CSR's Subject and URI SANs. A
-tenant Admin registering a tenant-barrier officer with a CSR for
-`CN=admin, OU=system` received a certificate that authenticated as the system
-tenant's `admin` (and with `OU=globex`, or a SPIFFE SAN for globex, as globex's
-user). Officer certificates now name the scope's tenant first and the profile
-second; a certificate issued under the old layout carries the profile as its
-first OU, and is still recognised as a holder certificate (below).
-
 **A holder certificate is never a user login.** A certificate whose OU carries
 a holder profile (`security-officer` or `custodian`, in any position) is marked
 by the mTLS authenticator (`auth.HolderProfile`), and the authentication
@@ -565,10 +541,10 @@ not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,
 whitespace) fails the load with a validation error on `auth.spiffe_trust_domain`
 rather than making the CA refuse every certificate at issue time.
 
-**Rotation is unaffected.** A user's binding is over the SubjectPublicKeyInfo,
-which the SAN is not part of, so a key re-issued under the same CN and tenant
-keeps authenticating. A certificate issued without the SAN no longer
-authenticates on its own: it must be re-issued, and the re-issued certificate
+**Rotation keeps the binding.** A user's binding is over the
+SubjectPublicKeyInfo, which the SAN is not part of, so a key re-issued under the
+same CN and tenant keeps authenticating. A certificate without the SAN does not
+authenticate: it must be re-issued, and the re-issued certificate
 binds the same key.
 
 **The provider and the authenticator must read the same value.** Both come from
@@ -590,8 +566,8 @@ recorded — see "Where revocation is enforced".
 
 The CA key follows the barrier seal/unseal lifecycle. The barrier GATES
 every step below — IsSealed() is checked first, and every operation
-returns BarrierSealedError while sealed — but, per the owner's CA-at-rest
-ruling, no longer ENCRYPTS the stored record itself; see "The CA key
+returns BarrierSealedError while sealed — but does not ENCRYPT the stored
+record itself; see "The CA key
 provider seam" below and "Trust boundaries" for what actually protects it
 at rest:
 
@@ -631,7 +607,7 @@ Issue Certificate (barrier unsealed)
 
 ## The CA key provider seam (`pkg/cakey`)
 
-**Normative target; lands incrementally.** go-qrdb is embedded as the
+go-qrdb is embedded as the
 datastore and consensus engine under go-xkms and other projects that bring
 their own key custody (software, TPM 2.0, PKCS#11, cloud KMS). Neither CA in
 this repository may hard-code where its key lives: both obtain their signing
@@ -651,21 +627,22 @@ type Provider interface {
 }
 ```
 
-This is the minimum every existing signing seam in this repository already
-needs: `ceremony.CeremonyCA`'s `SignCSR`/`IssueCertificate`, `cert.CertProvider`'s
-`IssueClientCert`, and `clustertls`'s node-leaf issuance all reduce to "get
-a signer, get the CA cert, call `x509.CreateCertificate`." Three separate
-paths converge on it rather than growing a fourth:
+Every signing path in this repository reduces to "get a signer, get the CA
+cert, call `x509.CreateCertificate`", and each takes a `cakey.Provider`:
 
-| Before | After |
-|---|---|
-| `ceremony.LocalCA` holds `caKey crypto.Signer` parsed once from raw PEM | `ceremony.NewProviderCA(p cakey.Provider)` resolves signer+cert from `p` on every call, so a re-seal/re-unseal or an HSM failover is reflected immediately |
-| `cert.DefaultCertProvider` owns barrier+KVStore key material directly | `cert.DefaultCertProvider` holds a `cakey.Provider` (`cakey.SoftwareProvider` by default, or an injected one) and its `getCAMaterial` returns a `crypto.Signer`, not key bytes |
-| `clustertls.IssueLeafForKey(caCertPEM, caKeyPEM []byte, pub, ...)` | a provider-backed sibling takes a `cakey.Provider` instead of raw PEM, for both node-leaf issuance and member-side cluster-join CSR signing (see [../clustering/architecture.md](../clustering/architecture.md)) |
+- `ceremony.NewProviderCA(p)` builds the `ceremony.CeremonyCA` behind
+  `SignCSR` and `IssueCertificate`; it resolves signer and certificate from
+  `p` on every call, so a re-seal, a re-unseal or an HSM failover is
+  reflected immediately.
+- `cert.DefaultCertProvider` holds one `cakey.Provider` per tenant
+  (`cakey.SoftwareProvider` by default, or one from an injected factory), and
+  its `getCAMaterial` returns a `crypto.Signer`, not key bytes.
+- `clusterca.IssueLeafForKey(ctx, provider, pub, ...)` issues node leaves
+  and signs member-side cluster-join CSRs (see
+  [../clustering/architecture.md](../clustering/architecture.md)).
 
-**Never return or export a CA private key; only sign through the Signer**
-(the CA signer ruling). `cakey.Provider` is the enforcement point: nothing
-outside `pkg/cakey` ever holds `*ecdsa.PrivateKey` for a CA key again.
+**Never return or export a CA private key; only sign through the Signer.**
+`cakey.Provider` is the enforcement point.
 
 ### `cakey.SoftwareProvider` — the built-in backend
 
@@ -677,8 +654,7 @@ under `__sys:cluster_ca/` — no tenant, one per cluster — and **Key B, the
 per-tenant login CA**, one `cakey.SoftwareProvider` instance per tenant
 under `__sys:cert_ca/{tenantID}/`, resolved and cached lazily by
 `pkg/cert.DefaultCertProvider.resolveKeyProvider`. Both read and write the
-identical record shape this section describes; neither is a separate
-implementation any more. For an isolated tenant the Key B records are in the
+identical record shape this section describes. For an isolated tenant the Key B records are in the
 tenant's home store rather than the system store, and only the public CA
 certificate is published to the system store, at
 `__sys:cert_ca_pub/{tenantID}/certificate` (see `engineering.md`, "Storage
@@ -698,23 +674,16 @@ that sign. Holder enrolment refuses with `ErrCANotInitialized`
 (`FAILED_PRECONDITION`); `sign-csr` refuses earlier, because such a node's
 ceremony never reaches the `enrolling` state that verb requires.
 
-The key and certificate are now TWO SEPARATE records
-(`{prefix}material` for the private key, `{prefix}certificate` for the
-public CA certificate), written together in ONE atomic batch
-(`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`, guarded on both
-being absent) rather than one combined record written with a single
-`PutIfAbsent`. An earlier revision combined them into one JSON-encoded
-record specifically to make their creation atomic with a single
-`PutIfAbsent`; splitting them back out without losing that atomicity is
-exactly what the guarded-batch primitive is for, and it buys something the
-combined record could not: `Certificate(ctx)` on a cold cache now reads and
-parses ONLY the certificate record — the private-key record is never
-fetched, let alone parsed, unless something actually calls `Signer`. The
-guarded batch still makes "does either record already exist" and "write
-both" one indivisible step, so concurrent generation (several nodes racing
-to become the cluster's first) converges on exactly one CA, and a crash (or
-a write failure) between what would have been two separate writes cannot
-leave one record without the other.
+The key and certificate are two records (`{prefix}material` for the private
+key, `{prefix}certificate` for the public CA certificate), written together
+in one atomic batch (`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`,
+guarded on both being absent). `Certificate(ctx)` on a cold cache reads and
+parses only the certificate record; the private-key record is fetched only
+when something calls `Signer`. The guarded batch makes "does either record
+already exist" and "write both" one indivisible step, so concurrent
+generation (several nodes racing to become the cluster's first) converges on
+exactly one CA, and a crash or a write failure cannot leave one record
+without the other.
 
 The `crypto.Signer` `Signer` returns is opaque (`cakey.barrierCheckedSigner`
 internally): it cannot be type-asserted back to `*ecdsa.PrivateKey`, its
@@ -725,12 +694,10 @@ generation on every `Sign` call — a `Signer` obtained before either `Seal`
 or an external reseal refuses on its next `Sign`, even though the caller
 never goes back through the provider to find out.
 
-**The record carries no additional encryption of its own layered on by this
-package.** An earlier revision wrapped the key with the writing node's
-`seal.EncryptionBarrier` before the Put (`barrier.Encrypt`/`Decrypt` calls in
-`software.go`); because Key A's record is REPLICATED and every node's
-barrier is its own, not shared cluster-wide, every node other than the one
-that wrote it failed to decrypt its own copy. What protects Key A now is
+**The record carries no encryption layered on by this package.** Key A's
+record is replicated and every node's barrier is its own, so a record
+wrapped with the writing node's `seal.EncryptionBarrier` could be decrypted
+by no other node. What protects Key A is
 the same thing that protects every other system-shard record: this node's
 own at-rest storage encryption when one is configured (`pkg/seal/encfs`,
 transparent below `kvstore.KVStore`), cluster mTLS while Raft replicates the
@@ -740,11 +707,9 @@ for what that means for a backup, and that document's [Trust
 boundaries](../backup-restore/architecture.md#trust-boundaries) section for
 why `backup:create`/`backup:read` are full access to this key material, not
 a narrower "backup data" scope, and belong only to fully trusted operators.
-`seal.EncryptionBarrier` is still a
-constructor argument, but `SoftwareProvider` now consults it only for
-`IsSealed()`: CA material is generated, adopted, signed with, or read only
-while unsealed, exactly as before, but that gate no longer performs any
-encryption of its own.
+`seal.EncryptionBarrier` is a constructor argument that `SoftwareProvider`
+consults only for `IsSealed()`: CA material is generated, adopted, signed
+with, or read only while unsealed.
 
 Because `kvstore.MultiGuardedBatchKVStore` is the same interface in
 standalone mode (the local store, backed by the same in-process
@@ -757,12 +722,12 @@ same CA.
 
 ### Injection
 
-An embedder supplies its own `cakey.Provider` through a `With*` option on
-`qrdbd`, `sdk/go/node`, and the embedded SDK alike:
+An embedder supplies its own CA keys through `sdk/go/node` options:
 
 - `WithClusterCAKeyProvider(cakey.Provider)` — replaces Key A: one key,
   cluster-wide, no tenant concept.
-- `WithCertKeyProviderFactory(cakey.ProviderFactory)` — replaces Key B:
+- `WithCertKeyProviderFactory(cakey.ProviderFactory)` (also a `pkg/server`
+  `ServerOption` of the same name) — replaces Key B:
   `pkg/cert`'s login CA. **Not a bare `cakey.Provider`** — see
   `cakey.ProviderFactory`, below, for why Key B's seam is asymmetric with
   Key A's.
@@ -781,33 +746,27 @@ capabilities named by this seam follow from THAT alone, for every caller:
   `clusterca.IssueLeafForKey` reads the signing key through `ClusterCAProv`,
   the same seam.
 
-**Member-side CSR join signing is a THIRD, separate capability that only
-`cmd/qrdbd` wires.** `cmd/qrdbd`'s `start` command starts
-`clusterenroll.StartJoinServer` (the Noise_NK listener) and registers
-`server.WithClusterJoin` (the SPKI/Direct `/v1/enroll/join` route) itself,
-in `cmd/qrdbd/start.go`, passing `svcNode.ClusterCAProv` into both — this is
-daemon-specific wiring, not something `lifecycle.BuildServices` does on any
-caller's behalf. `sdk/go/node` does not call either: a `cakey.Provider`
-injected through `WithClusterCAKeyProvider` on an `sdk/go/node` composition
-backs the ceremony CA and node-leaf issuance, but that node runs no
-join listener and registers no `/v1/enroll/join` route, so it cannot sign a
-join for another node, and `service.ClusterJoinTokenMinter` is never
-satisfied on it either (see
+**Member-side CSR join signing is the third capability, and
+`lifecycle.StartClusterJoin` wires it, not `lifecycle.BuildServices`.**
+`cmd/qrdbd`'s `start` and a clustered `sdk/go/node` node both call it with
+the node's `ClusterCAProv`. With a cluster CA key it records the node's own
+identity as admitted and, when join is enabled, starts the join listener
+(`clusterenroll.StartJoinServer`), contributes the `/v1/enroll/join` route
+(`server.WithClusterJoin`, through `ClusterJoin.ServerOptions`) and binds the
+admin join-token verb (`service.ClusterJoinTokenMinter`) to the store the
+listener consumes tokens from (see
 [../clustering/architecture.md](../clustering/architecture.md#join-token-minting)).
-An embedder that wants its own node to admit others over member-side CSR
-join must call `clusterenroll.StartJoinServer` / wire the REST route itself,
-exactly as `cmd/qrdbd` does, passing the same `ClusterCAProv` the node
-already holds.
+Without a cluster CA key (operator-supplied TLS) there is nothing to sign a
+joiner's CSR with, and an enabled join is not started.
 
 **Two options, not one role-parameterized option.** Key A and Key B are
-separate trust domains by ruling (a leaked login CA must not mint node
+separate trust domains (a leaked login CA must not mint node
 certificates); one option accepting a "role" argument would let a caller
 wire the *same* provider instance to both roles by mistake, silently
 collapsing the separation the two-key design exists to hold. Two distinctly
 named options make that mistake require two separate, deliberate lines.
 
-**The two options are not symmetric in shape, either, and that is deliberate
-(owner ruling).** Key A has no tenant concept — one cluster, one key — so
+**The two options are not symmetric in shape, either, and that is deliberate.** Key A has no tenant concept — one cluster, one key — so
 `WithClusterCAKeyProvider` takes a bare `cakey.Provider`. Key B is
 per-tenant BY DEFINITION: the built-in path already constructs one
 `cakey.SoftwareProvider` per tenant (its own storage prefix, its own
@@ -859,7 +818,7 @@ type.
 Key A must exist before the cluster — and before any store — does. The
 first node:
 
-1. Generates Key A in memory (unchanged from today).
+1. Generates Key A in memory.
 2. Uses it immediately to sign its own node leaf and, if the initial M-of-N
    ceremony runs before the barrier exists, the first officers' CSRs — via a
    `cakey.StaticProvider` wrapping the in-memory signer, so this step goes
@@ -898,7 +857,7 @@ session: it only accepts a call while the ceremony is still `enrolling`, so
 there is no post-unseal path to mint a new officer CSR this way.
 **Verifying a certificate an officer already holds needs only the CA
 certificate**, which is public and already part of every node's cached TLS
-identity — so an existing officer unseals exactly as before; minting a *new*
+identity — so an existing officer can always unseal; minting a *new*
 CSR-signed holder certificate through this verb is only possible during the
 ceremony, never after.
 
@@ -908,7 +867,7 @@ ceremony, never after.
 |---|---|---|
 | `cakey.Provider`, `cakey.SoftwareProvider`, `cakey.StaticProvider`, `cakey.Adapter` | `pkg/cakey` | go-qrdb |
 | `CertProvider` interface, `DefaultCertProvider` (Key B, over a `cakey.Provider`) | `pkg/cert` | go-qrdb |
-| Cluster CA (Key A, over a `cakey.Provider`) | `pkg/clustertls`, `pkg/clusterenroll` — see [../clustering/](../clustering/) | go-qrdb |
+| Cluster CA (Key A, over a `cakey.Provider`) | `pkg/clusterca`, `pkg/clustertls`, `pkg/clusterenroll` — see [../clustering/](../clustering/) | go-qrdb |
 | At-rest protection of the CA key | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
 | Certificate-to-user binding | `pkg/user` — see [../identity-rbac/](../identity-rbac/) | go-qrdb |
 | Ceremony CA adapter (`LocalCA` over raw PEM, `ProviderCA` over `cakey.Provider`) | `pkg/ceremony` — see [../ceremony/](../ceremony/) | go-qrdb |
@@ -921,16 +880,15 @@ thin adapters, which is what lets the ceremony run against any of them.
 
 ## Key B trust on the client-facing listeners
 
-Before this, a Key B-issued certificate could never authenticate to this
-node's own mTLS listener on any transport: `ClientCACertPool` was built once,
-at TLS setup, from Key A plus operator-configured client CA files only, and
-Key B's CA certificate (generated lazily, inside a sealed barrier, per
-tenant) had no path into it. `test/integration/api/cli_tenant_identity_ca_test.go`
-pinned this as a documented parity gap; its step 7 now asserts the login
-succeeds.
+A Key B-issued certificate authenticates to this node's own mTLS listeners
+on every transport. Key B's CA certificates are generated lazily, inside a
+sealed barrier, per tenant, so a client CA pool built once at TLS setup
+(`ClientCACertPool`, Key A plus operator-configured client CA files) cannot
+hold them; `test/integration/api/cli_tenant_identity_ca_test.go` asserts the
+login.
 
-The fix is a dynamic trust pool, not a static one seeded at boot, and it is
-ONE implementation (`pkg/clienttrust`) every composer wires rather than three
+The trust pool is therefore dynamic, not seeded at boot, and it is ONE
+implementation (`pkg/clienttrust`) every composer wires rather than three
 copies of the same logic:
 
 - **Client-facing listeners (REST, gRPC, Unix, QUIC, MCP)** verify a
@@ -970,19 +928,17 @@ copies of the same logic:
     never stickily. The composer's obligation — unconditionally
     wiring this SAME pool as the `auth.IssuerVerifier` at the
     authentication layer, regardless of whether a cluster CA happens to
-    exist — is what actually closes the gap a security review found: Key B
-    trusted at the TLS layer with the binding unenforced at the
-    authentication layer. `Pool` cannot verify that obligation for itself;
+    exist — is what keeps Key B from being trusted at the TLS layer with
+    the binding unenforced at the authentication layer. `Pool` cannot verify that obligation for itself;
     see `SetKeyBProvider`'s own doc comment.
   - **The handshake never reads storage, and the rebuild can never
-    generate a CA** (owner ruling). `GetConfigForClient` only loads an
+    generate a CA.** `GetConfigForClient` only loads an
     immutable snapshot from an `atomic.Pointer` and, at most, clones a
     pool; `Pool.Run`, started once by the composer for the life of the
     process, builds that snapshot from storage. A storage read held up by
     a leader election (the replicated read waits up to 10 seconds for a
-    leader) used to sit inside the handshake and outlast its 5-second
-    deadline, so clients saw a closed connection on every election; now
-    the handshake returns at once with the last snapshot built. The
+    leader) would outlast the handshake's 5-second deadline, so the
+    handshake returns at once with the last snapshot built. The
     rebuild's own read is bounded as a second line of defence
     (`refreshTimeout`, 2 seconds, well inside the handshake deadline). The
     cluster-CA half of the rebuild
@@ -990,7 +946,7 @@ copies of the same logic:
     `cakey.CertOnlyProvider.CertificateOnly` when the wrapped provider
     offers it, so trust-pool maintenance can never establish a self-issued
     cluster's Key A as a side effect — every composer instead calls the
-    new `lifecycle.EstablishClusterCA` once, deliberately, during startup.
+    `lifecycle.EstablishClusterCA` once, deliberately, during startup.
   - **The snapshot is rebuilt on every invalidation and every 2 seconds**
     (`poolCacheTTL`). Scanning and parsing every tenant's CA certificate
     costs ~20ms at 1,000 tenants; the handshake pays none of it.
@@ -1012,8 +968,8 @@ copies of the same logic:
     effective `tls.Config` wholesale, so REST/gRPC/Unix/MCP's TLS 1.3
     `MinVersion` floor and QUIC's exclusive ALPN protocol pin would
     otherwise be silently lost on any connection that takes the dynamic
-    (widened) path — proven as a measured TLS 1.2 downgrade and an ALPN
-    mismatch before this helper existed. `ReassertListenerTLS` clones the
+    (widened) path, as a TLS 1.2 downgrade or an ALPN mismatch.
+    `ReassertListenerTLS` clones the
     base config, applies the override, and — when the base already carries
     a dynamic hook — wraps it so the SAME override is reasserted on
     whatever config the hook returns.
@@ -1046,7 +1002,7 @@ copies of the same logic:
 - **The on-behalf cluster-forwarding path is gated the same way.** A
   follower's forwarded write is authenticated by `forward.ClusterPeer`,
   which checks only that the peer certificate carries a node-scoped SPIFFE
-  SAN — a SHAPE check, not an issuer check. With every tenant's Key B CA now
+  SAN — a SHAPE check, not an issuer check. With every tenant's Key B CA
   trusted on the same listener, a Key B leaf carrying a forged node SPIFFE
   SAN would otherwise pass that check and present an honored assertion AS
   THE CLUSTER. `AuthMiddleware.authenticateOnBehalf` additionally requires
@@ -1055,19 +1011,21 @@ copies of the same logic:
   authenticator use — before honoring the assertion, failing closed when no
   verifier is wired.
 - **The peer/Raft/enrollment transport trusts Key A only, never Key B.** It
-  never shares the client-facing listeners' `*tls.Config`: `buildHostConfig`
-  constructs `quicraftconfig.MTLSConfig` directly from `bundle.CACertPEM`
-  (Key A), so a Key B leaf (a tenant login certificate) presented there is
-  refused without any extra code -- this is the enforcement of the "separate
-  trust domains" ruling at the transport layer, not only at the issuance
-  layer. `pkg/clustertls/peer_trust_domain_test.go` reproduces the same
+  never shares the client-facing listeners' `*tls.Config`: `initializeNode`
+  (`cmd/qrdbd/start.go`) constructs `quicraftconfig.MTLSConfig` directly from
+  the TLS bundle's `CACertPEM` field (Key A) and hands it to
+  `buildHostConfig`, so a Key B leaf (a tenant login certificate) presented
+  there is refused without any extra code -- the two keys are separate trust
+  domains at the transport layer, not only at the issuance layer.
+  `cmd/qrdbd/peer_trust_domain_test.go`
+  (`TestPeerTransport_TrustsClusterCAOnly_KeyBLeafRefused`) reproduces the same
   `ClientCAs`/`ClientAuth` shape over real `crypto/tls` and proves a Key B
   leaf is refused there while a Key-A-signed node leaf is accepted.
 
 ## Issuer-tenant binding
 
-Trusting every tenant's Key B CA on ONE shared listener creates a new
-question the pre-shared-pool design never had to answer: a presented
+Trusting every tenant's Key B CA on ONE shared listener raises a question: a
+presented
 certificate verifies against SOME CA in the pool, but which one, and does it
 match the tenant the certificate's own Subject OU (or SPIFFE SAN) claims?
 Without an answer, tenant A's Key B CA could mint a leaf naming tenant B in
@@ -1119,8 +1077,7 @@ the other:
   Failing those, the chain may contain one of **that tenant's registered
   trust anchors** at any depth above the leaf, which is why
   `VerifyIssuer(ctx, tenantID, chain)` takes the whole verified chain rather
-  than the issuer alone (**BREAKING** for an `auth.IssuerVerifier`
-  implementer). See [../trust-anchors/engineering.md](../trust-anchors/engineering.md).
+  than the issuer alone. See [../trust-anchors/engineering.md](../trust-anchors/engineering.md).
 
   A mismatch is `*auth.IssuerTenantMismatchError`, matching
   `ErrInvalidCertificate` like `CertificateTenantError`.
@@ -1143,16 +1100,14 @@ operator-supplied additional client CA that is neither — which is why the
 pool must be wired consistently with whatever the listener's TLS layer
 actually trusts (see `SetClusterCA`/`SetKeyBProvider` above). A `nil`
 `IssuerVerifier` (a composer with no cluster CA resolved at all) leaves the
-check unenforced on both paths, matching the posture before it existed —
-but that is the ONLY case left unenforced, not every case lacking a Key B
-provider.
+check unenforced on both paths — but that is the ONLY case left
+unenforced, not every case lacking a Key B provider.
 
 ## Trust boundaries
 
 - **Each tenant's CA key is stored like every other replicated system
-  record — no additional per-record encryption of its own** (the owner's
-  CA-at-rest ruling; see "Trust boundaries" in the backup-restore feature
-  for what actually protects it). The IN-MEMORY cache is a different
+  record — no additional per-record encryption of its own** (see "Trust boundaries" in the
+  backup-restore feature for what actually protects it). The IN-MEMORY cache is a different
   matter: whenever established, the key lives in a `secure.Secret`
   (go-enclave protected memory, AES-256-GCM under the process Sealer),
   never a bare `*ecdsa.PrivateKey`; `Signer` opens it into an mlocked
@@ -1162,13 +1117,10 @@ provider.
   returns `BarrierSealedError`.
 - **`getCAMaterial()` resolves the SPECIFIC tenant's CA directly** through
   the `cakey.Provider` it just resolved (`prov.Signer`/`prov.Certificate`),
-  never through any shared, process-wide cache. Two different tenants'
-  calls can interleave — `getCAMaterial` is called from `IssueClientCert`
-  and `ExportPKCS12`, neither of which holds any lock across the call — so
-  returning anything other than THIS resolution's own answer would risk
-  handing one tenant's caller a different tenant's CA certificate.
-  `ExportPKCS12` resolves the exporting leaf's OWN tenant (from its Subject
-  OU) the same way, for the same reason.
+  never through any shared, process-wide cache. `IssueClientCert`, its
+  caller, holds no lock across the call, so two tenants' calls can
+  interleave; returning anything other than THIS resolution's own answer
+  would risk handing one tenant's caller a different tenant's CA.
 - **The built-in per-tenant CA key is never auto-created by a read.**
   `IsTenantIssuer` — reached on the authentication path for whatever tenant
   a presented leaf CLAIMS to be, including tenants that do not exist — is
@@ -1182,7 +1134,7 @@ provider.
   answers `false`, never minting one as a side effect of being asked about.
   `Initialize`'s own auto-init-on-first-use path is safe under concurrency
   without any lock of `pkg/cert`'s own: `cakey.SoftwareProvider.Initialize`
-  writes its material through `kvStore.PutIfAbsent`, the atomic primitive
+  writes its two records through `PutAllIfAllUnchanged`, the guarded batch
   that makes "does it already exist" and "write it" one indivisible step,
   so two callers racing the first-ever issuance for a brand-new tenant
   converge on exactly one CA rather than each writing its own candidate.
@@ -1200,11 +1152,8 @@ provider.
   (`certs:issue`, `certs:enroll`, `certs:revoke`, `certs:list`).
 - **An injected `cakey.ProviderFactory` (`WithKeyProviderFactory` /
   `WithCertKeyProviderFactory`) replaces the built-in per-tenant default
-  one tenant at a time, never with one shared CA** (owner ruling — this
-  reverses an earlier revision of this document, which described a single
-  injected `cakey.Provider` serving every tenant; that shape made the
-  issuer-tenant binding vacuous and is no longer how this seam is typed).
-  `resolveKeyProvider` calls
+  one tenant at a time, never with one shared CA.** `resolveKeyProvider`
+  calls
   `factory.ProviderForTenant(tenantID)` for the SAME `tenantID` every other
   accessor on the path is resolving for, so `IsTenantIssuer` compares each
   tenant's CLAIMED certificate against THAT tenant's own registered CA,
@@ -1218,11 +1167,9 @@ provider.
   drops every per-tenant CA it is switching away from**: nothing migrates
   existing tenants' Key B CAs onto the newly injected factory, and the
   built-in per-tenant material under `__sys:cert_ca/{tenantID}/` is not
-  deleted but is also no longer consulted — any login certificate still
-  anchored at a now-orphaned per-tenant CA stops authenticating. This is a
-  deliberate, operator-chosen transition, not an upgrade path; see the
-  BREAKING entry in the changelog for the inverse direction (adopting
-  per-tenant CAs for the first time).
+  deleted but is not consulted — any login certificate still anchored at an
+  orphaned per-tenant CA stops authenticating. This is a deliberate,
+  operator-chosen transition, not an upgrade path.
 
 ## What this feature deliberately does not do
 

@@ -1,13 +1,10 @@
 # Certificate Authority — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
-Command group: `qrdb ca` — post-init Certificate Authority operations. **This
-is the canonical CA surface; it replaces the legacy `certs` group.**
-
-`qrdb certs` has been removed outright. An operator who runs it gets cobra's
-normal "unknown command" error, not a redirect.
+Command group: `qrdb ca` — post-init Certificate Authority operations. It is
+the only CA command group; there is no `qrdb certs`.
 
 All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).
@@ -44,9 +41,6 @@ qrdb ca issue --username svc-import --csr svc-import.csr --ttl 720h --out ./svc
 There is no `--tenant-id`: the tenant is always yours. Only the CSR's key is
 used — the certificate names the account you pass, whatever the CSR's Subject
 says. The certificate carries `ClientAuth` extended key usage only.
-
-**BREAKING:** `qrdb ca issue` no longer has the server generate the key, and
-its `--tenant-id` flag is removed.
 
 ## `qrdb ca enroll`
 
@@ -139,7 +133,7 @@ qrdb ca list --tenant-id acme --output json
 
 ## `qrdb ca info` and `qrdb ca bundle`
 
-**Both are aliases for `list` today.** The help text says so directly:
+**Both are aliases for `list`.** The help text says so directly:
 
 - `info` — CA-only metadata such as DN, fingerprint and validity is **not yet
   exposed through the SDK**.
@@ -173,9 +167,8 @@ the not-revoked answer for `auth.revocation_cache_ttl` (default `30s`), and
 authenticates**. Set it to `0` to close the window entirely.
 
 **Revoking a serial this node holds no record for requires platform-operator
-authority.** The behaviour is unchanged — the marker is written and the serial
-is denied from then on, which is what revoking a peer-issued certificate needs
-— but only an identity in the `system` tenant holding `certs:revoke:cross` may
+authority.** The marker is written and the serial is denied from then on, which
+is what revoking a peer-issued certificate needs, but only an identity in the `system` tenant holding `certs:revoke:cross` may
 ask for it. A serial that matches no record names no tenant, so there is no way
 to tell "revoke a peer's certificate" from "revoke another customer's
 certificate", and the marker applies cluster-wide to both. A tenant admin
@@ -218,24 +211,26 @@ certificates of a customer tenant. Each tenant's own Admin does that. A new
 tenant's **first** admin certificate is the one exception, and it is issued at
 tenant creation — see [../multi-tenancy/cli.md](../multi-tenancy/cli.md).
 
-`ca export-bundle` names no tenant: it re-encodes the certificate and key you
-supply, and the server holds neither.
+`ca export-bundle` names no tenant: it runs locally and contacts no server.
 
 ## `qrdb ca export-bundle`
 
-Export a certificate and key as a PKCS#12 archive.
+Build a PKCS#12 archive from a certificate and its private key, both already on
+this machine. No server is contacted: the key leaves the machine only inside
+the archive written to `--out`.
 
-Unavailable when the daemon runs with `GODEBUG=fips140=only`: the format's
+Unavailable when the CLI runs with `GODEBUG=fips140=only`: the format's
 `localKeyId` attribute is a SHA-1 certificate fingerprint, which the Go
 Cryptographic Module refuses to compute under strict enforcement. See
 [../seal/fips140-mode.md](../seal/fips140-mode.md).
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--cert-pem` | string | path to the certificate PEM |
-| `--key-pem` | string | path to the private key PEM |
-| `--out` | string | output path for the `.p12` archive |
-| `--passphrase` | string | passphrase for the archive |
+| `--cert-pem` | string | required; path to the certificate PEM |
+| `--key-pem` | string | required; path to the private key PEM |
+| `--ca-pem` | string | optional; path to an issuer certificate PEM to embed in the archive's chain |
+| `--out` | string | required; output path for the `.p12` archive |
+| `--passphrase` | string | required; passphrase for the archive |
 
 ```bash
 qrdb ca export-bundle --cert-pem alice/cert.pem --key-pem alice/key.pem \
@@ -256,7 +251,7 @@ That route exists only when a bootstrap certificate is configured — see
 
 ## When the barrier is sealed
 
-`issue`, `delegate`, `revoke`, `export-bundle` and `list` all fail with a
+`issue`, `delegate`, `revoke` and `list` all fail with a
 barrier-sealed error, because the CA private key is destroyed in memory on seal.
 Unseal first: [../barrier-seal/cli.md](../barrier-seal/cli.md).
 
@@ -273,7 +268,3 @@ qrdb roles assign --user <user-id> --role <role-id>
 ```
 
 See [../identity-rbac/cli.md](../identity-rbac/cli.md).
-
-## Parity
-
-Every verb here has a `CommandDefinition` in the integration parity suite.

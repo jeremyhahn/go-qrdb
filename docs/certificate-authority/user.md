@@ -1,6 +1,6 @@
 # Certificate Authority — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Every caller authenticates with a client certificate. This is where they come
@@ -195,12 +195,11 @@ Until then, short TTLs are the mitigation.
 
 **`qrdb ca info` and `qrdb ca bundle` returned a list of certificates.** They
 are aliases for `list`. CA-only metadata and a CA+chain bundle export are not
-exposed through the SDK yet — the verbs exist to keep the canonical tree
+exposed through the SDK — the verbs exist to keep the canonical tree
 complete. The help text says this too.
 
-**`qrdb certs` is an unknown command.** The group was renamed to `qrdb ca`
-and `certs` has been removed outright, not kept as a redirect. Note the REST
-paths were **not** renamed and are still `/certs/...`.
+**`qrdb certs` is an unknown command.** The CA command group is `qrdb ca`.
+The REST paths are `/certs/...`.
 
 **The certificate authenticates but you cannot do anything.** Authentication and
 authorization are separate. Check the user binding and the role assignment.
