@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.51.0-alpha] - 2026-10-21
+
 ### Added
 
 - **A FIPS-approved P-256 bootstrap suite beside Noise NK** (#118). The anchor
@@ -25,7 +27,53 @@ are not reconstructed here — their history is in the git log.
   a node joins through a changed listener. See
   `docs/clustering/architecture.md`.
 
+- **ABAC condition values may be RFC 8259 quoted strings** (#756, #900; #819,
+  #945). A condition value is parsed as a JSON string, so quoting is the one
+  standard escape.
+- **A workload SPIFFE ID names its tenant as the trust domain** (#804; #885),
+  and `DelegatedContext` presents a tenant-issued delegation in-process (#873;
+  #887).
+- **Per-node tenant barrier init through the `BarrierKeyProvider`**, created as
+  passphrase from the start (#683; #812).
+- **gRPC-Web for hosted modules** served through the gRPC server's own handler
+  (#808; #831), and a `HandleOptional` route mode on `ModuleHTTPRegistrar`
+  (#783; #786).
+- **Users suspend and unsuspend on every transport and the CLI**, with typed
+  refusals on QUIC and MCP (#801, #807; #815).
+- **RBAC: own permissions, endpoint `Authorize`, the network `RBACClient` and
+  the CLI** (#753; #793); device-onboarding and OTA activate/confirm
+  permissions, carried by the built-in Admin (#737; #825).
+- **`sdk/go` re-exports**: `WithRegisterPINBackend` (#881; #884),
+  `SystemBarrierInitRefusedError` and `ceremony.InitializeOptions` (#823;
+  #830), `CompactionPolicy` (#820; #821), `IndexServicer` and
+  `NewIndexService` (#928; #937), `ServiceBatchServicer` with the batch
+  revision on every transport (#797; #800).
+- **A tenant create that is undone leaves a tombstone** every serving node
+  reconciles and acknowledges (#774; #829).
+
 ### Changed
+
+- **A rolling seal migration hands the turn on only after the owner's Raft log
+  caught up** (#803; #827). `TenantOwner` is decided by the hydrator, never
+  carried from the verifier (#897; #932).
+- **CI**: ci-template v1.22.1 and v1.23, one image job and cache volumes (#798,
+  #810; #802, #817), the integration image built once per runner (#813; #814,
+  #841), the main concurrency group per event (#933), and `deps-check`
+  reporting a module release younger than 7 days instead of failing (#941);
+  the Trivy gates take the database from the forge's bridge first (#770).
+- **Dependencies**: roaring v2.30.0 (#926), genproto rpc (#888), quic-go
+  v0.64.1 (#850), wails v2.17.0 (#790).
+- **Docs and gates**: standards index and status banners (#752, #634; #757,
+  #768), SPEC and ROADMAP rows (#734, #927, #928; #765, #782, #788, #931),
+  deadcode deletion (#350; #811).
+- **Trains**: #729, #746, #763, #766, #780, #789.
+- **Tests**: coverage added across the packages (#832, #833, #834, #835, #836, #837, #838, #839, #840, #842, #844, #845, #846,
+  #848, #849, #851, #852, #853, #854, #855, #856, #857, #858, #859, #860, #861,
+  #862, #863, #864, #865, #866, #867, #868, #869, #870, #871, #872, #874, #875,
+  #883, #889; #767), the coverage baseline refreshed (#886),
+  and timing-dependent tests made deterministic (#773, #779, #784, #799, #816,
+  #818, #822, #843, #877); the mocked Playwright tier serves the production
+  bundle (#880, #892).
 
 - **The isolation policy governs isolated tenants only** (**BREAKING**). A
   shared (`prefix`) tenant is never refused by the cluster floor or by its own
@@ -57,6 +105,18 @@ are not reconstructed here — their history is in the git log.
   unsealed. Existing `barrier` tenants are re-created.
 
 ### Fixed
+
+- **Every node serves CA operations from the replicated Key A**, and Admin
+  holds `tenant_barrier:status` (#812; #943).
+- **Concurrent database creates write their metadata without colliding** (#882),
+  and a failed create removes only the directory it made (#876).
+- **Index writes surface old-value read faults** and batch duplicate puts
+  (#847, #842).
+- **`enable-encryption` authorizes per scope and forwards to the leader on every
+  transport** (#791, #794; #787).
+- **Tenant teardown sees shards still starting** (#778), and **a lease renewal
+  cannot succeed for a lease its expiry is revoking** (#772).
+- **The main build restored** after #885 (#935).
 
 - **A value a barrier stores is no longer lost to a WAL epoch purge.** The
   system barrier and every isolated tenant's barrier double as their Raft
