@@ -1,22 +1,20 @@
 # Databases — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > This document has two layers, and each section says which layer it is in.
 >
-> - **Current state** sections describe the code as shipped and measured. Where
->   the previous revision of this document claimed more than the code does, the
->   claim is corrected here (see "Corrections to earlier revisions").
+> - **Current state** sections describe the code as shipped.
 > - **Target design** sections are the requirements contract for the
 >   multi-model database program: every database supports every engine on the
->   storage backend it chose, for every tenant isolation mode. They are
->   approved. Of the design, only ruling 3 below
->   (the `engine` field's removal, OD-12/OD-13) has shipped so far, as Lane 1C;
->   the rest of the program is not implemented yet. Every design question the
->   rulings did not settle is listed, with its options and the ruling, in
->   "Decisions ruled by the owner" at the end.
+>   storage backend it chose, for every tenant isolation mode. Of the design,
+>   rule 3 below (the `engine` field's removal) has shipped, and
+>   `database.ResolveBinding` (`pkg/database/binding.go`) with its typed
+>   refusals is written but has no production caller; the rest is not
+>   implemented. Every design question, with its options and the decision, is
+>   in "Decisions" at the end.
 
 ## Problem
 
@@ -30,9 +28,7 @@ A database is the unit at which those choices are made. For that to mean
 anything, the choice a database records has to be the choice its data actually
 lives under, for every kind of data it holds.
 
-## Rulings this design implements
-
-These are owner rulings. They are not reopened here.
+## Rules this design implements
 
 1. **Databases are multi-model.** Every database supports every engine — plain
    KV, MVCC and transactions, SQL/relational, collections, secondary indexes,
@@ -42,21 +38,21 @@ These are owner rulings. They are not reopened here.
    honoured by every engine. No node flag, no SQL statement and no boot path
    substitutes its own backend for the one the database recorded.
 3. **The `engine` field is removed** from the database configuration, the
-   persisted metadata and every API. **Shipped (Lane 1C).**
+   persisted metadata and every API. **Shipped.**
 4. **Vector and time series work the same way as every other engine** and are
    tenant scoped: they live in the database's storage binding, under the
    tenant's encryptor and data root.
-5. Custodian and secret-material rulings are unaffected by this design.
+5. Custodian and secret-material handling is unaffected by this design.
 6. **The database drop fence ships behind a cluster feature gate**, and so does
    every new Raft command this program adds (the vector commands and the
    time-series retention command). A node proposes a gated command only once the
    gate reports that every member of the group applies it; until then the
    capability that needs it is refused with a typed error rather than proposed
    into a group that would reject it.
-7. **Every open decision is ruled.** The ruling is every
-   recommendation in "Decisions ruled by the owner" below (OD-1 to OD-16).
+7. **Every design question is decided**, in "Decisions" below (OD-1 to
+   OD-16).
 
-## Current state (measured)
+## Current state
 
 ### What decides where a database's data lives today
 
@@ -71,7 +67,7 @@ node-level settings decide instead.
 | Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector | **no** |
 | Raft tenant | a dedicated Raft group per database on the system host | all except vector | forced to `raft` |
 
-Supporting facts, each located in the code by reading it:
+Supporting facts:
 
 - `database.Manager` opens a per-database store through `openStorage`
   (`pkg/database/factory.go`). That store is read by exactly one resolution
@@ -89,13 +85,11 @@ Supporting facts, each located in the code by reading it:
   isolation mode, so the database's data is served from the shared system shard.
   A per-database barrier on such a database would therefore not be on its
   data path, so creation refuses one with `database.BarrierOffDataPathError`
-  (as it does for every database of a volume- or raft-isolated tenant). A
-  barrier-enabled record written before that refusal opens sealed, and the
+  (as it does for every database of a volume- or raft-isolated tenant). An
+  existing barrier-enabled record of such a database opens sealed, and the
   service registry refuses every engine of a sealed database with
   `service.BarrierSealedError`, so it fails closed rather than serving the
-  shared shard. *(Corrected: an earlier revision of this design, written
-  before the refusal shipped, recorded that creation accepted such a barrier
-  and that sealing it did not fail the data closed.)*
+  shared shard.
 - `restServiceRegistry.resolve` (`pkg/server/rest_registry.go`) routes every
   other database to the shared default service set under the composite
   `<tenant>/<db>/` prefix, regardless of the database's recorded backend.
@@ -103,9 +97,7 @@ Supporting facts, each located in the code by reading it:
   backend is taken from **`databases[0].backend`** in the configuration file —
   the first database's setting is applied to every database on the node
   (`cmd/qrdbd` start path, `sdk/go/node.resolveBackend`).
-- SQL `CREATE DATABASE` hardcodes `backend: pebble` (`pkg/sql/provider`; its
-  `engine: kv` half is gone along with the `engine` concept, Lane 1C), and the
-  daemon's `--sql-database` auto-provisioning derives the backend from `--sm`.
+- SQL `CREATE DATABASE` hardcodes `backend: pebble` (`pkg/sql/provider`), and the daemon's `--sql-database` auto-provisioning derives the backend from `--sm`.
 - **Vector** is one node-local Pebble store at `{DataDir}/vector`, shared by
   every tenant and every database on the node, encrypted under the system
   encryptor, and isolated only by a key prefix on the namespace name
@@ -125,40 +117,15 @@ Supporting facts, each located in the code by reading it:
   apply batch; there is no separate in-memory fallback.
 - Every backend — memory, file, pebble and objstore — composes the
   MVCC-capable engine (`pkg/server/lifecycle.NewLocalEngine`). The plain KV
-  engine (`pkg/engine/kv_engine.go`) is no longer composed by any production
+  engine (`pkg/engine/kv_engine.go`) is not composed by any production
   composition root. The objstore batch is atomic (all-or-nothing after
   recovery, via a commit journal), matching the file backend.
 - **Remote-mode databases** (`mode: remote` with a `connection`) are validated
   and persisted, and the factory never constructs the remote proxy: such a
   database is opened on a local store like any other.
-
-### Corrections to earlier revisions
-
-Earlier revisions of this folder were wrong, or silent, on these points:
-
-- they said each database's backend is where its data lives — true only for the
-  paths marked "partly" and "forced" above;
-- they listed the backends as `pebble`, `memory`, `file`, `raft` — `objstore` is
-  also accepted by validation, and then refused when the store is opened;
-- they listed the engines as `kv`, `timeseries` — `vector` is also accepted;
-- they said nothing about where vector data lives, which is the node-local store above
-  rather than any database's store;
-- *(Lane 1A, 2026-10)* they said time series needed a raw `*pebble.DB` and wrote
-  outside the apply batch, secondary indexes fell back to an in-memory
-  implementation without one, file and objstore composed the plain KV engine,
-  and the objstore batch was best effort — all five are now storage-generic
-  and batch-atomic on every backend (see "Target: phased implementation
-  plan", Lane 1A, in engineering.md).
-- they said enabling etcd on a database that is not `kv` on `raft` is rejected at
-  configuration time — no such check existed in the database, configuration or
-  etcd server code. The engine half was then enforced: etcd on a non-`kv`
-  database was refused at create and on update with
-  `database.EtcdEngineUnsupportedError`. The backend half was not, and the
-  listener served any backend; the target design adds that check (see
-  "Combinations that are refused"). **Superseded by Lane 1C:** the `engine`
-  concept and `EtcdEngineUnsupportedError` are deleted outright (OD-12,
-  OD-13), so there is no longer an engine half to enforce — etcd serves any
-  database on a raft-mode node regardless of what it stores.
+- The etcd protocol serves a database of any backend on a raft-mode node;
+  nothing on the data path checks the backend (the target design adds that
+  check, "Combinations that are refused").
 
 ## Target design — shape chosen
 
@@ -223,7 +190,7 @@ Build(host) → the full service bundle, cached per (tenant, database, generatio
 the matrix below. `Materialize` opens or attaches the store and host exactly
 once per binding per node. A request resolves `(tenant, database)` to its
 binding and is served by that binding's bundle. The composite
-`<tenant>/<db>/` key prefix is no longer part of the data plane of any
+`<tenant>/<db>/` key prefix is not part of the data plane of any
 database that has its own store.
 
 ### Tenant isolation × backend composition
@@ -235,7 +202,7 @@ two compose; neither overrides the other.
 | Tenant isolation | Data root of the database's store | Encryptor | Host for `backend: raft` |
 |---|---|---|---|
 | `prefix` | node data root, `{DataDir}/tenants/<tenant>/databases/<db>` | the node at-rest encryptor — prefix isolation is, by definition, a tenant with no key of its own | system host, shared log |
-| `barrier` | node data root, as above | **the tenant's barrier** — the barrier now covers the tenant's database data, not only its IAM data | system host, shared log |
+| `barrier` | node data root, as above | **the tenant's barrier** — the barrier covers the tenant's database data, not only its IAM data | system host, shared log |
 | `volume` | the tenant's `DataRoot`, `{DataRoot}/databases/<db>` | the tenant's barrier | the tenant's own host, log under its `DataRoot` |
 | `raft` | the tenant's `DataRoot`, `{DataRoot}/databases/<db>` | the tenant's barrier | system host, shared log or the tenant's dedicated WAL |
 
@@ -248,38 +215,36 @@ Rules that hold in every cell:
 - **An explicit `data_dir` must lie under the tenant's data root** for volume
   and raft tenants, as today.
 - **A per-database barrier layers on the binding**, it does not replace the
-  tenant's (OD-6, ruled A). Every database now has a store of its
-  own, so the old refusal of a barrier on a shared store no longer has a shared
-  store to refuse; what remains is the refusal on `memory`, below.
+  tenant's (OD-6). Every database has a store of its own, so the only
+  barrier refusal is the one on `memory`, below.
 - **A sealed barrier — the tenant's or the database's — fails every engine of
   the database closed**, vector and time series included.
 
 The group granularity of `backend: raft` — one group per database for every
-isolation mode (OD-1, ruled A) — is what makes the right-hand column
+isolation mode (OD-1) — is what makes the right-hand column
 per-database for every isolation mode.
 
 ### Combinations that are refused
 
 Refusals happen at resolution, before anything is created, with typed errors.
-None of them degrades to another backend. Every type in this table is **new**
-except `service.BarrierSealedError`; `database.BarrierRequiresPersistentBackendError`
-replaces `database.SharedStoreBarrierUnsupportedError`, whose condition — a
-database without a store of its own — no longer exists. For the same reason
-the shipped `database.BarrierOffDataPathError` has no condition left to refuse:
-every database's barrier layers on its own binding, which is its data path.
+None of them degrades to another backend. `database.ResolveBinding` returns
+each `database.*` refusal below except `database.BindingOwnerUnavailableError`,
+which does not exist yet. Under the binding,
+`database.SharedStoreBarrierUnsupportedError` and
+`database.BarrierOffDataPathError` have no condition left to refuse: every
+database's barrier layers on its own binding, which is its data path.
 
 | Combination | Refused with | Why |
 |---|---|---|
 | `backend: raft` on a standalone node | `database.RaftBackendUnavailableError` | there is no Raft host to place the group on |
-| `replicas`, `cluster_mode` or any `raft` option on a non-raft backend | `database.RaftOptionsRequireRaftBackendError` | replication is a property of the raft binding only |
+| `replicas`, `dedicated_wal` or any `raft` option on a non-raft backend | `database.RaftOptionsRequireRaftBackendError` | replication is a property of the raft binding only |
 | a per-database barrier on `backend: memory` | `database.BarrierRequiresPersistentBackendError` | nothing is at rest to encrypt; the barrier would be decorative |
 | etcd protocol on a non-raft backend | `database.EtcdRequiresRaftBackendError` | etcd's revision counter needs a replicated log |
 | `data_dir` outside the tenant's data root (volume, raft tenants) | `database.DataDirOutsideTenantRootError` | the tenant's contract is that its data lives under its root |
-| `file` or `objstore` for a volume or raft tenant | `database.BackendIsolationConflictError` (OD-7, ruled B) | those backends expose key names outside the tenant's encryption |
+| `file` or `objstore` for a volume or raft tenant | `database.BackendIsolationConflictError` (OD-7) | those backends expose key names outside the tenant's encryption |
 | any backend while the tenant's or the database's barrier is sealed | `service.BarrierSealedError` at request time | fail closed |
 
-A non-replicated backend in a multi-node cluster is **not** refused (OD-2, ruled
-A): the catalog records its owning node and every other node forwards its
+A non-replicated backend in a multi-node cluster is **not** refused (OD-2): the catalog records its owning node and every other node forwards its
 requests there. When the owner cannot be reached the request fails with
 `database.BindingOwnerUnavailableError`, which names the owner.
 
@@ -287,11 +252,11 @@ requests there. When the owner cannot be reached the request fails with
 
 Node configuration keeps only what is genuinely a property of the node:
 
-| Setting | Meaning after this change |
+| Setting | Meaning under the binding |
 |---|---|
 | run mode (`raft` / `standalone`) | whether the node hosts Raft groups at all |
 | control-plane store — `raft.sm_type` / `raft.sm_storage` (raft mode), `storage.backend` (standalone) | the store that holds the system tenant's catalog, users, tenants, placement and the system database; **never** another database's data |
-| `database_defaults` — `backend`, `replicas`, `raft.cluster_mode`, `raft.state_storage` | filled into a database record at creation when the caller left the field empty; never consulted again for that database |
+| `database_defaults` — `backend`, `replicas`, `raft.clusterMode`, `raft.state_storage` (not yet configuration keys; `database.Defaults` holds the four fields) | filled into a database record at creation when the caller left the field empty; never consulted again for that database |
 | `storage.objstore` provider profiles and credentials | how the node reaches an object store; a database chooses `objstore`, the node supplies the credentials |
 | `storage.volume_pools` | where volume and raft tenants' data roots are allocated |
 | Raft tuning, data directory root, listeners | unchanged |
@@ -322,7 +287,7 @@ database, a drop is:
 4. **Remove the catalog record.**
 
 Dependents first and the resolvable record last, for the same reason as
-before. The keyspace walk below remains the reclamation for the control-plane
+the shipped drop. The keyspace walk below remains the reclamation for the control-plane
 store only.
 
 ## Shipped design — alternatives rejected
@@ -330,15 +295,15 @@ store only.
 - **One global configuration.** Rejected on the problem above.
 - **Per-database barrier off the data path.** **Refused by the code**, not
   merely discouraged: a barrier is only meaningful when it wraps the store the
-  database is served from. Today that is one shape — a non-raft database with
+  database is served from. In the shipped code that is one shape — a non-raft database with
   an explicit `--data-dir`, which only the system tenant can set. A database
   sharing the default store, a `backend: raft` database (served from its Raft
   group) and every database of a volume- or raft-isolated tenant (served from
   the tenant's own store) are all refused: the barrier would wrap a store no
   request reads, and sealing it would leave the data readable and writable.
-  Until per-database storage bindings land, a non-system tenant cannot create a
-  per-database barrier at all; the bindings restore it with a barrier on the
-  data path of every backend.
+  A non-system tenant therefore cannot create a per-database barrier; the
+  storage binding (target design) puts the barrier on the data path of every
+  backend.
 - **Recreating a database to change its replication factor.** Rejected:
   `database scale` adds and removes voting replicas in place.
 - **A global etcd facade.** Rejected — see
@@ -349,8 +314,7 @@ store only.
 ## Target design — alternatives rejected
 
 - **Keep the tenant isolation mode as the thing that decides the store, and
-  treat the database backend as advisory.** Rejected by ruling 2, and by the
-  measured result: a recorded setting that does not decide anything is a
+  treat the database backend as advisory.** Rejected by rule 2: a recorded setting that does not decide anything is a
   setting operators rely on and cannot see is ignored.
 - **Per-engine stores inside one database** (a vector store beside a KV store
   beside a time-series store). Rejected: a write that touches two engines —
@@ -358,15 +322,15 @@ store only.
   longer be one atomic apply, and each extra store needs its own snapshot,
   backup, barrier and drop.
 - **A node-local vector store, replicated later.** Rejected: that is the
-  current state, and it is the reason vector data today has neither
+  current state, and it is why vector data has neither
   replication nor tenant encryption. Vector is an engine of the binding from
   the start.
 - **An engine-type field that turns engines on per database.** Rejected by
-  ruling 1 and ruling 3. Build tags still decide which engines a binary
+  rules 1 and 3. Build tags still decide which engines a binary
   carries; a database never decides it.
 - **Emulating atomic batches on object storage by ordering writes.** Rejected:
   the storage interface promises an all-or-nothing batch, and every engine
-  depends on it. The objstore backend gets a commit journal, as the file
+  depends on it. The objstore backend has a commit journal, as the file
   backend has.
 
 ## Component boundaries
@@ -388,7 +352,7 @@ store only.
 
 Every data-plane request resolves `(tenant, database)` server side and looks the
 pair up in `service.Registry`, which returns the servicer bound to that
-database's engine, backend, shard and barrier. This is the single point where a
+database's backend, shard and barrier. This is the single point where a
 database becomes a concrete set of services, and it is why a database's
 configuration cannot leak into another's request path. In the target design it
 is also the single point where the binding is chosen, and every servicer it
@@ -426,7 +390,7 @@ permanent rather than merely present: once the catalog record is gone,
 nothing in the system names the keyspace again, so no later drop and no
 operator command can reach it. The fence closes the window that order alone
 leaves open: without it, a write that resolved the database between the
-keyspace scan and the catalog removal survived the reclamation that ran
+keyspace scan and the catalog removal would survive the reclamation that ran
 concurrently with it, orphaned under a name the catalog no longer named.
 The fence has two halves, and they answer different questions:
 
@@ -458,7 +422,7 @@ incarnation live as the last step before it becomes resolvable. A handle
 resolved before a drop names the old incarnation, so it is refused after the
 drop and stays refused after the name is created again: it can never write
 into the new database. A database with no incarnation of its own — one
-created before incarnations existed, or with no store to mark at the time —
+whose record carries none, or that had no store to mark when it was created —
 is live while its marker is absent; the tombstone a drop leaves is what
 refuses its stale handles, which is why the tombstone stays after the drop
 completes rather than being removed. A dedicated-raft database's marker is
@@ -513,8 +477,7 @@ the group's current members, has advertised support (see
 [../clustering/architecture.md](../clustering/architecture.md), "Cluster
 feature gate"). Until then every group's writes are proposed unguarded and
 the drop fence is the check made when the database is resolved, before the
-write — the protection the fence gave before guarded writes existed, with
-its check-then-write window. Activation is permanent once it happens, and
+write, with its check-then-write window. Activation is permanent once it happens, and
 from then on a node whose binary lacks an activated feature refuses to
 start. A standalone node, and a single-node or transportless group, has one
 binary and uses guarded writes from the start.
@@ -532,7 +495,7 @@ handle resolved before activation; there is nothing on it to upgrade when
 activation later happens, only its next write.
 
 The fence (`Database.Dropping`) is its own field, deliberately independent
-of `Database.Status`. Status keeps answering the question it always has —
+of `Database.Status`. Status answers its own question —
 was there an open backend for step 2 to close — undisturbed by the fence;
 Close, and the boot-time barrier re-registration that also writes Status,
 would otherwise be able to silently clear the fence as a side effect of
@@ -580,9 +543,8 @@ refuses the writes of handles already in hand. The placement entry, and the
 fence with it, is
 removed at the very end of a successful drop, once the manager-level drop
 and the tenant's quota release have both completed; a failed reclamation
-clears the fence the same way the local one is cleared. Unlike the
-best-effort placement cleanup this replaced, a failure removing the
-placement entry itself is no longer swallowed: the fence survives with the
+clears the fence the same way the local one is cleared. A failure removing
+the placement entry itself is not swallowed: the fence survives with the
 entry, so the database stays refused rather than becoming simultaneously
 unreachable (the local catalog record is already gone) and unrefused (no
 replica has any signal that it is still being torn down) — an operator's
@@ -593,8 +555,7 @@ the guard rides the request, not the verb.** A database's views attach the
 guard to the request context (`service.WithWriteGuard`), and every Raft
 proposal `pkg/service` makes goes through one path that wraps the command
 with the context's guard. A write verb cannot forget the guard, because no
-verb proposes any other way — which is what a per-verb re-check kept
-getting wrong, one method at a time. The views that carry it are the
+verb proposes any other way. The views that carry it are the
 namespaced KV, MVCC, batch, transaction, time-series and index views behind
 every transport, the collection and SQL services built over them, and the
 pass-through views of a dedicated-raft database. The default database
@@ -631,8 +592,7 @@ afterwards with `Store.RemoveReplica`, which applies to the entry as it then
 stands. A KV backend with no `AtomicKV` support
 is refused with `*placement.AtomicWriteUnsupportedError` (inside the
 `*placement.StoreError` naming the entry) rather than falling back to an
-unconditional `Put`: an early version of this fence degraded that way,
-which reintroduced the exact lost-update race the CAS exists to close (two
+unconditional `Put`, which would reopen the lost-update race the CAS exists to close (two
 concurrent claims could both observe `owned=true`). `ScaleForTenant` and
 the rebalance MOVE path both reject a placement snapshot that already shows
 `Dropping=true` before reserving quota or mutating membership, and the
@@ -688,8 +648,8 @@ from a request that reached a node with no local record.**
 `manager.DropForTenant` returning `NotFoundError` is otherwise ambiguous:
 it means either "an earlier attempt on this node already finished the local
 drop" (a legitimate retry that only needs to finish the placement teardown)
-or "this node never had the local record at all" (now refused upfront, per
-above, before this point is ever reached in practice). `DropCommitted`, set
+or "this node never had the local record at all" (refused upfront, per
+above). `DropCommitted`, set
 once — via `Store.MarkDropCommitted` — right before the placement entry is
 removed at the end of a successful drop, is the signal that tells them
 apart: only when it is already true does `DropForTenant` finish the
@@ -703,9 +663,9 @@ itself would refuse with `DroppingError`.
 
 **A drop resumes after a restart even though the local fence refuses the
 usual lookup.** `Manager.Get` keeps answering `*database.DroppingError` for
-a database whose local fence survived the restart, which is exactly the
-resolution path `Drop`'s tenant-ID lookup used to depend on. The error
-itself now carries the tenant ID, recovered from the fenced record before
+a database whose local fence survived the restart, the resolution path
+`Drop`'s tenant-ID lookup would otherwise use. The error carries the tenant
+ID (`DroppingError.TenantID`), recovered from the fenced record before
 the refusal, so `Drop` can still identify which tenant's placement entry to
 finish tearing down instead of leaving it permanently stranded.
 
@@ -714,8 +674,7 @@ through.** `RaftBackendFactory.Services`'s cache-hit path re-checks the
 fence on every call, but a completed drop's last step removes the WHOLE
 placement entry, not merely its `Dropping` flag — at that point there is no
 fence left to read at all, and the resolver's own placement lookup reports
-"no entry," identically to a Phase-4b (pre-placement) database that never
-had one. The factory tells the two apart by recording, on the cached shard
+"no entry," identically to a database that never had one. The factory tells the two apart by recording, on the cached shard
 itself, whether it was originally resolved through a real placement entry;
 if it was, and that entry is now gone entirely, the shard is refused rather
 than served stale — closing the asynchronous window between the placement
@@ -756,17 +715,15 @@ Three things are deliberately **not** reclaimed:
 - the **time-series tag index**, whose keys are `tag key:value` and carry no
   metric, so no single database owns it;
 - any record that is **database-agnostic** — roles, users, tenants;
-- **collection records written before the collection surface was tenant-scoped**
-  — `__sys:collections/<db>/…` and `__col:<db>:…` at the store root. These name
-  a database and no tenant, so nothing can attribute them to the tenant issuing
+- **collection records at the store root** — `__sys:collections/<db>/…` and
+  `__col:<db>:…`. These name a database and no tenant, so nothing can attribute them to the tenant issuing
   the drop, and a drop that deleted them by database alone would delete every
   other tenant's. They are left in place, inert: nothing reads them, because
   every transport's key surface is namespaced and no caller can compose the bare
-  key, and nothing deletes them. An operator upgrading a deployment that has
-  them exports them with the previous binary and re-imports them per tenant —
-  which is the migration a reclamation would take away. See
+  key, and nothing deletes them. A deployment that has them exports and re-imports
+  them per tenant; see
   [collections/engineering.md](../collections/engineering.md) "Upgrading across
-  the tenant-namespace change", which is the decision this follows.
+  the tenant-namespace change".
 
 **The reclamation reads through an unfiltered enumeration**, not the
 user-facing one. Several of the shapes above are in the internal key
@@ -788,8 +745,7 @@ store instead of walking it (see "Drop under a binding").
   identity; the database name travels in the request. A database name cannot
   reach across tenants.
 - **Another tenant's database is answered as missing.** Database names are
-  still one node-wide namespace (keying the catalog by tenant and name is the
-  catalog lane's work), so every tenant-scoped operation, every data-plane
+  one node-wide namespace, so every tenant-scoped operation, every data-plane
   resolution and SQL `HasDatabase` / `USE` answer a database of another tenant
   (other than the configured default SQL database, `sql.default_database`,
   which every tenant has in its own namespace)
@@ -799,7 +755,7 @@ store instead of walking it (see "Drop under a binding").
   the node-wide catalog, so another tenant's name and an unused name get the
   registry's one not-found rather than two different errors. The one
   remaining signal is creation: a name another tenant holds cannot be created
-  (`database.AlreadyExistsError`) until names are scoped per tenant.
+  (`database.AlreadyExistsError`).
 - **Privileged operations are separately gated.** Creating a Raft-backed
   database (`databases:create_raft`) and a volume-isolated one
   (`databases:create_volume`) are checked *in addition to* `databases:create`,
@@ -882,9 +838,9 @@ policies, rekey and revocation that serve the system and tenant barriers.
   naming another tenant makes a database the caller owns.
 - **Tenants.** A Shamir barrier is held to the passphrase barrier's rule: it
   is accepted only on the database's data path, a non-raft database with its
-  own data directory, which only the system tenant can set. Until per-database
-  storage bindings land, a non-system tenant cannot create one; the bindings
-  restore it, as they do the passphrase barrier.
+  own data directory, which only the system tenant can set. A non-system tenant
+  therefore cannot create one; the storage binding (target design) allows it,
+  as it does the passphrase barrier.
 - **Where it lives.** The database barrier's wrapped key and holder roster
   live with the barrier's metadata in the database's dedicated store, beside
   the passphrase barrier's: a Shamir database barrier needs a dedicated store
@@ -903,9 +859,14 @@ barrier, has the unseal domain only).
 
 ## Verifiable log
 
-> **Status: decided — not implemented.** [Decided](#decided) states what
-> the design does not reopen; [Design](#design) implements it, and its
-> [§9](#9-choices-decided-in-review) records the choices decided in review.
+> **Status: engine implemented; service and surface not.** In the code:
+> `pkg/vlog`, `protocol.OpVerifiableLog` (`pkg/protocol/vlog.go`),
+> `featuregate.VerifiableLog`, `statemachine.ApplyVerifiableLog` dispatched by
+> both state-machine families, and the reads behind `vlog.Request`. Not in the
+> code: the service, transports, SDK, CLI, `vlog:*` permissions, the sign-head
+> seam and the audit switch; the names this section gives them are proposed.
+> [Decided](#decided) states what the design does not reopen; [Design](#design) implements it, and its
+> [§9](#9-design-choices) records its choices with the alternatives not taken.
 > One choice is still open, with go-xkms: [Open questions](#open-questions).
 
 ### Decided
@@ -927,8 +888,9 @@ Each item is stated as a fact the design does not reopen.
 - **Engine surface:** create, append, get, proof-inclusion, proof-consistency,
   head, and a sign-head hook — a seam go-xkms implements with its KMS or
   hardware signer. go-qrdb ships only the software signer over a tenant key.
-- **No new state machine.** The log generalises `pkg/audit.Chain`. There is one
-  apply-time opcode like `protocol.OpAuditAppend`, behind a cluster feature gate
+- **No new state machine.** The log is `vlog.Chain`, which the audit chain
+  wraps (`audit.ChainOn`). There is one apply-time opcode,
+  `protocol.OpVerifiableLog`, framed like `protocol.OpAuditAppend`, behind a cluster feature gate
   for mixed-version groups, dispatched by both state-machine families, attached
   unconditionally in the Raft factory and in `lifecycle.NewLocalEngine`, and
   restored on open and on snapshot. The sequence is assigned at apply.
@@ -936,57 +898,35 @@ Each item is stated as a fact the design does not reopen.
   proofs; named per-tenant log instances; owner-signed heads. A head is signed
   outside apply and appended as a record. The audit trail becomes one log
   instance.
-- **Move, never delete and rewrite.** `pkg/audit.Chain` and its tests evolve in
-  place or move, with their history, to the destination package.
-- **The review's corrections:** `vlog:sign_head` is an Operator permission,
-  never Admin, as `keys:sign` is, and Admin creates and expires logs
-  ([Authorization](#authorization)); the per-state-machine audit chain is a fix
-  of its own that lands ahead of the move ([Order](#order), step 1).
+- **Move, never delete and rewrite.** Code the log takes over from
+  `pkg/audit` moves, with its history and tests, to `pkg/vlog`.
+- **Authorization:** `vlog:sign_head` is an Operator permission, never Admin,
+  as `keys:sign` is, and Admin creates and expires logs
+  ([Authorization](#authorization)).
 
 ### What already exists
 
-The replicated audit chain is most of the mechanism already
+The engine half of the log and the replicated audit chain share one mechanism
 ([../audit/architecture.md](../audit/architecture.md#cluster-wide-replicated-trail)):
 
-| Piece | Where | What it does today |
+| Piece | Where | What it does |
 |---|---|---|
-| `audit.Chain` | `pkg/audit/chain.go` | In-memory head per tenant (`headState{seq, lo, digest}`), restored from storage, updated only in Apply. `Append` assigns the next sequence and a linear SHA-256 digest (`digest = SHA-256(prev ‖ event JSON)`, `PrevHash` embedded in the event); `Prune` drops a retired prefix from the in-memory head alone; `Query` and `Verify` read. |
-| The table | `pkg/audit/table.go` | A reserved raw-keyspace table, `TablePrefix = "\x00qrdb.audit/"`, with `h/<tenant>` head records and `e/<tenant>/<seq>` event records. `IsTableKey` keeps it out of KV `Range` and watch. |
-| The opcode | `pkg/protocol/audit.go` | `OpAuditAppend` (79) with sub-types `AuditSubtypeAppend` and `AuditSubtypePrune`; `EncodeAuditAppend` refuses a zero timestamp or a tenant mismatch before proposal. |
-| The gate | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`). |
-| Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`) | Both families apply the opcode, answer `audit.QueryRequest` / `audit.VerifyRequest` in their read path, restore the chain on open and snapshot recovery, and resync it after a failed apply. |
-| Attachment | `pkg/store/factory.go` (`WithAuditChain`), `pkg/store/mvcc.go`, `pkg/store/pebble.go` (`SetAuditChain`), `pkg/engine/mvcc_engine.go` (`WithMVCCAuditChain`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | A chain is attached unconditionally to the system shard's state machine — the only group `buildSMCreateFunc`'s factory starts — and to every local engine. Tenant and database groups (`newDataPlaneCreateFunc`, `pkg/server/tenant_host.go:507`) get none. |
-| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every append to the system shard (`SystemShardAuditResolver`, `pkg/service/audit_shard_resolver.go:75`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. |
+| `vlog.Chain` | `pkg/vlog/log.go`, `pkg/vlog/named.go` | The per-state-machine registry: an in-memory head per audit tenant (`headState{seq, lo, digest}`) and per named log (`vlog.LogID{TenantID, Database, Log}`), restored from storage, updated only in Apply. `Create`, `AppendEntries`, `Checkpoint` and `ExpireBodies` are the named-log mutations; the Merkle tree comes from `github.com/transparency-dev/merkle` (`compact`, `rfc6962`, `proof`). |
+| `audit.Chain` | `pkg/audit/chain.go` | The audit trail over a `vlog.Chain` (`audit.ChainOn`). `Append` assigns the next sequence and a linear SHA-256 digest (`digest = SHA-256(prev ‖ event JSON)`, `PrevHash` embedded in the event); `Prune` drops a retired prefix; `Query` and `Verify` read. |
+| The tables | `pkg/vlog/table.go` | Two reserved raw-keyspace tables: `TablePrefix = "\x00qrdb.audit/"`, with `h/<tenant>` head records and `e/<tenant>/<seq>` event records, and `LogTablePrefix = "\x00qrdb.vlog/"` for named logs. `vlog.IsTableKey` keeps both out of KV `Range` and watch. |
+| The opcodes | `pkg/protocol/audit.go`, `pkg/protocol/vlog.go` | `OpAuditAppend` (79) with sub-types `AuditSubtypeAppend` and `AuditSubtypePrune`; `EncodeAuditAppend` refuses a zero timestamp or a tenant mismatch before proposal. `OpVerifiableLog` (82) with sub-types `VerifiableLogSubtypeCreate`, `…Append`, `…Checkpoint` and `…ExpireBodies`, built by the `EncodeVerifiableLog*` functions. |
+| The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`) and `featuregate.VerifiableLog` (`"verifiable-log"`). |
+| Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
+| Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
+| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. Nothing proposes `OpVerifiableLog` yet. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
-
-**One fix that lands first, on its own.** `Chain.Restore`
-(`pkg/audit/chain.go:102`) replaces the whole head table with what one state
-machine's storage holds, which is why its doc comment (`pkg/audit/chain.go:73`)
-requires exactly one chain per state machine instance. Today that holds only
-because of how the chain is wired, not by construction: `cmd/qrdbd/start.go:1419`
-builds one chain per node and hands it to `buildSMCreateFunc`
-(`cmd/qrdbd/start.go:1628`), whose factory is stored at
-`cmd/qrdbd/start.go:1632` and used by `initializeNode`
-(`cmd/qrdbd/start.go:3297`) to start the single system shard
-(`cmd/qrdbd/start.go:3425`); the offline restore (`cmd/qrdbd/restore.go:204`,
-`:223`) restarts that same shard, and each open re-runs `Restore` from its own
-storage. `lifecycle.NewLocalEngine` already builds its own chain per call
-(`pkg/server/lifecycle/local.go:152`). The node-wide instance is one factory
-reuse away from the defect: any second group started from that factory would
-share heads with the system shard, and named per-tenant logs attach to tenant
-and database groups, which `newDataPlaneCreateFunc` creates many per node
-(`pkg/server/tenant_host.go:131`, `pkg/server/raft_backend_factory.go:908`).
-So the fix is a separate change ahead of the move ([Order](#order), step 1):
-the create function builds a fresh chain for every state machine it creates,
-there is no node-wide instance in `cmd/qrdbd/start.go`, and the constraint
-holds by construction.
 
 ### Design
 
 **Constraints the design holds to.** Both modes, standalone and Raft (§1);
 nothing node-local (§1); strict tenant isolation (§8); every cryptographic
 primitive from an audited library (§4, §6, §9). These are the platform's
-standing rules, applied here rather than ruled for this design.
+standing rules.
 
 #### 1. Modes
 
@@ -998,8 +938,8 @@ table, so the same code serves both modes with no branch on mode:
   tenant — and every replica applies it identically. Reads that must be current
   (head, proofs at the latest size) are linearizable reads through the group;
   any node serves them, forwarding as replica forwarding already does.
-- **Standalone.** `lifecycle.NewLocalEngine` attaches the log exactly as it
-  attaches the audit chain today, and a proposal applies locally through the
+- **Standalone.** `lifecycle.NewLocalEngine` attaches a fresh `vlog.Chain`
+  (`engine.WithMVCCLogs`), and a proposal applies locally through the
   same handler. A standalone node is one replica; nothing about the handler
   knows the difference.
 
@@ -1009,14 +949,14 @@ store, so a backup of the tenant is a backup of its logs.
 
 #### 2. The opcode and its sub-types
 
-One new opcode, `OpVerifiableLog`, in a new `pkg/protocol/vlog.go` beside
-`audit.go`, framed the same way: `[subtype:1][tenantIDLen:2][tenantID][body]`.
+One opcode, `OpVerifiableLog`, in `pkg/protocol/vlog.go` beside `audit.go`,
+framed the same way: `[subtype:1][tenantIDLen:2][tenantID][body]`.
 The body names the log (database and log name) and carries the sub-type's
 fields.
 
 | Sub-type | Body | Apply does |
 |---|---|---|
-| `Create` | log name, descriptor (origin, hash, verifier keys) | Refuses a name that exists; stages the descriptor record and an empty head. |
+| `Create` | log name, `vlog.Descriptor` (`Origin`, `Hash`, `VerifierKeys`, `AllowExpireBodies`) | Refuses a name that exists; stages the descriptor record and an empty head. |
 | `Append` | one entry, or a bounded batch of entries | Assigns each entry the next index, stages the entry, its leaf hash and every tree node the append completes, and the new head (§4). Returns the first assigned index. |
 | `Checkpoint` | tree size, root hash, signed checkpoint bytes | Checks that the size is no larger than the log's size and that the root is the tree's root at that size (§5); stages the checkpoint record. |
 | `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) or by the audit retention scheduler. Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
@@ -1024,7 +964,7 @@ fields.
 There is no sub-type that updates or deletes an entry, and no per-log delete:
 a log dies with its database, through the drop and keyspace reclaim every
 database type already uses
-([../databases/architecture.md](../databases/architecture.md)).
+([What a drop reclaims](#what-a-drop-reclaims-current-state)).
 
 Refusals follow the audit handler's rule exactly: a malformed body, a missing
 log or an out-of-range checkpoint is a deterministic consequence of the
@@ -1033,7 +973,7 @@ fault is local to the replica and halts apply.
 
 #### 3. The feature gate, and a mixed-version group
 
-A new gate, `featuregate.VerifiableLog` (`"verifiable-log"`), in
+The gate, `featuregate.VerifiableLog` (`"verifiable-log"`), in
 `pkg/cluster/featuregate/featuregate.go`. A binary that carries the log
 advertises it.
 
@@ -1041,11 +981,11 @@ advertises it.
   without the log — the service refuses every create, append and checkpoint
   for a log on that group with a typed `LogFeatureNotActiveError` before
   proposing, as `ReplicatedLogger.Emit` refuses with
-  `AuditFeatureNotActiveError` today. Reads of a log that does not yet exist
+  `AuditFeatureNotActiveError`. Reads of a log that does not yet exist
   answer not-found. Nothing is proposed, so nothing diverges.
 - **The audit instance keeps working unchanged while the gate is closed.** The
   service goes on proposing `OpAuditAppend`, and every binary — old and new —
-  applies it as today: the linear chain only. No new binary writes a Merkle
+  applies it to the linear chain only. No new binary writes a Merkle
   node for an `OpAuditAppend`, so old and new replicas stay identical.
 - **Once the gate is enabled** for the group, the service proposes audit events
   as `OpVerifiableLog`/`Append` to the audit instance (§7). The switch is a
@@ -1061,14 +1001,13 @@ as they were applied. Proposers stop emitting it once the gate is enabled.
 
 #### 4. Apply-time sequencing and the tree
 
-Everything in apply follows `audit.Chain`'s rules, which exist because Raft may
+Everything in apply follows `vlog.Chain`'s rules, which exist because Raft may
 pack any number of committed entries into one `Update` call:
 
 - **The index is assigned at apply** from the log's in-memory head, never from
   the proposal.
 - **Apply never depends on whether an earlier entry of the same `Update` call is
-  visible in storage.** `Chain.Prune` was first written to read storage and
-  answered differently for one batch than for four. The log keeps, per state
+  visible in storage.** The log keeps, per state
   machine, the in-memory head of each log and the tree nodes it staged in the
   current `Update` call, and reads through them.
 - **Hashing happens at apply** (§9, decision 3). The log keeps each log's
@@ -1079,23 +1018,24 @@ pack any number of committed entries into one `Update` call:
   one leaf hash and on average one node hash per entry, and on average two node
   records per entry. The Merkle algorithms (leaf and node hashing, the compact
   range, proof construction and verification) come from `github.com/transparency-dev/merkle` (§9, decision 1); go-qrdb writes no hashing of its own.
-- **The head record** holds the size, the compact range and, for the audit
-  instance only, the linear digest and low-watermark it keeps today (§7).
+- **The head record** holds the size, the low-watermark below which
+  `ExpireBodies` has removed entry bodies, and the compact range; the audit
+  instance keeps its linear digest as well (§7).
 
-Records, all under one new raw-keyspace table that `IsTableKey`'s successor
-keeps out of KV `Range`, watch, MVCC and every protocol shim:
+Records, all under `LogTablePrefix`, which `vlog.IsTableKey` keeps out of KV
+`Range` and watch; indexes and sizes in keys are 8-byte big-endian:
 
 | Record | Key (under the log's prefix) | Value |
 |---|---|---|
-| Descriptor | `d` | origin, hash, verifier keys, the policy flags the owner set at create |
-| Head | `h` | size, compact range, (audit instance) linear digest and low-watermark |
+| Descriptor | `d` | the `vlog.Descriptor` set at create |
+| Head | `h` | size, low-watermark, compact range |
 | Entry | `e/<index>` | the entry bytes as appended |
 | Tree node | `n/<level>/<index>` | the hash of a completed perfect subtree |
 | Checkpoint | `c/<size>` | the signed checkpoint for that size |
 
-The log's prefix is `<table prefix><tenant>/<database>/<log>/`, with the
-tenant-id rule `validateTenantID` enforces today extended to database and log
-names (no `/`), so no name can carve a segment inside another's range.
+The log's prefix is `<LogTablePrefix><tenant>/<database>/<log>/`, and
+`LogID.Validate` refuses a `/` in any of the three names (and an empty
+database or log name), so no name can carve a segment inside another's range.
 
 **Proofs are reads.** An inclusion proof for index *i* at size *n*, and a
 consistency proof between sizes *m* and *n*, are each a bounded set of node
@@ -1235,10 +1175,9 @@ the upgrade moves no data.
   transport applies, and an `Append` batch by a per-command maximum, as
   `MaxPrunePerCommand` bounds a prune.
 
-#### 9. Choices decided in review
+#### 9. Design choices
 
-Each was decided in review. The alternatives considered are kept with the
-reason each lost.
+Each choice is kept with the alternatives not taken and the reason each lost.
 
 1. **Merkle library and hash: `github.com/transparency-dev/merkle`,** RFC 9162 /
    RFC 6962 tree hashing over SHA-256 (`0x00` leaf and `0x01` node prefixes),
@@ -1249,7 +1188,7 @@ reason each lost.
    dependency, but shaped around tiles and its own hash reader, a less direct fit
    for per-append node staging; it stays compatible because the tree is the same.
    Trillian as a service — a second datastore, refused by the single-datastore
-   rule. One new dependency.
+   rule.
 2. **Checkpoint format: C2SP `tlog-checkpoint` in a C2SP `signed-note`**:
    origin, size and root as text lines, signatures as note lines, witnessable by
    the C2SP cosignature ecosystem. `golang.org/x/mod/sumdb/note` signs and
@@ -1280,11 +1219,11 @@ reason each lost.
    `tlog-tiles` is added later as a read-side rendering of the stored node
    records (§4 stores every perfect node, so a tile is a read of 256 of them),
    with no change to storage.
-7. **The package is `pkg/vlog`.** The generic half of `chain.go` and all of
-   `table.go` move there with their history (the [move table](#the-move-table));
+7. **The package is `pkg/vlog`.** It holds the generic half of the chain
+   (`vlog.Chain`, `pkg/vlog/log.go`) and both tables (`pkg/vlog/table.go`);
    `pkg/audit` keeps the audit instance (event validation, `PrevHash`, `Query`,
-   `Verify`) and the node-local trail, and `audit.Chain` stays there as the
-   audit instance's adapter. Not taken: generalising `Chain` in place in
+   `Verify`) and the node-local trail, and `audit.Chain` is the audit instance's
+   adapter over a `vlog.Chain` (`audit.ChainOn`). Not taken: generalising `Chain` in place in
    `pkg/audit`, which would make the audit package own a database type; and the
    name `pkg/tlog`, which collides with `golang.org/x/mod/sumdb/tlog`.
 8. **Retention by `ExpireBodies`** (§2, §7): allowed only on a log whose
@@ -1292,82 +1231,36 @@ reason each lost.
    stay, so the tree and every proof stay valid and an expired entry reads as
    expired. Not taken: no retention on the audit instance (a compliance trail
    that must age out would grow without bound), and keeping the audit chain
-   outside the log type (contradicts the ruling that the audit trail becomes one
-   log instance).
+   outside the log type (contradicts [Decided](#decided): the audit trail becomes
+   one log instance).
 
-### The move table
+### Remaining work
 
-Every file of `pkg/audit`'s replicated chain and every caller, with where it
-goes. The destination package is `pkg/vlog` (§9, decision 7).
+What [What already exists](#what-already-exists) lists is in the code. Each
+remaining step leaves the tree green:
 
-**How a move is made.** A whole file moves with `git mv` in a commit that
-changes nothing else, so `git log --follow` finds its history. Where a file
-splits, the moving functions are cut and pasted unchanged in one commit and
-generalised in the next, so `git blame -C -C` follows them. No file is deleted
-and rewritten.
-
-#### pkg/audit
-
-| Source | Destination | Kept | Generalised |
-|---|---|---|---|
-| `pkg/audit/table.go` | `pkg/vlog/table.go` (`git mv`) | `TablePrefix` (the audit instance's prefix), the head/event key builders, `encodeHead`/`decodeHead`, `prefixEnd`, `IsTableKey`, `MaxPrunePerCommand` | Keys built from a log prefix; node, descriptor and checkpoint records added; the head record gains the compact range; `IsTableKey` covers both prefixes. |
-| `pkg/audit/chain.go` — `Chain`, `headState`, `Writer`, `NewChain`, `Restore`, `validateTenantID`, the sequencing and staging half of `Append`, the head arithmetic of `Prune` | `pkg/vlog/log.go` (cut and paste, then generalise) | The apply-time head, restore-then-apply contract, the `Writer` staging interface, the no-storage-read rule and its doc comment | `Chain` becomes the per-state-machine log registry keyed by (tenant, database, log); `Append` adds leaf hashing and node staging; `Prune` becomes `ExpireBodies`; create, checkpoint and proof reads added. |
-| `pkg/audit/chain.go` — the audit half: `Append`'s event validation, JSON encoding and `PrevHash` fold, `Query`, `Verify`, `ChainContinuityReport`, `decodeReplicatedDigest` | stays in `pkg/audit/chain.go` | All of it, behaviour unchanged | `Append`, `Query` and `Verify` call the audit instance of `pkg/vlog` instead of touching the table themselves. |
-| `pkg/audit/chain_errors.go` | split: `TableWriteError`, `TableReadError`, `CorruptTableError`, `InvalidTenantIDError` to `pkg/vlog/errors.go`; `EncodeEventError`, `MissingTimestampError`, `InvalidCursorError`, `TenantMismatchError` stay | Every type, message and `Unwrap` | `pkg/audit` re-exports nothing; callers that match the moved types (`handleAuditAppend`, `pebbleHandleAuditAppend`) import `pkg/vlog`. |
-| `pkg/audit/query_request.go` | stays | `QueryRequest`, `VerifyRequest` | New read requests (`vlog.GetRequest`, `InclusionRequest`, `ConsistencyRequest`, `HeadRequest`) sit beside them in `pkg/vlog`. |
-| `pkg/audit/chain_verify.go`, `chain_file_logger.go`, `trail.go`, `trail_dir.go`, `verify.go` | stay | All of it | Nothing: the node-local trail is out of scope (§7). |
-| `pkg/audit/table_test.go` | `pkg/vlog/table_test.go` (`git mv`) | `TestIsTableKey`, `TestEventSeq`, `TestDecodeHead` | Cases for the new records and prefixes. |
-| `pkg/audit/chain_test.go` | split as `chain.go` splits | Sequencing, restore, prune-cap and tenant-id tests move to `pkg/vlog/log_test.go`; tenant-mismatch, empty-tenant, zero-timestamp, query and pagination tests stay | Determinism-across-replicas and restore tests run over named logs and the tree. |
-| `pkg/audit/chain_fault_test.go` | split the same way | Restore-path fault tests move; query-path fault tests stay | Fault injection on node and checkpoint records. |
-| `pkg/audit/chain_verify_replicated_test.go` | stays | All of it | Run over an instance that crossed the upgrade (§7), proving the linear verify still holds. |
-| `pkg/audit/chain_errors_test.go` | splits with `chain_errors.go` | Every case | None. |
-| `pkg/audit/chain_bench_test.go`, `chain_file_logger_test.go`, `chain_rotation*_test.go`, `chain_verify_helpers_test.go`, `trail_test.go`, `trail_confine_test.go`, `verify_test.go` | stay | All | None — they test the node-local trail. |
-
-#### Callers
-
-| Source | Destination | Kept | Generalised |
-|---|---|---|---|
-| `pkg/protocol/audit.go` | stays | `OpAuditAppend`, both sub-types, the encoders and `DecodeAuditCommand` | `pkg/protocol/vlog.go` adds `OpVerifiableLog` with the same framing. |
-| `pkg/cluster/featuregate/featuregate.go` | stays | `AuditAppend` | Adds `VerifiableLog`. |
-| `pkg/engine/mvcc_engine.go` | stays | `handleAuditAppend`, the `audit.QueryRequest`/`VerifyRequest` read cases, restore on open, `resyncAuditChain` | `WithMVCCAuditChain` becomes `WithMVCCLogs`; a `handleVerifiableLog` entry in the dispatch map; the new read requests; restore and resync cover every log. |
-| `pkg/store/pebble.go`, `pkg/store/mvcc.go`, `pkg/store/factory.go` | stay | `pebbleHandleAuditAppend`, `restoreAuditChain`, the read cases | `SetAuditChain`/`WithAuditChain` become `SetLogs`/`WithLogs`, renamed in place with every caller; the same additions as the MVCC engine. |
-| `cmd/qrdbd/start.go` (`buildSMCreateFunc`) | stays | Unconditional attachment | Step 1: the node-wide `audit.NewChain()` (`cmd/qrdbd/start.go:1419`) goes, and the create function `buildSMCreateFunc` returns builds a fresh chain for each state machine it creates; from step 3 that chain is the log registry carrying the audit instance. |
-| `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`) | stays | The barrier, lessor, watch hub and time-series options | Attaches a log registry built **inside** the returned create function, one per state machine, so the many tenant and database groups on a node never share heads. |
-| `pkg/server/lifecycle/local.go` (`NewLocalEngine`), `pkg/server/lifecycle/lifecycle.go` | stay | Unconditional attachment; the aggregate audit logger | Attach the registry; compose the log service. |
-| `pkg/service/audit_replicated_logger.go`, `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | stay | Entitlement, routing, timestamp-at-proposer, the gate check | `Emit` proposes to the audit instance through the log service once `VerifiableLog` is enabled for the group, `OpAuditAppend` before; the resolver is shared with the log service. |
-| Audit transports: `pkg/api/rest/handlers_audit.go`, `pkg/api/grpc/audit_server.go`, `pkg/api/quic/audit_frame.go`, `pkg/api/mcp/audit_tool.go`, `pkg/api/unix/audit_cmd.go`; `sdk/go/transport/{rest,grpc,quic,mcp,unix}/transport_audit.go`, `sdk/go/transport/embedded/audit.go`, `sdk/go/transport/audit_types.go`, `sdk/go/types_audit.go`; `cmd/qrdb/audit.go`, `cmd/qrdb/bindings_audit.go` | stay | Every audit capability and its shape | Unchanged; the audit instance is also reachable through the log surface (§ [Surface](#surface)) by a caller holding the log permissions on its own tenant. |
-
-#### Order
-
-Each step leaves the tree green; the destination is wired before the old copy
-goes.
-
-1. **A separate change that lands first:**
-   the create function `buildSMCreateFunc` returns builds a fresh
-   `audit.NewChain()` for every state machine instance it creates, and
-   `cmd/qrdbd/start.go` keeps no node-wide instance, so one chain per state
-   machine holds by construction rather than by today's wiring. It carries the
-   test that two groups started from one create function on one node keep
-   separate heads across open and recovery. No behaviour change for the system
-   shard.
-2. `git mv` `table.go` and its test to `pkg/vlog`; cut and paste the generic half
-   of `chain.go`, its errors and their tests, unchanged; `pkg/audit` calls them.
-   No behaviour change.
-3. Generalise in `pkg/vlog`: named instances, the tree and node records, proofs.
-   The audit instance reads and writes exactly as before.
-4. `OpVerifiableLog`, the gate, dispatch in both families, restore and resync;
-   `newDataPlaneCreateFunc` builds one registry per state machine the same way,
-   and step 1's test runs over data-plane groups too.
-5. The service, the seam and its software provider, transports, SDK, CLI.
-6. The audit service switches to the audit instance behind the gate.
+1. The log service (`pkg/service/vlog_service.go`), composed in
+   `pkg/server/lifecycle/lifecycle.go`; the sign-head seam and its software
+   provider (§6); the transports, SDK and CLI ([Surface](#surface)); the
+   `vlog:*` permissions ([Authorization](#authorization)).
+2. The audit switch (§7): `ReplicatedLogger.Emit` proposes to the audit
+   instance through the log service once `featuregate.VerifiableLog` is enabled
+   for the group, and `OpAuditAppend` before; the log service shares the audit
+   resolver. The audit transports, SDK and CLI keep every capability and its
+   shape; the audit instance is also reachable through the log surface by a
+   caller holding the log permissions on its own tenant.
 
 ### Surface
 
 #### Engine
 
-`pkg/vlog` exposes `Create`, `Append`, `Get`, `Inclusion`, `Consistency`,
-`Head` (latest checkpoint and the unsigned current size and root) and
-`Checkpoint` (the apply half of sign-head), each on (tenant, database, log).
+`pkg/vlog` addresses every log by a `vlog.LogID` (tenant, database, log). The
+mutations are `vlog.Chain` methods called in apply: `Create`, `AppendEntries`,
+`Checkpoint` (the apply half of sign-head) and `ExpireBodies`. The reads take a
+`storage.Reader`: `ReadHead` (a `vlog.Head`: the current size and root, the
+lowest unexpired index and the latest checkpoint), `Get`, `Inclusion`,
+`Consistency` and `ReadCheckpoint`; the state machines answer them as
+`vlog.Request` values.
 
 #### Service layer
 
@@ -1458,9 +1351,8 @@ the tenant's data, which is Admin's. A cross-tenant request is refused by
 
 ### Open questions
 
-The review decided the other seven ([§9](#9-choices-decided-in-review)). One
-remains, the half of the checkpoint question the review left to agree with
-go-xkms.
+[§9](#9-design-choices) settles the other choices. One remains, the half of
+the checkpoint choice to agree with go-xkms.
 
 1. **The signed-note signature type for a non-Ed25519 owner key** — ECDSA
    P-256 at least, the CA key go-xkms's transparency log signs with.
@@ -1493,8 +1385,8 @@ go-xkms.
      go-xkms's to decide, two signatures per head, and the question of which key
      a consumer must trust, which is go-xkms's policy.
    - *Recommendation: (a)* for go-xkms's CA key: its transparency log is
-     CT-shaped and its consumers have CT tooling, and one key stays the one trust
-     root the rulings name. (c) remains additive without a change in go-qrdb,
+     CT-shaped and its consumers have CT tooling, and the CA key stays the log
+     owner's one key, as [Decided](#decided) states. (c) remains additive without a change in go-qrdb,
      since a signed note carries any number of signature lines. A tenant's own
      log keeps the software provider's Ed25519 type.
 
@@ -1511,8 +1403,8 @@ go-xkms.
   `OpAuditAppend` → `OpVerifiableLog` switch. In `pkg/permission`: the grant
   table above, row by row — `vlog:sign_head` refused for an Admin and the
   Security Officer and granted to an Operator, `vlog:create` and `vlog:expire`
-  granted to an Admin. The per-state-machine chain (Order, step 1): two groups
-  from one create function keep separate heads across open and recovery. The seam: the software provider's
+  granted to an Admin. The per-state-machine registry: two groups from one
+  create function keep separate heads across open and recovery. The seam: the software provider's
   sealed key round trip and a fault-injecting fake provider.
 - **The mixed-version gate test.** A three-replica group with one replica on a
   binary that does not advertise `verifiable-log`: create and append are refused
@@ -1537,9 +1429,7 @@ go-xkms.
 
 ### What this backs
 
-**The SPEC row** (`docs/SPEC.md`, Remaining work):
-
-> | verifiable-log | planned | A database type created per tenant like key-value, time-series and vector: append-only (no update, no delete), sequence-numbered entries, a Merkle tree over them, inclusion proofs and consistency proofs between tree sizes, checkpoints, and tree heads signed by the log owner's own key (the CA key for go-xkms's transparency log, a tenant key for a tenant's own log); served on every transport and in the SDK with the tenant's isolation, DEK, barrier and replication; no PKI semantics. Engine surface: create, append, get, proof-inclusion, proof-consistency, head, and a sign-head hook. It generalises `pkg/audit.Chain` with no new state machine, in standalone and Raft modes: one apply-time opcode behind a feature gate for mixed-version groups, dispatched by both state-machine families, the sequence assigned at apply; a head's signature is produced outside apply by the owner's key and appended as a record; the audit trail becomes one log instance. The provider side of the seam with go-xkms's transparency log. | [databases/](./) |
+**The SPEC row** is `verifiable-log` in [../SPEC.md](../SPEC.md).
 
 **The seam rows on the other side**, named here and written in those projects'
 own SPECs:
@@ -1561,15 +1451,14 @@ own SPECs:
   protocols, barrier state and connection settings remain updatable.
 - **No implicit database creation.** A request naming an unknown database fails.
 - **No per-database engine selection.** Every compiled-in engine is available
-  in every database (target design; ruling 1).
+  in every database (target design; rule 1).
 
-## Decisions ruled by the owner
+## Decisions
 
-Each item was a question the rulings above did not answer. **All sixteen are
-ruled: each ruling is the recommendation.** The options are
-kept so the reasoning behind each ruling stays on record.
+Each item is a question the rules above do not answer, with its options and the
+option chosen; the options not chosen are kept with the reason each lost.
 
-**OD-1 — RULED A — Raft group granularity for `backend: raft`.**
+**OD-1 — Raft group granularity for `backend: raft`.**
 - A: one Raft group per database, for every tenant isolation mode. The tenant's
   isolation decides the host, data root and key; the database always gets its
   own group.
@@ -1577,7 +1466,7 @@ kept so the reasoning behind each ruling stays on record.
   group under the `<tenant>/<db>/` prefix, a volume tenant's share its tenant
   group, raft tenants get one per database.
 - C: a per-database option `raft.group: dedicated | shared`.
-- **RULED: A — the recommendation, accepted.** It is the only option under which replicas, scale,
+- **Chosen: A.** It is the only option under which replicas, scale,
   etcd, the drop fence, a per-database barrier and the tenant encryptor mean the
   same thing for every raft database. B keeps the prefix machinery on the data
   plane and cannot put a barrier tenant's data under the tenant's key without
@@ -1585,55 +1474,54 @@ kept so the reasoning behind each ruling stays on record.
   cost of A is one group per raft database, which is what multi-group Raft is
   for.
 
-**OD-2 — RULED A — Non-replicated backends in a multi-node raft-mode cluster.** A memory,
+**OD-2 — Non-replicated backends in a multi-node raft-mode cluster.** A memory,
 file, pebble or objstore database exists on one node.
 - A: the replicated catalog records the owning node; every other node forwards
-  the database's requests to it, as writes are forwarded to a leader today. If
+  the database's requests to it, as writes are forwarded to a leader. If
   the owner is down the database is unavailable, which is what that backend
   choice means.
-- B: refused in a multi-node cluster with `database.LocalBackendInClusterError`.
+- B: refused in a multi-node cluster with a typed error.
 - C: allowed, reachable only on the owning node; elsewhere a typed error names
   the owner.
-- **RULED: A — the recommendation, accepted**, with C's typed error as what a request gets when
+- **Chosen: A**, with C's typed error as what a request gets when
   forwarding cannot reach the owner.
 
-**OD-3 — RULED A — The default backend when a create leaves it empty.**
+**OD-3 — The default backend when a create leaves it empty.**
 - A: run-mode dependent — `raft` in raft mode, `pebble` in standalone mode —
   overridable by `database_defaults.backend`.
-- B: `pebble` always, today's literal default. In a cluster that would make
-  every default database node-local and unreplicated, where today its data is in
-  the replicated system shard.
+- B: `pebble` always. In a cluster that makes every default database
+  node-local and unreplicated.
 - C: no default; `backend` is required.
-- **RULED: A — the recommendation, accepted.**
+- **Chosen: A.**
 
-**OD-4 — RULED A — Catalog authority.** Today a database's `meta.json` is node-local; only
+**OD-4 — Catalog authority.** A database's `meta.json` is node-local; only
 dedicated-raft databases also have a replicated placement record.
 - A: the replicated catalog (the placement table, extended to every backend) is
   authoritative for every database; `meta.json` becomes a node-local cache
   rebuilt from it.
 - B: keep `meta.json` authoritative for non-raft backends and placement for raft.
-- **RULED: A — the recommendation, accepted.** OD-2 A requires every node to resolve every database,
+- **Chosen: A.** OD-2 A requires every node to resolve every database,
   and B cannot give it that.
 
-**OD-5 — RULED A — Implicit default databases of non-system tenants.** Every tenant can
+**OD-5 — Implicit default databases of non-system tenants.** Every tenant can
 address the default database (`system`) and the SQL default database without
-creating them; today both are prefixes in the shared system shard.
+creating them; both are prefixes in the shared system shard.
 - A: provision both as real databases at tenant creation, with the node defaults.
 - B: keep them on the control-plane store under the `<tenant>/<db>/` prefix, as
   the one remaining shared binding.
 - C: remove them; a non-system tenant's request without a database is refused.
-- **RULED: A — the recommendation, accepted.** B keeps a second resolution path alive for two names;
-  C breaks every client that relies on the default today.
+- **Chosen: A.** B keeps a second resolution path alive for two names;
+  C breaks every client that relies on the default.
 
-**OD-6 — RULED A — Encryption when a database has its own barrier.**
+**OD-6 — Encryption when a database has its own barrier.**
 - A: nested — the store is encrypted at rest under the tenant's key (or the
   node's, for prefix tenants), and values are additionally encrypted under the
   database's barrier. Sealing either one fails the database closed.
 - B: the database's barrier replaces the tenant's for that database's store.
-- **RULED: A — the recommendation, accepted.** B would let a database owner take a tenant's data out
+- **Chosen: A.** B would let a database owner take a tenant's data out
   from under the tenant's custody.
 
-**OD-7 — RULED B — Key-name confidentiality on `file` and `objstore`.** Values are
+**OD-7 — Key-name confidentiality on `file` and `objstore`.** Values are
 encrypted on every backend. Pebble encrypts whole files, keys included. The file
 backend's keys are file names and objstore's are object names, so key names are
 visible to anyone who can list the directory or bucket. A remote object-store
@@ -1644,32 +1532,30 @@ provider also places data outside the tenant's data root.
   for prefix and barrier tenants.
 - C: encrypt key names deterministically. This destroys key ordering, so range
   scans — and therefore MVCC, SQL and time series — stop working on those
-  backends. Not viable under ruling 1.
-- **RULED: B — the recommendation, accepted.**
+  backends. Not viable under rule 1.
+- **Chosen: B.**
 
-**OD-8 — RULED A — State machine of a database's Raft group.**
+**OD-8 — State machine of a database's Raft group.**
 - A: one canonical database state machine — the MVCC engine over
   `storage.Storage` — for every database group, with its state storage chosen
   per database (`raft.state_storage: pebble | file | memory`, defaulted from
   the node). The node's `sm_type` applies to the control-plane group only.
 - B: a per-database `sm_type`, which requires every state-machine family to
   implement every engine, vector and time series included.
-- **RULED: A — the recommendation, accepted.** The in-flight work giving every state-machine type an
-  MVCC store remains useful for the control-plane group and is not a
-  prerequisite here.
+- **Chosen: A.**
 
-**OD-9 — RULED A — Remote-mode databases.** Measured: accepted, validated, persisted, and
-never constructed; the data goes to a local store.
+**OD-9 — Remote-mode databases.** `database.ModeRemote` is accepted, validated and
+persisted, and never constructed; the data goes to a local store.
 - A: remove remote mode, the `connection` block and the update-connection verb
   on all six transports.
 - B: implement a full multi-model proxy over the SDK client, every engine.
-- C: keep a KV-only proxy and refuse other engines — contradicts ruling 1.
-- **RULED: A — the recommendation, accepted.** A database that proxies to another node is a client
+- C: keep a KV-only proxy and refuse other engines — contradicts rule 1.
+- **Chosen: A.** A database that proxies to another node is a client
   configuration, which the SDK already provides.
 
-**OD-10 — RULED A — Relocating existing shared-shard data.** Databases whose data is in
-the shared system shard (or a volume tenant's shared shard) today move to their
-own bindings.
+**OD-10 — Relocating existing shared-shard data.** Databases whose data is in
+the shared system shard (or a volume tenant's shared shard) move to their own
+bindings.
 - A: automatic, online, per database, run by the control-plane leader on first
   boot of the new version. Each database is fenced for the duration of its copy
   (writes are refused with a retryable unavailable error), copied with its
@@ -1680,10 +1566,9 @@ own bindings.
   keep resolving to the shared shard until it is run.
 - C: refuse; the new version does not open pre-binding data, and operators
   export with the previous version and import into the new one.
-- **RULED: A — the recommendation, accepted.**
+- **Chosen: A.**
 
-**OD-11 — SUPERSEDED 2026-10-02 by the no-backward-compat ruling — Migrating the
-node-local vector stores.** In a multi-node cluster each node's vector store
+**OD-11 — Migrating the node-local vector stores.** In a multi-node cluster each node's vector store
 holds only the writes that node served, so the stores disagree.
 - A: import every node's store; last writer wins by vector version and update
   time; deletes are not propagated.
@@ -1691,17 +1576,14 @@ holds only the writes that node served, so the stores disagree.
 - C: an operator import command, run per node, with
   `--on-conflict fail | newest | skip` defaulting to `fail`, reporting every
   conflict.
-- ~~**RULED: C — the recommendation, accepted.** A single-node deployment, the common case, has no
-  conflicts and imports cleanly; a cluster's operator sees every disagreement
-  instead of having one resolved silently.~~ **SUPERSEDED:** old systems are
-  obsolete and ship no migration code. The node-local vector stores are
-  deleted outright; an operator who needs the data re-ingests it through the
-  ordinary vector API, same as any other data source. No import command is
-  built.
+- **Chosen: none of them.** No release ships migration code for an earlier
+  layout: the node-local vector stores are deleted outright, and an operator who
+  needs the data re-ingests it through the vector API, as from any other data
+  source. No import command is built.
 
-**OD-12 — RULED B — SQL virtual tables for the engines.** Today only a database created
-with engine `timeseries` or `vector` exposes `datapoints`/`metrics` or
-`namespaces`/`vectors` as SQL tables.
+**OD-12 — SQL virtual tables for the engines.** The time-series engine's
+tables are `datapoints` and `metrics`, the vector engine's `namespaces` and
+`vectors` (`pkg/sql/provider`).
 - A: every database exposes every compiled-in engine table under those names,
   and the names become reserved (`CREATE TABLE metrics` is refused).
 - B: every database exposes them under reserved, prefixed names —
@@ -1709,40 +1591,36 @@ with engine `timeseries` or `vector` exposes `datapoints`/`metrics` or
   `qrdb_vector_vectors` — so user tables named `metrics` or `vectors` keep
   working.
 - C: stop exposing engine tables through SQL.
-- **RULED: B — the recommendation, accepted.**
+- **Chosen: B.**
 
-**OD-13 — RULED A — How callers learn `engine` is gone.** The CLI flag fails as an unknown
+**OD-13 — How callers learn `engine` is gone.** The CLI flag fails as an unknown
 flag and the protobuf field number is reserved either way.
 - A: strict decoding on database-create requests (REST, QUIC, MCP) and on the
   `databases:` configuration section, so `engine` is refused as an unknown field
   — a generic rule, not an engine-specific shim.
 - B: ignore it silently, the JSON and YAML default.
-- **RULED: A — the recommendation, accepted.** A script creating an `engine: timeseries` database
-  should learn that the field no longer means anything.
+- **Chosen: A.** A script creating an `engine: timeseries` database
+  should learn that the field means nothing.
 
-**OD-14 — RULED A — The vector `shard_id` request field.** The binding decides the shard.
+**OD-14 — The vector `shard_id` request field.** The binding decides the shard.
 - A: remove it from all twenty vector requests on all six transports.
 - B: keep it and refuse any non-zero value with a typed error.
-- **RULED: A — the recommendation, accepted** — a breaking change, carried by a MINOR bump.
+- **Chosen: A** — a breaking change, carried by a MINOR bump.
 
-**OD-15 — RULED A — Choosing a backend from SQL `CREATE DATABASE`.**
+**OD-15 — Choosing a backend from SQL `CREATE DATABASE`.**
 - A: node defaults only; non-default backends are created through the API or CLI.
 - B: an executable-comment extension on MySQL
   (`CREATE DATABASE x /*!qrdb backend=raft replicas=3 */`) and a `WITH` option
   on PostgreSQL.
-- **RULED: A — the recommendation, accepted** for this program.
+- **Chosen: A.**
 
-**OD-16 — RULED A — Time-series retention enforcement.** Measured: retention policies are
-stored and returned, and nothing ever expires or downsamples a point.
+**OD-16 — Time-series retention enforcement.**
 - A: include it in this program — a leader-driven retention operation, proposed
   through the binding and applied deterministically in the apply batch.
 - B: a separate program; this program only corrects the documentation.
-- **RULED: A — the recommendation, accepted**, as its own lane after the time-series phase. The
-  documentation is corrected now either way.
-- **Landed ahead of its lane:** the leader-driven, proposed,
-  deterministic deletion half of A shipped against the CURRENT (pre-migration)
-  time-series architecture — a `pkg/server` scheduler proposes a feature-gated
-  `TSApplyRetention` command per metric per tick; see
+- **Chosen: A.** Its deletion half is in the code: a `pkg/server` scheduler
+  proposes a feature-gated `protocol.OpTSApplyRetention` command per metric per
+  tick; see
   [../time-series/architecture.md#retention-enforcement-od-16-a](../time-series/architecture.md#retention-enforcement-od-16-a).
-  Downsampling and the "applied in the apply batch" half still wait on this
-  program's storage-interface migration.
+  Downsampling, and applying it through the database's binding, wait on the
+  storage binding.
