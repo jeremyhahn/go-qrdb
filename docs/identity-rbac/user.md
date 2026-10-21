@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Who someone is, and what they may do. There are no passwords: a certificate is
@@ -37,10 +37,9 @@ binding.
 ## Enrolling somebody, end to end
 
 Run as an Admin of the tenant the user belongs to (here `acme`). Under the
-default `auth.mtls_binding_policy: required`, issuing a certificate is not
-enough on its own — alice cannot log in until her account also holds a
-binding for that certificate's key (step 5 below). Skip it and her
-certificate authenticates to nobody.
+default `auth.mtls_binding_policy: required`, a certificate logs in only when
+its key is bound to the account; `ca issue` makes that binding in the same
+call.
 
 ```bash
 # 1. Create the user record — the email is the login key
@@ -52,23 +51,12 @@ qrdb users create --username alice --email alice@acme.com --tenant-id acme
 qrdb ca issue --username alice --out ./alice
 
 # 3. Find the IDs (both assign flags take IDs, not names)
-ROLE=$(qrdb roles get-by-name Operator --output json | jq -r .id)
+ROLE=$(qrdb roles get-by-name operator --tenant-id acme --output json | jq -r .id)
 USER=$(qrdb users list --tenant-id acme --output json \
-       | jq -r '.[] | select(.username=="alice") | .id')
+       | jq -r '.users[] | select(.username=="alice") | .id')
 
 # 4. Give them a role
 qrdb roles assign --user "$USER" --role "$ROLE"
-
-# 5. Enrol her certificate's key -- REQUIRED before she can log in.
-#    No CLI verb exists for this yet; every transport exposes AddCertBinding,
-#    REST shown here (see api.md). The thumbprint is the base64url SHA-256 of
-#    the certificate's SubjectPublicKeyInfo (user.ComputeSPKIThumbprint).
-THUMB=$(openssl x509 -in ./alice/alice-cert.pem -noout -pubkey \
-        | openssl pkey -pubin -outform DER \
-        | openssl dgst -sha256 -binary | base64 | tr -d '=' | tr '/+' '_-')
-curl -X POST "https://db.example.com/v1/users/$USER/cert-bindings" \
-     --cert admin-cert.pem --key admin-key.pem --cacert ca.pem \
-     -d "{\"thumbprint\": \"$THUMB\"}"
 ```
 
 The account must exist before step 2: a certificate is only ever issued for an
@@ -103,10 +91,9 @@ qrdb enroll --server https://db.example.com --tenant-id acme \
 #    bound to her account and active. The key never left her machine.
 ```
 
-The same two verbs work on REST, QUIC and MCP (see
+The same two verbs work on every transport (see
 [api.md](api.md#capability-matrix--invitation-self-enrolment) for the raw
-wire shapes, and [cli.md](cli.md) for every flag); gRPC and the Unix socket
-refuse both with a typed error. `qrdb enroll` can also submit a CSR made
+wire shapes, and [cli.md](cli.md) for every flag). `qrdb enroll` can also submit a CSR made
 elsewhere (`--csr`) or bring your own certificate over that CSR's key
 (`--cert`, `--chain`) instead of generating a key and letting the tenant's CA
 sign it.
@@ -151,7 +138,7 @@ confirming it, put them in two roles.
 ```bash
 qrdb roles create --name ota-release --tenant-id acme \
      --permissions "ota:activate,ota:confirm"
-ROLE=$(qrdb roles get-by-name ota-release --output json | jq -r .id)
+ROLE=$(qrdb roles get-by-name ota-release --tenant-id acme --output json | jq -r .id)
 qrdb roles assign --user "$USER" --role "$ROLE"
 ```
 
@@ -202,15 +189,16 @@ qrdb roles list --tenant-id acme
 
 ## The built-in roles
 
-Six exist from the first boot and cannot be deleted:
+Five exist from the first boot and cannot be deleted. `get-by-name` takes
+the name in the first column:
 
 | Role | For |
 |---|---|
-| Security Officer | governance — barrier, certificates, roles, users, key escrow. **Crypto operations are explicitly denied**, on purpose |
-| Admin | key lifecycle, tenants, backups, key escrow |
-| Operator | routine operations, including seal and unseal |
-| User | crypto operations only |
-| Auditor | read-only everywhere |
+| `so` (Security Officer) | governance — barrier, certificates, roles, users, key escrow. **Crypto operations are explicitly denied**, on purpose |
+| `admin` | key lifecycle, tenants, backups, key escrow |
+| `operator` | routine operations, including seal and unseal |
+| `user` | crypto operations only |
+| `auditor` | read-only everywhere |
 
 A key custodian — a Shamir share holder — is not a role: it is enrolled in the
 holder roster and authenticates with its holder certificate and factors. See
@@ -241,17 +229,16 @@ running, after an upgrade renamed or added a permission:
 qrdb roles reconcile --tenant acme
 ```
 
-Your tenant was seeded from the built-in definitions on the day it was created
-and, before this command existed, never touched again — so a tenant older than
-an upgrade keeps verbs the software has retired and never gains the ones it
-added. Reconciling adds what is missing, removes what is retired, and leaves
+Your tenant's built-in roles are seeded when it is created and not changed by
+an upgrade, so a tenant older than an upgrade keeps verbs the software has
+retired and lacks the ones it added until you reconcile. Reconciling adds what is missing, removes what is retired, and leaves
 your own roles alone. Running it twice is harmless: the second run reports that
 everything is already current and changes nothing.
 
 ## Two ways to hold a role
 
-- **System-scoped** (`roleIDs`) — the role applies everywhere.
-- **Tenant-scoped** (`roleBindings`) — the role applies only inside one tenant,
+- **System-scoped** (`role_ids`) — the role applies everywhere.
+- **Tenant-scoped** (`role_bindings`) — the role applies only inside one tenant,
   and that tenant must be the user's own.
 
 They add up. A binding can name only the tenant the user belongs to, and that
@@ -494,10 +481,9 @@ withdraw the compromised one.** Withdrawing is refused with a 404 if the
 thumbprint is not one this account holds — that is deliberate, so a typo cannot
 look like a successful withdrawal.
 
-**Careful: under the default `mtls_binding_policy: enrolled`, withdrawing an
-account's LAST binding opens it back up.** An account with no bindings accepts
-*any* certificate from your CA whose CN and OU name it — which is how every
-account behaved before anyone enrolled anything. So withdrawing the only
+**Careful: under `mtls_binding_policy: enrolled`, withdrawing an account's LAST
+binding opens it back up.** An account with no bindings accepts *any*
+certificate from your CA whose CN and OU name it. So withdrawing the only
 binding on an account does not lock it down, it widens it. If your intent is
 "this account should not log in", disable the account
 (`POST /users/{id}/disable`); if your intent is "this key should not log in",
@@ -552,11 +538,9 @@ thumbprint the message quotes — or the certificate was issued for someone othe
 than its subject, which is the case this check exists for.
 
 **Nobody can log in and there is no second administrator.** This is the
-standing break-glass for total credential loss and it is unchanged: restart the
-node with authentication disabled, enrol the certificate you do hold, and
-restart with authentication on. An account you never enrolled is not affected
-by any of this — it authenticates on its certificate's CN and OU as it always
-did.
+break-glass for total credential loss: restart the node with authentication
+disabled (`auth.enabled: false`), enrol the certificate you do hold, and
+restart with authentication on.
 
 **"permission denied" on something you think you have.** Run
 `qrdb roles resolve-permissions` over the user's roles and look for the exact
@@ -574,7 +558,7 @@ registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists
 what exists.
 
 **You cannot delete a user or a role.** The bootstrap admin — the one built-in
-user, created the first time the cluster ever comes up — and the six built-in
+user, created the first time the cluster ever comes up — and the five built-in
 roles are undeletable, and a built-in role cannot be re-permissioned either.
 Disable the user instead; for a built-in role's permissions, use
 `qrdb roles reconcile`, which is the only writer the guard admits. Every other

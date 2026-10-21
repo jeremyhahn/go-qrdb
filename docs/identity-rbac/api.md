@@ -1,6 +1,6 @@
 # Identity and RBAC — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -83,13 +83,10 @@ see [Status and error mapping](#status-and-error-mapping).
 | Authorize an identity | `POST /permissions/authorize` | `Authorize` | `role.Authorize` | `qrdb_permissions_authorize` | `Client.RBAC().Authorize` | identity-gated; `permissions:resolve` for another identity |
 | Reconcile built-in roles | `POST /roles/reconcile` | `ReconcileBuiltInRoles` | `role.ReconcileBuiltIn` | `qrdb_role_reconcile_builtin` | `ReconcileBuiltInRoles` | `roles:create` |
 
-The four route, method and tool names above the reconcile row were corrected
-against the code in the same change; the document had drifted.
-
 Reconcile carries **`roles:create`**, not a permission of its own. It IS the
-seeding operation applied to an existing tenant, and a dedicated verb would be
-absent from every role seeded before that verb existed — so nobody would hold
-the grant needed to repair that exact absence.
+seeding operation applied to an existing tenant, and a dedicated permission
+would be absent from any role that lacks it — so nobody would hold the grant
+needed to repair that exact absence.
 
 `Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
 does not implement the corresponding provider. Nil-check them; the nil is not
@@ -135,7 +132,7 @@ as a record of the **caller's own tenant**. Every capability acts on that
 tenant: a `tenant_id`, or a document's `metadata.tenant`, is optional and,
 when set, must name it; any other tenant is refused with 403 /
 `PERMISSION_DENIED`, a system-tenant caller included. The five permissions
-are self-scoped and the built-in Admin role holds all of them. A node wires
+are self-scoped and the built-in `admin` role holds all of them. A node wires
 the policy service whenever it has a tenant store resolver; without one, REST,
 QUIC and MCP do not register these routes and tools, and the gRPC and Unix
 RPCs answer `UNIMPLEMENTED` (the policy service is not configured).
@@ -259,8 +256,8 @@ Every refusal is a `*sdk.ClientCertificateTenantError` that matches
 authenticator applies the same rule, so such a certificate cannot log in
 either. Every transport reports that refusal to the client the same way: REST,
 QUIC, MCP, and the gRPC and unix-socket `Connect`, which return the server's
-refusal as a typed `*transport.RequestError` of class `Unauthenticated` rather
-than a failed health check.
+refusal as a typed `*transport.RequestError` whose `StatusCode` is
+`codes.Unauthenticated`, rather than a failed health check.
 
 **A login also needs the tenant to exist.** `TenantFromClientCert` checks only
 the certificate. The node's mTLS authenticator also requires that the tenant
@@ -309,8 +306,7 @@ them authenticates as it** — the CN and OU select the account, the thumbprint
 proves the holder. A certificate naming an enrolled account that matches none
 of its bindings is refused with **401**, and the message carries the presented
 thumbprint so an operator can enrol it if the refusal was a missed enrolment.
-An account with NO bindings is unchanged: it authenticates on the CN and OU
-alone. See [architecture.md](architecture.md#what-a-certificate-actually-claims).
+An account with NO bindings authenticates on the CN and OU alone. See [architecture.md](architecture.md#what-a-certificate-actually-claims).
 
 `POST /users/{id}/cert-bindings` is therefore an authentication-affecting
 write, not bookkeeping. It is **additive** — enrol a new key alongside the old
@@ -488,8 +484,8 @@ chain, so a node that plugs in, say, an `oauth` authenticator can write
 `["mtls","oauth"]` — and a second node in the same process that does not,
 cannot. A create or update naming a token outside that live set is
 refused with **400** / `INVALID_ARGUMENT` (`UnknownAuthMethodError`, a
-validation error). A policy stored before that rule reads back and keeps
-working unchanged, and an update may keep an entry it already holds.
+validation error). A stored policy is not re-validated on read, and an update
+may keep an entry it already holds.
 
 A composing host that runs its own login ceremony enforces the same policy
 with `sdk.CheckAuthMethod(user, method)`, which returns nil or
@@ -518,7 +514,7 @@ rotation must not silently unenrol the key being rotated, which is why revoking
 does not drop a matching binding. **Withdrawing the binding is the remediation
 for a compromised key; revoking the certificate is not.**
 
-**Withdrawing an account's LAST binding WIDENS it** under the default
+**Withdrawing an account's LAST binding WIDENS it** under
 `auth.mtls_binding_policy: enrolled`. An empty binding set states no
 restriction, so the account returns to admitting any certificate whose CN and
 OU name it — the state every account was in before enrolment. That is a real
@@ -573,9 +569,9 @@ the server can re-apply them against whatever committed first.
 
 ```json
 { "id": "…", "name": "admin", "tenant_id": "acme",
-  "permissions": ["keys:create", "sdlc:bind"],
+  "permissions": ["keys:create", "devices:onboard", "example:retired"],
   "system": true,
-  "retired_permissions": ["sdlc:register"],
+  "retired_permissions": ["example:retired"],
   "created_at": "…", "updated_at": "…" }
 ```
 
@@ -594,7 +590,7 @@ entry for one to lose.
 { "tenant_id": "acme",
   "roles": [
     { "role_id": "…", "name": "admin",  "created": false,
-      "added": ["sdlc:bind"], "removed": ["sdlc:register"] },
+      "added": ["devices:onboard"], "removed": ["example:retired"] },
     { "role_id": "…", "name": "operator", "created": true,
       "added": ["orchestrator:task_block"] }
   ] }
@@ -626,10 +622,11 @@ tenant; naming another returns the cross-tenant refusal.
   "createdAt": "…", "updatedAt": "…" }
 ```
 
-(Field names above are REST/QUIC/MCP camelCase; gRPC and the SDK spell the
+(Field names above are QUIC/MCP camelCase; REST, gRPC and the SDK spell the
 same fields snake_case — `tenant_id`, `role_ids`, `auth_methods`,
-`last_auth`/`last_auth_unix`, `role_bindings`, `cert_bindings`, `factor_name`,
-`created_at`, `mfa_enabled`, `mfa_methods`, `mfa_enrolled_at`.)
+`last_auth` (gRPC `last_auth_unix`), `role_bindings` (`role_id`),
+`cert_bindings` (`not_after`), `factor_name`, `created_at`, `mfa_enabled`,
+`mfa_methods`, `mfa_enrolled_at`.)
 
 `system` marks the **single, cluster-wide bootstrap admin** created by
 first-boot — the one account a cluster can never be locked out of by an
@@ -666,20 +663,6 @@ listed because it still holds the account in the enforcing posture: an account
 with any binding admits only a matching certificate, so a reader who could not
 see the expired one could not explain why the account refuses a certificate.
 
-> **Breaking change (MCP only).** MCP previously `json.Marshal`ed the domain
-> `*user.User` record directly, so `certBindings[].kind` arrived as
-> pkg/user's internal ordinal (`0`/`1`/`2`) and a non-expiring binding's
-> `notAfter` was the zero `time.Time` (`0001-01-01T00:00:00Z`) rather than
-> omitted. That was the same defect a prior fix had already corrected on
-> every other transport; MCP now builds the identical string-labeled, omit-when-absent
-> projection REST, gRPC, QUIC, unix and embedded already use. An MCP client
-> written against the old, leaked shape — decoding `kind` as a number — will
-> fail to decode a user with certificate bindings against this server version,
-> and the reverse during a rolling upgrade. There is no compatibility shim: the
-> old shape was an accident of how the handler was written, not a documented
-> contract, and this repository ships no wire-compatibility guarantee
-> pre-release.
-
 `kind` is `spki_thumbprint` (canonical), `full_cert_fingerprint` or
 `piv_attested`; `notAfter` is absent for a binding that does not expire on its
 own. The thumbprint is a hash of public material — listing it discloses
@@ -692,11 +675,8 @@ it needs what reading the record needs: `users:read` on a single user,
 `suspended` · `locked` · `disabled` · `deleting`. Only `active` authenticates;
 an absent or unrecognized state fails closed.
 
-> **Breaking change.** The `enabled` boolean has been removed from the `User`
-> schema on every transport (REST, gRPC, QUIC, MCP, Unix socket and the
-> embedded SDK). It was a derived projection of `lifecycle`
-> (`lifecycle == "active"`); read `lifecycle` instead. In the gRPC
-> `UserResponse`, field number 5 and the name `enabled` are reserved.
+There is no `enabled` field on any transport; read `lifecycle`. In the gRPC
+`UserResponse`, field number 5 and the name `enabled` are reserved.
 
 Transitions are checked against a fixed table. `pending → active` is the only
 activation; `disabled` and `deleting` are reachable from every non-terminal
@@ -714,16 +694,12 @@ an account already in its target state and a `LifecycleTransitionError` from
 any other state. A suspended account is refused on every request, including
 one carrying a credential issued before the suspension.
 
-> **Breaking change.** `groupIDs` (`group_ids` on REST, gRPC and MCP) has been
-> removed from the `User` schema and from the create and update requests on
-> every transport, together with gRPC's `has_group_ids` flag and MCP's
-> `clear_group_ids` argument. No qrdb authorization path read it: access
-> resolves user → role bindings → roles → permissions. A layer that needs group
-> membership stores it itself. In gRPC the removed field numbers and names are
-> reserved (`CreateUserRequest` 7; `UpdateUserProtoRequest` 6 and 7;
-> `UserResponse` 12). On REST and QUIC an unknown key in a request body is
-> ignored, so a client still sending `group_ids` is not refused — the value is
-> simply not stored.
+The `User` schema and its create and update requests carry no group
+membership: access resolves user → role bindings → roles → permissions, and a
+layer that needs groups stores them itself. gRPC reserves `group_ids` and
+`has_group_ids` (`CreateUserRequest` 7; `UpdateUserProtoRequest` 6 and 7;
+`UserResponse` 12). On REST and QUIC an unknown key in a request body is
+ignored, so a body carrying `group_ids` is not refused and nothing is stored.
 
 `authMethods` is a **policy** statement of what the account may present
 (`webauthn`, `piv`, …), distinct from `factors`, which records what it has
@@ -776,11 +752,6 @@ alone".
 account has never authenticated. On the JSON transports "never" is the **absent
 key**, never a zero timestamp — `1970` is not a login.
 
-`certBindings[].kind`: `0` SPKI thumbprint (**canonical default**) ·
-`1` full-certificate fingerprint (exact pinning) · `2` PIV-attested (gRPC
-carries the ordinal; every other transport carries the string label shown in
-the schema above).
-
 `roleBindings` and `attributes` follow the identical leave-alone / clear /
 replace contract `authMethods` does, on `UpdateUser` only — neither is
 settable on `CreateUser`, matching the domain request shape:
@@ -795,8 +766,7 @@ settable on `CreateUser`, matching the domain request shape:
 union. A binding's `tenantID` must be the user's own tenant — for a
 system-tenant user too — and a binding naming any other tenant is refused.
 A tenant's own administrators act only in their tenant; a system-tenant
-Admin can still administer a tenant's users and roles until strict tenant
-isolation lands (see
+`admin` can also administer a tenant's users and roles (see
 [architecture.md](architecture.md#three-authorization-inputs-on-one-user)). `attributes` are ABAC inputs in their own
 namespace — `subject.user_attrs.<key>` in a policy condition, `user_attrs.<key>`
 as a match key — so an attribute can never satisfy a policy written against a
@@ -820,10 +790,8 @@ is written. The role check runs whether or not RBAC is enabled; only the
 `factors` is **read-only on every transport, on both `CreateUser` and
 `UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
 `transport.CreateUserRequest`/`UpdateUserRequest` — declares a `factors`
-input. Enrolling or rotating a factor is its own verb (the `AuthFactorService`
-/ `/v1/users/factors` surface), never a field on the user record's own
-create/update request. The `data` blob is never readable either; only `id`,
-`factorName` and `createdAt` are ever returned.
+input. Enrolling or rotating a factor is its own verb (`AuthFactorService`,
+`/v1/users/factors`).
 
 Role creation takes a name, a tenant and a permission list of `resource:action`
 strings, each validated against the registry.
@@ -831,8 +799,8 @@ strings, each validated against the registry.
 `ListPermissions` returns the registry, grouped into categories with display
 names for UI rendering.
 
-The embedded SDK's `RBAC().ListPermissions(identity)` is the per-identity
-view: the union of what the identity's roles grant, each entry carrying its
+The SDK's `Client.RBAC().ListPermissions(ctx, identity)`, on every transport,
+is the per-identity view: the union of what the identity's roles grant, each entry carrying its
 declared scope (`self`, `cross` or `tenant-only`) so a UI can filter to what
 the caller can do where it is. A whole-segment wildcard grant (`objstore:*`,
 `*:read`, `*:*`) is expanded to the registered permissions it matches, each
@@ -868,7 +836,7 @@ of its own, and the listing never contains one.
 | Deleting a role whose holder strip failed part way (`role.HolderRevocationError`; the role stays, marked, and a retry of the delete finishes it) | the cause's status, e.g. 500 for a store failure | the cause's code, e.g. `INTERNAL` |
 | The user's auth factors could not be listed while building the response | 503 | `UNAVAILABLE` |
 | A user/role request whose body (REST) or payload (QUIC) does not decode | 400 | `INVALID_ARGUMENT` |
-| A REST create, lookup or role-assignment body larger than 1 MiB | 413 | — |
+| A REST user or role administration body larger than 1 MiB | 413 | — |
 | A create, list or name lookup by a caller outside the system tenant naming a tenant other than its own (`tenant.CrossTenantDeniedError`) | 403 | `PERMISSION_DENIED` |
 | An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
 | Invite or redeem request missing a required field | 400 | `INVALID_ARGUMENT` |
@@ -877,15 +845,16 @@ of its own, and the listing never contains one.
 
 ## Pagination
 
-`ListUsers` and `ListRoles` are **page-based** (`page`, `page_size`).
+`ListUsers` and `ListRoles` are **page-based**: `page` and `page_size` on
+gRPC, the `page` and `pageSize` query parameters on REST.
 `ListPermissions` returns the whole registry and is not paginated.
 
 ## Versioning
 
-Identity REST paths are unversioned (`/users/...`, `/roles/...`,
-`/permissions/...`). Nothing here is deprecated; removed fields are removed
-outright rather than deprecated (see the breaking-change notes under
-[Schemas](#schemas)).
+The user, role and permission REST paths are unversioned (`/users/...`,
+`/roles/...`, `/permissions/...`); the auth-factor paths are under
+`/v1/users/factors`. Nothing here is deprecated: a removed field is removed
+outright.
 
 ## The email login key
 

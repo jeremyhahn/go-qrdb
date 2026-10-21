@@ -1,6 +1,6 @@
 # Identity and RBAC — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Three command groups: `qrdb users`, `qrdb roles` and `qrdb abac policy`.
@@ -72,8 +72,7 @@ Security Officer target, and an Owner target only when you hold Owner
 yourself.
 
 Served on every transport (see
-[api.md](api.md#capability-matrix--invitation-self-enrolment)). *(Corrected
-2026-10-06: this said `grpc` and `unix` refuse it; both carry `InviteUser`.)*
+[api.md](api.md#capability-matrix--invitation-self-enrolment)).
 
 ### `qrdb enroll`
 
@@ -105,8 +104,8 @@ qrdb enroll --tenant-id acme --token "$TOKEN" --csr ./alice.csr
 other command uses, but this is the one command that dials without
 connecting first: on `mcp`, redemption is served by a **separate** public
 server (`/mcp/enroll`) because the main endpoint answers an unauthenticated
-caller nothing beyond the tools an embedder declares public. Served on `rest`, `quic` and
-`mcp`, and likewise on `grpc` and `unix`.
+caller nothing beyond the tools an embedder declares public. Served on every
+transport.
 
 A token is single-use: a second `qrdb enroll` with the same token gets the
 same opaque refusal an unknown or expired token gets, by design (see
@@ -142,20 +141,18 @@ either is a no-op; from any other state (a `disabled`, `locked` or `pending`
 account) both are refused with a `LifecycleTransitionError`, so `unsuspend`
 never brings back an account that `enable` owns. A suspended account's requests
 are refused, including those carrying a token issued before the suspension.
-
-> **Breaking change.** `users get` and `users list` no longer print an
-> `Enabled` line or `ENABLED` column, and `--output json|yaml` no longer carries
-> an `enabled` key: `lifecycle` is the only account-state field.
+`lifecycle` is the only account-state field.
 
 The default (table) output of `users get` also prints, when present: a
-`RoleBinding: <role_id>@<tenant_id>` line per tenant-scoped role binding, an
+`CertBinding: <thumbprint> (<kind>[, expires <time>])` line per enrolled mTLS
+key, a `RoleBinding: <role_id>@<tenant_id>` line per tenant-scoped role binding, an
 `Attribute: <key>=<value>` line per ABAC attribute, `MFAEnabled: true|false`
 (derived from enrolled factors, never stored), `MFAMethods: <comma-separated>`
 when at least one factor is enrolled, and a `Factor: <id> (<factor_name>)`
 line per enrolled factor — the factor's opaque `data` is never printed,
 because it never reaches the client on any transport. `--output json|yaml`
-carry the same information under `roleBindings`, `attributes`, `mfaEnabled`,
-`mfaMethods`, `mfaEnrolledAt` and `factors`.
+carry the same information under `cert_bindings`, `role_bindings`, `attributes`,
+`mfa_enabled`, `mfa_methods`, `mfa_enrolled_at` and `factors`.
 
 ### `qrdb users list`
 
@@ -194,12 +191,10 @@ reachable by neither.
 `--role-binding` and `--attribute` REPLACE the whole set when given; there is
 no way to add or remove a single entry from the command line — read the
 current set with `qrdb users get <id> --output json` first if only one entry
-needs to change. `--role-binding` and `--clear-role-bindings` are mutually
-exclusive, as are `--attribute` and `--clear-attributes`; passing the clear
-flag alongside the corresponding set flag is a no-op for the clear (the set
-flag takes precedence).
+needs to change. Given with its set flag (`--role-binding`, `--attribute`), a
+clear flag is ignored: the set flag wins.
 
-`system`, `factors[].data`, `mfaEnabled`, `mfaMethods` and `mfaEnrolledAt`
+`system`, `factors[].data`, `mfa_enabled`, `mfa_methods` and `mfa_enrolled_at`
 have **no update flag**. `system` is set exactly once, by first-boot, for the
 single cluster-wide bootstrap admin, and no CLI command can create a second
 one. The MFA fields and the auth-factor metadata are derived read-only
@@ -228,7 +223,7 @@ refused.
 
 ```bash
 qrdb roles get 7a1b...
-qrdb roles get-by-name Operator --tenant-id system
+qrdb roles get-by-name operator --tenant-id system
 qrdb roles delete 7a1b...        # refused for the five built-in roles
 ```
 
@@ -260,7 +255,7 @@ Flags: `--tenant-id`, `--page`, `--page-size`.
 | `--role` | string — role **ID** |
 
 ```bash
-ROLE=$(qrdb roles get-by-name Operator --output json | jq -r .id)
+ROLE=$(qrdb roles get-by-name operator --output json | jq -r .id)
 qrdb roles assign --user 1f2e... --role "$ROLE"
 qrdb roles unassign --user 1f2e... --role "$ROLE"
 ```
@@ -334,8 +329,7 @@ qrdb roles reconcile --tenant acme
 ```
 Tenant acme:
   admin (5aee453e-…) updated
-    + sdlc:bind
-    - sdlc:register
+    + devices:onboard
   operator (…) created
     + orchestrator:task_block
 ```
@@ -434,12 +428,13 @@ qrdb abac policy delete deny-after-hours
 ```
 
 Each verb needs its `abac_policies:*` permission (`create`, `read`, `list`,
-`update`, `delete`); the built-in Admin role holds all five.
+`update`, `delete`); the built-in `admin` role holds all five.
 
 ## The built-in roles
 
-Five roles exist from bootstrap and **cannot be deleted**: Security Officer,
-Admin, Operator, User, Auditor. Their identifiers are deterministic,
+Five roles exist from bootstrap and **cannot be deleted**: `so` (Security
+Officer), `admin`, `operator`, `user` and `auditor`; `get-by-name` takes these
+names. Their identifiers are deterministic,
 so they are the same on every node. Their permissions are fixed too — the one
 supported way to change them is `qrdb roles reconcile`, which converges them
 onto the build's own definitions rather than onto anything a caller supplies.
@@ -469,8 +464,8 @@ certificate to it.
 ```bash
 qrdb users create --username alice --email alice@acme.com --tenant-id acme
 qrdb ca issue --username alice --out ./alice
-ROLE=$(qrdb roles get-by-name Operator --output json | jq -r .id)
-USER=$(qrdb users list --tenant-id acme --output json | jq -r '.[] | select(.username=="alice") | .id')
+ROLE=$(qrdb roles get-by-name operator --tenant-id acme --output json | jq -r .id)
+USER=$(qrdb users list --tenant-id acme --output json | jq -r '.users[] | select(.username=="alice") | .id')
 qrdb roles assign --user "$USER" --role "$ROLE"
 ```
 
