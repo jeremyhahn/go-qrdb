@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/retry"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -392,6 +393,10 @@ type AdminCompletionBounds struct {
 	// up to MaxDelay. Defaults 250ms and 5s.
 	Delay    time.Duration
 	MaxDelay time.Duration
+	// Clock is the clock Budget and AttemptTimeout run on. Default
+	// clock.Real(); a test passes a clocktest.Fake so that no attempt ends
+	// unless it advances the fake.
+	Clock clock.Clock
 }
 
 // withDefaults returns b with every zero field set to its default.
@@ -407,6 +412,9 @@ func (b AdminCompletionBounds) withDefaults() AdminCompletionBounds {
 	}
 	if b.MaxDelay <= 0 {
 		b.MaxDelay = 5 * time.Second
+	}
+	if b.Clock == nil {
+		b.Clock = clock.Real()
 	}
 	return b
 }
@@ -438,7 +446,7 @@ func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps
 	b = b.withDefaults()
 	// The account and its roles are the tenant's own records, written as
 	// ProvisionTenant writes them.
-	ctx, cancel := context.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.Budget)
+	ctx, cancel := clock.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.Clock, b.Budget)
 	defer cancel()
 	var done bool
 	var prev error // the last attempt's error, for an attempt the budget cuts off
@@ -452,7 +460,7 @@ func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps
 				slog.Duration("retry_in", wait), slog.Any("error", err))
 		},
 	}, func(ctx context.Context) error {
-		actx, cancel := context.WithTimeout(ctx, b.AttemptTimeout)
+		actx, cancel := clock.WithTimeout(ctx, b.Clock, b.AttemptTimeout)
 		defer cancel()
 		var err error
 		done, err = CompletePendingTenantAdmin(actx, tenantID, deps)
@@ -478,7 +486,8 @@ func CompletePendingTenantAdminWithin(ctx context.Context, tenantID string, deps
 // only its own node -- tries the admin once and leaves a record it cannot
 // complete yet to the barrier-ready hook's next unseal or status read.
 func CompletePendingTenantAdminOnce(ctx context.Context, tenantID string, deps Dependencies, b AdminCompletionBounds) (bool, error) {
-	ctx, cancel := context.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.withDefaults().AttemptTimeout)
+	b = b.withDefaults()
+	ctx, cancel := clock.WithTimeout(tenant.WithTenantID(ctx, tenantID), b.Clock, b.AttemptTimeout)
 	defer cancel()
 	return CompletePendingTenantAdmin(ctx, tenantID, deps)
 }

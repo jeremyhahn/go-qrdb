@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
@@ -53,7 +54,7 @@ func TestTenantRoleResolver_NilWhenRolesCannotResolve(t *testing.T) {
 
 func TestAdminCompletionBounds_ZeroDefaultsEveryBound(t *testing.T) {
 	got := AdminCompletionBounds{}.withDefaults()
-	want := AdminCompletionBounds{Budget: 2 * time.Minute, AttemptTimeout: 10 * time.Second, Delay: 250 * time.Millisecond, MaxDelay: 5 * time.Second}
+	want := AdminCompletionBounds{Budget: 2 * time.Minute, AttemptTimeout: 10 * time.Second, Delay: 250 * time.Millisecond, MaxDelay: 5 * time.Second, Clock: clock.Real()}
 	if got != want {
 		t.Fatalf("withDefaults() = %+v, want %+v", got, want)
 	}
