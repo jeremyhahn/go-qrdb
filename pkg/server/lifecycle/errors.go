@@ -369,6 +369,18 @@ func (e *DEKServiceError) Error() string {
 
 func (e *DEKServiceError) Unwrap() error { return e.Err }
 
+// PolicyServiceError is returned when the tenant ABAC policy service cannot
+// be constructed.
+type PolicyServiceError struct {
+	Err error
+}
+
+func (e *PolicyServiceError) Error() string {
+	return "lifecycle: build abac policy service: " + e.Err.Error()
+}
+
+func (e *PolicyServiceError) Unwrap() error { return e.Err }
+
 // CertStoreError is returned when the guarded KV store backing CertProv
 // (Key B) and ClusterCAProv (Key A) cannot be built. In production this
 // never happens -- n.Transaction is wired unconditionally before

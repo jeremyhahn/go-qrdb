@@ -3,7 +3,8 @@
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
 > Conflicts with this document are defects. Fix them here first.
 
-Two command groups: `qrdb users` and `qrdb roles`. Authentication factors are
+Three command groups: `qrdb users`, `qrdb roles` and `qrdb abac policy`.
+Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
 [../certificate-authority/cli.md](../certificate-authority/cli.md).
 
@@ -356,6 +357,85 @@ the tenant's own Admin reconciles the tenant without taking another role.
 build no longer defines. That is the drift this command repairs; seeing it is
 how you know to run it.
 
+## ABAC policies
+
+`qrdb abac policy` manages the stored ABAC policy documents of the caller's
+own tenant (the document format is [the ABAC reference](../auth/abac.md)).
+Every verb acts on that tenant and works on every transport the root
+`--transport` flag selects. A stored policy does **not** feed the ABAC
+evaluator yet: these verbs store and return documents, and an authorization
+decision does not change when one is created, updated or deleted.
+
+One flag is shared by every verb:
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--tenant` | string | the caller's tenant | the tenant addressed. It may only name the caller's own tenant; any other is refused |
+
+Each verb prints a table (`NAME`, `TENANT`, `ENABLED`, `PRIORITY`, `RULES`,
+`UPDATED`) by default, and the stored document with `--output json` or
+`--output yaml`. A refusal exits non-zero with the server's error.
+
+### `qrdb abac policy create`
+
+Creates a policy from one YAML or JSON document. A name the tenant already
+holds is refused.
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--file`, `-f` | string | — (required) | path to the policy document; the file must hold exactly one document |
+
+If the document carries no `metadata.tenant` and `--tenant` is given, the
+document takes that tenant; a document naming a tenant other than `--tenant`
+is refused before any request is sent.
+
+```bash
+qrdb abac policy create --file ./deny-after-hours.yaml
+qrdb --output json abac policy create -f ./deny-after-hours.yaml
+```
+
+### `qrdb abac policy get <name>`
+
+Shows one policy. The document is returned exactly as it was written:
+`spec.enabled` appears only if the document set it.
+
+```bash
+qrdb --output yaml abac policy get deny-after-hours
+```
+
+### `qrdb abac policy list`
+
+Lists the tenant's policies, sorted by name. An empty tenant prints an empty
+table, or `[]` with `--output json`.
+
+```bash
+qrdb abac policy list
+```
+
+### `qrdb abac policy update`
+
+Replaces a policy with one YAML or JSON document; `metadata.name` selects the
+policy. It takes the same `--file` / `-f` flag as `create`. The policy must
+exist; its creation time is kept and its update time set. An update that
+loses to a concurrent write is refused and is safe to retry after a fresh
+`get`.
+
+```bash
+# Switch a policy off without deleting it: set spec.enabled to false.
+qrdb abac policy update -f ./deny-after-hours.yaml
+```
+
+### `qrdb abac policy delete <name>`
+
+Deletes one policy and prints `Deleted policy <name>`.
+
+```bash
+qrdb abac policy delete deny-after-hours
+```
+
+Each verb needs its `abac_policies:*` permission (`create`, `read`, `list`,
+`update`, `delete`); the built-in Admin role holds all five.
+
 ## The built-in roles
 
 Five roles exist from bootstrap and **cannot be deleted**: Security Officer,
@@ -396,4 +476,10 @@ qrdb roles assign --user "$USER" --role "$ROLE"
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+The `qrdb users`, `qrdb enroll`, `qrdb roles` and `qrdb abac policy`
+commands are driven through the CLI binary on every transport of one node by the
+`_PerProtocol` suites `make integration-test-identity-rbac` runs
+(`roles_cli_test.go`, `users_cli_test.go`, `invitation_cli_test.go`,
+`abac_policy_cli_test.go`). Per-transport accounting, including every gap: the
+`identity-rbac` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

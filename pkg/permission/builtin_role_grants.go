@@ -152,6 +152,10 @@ func registerAdminGrants() {
 		// everything in its tenant except key custody, and onboarding a
 		// device or rolling out an update is neither.
 		DevicesOnboard, OTAActivate, OTAConfirm,
+		// ABAC policy management, in the Admin's own tenant only
+		// (ScopeSelf, and the policy service refuses another tenant).
+		ABACPoliciesCreate, ABACPoliciesRead, ABACPoliciesList,
+		ABACPoliciesUpdate, ABACPoliciesDelete,
 		// Seal management (operational subset: no bootstrap, rotate, rekey)
 		SealUnseal, SealSeal, SealStatus,
 		// Share-holder enrolment and revocation. An Admin and a Security

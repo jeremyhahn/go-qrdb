@@ -173,6 +173,7 @@ func (t *Transport) cloneShared() *Transport {
 		pinBackend:                   t.pinBackend,
 		holderActLimiter:             t.holderActLimiter,
 		dekSvc:                       t.dekSvc,
+		policySvc:                    t.policySvc,
 		ceremonySvc:                  t.ceremonySvc,
 		ceremonyCA:                   t.ceremonyCA,
 		credentialSvc:                t.credentialSvc,

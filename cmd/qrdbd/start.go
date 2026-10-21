@@ -2894,6 +2894,9 @@ func runStart(f *startFlags) (err error) {
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
 			}
+			if svcNode.Policy != nil {
+				serverOpts = append(serverOpts, server.WithPolicyService(svcNode.Policy))
+			}
 			if barrierRegistry != nil {
 				serverOpts = append(serverOpts, server.WithBarrierRegistry(barrierRegistry))
 			}

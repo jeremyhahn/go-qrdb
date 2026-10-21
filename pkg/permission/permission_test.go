@@ -633,7 +633,9 @@ func TestAll_TotalCount(t *testing.T) {
 	//   tenant's status (active/suspended/disabled) = 393 total.
 	// + 3 device perms (devices:onboard, ota:activate, ota:confirm), each
 	//   tenant acting on its own devices only (ScopeSelf) = 396 total.
-	const expectedTotal = 396
+	// + 5 abac_policies perms (create, read, list, update, delete), each
+	//   tenant managing its own ABAC policies only (ScopeSelf) = 401 total.
+	const expectedTotal = 401
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

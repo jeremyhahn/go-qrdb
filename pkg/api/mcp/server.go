@@ -83,6 +83,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	policySvc         service.PolicyServicer
 	tenantSvc         tenant.TenantServicer
 	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
@@ -522,6 +523,14 @@ func WithDEKService(svc service.DEKServicer) ServerOption {
 	}
 }
 
+// WithPolicyService configures the tenant ABAC policy store. Without it the
+// qrdb_abac_policy_* tools are not registered.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(s *Server) {
+		s.policySvc = svc
+	}
+}
+
 // WithCeremonyCA configures the ceremony CA used for ceremony initialization.
 func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 	return func(s *Server) {
@@ -858,6 +867,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.dekSvc != nil {
 		s.addTools(dekTools(s.dekSvc)...)
+	}
+	if s.policySvc != nil {
+		s.addTools(policyTools(s.policySvc)...)
 	}
 	if s.credentialSvc != nil {
 		s.addTools(credentialTools(s.credentialSvc)...)

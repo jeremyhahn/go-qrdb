@@ -153,7 +153,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 	for _, n := range []string{"kvSvc", "adminSvc", "mvccSvc", "txSvc", "batchSvc", "watchSvc", "leaseSvc",
 		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "certProv", "certEnroll", "invitations", "onboarding",
 		"dbSvc", "barrierSvc", "pinBackend", "holderActLimiter",
-		"dekSvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",
+		"dekSvc", "policySvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",
 		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "volumeSvc", "lockSvc",
 		"authFactorSvc", "auditLogger", "replicatedAudit", "encMigrator", "registry", "rbacAuthz", "authMW", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",

@@ -300,6 +300,7 @@ type qrdbServiceServer struct {
 	ceremonyCA    ceremony.CeremonyCA
 	credentialSvc service.CredentialServicer
 	dekSvc        service.DEKServicer
+	policySvc     service.PolicyServicer
 	tenantSvc     tenant.TenantServicer
 	volumeSvc     volume.Service
 	userSvc       user.UserServicer

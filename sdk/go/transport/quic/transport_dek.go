@@ -36,7 +36,7 @@ func (t *Transport) TenantDEKStatus(ctx context.Context, req *transport.TenantDE
 		return nil, dekNilRequest("TenantDEKStatus")
 	}
 	var resp pb.TenantDEKStatusResponse
-	if err := t.dekCall(ctx, "dek.Status", &pb.TenantDEKRequest{TenantId: req.TenantID}, &resp); err != nil {
+	if err := t.protoCall(ctx, "dek.Status", &pb.TenantDEKRequest{TenantId: req.TenantID}, &resp); err != nil {
 		return nil, err
 	}
 	return dekconv.Status(&resp), nil
@@ -48,7 +48,7 @@ func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDE
 		return nil, dekNilRequest("TenantDEKRotate")
 	}
 	var resp pb.TenantDEKStatusResponse
-	if err := t.dekCall(ctx, "dek.Rotate", &pb.TenantDEKRequest{TenantId: req.TenantID}, &resp); err != nil {
+	if err := t.protoCall(ctx, "dek.Rotate", &pb.TenantDEKRequest{TenantId: req.TenantID}, &resp); err != nil {
 		return nil, err
 	}
 	return dekconv.Status(&resp), nil
@@ -60,7 +60,7 @@ func (t *Transport) TenantDEKRetire(ctx context.Context, req *transport.TenantDE
 		return nil, dekNilRequest("TenantDEKRetire")
 	}
 	var resp pb.TenantDEKStatusResponse
-	if err := t.dekCall(ctx, "dek.Retire", &pb.TenantDEKRetireRequest{TenantId: req.TenantID, Version: req.Version}, &resp); err != nil {
+	if err := t.protoCall(ctx, "dek.Retire", &pb.TenantDEKRetireRequest{TenantId: req.TenantID, Version: req.Version}, &resp); err != nil {
 		return nil, err
 	}
 	return dekconv.Status(&resp), nil
@@ -73,7 +73,7 @@ func (t *Transport) TenantDEKEncrypt(ctx context.Context, req *transport.TenantD
 	}
 	var resp pb.TenantDEKEncryptResponse
 	in := &pb.TenantDEKEncryptRequest{TenantId: req.TenantID, Plaintext: req.Plaintext, Aad: req.AAD}
-	if err := t.dekCall(ctx, "dek.Encrypt", in, &resp); err != nil {
+	if err := t.protoCall(ctx, "dek.Encrypt", in, &resp); err != nil {
 		return nil, err
 	}
 	return dekconv.Encrypt(&resp), nil
@@ -86,7 +86,7 @@ func (t *Transport) TenantDEKDecrypt(ctx context.Context, req *transport.TenantD
 	}
 	var resp pb.TenantDEKDecryptResponse
 	in := &pb.TenantDEKDecryptRequest{TenantId: req.TenantID, Ciphertext: req.Ciphertext, Aad: req.AAD}
-	if err := t.dekCall(ctx, "dek.Decrypt", in, &resp); err != nil {
+	if err := t.protoCall(ctx, "dek.Decrypt", in, &resp); err != nil {
 		return nil, err
 	}
 	return dekconv.Decrypt(&resp), nil
@@ -99,14 +99,14 @@ func (t *Transport) TenantDEKRewrap(ctx context.Context, req *transport.TenantDE
 	}
 	var resp pb.TenantDEKRewrapResponse
 	in := &pb.TenantDEKRewrapRequest{TenantId: req.TenantID, Ciphertext: req.Ciphertext, Aad: req.AAD}
-	if err := t.dekCall(ctx, "dek.Rewrap", in, &resp); err != nil {
+	if err := t.protoCall(ctx, "dek.Rewrap", in, &resp); err != nil {
 		return nil, err
 	}
 	return dekconv.Rewrap(&resp), nil
 }
 
-// dekCall frames in, invokes method and decodes the reply into out.
-func (t *Transport) dekCall(ctx context.Context, method string, in, out proto.Message) error {
+// protoCall frames in, invokes method and decodes the reply into out.
+func (t *Transport) protoCall(ctx context.Context, method string, in, out proto.Message) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

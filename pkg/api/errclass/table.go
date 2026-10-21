@@ -1096,6 +1096,24 @@ var dekRules = []rule{
 	is(dek.ErrKeyWrapFailed, InvalidArgument),
 }
 
+// policyRules classify the ABAC policy service's errors (pkg/service,
+// policy_errors.go).
+var policyRules = []rule{
+	// Before PolicyInvalidError: a corrupt record wraps the invalid-name
+	// error that found it, and is still persisted state, not a bad request.
+	as(&service.PolicyCorruptError{}, DataLoss),
+	as(&service.PolicyInvalidError{}, InvalidArgument),
+	as(&service.PolicyNotFoundError{}, NotFound),
+	as(&service.PolicyExistsError{}, AlreadyExists),
+	// A lost guarded write: the store is unchanged and a re-read and retry
+	// can succeed.
+	as(&service.PolicyConflictError{}, Aborted),
+	// Another tenant's policies are refused even for a system-tenant caller.
+	as(&service.PolicyCrossTenantError{}, PermissionDenied),
+	// A server-side capability gap, not a value the request could fix.
+	as(&service.PolicyStoreUnsupportedError{}, Unimplemented),
+}
+
 // auditVerifyRules are the conditions that stop an audit chain verification
 // from being performed at all. A tamper verdict is never an error -- it is a
 // field of the report -- so none of these says anything about the trail's

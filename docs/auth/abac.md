@@ -185,9 +185,18 @@ held and re-serialised without it, and one written with `false` keeps
 `false`, so a reader sees whether the field was set and not only its
 effective value. `PolicySpec.EnabledSet()` reports presence and
 `PolicySpec.IsEnabled()` the effective value (true when absent). The field
-reaches qrdb through the two policy inputs, the `policy_dir` files and the
-SDK's `ABACPolicySpec`. No network transport accepts or returns a policy
-document today, so there is no wire form yet.
+reaches the evaluator through its two policy inputs, the `policy_dir` files
+and the SDK's `ABACPolicySpec`.
+
+Every transport also carries a policy document, through the stored-policy
+API: `qrdb abac policy create|get|list|update|delete`, REST
+`/v1/abac/policies[/{name}]`, and the gRPC, Unix socket, QUIC and MCP
+equivalents (the identity-rbac feature's [api.md](../identity-rbac/api.md)
+and [cli.md](../identity-rbac/cli.md)). It stores the document as a record
+of the caller's own tenant and returns it unchanged, `enabled` included: the
+gRPC message's `spec.enabled` is an `optional bool`, so an unset field stays
+unset. A stored policy does **not** feed the evaluator yet; the evaluator
+still reads only the two inputs above.
 
 Condition expressions support comparison (`==`, `!=`, `>`, `>=`, `<`,
 `<=`, `between`), string (`startswith`, `endswith`, `contains`, `matches`,

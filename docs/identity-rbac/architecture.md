@@ -883,6 +883,7 @@ go-trusted-platform and go-xkms.
 | Roles | `pkg/role` | go-qrdb |
 | Permission vocabulary and registry | `pkg/permission` | go-qrdb |
 | The RBAC PDP, ABAC, middleware, authenticators | `pkg/auth` | go-qrdb |
+| Stored ABAC policies (tenant records at `__sys:abac_policy/<name>`; not yet read by the evaluator) | `pkg/service` (`PolicyServicer`) | go-qrdb |
 | Certificate issuance | `pkg/cert` — see [../certificate-authority/](../certificate-authority/) | go-qrdb |
 | Auth factors framework and the mTLS factor | `pkg/authfactors` — see [../auth-factors/](../auth-factors/) | go-qrdb |
 | FIDO2 / PIV / PKCS#11 factor implementations | — | **go-xkms**, injected |

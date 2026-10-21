@@ -182,6 +182,17 @@ From the moment the delete starts, the role grants nothing. If the delete
 fails part way, for example because a node is unavailable, run it again: it
 picks up where it stopped.
 
+**Store an ABAC policy and read it back.**
+
+```bash
+qrdb abac policy create --file ./deny-after-hours.yaml
+qrdb abac policy get deny-after-hours
+```
+
+The policy is kept in your own tenant and comes back exactly as you wrote it.
+Stored policies do not yet change any authorization decision: the evaluator
+still reads only the `policy_dir` files and the SDK's `ABACPolicySpec`. See [cli.md](cli.md#abac-policies).
+
 **List and page.**
 
 ```bash

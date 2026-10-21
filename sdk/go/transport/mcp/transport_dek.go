@@ -35,7 +35,7 @@ func (t *Transport) TenantDEKStatus(ctx context.Context, req *transport.TenantDE
 		return nil, &transport.RequestError{Method: "TenantDEKStatus", Err: &transport.NilRequestError{}}
 	}
 	var resp transport.TenantDEKStatusResponse
-	if err := t.dekTool(ctx, "TenantDEKStatus", "qrdb_dek_status", dekArgs(req.TenantID), &resp); err != nil {
+	if err := t.jsonTool(ctx, "TenantDEKStatus", "qrdb_dek_status", tenantArgs(req.TenantID), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -47,7 +47,7 @@ func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDE
 		return nil, &transport.RequestError{Method: "TenantDEKRotate", Err: &transport.NilRequestError{}}
 	}
 	var resp transport.TenantDEKStatusResponse
-	if err := t.dekTool(ctx, "TenantDEKRotate", "qrdb_dek_rotate", dekArgs(req.TenantID), &resp); err != nil {
+	if err := t.jsonTool(ctx, "TenantDEKRotate", "qrdb_dek_rotate", tenantArgs(req.TenantID), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -58,10 +58,10 @@ func (t *Transport) TenantDEKRetire(ctx context.Context, req *transport.TenantDE
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantDEKRetire", Err: &transport.NilRequestError{}}
 	}
-	args := dekArgs(req.TenantID)
+	args := tenantArgs(req.TenantID)
 	args["version"] = req.Version
 	var resp transport.TenantDEKStatusResponse
-	if err := t.dekTool(ctx, "TenantDEKRetire", "qrdb_dek_retire", args, &resp); err != nil {
+	if err := t.jsonTool(ctx, "TenantDEKRetire", "qrdb_dek_retire", args, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -73,7 +73,7 @@ func (t *Transport) TenantDEKEncrypt(ctx context.Context, req *transport.TenantD
 		return nil, &transport.RequestError{Method: "TenantDEKEncrypt", Err: &transport.NilRequestError{}}
 	}
 	var resp transport.TenantDEKEncryptResponse
-	if err := t.dekTool(ctx, "TenantDEKEncrypt", "qrdb_dek_encrypt", dekDataArgs(req.TenantID, "plaintext", req.Plaintext, req.AAD), &resp); err != nil {
+	if err := t.jsonTool(ctx, "TenantDEKEncrypt", "qrdb_dek_encrypt", dekDataArgs(req.TenantID, "plaintext", req.Plaintext, req.AAD), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -85,7 +85,7 @@ func (t *Transport) TenantDEKDecrypt(ctx context.Context, req *transport.TenantD
 		return nil, &transport.RequestError{Method: "TenantDEKDecrypt", Err: &transport.NilRequestError{}}
 	}
 	var resp transport.TenantDEKDecryptResponse
-	if err := t.dekTool(ctx, "TenantDEKDecrypt", "qrdb_dek_decrypt", dekDataArgs(req.TenantID, "ciphertext", req.Ciphertext, req.AAD), &resp); err != nil {
+	if err := t.jsonTool(ctx, "TenantDEKDecrypt", "qrdb_dek_decrypt", dekDataArgs(req.TenantID, "ciphertext", req.Ciphertext, req.AAD), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -97,14 +97,15 @@ func (t *Transport) TenantDEKRewrap(ctx context.Context, req *transport.TenantDE
 		return nil, &transport.RequestError{Method: "TenantDEKRewrap", Err: &transport.NilRequestError{}}
 	}
 	var resp transport.TenantDEKRewrapResponse
-	if err := t.dekTool(ctx, "TenantDEKRewrap", "qrdb_dek_rewrap", dekDataArgs(req.TenantID, "ciphertext", req.Ciphertext, req.AAD), &resp); err != nil {
+	if err := t.jsonTool(ctx, "TenantDEKRewrap", "qrdb_dek_rewrap", dekDataArgs(req.TenantID, "ciphertext", req.Ciphertext, req.AAD), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
-// dekTool calls a keyring tool and decodes its JSON result into dest.
-func (t *Transport) dekTool(ctx context.Context, method, tool string, args map[string]any, dest any) error {
+// jsonTool calls a tool answering with a JSON body (the keyring and ABAC
+// policy tools) and decodes that body into dest.
+func (t *Transport) jsonTool(ctx context.Context, method, tool string, args map[string]any, dest any) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -118,8 +119,8 @@ func (t *Transport) dekTool(ctx context.Context, method, tool string, args map[s
 	return nil
 }
 
-// dekArgs returns the tool arguments carrying the optional tenant.
-func dekArgs(tenantID string) map[string]any {
+// tenantArgs returns the tool arguments carrying the optional tenant.
+func tenantArgs(tenantID string) map[string]any {
 	args := map[string]any{}
 	if tenantID != "" {
 		args["tenant_id"] = tenantID
@@ -129,7 +130,7 @@ func dekArgs(tenantID string) map[string]any {
 
 // dekDataArgs returns the tool arguments for a data-carrying keyring tool.
 func dekDataArgs(tenantID, field string, data, aad []byte) map[string]any {
-	args := dekArgs(tenantID)
+	args := tenantArgs(tenantID)
 	args[field] = base64.StdEncoding.EncodeToString(data)
 	if len(aad) > 0 {
 		args["aad"] = base64.StdEncoding.EncodeToString(aad)

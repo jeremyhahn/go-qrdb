@@ -95,6 +95,7 @@ type Server struct {
 	ragSvc            service.RAGServicer
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	policySvc         service.PolicyServicer
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	sqlSvc            service.SQLServicer
@@ -583,6 +584,12 @@ func WithCredentialService(svc service.CredentialServicer) ServerOption {
 // service. Without it the dek.* methods are not served.
 func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(s *Server) { s.dekSvc = svc }
+}
+
+// WithPolicyService configures the QUIC server with the tenant ABAC policy
+// store, registering the abacpolicy.* methods.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(s *Server) { s.policySvc = svc }
 }
 
 // WithAuthFactorService configures the QUIC server with an auth factor service

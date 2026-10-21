@@ -484,6 +484,43 @@ is the fail-closed direction: a permission added to the family and not listed
 as an exception is asserted tenant-only, so getting a new permission's scope
 wrong fails a test rather than passing a typed-in column.
 
+## Stored ABAC policies
+
+The stored-policy API keeps ABAC policy documents (`pkg/auth/abac.Policy`) as
+records of a tenant. It stores and returns them; **it does not feed the
+evaluator yet**, which still reads only the `policy_dir` files and the SDK's
+`ABACPolicySpec`.
+
+| Symbol | Where | What |
+|---|---|---|
+| `PolicyServicer` | `pkg/service/policy_service.go` | `CreatePolicy`, `GetPolicy`, `ListPolicies`, `UpdatePolicy`, `DeletePolicy`. Every transport's policy endpoints delegate to it |
+| `PolicyService`, `NewPolicyService(tenant.StoreResolver)` | `pkg/service/policy_service.go` | the implementation; a nil resolver is `*SubsystemNotConfiguredError` |
+| `server.WithPolicyService` | `pkg/server/server.go` | hands the service to the REST, gRPC, Unix, QUIC and MCP servers. The node lifecycle builds it over the node's `StoreResolver` whenever it has one |
+| `abac_policies:create`, `:read`, `:list`, `:update`, `:delete` | `pkg/permission/constants.go` | one permission per verb, ScopeSelf (`selfScopedPermissions`), granted to the built-in Admin role |
+| `transport.ABACPolicyClient`, `ABACPolicyRequest`, `ABACPolicyListRequest`, `ABACPolicyListResponse` | `sdk/go/transport/policy_types.go` | the SDK surface, `Client.ABACPolicies()`, implemented by all six transports |
+| `qrdb abac policy` | `cmd/qrdb/abac_policy.go` | the CLI ([cli.md](cli.md#abac-policies)) |
+
+Invariants:
+
+- **The caller's own tenant, only.** An empty tenant argument or
+  `metadata.tenant` means `tenant.FromContext`; any other value is
+  `*PolicyCrossTenantError`, a system-tenant caller included. A write fills an
+  empty `metadata.tenant` with the resolved tenant.
+- **Validated before stored.** Create and update validate and compile the
+  document as the evaluator would, and work on a copy: the caller's policy is
+  never modified. A name is 1 to 253 bytes of letters, digits, `.`, `_` and
+  `-`, starting with a letter or digit, because it is a key segment.
+- **Guarded writes.** Create is a put-if-absent; update is a guarded swap
+  against the document read; delete is a guarded delete. A lost race is
+  `*PolicyConflictError` with the store unchanged. A tenant store without the
+  guarded-write capability (`kvstore.AtomicKVStore`) fails closed with
+  `*PolicyStoreUnsupportedError`; nothing falls back to an unguarded write.
+- **The document is never normalised.** Reads return the stored JSON decoded
+  as written, so `spec.enabled` keeps its presence (the gRPC message carries it
+  as `optional bool`). The server sets `metadata.created` on create and
+  `metadata.updated` on create and update; an update keeps `created`.
+- **List is sorted by name** and returns the whole set, unpaginated.
+
 ## Invitation self-enrolment
 
 `pkg/service.InvitationServicer` is the one surface every transport's invite
@@ -1271,6 +1308,13 @@ authenticated value — whether or not the authenticator set one.
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
+| Stored ABAC policy document or name invalid, does not decode, or does not compile | `*service.PolicyInvalidError` (400 / `INVALID_ARGUMENT`), nothing written | **yes** |
+| Policy create of a name the tenant already holds | `*service.PolicyExistsError` (409 / `ALREADY_EXISTS`) | **yes** |
+| Policy get, update or delete of a name the tenant does not hold | `*service.PolicyNotFoundError` (404 / `NOT_FOUND`) | — |
+| Policy update or delete loses a guarded write to a concurrent writer | `*service.PolicyConflictError` (409 / `ABORTED`), store unchanged; re-read and retry | **yes** |
+| Policy call naming a tenant other than the caller's own, a system-tenant caller included | `*service.PolicyCrossTenantError` (403 / `PERMISSION_DENIED`) | **yes** |
+| Stored policy record does not decode, or its name does not match its key | `*service.PolicyCorruptError` (500 / `DATA_LOSS`) | **yes** |
+| Tenant store without guarded writes (`kvstore.AtomicKVStore`) | `*service.PolicyStoreUnsupportedError` (501 / `UNIMPLEMENTED`), no unguarded fallback | **yes** |
 | `Permissions()` / `RBAC()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 
 **The StaleRead user fallback answers for the system tenant only.** qrdbd
@@ -1436,6 +1480,10 @@ unchecked call panics rather than failing cleanly.
 - The email login key is a tenant-scoped secondary index at
   `__sys:user_idx/email/{tenantID}/{normalized-email}`, maintained by the same
   functions that write the record so the two cannot drift.
+- Stored ABAC policies are tenant-scoped: each is one JSON record at
+  `__sys:abac_policy/<name>` in the tenant's own store, resolved through
+  `tenant.StoreResolver`, so no tenant's policies share a keyspace with
+  another's.
 - Email lookup is `POST /users/lookup` with the key in the **body**. It is
   deliberately not a path parameter: the canonical login identifier would then
   be captured by access logs, proxies, tracing and browser history on every
@@ -1535,6 +1583,11 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   data, after revocation, after expiry and past 24h of validity even when the
   tenant's own CA signed it; and that issuance refuses an unknown permission,
   a lifetime over 24h and a built-in role's name.
+  `TestABACPolicy_CLI_PerProtocol` (`make integration-test-identity-rbac`)
+  drives the stored-policy lifecycle with `qrdb abac policy` on every
+  transport of one node: create, get, update (the creation time survives,
+  `spec.enabled` flips), list and delete, and the refusals of a duplicate
+  name, a missing policy and another tenant.
 - **An embedder reaches the delegation seams through `sdk/go` alone**: the
   external-composer build gate (`test/buildgates`) reads a grant with
   `sdk.DelegationFromCertificate` and composes `node.WithServicePrincipal` from

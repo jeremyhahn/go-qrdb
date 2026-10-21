@@ -239,6 +239,11 @@ const (
 	QRDBService_TenantDEKEncrypt_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDEKEncrypt"
 	QRDBService_TenantDEKDecrypt_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDEKDecrypt"
 	QRDBService_TenantDEKRewrap_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRewrap"
+	QRDBService_CreateABACPolicy_FullMethodName                  = "/qrdb.v1.QRDBService/CreateABACPolicy"
+	QRDBService_GetABACPolicy_FullMethodName                     = "/qrdb.v1.QRDBService/GetABACPolicy"
+	QRDBService_ListABACPolicies_FullMethodName                  = "/qrdb.v1.QRDBService/ListABACPolicies"
+	QRDBService_UpdateABACPolicy_FullMethodName                  = "/qrdb.v1.QRDBService/UpdateABACPolicy"
+	QRDBService_DeleteABACPolicy_FullMethodName                  = "/qrdb.v1.QRDBService/DeleteABACPolicy"
 	QRDBService_BackupCreate_FullMethodName                      = "/qrdb.v1.QRDBService/BackupCreate"
 	QRDBService_BackupList_FullMethodName                        = "/qrdb.v1.QRDBService/BackupList"
 	QRDBService_BackupGet_FullMethodName                         = "/qrdb.v1.QRDBService/BackupGet"
@@ -827,6 +832,18 @@ type QRDBServiceClient interface {
 	// TenantDEKRewrap re-seals a ciphertext under the current key version
 	// without returning its plaintext.
 	TenantDEKRewrap(ctx context.Context, in *TenantDEKRewrapRequest, opts ...grpc.CallOption) (*TenantDEKRewrapResponse, error)
+	// CreateABACPolicy validates, compiles and stores a new policy. A name
+	// the tenant already holds is AlreadyExists.
+	CreateABACPolicy(ctx context.Context, in *ABACPolicy, opts ...grpc.CallOption) (*ABACPolicy, error)
+	// GetABACPolicy returns one stored policy document.
+	GetABACPolicy(ctx context.Context, in *ABACPolicyRequest, opts ...grpc.CallOption) (*ABACPolicy, error)
+	// ListABACPolicies returns every policy of the tenant, sorted by name.
+	ListABACPolicies(ctx context.Context, in *ABACPolicyListRequest, opts ...grpc.CallOption) (*ABACPolicyListResponse, error)
+	// UpdateABACPolicy replaces an existing policy's document, keeping its
+	// creation time. A concurrent change is Aborted.
+	UpdateABACPolicy(ctx context.Context, in *ABACPolicy, opts ...grpc.CallOption) (*ABACPolicy, error)
+	// DeleteABACPolicy removes one policy.
+	DeleteABACPolicy(ctx context.Context, in *ABACPolicyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BackupCreate captures a consistent snapshot of the selected shards (or
 	// all shards) and stores it as a named backup artifact.
 	BackupCreate(ctx context.Context, in *BackupCreateRequest, opts ...grpc.CallOption) (*BackupInfo, error)
@@ -2973,6 +2990,56 @@ func (c *qRDBServiceClient) TenantDEKRewrap(ctx context.Context, in *TenantDEKRe
 	return out, nil
 }
 
+func (c *qRDBServiceClient) CreateABACPolicy(ctx context.Context, in *ABACPolicy, opts ...grpc.CallOption) (*ABACPolicy, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ABACPolicy)
+	err := c.cc.Invoke(ctx, QRDBService_CreateABACPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetABACPolicy(ctx context.Context, in *ABACPolicyRequest, opts ...grpc.CallOption) (*ABACPolicy, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ABACPolicy)
+	err := c.cc.Invoke(ctx, QRDBService_GetABACPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListABACPolicies(ctx context.Context, in *ABACPolicyListRequest, opts ...grpc.CallOption) (*ABACPolicyListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ABACPolicyListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListABACPolicies_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UpdateABACPolicy(ctx context.Context, in *ABACPolicy, opts ...grpc.CallOption) (*ABACPolicy, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ABACPolicy)
+	err := c.cc.Invoke(ctx, QRDBService_UpdateABACPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DeleteABACPolicy(ctx context.Context, in *ABACPolicyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DeleteABACPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BackupCreate(ctx context.Context, in *BackupCreateRequest, opts ...grpc.CallOption) (*BackupInfo, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BackupInfo)
@@ -3838,6 +3905,18 @@ type QRDBServiceServer interface {
 	// TenantDEKRewrap re-seals a ciphertext under the current key version
 	// without returning its plaintext.
 	TenantDEKRewrap(context.Context, *TenantDEKRewrapRequest) (*TenantDEKRewrapResponse, error)
+	// CreateABACPolicy validates, compiles and stores a new policy. A name
+	// the tenant already holds is AlreadyExists.
+	CreateABACPolicy(context.Context, *ABACPolicy) (*ABACPolicy, error)
+	// GetABACPolicy returns one stored policy document.
+	GetABACPolicy(context.Context, *ABACPolicyRequest) (*ABACPolicy, error)
+	// ListABACPolicies returns every policy of the tenant, sorted by name.
+	ListABACPolicies(context.Context, *ABACPolicyListRequest) (*ABACPolicyListResponse, error)
+	// UpdateABACPolicy replaces an existing policy's document, keeping its
+	// creation time. A concurrent change is Aborted.
+	UpdateABACPolicy(context.Context, *ABACPolicy) (*ABACPolicy, error)
+	// DeleteABACPolicy removes one policy.
+	DeleteABACPolicy(context.Context, *ABACPolicyRequest) (*emptypb.Empty, error)
 	// BackupCreate captures a consistent snapshot of the selected shards (or
 	// all shards) and stores it as a named backup artifact.
 	BackupCreate(context.Context, *BackupCreateRequest) (*BackupInfo, error)
@@ -4539,6 +4618,21 @@ func (UnimplementedQRDBServiceServer) TenantDEKDecrypt(context.Context, *TenantD
 }
 func (UnimplementedQRDBServiceServer) TenantDEKRewrap(context.Context, *TenantDEKRewrapRequest) (*TenantDEKRewrapResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantDEKRewrap not implemented")
+}
+func (UnimplementedQRDBServiceServer) CreateABACPolicy(context.Context, *ABACPolicy) (*ABACPolicy, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateABACPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetABACPolicy(context.Context, *ABACPolicyRequest) (*ABACPolicy, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetABACPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListABACPolicies(context.Context, *ABACPolicyListRequest) (*ABACPolicyListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListABACPolicies not implemented")
+}
+func (UnimplementedQRDBServiceServer) UpdateABACPolicy(context.Context, *ABACPolicy) (*ABACPolicy, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateABACPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) DeleteABACPolicy(context.Context, *ABACPolicyRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteABACPolicy not implemented")
 }
 func (UnimplementedQRDBServiceServer) BackupCreate(context.Context, *BackupCreateRequest) (*BackupInfo, error) {
 	return nil, status.Error(codes.Unimplemented, "method BackupCreate not implemented")
@@ -8337,6 +8431,96 @@ func _QRDBService_TenantDEKRewrap_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_CreateABACPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ABACPolicy)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CreateABACPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CreateABACPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CreateABACPolicy(ctx, req.(*ABACPolicy))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetABACPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ABACPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetABACPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetABACPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetABACPolicy(ctx, req.(*ABACPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListABACPolicies_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ABACPolicyListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListABACPolicies(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListABACPolicies_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListABACPolicies(ctx, req.(*ABACPolicyListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UpdateABACPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ABACPolicy)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UpdateABACPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UpdateABACPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UpdateABACPolicy(ctx, req.(*ABACPolicy))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DeleteABACPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ABACPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DeleteABACPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DeleteABACPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DeleteABACPolicy(ctx, req.(*ABACPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BackupCreate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BackupCreateRequest)
 	if err := dec(in); err != nil {
@@ -9717,6 +9901,26 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TenantDEKRewrap",
 			Handler:    _QRDBService_TenantDEKRewrap_Handler,
+		},
+		{
+			MethodName: "CreateABACPolicy",
+			Handler:    _QRDBService_CreateABACPolicy_Handler,
+		},
+		{
+			MethodName: "GetABACPolicy",
+			Handler:    _QRDBService_GetABACPolicy_Handler,
+		},
+		{
+			MethodName: "ListABACPolicies",
+			Handler:    _QRDBService_ListABACPolicies_Handler,
+		},
+		{
+			MethodName: "UpdateABACPolicy",
+			Handler:    _QRDBService_UpdateABACPolicy_Handler,
+		},
+		{
+			MethodName: "DeleteABACPolicy",
+			Handler:    _QRDBService_DeleteABACPolicy_Handler,
 		},
 		{
 			MethodName: "BackupCreate",

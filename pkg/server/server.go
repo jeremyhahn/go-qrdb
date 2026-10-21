@@ -249,6 +249,7 @@ type serverOptions struct {
 	collectionSvc      service.CollectionServicer
 	barrierRegistry    *seal.BarrierRegistry
 	dekSvc             service.DEKServicer
+	policySvc          service.PolicyServicer
 	tenantSvc          tenant.TenantServicer
 	tenantStoreRes     tenant.StoreResolver
 	backupSvc          service.BackupServicer
@@ -945,6 +946,12 @@ func WithBarrierRegistry(reg *seal.BarrierRegistry) ServerOption {
 // servers.
 func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(o *serverOptions) { o.dekSvc = svc }
+}
+
+// WithPolicyService configures the tenant ABAC policy store for the
+// protocol servers that serve the policy API.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(o *serverOptions) { o.policySvc = svc }
 }
 
 // WithTenantService sets the tenant lifecycle service for multi-tenant
@@ -2110,6 +2117,9 @@ func (s *Server) startREST() error {
 	if s.opts.dekSvc != nil {
 		restOpts = append(restOpts, rest.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		restOpts = append(restOpts, rest.WithPolicyService(s.opts.policySvc))
+	}
 	if s.opts.ceremonyCA != nil {
 		restOpts = append(restOpts, rest.WithCeremonyCA(s.opts.ceremonyCA))
 	}
@@ -2390,6 +2400,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.dekSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithPolicyService(s.opts.policySvc))
+	}
 	if s.opts.auditLogger != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuditLogger(s.opts.auditLogger))
 	}
@@ -2625,6 +2638,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.dekSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithPolicyService(s.opts.policySvc))
+	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
@@ -2715,6 +2731,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.dekSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithDEKService(s.opts.dekSvc))
+	}
+	if s.opts.policySvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithPolicyService(s.opts.policySvc))
 	}
 	if s.opts.collectionSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCollectionService(s.opts.collectionSvc))
@@ -2889,6 +2908,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.dekSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDEKService(s.opts.dekSvc))
+	}
+	if s.opts.policySvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithPolicyService(s.opts.policySvc))
 	}
 	if s.opts.ceremonyCA != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCeremonyCA(s.opts.ceremonyCA))

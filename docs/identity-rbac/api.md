@@ -119,6 +119,73 @@ is not; that error matches `auth.ErrUnauthorized` under `errors.Is`.
 the resolve-permissions endpoint, so it needs `permissions:resolve`, and
 expands them the same way the own-permissions answer is expanded.
 
+## Capability matrix — stored ABAC policies
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.ABACPolicies()`) | `scp` permission |
+|---|---|---|---|---|---|---|
+| Create policy | `POST /v1/abac/policies` | `CreateABACPolicy` | `abacpolicy.Create` | `qrdb_abac_policy_create` | `CreateABACPolicy` | `abac_policies:create` |
+| Get policy | `GET /v1/abac/policies/{name}` | `GetABACPolicy` | `abacpolicy.Get` | `qrdb_abac_policy_get` | `GetABACPolicy` | `abac_policies:read` |
+| List policies | `GET /v1/abac/policies` | `ListABACPolicies` | `abacpolicy.List` | `qrdb_abac_policy_list` | `ListABACPolicies` | `abac_policies:list` |
+| Update policy | `PUT /v1/abac/policies/{name}` | `UpdateABACPolicy` | `abacpolicy.Update` | `qrdb_abac_policy_update` | `UpdateABACPolicy` | `abac_policies:update` |
+| Delete policy | `DELETE /v1/abac/policies/{name}` | `DeleteABACPolicy` | `abacpolicy.Delete` | `qrdb_abac_policy_delete` | `DeleteABACPolicy` | `abac_policies:delete` |
+
+A stored policy is the ABAC policy document of [the ABAC
+reference](../auth/abac.md) (`apiVersion`, `kind`, `metadata`, `spec`), kept
+as a record of the **caller's own tenant**. Every capability acts on that
+tenant: a `tenant_id`, or a document's `metadata.tenant`, is optional and,
+when set, must name it; any other tenant is refused with 403 /
+`PERMISSION_DENIED`, a system-tenant caller included. The five permissions
+are self-scoped and the built-in Admin role holds all of them. A node wires
+the policy service whenever it has a tenant store resolver; without one, REST,
+QUIC and MCP do not register these routes and tools, and the gRPC and Unix
+RPCs answer `UNIMPLEMENTED` (the policy service is not configured).
+
+**Stored policies do not feed the evaluator yet.** The ABAC evaluator still
+reads only the `policy_dir` files and the SDK's `ABACPolicySpec`; storing,
+updating or deleting a policy here does not change an authorization
+decision.
+
+Request and response bodies:
+
+- **Create** and **Update** take one policy document and return the stored
+  document. REST answers create with 201 and update with 200; REST takes the
+  document as JSON, MCP as a JSON string in the `policy` argument, gRPC, Unix
+  and QUIC as the `ABACPolicy` message, whose fields follow the document field
+  for field. The server validates and compiles the document first, so a
+  document the evaluator would reject is refused with 400 /
+  `INVALID_ARGUMENT`. On REST update, the `{name}` in the path must equal
+  `metadata.name` (400 otherwise).
+- **Get** returns one document; **List** returns
+  `{"policies": [<document>, ...]}` (gRPC `ABACPolicyListResponse`), sorted by
+  name. Both take an optional tenant: REST and MCP `tenant_id`, gRPC, Unix and
+  QUIC `ABACPolicyRequest.tenant_id` / `ABACPolicyListRequest.tenant_id`.
+- **Delete** returns REST 204 and gRPC `google.protobuf.Empty`.
+
+Every read returns the document exactly as it was written. `spec.enabled` is
+presence-tracked (an `optional bool` in the gRPC message): an unset field
+stays unset and `false` stays `false`. `metadata.created` and
+`metadata.updated` are RFC 3339 timestamps the server sets; a value sent on a
+write is ignored, and an update keeps the creation time.
+
+A policy name is 1 to 253 bytes of letters, digits, `.`, `_` and `-`,
+starting with a letter or digit.
+
+| Condition | REST | gRPC / Unix |
+|---|---|---|
+| Created | 201 | `OK` |
+| Read, listed or updated | 200 | `OK` |
+| Deleted | 204 | `OK` |
+| Document or name invalid, does not decode, or does not compile; REST path name differs from `metadata.name` | 400 | `INVALID_ARGUMENT` |
+| Create of a name the tenant already holds | 409 | `ALREADY_EXISTS` |
+| Get, update or delete of a name the tenant does not hold | 404 | `NOT_FOUND` |
+| Update or delete lost to a concurrent write (re-read and retry) | 409 | `ABORTED` |
+| A tenant other than the caller's own | 403 | `PERMISSION_DENIED` |
+| The tenant's store does not support guarded writes | 501 | `UNIMPLEMENTED` |
+| A stored record does not decode, or its name does not match its key | 500 | `DATA_LOSS` |
+
+QUIC and MCP report the same error class as gRPC. List returns the tenant's
+whole policy set and is not paginated.
+
 ## Authentication
 
 **mTLS, passwordless, on every transport.** There is no login endpoint that

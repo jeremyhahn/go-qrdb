@@ -4285,6 +4285,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
 	}
+	if svcNode.Policy != nil {
+		opts = append(opts, embedded.WithPolicyService(svcNode.Policy))
+	}
 	if svcNode.User != nil {
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
@@ -4614,6 +4617,9 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.DEK != nil {
 		opts = append(opts, server.WithDEKService(svcNode.DEK))
+	}
+	if svcNode.Policy != nil {
+		opts = append(opts, server.WithPolicyService(svcNode.Policy))
 	}
 	if svcNode.CertProv != nil {
 		opts = append(opts, server.WithCertProvider(svcNode.CertProv))

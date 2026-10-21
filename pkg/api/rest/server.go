@@ -135,6 +135,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	policySvc         service.PolicyServicer
 	ceremonyCA        ceremony.CeremonyCA
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
@@ -643,6 +644,12 @@ func WithCredentialService(svc service.CredentialServicer) ServerOption {
 // /v1/dek routes are not served.
 func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(s *Server) { s.dekSvc = svc }
+}
+
+// WithPolicyService sets the ABAC policy service. Without it the
+// /v1/abac/policies routes are not registered.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(s *Server) { s.policySvc = svc }
 }
 
 // WithCeremonyCA sets the CeremonyCA used by the ceremony initialization
@@ -2443,6 +2450,14 @@ func (s *Server) registerRoutes() {
 	s.routeIf(dekOn, http.MethodPost, "/v1/dek/encrypt", permission.DEKEncrypt, s.handleDEKEncrypt)
 	s.routeIf(dekOn, http.MethodPost, "/v1/dek/decrypt", permission.DEKDecrypt, s.handleDEKDecrypt)
 	s.routeIf(dekOn, http.MethodPost, "/v1/dek/rewrap", permission.DEKRewrap, s.handleDEKRewrap)
+
+	// ABAC policy routes. Every route acts on the caller's own tenant.
+	policyOn := s.policySvc != nil
+	s.routeIf(policyOn, http.MethodPost, "/v1/abac/policies", permission.ABACPoliciesCreate, s.handleCreatePolicy)
+	s.routeIf(policyOn, http.MethodGet, "/v1/abac/policies", permission.ABACPoliciesList, s.handleListPolicies)
+	s.routeIf(policyOn, http.MethodGet, "/v1/abac/policies/{name}", permission.ABACPoliciesRead, s.handleGetPolicy)
+	s.routeIf(policyOn, http.MethodPut, "/v1/abac/policies/{name}", permission.ABACPoliciesUpdate, s.handleUpdatePolicy)
+	s.routeIf(policyOn, http.MethodDelete, "/v1/abac/policies/{name}", permission.ABACPoliciesDelete, s.handleDeletePolicy)
 
 	// Audit event retrieval route.
 	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/events", permission.AuditQuery, s.handleAuditQuery)

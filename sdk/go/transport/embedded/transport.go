@@ -114,6 +114,7 @@ type Transport struct {
 	holderActLimiter HolderActLimitFunc
 
 	dekSvc          service.DEKServicer
+	policySvc       service.PolicyServicer
 	ceremonySvc     service.CeremonyServicer
 	ceremonyCA      ceremony.CeremonyCA
 	credentialSvc   service.CredentialServicer

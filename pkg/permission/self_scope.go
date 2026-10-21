@@ -57,6 +57,15 @@ package permission
 // below registers each in the scope registry.
 func selfScopedPermissions() []Permission {
 	return []Permission{
+		// abac_policies. Each tenant manages its own ABAC policies: the
+		// policy service acts on the caller's own tenant and refuses any
+		// other, the system tenant's included.
+		ABACPoliciesCreate,
+		ABACPoliciesDelete,
+		ABACPoliciesList,
+		ABACPoliciesRead,
+		ABACPoliciesUpdate,
+
 		// acme_accounts
 		ACMEAccountsDisable,
 		ACMEAccountsList,

@@ -119,6 +119,7 @@ type Server struct {
 	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	policySvc         service.PolicyServicer
 	tenantSvc         tenant.TenantServicer
 	volumeSvc         volume.Service
 	userSvc           user.UserServicer
@@ -423,6 +424,12 @@ func WithCredentialService(svc service.CredentialServicer) ServerOption {
 // service. Without it the TenantDEK* RPCs answer Unimplemented.
 func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(s *Server) { s.dekSvc = svc }
+}
+
+// WithPolicyService attaches the ABAC policy service backing the *ABACPolic*
+// RPCs. Without it they answer Unimplemented.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(s *Server) { s.policySvc = svc }
 }
 
 // WithAuditLogger configures the gRPC server with an audit logger, which
@@ -763,6 +770,7 @@ func (s *Server) Start() error {
 		ceremonyCA:        s.ceremonyCA,
 		credentialSvc:     s.credentialSvc,
 		dekSvc:            s.dekSvc,
+		policySvc:         s.policySvc,
 		tenantSvc:         s.tenantSvc,
 		volumeSvc:         s.volumeSvc,
 		userSvc:           s.userSvc,

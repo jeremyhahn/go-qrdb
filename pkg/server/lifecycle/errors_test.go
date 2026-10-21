@@ -332,6 +332,17 @@ func TestDEKServiceError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
+func TestPolicyServiceError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("resolver unavailable")
+	err := &lifecycle.PolicyServiceError{Err: inner}
+	if !strings.Contains(err.Error(), "abac policy service") || !strings.Contains(err.Error(), inner.Error()) {
+		t.Errorf("unexpected message: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Error("Unwrap did not return inner error")
+	}
+}
+
 func TestEmptyVectorDataDirError_Error(t *testing.T) {
 	err := &lifecycle.EmptyVectorDataDirError{Backend: database.BackendPebble}
 	msg := err.Error()

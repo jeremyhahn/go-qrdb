@@ -307,6 +307,28 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// ABAC policy management permissions
+//
+// An ABAC policy (pkg/auth/abac) is a tenant-scoped record stored in qrdb.
+// All five are ScopeSelf (self_scope.go), and the policy service acts on the
+// caller's own tenant only, so a grant held in one tenant reads and writes
+// that tenant's policies and no other's, the system tenant's included.
+// ---------------------------------------------------------------------------
+
+const (
+	// ABACPoliciesCreate grants access to create an ABAC policy.
+	ABACPoliciesCreate Permission = "abac_policies:create"
+	// ABACPoliciesRead grants access to read an ABAC policy document.
+	ABACPoliciesRead Permission = "abac_policies:read"
+	// ABACPoliciesList grants access to list ABAC policy documents.
+	ABACPoliciesList Permission = "abac_policies:list"
+	// ABACPoliciesUpdate grants access to replace an ABAC policy document.
+	ABACPoliciesUpdate Permission = "abac_policies:update"
+	// ABACPoliciesDelete grants access to delete an ABAC policy.
+	ABACPoliciesDelete Permission = "abac_policies:delete"
+)
+
+// ---------------------------------------------------------------------------
 // Certificate management permissions
 // ---------------------------------------------------------------------------
 
@@ -1085,6 +1107,14 @@ var categories = []Category{
 			RolesCreate, RolesRead, RolesUpdate, RolesDelete,
 			RolesList, RolesAssign, RolesUnassign, PermissionsList,
 			PermissionsResolve,
+		},
+	},
+	{
+		Name:  "ABAC Policy Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			ABACPoliciesCreate, ABACPoliciesRead, ABACPoliciesList,
+			ABACPoliciesUpdate, ABACPoliciesDelete,
 		},
 	},
 	{

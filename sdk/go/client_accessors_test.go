@@ -52,6 +52,7 @@ func TestClient_CapabilityAccessors_ReturnTheTransport(t *testing.T) {
 		"Barrier":         func() any { return c.Barrier() },
 		"Ceremony":        func() any { return c.Ceremony() },
 		"Credentials":     func() any { return c.Credentials() },
+		"ABACPolicies":    func() any { return c.ABACPolicies() },
 		"Collections":     func() any { return c.Collections() },
 		"SealStore":       func() any { return c.SealStore() },
 		"Tenants":         func() any { return c.Tenants() },

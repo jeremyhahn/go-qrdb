@@ -230,7 +230,8 @@ var leanStandaloneEdges = map[string]bool{
 	"sdk/go/transport/embedded -> pkg/timeseries":                             true,
 
 	// The transport proto converters and the QUIC transport, reached through
-	// the SDK root.
+	// the SDK root. policywire is public because the gRPC and QUIC servers
+	// convert through it too.
 	"sdk/go/transport/internal/collectionconv -> pkg/api/grpc/proto/qrdbv1": true,
 	"sdk/go/transport/internal/compactionconv -> pkg/api/grpc/proto/qrdbv1": true,
 	"sdk/go/transport/internal/dekconv -> pkg/api/grpc/proto/qrdbv1":        true,
@@ -240,6 +241,7 @@ var leanStandaloneEdges = map[string]bool{
 	"sdk/go/transport/internal/sealconv -> pkg/api/grpc/proto/qrdbv1":       true,
 	"sdk/go/transport/internal/statehashconv -> pkg/api/grpc/proto/qrdbv1":  true,
 	"sdk/go/transport/internal/tenantconv -> pkg/api/grpc/proto/qrdbv1":     true,
+	"sdk/go/transport/policywire -> pkg/api/grpc/proto/qrdbv1":              true,
 	"sdk/go/transport/quic -> pkg/api/grpc/proto/qrdbv1":                    true,
 	"sdk/go/transport/quic -> pkg/api/quic/wire":                            true,
 }

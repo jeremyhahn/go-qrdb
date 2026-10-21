@@ -162,6 +162,8 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.ACMEEABRead, permission.ACMEEABList,
 	permission.ACMEEABCreate, permission.ACMEEABDelete,
 	permission.DevicesOnboard, permission.OTAActivate, permission.OTAConfirm,
+	permission.ABACPoliciesCreate, permission.ABACPoliciesRead, permission.ABACPoliciesList,
+	permission.ABACPoliciesUpdate, permission.ABACPoliciesDelete,
 }
 
 var goldenOperatorPermissions = []permission.Permission{
