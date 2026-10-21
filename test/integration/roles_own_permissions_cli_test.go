@@ -24,9 +24,11 @@ package integration_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ownPermissionsCLIJSON mirrors the `roles own-permissions --output json`
@@ -103,5 +105,51 @@ func TestRolesOwnPermissions_CLI_RejectsArguments(t *testing.T) {
 	proto := multiProtocols[0]
 	if out, err := runCLIProto(t, node, proto, "roles", "own-permissions", "someone-else"); err == nil {
 		t.Fatalf("[%s] roles own-permissions accepted a positional argument:\n%s", proto.name, out)
+	}
+}
+
+// ownPermissionsUnprivilegedGrants is the whole grant of the role held by
+// the unprivileged identity below: no permissions:resolve, no roles:*.
+var ownPermissionsUnprivilegedGrants = []string{"kv:get", "databases:list"}
+
+// TestRolesOwnPermissions_CLI_Unprivileged_PerProtocol proves the two
+// clauses that separate own-permissions from `roles resolve-permissions`:
+// it needs authentication and no permission, so a tenant identity holding
+// neither permissions:resolve nor any roles:* grant reads exactly its own
+// grants on every transport; and the identity comes from the request, so a
+// call carrying no client certificate is refused rather than answered.
+func TestRolesOwnPermissions_CLI_Unprivileged_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	tenantID := fmt.Sprintf("ownperm-%d", time.Now().UnixNano())
+	createTenant(t, node, multiProtocols[0], tenantID, "Own Permissions", "prefix", false)
+	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "kv-reader", ownPermissionsUnprivilegedGrants)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
+			out, err := runQRDB(t, node.cli, conn, "--output", "json", "roles", "own-permissions")
+			if err != nil {
+				t.Fatalf("[%s] unprivileged roles own-permissions: %v\noutput: %s", proto.name, err, out)
+			}
+			var doc ownPermissionsCLIJSON
+			if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
+				t.Fatalf("[%s] decode roles own-permissions JSON: %v\noutput: %s", proto.name, jerr, out)
+			}
+			names := make([]string, len(doc.Permissions))
+			for i, p := range doc.Permissions {
+				names[i] = p.Name
+			}
+			if !stringSliceEqualUnordered(names, ownPermissionsUnprivilegedGrants) {
+				t.Fatalf("[%s] own permissions = %v, want exactly the role's grants %v", proto.name, names, ownPermissionsUnprivilegedGrants)
+			}
+
+			anon := append(unauthenticatedArgsFor(node, proto), "roles", "own-permissions")
+			if out, err := runCLI(t, node.cli, anon...); err == nil {
+				t.Fatalf("[%s] unauthenticated roles own-permissions was answered:\n%s", proto.name, out)
+			}
+		})
 	}
 }
