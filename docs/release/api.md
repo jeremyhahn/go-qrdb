@@ -1,6 +1,6 @@
 # Release — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -33,10 +33,12 @@ points to.
 `release.yml` exposes one indirect side effect a caller can observe: once its
 `validate` and `gate` jobs pass, `publish` calls the forge's own releases API
 (`POST {{ github.api_url }}/repos/{owner}/{repo}/releases`) with the matching
-`CHANGELOG.md` section as the release body. That call is the workflow's only
-write; everything before it is read-only re-verification of what
-`release-alpha` already published.
+`CHANGELOG.md` section as the release body, then attaches the
+`make release-artifacts` binaries and `SHA256SUMS` to that release
+(`.../releases/{id}/assets`). Those two calls are the workflow's only writes;
+everything before them is read-only re-verification of what `release-alpha`
+already published.
 
 What a consumer sees is the published result: three Go module versions at one
-commit, plus a release object carrying that version's CHANGELOG section, as
-described in [architecture.md](architecture.md).
+commit, plus a release object carrying that version's CHANGELOG section and
+its binaries, as described in [architecture.md](architecture.md).

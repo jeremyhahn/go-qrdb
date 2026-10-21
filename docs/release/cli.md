@@ -1,6 +1,6 @@
 # Release — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -31,7 +31,7 @@ no bot that performs this step instead.
 |---|---|---|
 | `VERSION` | *(required)* | the release, `vX.Y.Z-alpha`. Must be given on the command line; a value inherited from the environment is refused |
 | `RELEASE_REMOTE` | `dev` | the remote to publish to. A remote that points at github.com is refused |
-| `AGENT_GIT` | the operator's signing wrapper, from `PATH` | the identity and signing wrapper every git write goes through -- the same one every other commit in this repository already carries |
+| `AGENT_GIT` | the operator's signing wrapper, from `PATH` | the identity and signing wrapper every git write goes through |
 | `REPO_NAME` | `go-qrdb` | the literal repository name handed to the wrapper |
 
 `VERSION` is authoritative: the recipe tags `HEAD` and never writes VERSION

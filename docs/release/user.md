@@ -1,6 +1,6 @@
 # Release — User guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -123,7 +123,7 @@ the next PATCH version rather than trying to retarget the tag:
 
 | Job | Typical cause |
 |---|---|
-| `validate` | the tag, VERSION or CHANGELOG drifted from what `release-alpha` checked locally (should not happen if it ran to completion), or a lockstep tag genuinely never arrived after ten retries |
+| `validate` | the tag, VERSION or CHANGELOG drifted from what `release-alpha` checked locally (should not happen if it ran to completion), or a lockstep tag never arrived in ten attempts, three seconds apart |
 | `gate` | the tagged tree fails a build/lint/test check that passed on `main` moments earlier — investigate the runner and the checkout before assuming the code regressed |
 | `publish` | a release artifact failed to build (nothing is published), or the forge's releases API rejected the request (for example, a release for this tag already exists) |
 
