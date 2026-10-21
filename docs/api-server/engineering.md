@@ -1,6 +1,6 @@
 # Unified API Server — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 ## Exported surface
 
@@ -46,7 +46,7 @@ that work:
 sdk.RegisterPermissionRoleGrant("xkms", sdk.PermissionCredentialsStore, sdk.PermissionCredentialsRetrieve)
 n, err := node.NewStandaloneNode(ctx, cfg, serverOpts, node.WithServicePrincipal("xkms"))
 svcCtx, err := n.ServiceContext(ctx)
-secret, err := n.Client().Credentials().CredentialRetrieve(svcCtx, "ca-state")
+secret, err := n.Client().Credentials().CredentialRetrieveBuffer(svcCtx, "ca-state")
 ```
 
 - **Its authority is declared, not implied.** `ServiceContext` builds the
@@ -221,7 +221,7 @@ nothing — the listener is not wrapped at all.
 
 | Listener | Where a connection is reported |
 |---|---|
-| gRPC, unix | `ConnObservers.Credentials` wraps the TLS transport credentials: `ServerHandshake` reports the open, returns a conn that reports its close, and reports the close at once on a failed handshake. The listener is NOT wrapped — grpc-go sets `TCP_USER_TIMEOUT` only on the `*net.TCPConn` it accepts, and a wrapped listener silently dropped it from 20000ms to 0 (`TestConnObserver_KeepsGRPCTCPUserTimeout` reads the kernel's value) |
+| gRPC, unix | `ConnObservers.Credentials` wraps the TLS transport credentials: `ServerHandshake` reports the open, returns a conn that reports its close, and reports the close at once on a failed handshake. The listener is NOT wrapped — grpc-go sets `TCP_USER_TIMEOUT` only on the `*net.TCPConn` it accepts, and a wrapped listener would drop it from 20000ms to 0 (`TestConnObserver_KeepsGRPCTCPUserTimeout` reads the kernel's value) |
 | REST (TCP), MCP | the raw TCP listener is wrapped **beneath** `tls.NewListener`, so `http.Server` still sees a `*tls.Conn` and negotiates HTTP/2 |
 | REST (HTTP/3) | `http3.Server.ConnContext` reports the open; `context.AfterFunc` on the connection's context reports the close |
 | QUIC | `handleConnection` spans exactly the connection's life; it reports the open on entry and the close on return, before `Stop`'s wait completes |
@@ -388,7 +388,7 @@ method:
 
 | Method | Admitted when |
 |---|---|
-| `initialize`, `notifications/initialized`, `tools/list` | the failure is `401`-class; a `503` or `429` answers as before, so a caller with a credential the node could not finish checking is told to retry |
+| `initialize`, `notifications/initialized`, `tools/list` | the failure is `401`-class; a `503` or `429` is returned unchanged, so a caller with a credential the node could not finish checking is told to retry |
 | `tools/call` | the named tool is public, whatever the failure |
 | anything else, a batch, a `GET` | never — `401` |
 
@@ -529,11 +529,12 @@ What kind of failure a typed error is, is decided once, by `pkg/api/errclass`:
   tenant, a cross-tenant refusal, a failed index rollback, a database create
   that ran out of its own deadline. **Family** blocks hold the leaf
   conditions. After them come the context conditions -- the caller's deadline
-  or cancellation, and go-quicraft's own `ErrTimeout` (`DeadlineExceeded`) and
-  `ErrCanceled` -- and then every other refusal go-quicraft reports as
+  or cancellation, and go-quicraft's own `ErrCanceled` -- and then every other refusal go-quicraft reports as
   temporary (`quicraft.Temporary`: busy, dropped, shard not ready, no leader
   yet) as `Unavailable`, so a consensus step that could not finish answers as
-  retryable rather than as a server fault. **Generic** wrappers
+  retryable rather than as a server fault. go-quicraft's `ErrTimeout` is a
+  family row, also `Unavailable`, because it most often means an election
+  rather than the caller's deadline. **Generic** wrappers
   (`ProposeError`, `ReadError`, the store errors) come last, so they only
   classify what nothing more specific recognised -- a permanent consensus
   failure such as a missing shard among them.

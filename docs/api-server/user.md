@@ -1,6 +1,6 @@
 # Unified API Server — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 One server, six ways to reach it. Which one you pick is a deployment and
 performance question, not a capability question — the same operations are
@@ -45,7 +45,8 @@ A URL scheme on `--server` picks the transport, so you rarely need
 REST and gRPC are on by default; QUIC, MCP and Unix are off until enabled. The
 REST port also serves HTTP/3 on UDP. Plus, when enabled: MySQL 3306, PostgreSQL
 5432, and a per-database etcd listener at the database's `listen_addr` (no
-daemon default; `qrdb database create --etcd` suggests `localhost:2379`).
+daemon default; `qrdb database create --etcd` takes it from
+`--etcd-listen-addr`, default `localhost:2379`).
 
 ## Calling from a browser — gRPC-Web
 
@@ -112,7 +113,9 @@ curl -k https://db.example.com/v1/config/initialized
 curl -k https://db.example.com/v1/ca/bootstrap     # only if configured
 ```
 
-Everything else needs a certificate.
+Everything else needs a certificate. The cluster key routes
+(`/v1/cluster/nodekey`, `/v1/cluster/keydelivery`) also take no credential, but
+they serve joining nodes and run their own certificate and placement checks.
 
 Over MCP, nothing answers an anonymous caller unless the deployment's embedder
 declared public tools — typically health, liveness, readiness and a login
@@ -219,7 +222,8 @@ capability needs raft mode and the server is standalone, or it needs a build tag
 the binary lacks. `qrdb admin capabilities` distinguishes them.
 
 **A route 404s that you are sure exists.** Some routes are registered
-conditionally — `/v1/ca/bootstrap` only with a bootstrap certificate,
+conditionally — `/v1/ca/bootstrap` only when exactly one CA bundle source
+(the cluster CA or a host bundle) is configured,
 `/metrics` unless the embedder turned it off. An unregistered route is a 404,
 not a 501.
 `/v1/barrier/enable-encryption` is *not* one of these: it is always
