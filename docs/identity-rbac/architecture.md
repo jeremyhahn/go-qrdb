@@ -599,6 +599,28 @@ out an update is neither. **User** (a crypto consumer) and **Auditor**
 (read-only) carry none. A tenant provisioned before these grants existed gains
 them through `ReconcileBuiltInRoles`; a custom role may grant any of them.
 
+#### Granting device onboarding through a custom role
+
+To let someone onboard devices without the rest of Admin, the tenant's Admin
+defines a custom role in its own tenant carrying `devices:onboard` alone and
+assigns it ([cli.md](cli.md#granting-device-onboarding-alone)). The grant
+belongs to the tenant that defined the role:
+
+- A holder in tenant A is allowed `devices:onboard` against A and refused
+  against B, as is every `ScopeSelf` grant.
+- A custom role carries exactly the permissions it lists: `devices:onboard`
+  brings neither OTA permission with it.
+- A role ID is resolved in the tenant that defined it, so an identity of
+  tenant B presenting tenant A's role ID is granted nothing, in B or in A.
+
+Nothing inside qrdb onboards a device, so qrdb gates no operation of its own on
+`devices:onboard`. The layer that admits devices asks the PDP through the
+remote `Authorize` endpoint (`RBACClient.Authorize`, [api.md](api.md)) on any
+transport, and gets the same answer on each: allowed in the holder's tenant,
+denied with a reason in any other. Asking about an identity other than the
+caller needs `permissions:resolve` in that identity's tenant, and is never
+answered across tenants.
+
 ## The canonical login key
 
 Identity in qrdb has two handles, and they answer different questions.

@@ -267,6 +267,23 @@ qrdb roles unassign --user 1f2e... --role "$ROLE"
 **Both flags take IDs, not names.** This is the most common mistake in this
 group.
 
+### Granting device onboarding alone
+
+`devices:onboard` is a permission, and the tenant Admin already holds it. To
+give it to someone without the rest of Admin, define a custom role in your own
+tenant that carries it alone, then assign that role:
+
+```bash
+qrdb roles create --name device-onboarder --tenant-id acme \
+     --permissions "devices:onboard"
+ROLE=$(qrdb roles get-by-name device-onboarder --tenant-id acme --output json | jq -r .id)
+qrdb roles assign --user "$USER" --role "$ROLE"
+```
+
+The holder may onboard acme's devices and no other tenant's. `qrdb roles
+own-permissions`, run as the holder, lists `devices:onboard` with scope
+`self`. See [architecture.md](architecture.md#granting-device-onboarding-through-a-custom-role).
+
 ### `qrdb roles permissions`
 
 List every registered permission. No flags. This is the authoritative

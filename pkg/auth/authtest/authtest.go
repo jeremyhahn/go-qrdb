@@ -99,6 +99,22 @@ func BuiltInRoles(t testing.TB, tenantIDs ...string) role.RoleServicer {
 	return roles
 }
 
+// CustomRole creates in roles a tenant-defined role named name in tenantID
+// carrying exactly perms, and returns its ID: the role a tenant Admin defines
+// and assigns, as opposed to a built-in one. A store failure fails the test.
+func CustomRole(t testing.TB, roles role.RoleServicer, tenantID, name string, perms ...permission.Permission) string {
+	t.Helper()
+	created, err := roles.CreateRole(context.Background(), &role.CreateRoleRequest{
+		Name:        name,
+		TenantID:    tenantID,
+		Permissions: perms,
+	})
+	if err != nil {
+		t.Fatalf("authtest: create role %q in %q: %v", name, tenantID, err)
+	}
+	return created.ID
+}
+
 // AdminIdentity returns an identity holding the built-in Admin role of its own
 // tenant, and nothing else.
 func AdminIdentity(tenantID, subject string) *auth.Identity {

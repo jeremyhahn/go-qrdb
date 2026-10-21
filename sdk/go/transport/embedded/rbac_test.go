@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -360,6 +361,26 @@ func TestRBACClient_Authorize_AdminAtAcme_SelfPermission_OnOtherTenant(t *testin
 	var denied *rbac.PermissionDeniedError
 	if !errors.As(err, &denied) {
 		t.Errorf("expected *rbac.PermissionDeniedError, got %T", err)
+	}
+}
+
+// TestRBACClient_Authorize_DevicesOnboard_TenantScoped answers through the
+// real role store for a holder of acme's custom device-onboarder role:
+// allowed in acme, *rbac.PermissionDeniedError in globex.
+func TestRBACClient_Authorize_DevicesOnboard_TenantScoped(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
+	roleID := authtest.CustomRole(t, roles, "acme", "device-onboarder", permission.DevicesOnboard)
+	client := newRBACTransport(t, roles).RBACClient()
+	id := &transport.Identity{Subject: "dana", TenantID: "acme", Roles: []string{roleID}}
+	resource, action := permission.Resource(permission.DevicesOnboard), permission.Action(permission.DevicesOnboard)
+
+	if err := client.Authorize(tenant.WithTenantID(context.Background(), "acme"), id, resource, action); err != nil {
+		t.Fatalf("dana@acme devices:onboard in acme: %v", err)
+	}
+	err := client.Authorize(tenant.WithTenantID(context.Background(), "globex"), id, resource, action)
+	var denied *rbac.PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("dana@acme devices:onboard in globex: got %v, want *rbac.PermissionDeniedError", err)
 	}
 }
 
