@@ -142,6 +142,24 @@ qrdb roles create --name readonly --tenant-id acme \
      --permissions "kv:get,kv:list,kv:range"
 ```
 
+**Let a release team activate and confirm updates on your devices.** The
+`ota:activate` and `ota:confirm` permissions belong to your tenant, so a custom
+role carrying them in `acme` reaches `acme`'s devices and no other tenant's.
+They are separate grants. To keep the person who activates an image from also
+confirming it, put them in two roles.
+
+```bash
+qrdb roles create --name ota-release --tenant-id acme \
+     --permissions "ota:activate,ota:confirm"
+ROLE=$(qrdb roles get-by-name ota-release --output json | jq -r .id)
+qrdb roles assign --user "$USER" --role "$ROLE"
+```
+
+The built-in Admin already holds both. go-qrdb does not activate or confirm
+anything itself. The layer that ships updates gates each step on these
+permissions through the `Authorize` endpoint (`POST /permissions/authorize`, or
+the SDK's RBAC client), so a new role applies on its next check.
+
 **Turn somebody off without deleting them.**
 
 ```bash

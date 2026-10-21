@@ -599,6 +599,18 @@ out an update is neither. **User** (a crypto consumer) and **Auditor**
 (read-only) carry none. A tenant provisioned before these grants existed gains
 them through `ReconcileBuiltInRoles`; a custom role may grant any of them.
 
+A custom role is created in one tenant, and so is its grant. A role in `acme`
+holding `ota:activate` authorizes activation on `acme` and is denied on any
+other tenant. Another tenant's identity that presents the role's ID gets
+nothing, because roles are resolved within the caller's own tenant, where that
+ID does not exist. Activation and confirmation are separate grants, so a tenant
+can give them to different roles. A layer above asks the question through the
+`Authorize` endpoint on any transport, which decides with this same PDP: either
+for the caller itself, or, with `permissions:resolve`, for another identity in
+the caller's own tenant. A caller never gets an answer about another tenant's
+identity. The task-shaped version, with commands, is in
+[user.md](user.md#common-tasks).
+
 #### Granting device onboarding through a custom role
 
 To let someone onboard devices without the rest of Admin, the tenant's Admin
