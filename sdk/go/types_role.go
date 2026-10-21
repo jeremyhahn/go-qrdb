@@ -66,6 +66,14 @@ type UserIDExistsError = user.UserIDExistsError
 // servicer did not return. Now there is one type, and both return it.
 type UserNotFoundError = transport.UserNotFoundError
 
+// ConcurrentUpdateError is returned when an update of a user lost a race with
+// another update that committed between its read and its write. It is a
+// retryable ErrConflict: IsErrorCode(err, ErrConflict) and IsRetryable(err)
+// hold, and pkg/retry's default classifier retries it. Every transport and
+// UserServicer return the one type -- pkg/user.ConcurrentUpdateError is an
+// alias of the same transport type (go-qrdb#938).
+type ConcurrentUpdateError = transport.UserConcurrentUpdateError
+
 // ---------------------------------------------------------------------------
 // Role IAM types
 // ---------------------------------------------------------------------------

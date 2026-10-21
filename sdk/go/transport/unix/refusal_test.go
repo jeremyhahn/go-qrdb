@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -52,5 +53,37 @@ func TestMapGRPCError_alreadyExistsWithoutRefusalStaysPlain(t *testing.T) {
 	}
 	if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != int(codes.AlreadyExists) {
 		t.Fatalf("err = %T %v, want a RequestError carrying AlreadyExists", got, got)
+	}
+}
+
+func TestMapGRPCError_userConcurrentUpdateRefusalIsTyped(t *testing.T) {
+	want := &transport.UserConcurrentUpdateError{ID: 42}
+	st, err := status.New(codes.Aborted, want.Error()).WithDetails(&errdetails.ErrorInfo{
+		Domain: transport.RefusalDomain, Reason: transport.ReasonUserConcurrentUpdate, Metadata: want.Metadata(),
+	})
+	if err != nil {
+		t.Fatalf("WithDetails: %v", err)
+	}
+	got := mapGRPCError("UpdateUser", st.Err())
+
+	refusal, ok := errors.AsType[*transport.UserConcurrentUpdateError](got)
+	if !ok || *refusal != *want {
+		t.Fatalf("refusal = %+v, want %+v", refusal, want)
+	}
+	if !dberrors.Is(got, dberrors.ErrConflict) || !dberrors.IsRetryable(got) {
+		t.Fatalf("err = %v, want a retryable ErrConflict", got)
+	}
+	if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != int(codes.Aborted) {
+		t.Fatalf("err = %T, want a RequestError carrying Aborted", got)
+	}
+}
+
+func TestMapGRPCError_abortedWithoutRefusalIsNotAConflict(t *testing.T) {
+	got := mapGRPCError("UpdateUser", status.Error(codes.Aborted, "aborted"))
+	if _, ok := errors.AsType[*transport.UserConcurrentUpdateError](got); ok {
+		t.Fatalf("err = %v decoded a refusal the status does not carry", got)
+	}
+	if dberrors.IsRetryable(got) {
+		t.Fatalf("err = %v is retryable without the refusal", got)
 	}
 }

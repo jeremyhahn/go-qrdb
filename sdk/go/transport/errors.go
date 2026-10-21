@@ -18,6 +18,8 @@ import (
 	"errors"
 	"strconv"
 	"time"
+
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 )
 
 // ConfigError is returned when the transport configuration is invalid.
@@ -438,6 +440,65 @@ func UserLookupKey(tenantID, key string) string {
 		return key
 	}
 	return tenantID + "/" + key
+}
+
+// UserConcurrentUpdateError reports that another update committed to the same
+// user record between a call's read and its write, so the call did not apply.
+// Nothing is wrong: the caller lost a race and its view of the record is
+// stale, and re-reading and retrying is the correct response.
+//
+// Like UserNotFoundError it is the ONE type for this condition across the SDK
+// surface: pkg/user.ConcurrentUpdateError is an alias of it (go-qrdb#938), the
+// user service returns it in-process, and every remote transport rebuilds it
+// from the ReasonUserConcurrentUpdate structured refusal. Through As it is
+// also a *QRDBError with code ErrConflict and Retry set, so errors.IsRetryable,
+// errors.IsErrorCode and pkg/retry's default classifier treat it as the
+// retryable conflict it is on every transport.
+type UserConcurrentUpdateError struct {
+	// ID is the numeric id of the user whose update lost the race.
+	ID uint64
+}
+
+// Error returns a human-readable description of the lost race.
+func (e *UserConcurrentUpdateError) Error() string {
+	return "user: concurrent update to user " + strconv.FormatUint(e.ID, 10) + "; re-read and retry"
+}
+
+// As lets errors.As match a **dberrors.QRDBError, presenting the lost race as
+// a retryable ErrConflict, so a caller classifies it by code and retries it
+// without naming this type.
+func (e *UserConcurrentUpdateError) As(target any) bool {
+	qe, ok := target.(**dberrors.QRDBError)
+	if !ok {
+		return false
+	}
+	*qe = &dberrors.QRDBError{Code: dberrors.ErrConflict, Op: "user.update", Err: e, Retry: true}
+	return true
+}
+
+// ReasonUserConcurrentUpdate is the structured-refusal reason every transport
+// carries beside the message of a *UserConcurrentUpdateError, so a client
+// rebuilds the typed error without parsing text.
+const ReasonUserConcurrentUpdate = "USER_CONCURRENT_UPDATE"
+
+// userConcurrentUpdateKeyUserID is the refusal metadata key of
+// UserConcurrentUpdateError.ID.
+const userConcurrentUpdateKeyUserID = "user_id"
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *UserConcurrentUpdateError) Metadata() map[string]string {
+	return map[string]string{userConcurrentUpdateKeyUserID: strconv.FormatUint(e.ID, 10)}
+}
+
+// UserConcurrentUpdateFromMetadata rebuilds the error Metadata encoded. The
+// reason, not the metadata, says the update lost a race, so a missing or
+// malformed user id leaves ID zero rather than losing the classification.
+func UserConcurrentUpdateFromMetadata(md map[string]string) *UserConcurrentUpdateError {
+	id, err := strconv.ParseUint(md[userConcurrentUpdateKeyUserID], 10, 64)
+	if err != nil {
+		id = 0
+	}
+	return &UserConcurrentUpdateError{ID: id}
 }
 
 // UserExistsError is returned when a username already exists within

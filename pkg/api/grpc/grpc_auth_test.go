@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -268,6 +269,22 @@ func TestMapAuthServiceError_ConcurrentUpdateIsAborted(t *testing.T) {
 	err := mapServiceError(&user.ConcurrentUpdateError{ID: 7})
 	if status.Code(err) != codes.Aborted {
 		t.Fatalf("got %v, want Aborted", status.Code(err))
+	}
+	reason, md, ok := refusalFromStatus(status.Convert(err))
+	if !ok || reason != transport.ReasonUserConcurrentUpdate {
+		t.Fatalf("refusal = %q, %v; want %q", reason, ok, transport.ReasonUserConcurrentUpdate)
+	}
+	if got := transport.UserConcurrentUpdateFromMetadata(md); got.ID != 7 {
+		t.Fatalf("refusal decodes to %+v, want the lost race of user 7", got)
+	}
+}
+
+// A failed rollback over a lost race is not a conflict to retry, so its
+// status carries no refusal a client would rebuild as one.
+func TestMapAuthServiceError_CompensationOverConcurrentUpdateCarriesNoRefusal(t *testing.T) {
+	err := mapServiceError(&user.IndexCompensationError{Op: "update", Cause: &user.ConcurrentUpdateError{ID: 7}})
+	if reason, _, ok := refusalFromStatus(status.Convert(err)); ok {
+		t.Fatalf("status carried refusal %q", reason)
 	}
 }
 

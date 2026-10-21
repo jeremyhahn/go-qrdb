@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 func TestExponentialBackoff_Next(t *testing.T) {
@@ -291,6 +292,35 @@ func TestDo_NonRetryableError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, 1, callCount, "non-retryable error should not retry")
 	assert.True(t, dberrors.Is(err, dberrors.ErrNotFound))
+}
+
+// A user update that lost a race is a retryable ErrConflict, so the default
+// classifier retries it with no RetryableFunc (go-qrdb#938).
+func TestDo_UserConcurrentUpdateIsRetriedByDefault(t *testing.T) {
+	cfg := &Config{MaxAttempts: 3, Backoff: &ConstantBackoff{}}
+	callCount := 0
+	err := Do(context.Background(), cfg, func(ctx context.Context) error {
+		callCount++
+		if callCount < 3 {
+			return &transport.UserConcurrentUpdateError{ID: 7}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, callCount, "a lost race should be retried until it applies")
+}
+
+func TestDo_UserConcurrentUpdateExhaustsAsAConflict(t *testing.T) {
+	cfg := &Config{MaxAttempts: 2, Backoff: &ConstantBackoff{}}
+	callCount := 0
+	err := Do(context.Background(), cfg, func(ctx context.Context) error {
+		callCount++
+		return &transport.UserConcurrentUpdateError{ID: 7}
+	})
+	assert.Equal(t, 2, callCount, "every attempt should run")
+	assert.True(t, dberrors.Is(err, dberrors.ErrConflict))
+	var lost *transport.UserConcurrentUpdateError
+	assert.True(t, errors.As(err, &lost), "the final error should still be the lost race, got %v", err)
 }
 
 func TestDo_MaxAttemptsExceeded(t *testing.T) {
