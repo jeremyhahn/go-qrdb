@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Getting a brand-new server from nothing to something you can log into.
@@ -22,13 +22,14 @@ Simplest case, one administrator:
 
 ```bash
 qrdb init --so-pin SOPIN --user-pin USERPIN \
-          --barrier-strategy passphrase --passphrase '<passphrase>'
+          --barrier-strategy passphrase --passphrase '<passphrase>' \
+          --admin-csr admin.csr
 ```
 
 That one call brings up the system barrier (`--barrier-strategy` defaults to
 `passphrase`, which --- unlike `none` --- needs the `--passphrase` above;
 see [../barrier-seal/user.md](../barrier-seal/user.md) for the other
-strategies), the CA and the six built-in roles. The ceremony also resolves
+strategies), the CA and the built-in roles. The ceremony also resolves
 the bootstrap admin's credential right there (see "Bringing your own admin
 credential" below) and prints it; first boot binds it to the admin account
 moments later, once the account exists. By default
@@ -43,7 +44,7 @@ have committed.
 
 `qrdb init` is the ONLY way a fresh node's system barrier is ever brought
 up: `qrdb barrier init` targeting it is refused with a typed error pointing
-back here. Auth also now requires the seal subsystem --- an auth-enabled
+back here. Auth requires the seal subsystem --- an auth-enabled
 node started with `seal.enabled: false` is refused at config validation ---
 so a deployment that wants no encryption runs `--barrier-strategy none`
 above (no `--passphrase`) rather than disabling the seal.
@@ -52,13 +53,14 @@ For a production M-of-N setup, name the officers up front:
 
 ```bash
 qrdb init --barrier-strategy shamir --shares 5 --threshold 3 \
-          --so-pin SOPIN --user-pin USERPIN \
+          --so-pin SOPIN --user-pin USERPIN --admin-csr admin.csr \
           --officers alice=alice.csr --officers bob=bob.csr \
           --officers carol=carol.csr
 ```
 
-You can supply everything through the environment instead —
-`QRDB_SO_PIN`, `QRDB_USER_PIN`, `QRDB_BARRIER_STRATEGY`, `QRDB_SHARES`,
+You can supply the PINs, strategy, shares and names through the environment
+instead — `QRDB_SO_PIN`, `QRDB_USER_PIN`, `QRDB_BARRIER_STRATEGY`,
+`QRDB_PASSPHRASE`, `QRDB_SHARES`,
 `QRDB_THRESHOLD`, `QRDB_HOSTNAME`, `QRDB_SANS`.
 
 ## Check it worked
@@ -66,7 +68,7 @@ You can supply everything through the environment instead —
 ```bash
 qrdb ceremony status      # operational (single-admin) or enrolling (M-of-N)
 qrdb barrier status
-qrdb roles list           # SO, Admin, Operator, User, Auditor
+qrdb roles list           # so, admin, operator, user, auditor (+ owner)
 qrdb users list           # the admin user
 ```
 
@@ -76,7 +78,8 @@ certificate and share — see [../ceremony/user.md](../ceremony/user.md).
 ## What you get
 
 Five built-in roles, created with stable identifiers so they mean the same thing
-on every node and after every restart:
+on every node and after every restart, plus an all-permission `owner`
+convenience role unless separation of duties is enforced:
 
 | Role | For |
 |---|---|
@@ -91,8 +94,8 @@ holder roster and authenticates with its holder certificate and factors. See
 [../shamir-custody/](../shamir-custody/).
 
 Plus an admin user for the system tenant, and a data directory containing
-`ca.pem`, the server certificate and key, the storage directory, the Raft WAL
-and a `.qrdb.lock` preventing a second daemon from starting on the same data.
+`ca.pem`, the server certificate and key, the storage directory and the Raft
+WAL.
 There is no per-node admin certificate file: the admin's credential travels
 through the ceremony and the cluster's own replicated store, not
 a file on one node's disk.
@@ -134,23 +137,22 @@ when that binding has not arrived by the time it finishes starting.
 
 ## Troubleshooting
 
-**"no officers".** `--threshold >= 2` requires `--officers` entries. Without
+**"M-of-N requires at least one officer".** `--threshold >= 2` requires `--officers` entries. Without
 them you would end up with a quorum arrangement nobody holds a share in, so it
 fails closed.
 
 **"no admin certificate binding and no pending admin credential record".**
 First boot waited for the admin's certificate to arrive (it may have been
 issued by `qrdb init` on a different node of the cluster) and nothing showed
-up in time. This no longer aborts the boot: the node logs this message as a
+up in time. This does not abort the boot: the node logs this message as a
 warning and starts anyway, coming up in the same "awaiting admin credential"
 state described below, rather than shutting down and leaving the operator
 with no running node to retry against. The admin-credential step is
 retriable: re-run `qrdb init` with `--admin-csr`, `--admin-cert`, or
 `--admin-generate`, against ANY node over REST — a follower forwards the
-retry to the current Raft leader in one hop
-(`service.CeremonyServiceWithLeaderGate`, the same `forwardToLeader` path
-every other system-shard write already uses) instead of refusing it, so
-there is no need to find the leader by hand with `qrdb status` first. The
+retry to the current Raft leader in one hop, like every other system-shard
+write, instead of refusing it, so there is no need to find the leader by
+hand with `qrdb admin status` first. The
 retry both issues a fresh credential AND binds it to the admin account, in
 the same call — it never hands back a credential that looks successful but
 is not actually bound. Nothing about this is destructive — it does not
@@ -162,7 +164,7 @@ this composition's own wiring is missing the piece that binds a certificate
 (an operator/configuration gap, not something retrying fixes); "the
 bootstrap admin does not exist yet to bind it to" means first boot itself
 has not created the admin account on this cluster yet — retry again once it
-has (or once `qrdb status` shows this node as leader, if a different node is
+has (or once `qrdb admin status` shows this node as leader, if a different node is
 about to run first boot); any other bind failure names its own cause and is
 retriable once that cause is resolved.
 
@@ -177,7 +179,7 @@ the Unix socket transport — in a reduced "awaiting admin credential" state
 that serves exactly two things, with no certificate or other identity
 required to reach either:
 
-- `qrdb status` / `GET /v1/ceremony/status` — so you can confirm the state
+- `qrdb ceremony status` / `GET /v1/ceremony/status` — so you can confirm the state
   without a credential.
 - `qrdb init` / `POST /v1/ceremony/initialize` — the SAME admin-credential
   retry described above. Run it with `--admin-csr`, `--admin-cert`, or
@@ -189,10 +191,8 @@ required to reach either:
 Every other endpoint answers `503` /
 `{"code":"AWAITING_ADMIN_CREDENTIAL"}` until that retry binds a
 certificate. The transition back to normal serving is event-driven, not a
-poll: the node that actually performs the retry (the current Raft leader,
-which every OTHER node's own call now reaches directly) is told directly
-the moment
-the bind commits, and every OTHER node in the cluster learns of it through
+poll: the node that performs the retry (the current Raft leader) is told
+directly the moment the bind commits, and every OTHER node in the cluster learns of it through
 a watch on the admin's replicated record and leaves "awaiting" the same
 way — there is no flag to flip and nothing to restart, on any node. If you would rather not wait for a production binding right now,
 `auth.mtls_binding_policy: enrolled` lifts the restriction entirely (not a
@@ -213,16 +213,15 @@ awaiting-mode bypass that otherwise admits the call unauthenticated no
 longer applies once a node has left that state. The retry request itself
 must therefore authenticate as an SO — present an SO holder certificate
 over mTLS (`--cert-file`/`--key-file`, the credential issued when the
-ceremony enrolled that officer, never the admin's own certificate) — in
-addition to presenting the SO PIN the retry has always required. Only a
+ceremony enrolled that officer, never the admin's own certificate) — as
+well as the SO PIN. Only a
 NODE THAT RESTARTS re-runs the boot-time check that decides "awaiting"
 from scratch, and that restarted node WILL come up in "awaiting admin
 credential" if the expired binding was never replaced — at which point the
 retry goes back to being reachable with the SO PIN alone, no SO identity
 required.
 
-**"AdminCSRPEM and AdminCertPEM are mutually exclusive" / "conflicting admin
-cert inputs".** You gave both `--admin-csr` and `--admin-cert`. Signing the
+**"AdminCSRPEM and AdminCertPEM are mutually exclusive".** You gave both `--admin-csr` and `--admin-cert`. Signing the
 CSR would leave your certificate unbound; adopting the certificate would
 discard your CSR. Pick one.
 
@@ -247,7 +246,7 @@ not a replication delay and waiting will not clear it.
 support".** The shard's state machine did not answer a guarded batch. Every
 registered `--sm` type answers one, so this means the daemon was built with a
 state machine registered without a transaction plane. See
-[cli.md](cli.md#daemon-side-mode-selection).
+[cli.md](cli.md#state-machine-check).
 
 **The system started but the barrier is sealed.** Bootstrap does not unseal for
 you. See [../barrier-seal/user.md](../barrier-seal/user.md).

@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Firstboot is the **admin bootstrap**: system tenant, built-in roles, the
@@ -20,15 +20,13 @@ Two bootstraps, run in order, each idempotent:
 
 | Concern | Package | Function |
 |---|---|---|
-| Barrier custody (M-of-N split, custodian enrolment, share lifecycle) | `pkg/ceremony` | `ceremony.Initialize` |
+| Barrier custody (M-of-N split, custodian enrolment, share lifecycle) | `pkg/ceremony` | `CeremonyService.Initialize` |
 | System tenant + built-in roles + platform admin user + admin client cert | `pkg/firstboot` | `firstboot.Initialize` |
 
-Orchestration entry points live in `pkg/bootstrap`:
-
-System-level admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thumbprint binding); there are no invite tokens at the system level. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
+The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
 
 - **System bootstrap** — system barrier + system tenant + system admin + admin-mTLS.
-- **Provision tenant** — minimal control-plane tenant record + tenant-admin enrollment per `AdminEnrollmentMode` (no tenant barrier key held by the system admin): `cert` (default) enrolls the tenant-admin cert during provisioning; `deferred` creates the tenant admin PENDING with no credential bound, returning the user + role ids so the composing host (go-quicbaas) can attach a single-use invitation (`pkg/invite` `TenantInviteStore`) whose redemption binds the admin's first auth factor and activates the account (company doc 08 §"Admin enrollment").
+- **Provision tenant** — minimal control-plane tenant record + tenant-admin enrollment per `AdminEnrollmentMode` (no tenant barrier key held by the system admin): `cert` (default) enrolls the tenant-admin cert during provisioning; `deferred` creates the tenant admin PENDING with no credential bound, returning the user + role ids so the composing host (go-quicbaas) can attach a single-use invitation (`pkg/invite` `TenantStore`) whose redemption binds the admin's first auth factor and activates the account.
 - **Initialize tenant barrier** — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
 
 
@@ -63,8 +61,6 @@ mutually-exclusive paths, selected by which `Dependencies` inputs it receives:
 | **B** CSR-sign | `AdminCSRPEM` + `Signer` | `CertSigner.SignAdminCSR` signs the admin's CSR | Key never leaves the admin |
 | **C** adopt-presented | `AdminCertPEM` + `AdminCertPool` | The certificate the admin **already holds** (PIV card, security key) is validated and adopted; nothing is issued | Key never leaves the operator's token |
 
-Path C is checked **first**, because it is the only path that issues nothing: a deployment that presents a certificate has already decided which identity the admin authenticates as, so falling through to a configured CA would mint a second, unrelated credential and bind that instead — leaving the operator holding a certificate the server has never heard of.
-
 **Path C is checked first**, because it is the only path that issues nothing.
 A deployment presenting a certificate has already decided which identity the
 admin authenticates as; falling through to a configured CA would mint a second,
@@ -76,8 +72,6 @@ Refusals:
 - `AdminCSRPEM` **and** `AdminCertPEM` together → `ConflictingAdminCertInputsError`. Signing the CSR would leave the presented certificate unbound; adopting the certificate would silently discard the CSR. Neither is choosable on the operator's behalf.
 - `AdminCertPEM` without `AdminCertPool` → `MissingAdminCertPoolError`. An absent pool is refused rather than treated as "trust anything".
 - Parse failure, expiry, or no chain to the pool → `AdminCertRejectedError`.
-
-`AdminCertPool` is deliberately **not** the platform CA: a certificate the operator already holds was issued by something else (corporate PKI, card vendor), so validating against the CA this deployment is about to create would reject every legitimate input.
 
 `AdminCertPool` is deliberately **not** the platform CA: a certificate the
 operator already holds was issued by something else (corporate PKI, a card
@@ -95,12 +89,11 @@ When the fleet requires every certificate login to present an enrolled key
 an admin without a binding is an admin nobody can log in as — and the way back
 in needs a login. `Initialize` therefore takes the policy
 (`Dependencies.MTLSBindingPolicy`, forwarded by `bootstrap.SystemConfig`) and,
-under `required`, refuses **before its first write**:
-
-- an admin it would **create** with no `Binder`, or with no path above to issue
-  or adopt a certificate — there would be nothing bound;
-- an admin that **already exists** with no unexpired binding — a re-run issues
-  nothing, so nothing would change.
+under `required`, refuses **before its first write** when a path above is
+configured but no `Binder` is, whether the admin is about to be created or
+already exists with no unexpired binding: nothing would ever bind the
+certificate that path issues. With no path configured, the admin is created
+or left unbound and the node enters "awaiting admin credential" (below).
 
 Verifying an existing admin needs a read, so `Users` must also implement
 `AdminLookup`; one that cannot is refused, because the posture cannot be shown
@@ -126,8 +119,8 @@ admin-credential reissue).
 - **Invite tokens for system-level identities.** Rejected: a bearer token that
   grants system admin (or a Shamir custodian) is a bearer token that can be
   replayed against barrier material. System-level enrolment is
-  certificate-based, always. The initial *tenant* admin is the ruled
-  exception (2026-09-01): `ProvisionTenant`'s deferred mode defers the
+  certificate-based, always. The initial *tenant* admin is the one
+  exception: `ProvisionTenant`'s deferred mode defers the
   credential to a single-use invitation redeemed through the ordinary
   `authfactors.Factor.Enroll` seam — the same machinery as ordinary-user
   invitations, guarding no barrier material at redemption time.
@@ -145,15 +138,7 @@ admin-credential reissue).
 
 ## How go-qrdb's own compositions wire the three paths
 
-Before this change, `qrdbd`'s own first boot wired no `CA`, `Signer` or
-`Binder` at all — none of the three paths above were reachable, and the
-bootstrap admin was created with an empty binding set. Under the default
-`auth.mtls_binding_policy` at the time (`enrolled`) that was merely
-non-compliant; under the new default (`required`, see
-[../identity-rbac/architecture.md](../identity-rbac/architecture.md)) it would
-refuse every fresh boot.
-
-`qrdbd`, `sdk/go/node` and the embedded composition now resolve the three
+`qrdbd`, `sdk/go/node` and the embedded composition resolve the three
 paths through the ceremony instead of through `firstboot.Dependencies.CA` /
 `Signer` directly:
 
@@ -179,21 +164,19 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
    proposal against this node's own replica. It succeeds immediately when
    this node IS the Raft leader (the common case — a single-node deployment,
    or `qrdb init` pointed at the leader of a multi-node cluster). On a
-   genuine follower it currently has no way to forward the proposal to the
-   leader, so it surfaces the write failure rather than silently succeeding.
-   The retry remedy is the SAME path as step 4, and that retry no longer
-   requires the operator to find the leader first: `CeremonyServiceWithLeaderGate`
-   (the gate step 4's retry runs through on every call after the first) now
-   forwards a non-leader's `CeremonyInitialize` to the leader over REST —
-   the SAME `forwardToLeader`/`tryForwardWrite` path every other
-   system-shard write already uses — instead of refusing it with
-   `*service.AdminCredentialNotLeaderError`. Re-running `qrdb init` against
-   ANY node now reaches the leader in one hop. Giving THIS step's own first
-   write (the pending-admin-cert record above, reached before any Raft host
-   or REST server exists for this node's own boot) the same any-node reach
-   is tracked separately — it is a different call site (an in-process
-   proposal issued from `cmd/qrdbd`'s own boot sequence, not an incoming
-   REST request) with no existing forwarding primitive to reuse.
+   follower it has no way to forward the proposal to the leader, so it
+   surfaces the write failure rather than silently succeeding. The remedy is
+   the retry in step 4, which needs no leader lookup:
+   `CeremonyServiceWithLeaderGate` (the gate step 4's retry runs through on
+   every call after the first) refuses a non-leader's `CeremonyInitialize`
+   with `*service.AdminCredentialNotLeaderError`, and the serving transport
+   forwards it to the leader — on REST through the same
+   `tryForwardWrite`/`forwardToLeader` path every other system-shard write
+   uses. Re-running `qrdb init` against ANY node reaches the leader in one
+   hop. THIS step's own first write (the pending-admin-cert record above,
+   reached before any Raft host or REST server exists for this node's own
+   boot) is an in-process proposal from `cmd/qrdbd`'s boot sequence, not an
+   incoming request, so it has no forwarding primitive to reuse.
 
    **Every boot reaches this step, and only the first one writes.** Both
    composers call `firstboot.WriteIssuedAdminCertIfAny` on every start, and
@@ -244,15 +227,14 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
      `*service.AdminRebindAdminNotFoundError`, `*service.AdminRebindBindError`).
 5. **No record and no binding within the bound** is
    `*firstboot.NoPendingAdminCredentialError`, naming the retry command — but
-   it no longer refuses the boot, reversing the earlier design here:
+   it does not refuse the boot:
    `runFirstBoot` (`cmd/qrdbd`) and `sdk/go/node`'s
    `FirstBootWithCeremony` both log it as a warning and continue with no
    certificate to bind, exactly as if no pending record had ever been
    expected. First boot still creates (or reconciles) the admin account;
    it is simply left unbound, and the node comes up into "awaiting admin
    credential" (§ below) once the boot-time binding check runs, rather than
-   refusing to start at all — the one case a default (`required`) boot used
-   to still refuse outright, before this fix.
+   refusing to start.
 
 **A separate crash window exists one layer up, inside `firstboot.Initialize`
 itself: creating the admin user and binding its certificate are two
@@ -265,36 +247,30 @@ binding state with the identical `verifyAdminBindings` predicate
 `checkBindingPosture` and `verifyRequiredOutcome` already apply, and runs
 step 4 (issue + bind) again whenever that check fails, not only when this
 run created the account. `checkBindingPosture`'s pre-flight lets an
-existing, unbound admin through UNCONDITIONALLY now — with a credential
+existing, unbound admin through UNCONDITIONALLY — with a credential
 path wired, step 4 repairs it; with none wired at
 all, the admin stays unbound for the "awaiting admin credential" posture
 to gate, which is the ordinary case this bound exists for, not a boot
-refusal. The one case that still refuses pre-flight is the genuine wiring
+refusal. The one case that refuses pre-flight is the genuine wiring
 bug: a credential path IS configured but no `CertBinder` is, so step 4
 would issue a certificate and silently never bind it. A reason issuing a
 certificate cannot fix at all (the account's own lifecycle or
-permitted-method policy) still refuses outright regardless of what is
+permitted-method policy) refuses outright regardless of what is
 wired.
 
 ## Built-in roles
 
-Created deterministically on first init, undeletable, persisted at
-`__sys:role/<id>`, each with a fixed `uuid5(namespace, "go-qrdb/role/<Name>")`:
-
-| Admin | `uuid5(namespace, "go-qrdb/role/Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
-| Operator | `uuid5(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
-| User | `uuid5(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
-| Auditor | `uuid5(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-
-An admin user for the system tenant is also created:
-
+Created on first init as system roles (`System: true`, so rename,
+re-permission and delete refuse them), persisted at `__sys:roles/id/<id>`,
+each with a fixed ID from `role.SystemRoleID(tenantID, name)` (UUIDv8 over
+SHA-256): `so`, `admin`, `operator`, `user`, `auditor`, plus `owner` unless
+`SeparationOfDuties` is set. Each role's permissions are
+`permission.RolePermissions(<role>)`. An `admin` user for the system tenant
+is created alongside, bound to the `admin` role, once and idempotently.
 
 The full permission matrix and the FIPS 140-3 AS10.03 separation-of-duties
 constraints are in [../identity-rbac/](../identity-rbac/) and
 [auth/roles.md](../auth/roles.md).
-
-An `admin` user for the system tenant is created alongside, bound to the
-`admin` role, once and idempotently.
 
 ## Startup sequence
 
@@ -327,22 +303,18 @@ An `admin` user for the system tenant is created alongside, bound to the
   of any other kind is returned with its cause rather than being retried as
   though a leader elsewhere were about to fix it.
 - **A boot-time role or user create is ONE atomic proposal, not several.**
-  The identity claim, the primary record, and every secondary index used to
-  commit as separate Raft proposals — up to four for a role, more for a
-  user with an email login key — so a leadership change between any two of
-  them could leave a claim with no record behind it, or a record missing
-  one of its indexes, permanently: nothing could complete or roll back the
-  remainder without the very leadership that was just lost, and every
-  future create of that same role or user then found the same partial
-  state and refused identically, forever. `role.WithAtomicIdentity` /
-  `user.WithAtomicIdentity` close this by committing the claim and every
-  write as ONE guarded batch, using the multi-guard
+  As separate Raft proposals, the identity claim, the primary record and
+  each secondary index could be split by a leadership change, leaving a
+  claim with no record behind it, or a record missing an index, that every
+  later create of the same role or user would refuse identically.
+  `role.WithAtomicIdentity` / `user.WithAtomicIdentity` commit the claim and
+  every write as ONE guarded batch, using the multi-guard
   `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged` for BOTH: a role
   fences its generated id claim and its name together (an id-only guard
   cannot see two concurrent creates that use different ids but the same
   name), and a user fences its generated id, its username, and an optional
   email together (a single guard cannot express all three at once). A
-  failure anywhere in the sequence now leaves either everything or nothing.
+  failure anywhere in the sequence leaves either everything or nothing.
   Every boot-time composer (`cmd/qrdbd`, and through
   `pkg/server/lifecycle`, `sdk/go/node`) wires its role and user stores
   with a guarded adapter, and construction refuses outright when no
@@ -426,12 +398,10 @@ An `admin` user for the system tenant is created alongside, bound to the
   at once; exactly one wins the atomic batch, and the other is refused with
   the ordinary id-collision OR name-collision error. `firstboot` resolves
   either refusal by reading the persisted record back and comparing it
-  against the canonical built-in definition — tenant, canonical name, the
-  `System` immutability flag, and permission set always; the id as well for
-  an id collision, but NOT for a name collision, since a cluster seeded
-  before `role.SystemRoleID`'s hash algorithm changed (FIPS 140-3's move off
-  SHA-1) legitimately keeps its roles under a different, older id — before
-  treating either refusal as its own idempotent re-attempt. That check lives
+  against the canonical built-in definition — id, tenant, canonical name,
+  the `System` immutability flag and permission set, on either collision
+  (`firstboot.RoleMatchesSeed`) — before treating the refusal as its own
+  idempotent re-attempt. That check lives
   in `firstboot`, not in `CreateRole` itself: a general create endpoint
   accepting "same name and a guessed id means treat it as mine" would let
   any caller holding `roles:create` adopt another actor's in-flight or
@@ -441,29 +411,21 @@ An `admin` user for the system tenant is created alongside, bound to the
   read.** A refused guard proves SOME write already claimed the id or the
   name; it does not prove that write is visible to THIS node's read yet,
   which is exactly the gap between the typed-error diagnosis's own re-reads
-  (above) and firstboot's SEPARATE verification read that follows it. A
-  node that loses the race and checks before the winner's entry has locally
-  replicated used to fail the whole run with a false "unexplained conflict"
-  (`register role <name> failed: role: id already exists`, reproduced at
-  61d7cb049). A record that DOES resolve but disagrees with the canonical
-  definition is still refused at once — no amount of waiting makes a
-  mismatched record match. Every OTHER caller that can seed a tenant's
-  built-in roles resolves its own create collisions the identical way, by
-  calling this SAME exported function rather than re-deriving the
-  verification: `role.ReconcileBuiltInRoles`'s own `seedMissingRole` (the
-  tenant-scoped seeder `CreateTenant` triggers, which races first-boot's
-  loop for the SAME tenant's SAME built-ins), and `pkg/bootstrap`'s
-  `seedTenantRoles` (`ProvisionTenant`'s tenant-scoped seeding, which races
-  ANOTHER concurrent `ProvisionTenant` call for the same new tenant — it
-  used to check only `RoleNameExistsError`, never `RoleIDExistsError`, and
-  never verified a name collision was its own canonical definition before
-  accepting it). Every seeder that writes the roles themselves is wired
-  `WithIdentityIndex`/`WithAtomicIdentity` for the same reason cmd/qrdbd's
-  boot-time stores are: the tenant seeder (`pkg/server/lifecycle`'s
-  `roleSeederAdapter`) used to build its role store without either, falling
-  back to CreateRole's non-atomic, three-proposal path, whose
-  primary-record-before-name-index window a concurrent racer could observe
-  mid-write.
+  (above) and firstboot's SEPARATE verification read that follows it; the
+  window is `firstboot.BuiltInRoleSeedRetryWindow`. A record that DOES
+  resolve but disagrees with the canonical definition is refused at once —
+  no amount of waiting makes a mismatched record match. The other seeders
+  of a tenant's built-in roles resolve their create collisions the same
+  way: `pkg/bootstrap`'s `seedTenantRoles` (`ProvisionTenant`'s
+  tenant-scoped seeding, which can race another `ProvisionTenant` call for
+  the same new tenant) calls `firstboot.BuiltInRoleAlreadySeededWithin`
+  itself, and `role.ReconcileBuiltInRoles`'s `seedMissingRole` (the
+  tenant-scoped seeder `CreateTenant` triggers, which can race first boot
+  for the same tenant's built-ins) waits for an exact match on either
+  collision in the role store. The tenant seeder's role store
+  (`pkg/server/lifecycle`'s `roleSeederAdapter`) is wired
+  `WithIdentityIndex`/`WithAtomicIdentity`, as `cmd/qrdbd`'s boot-time
+  stores are.
 - **The admin is verified the same way, and an id collision with anyone else
   is retried.** A losing admin create reports `UsernameExistsError` or
   `UserIDExistsError`; either is accepted as idempotent only when the record
@@ -471,8 +433,8 @@ An `admin` user for the system tenant is created alongside, bound to the
   tenant and username, the tenant-scoped Admin role, and a defined,
   non-terminal lifecycle (an operator may since have suspended or disabled
   it; `deleting` or an unknown state is refused). `System` is not part of the
-  check: first boot creates the admin as the System user, and an admin made
-  before the flag existed is promoted to it on the same run. An id collision
+  check: first boot creates the admin as the System user, and an existing
+  admin without the flag is promoted to it on the same run. An id collision
   with no such admin behind it means the generated id repeated some other
   user's, so the create is retried with a fresh id, a bounded number of
   times. A username that resolves to anything but the admin is a squatter
@@ -503,9 +465,6 @@ The bootstrap sequence is **idempotent** and safe to re-run:
 - **Barrier** — If sealed, unseal must be done manually; if unsealed, state remains
 - **Raft** — If a node restarts, it re-joins the cluster using the stored log and snapshots
 
-A fresh start vs. a restart of an existing node follows the same sequence; only the first run performs initialization, subsequent runs skip redundant operations.
-
-
 A fresh start and a restart follow the same sequence; only the first run
 performs initialization.
 
@@ -518,7 +477,7 @@ performs initialization.
   redemption) is composed by the host, not by firstboot.
 - **No unsealing.** If the barrier is sealed, unsealing is a separate,
   deliberate operator action.
-- **No role customization at bootstrap.** The six built-in roles are fixed;
+- **No role customization at bootstrap.** The built-in roles are fixed;
   additional roles are created afterwards through
   [../identity-rbac/](../identity-rbac/).
 

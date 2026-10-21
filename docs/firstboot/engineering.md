@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -60,8 +60,9 @@ a second, unrelated credential bound instead.
   tenant-scoped Admin role, a lifecycle of exactly `pending` (an absent,
   unrecognized or any other state is refused), no bound certificate, no
   enrolled factors on the record, and no ACTIVE factor in the canonical
-  auth-factor store (the required `Dependencies.AdminFactors` seam — the
-  FAIL-CLOSED `service.ActiveFactorChecker` query, implemented by the
+  auth-factor store (the required `Dependencies.AdminFactors` seam,
+  `bootstrap.AdminFactorChecker` — the FAIL-CLOSED
+  `service.ActiveFactorChecker` contract, implemented by the
   production user auth-factor service over the canonical PRIMARY factor
   records rather than the per-user index, so a partially indexed enrollment
   or index corruption cannot hide a factor; the lenient `List`, which walks
@@ -76,10 +77,14 @@ a second, unrelated credential bound instead.
 - **The admin is bound by SPKI thumbprint.**
 - **`AdminCertPool` is not the platform CA.** It is an operator-supplied pool
   for a credential issued elsewhere.
-- **Built-in role IDs are deterministic** — `uuid5(namespace,
-  "go-qrdb/role/<Name>")` — so role identity is stable across clusters and
+- **Built-in role IDs are deterministic** — `role.SystemRoleID(tenantID,
+  name)`, a UUIDv8 over SHA-256 of a domain-separating namespace, the tenant
+  and the role name — so role identity is stable across clusters and
   re-inits.
-- **The six built-in roles are undeletable**, persisted at `__sys:role/<id>`.
+- **The built-in roles are system roles** (`System: true`): `so`, `admin`,
+  `operator`, `user`, `auditor`, plus `owner` unless `SeparationOfDuties` is
+  set. Rename, re-permission and delete refuse them with
+  `SystemRoleImmutableError`. They persist at `__sys:roles/id/<id>`.
 - **Bootstrap is idempotent.** Existing roles and the admin user cause an
   immediate return without duplicates.
 - **Only the leader creates.** Followers detect `NotLeader` and wait for
@@ -87,8 +92,8 @@ a second, unrelated credential bound instead.
 - **A role's or user's boot-time create is ONE guarded batch, not several
   proposals.** `role.WithAtomicIdentity` / `user.WithAtomicIdentity` commit
   the identity claim together with the primary record and its indexes in a
-  single proposal. A leadership change anywhere in what used to be a
-  multi-proposal sequence now leaves either everything or nothing — there is
+  single proposal. A leadership change leaves either everything or
+  nothing — there is
   no partial state left for a later attempt to find, repair, or refuse
   against. `NewStore` refuses construction when `WithAtomicIdentity` is set
   without the required capability, so the guarantee is fixed at startup, not
@@ -109,30 +114,28 @@ a second, unrelated credential bound instead.
     when the request has one — the email index key, all evaluated together
     in the SAME proposal. A single guard cannot fence three independent
     handles (a generated id, a chosen username, and an optional email) at
-    once: an earlier design guarded only the username key on the theory that
-    a freshly generated id essentially never collides, which left a
-    reused-id create able to silently overwrite an existing record and claim
-    under a different, unused username. `WithAtomicIdentity` now applies to
-    EVERY create this store makes, email-bearing or not — there is no
+    once: a username-only guard would leave a reused-id create able to
+    silently overwrite an existing record and claim under a different,
+    unused username. `WithAtomicIdentity` applies to EVERY create this store
+    makes, email-bearing or not — there is no
     sequential fallback path.
 - **A concurrent, identical built-in role's create is verified in
   `firstboot`, not assumed in `CreateRole`, on EITHER collision `CreateRole`
   can report.** Exactly one of two simultaneous first-boot attempts wins the
   guarded batch for a given built-in role; the other is refused with
-  `RoleIDExistsError` or `RoleNameExistsError`, the SAME error types
-  `CreateRole` has always returned for those collisions.
-  `registerBuiltInRoles` resolves EITHER refusal by reading the persisted
+  `RoleIDExistsError` or `RoleNameExistsError`, the error types
+  `CreateRole` returns for those collisions.
+  `RegisterBuiltInRoles` resolves EITHER refusal by reading the persisted
   record back (`role.NameResolver.GetRoleByName`) and comparing tenant,
   canonical name, the `System` flag, and permission set against the
   canonical built-in definition — an id collision additionally requires the
   persisted id to match exactly, while a name collision does not, since
   `role.SystemRoleID` is a pure function of tenant and name and an idempotent
   re-attempt derives the identical id anyway. The
-  `System` check exists because an earlier release persisted every built-in
-  role with `System: false` (`CreateRoleRequest` had no such field then), and
-  matching id/tenant/permissions while accepting that flag mismatch would
-  leave a reserved-name role mutable and deletable through the ordinary role
-  APIs. A mismatch on any required field is refused, not papered over. This
+  `System` check exists because a role persisted with `System: false` is
+  mutable and deletable through the ordinary role APIs: matching
+  id/tenant/permissions while accepting that flag mismatch would leave a
+  reserved-name role unprotected. A mismatch on any required field is refused, not papered over. This
   lives in `firstboot` specifically because it is the one caller that knows
   the canonical definition a collision might legitimately mean; `CreateRole`
   itself never makes this judgment, so a general caller holding
@@ -166,10 +169,8 @@ a second, unrelated credential bound instead.
 - **Only a `NotLeader` failure waits.** The follower wait is entered for that
   condition alone, checked at both layers that express it
   (`service.NotLeaderError` and `quicraft.NotLeaderError`). Every other
-  first-boot failure propagates with its own cause. It previously caught
-  ANY error, so a local fault — a state machine unable to apply an op code,
-  say — was reported 30 seconds later as `admin user not replicated`, a
-  message naming the symptom while the cause appeared only in a log line.
+  first-boot failure propagates with its own cause, rather than surfacing
+  later as `admin user not replicated`.
 - **Ceremony runs before firstboot**, and both are safe to re-run on cluster
   nodes.
 
@@ -184,7 +185,7 @@ a second, unrelated credential bound instead.
 | `AdminCertBindingRequiredError` | `MTLSBindingPolicy` is `required` and the admin could not log in by certificate: `Reason` is one of `AdminBindingNoBinder`, `AdminBindingNone`, `AdminBindingAllExpired`, `AdminBindingMissing`, `AdminBindingCannotAuthenticate` (lifecycle forbids login), `AdminBindingMTLSNotPermitted` (method policy excludes mtls), `AdminBindingUnverifiable` | **only `AdminBindingNoBinder`, and only when a credential path IS otherwise configured** (a wiring bug: nothing would ever bind the certificate a path would issue) — see below |
 | `AdminLookupError` | the admin could not be read while checking that posture | **yes** — no verdict is not a pass |
 
-Only ONE of these reasons still refuses before any write:
+Of the reasons a certificate can fix, only ONE refuses before any write:
 `AdminBindingNoBinder`, and only when a credential path (a CA, a Signer with
 an admin CSR, or an adopted certificate) is ALSO configured — a composer that
 wired a way to issue a certificate but not a way to bind it is a wiring bug,
@@ -192,13 +193,13 @@ caught before any side effect (`checkBindingPosture`). A `CertBinder` with
 nothing to bind is the ordinary case this doc's "awaiting admin credential"
 state exists for, not a refusal.
 Every other reason — no credential path configured at all, a missing admin,
-or all bindings expired — no longer refuses `Initialize` pre-flight or its
-post-run outcome check (`verifyRequiredOutcome`) either: the admin is
+or all bindings expired — refuses neither `Initialize` pre-flight nor its
+post-run outcome check (`verifyRequiredOutcome`): the admin is
 created or left unbound, and it is the composer's own
 `firstboot.AwaitingAdminCredentialProbe` (below) that gates traffic on the
 result, not a boot refusal. `AdminBindingCannotAuthenticate` and
 `AdminBindingMTLSNotPermitted` — a lifecycle or permitted-method policy a
-certificate cannot fix regardless of what is wired — still refuse outright,
+certificate cannot fix regardless of what is wired — refuse outright,
 both pre-flight and in the outcome check.
 
 Under `required`, `Initialize` also re-reads the admin after it finishes and
@@ -270,17 +271,12 @@ request re-driving the check.
 
 ## Built-in roles
 
-| Role | Permissions | Notes |
-|---|---|---|
-| Security Officer (SO) | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` — **crypto ops explicitly denied** | governance only; dual-factor auth required |
-| Admin | `keys:*` (except deleting infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | day-to-day key lifecycle |
-| Operator | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | routine operations |
-| User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | crypto ops only |
-| Auditor | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | read-only everywhere |
-
-The SO's explicit denial of crypto operations is the separation-of-duties
-control: governance and key use are different people. Full matrix and the FIPS
-140-3 AS10.03 constraints: [auth/roles.md](../auth/roles.md).
+`role.BuiltInRoles(tenantID)` returns `so`, `admin`, `operator`, `user` and
+`auditor`; first boot adds `role.OwnerRole` unless `SeparationOfDuties` is set.
+Each role's permission set is `permission.RolePermissions(<role>)`, read from
+the grant registry in `pkg/permission/role_grant.go`, so the registry, not
+this document, is the matrix. Role semantics and the separation-of-duties
+constraints: [auth/roles.md](../auth/roles.md).
 
 ## Configuration
 
@@ -289,38 +285,21 @@ surrounding daemon startup is configured through
 [../configuration/](../configuration/); mode selection is
 [../run-modes/](../run-modes/).
 
-Single-admin versus M-of-N is selected at init:
-
-```bash
-qrdbd start --threshold 1            # single-admin: initialize, unseal, operational
-qrdbd start --threshold 2 --total 3  # M-of-N: stays in "enrolling" until officers claim
-```
+Single-admin versus M-of-N is selected by `qrdb init`
+(`--barrier-strategy shamir --threshold`); see
+[cli.md](cli.md#m-of-n-enrollment).
 
 ## File layout after bootstrap
 
-
-```
-$DATA_DIR/
-├── ca.pem                    # CA certificate (readable by operators)
-├── qrdb-server.key           # Server TLS private key (encrypted in barrier)
-├── qrdb-server.pem           # Server TLS certificate
-├── admin.pem                 # Admin client certificate (system tenant)
-├── db.pebble/                # PebbleDB storage (if pebble backend)
-│   ├── MANIFEST
-│   ├── 000001.sst
-│   └── ...
-├── raft.log                  # Raft WAL
-└── .qrdb.lock                # File lock (prevents concurrent daemon instances)
-```
-
-All sensitive keys are stored in the barrier (encrypted). Once unsealed, they are available in memory via `seal.EncryptionBarrier.Decrypt()`.
-
-**All sensitive keys are stored in the barrier.** Once unsealed they are
-available in memory via `seal.EncryptionBarrier.Decrypt()`.
+The data directory holds `ca.pem` (readable by operators), `ca-key.pem` only
+when this node holds the CA's private key, the node's TLS key and certificate
+(`node-key.pem`, `node-cert.pem`), the storage directory and the Raft WAL.
 
 ## Persistence
 
-- Roles: `__sys:role/<id>` with deterministic UUIDv8 (SHA-256) identifiers.
+- Roles: `__sys:roles/id/<id>`, indexed by `__sys:roles/tenant/<tenant>/<id>`
+  and `__sys:role_idx/name/<tenant>/<name>`, with deterministic UUIDv8
+  (SHA-256) identifiers for the built-in roles.
 - Users and their certificate bindings: see
   [../identity-rbac/](../identity-rbac/engineering.md).
 - Certificates: see
