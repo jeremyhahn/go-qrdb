@@ -1,12 +1,12 @@
 # Time Series — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented. OD-n refers to that document's ruled decisions.
+> are approved and not implemented.
 
 > **Build-tag gated: `qrdb_ts`** (`WITH_QRDB_TS=1`). Without it the CLI verb
 > group and transport handlers are compiled out and `pkg/capabilities` does not
@@ -123,8 +123,11 @@ type TSListMetricsResponse struct{ Metrics []string }
 
 ### Aggregation functions
 
-`AggFunc` is a `uint8` with **explicit numeric values**, so the wire form is a
-number and the numbering is part of the contract:
+`AggFunc` is a `uint8` with **explicit numeric values**. The numbering is part
+of the contract: a stored retention policy encodes it as one byte
+(`pkg/timeseries/storage.go`), and the SDK types and QUIC's JSON methods carry
+it as a number. REST and MCP take names and gRPC has its own enum
+([api.md](api.md#wire-forms-per-transport)).
 
 | Constant | Value |
 |---|---|
@@ -144,27 +147,29 @@ number and the numbering is part of the contract:
 ## Invariants
 
 - **All timestamps are nanoseconds** (`TimestampNs`, `StartNs`, `EndNs`,
-  `IntervalNs`, `DurationNs`, `ResolutionNs`). There is no second- or
-  millisecond-based field anywhere in this surface.
-- **Ranges are `[start_ns, end_ns)`** — start inclusive, end exclusive, matching
-  every other range in the store.
-- **`AggFunc` values are fixed numbers**, not names. Renumbering them is a
-  breaking wire change.
+  `IntervalNs`, `DurationNs`, `ResolutionNs`). The one exception is MCP's
+  `qrdb_ts_set_retention_policy`, which takes `duration_seconds` and
+  `resolution_seconds`.
+- **Ranges are `[start_ns, end_ns]`** — both ends inclusive.
+- **`AggFunc` values are fixed numbers** on the SDK types and in a stored
+  retention policy. Renumbering them is a breaking wire and disk change. The
+  other transports' forms are in [api.md](api.md#wire-forms-per-transport).
 - **`TSWrite` and `TSWritePoint` are both single-point writes** with distinct
   permissions (`timeseries:write`, `timeseries:write_point`). They are separate
   RPCs on every transport; treat `TSWritePoint` as the narrower grant.
 - **Retention is per metric and is intended as a downsampling policy**, not
   just a delete horizon: `duration_ns` bounds age, `resolution_ns` sets
   downsampled resolution, and `aggregation` chooses the function that would
-  produce the downsampled value. **Measured: `duration_ns` is enforced,
+  produce the downsampled value. **`duration_ns` is enforced;
   `resolution_ns`/`aggregation` are not.** A leader-driven scheduler
   (`pkg/server`'s `retentionScheduler`) proposes a Raft command
   (`protocol.OpTSApplyRetention`, gated behind
-  `featuregate.TimeSeriesRetention`) once a minute per metric with a policy,
-  deleting points older than `duration_ns` deterministically on every
-  replica, bounded to `timeseries.MaxRetentionDeletesPerApply` points per
-  command. No point is ever downsampled (OD-16's downsampling half remains
-  target work; see docs/time-series/architecture.md#retention-enforcement-od-16-a).
+  `featuregate.TimeSeriesRetention`) every `DefaultRetentionInterval` (one
+  minute) per metric with a policy, deleting points older than `duration_ns`
+  deterministically on every replica, bounded to
+  `timeseries.MaxRetentionDeletesPerApply` points per command. No point is
+  downsampled; see
+  [architecture.md](architecture.md#retention-enforcement-od-16-a).
 - **`TSDeleteSeries` is bounded by its request**: metric, optionally tags,
   optionally a time range. With no range it deletes the whole series.
 - **Time-series keys live under reserved prefixes** (`ts:`, `idx:metric:`,
@@ -181,8 +186,8 @@ number and the numbering is part of the contract:
 |---|---|---|
 | Built without `qrdb_ts` | capability absent; verbs and handlers unregistered | **yes** |
 | Unknown metric on query | empty result (a metric is created by writing to it) | n/a |
-| `end_ns <= start_ns` | invalid-argument | **yes** |
-| Unknown `AggFunc` value | invalid-argument | **yes** |
+| `end_ns < start_ns` | invalid-argument | **yes** |
+| Unknown aggregation function | invalid-argument | **yes** |
 | `AggPercentile` without `percentile` | invalid-argument | **yes** |
 | Retention policy with `duration_ns <= 0` | invalid-argument | **yes** |
 | Missing `timeseries:*` permission | permission denied | **yes** |
@@ -202,7 +207,7 @@ Build flag: `WITH_QRDB_TS=1`.
 - **Compatibility**: the composite key encoding and the `AggFunc` numbering are
   both on-disk/on-wire format. Changing either is a breaking change.
 
-## The time-series engine over the storage interface (shipped: Lane 1A, 2026-10-06)
+## The time-series engine over the storage interface
 
 ### Contract
 
@@ -211,7 +216,7 @@ Build flag: `WITH_QRDB_TS=1`.
 // storage.Storage itself (not a *pebble.DB), and does not own it: the
 // caller opens and closes it, exactly as the caller owns the storage.Batch
 // passed to every write method.
-type Storage struct{ /* stg storage.Storage; codec, clock seam for tests only */ }
+type Storage struct{ /* stg storage.Storage; closed atomic.Bool */ }
 
 func New(stg storage.Storage) (*Storage, error)
 
@@ -227,85 +232,85 @@ func (s *Storage) QueryRich(req *QueryRequest) (*QueryResult, error)
 func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, interval time.Duration) ([]AggResult, error)
 func (s *Storage) GetRetentionPolicy(metric string) (*RetentionPolicy, error)
 func (s *Storage) ListMetrics(prefix string, limit int) ([]string, error)
-```
 
-Shipped shape differs from an earlier revision of this plan in two ways,
-both simplifications made while implementing it:
+// Close marks the Storage closed; later calls return *ClosedError. It does
+// not close the storage.Storage.
+func (s *Storage) Close() error
+```
 
 - **Write methods take only `batch`, not a separate reader.** `storage.Batch`
   already implements `storage.Reader` (it reads its own pending writes
-  layered over committed storage — see `pkg/storage`'s `Reader` doc comment),
-  so passing a second reader parameter would only ever name the same value a
-  second way. A point written earlier in the same apply batch is visible to
-  a later write in it because every read inside `Write`/`WriteBatch`/
-  `DeleteSeries`/`ApplyRetention` goes through `batch`, not through `s.stg`.
+  layered over committed storage — see `pkg/storage`'s `Reader` doc comment).
+  A point written earlier in the same apply batch is visible to a later write
+  in it because every read inside `Write`/`WriteBatch`/`DeleteSeries`/
+  `ApplyRetention` goes through `batch`, not through `s.stg`.
 - **Read methods (`Query`, `QueryRich`, `Aggregate`, `GetRetentionPolicy`,
-  `ListMetrics`) take no reader argument at all.** They read through the
+  `ListMetrics`) take no reader argument.** They read through the
   `Storage`'s own `stg` (set once at construction by `New`), because a query
-  is never part of an in-flight apply batch — it always runs after a batch
-  has committed, so there is only ever one reader a query could be given:
-  `s.stg` itself.
+  is never part of an in-flight apply batch.
 
 Other facts:
 
-- `timeseries.New(*pebble.DB)`, `NewWithDir`, `StorageOption`, `WithEncryptor`
-  and `Storage.DB()` are deleted from `pkg/timeseries`. The equivalent
-  directory-opening convenience for a standalone embedder now lives in the
-  SDK (`sdk.NewTimeSeriesStorageWithDir` / `sdk.NewTimeSeriesStorageWithEncryptor`,
-  `sdk/go/types_timeseries.go`), which owns Pebble directly for that one
-  use case; `pkg/timeseries` itself imports no storage engine.
+- A standalone embedder that wants a directory-backed store uses the SDK
+  (`sdk.NewTimeSeriesStorageWithDir`, and
+  `sdk.NewTimeSeriesStorageWithEncryptor`, which takes an
+  `*atrest.Encryptor`; both in `sdk/go/types_timeseries.go`). The SDK owns
+  Pebble for that one use case; `pkg/timeseries` does not import Pebble.
 - The engine's time-series handlers pass the batch they are given; the
-  engine's `WithMVCCTimeSeries` option takes no Pebble handle.
-  `WithMVCCPebbleDB` is deleted along with the field it set.
-- `TSApplyRetention` is an extended-protocol command, landed ahead of this
-  lane and adapted to it: `handleTSApplyRetention` now stages into the
-  caller's batch like every other time-series handler.
+  engine's `WithMVCCTimeSeries(ts *timeseries.Storage)` option takes no Pebble
+  handle.
+- `protocol.OpTSApplyRetention` is an extended-protocol command;
+  `MVCCEngine.handleTSApplyRetention` stages into the caller's batch like
+  every other time-series handler.
 
 ### Acceptance tests
 
-Lane 1A (storage-generic engine):
+Shipped:
 
-1. **Shipped: in the batch.** A time-series write and a KV write in one entry
+1. **In the batch.** A time-series write and a KV write in one entry
    whose batch commit is forced to fail leave neither
    (`pkg/engine.TestMVCCEngine_TSAndKVWriteInOneApplyBatch_CommitFailureLeavesNeither`).
-2. **Shipped (basic read/write): every backend.** `pkg/engine.TestEngineConformance`
+2. **Every backend, basic read/write.** `pkg/engine.TestEngineConformance`
    proves a time-series write and a range query round-trip identically on
-   memory, file, pebble and local-provider objstore. **Not yet shipped: the
-   exhaustive per-feature matrix** — tag filters, every `AggFunc`, interval
-   bucketing, `group_by`, percentile, delete with and without a range, and
-   the retention round trip are each tested in `pkg/timeseries`, but that
-   suite runs over one in-memory `storage.Storage`, not parametrized across
-   all four backends. A raft *binding* (a database's own dedicated shard, as
-   opposed to the shared system store a raft-mode node already runs this
-   code against today) is Phase 2 work.
-3. **Shipped: no engine import.** `test/buildgates.TestEngineAndTimeSeriesDoNotImportPebble`
+   memory, file, pebble and local-provider objstore. Tag filters, every
+   `AggFunc`, interval bucketing, `group_by`, percentile, delete with and
+   without a range, and the retention round trip are each tested in
+   `pkg/timeseries` over one in-memory `storage.Storage`, not across all four
+   backends.
+3. **No Pebble import.** `test/buildgates.TestEngineAndTimeSeriesDoNotImportPebble`
    gates both `pkg/engine` and `pkg/timeseries`.
-4. **Placement.** On a barrier, volume or raft tenant's database the `ts:` keys
+4. **Bounded deletes.** One `ApplyRetention` call deletes at most
+   `MaxRetentionDeletesPerApply` points
+   (`pkg/timeseries.TestStorage_ApplyRetention_BoundsDeletesPerCall`).
+
+Target:
+
+5. **Placement.** On a barrier, volume or raft tenant's database the `ts:` keys
    are found by exact key in that database's own store and not in any other,
    and cannot be read with the node's encryptor.
-
-Lane 4C (retention, OD-16 A):
-
-5. **Deterministic sweep.** Three replicas apply the same `TSApplyRetention`
-   and hold byte-identical `ts:` ranges afterwards, with their clocks
-   deliberately skewed.
-6. **Downsampling.** A policy with a resolution replaces expired points by one
+6. **Deterministic sweep.** Three replicas apply the same
+   `protocol.OpTSApplyRetention` and hold byte-identical `ts:` ranges
+   afterwards, with their clocks deliberately skewed.
+7. **Downsampling.** A policy with a resolution replaces expired points by one
    point per bucket whose value is the policy's aggregation of the bucket.
-7. **Bounded entries.** A metric with more expired points than one entry's
-   bound is fully swept across several commands, and no entry exceeds the
-   bound.
-8. **The drop fence.** A sweep proposed before the database's drop fence and
+8. **Bounded entries across commands.** A metric with more expired points than
+   one entry's bound is fully swept across several commands, and no entry
+   exceeds the bound.
+9. **The drop fence.** A sweep proposed before the database's drop fence and
    applied after it is refused.
 
 ## Test strategy
 
 - **Unit**, under `qrdb_ts`: write and batch write, range query boundary
-  behaviour (`[start, end)`), tag filtering, each `AggFunc`, interval bucketing,
+  behaviour (`[start, end]`), tag filtering, each `AggFunc`, interval bucketing,
   `group_by` in rich query, percentile, delete with and without a range, and
   retention round-trip.
 - **Error tests** per function.
-- **No `time.Sleep`** — retention expiry is driven through the clock seam.
-- **Integration**: time-series parity across transports in the standalone stage.
+- **No `time.Sleep`** — retention expiry is driven by the `cutoff` passed to
+  `ApplyRetention`, never the wall clock.
+- **Integration**: `make integration-test-time-series` runs
+  `TestTS_CLI_PerProtocol` (`test/integration/ts_cli_test.go`) over REST,
+  gRPC, QUIC, MCP and the Unix socket.
 
 ## Known gap — CLI does not cover the API
 
@@ -317,7 +322,9 @@ through the SDK. Recorded in [cli.md](cli.md) and [api.md](api.md).
 
 ## Observability
 
-- Writes and deletes are audited through [../audit/](../audit/).
+- Each call's authorization decision is audited as `auth.authorize`, with the
+  `timeseries:*` permission as its resource ([../audit/](../audit/)). The
+  write or delete itself has no record of its own.
 - `TSListMetrics` is the discovery surface — it is how an operator finds out
   what is being written, since metrics are created implicitly by writing.
 

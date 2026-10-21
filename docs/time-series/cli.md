@@ -1,12 +1,12 @@
 # Time Series — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented. OD-n refers to that document's ruled decisions.
+> are approved and not implemented.
 
 Command group: `qrdb ts`. **Present only in builds carrying the `qrdb_ts` tag**
 (`make build WITH_QRDB_TS=1`); confirm with `qrdb admin capabilities`
@@ -23,8 +23,8 @@ Write a single data point.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--metric` | string | — | metric name |
-| `--value` | float | — | data point value |
+| `--metric` | string | — | metric name, required |
+| `--value` | float | — | data point value, required |
 | `--timestamp` | int | current time | nanosecond timestamp |
 | `--tag` | strings | — | tags as `k=v`, repeatable |
 
@@ -55,9 +55,9 @@ Query raw data points in a time range.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--metric` | string | — | metric name |
-| `--start` | int | — | start timestamp, nanoseconds (inclusive) |
-| `--end` | int | — | end timestamp, nanoseconds (exclusive) |
+| `--metric` | string | — | metric name, required |
+| `--start` | int | — | start timestamp, nanoseconds (inclusive), required |
+| `--end` | int | — | end timestamp, nanoseconds (inclusive), required |
 | `--tag` | strings | — | filter tags as `k=v`, repeatable |
 | `--limit` | int32 | unlimited | maximum results |
 | `--desc` | bool | false | descending order |
@@ -72,7 +72,7 @@ qrdb ts query --metric cpu.usage --start 0 --end 9223372036854775807 \
      --desc --limit 10
 ```
 
-The range is half-open: `[start, end)`.
+The range is closed: `[start, end]`.
 
 ## `qrdb ts aggregate`
 
@@ -80,10 +80,10 @@ Aggregate data points, bucketed by interval.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--metric` | string | metric name |
-| `--start` | int | start timestamp, nanoseconds |
-| `--end` | int | end timestamp, nanoseconds |
-| `--function` | string | `avg \| sum \| min \| max \| count \| percentile` |
+| `--metric` | string | metric name, required |
+| `--start` | int | start timestamp, nanoseconds, required |
+| `--end` | int | end timestamp, nanoseconds, required |
+| `--function` | string | `avg \| sum \| min \| max \| count \| percentile`, required |
 | `--interval` | int | bucket interval, nanoseconds |
 
 ```bash
@@ -116,6 +116,6 @@ This is a CLI coverage gap, not a deliberate scope fence. See
 
 ## Parity
 
-The four verbs above have `CommandDefinition`s in the integration parity suite.
-The six capabilities with no verb have nothing to define, which is precisely
-what makes the gap invisible without this note.
+`TestTS_CLI_PerProtocol` (`test/integration/ts_cli_test.go`) drives the four
+verbs above end to end over REST, gRPC, QUIC, MCP and the Unix socket. The six capabilities with no verb
+have no CLI test.
