@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -92,8 +92,8 @@ See [key-wrapping](../key-wrapping/architecture.md).
 | Tenant sealed or keyring store unavailable | 503 | `UNAVAILABLE` |
 | Stored keyring corrupt | 500 | `DATA_LOSS` |
 | Lost to concurrent updates | 409 | `ABORTED` |
-| A legacy-format (pre-key-wrap) record was found | 500 | `DATA_LOSS` |
-| No key directory configured for the built-in "software" key-wrap provider | 404 (route absent) | `UNIMPLEMENTED` |
+| Stored keyring holds an unwrapped key per version (refused, never migrated) | 500 | `DATA_LOSS` |
+| No key directory configured for the built-in "software" key-wrap provider | 501 | `UNIMPLEMENTED` |
 | An unregistered key-wrap provider ID, a bad key reference, or a KEK authentication failure | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Service not configured | 404 (route absent) | `UNIMPLEMENTED` |

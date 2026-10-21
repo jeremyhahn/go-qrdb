@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Packages
@@ -9,7 +9,8 @@
 |---|---|
 | `pkg/dek` | `Keyring`: versions, the stored record, the AEAD, the KEK wrap/unwrap seam, typed errors. Depends on `pkg/kvstore`, `pkg/crypto/aesgcm`, `pkg/secure` and `pkg/keywrap`. |
 | `pkg/service` | `DEKServicer` / `DEKService`: the one place tenant scoping is decided, shared by every transport. |
-| `pkg/api/dekwire` | Keyring results to wire shapes, and the error classification every transport renders. |
+| `pkg/api/dekwire` | Keyring results to wire shapes. |
+| `pkg/api/errclass` | The error classification every transport renders. |
 | `pkg/api/{rest,grpc,quic,mcp}` | Transport handlers; `pkg/api/unix` serves the gRPC handlers over a socket. |
 | `sdk/go/transport` | `DEKClient` and its request/response types. |
 | `sdk/go/transport/{rest,grpc,unix,quic,mcp,embedded}` | Client implementations; gRPC and Unix share `internal/dekconv`. |
@@ -87,8 +88,8 @@ A retired version keeps its number and timestamps and loses its wrapped
 key, provider ID and key reference. On read, a record whose format is
 unknown, which has no versions, or whose current version has no usable
 wrapped key (missing wrapped bytes, provider ID or key reference) is
-refused as `ErrCorruptKeyring` rather than used. A record stored in the
-PRE-key-wrap format (format 1 — a plaintext key per version) is refused
+refused as `ErrCorruptKeyring` rather than used. A record in format 1
+(a plaintext key per version) is refused
 as `ErrLegacyKeyringFormat` instead, checked before the generic corruption
 check so the refusal names the real reason; see
 [architecture.md](architecture.md#key-wrapping).
@@ -109,8 +110,7 @@ consistent with the replicated record at the cost of one store read per call.
 A new version's key is generated straight into a protected-memory buffer
 (go-enclave, via `pkg/secure`) and handed to the provider's `Wrap` from that
 same buffer, which is destroyed when the wrap returns: the key is never copied
-to the Go heap on the way. The `keywrap.Provider` interface is unchanged, so
-a provider receives the key as a `[]byte` over protected pages; it must not
+to the Go heap on the way. A `keywrap.Provider` receives the key as a `[]byte` over protected pages; it must not
 retain it past the call. The buffer's borrow is held across `Wrap`, and a
 provider — a hardware or KMS one especially — may allocate, open and destroy
 protected memory of its own inside it: every go-enclave object carries its
@@ -121,8 +121,8 @@ is.
 
 ## Error classes
 
-Every error matches exactly one sentinel under `errors.Is`; `dekwire.Code` maps
-the class to a status once, and each transport renders that status.
+Every error matches exactly one sentinel under `errors.Is`; `pkg/api/errclass`
+classifies it once (`table.go`), and each transport renders that class.
 
 | Sentinel | gRPC / QUIC / MCP | REST |
 |---|---|---|
@@ -138,7 +138,7 @@ the class to a status once, and each transport renders that status.
 | `ErrConcurrentUpdate` | `Aborted` | 409 |
 | `ErrCrypto` | `Internal` | 500 |
 | `ErrLegacyKeyringFormat` | `DataLoss` | 500 |
-| `ErrKeyDirNotConfigured` | `Unimplemented` | 404 (route absent) |
+| `ErrKeyDirNotConfigured` | `Unimplemented` | 501 |
 | `ErrKeyWrapFailed` | `InvalidArgument` | 400 |
 
 `ErrAuthenticationFailed` deliberately does not say whether the cause was
@@ -170,8 +170,8 @@ resource, the other two by verb).
 ## Teardown
 
 There is no DEK-shred step. The fence makes the tenant unresolvable, so the
-keyring is unusable from that point; the barrier destroy makes a dedicated
-tenant's record undecryptable; the teardown deletes it. A shared tenant's
+keyring is unusable from that point; the barrier destroy makes an isolated
+tenant's record undecryptable; the teardown deletes it. A prefix tenant's
 keyring is under `<tenant>/`, which `service.TenantKeyPrefixes` covers; an
 isolated tenant's keyring, like its identity records, is in its home store,
 which is retired with the tenant before its barrier is destroyed.
@@ -192,7 +192,7 @@ which is retired with the tenant before its barrier is destroyed.
 | Barrier wrapping, sealed refusal, reclaim on delete | `pkg/server/lifecycle/dek_test.go` |
 | Concurrent rotations lose no version | `pkg/dek` |
 | Every version's key is wrapped (never plaintext) under the configured provider/key reference, default and configured | `pkg/dek` |
-| A legacy-format (pre-key-wrap) record is refused, not migrated | `pkg/dek` |
+| A format-1 record (plaintext key per version) is refused, not migrated | `pkg/dek` |
 | The built-in "software" provider with no key directory configured refuses minting a key | `pkg/dek` |
 | A go-xkms-shaped hardware/cloud-KMS provider double round-trips through the SAME registry seam backup uses | `pkg/dek` |
 | Backup and the DEK keyring share one injected key-wrap registry/provider with no collision | `pkg/server/lifecycle` |
