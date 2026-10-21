@@ -1,6 +1,6 @@
 # Leases — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 A lease is a timer with a name. Attach keys to it, keep it alive while you care
@@ -136,15 +136,9 @@ or was revoked between your grant and your write. The write is refused rather
 than accepted lease-less, because a key silently written without its lease would
 never expire. Grant a new lease and retry.
 
-**A key you re-wrote disappeared when an older lease expired.** On current
-releases that cannot happen: re-writing a key moves it out of its old lease.
-Releases before the correction kept the key in every lease any of its values had
-named, so the oldest lease's expiry deleted the newest value. Upgrade.
-
-**Leases disappeared after a node restarted.** Leases are persisted and survive
-restarts and snapshot recovery, and each one restarts on a full TTL. Leases
-granted by a release that did not persist them are lost on the restart into the
-upgrade. Grant new ones and re-write their keys.
+**Leases after a node restart.** Leases are persisted and survive restarts and
+snapshot recovery. Each one counts from its last checkpoint, or from a full TTL
+when it has none.
 
 **`lease keep-alive` returns not-found.** The lease already expired; its keys are
 already gone. Grant a new one and re-create the state.

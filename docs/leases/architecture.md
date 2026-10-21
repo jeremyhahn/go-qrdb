@@ -1,6 +1,6 @@
 # Leases — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -17,7 +17,7 @@ by ID; when the lease expires or is revoked, every key attached to it is
 deleted, in one place, by the leader.
 
 - `LeaseGrant(ttl)` returns a `LeaseInfo` with an `ID`.
-- `Put(key, value, leaseID)` — or `MVCC().PutWithLease` — attaches the key.
+- `MVCC().PutWithLease(key, value, leaseID)` attaches the key.
 - `LeaseKeepAlive(id)` resets the TTL; a client that stops calling it lets the
   keys go. The leader renews it in memory; a periodic checkpoint records
   what is left of it, for the next leader.
@@ -53,22 +53,19 @@ operation, so every replica sees the deletions at the same point in the log.
 - **Wall-clock expiry evaluated independently on each node.** Rejected: clock
   skew makes replicas disagree about whether a key exists, which is a
   consistency violation, not a rounding error. Expiry goes through the log.
-- **Every keep-alive through the log.** This was the behaviour until it was
-  replaced. Rejected because each renewal paid a Raft-log fsync, and under CPU
-  contention that fsync gave renewals a heavy latency tail (p90 12x the median
-  on a loaded 2-core host) that a holder with a short TTL experiences as a
-  spurious loss. Renewal needs the leader's word, not the group's.
-- **Replicating every renewed lease each second.** This was the behaviour until
-  it was replaced by etcd's checkpoints. Rejected because those proposals kept
-  a commit-to-apply window open almost all the time, and a renewal's
-  linearizable read waits behind it: under disk-sync contention renewals
-  stalled for 0.2 to 5 seconds. It also bought nothing a failover needed — a
-  new leader still had to grant a fresh TTL, since the deadline it learned was
-  up to a second old.
-- **A key stays in every lease any of its values named.** This was the
-  behaviour until it was corrected. Rejected because it makes a lease delete
-  data written after the key left it: the old lease's revoke or expiry deleted
-  the newer value, silently.
+- **Every keep-alive through the log.** Rejected because each renewal pays a
+  Raft-log fsync, and under CPU contention that fsync gives renewals a heavy
+  latency tail that a holder with a short TTL experiences as a spurious loss.
+  Renewal needs the leader's word, not the group's.
+- **Replicating every renewed lease each second.** Rejected because those
+  proposals keep a commit-to-apply window open almost all the time, and a
+  renewal's linearizable read waits behind it, so renewals stall under
+  disk-sync contention. It also buys nothing a failover needs — a new leader
+  still has to grant a fresh TTL, since the deadline it learned is up to a
+  second old.
+- **A key stays in every lease any of its values named.** Rejected because it
+  makes a lease delete data written after the key left it: the old lease's
+  revoke or expiry deletes the newer value, silently.
 - **Checking each key's current lease at revoke time instead of keeping a
   binding.** Rejected as the mechanism: it needs every key's lease to be
   readable from the stored value, which the non-MVCC state machine does not
@@ -92,7 +89,7 @@ log on every renewal:
   would revoke a lease whose renewals were made in its predecessor's memory.
 - **Checkpoints record what is left, not what was renewed.** Every
   `lease.checkpoint_interval` (default `5m`) the leader proposes one
-  `LeaseCheckpoint` entry per batch of up to 1000 leases, carrying each lease's
+  `OpLeaseCheckpoint` entry per batch of up to 1000 leases, carrying each lease's
   remaining TTL rounded up to a whole second. Only leases whose TTL is longer
   than the interval are checkpointed — a lease that cannot outlive one interval
   gains nothing from it. Every replica persists the value as the lease's
@@ -131,12 +128,12 @@ log on every renewal:
 - **A restarted replica counts from the checkpoint too.** It restores each
   lease with *now + effective TTL*, for the same reason.
 
-`LeaseCheckpoint` is a new Raft opcode, so it is behind the `lease-checkpoint`
-cluster feature gate: until every replica of the group can apply it, the leader
+`OpLeaseCheckpoint` is a Raft opcode an older replica cannot apply, so it is
+behind the `lease-checkpoint` cluster feature gate (`featuregate.LeaseCheckpoint`): until every replica of the group can apply it, the leader
 proposes no checkpoints and a new leader counts every lease from its full TTL.
 The same gate covers the renewal indexes. They are recorded only after a
-group's first checkpoint has applied, so a group whose gate is off keeps
-exactly the replicated state it kept before. That first checkpoint starts the
+group's first checkpoint has applied, so a group whose gate is off records
+none. That first checkpoint starts the
 recording and is itself discarded; the leader samples again at once, so a
 group pays for this with one extra entry over its lifetime.
 
@@ -167,12 +164,10 @@ The measured effect on the renewal round trip is in
 | SDK surface | `sdk/go` (`Client.Lease()`) | go-qrdb |
 
 **Owning the sweeper and starting it are different jobs, and the second is the
-composer's.** `pkg/lease.RunExpiry` is a loop somebody has to run; it does not
-start itself. Every clustered composition must start it, and there are three:
-the daemon (`cmd/qrdbd`), the tenant host (`pkg/server`), and the embedded
-clustered node (`sdk/go/node`). The third was missing for a time, so an
-embedded clustered node closed a lease's `Done` channel on time and then never
-deleted the keys bound to it.
+composer's.** `(*lease.Lessor).RunExpiry` is a loop somebody has to run; it
+does not start itself. Every clustered composition must start it, and there are
+three: the daemon (`cmd/qrdbd`), the tenant host (`pkg/server`), and the
+embedded clustered node (`sdk/go/node`).
 
 **Standalone compositions start it too**: the daemon in mode
 `standalone`, `sdk/go/node.NewStandaloneNode` and the flat
@@ -184,8 +179,9 @@ revoke takes. So leases expire, delete their keys and notify watchers the same
 way in both modes, and "expiry is decided in one place" holds: one sweeper per
 node, never two clocks for the same lease.
 
-The failure is worth stating because it is quiet and it is not symmetric. The
-holder learns it lost the lease; nothing else changes. For a consumer whose HA
+A composition that does not start the sweeper fails quietly, and not
+symmetrically: the holder learns it lost the lease, and the keys bound to it are
+never deleted. For a consumer whose HA
 design makes the bound key's existence the ownership signal, that is a control
 plane that can **fence** a dead leader and can never **elect** a replacement —
 every contender receives `LeaseHeldError` forever. A composition that grants
@@ -237,10 +233,8 @@ without anybody asking.
 - Leases are scoped to a (tenant, database) pair like every other data-plane
   object; a lease ID from one tenant is not resolvable in another -- it is
   answered exactly as a missing lease is (not-found, or for `Revoke` the
-  idempotent success). *(Corrected: until this release the namespaced lease view
-  operated on the global lease set, so any tenant could list, keep alive and
-  revoke every tenant's leases by ID. Ownership is now recorded at grant; see
-  engineering.md.)*
+  idempotent success). Ownership is recorded at grant; see
+  [engineering.md](engineering.md).
 - Each verb carries its own permission (`lease:grant`, `lease:revoke`,
   `lease:keepalive`, `lease:ttl`, `lease:list`) — revoking somebody else's lease
   is a destructive act and is authorized separately from granting your own.

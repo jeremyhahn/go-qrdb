@@ -1,6 +1,6 @@
 # Leases — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -38,13 +38,11 @@ Response envelopes: `LeaseGrantResponse`, `LeaseKeepAliveResponse`,
 Attachment is on the write side, not here:
 
 ```go
-// KV
-Put(ctx, key, value, opts...)                        // lease via WriteOption
-// MVCC
+// transport.MVCCClient
 PutWithLease(ctx, key, value, leaseID, opts...) (*MVCCKeyValue, error)
 ```
 
-The resulting `MVCCKeyValue` carries the `lease` field, so a reader can see
+The resulting `MVCCKeyValue` carries `LeaseID` (`lease_id`), so a reader can see
 which lease a key hangs off. On an MVCC state machine the write is read back
 at its revision, so the result carries its full revision metadata. The default
 `pebble` state machine attaches the lease just the same but keeps no revision
@@ -124,7 +122,7 @@ caused it, on every backend. With no MVCC store, `OpMVCCPut` and
 `OpMVCCDelete` are the native lease-bearing put and the delete, as on the
 `pebble` state machine. The lessor is rebuilt from the table when an
 in-memory state machine is created (over its empty keyspace), when the disk
-state machine opens its storage, and after any snapshot recovery. The legacy
+state machine opens its storage, and after any snapshot recovery. The
 `regular` state machine keeps no leases; `qrdbd` and the SDK's clustered node
 refuse it at start (`SMLeasesUnsupportedError` / the registry's
 `KVOptionsNotApplicableError`), because cluster membership and the feature gate
@@ -135,19 +133,20 @@ are lease-backed.
 - **The sweeper is started by the composer, and every clustered composition
   must start it.** `Lessor.RunExpiry` is a loop, not a background service that
   begins on its own; a composition that builds a `Lessor` and hands it to the
-  state machine has done half the wiring. All three clustered compositions run
-  it — `cmd/qrdbd`, `pkg/server`'s tenant host, and `sdk/go/node` — and a new
-  one must too. It takes a NODE-LIFETIME context, never a boot request's ctx,
+  state machine has done half the wiring. Every clustered composition runs it —
+  `cmd/qrdbd`, `sdk/go/node`, and in `pkg/server` the tenant host and each
+  database's Raft shard — and a new one must too; a standalone node runs it
+  through `lifecycle.StartLocalLeaseExpiry`. It takes a NODE-LIFETIME context, never a boot request's ctx,
   which is cancelled as soon as `New`/`Unseal` returns.
 - **`lease.mu` guards `expiry` as well as `keys`, and every reader takes it.**
   `KeepAlive` writes `expiry` from the Raft apply goroutine, and `RenewLocal`
   from the reader that served the renewal, while the sweeper reads it from its
-  own; an unlocked read there is a real data race, measured
-  under `-race`. The `*Locked` helpers carry the
-  caller-holds-the-lock contract and are deliberately NOT wrapped by the
-  locking variants: `toLease` already holds `l.mu` when it needs the remaining
-  TTL, and `sync.RWMutex` is not reentrant, so a nested `RLock` deadlocks the
-  moment a writer queues between the two acquisitions. Lock ordering is
+  own; an unlocked read there is a data race. The `*Locked` helpers
+  (`effectiveTTLLocked`, `remainingTTLLocked`, `isExpiredLocked`,
+  `extendLocked`) require the caller to hold `l.mu`, and a caller that already
+  holds it, such as `toLease`, calls them rather than a locking variant like
+  `isExpired`: `sync.RWMutex` is not reentrant, so a nested `RLock` deadlocks
+  the moment a writer queues between the two acquisitions. Lock ordering is
   `Lessor.mu` then `lease.mu`, never the reverse.
 - **The sweep holds while the node barrier is sealed.** A revoke is a Raft
   proposal, and a sealed node barrier's log cannot take one. `cmd/qrdbd` and
@@ -159,7 +158,7 @@ are lease-backed.
   full TTL after the unseal is revoked as usual.
 - **Assert the reap by reading the STORE, not `Lessor.Leases()`.** That getter
   filters expired leases, so a test asserting on it passes whether or not
-  anything was reaped — which is how the embedded gap stayed invisible.
+  anything was reaped.
 - **Expiry is a committed Raft operation, not a local timer.** Every replica
   observes the cascade delete at the same log position. No node expires a key on
   its own clock.
@@ -304,7 +303,7 @@ are lease-backed.
   `service.LeaseExists`, so a database never learns of another's lease from the
   refusal.
 - **Checkpoints need every replica to understand them.** `OpLeaseCheckpoint`
-  is a new opcode behind the `lease-checkpoint` cluster feature
+  is an opcode behind the `lease-checkpoint` cluster feature
   (`featuregate.LeaseCheckpoint`). `LeaseService.CheckpointEnabled` reports it,
   and until it is enabled a round proposes nothing and a new leader counts every
   lease from its granted TTL. The applied index and the renewal records share
@@ -376,24 +375,17 @@ The refusal on attaching to an unknown lease is the important one: accepting the
 write and dropping the association would produce a key that outlives its owner
 with no way to notice.
 
-**The typed error has to originate where the lease table actually lives, and
-there are two of those.** `raft.sm_type` selects between two clustered state
-machine backends that each hold their own `*lease.Lessor` and each answer
-`LeaseTimeToLiveQuery` independently: `pkg/engine`'s `MVCCEngine` (`sm_type:
-mvcc`) and `pkg/store`'s `PebbleStateMachine` (`sm_type: pebble`, the
-default). Every transport already matched on `service.LeaseNotFoundError`,
-but both `Lookup` implementations answered a missing lease with a generic
-query error instead of the typed one, so the match at every transport
-boundary never fired for a real deployment -- only for tests that called the
-service layer directly with a hand-built typed error. The "lease is absent"
-decision now lives in one place, `Lessor.LookupOrNotFound`, which both
-`Lookup` implementations call and translate into `*service.LeaseNotFoundError`
-at their own layer, so the two backends cannot drift apart on what "not
-found" means. `Lessor.Lookup` still does not distinguish an expired lease
-from an absent one -- the expiry sweeper deletes an expired lease's entry
-outright rather than tombstoning it -- so the two conditions remain
-indistinguishable from the read path up, exactly as this document already
-required.
+**The typed error originates where the lease table lives.** `raft.sm_type`
+selects the state machine, and each one that holds a `*lease.Lessor` answers
+`LeaseTimeToLiveQuery` itself. The two MVCC-capable backends, `pkg/engine`'s
+`MVCCEngine` (`sm_type: mvcc`) and `pkg/store`'s `PebbleStateMachine`
+(`sm_type: pebble`, the default), both call `Lessor.TimeToLive`, whose absence
+test is `Lessor.LookupOrNotFound`, and translate its `*lease.NotFoundError` into
+`*service.LeaseNotFoundError` at their own layer, so the two cannot drift apart
+on what "not found" means and the match on `service.LeaseNotFoundError` at
+every transport boundary fires. An expired lease and an absent one are
+indistinguishable from the read path up: the expiry sweeper deletes an expired
+lease's entry outright rather than tombstoning it.
 
 `sdk/go/transport.LeaseNotFoundError` / `LeaseExpiredError` cross `embedded`,
 `grpc`, `unix`, `quic` and `mcp` as the same two types. All four remote
@@ -410,18 +402,11 @@ of a lease's two conditions** it is, at a call site that already knows the
 subject is a lease and already holds the lease id, is not: the id on the typed
 error comes from the caller's own argument, never from the message.
 
-The `quic` gate used to be `wire.StatusError` — the same status a transport
-fault carries — so the words "lease not found" were the only thing separating a
-gone lease from a broken node. That changed when the QUIC wire gained a status
-vocabulary; see
+`quic` gates on `wire.StatusNotFound`, not on the status a transport fault
+carries, so a gone lease and a broken node never share a status; see
 [the API server's status vocabulary](../api-server/api.md#the-quic-status-vocabulary).
-
-`mcp` had no gate at all: it tested the message for "lease expired", then for
-"not found", on **any** tool failure, so a broken node whose prose carried
-either phrase was reported as a lease condition. It now gates on the same
-not-found code as its siblings before the message is consulted, which is the
-difference between a split made at a call site that knows its subject and a
-guess made about an unclassified failure. See
+`mcp` gates on the not-found code before it reads the message, so a tool failure
+of any other kind is never reported as a lease condition; see
 [the MCP error vocabulary](../api-server/api.md#the-mcp-error-vocabulary).
 
 **REST is the exception, and it is a partial one.** Only `LeaseTimeToLive` maps
@@ -430,12 +415,11 @@ a typed lease error (`transport/rest/transport_lease.go` turns a 404 into
 `postJSON`/`postJSONDecode`, whose 404 lands in `decodeErrorResponse` and comes
 back as a generic `RequestError`. And REST emits **no `LeaseExpiredError` at
 all**: `mapHTTPError` sends both the not-found and the expired case to
-`http.StatusNotFound`, so the wire cannot tell them apart — a client would have
-to parse the body text, which is what #141 exists to eliminate.
+`http.StatusNotFound`, so the wire cannot tell them apart without parsing the
+body text, which no client does.
 
-Closing that gap means giving REST a status or body field that distinguishes
-the two, which is a wire-format change and not a client-side mapping; it is not
-done here. `sdk/go`'s
+Closing that gap needs a REST status or body field that distinguishes the two,
+a wire-format change rather than a client-side mapping. `sdk/go`'s
 lease monitor (`coordination.go`) is the reason this matters: it detects
 external revocation at the revoke rather than at the lease's own expiry only
 when the absence arrives typed.
@@ -465,11 +449,9 @@ A standalone node has no other replica, so it ignores both checkpoint keys.
 
 The expiry sweep runs on the leader, once every
 `lease.DefaultExpiryInterval` (one second), in every composition that starts it
-(`pkg/server/lifecycle.StartLocalLeaseExpiry`, the raft backend factory, the
-tenant host); there is no setting for it. An unrefreshed lease's keys are
+(see Invariants); there is no setting for it. An unrefreshed lease's keys are
 therefore reaped within its TTL plus one interval, plus the time the revoke
-itself takes to apply. *(Corrected: this said the cadence follows the Raft
-tick, which no composition does.)*
+itself takes to apply.
 
 The lessor's time source is a composition seam: `server.WithClock` /
 `node.WithClock` hand the node's `clock.Clock` to the lessor, so lease time and
@@ -487,17 +469,11 @@ state-machine record. They are **not** visible through user-facing KV
 enumeration — see the internal-key guard in
 [../key-value/engineering.md](../key-value/engineering.md). A snapshot carries
 the table, so a recovering replica restores keys and their bindings together.
-
-*(Corrected: this section used to say the binding lived on the key's MVCC
-record, so a snapshot restored keys and bindings together. It did not. The
-lessor's table was held only in memory on both state machines. A restart or
-snapshot recovery came back with no leases at all, so leased keys never
-expired, and the next grant reused ID 1. The MVCC record's `lease` field is
-still written and reported to readers, but the binding is the lease table's.)*
+The MVCC record's `LeaseID` is reported to readers; the binding that revoke and
+expiry act on is the lease table's.
 
 **Upgrading.** Leases granted by a release without the lease table are not in
-any table, so they do not survive the upgrade's restart. That matches what a
-restart has always done to them. Keys still bound to such a lease stay as they
+any table, so they do not survive the upgrade's restart. Keys still bound to such a lease stay as they
 are and never expire. Re-grant and re-write them, which is what a client whose
 keep-alive starts returning not-found does anyway.
 
@@ -531,9 +507,7 @@ keep-alive starts returning not-found does anyway.
   batch paths, refusal of a write naming a revoked lease, restart, snapshot
   recovery onto a replica that held other leases (with a hash comparison),
   expiry through the real sweeper, and a corrupt table refusing both open and
-  recovery. Run its behavioural cases against a tree without the binding and
-  ten of the eleven fail. Compare-and-swap passes because that behaviour was
-  already correct.
+  recovery.
 - **Integration** (`test/integration/lease_binding_test.go`): a three-node
   qrdbd cluster re-puts and revokes, then repeats the check after a full
   cluster restart over the same data directories, on every replica, on
@@ -541,7 +515,7 @@ keep-alive starts returning not-found does anyway.
   over every transport. A three-node cluster on `sm_type: memory`
   (`TestDEK_Cluster_EveryNodeDecryptsEveryVersion`) and on `sm_type: disk`
   over file storage (`TestRaftSMOverFileStorage_ThreeNodeCluster`) forms only
-  because its lease-backed membership registrations now apply.
+  when its lease-backed membership registrations apply.
 - **No `time.Sleep` in the unit tests of `pkg/lease`.** Expiry, renewal,
   promotion and checkpointing are exercised by driving the clock seam
   (`lease.WithClock`), not by waiting — the only way these tests stay
@@ -639,13 +613,13 @@ skip on every run and CI would report success. **This test is the only end-to-en
 coverage of the property**, so a non-failing silence there is the whole signal
 lost.
 
-**And skipping is forbidden regardless.** `CLAUDE.md` and `AGENTS.md` both say
-*"NEVER use skip guards or -short flags"*, and a measured precondition is not an
-exemption from a rule written as *never*.
+**And skipping is forbidden regardless.** The project's testing rules forbid skip
+guards and `-short` flags without exception, and a measured precondition is not
+one.
 
 **Which interval decides it.** Not the sleep. The lease deadline is dated from
-the instant the **previous** confirmation was *sent* (`heldUntil = sent.Add(ttl)`
-in `sdk/go/coordination.go`), so the quantity that decides expiry is
+the instant the **previous** confirmation was *sent* (`sent.Add(d)` advances
+`heldUntil` in `sdk/go/coordination.go`), so the quantity that decides expiry is
 `previous renew's round trip + the sleep + this renew's round trip`. A
 discriminator built on the sleep omits the previous round trip — which is exactly
 what consumes the 500 ms of slack between a 1.5 s cadence and a 2 s TTL — and
@@ -654,8 +628,7 @@ will report a slow pair of raft proposals as a lease-renewal defect.
 **Why the timing is not widened.** A 2 s TTL renewed at 1.5 s is the exact
 cadence that produces the ~0.999 s remainder the whole-second `RemainingTTL`
 truncation rounds to zero, which is the defect the test exists to catch. A longer
-TTL would make it pass more often and stop testing anything. The durable fix is
-the injectable clock seam, which this test is a named consumer of.
+TTL would make it pass more often and stop testing anything.
 
 ## Observability
 
