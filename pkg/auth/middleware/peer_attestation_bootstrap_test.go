@@ -215,8 +215,12 @@ func TestIsGateRefusal(t *testing.T) {
 		"attestation refusal":         {&PeerAttestationRefusedError{Reason: PeerAttestationEvidenceStale}, true},
 		"rate limited":                {&RateLimitedError{Permission: permission.TenantBarrierInit}, true},
 		"wrapped attestation refusal": {errors.Join(errors.New("ctx"), &PeerAttestationRefusedError{}), true},
+		"tenant not active":           {&TenantNotActiveError{TenantID: "t1", Status: "suspended"}, true},
+		"wrapped tenant not active":   {errors.Join(errors.New("ctx"), &TenantNotActiveError{TenantID: "t1"}), true},
 		"rbac denial":                 {auth.ErrUnauthorized, false},
 		"sealed tenant":               {&StoreUnavailableError{Err: context.Canceled}, false},
+		"status unreadable":           {&TenantStatusUnavailableError{TenantID: "t1", Err: &StoreUnavailableError{Err: context.Canceled}}, true},
+		"status barrier sealed":       {&TenantStatusUnavailableError{TenantID: "t1", Err: &BarrierSealedError{Err: context.Canceled}}, true},
 		"nil":                         {nil, false},
 	}
 	for name, tc := range cases {

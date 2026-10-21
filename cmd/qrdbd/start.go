@@ -4063,6 +4063,11 @@ type mgmtBootstrapResult struct {
 	// to build one.
 	storeResolver tenant.StoreResolver
 
+	// tenantSvc is the tenant servicer the stores were built over; the auth
+	// middleware reads each principal's tenant Status from it. Nil when none
+	// was available.
+	tenantSvc tenant.TenantServicer
+
 	// legacyFactorStore is the UNCONFINED root store the pre-tenant
 	// auth-factor records live in, handed to the go-qrdb#393 migration.
 	legacyFactorStore kvstore.KVStore
@@ -4403,6 +4408,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		bootRoleSvc:   bootRoleSvc,
 
 		storeResolver:     storeResolver,
+		tenantSvc:         tenantSvc,
 		legacyFactorStore: runtimeStore,
 		tenantSvc:         tenantSvc,
 	}, nil
@@ -4618,6 +4624,8 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// The first admin pinned for each barrier at onboarding: what that
 		// window admits on a node initializing after the record is consumed.
 		FirstAdminPins: pins,
+		// A principal of a suspended or disabled tenant is refused.
+		TenantStatusReader: mgmt.tenantSvc,
 		// users:add_cert_binding is held to the certificate target guard.
 		CertTargetGuard:    certTargets,
 		RevocationCacheTTL: revocationTTL,

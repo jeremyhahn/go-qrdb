@@ -200,6 +200,18 @@ func (s *qrdbServiceServer) TenantUpdate(ctx context.Context, req *pb.TenantUpda
 	patch := tenant.TenantPatch{
 		Name:          req.GetName(),
 		IsolationType: tenant.IsolationType(req.GetIsolationType()),
+		Description:   req.Description,
+	}
+	if req.Status != nil {
+		s := tenant.Status(req.GetStatus())
+		patch.Status = &s
+	}
+	// A present metadata message replaces the map; its empty entries clear it.
+	if md := req.GetMetadata(); md != nil {
+		patch.Metadata = md.GetEntries()
+		if patch.Metadata == nil {
+			patch.Metadata = map[string]string{}
+		}
 	}
 
 	if err := s.authorizeTenantUpdate(ctx, req.GetId(), patch); err != nil {
@@ -322,6 +334,9 @@ func tenantToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
 		VolumePool:    info.VolumePool,
+		Description:   info.Description,
+		Metadata:      info.Metadata,
+		Status:        string(info.Status),
 	}
 	if info.Quotas != nil {
 		resp.Quotas = quotaToProto(info.Quotas)

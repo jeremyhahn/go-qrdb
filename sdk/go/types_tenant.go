@@ -86,6 +86,17 @@ type TenantPatch = tenant.TenantPatch
 // pkg/tenant.IsolationType.)
 type TenantIsolationType = tenant.IsolationType
 
+// TenantStatus is a tenant's operational status; only TenantStatusActive
+// admits the tenant's principals. (Aliases pkg/tenant.Status.)
+type TenantStatus = tenant.Status
+
+// The tenant statuses. (Alias pkg/tenant's Status constants.)
+const (
+	TenantStatusActive    = tenant.StatusActive
+	TenantStatusSuspended = tenant.StatusSuspended
+	TenantStatusDisabled  = tenant.StatusDisabled
+)
+
 // CreateTenantOption configures optional CreateTenant behavior. (Aliases
 // pkg/tenant.CreateTenantOption.) Re-exported so SDK consumers that
 // implement the first-boot TenantCreator seam can name the variadic

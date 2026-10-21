@@ -3969,6 +3969,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		PeerAttestation:     n.peerAttestation,
 		RateLimitPolicies:   n.rateLimitPolicies,
 		RateLimiter:         n.rateLimiter,
+		// A principal of a suspended or disabled tenant is refused.
+		TenantStatusReader: svcNode.Tenant,
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}

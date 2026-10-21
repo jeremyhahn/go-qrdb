@@ -717,6 +717,15 @@ func TestRestTenant_ToTenantInfo_CarriesRefusal(t *testing.T) {
 	}
 }
 
+func TestRestTenant_ToTenantInfo_CarriesStatus(t *testing.T) {
+	if got := (&restTenant{ID: "acme", Status: transport.TenantStatusSuspended}).toTenantInfo().Status; got != transport.TenantStatusSuspended {
+		t.Fatalf("Status = %q; want suspended", got)
+	}
+	if got := (&restTenant{ID: "acme"}).toTenantInfo().Status; got != "" {
+		t.Fatalf("Status = %q; want empty", got)
+	}
+}
+
 // TestRestTenant_ToTenantInfo_NoRefusalStaysNil proves a served tenant
 // (no refusal on the wire) still decodes with a nil Refusal.
 func TestRestTenant_ToTenantInfo_NoRefusalStaysNil(t *testing.T) {

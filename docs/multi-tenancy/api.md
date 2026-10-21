@@ -16,7 +16,7 @@ wire over a UDS.
 | Create | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create` (platform operator) |
 | Get | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | `tenants:read` |
 | List | `GET /v1/tenants/list` | `TenantList` | `tenant.List` | `qrdb_tenant_list` | `ListTenants` | `tenants:list`; the full list needs `tenants:list:cross` |
-| Update | `PUT /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update`; an isolation change also needs `tenants:set_isolation` (platform operator) |
+| Update | `PUT /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update`; an isolation change also needs `tenants:set_isolation`, a status change `tenants:set_status` (platform operator) |
 | Delete | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | `tenants:delete` |
 | Update quotas | `POST /v1/tenants/{id}/quotas` | `TenantUpdateQuotas` | `tenant.UpdateQuotas` | `qrdb_tenant_update_quotas` | `UpdateTenantQuotas` | `tenants:set_quotas` (platform operator) |
 | Update entitlements | `PATCH /v1/tenants/{id}/entitlements` | `TenantUpdateEntitlements` | `tenant.UpdateEntitlements` | `qrdb_tenant_update_entitlements` | `UpdateTenantEntitlements` | `tenants:set_entitlements` (platform operator) |
@@ -261,6 +261,37 @@ retry under a new id.
 response carries `admin`. A tenant can no longer be created without its first
 admin. The caller still needs `tenants:create` (platform operator).
 
+### Description and metadata
+
+A tenant carries two free-form descriptive fields, returned on every read
+(`TenantInfo` / `TenantResponse`) and set only by **Update**, a patch. Neither
+field affects isolation, quotas or authorization; qrdb stores them and returns
+them.
+
+| Field | Patch semantics | Limits |
+|---|---|---|
+| `description` | absent: unchanged · present: replaces · `""`: clears | at most 1024 bytes of UTF-8 |
+| `metadata` | absent: unchanged · present: **replaces the whole map** · empty map: clears | at most 64 entries; keys non-empty, at most 128 bytes; values at most 1024 bytes; all UTF-8 |
+
+On each transport:
+
+| Transport | `description` | `metadata` |
+|---|---|---|
+| REST `PUT /v1/tenants/{id}` | `"description"`; omitted or `null` is unchanged | `"metadata": {…}`; omitted or `null` is unchanged, `{}` clears |
+| gRPC / Unix `TenantUpdate`, QUIC `tenant.Update` | `optional string description` | `TenantMetadata metadata` (`map<string,string> entries`); an unset message is unchanged, a set empty message clears |
+| MCP `qrdb_tenant_update` | `description` string | `metadata` as a JSON object string; `clear_metadata: true` clears when `metadata` is absent |
+| Go SDK `UpdateTenantRequest`, every SDK transport (embedded included) | `Description *string`: nil unchanged, `""` clears | `Metadata map[string]string`: nil unchanged, non-nil empty clears |
+
+```json
+PUT /v1/tenants/acme
+{ "description": "Acme production",
+  "metadata": { "env": "prod", "team": "storage" } }
+```
+
+A value over a limit is refused before anything is written —
+`*tenant.TenantFieldError` naming the field, 400 / `INVALID_ARGUMENT` — so a
+refused update changes none of the tenant's fields.
+
 Quotas — `-1` unlimited, `0` system default:
 
 ```json
@@ -292,6 +323,42 @@ uses. A Go string cannot be zeroized, so a credential is never one: the caller
 may wipe the slice it supplied as soon as the call returns, and the daemon
 wipes the slice its decoder produced before the handler returns. See
 [../barrier-seal/api.md](../barrier-seal/api.md#the-barrier-credential-is-bytes-and-therefore-base64-in-rest-json).
+
+### Status
+
+Every tenant read returns `status`: `active`, `suspended` or `disabled`. A
+tenant is created `active`. The update request's optional `status` moves it;
+absent leaves it unchanged. Any status may move to any other except
+`disabled` → `suspended`; a disabled tenant is reactivated first.
+
+| Transport | Field |
+|---|---|
+| REST `PUT /v1/tenants/{id}` | `"status"`; omitted or `null` is unchanged |
+| gRPC / Unix `TenantUpdate`, QUIC `tenant.Update` | `optional string status`; `TenantResponse.status` |
+| MCP `qrdb_tenant_update` | `status` string |
+| Go SDK `transport.UpdateTenantRequest` | `Status *TenantStatus`: nil unchanged; `TenantInfo.Status` |
+| CLI | `qrdb tenant update <id> --status suspended`; `tenant get` / `list` show it |
+
+A status change needs `tenants:set_status`, which is cross-scope: only a
+system-tenant Admin holds it, so a tenant's own Admin cannot suspend or
+reactivate its tenant. While a tenant is not active the auth chain refuses
+every principal of it on every transport and credential — a token issued
+before the change included — with 403 / `PERMISSION_DENIED`. Reactivating it
+restores access on the next request. Principals of other tenants and the
+system administrator's calls on the tenant are unaffected.
+
+Every status change is audited as `tenant.status_change`, keyed by the
+affected tenant and carrying the caller and the `from` and `to` status. A
+`permitted` record is written before the change is stored and a `success` or
+`failure` record once it is. Under the default `fail-closed`
+`auth.audit_failure_policy` a change whose record cannot be written is
+refused and nothing is stored. An update that leaves the status as it was
+records nothing.
+
+```json
+PUT /v1/tenants/acme
+{ "status": "suspended" }
+```
 
 ## Delete semantics
 
@@ -422,8 +489,12 @@ leaks to a caller with no access to the tier.
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
 | Create with `data_root` | 400 | `INVALID_ARGUMENT` — `*DataRootRetiredError`; nothing is created at the path |
 | Read a tenant whose stored record names a path | 409 | `FAILED_PRECONDITION` — `*PersistedDataRootError`; the record is refused, never trusted, and its data is never opened. Listing still returns the tenant, marked refused, beside every other tenant. Delete it — the delete removes its records and touches no directory — and re-create it |
+| Update with a `description` or `metadata` over its limit, an empty metadata key, or invalid UTF-8 | 400 | `INVALID_ARGUMENT` — `*TenantFieldError` naming the field; nothing written |
+| Update with a `status` that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values; nothing written |
+| Update with a `status` the tenant cannot move to from its current one (`disabled` → `suspended`) | 409 | `FAILED_PRECONDITION` — `*StatusTransitionError`; nothing written |
+| Any request by a principal of a suspended or disabled tenant | 403 | `PERMISSION_DENIED` — `*middleware.TenantNotActiveError`, classed as a disabled account |
 | Missing permission | 403 | `PERMISSION_DENIED` |
-| A tenant's Admin naming another tenant, or setting its own plan | 403 | `PERMISSION_DENIED` |
+| A tenant's Admin naming another tenant, or setting its own plan or status | 403 | `PERMISSION_DENIED` |
 | Tenant id containing `/`, `\`, a control byte, or `.`/`..` | 400 | `INVALID_ARGUMENT` — `*InvalidTenantIDCharError` / `*InvalidTenantIDError`. Previously 500 / `INTERNAL` on create |
 | Rate-limit policy exhausted, including inside a barrier bootstrap window | 429 | `RESOURCE_EXHAUSTED` |
 | Isolation change while the tenant cannot be verified empty | 503 | `UNAVAILABLE` — `ErrTenantDataUnverifiable` / `*TenantDataProbeError` |

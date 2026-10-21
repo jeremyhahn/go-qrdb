@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"encoding/hex"
+	"maps"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -36,6 +37,9 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 		Name:          info.Name,
 		IsolationType: transport.TenantIsolationType(info.EffectiveIsolationType()),
 		VolumePool:    info.VolumePool,
+		Description:   info.Description,
+		Metadata:      maps.Clone(info.Metadata),
+		Status:        transport.TenantStatus(info.Status),
 		CreatedAt:     info.CreatedAt,
 		UpdatedAt:     info.UpdatedAt,
 	}
@@ -387,15 +391,6 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	// the request NAMES, deliberately charges neither on a grant (see its
 	// own doc comment): without this entry check first, a successful
 	// embedded UpdateTenant was charged and audited nowhere at all.
-	// The ENTRY check: tenants:update against the caller's OWN (ambient)
-	// tenant, exactly as REST's route-level middleware authorizes it
-	// (s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, ...))
-	// before its handler ever runs -- the step that charges the rate-limit
-	// token and writes the audit record. AuthorizeTenantTarget, which
-	// authorizeTenantUpdate below calls as the RE-check against the tenant
-	// the request NAMES, deliberately charges neither on a grant (see its
-	// own doc comment): without this entry check first, a successful
-	// embedded UpdateTenant was charged and audited nowhere at all.
 	if err := t.authorizeTenantSelf(ctx, permission.TenantsUpdate); err != nil {
 		return nil, err
 	}
@@ -403,10 +398,17 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	patch := tenant.TenantPatch{
 		Name:          req.Name,
 		IsolationType: tenant.IsolationType(req.IsolationType),
+		Description:   req.Description,
+		Metadata:      req.Metadata,
+	}
+	if req.Status != nil {
+		s := tenant.Status(*req.Status)
+		patch.Status = &s
 	}
 	// The RE-check: tenants:update against the named tenant, plus
 	// tenants:set_isolation (platform-operator only) when the patch also
-	// changes the isolation tier -- the same two-permission rule
+	// changes the isolation tier, or tenants:set_status when it changes the
+	// status -- the same two-permission rule
 	// AuthorizeTenantUpdate enforces on every network transport.
 	if err := t.authorizeTenantUpdate(ctx, req.TenantID, patch); err != nil {
 		return nil, err

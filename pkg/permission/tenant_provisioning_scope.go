@@ -49,6 +49,7 @@ func tenantProvisioningPermissions() []Permission {
 		TenantsSetQuotas,
 		TenantsSetEntitlements,
 		TenantsSetIsolation,
+		TenantsSetStatus,
 	}
 }
 

@@ -232,9 +232,10 @@ func (h sealedConnHandler) ConnectionClosed(c *mysql.Conn) {
 
 // sealedSessions maps each open MySQL connection to its seal guard session
 // (sessionguard.Session): the guard closes the connection when a seal reaches
-// it, which is the only thing that ends a server-side cursor -- vitess answers
-// COM_STMT_FETCH itself, so no statement gate sees it -- or a transaction
-// held across the seal.
+// it or its tenant stops being admitted (sessionguard.TenantAdmission), which is the only
+// thing that ends a server-side cursor -- vitess answers COM_STMT_FETCH
+// itself, so no statement gate sees it -- or a transaction held across the
+// seal.
 type sealedSessions struct {
 	guard *sessionguard.Guard
 	open  sync.Map // connection ID (uint32) -> *sessionguard.Session

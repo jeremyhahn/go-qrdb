@@ -392,6 +392,12 @@ var authFailureRules = []struct {
 		var e *UserDisabledError
 		return AuthFailureUnauthorized, errors.As(err, &e)
 	}},
+	// The same answer as a refused account: the credential is valid, the
+	// principal's tenant is out of service.
+	{"TenantNotActiveError", func(err error) (AuthFailureClass, bool) {
+		var e *TenantNotActiveError
+		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
 	// The credential is valid and the account is fine -- this WAY in is not
 	// one the account may use, and retrying it will never work.
 	{"AuthMethodNotPermittedError", func(err error) (AuthFailureClass, bool) {

@@ -428,11 +428,18 @@ func (s *Server) Start() error {
 
 	// The seal guard registers each session's connection after
 	// authentication, so it knows the session's tenant, and closes it when a
-	// seal reaches it. The listener tracks every accepted connection so the
-	// guard can close one psql-wire hands it only as a context.
+	// seal reaches it or the auth chain stops admitting its tenant: a
+	// suspended portal is resumed inside psql-wire, so closing the connection
+	// is what ends one its tenant can no longer read. The listener tracks
+	// every accepted connection so the guard can close one psql-wire hands it
+	// only as a context.
 	var tracking *trackingListener
-	if s.sealedProbe != nil || s.sealStreams != nil {
-		s.guard = sessionguard.New(s.sealedProbe, s.sealStreams, sessionguard.DefaultProbeInterval)
+	if s.sealedProbe != nil || s.sealStreams != nil || s.authMW != nil {
+		var guardOpts []sessionguard.Option
+		if s.authMW != nil {
+			guardOpts = append(guardOpts, sessionguard.WithAdmission(sessionguard.TenantAdmission(s.authMW)))
+		}
+		s.guard = sessionguard.New(s.sealedProbe, s.sealStreams, sessionguard.DefaultProbeInterval, guardOpts...)
 		tracking = &trackingListener{}
 		wireOpts = append(wireOpts, wire.SessionMiddleware(guardSessionHandler(s.guard, tracking)))
 	}
@@ -441,8 +448,19 @@ func (s *Server) Start() error {
 	// middleware above), so it sees whatever identity authentication
 	// established. This is what lets BEGIN/COMMIT/ROLLBACK/SAVEPOINT state
 	// persist across the statements of one connection -- see
-	// newConnectionSessionHandler's doc comment.
-	wireOpts = append(wireOpts, wire.SessionMiddleware(newConnectionSessionHandler()))
+	// newConnectionSessionHandler's doc comment. Authentication runs once, for
+	// the connection; the session re-admits the identity before each
+	// statement, so the connection is refused once its tenant is suspended.
+	var sessionOpts []provider.SessionOption
+	if s.authMW != nil {
+		sessionOpts = append(sessionOpts, provider.WithSessionAdmitter(s.authMW))
+	}
+	wireOpts = append(wireOpts, wire.SessionMiddleware(newConnectionSessionHandler(sessionOpts...)))
+
+	// A later Execute of a suspended portal resumes it inside psql-wire,
+	// past every admission above; the portal cache re-admits the session
+	// before each resume, closing the window before the guard's next tick.
+	wireOpts = append(wireOpts, wire.Portals(newAdmittingPortals))
 
 	// Create the psql-wire server.
 	wireSrv, err := wire.NewServer(parseHandler.HandleParse, wireOpts...)

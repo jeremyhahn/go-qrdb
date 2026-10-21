@@ -715,6 +715,11 @@ const (
 	// plan-management operation exercisable only by system administrators.
 	TenantsSetQuotas Permission = "tenants:set_quotas"
 
+	// TenantsSetStatus grants access to change a tenant's status (active,
+	// suspended, disabled). A system-admin control-plane operation: a
+	// suspended or disabled tenant cannot reactivate itself.
+	TenantsSetStatus Permission = "tenants:set_status"
+
 	// TenantBarrierInit grants a tenant admin the ability to initialize
 	// their own tenant's barrier with a caller-supplied passphrase. This
 	// permission is tenant-scoped (ScopeTenantOnly): it is exercisable only
@@ -1187,7 +1192,7 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
-			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas,
+			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas, TenantsSetStatus,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
 			TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
 			TenantsListDeleted, TenantsReconcileDeleted,

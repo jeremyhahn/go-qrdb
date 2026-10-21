@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // grantAuthorizer permits subject@tenant exactly the "resource:action" pairs
@@ -131,6 +132,72 @@ func TestEvaluateAuthorization_NeverAnswersForAnotherTenant(t *testing.T) {
 		if id.Subject == "carol" {
 			t.Fatal("the other tenant's identity was evaluated")
 		}
+	}
+}
+
+// The decision for an identity in a suspended tenant is the refusal its own
+// operation would get; the authorizer is never consulted.
+func TestEvaluateAuthorization_SubjectInSuspendedTenantIsRefused(t *testing.T) {
+	tenants := statusTenants(t)
+	g := &grantAuthorizer{grants: map[string]map[string]bool{
+		"alice@acme": {string(permission.PermissionsResolve): true, "kv:get": true},
+		"bob@acme":   {"kv:get": true},
+	}}
+	m := New(g, WithTenantStatusReader(tenants))
+	ctx := callerCtx(&auth.Identity{Subject: "alice", TenantID: "acme"})
+	targets := map[string]*auth.Identity{
+		"self":    nil,
+		"another": {Subject: "bob", TenantID: "acme"},
+	}
+	for name, target := range targets {
+		if decision, err := m.EvaluateAuthorization(ctx, target, "kv", "get"); err != nil || decision != nil {
+			t.Fatalf("%s while active: decision=%v err=%v, want allowed", name, decision, err)
+		}
+	}
+	setStatus(t, tenants, "acme", tenant.StatusSuspended)
+	g.evaluated = nil
+	decision, err := m.EvaluateAuthorization(ctx, targets["self"], "kv", "get")
+	if err != nil {
+		t.Fatalf("self: err = %v, want a decision", err)
+	}
+	wantNotActive(t, "self decision", decision, tenant.StatusSuspended)
+	// Asking about another identity is itself an operation of the caller's
+	// suspended tenant, so the request is refused rather than answered.
+	decision, err = m.EvaluateAuthorization(ctx, targets["another"], "kv", "get")
+	if decision != nil {
+		t.Fatalf("another: decision = %v, want the request refused", decision)
+	}
+	wantNotActive(t, "another", err, tenant.StatusSuspended)
+	if len(g.evaluated) != 0 {
+		t.Fatalf("authorizer consulted for a suspended tenant: %v", g.evaluated)
+	}
+}
+
+// A status that cannot be read is an error, never a decision: the caller
+// retries rather than caching an answer.
+func TestEvaluateAuthorization_UnreadableStatusIsAnError(t *testing.T) {
+	g := &grantAuthorizer{grants: map[string]map[string]bool{"alice@acme": {"kv:get": true}}}
+	m := New(g, WithTenantStatusReader(&countingTenants{err: errStoreDown}))
+	decision, err := m.EvaluateAuthorization(callerCtx(&auth.Identity{Subject: "alice", TenantID: "acme"}), nil, "kv", "get")
+	var unavailable *StoreUnavailableError
+	if !errors.As(err, &unavailable) || decision != nil {
+		t.Fatalf("decision=%v err=%T(%v), want *StoreUnavailableError and no decision", decision, err, err)
+	}
+	if len(g.evaluated) != 0 {
+		t.Fatalf("authorizer consulted without a status: %v", g.evaluated)
+	}
+}
+
+// The system tenant is never gated: its own evaluations are answered while a
+// tenant it administers is suspended.
+func TestEvaluateAuthorization_SystemTenantNotGated(t *testing.T) {
+	tenants := statusTenants(t)
+	setStatus(t, tenants, "acme", tenant.StatusSuspended)
+	g := &grantAuthorizer{grants: map[string]map[string]bool{"root@" + tenantid.System: {"tenants:read": true}}}
+	m := New(g, WithTenantStatusReader(tenants))
+	decision, err := m.EvaluateAuthorization(callerCtx(&auth.Identity{Subject: "root", TenantID: tenantid.System}), nil, "tenants", "read")
+	if err != nil || decision != nil {
+		t.Fatalf("system root while acme is suspended: decision=%v err=%v, want allowed", decision, err)
 	}
 }
 

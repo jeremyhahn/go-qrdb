@@ -1421,6 +1421,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireTenantHostShards()
 	s.wireStoreResolver()
 	s.wireTenantDataProbe()
+	s.wireTenantStatusAudit()
 	s.wireReclaimStoreResolver()
 	s.wireCompactionPolicies()
 	s.wireProvisioningAuthorization()
@@ -1474,6 +1475,26 @@ func (s *Server) wireTenantDataProbe() {
 	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
 	}
+}
+
+// wireTenantStatusAudit gives the tenant service the auditor every status
+// change is recorded through (tenant.StatusAuditWiring), over the node's
+// audit logger and failure policy. It is wired here, once, so a change made
+// through any transport -- including the embedded one -- is recorded. An
+// unrecognised policy wires fail-closed: it fails the start when the REST
+// transport parses it, and must not weaken the gate before then.
+func (s *Server) wireTenantStatusAudit() {
+	w, ok := s.opts.tenantSvc.(tenant.StatusAuditWiring)
+	if !ok || s.opts.auditLogger == nil {
+		return
+	}
+	policy := audit.FailClosed
+	if s.config != nil {
+		if p, err := audit.ParseFailurePolicy(s.config.Auth.AuditFailurePolicy); err == nil {
+			policy = p
+		}
+	}
+	w.SetStatusChangeAuditor(service.NewTenantStatusAudit(s.opts.auditLogger, policy))
 }
 
 // wireCompactionPolicies gives the database service the port it sets and
@@ -2063,7 +2084,7 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithRAG(s.opts.ragSvc))
 	}
 	if s.opts.watchSvc != nil {
-		restOpts = append(restOpts, rest.WithWatch(s.opts.watchSvc))
+		restOpts = append(restOpts, rest.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.databaseSvc != nil {
 		restOpts = append(restOpts, rest.WithDatabaseService(s.opts.databaseSvc))
@@ -2258,7 +2279,29 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 	if s.opts.clusterSeal != nil {
 		regOpts = append(regOpts, withClusterSealRegistry(s.opts.clusterSeal))
 	}
+	if admitter := s.streamAdmitter(); admitter != nil {
+		regOpts = append(regOpts, withStreamAdmitter(admitter))
+	}
 	return regOpts
+}
+
+// streamAdmitter is the admission check every watch this server serves
+// re-runs before each event it forwards, whether the watch comes from the
+// database-service registry or from the singleton WithWatch service. nil
+// when the server runs no auth middleware.
+func (s *Server) streamAdmitter() service.StreamAdmitter {
+	if s.opts.authMW == nil {
+		return nil
+	}
+	return s.opts.authMW
+}
+
+// listenerWatch is the singleton watch service every listener receives: the
+// WithWatch service under the same stream admitter the registry installs, so
+// a watch opened before its tenant was suspended ends on its next event in
+// both configurations.
+func (s *Server) listenerWatch() service.WatchServicer {
+	return service.NewAdmittedWatch(s.opts.watchSvc, s.streamAdmitter())
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -2366,7 +2409,7 @@ func (s *Server) startGRPC() error {
 		grpcOpts = append(grpcOpts, grpcapi.WithBatch(s.opts.batchSvc))
 	}
 	if s.opts.watchSvc != nil {
-		grpcOpts = append(grpcOpts, grpcapi.WithWatch(s.opts.watchSvc))
+		grpcOpts = append(grpcOpts, grpcapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.leaseSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithLease(s.opts.leaseSvc))
@@ -2521,7 +2564,7 @@ func (s *Server) startQUIC() error {
 		quicOpts = append(quicOpts, quicapi.WithVector(s.opts.vectorSvc))
 	}
 	if s.opts.watchSvc != nil {
-		quicOpts = append(quicOpts, quicapi.WithWatch(s.opts.watchSvc))
+		quicOpts = append(quicOpts, quicapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.databaseSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDatabaseService(s.opts.databaseSvc))
@@ -2686,7 +2729,7 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithBatch(s.opts.batchSvc))
 	}
 	if s.opts.watchSvc != nil {
-		unixOpts = append(unixOpts, unixapi.WithWatch(s.opts.watchSvc))
+		unixOpts = append(unixOpts, unixapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.leaseSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithLease(s.opts.leaseSvc))
@@ -2884,7 +2927,7 @@ func (s *Server) startMCP() error {
 		mcpOpts = append(mcpOpts, mcpapi.WithRAG(s.opts.ragSvc))
 	}
 	if s.opts.watchSvc != nil {
-		mcpOpts = append(mcpOpts, mcpapi.WithWatch(s.opts.watchSvc))
+		mcpOpts = append(mcpOpts, mcpapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.databaseSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDatabaseService(s.opts.databaseSvc))

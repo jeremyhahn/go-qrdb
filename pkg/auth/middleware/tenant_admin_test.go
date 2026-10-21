@@ -81,6 +81,26 @@ func TestAuthorizeTenantUpdate_TenantAdminMayOnlyRenameItself(t *testing.T) {
 	}
 }
 
+func TestAuthorizeTenantUpdate_DescriptiveFieldsNeedTenantsUpdateOnTheTarget(t *testing.T) {
+	m := builtInMiddleware(t)
+	ctx := as(authtest.AdminIdentity("acme", "acme-admin"))
+	desc := "billing"
+	for _, patch := range []tenant.TenantPatch{
+		{Description: &desc},
+		{Metadata: map[string]string{"env": "prod"}},
+		{Metadata: map[string]string{}},
+	} {
+		if err := m.AuthorizeTenantUpdate(ctx, "acme", patch); err != nil {
+			t.Fatalf("acme admin editing acme's %+v = %v, want nil", patch, err)
+		}
+		err := m.AuthorizeTenantUpdate(ctx, "globex", patch)
+		var denied *rbac.PermissionDeniedError
+		if !errors.As(err, &denied) {
+			t.Fatalf("acme admin editing globex's %+v = %v, want a permission denial", patch, err)
+		}
+	}
+}
+
 func TestAuthorizeTenantUpdate_SystemAdminMayChangeIsolation(t *testing.T) {
 	m := builtInMiddleware(t)
 	ctx := as(authtest.AdminIdentity(tenantid.System, "root"))

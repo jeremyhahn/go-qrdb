@@ -1124,7 +1124,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 				ctx, err = s.authenticate(ctx, conn)
 			}
 			if err != nil {
-				st, body := errorFrame(wire.StatusUnauthenticated, err)
+				st, body := errorFrame(authnStatus(err), err)
 				_ = s.writeResponse(stream, requestID, st, body)
 				s.logRequest(method, requestID, st, start)
 				return

@@ -324,8 +324,15 @@ func (s *Server) Start() error {
 	s.sqlEngine = engine.New(engine.Config{Provider: prov})
 
 	// Build the session builder for connection authentication.
-	if s.sealedProbe != nil || s.sealStreams != nil {
-		guard := sessionguard.New(s.sealedProbe, s.sealStreams, sessionguard.DefaultProbeInterval)
+	// The guard closes a connection a seal reaches, or whose tenant the auth
+	// chain stops admitting: COM_STMT_FETCH is answered inside vitess, so
+	// closing the connection is the only thing that ends an open cursor.
+	if s.sealedProbe != nil || s.sealStreams != nil || s.authMW != nil {
+		var guardOpts []sessionguard.Option
+		if s.authMW != nil {
+			guardOpts = append(guardOpts, sessionguard.WithAdmission(sessionguard.TenantAdmission(s.authMW)))
+		}
+		guard := sessionguard.New(s.sealedProbe, s.sealStreams, sessionguard.DefaultProbeInterval, guardOpts...)
 		guard.Start()
 		s.sessions = &sealedSessions{guard: guard}
 	}

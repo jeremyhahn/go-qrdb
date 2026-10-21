@@ -174,12 +174,56 @@ system-tenant permission.
 |---|---|---|
 | `--name` | string | new human-readable name |
 | `--isolation-type` | string | **`barrier \| prefix` only** |
+| `--description` | string | new description; `--description ""` clears it |
+| `--metadata` | `key=value`, repeatable | **replaces the whole metadata map** with the given entries |
+| `--clear-metadata` | bool | removes every metadata entry; not with `--metadata` |
+| `--status` | string | **`active \| suspended \| disabled`**; needs `tenants:set_status` (system-tenant Admin only) |
+
+A flag that is not given leaves its field unchanged. `--metadata` splits each
+entry at the first `=`, so a value may contain `=`; an entry with no `=` or an
+empty key is refused before anything is sent. The server's limits: a
+description of at most 1024 bytes; at most 64 metadata entries, keys at most
+128 bytes, values at most 1024 bytes, all UTF-8. Over a limit, the update is
+refused and nothing changes (`invalid description: exceeds 1024 bytes`).
+
+```
+$ qrdb tenant update acme --description "Acme production" \
+    --metadata env=prod --metadata team=storage
+$ qrdb tenant get acme
+ID:         acme
+Name:       Acme Corp
+...
+Description: Acme production
+Metadata:   env=prod,team=storage
+$ qrdb tenant update acme --description "" --clear-metadata
+```
+
+`tenant get` prints the two lines only when set; `tenant list` shows them as
+the `DESCRIPTION` and `METADATA` columns, metadata as sorted `key=value`
+pairs.
+
+`--status` moves the tenant between `active`, `suspended` and `disabled`; a
+disabled tenant cannot move straight to suspended (`409`, reactivate it first),
+and any other value is refused (`400`). While a tenant is not active, every
+principal of it is refused on every transport (`403` / `PERMISSION_DENIED`,
+`tenant is not active`); `--status active` restores access on the next
+request. `tenant get` prints `Status:` and `tenant list` a `STATUS` column.
+
+```
+$ qrdb tenant update acme --status suspended
+$ qrdb tenant get acme
+ID:         acme
+Name:       Acme Corp
+Status:     suspended
+...
+$ qrdb tenant update acme --status active
+```
 
 Note the restriction: `update` accepts only `barrier` and `prefix`, and any
 change is refused once the tenant holds data (`ErrTenantHasData`). Changing
 `--isolation-type` also needs `tenants:set_isolation`, which only a
-`system`-tenant identity can exercise; a tenant's Admin can change `--name` on
-its own tenant only.
+`system`-tenant identity can exercise; a tenant's Admin can change `--name`,
+`--description` and `--metadata` on its own tenant only.
 
 ## Governance
 

@@ -385,7 +385,9 @@ func mustPut(t *testing.T, b []byte) *pb.PutRequest {
 
 // TestReplicaForwardQUIC_AForwardedRequestIsNeverForwardedAgain: an
 // envelope is served as its inner method and never forwarded; with no
-// verifiable assertion it is not even served.
+// verifiable assertion it is not even served. The refusal answers the class
+// the auth chain gives it (an unverifiable assertion is unauthorized), the
+// status REST (403) and gRPC (PermissionDenied) answer for the same error.
 func TestReplicaForwardQUIC_AForwardedRequestIsNeverForwardedAgain(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startQUICTarget(t, ca, "node-1", "raft-b")
@@ -395,8 +397,8 @@ func TestReplicaForwardQUIC_AForwardedRequestIsNeverForwardedAgain(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := c.put(t, wire.MethodOnBehalf, env); st != wire.StatusUnauthenticated || b.calls.Load() != 0 {
-		t.Fatalf("a forged envelope = %s (%d target calls); want unauthenticated and nothing forwarded", wire.StatusName(st), b.calls.Load())
+	if st, _ := c.put(t, wire.MethodOnBehalf, env); st != wire.StatusPermissionDenied || b.calls.Load() != 0 {
+		t.Fatalf("a forged envelope = %s (%d target calls); want permission denied and nothing forwarded", wire.StatusName(st), b.calls.Load())
 	}
 	if st, _ := c.put(t, wire.MethodOnBehalf, []byte{0xff}); st != wire.StatusInvalidArgument {
 		t.Fatalf("a malformed envelope = %s; want invalid argument", wire.StatusName(st))

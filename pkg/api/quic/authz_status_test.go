@@ -126,6 +126,44 @@ func TestAuthorizationError_Unwrap(t *testing.T) {
 	}
 }
 
+// A refusal of a caller the chain identified answers its class, as REST and
+// gRPC do: a tenant out of service or a disabled account is a denial, a store
+// the chain could not reach is a fault to retry. Before, every one answered
+// StatusUnauthenticated, which a client takes for a bad credential.
+func TestAuthnStatus_Classes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want uint16
+	}{
+		{"tenant not active", &authmw.TenantNotActiveError{TenantID: "acme", Status: "suspended"}, wire.StatusPermissionDenied},
+		{"user disabled", &authmw.UserDisabledError{Username: "u", TenantID: "acme"}, wire.StatusPermissionDenied},
+		{"user store unavailable", &authmw.StoreUnavailableError{Err: errors.New("raft")}, wire.StatusUnavailable},
+		{"unauthenticated", auth.ErrUnauthenticated, wire.StatusUnauthenticated},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &AuthenticationError{Reason: tc.err.Error(), Err: tc.err}
+			if got := authnStatus(err); got != tc.want {
+				t.Errorf("status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// A refusal the middleware does not classify, and one with no cause at all
+// (no client certificate), answers StatusUnauthenticated.
+func TestAuthnStatus_FallbackIsUnauthenticated(t *testing.T) {
+	for _, err := range []error{
+		&AuthenticationError{Reason: "no client certificate provided"},
+		&AuthenticationError{Reason: "odd", Err: errors.New("odd")},
+	} {
+		if got := authnStatus(err); got != wire.StatusUnauthenticated {
+			t.Errorf("authnStatus(%v) = %d, want StatusUnauthenticated", err, got)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The handler funnel
 // ---------------------------------------------------------------------------

@@ -52,6 +52,28 @@ func (e *UserDisabledError) Error() string {
 	return msg
 }
 
+// TenantNotActiveError is returned when an authenticated principal's tenant is
+// not active: a system administrator suspended or disabled it, or its record
+// carries no known status. The credentials are valid; the tenant is out of
+// service until a system administrator reactivates it.
+type TenantNotActiveError struct {
+	TenantID string
+
+	// Status is the tenant's status when the gate refused it. It is empty for
+	// a record that carried no status at all.
+	Status string
+}
+
+// Error returns a human-readable description of the refusal, naming the
+// status when one is known.
+func (e *TenantNotActiveError) Error() string {
+	msg := "auth/middleware: tenant is not active: " + e.TenantID
+	if e.Status != "" {
+		msg += " (status " + e.Status + ")"
+	}
+	return msg
+}
+
 // AuthChainError is returned when every authenticator in the chain fails.
 // It wraps the last error encountered from the authenticator chain to
 // provide context about why authentication failed.
@@ -131,6 +153,31 @@ func (e *BarrierSealedError) Error() string {
 
 // Unwrap returns the barrier's sealed sentinel.
 func (e *BarrierSealedError) Unwrap() error {
+	return e.Err
+}
+
+// TenantStatusUnavailableError is returned when the caller's tenant record
+// could not be read to establish that the tenant is still active. Err is the
+// read failure as classified -- *BarrierSealedError for a sealed node barrier,
+// *StoreUnavailableError otherwise -- so it maps to HTTP 503 / gRPC
+// UNAVAILABLE exactly as they do.
+//
+// It is its own type because it names WHICH gate failed. The tenant-IAM-sealed
+// signal the sealed bootstrap window acts on is a *StoreUnavailableError too,
+// and a status read that failed must never be mistaken for it: the window
+// would grant an operation without the tenant ever having been found active.
+type TenantStatusUnavailableError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the failed status read.
+func (e *TenantStatusUnavailableError) Error() string {
+	return "auth/middleware: tenant " + e.TenantID + " status unavailable: " + e.Err.Error()
+}
+
+// Unwrap returns the classified read failure.
+func (e *TenantStatusUnavailableError) Unwrap() error {
 	return e.Err
 }
 

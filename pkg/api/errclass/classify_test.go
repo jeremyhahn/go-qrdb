@@ -138,6 +138,7 @@ func TestClassify_DominantRulesWinThroughWrappers(t *testing.T) {
 		{"failed rollback over a lost concurrent update", &user.IndexCompensationError{Op: "update", Cause: &user.ConcurrentUpdateError{}}, DataLoss},
 		{"unrecorded audit decision over a missing key", &audit.GateError{Component: "authorize", Err: &service.KeyNotFoundError{Key: "k"}}, Unavailable},
 		{"sealed tenant inside a user store error", &user.StoreError{Op: "get", Err: tenant.ErrTenantSealed}, Unavailable},
+		{"tenant update lost to concurrent writers", &tenant.ConcurrentUpdateError{TenantID: "acme", Attempts: 8}, Aborted},
 		{"cross-tenant refusal inside a user store error", &user.StoreError{Op: "get", Err: &tenant.CrossTenantDeniedError{}}, PermissionDenied},
 		{"closed store inside a time-series failure", &service.TimeSeriesError{Op: "write", Err: storage.ErrStorageClosed}, Unavailable},
 		// A node re-sealed at runtime: go-quicraft refuses every store read

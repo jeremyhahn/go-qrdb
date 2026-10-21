@@ -107,6 +107,26 @@ run it. A `prefix` tenant's admin can log in straight away.
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.
 
+## Describing a tenant
+
+A tenant can carry a free-text description and a small map of `key=value`
+metadata — an owner, an environment, a billing reference. qrdb stores them and
+returns them; nothing in qrdb reads them, so they grant nothing and restrict
+nothing.
+
+```bash
+qrdb tenant update acme --description "Acme production" \
+     --metadata env=prod --metadata owner=platform-team
+qrdb tenant get acme
+```
+
+`--metadata` sets the **whole** map: name every entry you want to keep.
+Leave a flag out and that field is unchanged; `--description ""` and
+`--clear-metadata` empty them. A description is at most 1024 bytes; metadata is
+at most 64 entries, keys at most 128 bytes and values at most 1024 bytes. A
+value over a limit is refused and nothing changes. A tenant's own Admin can
+set both on its tenant.
+
 ## Granting the plan
 
 Nothing above `prefix` is available until you grant it. Entitlements are the

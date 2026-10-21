@@ -363,8 +363,22 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 	t.mvccSvc = service.NewHardConfinedMVCC(t.mvccSvc)
 	t.txSvc = service.NewHardConfinedTransaction(t.txSvc)
 	t.batchSvc = service.NewHardConfinedBatch(t.batchSvc)
-	t.watchSvc = service.NewHardConfinedWatch(t.watchSvc)
+	t.watchSvc = t.admitWatch(service.NewHardConfinedWatch(t.watchSvc))
 	return t, nil
+}
+
+// admitWatch wraps svc so every event it delivers is re-admitted through
+// t.authMW, ending a watch whose tenant was suspended after it opened. It
+// is the one place a watch service this transport serves gets its stream
+// admission: New applies it to the configured service and WithDatabase to
+// each database-scoped one, whose registry may admit nothing of its own
+// (the public server.NewRESTServiceRegistry does not). svc is returned
+// unchanged when no AuthMiddleware is installed.
+func (t *Transport) admitWatch(svc service.WatchServicer) service.WatchServicer {
+	if t.authMW == nil {
+		return svc
+	}
+	return service.NewAdmittedWatch(svc, t.authMW)
 }
 
 // Connect is a no-op for embedded transports since the service layer

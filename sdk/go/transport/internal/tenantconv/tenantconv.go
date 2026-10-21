@@ -26,6 +26,26 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
+// UpdateRequest converts an SDK UpdateTenantRequest to its protobuf form.
+// A non-nil Metadata, even an empty one, is sent as a present
+// TenantMetadata message, so the server can tell "clear" from "unchanged".
+func UpdateRequest(req *transport.UpdateTenantRequest) *pb.TenantUpdateRequest {
+	out := &pb.TenantUpdateRequest{
+		Id:            req.TenantID,
+		Name:          req.Name,
+		IsolationType: string(req.IsolationType),
+		Description:   req.Description,
+	}
+	if req.Metadata != nil {
+		out.Metadata = &pb.TenantMetadata{Entries: req.Metadata}
+	}
+	if req.Status != nil {
+		s := string(*req.Status)
+		out.Status = &s
+	}
+	return out
+}
+
 // ToTenantInfo converts a protobuf TenantResponse into a transport.TenantInfo.
 // A nil response yields the zero value. Quotas and Entitlements are populated
 // only when present on the wire; timestamps are parsed best-effort (a malformed
@@ -40,6 +60,9 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 		Name:          resp.GetName(),
 		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
 		VolumePool:    resp.GetVolumePool(),
+		Description:   resp.GetDescription(),
+		Metadata:      resp.GetMetadata(),
+		Status:        transport.TenantStatus(resp.GetStatus()),
 	}
 	if r := resp.GetRefusal(); r != nil {
 		info.Refusal = &transport.TenantRefusal{Code: r.GetCode(), Message: r.GetMessage()}

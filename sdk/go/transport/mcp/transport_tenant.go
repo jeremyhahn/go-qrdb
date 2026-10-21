@@ -40,6 +40,9 @@ type mcpTenantInfo struct {
 	VolumePool    string                        `json:"volume_pool,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
+	Description   string                        `json:"description,omitempty"`
+	Metadata      map[string]string             `json:"metadata,omitempty"`
+	Status        transport.TenantStatus        `json:"status,omitempty"`
 	// Refusal is set when the answering node will not serve this
 	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
 	// otherwise. Another node may still serve it.
@@ -305,6 +308,20 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	}
 	if req.IsolationType != "" {
 		args["isolation_type"] = string(req.IsolationType)
+	}
+	if req.Description != nil {
+		args["description"] = *req.Description
+	}
+	// A nil map is not sent (unchanged); an empty one is the explicit clear.
+	if req.Metadata != nil {
+		if len(req.Metadata) == 0 {
+			args["clear_metadata"] = true
+		} else if err := putJSONValue(args, "metadata", req.Metadata); err != nil {
+			return nil, &transport.RequestError{Method: "UpdateTenant", Err: err}
+		}
+	}
+	if req.Status != nil {
+		args["status"] = string(*req.Status)
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_update", args)
@@ -598,6 +615,9 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		VolumePool:    m.VolumePool,
 		Quotas:        m.Quotas,
 		Entitlements:  m.Entitlements,
+		Description:   m.Description,
+		Metadata:      m.Metadata,
+		Status:        m.Status,
 		Refusal:       m.Refusal,
 	}
 	if m.CreatedAt != "" {

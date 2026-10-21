@@ -4455,6 +4455,13 @@ message TenantResponse {
     // refusal is set when the answering node will not serve this tenant's
     // data; absent otherwise.
     TenantRefusal refusal = 10;
+    // description is the tenant's free-text description; empty when unset.
+    string description = 11;
+    // metadata is the tenant's caller-defined string map; empty when unset.
+    map<string, string> metadata = 12;
+    // status is the tenant's operational status: "active", "suspended" or
+    // "disabled". A principal of a tenant that is not active is refused.
+    string status = 13;
 }
 
 // TenantCreateRequest creates a new tenant.
@@ -4704,6 +4711,22 @@ message TenantUpdateRequest {
     string id             = 1;
     string name           = 2;
     string isolation_type = 3;
+    // description, when present, replaces the tenant's description; an
+    // empty string clears it. Absent leaves it unchanged.
+    optional string description = 4;
+    // metadata, when present, replaces the tenant's whole metadata map; an
+    // empty entries map clears it. Absent leaves it unchanged. A bare proto
+    // map cannot tell "clear" from "unchanged", hence the wrapper message.
+    TenantMetadata metadata = 5;
+    // status, when present, moves the tenant to that status ("active",
+    // "suspended" or "disabled"), along the allowed transitions; it needs
+    // tenants:set_status. Absent leaves it unchanged.
+    optional string status = 6;
+}
+
+// TenantMetadata carries a tenant's caller-defined string map on an update.
+message TenantMetadata {
+    map<string, string> entries = 1;
 }
 
 // TenantDeleteRequest removes a tenant by ID.

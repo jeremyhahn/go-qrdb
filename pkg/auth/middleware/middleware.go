@@ -102,6 +102,11 @@ type AuthMiddleware struct {
 	// consumed (see firstInitAdmin). Nil reads as "no barrier has one".
 	firstAdminPins FirstAdminPins
 
+	// tenants is the tenant record store every non-system identity's tenant
+	// Status is read from, per request (checkTenantActive). Nil enforces no
+	// tenant status.
+	tenants TenantStatusReader
+
 	// initChallenges holds the tenant barrier init nonces this node issued
 	// and has not yet seen completed (BeginTenantBarrierInit). New supplies
 	// one on the real clock when WithInitChallengeBook did not.
@@ -528,6 +533,13 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// is now a no-op for this value, and is kept for the branches that
 	// return earlier without reaching it.
 	ctx = tenant.WithTenantID(ctx, identity.TenantID)
+
+	// A principal of a suspended or disabled tenant is refused before any
+	// lookup, whatever credential it presented: holders, sealed-window
+	// identities and unresolved subjects included.
+	if err := m.checkTenantActive(ctx, identity.TenantID); err != nil {
+		return ctx, nil, err
+	}
 
 	// RoleBindings and Attributes are user-record state: the user store is
 	// their ONLY source. Clear whatever the authenticator carried in, before
@@ -1004,6 +1016,17 @@ var errUnauditedUnauthenticated = errors.New("auth/middleware: unaudited unauthe
 // lookup, certificate-thumbprint match, nonce-signature or factor
 // verification) is enforced at the handler layer.
 func (m *AuthMiddleware) decide(ctx context.Context, identity *auth.Identity, perm permission.Permission) error {
+	// The tenant status gate runs at every decision, not only at
+	// authentication: an identity authenticated while its tenant was active
+	// -- an open SQL session, an embedded caller, a long-lived stream -- is
+	// refused on its next operation once the tenant is suspended or disabled.
+	// The system tenant is never gated, so its administrators keep
+	// administering the tenant (see checkTenantActive).
+	if identity != nil {
+		if err := m.checkTenantActive(ctx, identity.TenantID); err != nil {
+			return err
+		}
+	}
 	if perm == permission.IdentityGated {
 		if identity == nil {
 			return errUnauditedUnauthenticated

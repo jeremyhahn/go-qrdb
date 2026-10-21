@@ -62,7 +62,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.UsersInvite,
 	permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
 	permission.TenantsDelete, permission.TenantsList,
-	permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
+	permission.TenantsSetIsolation, permission.TenantsSetEntitlements, permission.TenantsSetStatus,
 	permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
 	permission.KeysImport, permission.KeysExport,
 	permission.EscrowCreate, permission.EscrowRecover, permission.EscrowList, permission.EscrowRevoke,
@@ -136,6 +136,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// rather than tenants:update, and the platform operator must hold it.
 	permission.TenantsCreate, permission.TenantsSetQuotas,
 	permission.TenantsSetEntitlements, permission.TenantsSetIsolation,
+	permission.TenantsSetStatus,
 	// Retired-tenant listing and reconcile, cross-scope: effective only for
 	// system-tenant Admin.
 	permission.TenantsListDeleted, permission.TenantsReconcileDeleted,

@@ -207,6 +207,63 @@ status read), so the hook must be idempotent; `CompletePendingTenantAdmin` is.
 `pkg/auth/middleware`: `WithPendingTenantAdmins(p PendingTenantAdmins) Option`;
 `pkg/auth/wiring.AuthMiddlewareConfig.PendingTenantAdmins`.
 
+## Descriptive fields — `Description` and `Metadata`
+
+`tenant.TenantInfo` carries `Description string` and
+`Metadata map[string]string`, persisted in the tenant record
+(`json:"description,omitempty"`, `json:"metadata,omitempty"`). They are set
+only through `UpdateTenant`'s `tenant.TenantPatch`, and nothing in qrdb reads
+them: they gate no permission, quota or isolation decision.
+
+```go
+type TenantPatch struct {
+	// ...
+	Description *string           // nil: unchanged; "" clears
+	Metadata    map[string]string // nil: unchanged; non-nil empty clears; otherwise replaces the whole map
+}
+
+const (
+	MaxDescriptionBytes   = 1024
+	MaxMetadataEntries    = 64
+	MaxMetadataKeyBytes   = 128
+	MaxMetadataValueBytes = 1024
+)
+
+type TenantFieldError struct{ Field, Reason string } // errclass.InvalidArgument
+```
+
+**Invariants.**
+
+- **Validated before anything is written.** Both `UpdateTenant`
+  implementations (`KVTenantService` and the seal-enabled `TenantService`)
+  call `validateDescriptive` first. It checks the byte limits, refuses an empty
+  key and refuses text that is not valid UTF-8. A refused patch changes none of
+  the tenant's fields, including `Name`.
+- **Metadata replaces, never merges.** There is no per-key patch; a client
+  that wants to add one entry sends the whole map. An empty map is stored as
+  absent (`nil`), and the stored map is a clone of the caller's.
+- **Absent and empty are distinct on every transport.** The Go SDK's
+  `UpdateTenantRequest.Metadata` is `omitzero` in REST JSON, so a non-nil
+  empty map reaches the server as `{}`. In protobuf, `description` is
+  `optional` and `metadata` is a `TenantMetadata` message wrapping
+  `map<string,string> entries`, because a bare proto map cannot tell absent
+  from empty. MCP takes `metadata` as a JSON-object string and a separate
+  `clear_metadata` flag, applied only when `metadata` is absent.
+- **One error class.** `*TenantFieldError` maps to `errclass.InvalidArgument`:
+  400 on REST, `INVALID_ARGUMENT` on gRPC and Unix, `StatusInvalidArgument` on
+  QUIC, an `InvalidArgument` tool error on MCP. The embedded transport returns
+  the error itself.
+
+**Tests.**
+
+- Each server handler (REST, gRPC, QUIC, MCP) and each SDK transport (REST,
+  gRPC, Unix, MCP, embedded) runs against the real in-memory tenant service and
+  checks four things: a round trip, that an absent field is unchanged, a clear,
+  and an over-limit refusal.
+- The QUIC SDK test checks presence on the wire.
+- `TestTenant_CLI_DescriptiveFields_PerProtocol` runs the CLI against `qrdbd`
+  on all five network transports.
+
 ## Isolation modes
 
 `TenantInfo.IsolationType`, set at creation, defaulting to `prefix`:
@@ -889,7 +946,7 @@ instant.
 questions and are owned by different people.
 
 Provisioning-governance permissions: `tenants:set_isolation`,
-`tenants:set_entitlements`, `databases:create_raft`, `databases:create_volume`.
+`tenants:set_status`, `tenants:set_entitlements`, `databases:create_raft`, `databases:create_volume`.
 
 ### Tenant-administration authorization
 
@@ -901,14 +958,29 @@ it:
 | Operation | Decision |
 |---|---|
 | get / delete | `AuthorizeTenantTarget(ctx, id, tenants:read / tenants:delete)` |
-| update | `AuthorizeTenantUpdate(ctx, id, patch)` — `tenants:update`, plus `tenants:set_isolation` when `patch.IsolationType` is set |
+| update | `AuthorizeTenantUpdate(ctx, id, patch)` — `tenants:update` for a descriptive field, `tenants:set_isolation` when `patch.IsolationType` is set, `tenants:set_status` when `patch.Status` is set |
 | quotas / entitlements | route permission `tenants:set_quotas` / `tenants:set_entitlements` (cross-scope), re-checked against `id` |
 | create | route permission `tenants:create` (cross-scope) |
 | list | `FilterTenantList` — every tenant with `tenants:list:cross` against `system`, else the caller's own; any refusal other than an RBAC denial is returned, not narrowed |
 
-The four plan permissions are `ScopeCross`
+The five plan permissions (`tenants:create`, `tenants:set_quotas`,
+`tenants:set_entitlements`, `tenants:set_isolation`, `tenants:set_status`) are
+`ScopeCross`
 (`pkg/permission/tenant_provisioning_scope.go`). The built-in Admin role carries
 them in every tenant; the scope rule makes them inert outside `system`.
+
+A tenant's `Status` (`pkg/tenant/status.go`) is enforced by the auth chain, not
+by each handler. `AuthMiddleware.finalizeIdentity` and `finalizeDelegated` call
+`checkTenantActive` (`pkg/auth/middleware/tenant_status.go`) once the identity's
+tenant is normalized, beside the account's own lifecycle gate, so every
+transport refuses a principal of a suspended or disabled tenant with
+`*TenantNotActiveError`, classed with `*UserDisabledError` (403 /
+`PermissionDenied`). The record is read through `WithTenantStatusReader` on
+every request, with no cache, so a token issued before a suspension is refused
+on its next request and reactivation restores access the same way. The system
+tenant is never looked up: its administrators are the principals who change
+another tenant's status. A tenant with no record is admitted as the store
+resolver admits it; a record with an empty or unknown status fails closed.
 
 Each transport validates the id with `tenant.ValidateTenantIDShape` before it
 authorizes, and maps `*tenant.InvalidTenantIDCharError` to 400 /

@@ -629,9 +629,11 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 2 users:suspend, users:unsuspend: suspension's own verbs, separate
 	//   from users:update so it carries its own grant and audit event
 	//   (go-qrdb#801) = 392 total.
+	// + 1 tenants:set_status, the system admin's cross-scope change of a
+	//   tenant's status (active/suspended/disabled) = 393 total.
 	// + 3 device perms (devices:onboard, ota:activate, ota:confirm), each
-	//   tenant acting on its own devices only (ScopeSelf) = 395 total.
-	const expectedTotal = 395
+	//   tenant acting on its own devices only (ScopeSelf) = 396 total.
+	const expectedTotal = 396
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

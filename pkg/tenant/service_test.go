@@ -83,8 +83,20 @@ func (f *failingBackend) CompareAndDelete(ctx context.Context, key string, expec
 	return false, nil
 }
 
+// CompareAndSwap is a write, so failPut applies to it as it does to Put;
+// otherwise it swaps through inner exactly as inner would, and an inner with
+// no guarded swap answers as a seal.StorageBarrier over such a base does.
 func (f *failingBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	if f.failPut {
+		return false, errStoreFault
+	}
+	guarded, ok := f.inner.(interface {
+		CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
+	})
+	if !ok {
+		return false, seal.ErrGuardedSwapUnsupported
+	}
+	return guarded.CompareAndSwap(ctx, key, expected, next)
 }
 func (f *failingBackend) Delete(ctx context.Context, key string) error {
 	if f.failDel {

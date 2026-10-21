@@ -80,6 +80,24 @@ const (
 	TenantIsolationPrefix TenantIsolationType = "prefix"
 )
 
+// TenantStatus is a tenant's operational status. The server validates it and
+// its transitions; only TenantStatusActive admits the tenant's principals.
+type TenantStatus string
+
+const (
+	// TenantStatusActive is a tenant in normal service. New tenants start
+	// here.
+	TenantStatusActive TenantStatus = "active"
+
+	// TenantStatusSuspended is a tenant temporarily out of service; its
+	// principals are refused until it is reactivated.
+	TenantStatusSuspended TenantStatus = "suspended"
+
+	// TenantStatusDisabled is a tenant taken out of service; its principals
+	// are refused until it is reactivated. It cannot move to suspended.
+	TenantStatusDisabled TenantStatus = "disabled"
+)
+
 // TenantInfo contains information about a tenant.
 type TenantInfo struct {
 	ID            string              `json:"id"`
@@ -91,8 +109,15 @@ type TenantInfo struct {
 	VolumePool   string              `json:"volume_pool,omitempty"`
 	Quotas       *TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements *TenantEntitlements `json:"entitlements,omitempty"`
-	CreatedAt    time.Time           `json:"created_at"`
-	UpdatedAt    time.Time           `json:"updated_at"`
+	// Description is the tenant's free-text description; empty when unset.
+	Description string `json:"description,omitempty"`
+	// Metadata is the tenant's caller-defined string map; nil when unset.
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Status is the tenant's operational status. A principal of a tenant
+	// that is not TenantStatusActive is refused.
+	Status    TenantStatus `json:"status,omitempty"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
 	// Refusal is set when the answering node will not serve this tenant's
 	// data; nil otherwise. Another node may still serve it.
 	Refusal *TenantRefusal `json:"refusal,omitempty"`
@@ -144,6 +169,17 @@ type UpdateTenantRequest struct {
 	TenantID      string              `json:"tenant_id"`
 	Name          string              `json:"name,omitempty"`
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
+	// Description, when non-nil, replaces the tenant's description; a
+	// pointer to "" clears it.
+	Description *string `json:"description,omitempty"`
+	// Metadata, when non-nil, replaces the tenant's whole metadata map; a
+	// non-nil empty map clears it. omitzero (not omitempty) keeps an empty
+	// map on the wire, so a clear is distinguishable from "unchanged".
+	Metadata map[string]string `json:"metadata,omitzero"`
+	// Status, when non-nil, moves the tenant to that status along the
+	// allowed transitions; it needs tenants:set_status. Nil leaves it
+	// unchanged.
+	Status *TenantStatus `json:"status,omitempty"`
 }
 
 // UpdateTenantResponse contains the updated tenant.

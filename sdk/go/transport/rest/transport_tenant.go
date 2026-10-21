@@ -42,6 +42,9 @@ type restTenant struct {
 	VolumePool    string                        `json:"volume_pool,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
+	Description   string                        `json:"description,omitempty"`
+	Metadata      map[string]string             `json:"metadata,omitempty"`
+	Status        transport.TenantStatus        `json:"status,omitempty"`
 	// Refusal is set when the answering node will not serve this
 	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
 	// otherwise. Another node may still serve it.
@@ -133,6 +136,9 @@ func (r *restTenant) toTenantInfo() transport.TenantInfo {
 		VolumePool:    r.VolumePool,
 		Quotas:        r.Quotas,
 		Entitlements:  r.Entitlements,
+		Description:   r.Description,
+		Metadata:      r.Metadata,
+		Status:        r.Status,
 		Refusal:       r.Refusal,
 	}
 	if ts := pickFirstNonEmpty(r.CreatedAtStr, r.CreatedAtAlt); ts != "" {

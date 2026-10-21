@@ -993,6 +993,15 @@ var tenantRules = []rule{
 	as(&tenant.TenantScopeError{}, PermissionDenied),
 	// A page size or page token the caller supplied that cannot be honoured.
 	as(&tenant.InvalidPageRequestError{}, InvalidArgument),
+	// A description or metadata map outside its bounds on UpdateTenant.
+	as(&tenant.TenantFieldError{}, InvalidArgument),
+	// A status that is not a status is the caller's error; a known status
+	// the tenant cannot move to from where it is depends on its state.
+	as(&tenant.InvalidStatusError{}, InvalidArgument),
+	as(&tenant.StatusTransitionError{}, FailedPrecondition),
+	// UpdateTenant lost its compare-and-swap on every attempt: other writers
+	// kept committing the record, and the caller may retry the update.
+	as(&tenant.ConcurrentUpdateError{}, Aborted),
 	as(&tenant.DataRootIsolationTypeError{}, InvalidArgument),
 	// Reserving the tenant's named volume pool failed (pool not found,
 	// capacity exceeded, entitlement denied). volumeRules above, placed
@@ -1591,6 +1600,7 @@ var authSamples = []error{
 	&auth.RevocationCheckError{},
 	&auth.TenantLookupError{},
 	&authmw.UserDisabledError{},
+	&authmw.TenantNotActiveError{},
 	&authmw.AuthMethodNotPermittedError{},
 	&authmw.CertBindingNotPermittedError{},
 	&authmw.FirstInitCertificateMismatchError{},

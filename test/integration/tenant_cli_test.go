@@ -34,6 +34,7 @@ package integration_test
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -637,4 +638,99 @@ func stringSliceEqualUnordered(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// tenantDescriptiveCLIJSON is the slice of `tenant get --output json` the
+// descriptive-fields test asserts on.
+type tenantDescriptiveCLIJSON struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+// TestTenant_CLI_DescriptiveFields_PerProtocol drives `qrdb tenant update
+// --description/--metadata/--clear-metadata` then `qrdb tenant get` against a
+// real qrdbd over every transport: the fields round-trip, an update that names
+// neither leaves them, the clear flags clear them, and an over-limit value is
+// refused with nothing stored.
+func TestTenant_CLI_DescriptiveFields_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testTenantDescriptiveFieldsOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testTenantDescriptiveFieldsOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	tenantID := fmt.Sprintf("tdf-%s-%d", proto.name, time.Now().UnixNano())
+	adminArgs := adminCSRArgsForTenant(t, node, proto, tenantID+"-admin")
+	if out, err := runCLIProto(t, node, proto, append([]string{"--output", "json", "tenant", "create",
+		"--id", tenantID, "--name", "Descriptive Tenant", "--isolation-type", "prefix",
+	}, adminArgs...)...); err != nil {
+		t.Fatalf("[%s] tenant create: %v\noutput: %s", proto.name, err, out)
+	}
+
+	get := func() tenantDescriptiveCLIJSON {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "get", tenantID)
+		if err != nil {
+			t.Fatalf("[%s] tenant get: %v\noutput: %s", proto.name, err, out)
+		}
+		var got tenantDescriptiveCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("[%s] decode tenant get JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		return got
+	}
+	update := func(args ...string) (string, error) {
+		return runCLIProto(t, node, proto, append([]string{"--output", "json", "tenant", "update", tenantID}, args...)...)
+	}
+
+	// --- set both ---------------------------------------------------------
+	const desc = "Acme production"
+	want := map[string]string{"env": "prod", "team": "storage"}
+	if out, err := update("--description", desc, "--metadata", "env=prod", "--metadata", "team=storage"); err != nil {
+		t.Fatalf("[%s] tenant update: %v\noutput: %s", proto.name, err, out)
+	}
+	if got := get(); got.Description != desc || !maps.Equal(got.Metadata, want) {
+		t.Fatalf("[%s] tenant get = %q, %v; want %q, %v", proto.name, got.Description, got.Metadata, desc, want)
+	}
+
+	// --- neither flag: both unchanged ------------------------------------
+	if out, err := update("--name", "Renamed Tenant"); err != nil {
+		t.Fatalf("[%s] tenant update --name: %v\noutput: %s", proto.name, err, out)
+	}
+	if got := get(); got.Name != "Renamed Tenant" || got.Description != desc || !maps.Equal(got.Metadata, want) {
+		t.Fatalf("[%s] rename changed descriptive fields: %+v", proto.name, got)
+	}
+
+	// --- over limit (1024-byte values): refused, nothing stored ----------
+	out, err := update("--metadata", "k="+strings.Repeat("v", 1025))
+	if err == nil {
+		t.Fatalf("[%s] over-limit metadata value accepted: %s", proto.name, out)
+	}
+	if !strings.Contains(strings.ToLower(out), "invalid") {
+		t.Fatalf("[%s] over-limit metadata: want an invalid-argument error, got: %s", proto.name, out)
+	}
+	if got := get(); !maps.Equal(got.Metadata, want) {
+		t.Fatalf("[%s] refused update changed metadata: %v", proto.name, got.Metadata)
+	}
+
+	// --- clear both ------------------------------------------------------
+	if out, err := update("--description", "", "--clear-metadata"); err != nil {
+		t.Fatalf("[%s] tenant update --clear-metadata: %v\noutput: %s", proto.name, err, out)
+	}
+	if got := get(); got.Description != "" || len(got.Metadata) != 0 {
+		t.Fatalf("[%s] cleared tenant = %q, %v; want both empty", proto.name, got.Description, got.Metadata)
+	}
+
+	if out, err := runCLIProto(t, node, proto, "tenant", "delete", tenantID); err != nil {
+		t.Fatalf("[%s] tenant delete: %v\noutput: %s", proto.name, err, out)
+	}
 }

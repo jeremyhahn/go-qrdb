@@ -135,7 +135,7 @@ func registerGovernanceDuties() {
 		// Tenant administration.
 		TenantsCreate, TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
-		TenantsSetIsolation, TenantsSetEntitlements,
+		TenantsSetIsolation, TenantsSetEntitlements, TenantsSetStatus,
 		// Key lifecycle — creation, rotation, destruction, inventory, and key
 		// entry/output. Never key use: the crypto verbs of the same family are
 		// declared DutyCryptoUse above. keys:rotate is declared here even

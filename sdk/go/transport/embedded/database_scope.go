@@ -108,7 +108,10 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	c.mvccSvc = scopedIfServed[service.MVCCKVServicer](t.mvccSvc, &scopedMVCC{scope: scope})
 	c.txSvc = scopedIfServed[service.TransactionServicer](t.txSvc, &scopedTransaction{scope: scope})
 	c.batchSvc = scopedIfServed[service.BatchServicer](t.batchSvc, &scopedBatch{scope: scope})
-	c.watchSvc = scopedIfServed[service.WatchServicer](t.watchSvc, &scopedWatch{scope: scope})
+	// The scoped watch replaces the admitted one New built, so it is
+	// admitted again here: a watch through this scope ends once its tenant
+	// is suspended, whatever the registry does.
+	c.watchSvc = t.admitWatch(scopedIfServed[service.WatchServicer](t.watchSvc, &scopedWatch{scope: scope}))
 	// The registry's watch service is already guarded by the seal stream
 	// registry for the scoped (tenant, database); guarding again here would
 	// subscribe every scoped watch twice.

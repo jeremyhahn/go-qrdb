@@ -177,11 +177,7 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 		return nil, &transport.ClosedError{}
 	}
 
-	resp, err := t.client.TenantUpdate(ctx, &pb.TenantUpdateRequest{
-		Id:            req.TenantID,
-		Name:          req.Name,
-		IsolationType: string(req.IsolationType),
-	})
+	resp, err := t.client.TenantUpdate(ctx, tenantconv.UpdateRequest(req))
 	if err != nil {
 		return nil, mapGRPCError("UpdateTenant", err)
 	}

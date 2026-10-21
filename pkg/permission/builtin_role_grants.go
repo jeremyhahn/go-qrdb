@@ -71,7 +71,7 @@ func registerSOGrants() {
 		// Tenant management
 		TenantsCreate, TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
-		TenantsSetIsolation, TenantsSetEntitlements,
+		TenantsSetIsolation, TenantsSetEntitlements, TenantsSetStatus,
 		// Key lifecycle (infrastructure keys — delete any key; create infra keys)
 		KeysCreate, KeysDelete, KeysList, KeysGet,
 		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
@@ -235,6 +235,7 @@ func registerAdminGrants() {
 		// ScopeCross (tenant_provisioning_scope.go): only effective for
 		// system-tenant Admin, so a tenant Admin cannot raise its own limits.
 		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
+		TenantsSetStatus,
 		TenantsListDeleted, TenantsReconcileDeleted,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,

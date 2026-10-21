@@ -90,6 +90,11 @@ var classCases = []struct {
 		class: AuthFailureUnauthorized, http: http.StatusForbidden, grpc: codes.PermissionDenied,
 	},
 	{
+		name:  "TenantNotActiveError",
+		err:   &TenantNotActiveError{TenantID: "t1", Status: "suspended"},
+		class: AuthFailureUnauthorized, http: http.StatusForbidden, grpc: codes.PermissionDenied,
+	},
+	{
 		name:  "AuthMethodNotPermittedError",
 		err:   &AuthMethodNotPermittedError{Username: "bob", Method: "mtls", Permitted: []string{"webauthn"}},
 		class: AuthFailureUnauthorized, http: http.StatusForbidden, grpc: codes.PermissionDenied,

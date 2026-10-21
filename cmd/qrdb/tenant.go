@@ -19,7 +19,9 @@ import (
 	"crypto"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -77,7 +79,7 @@ func newTenantListCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(resp)
 			default:
-				headers := []string{"ID", "NAME", "CREATED_AT", "UPDATED_AT"}
+				headers := []string{"ID", "NAME", "STATUS", "DESCRIPTION", "METADATA", "CREATED_AT", "UPDATED_AT"}
 				rows := make([][]string, 0, len(resp.Tenants))
 				for _, t := range resp.Tenants {
 					rows = append(rows, tenantRow(t))
@@ -241,17 +243,40 @@ func newTenantUpdateCmd() *cobra.Command {
 	var (
 		name          string
 		isolationType string
+		description   string
+		metadata      []string
+		clearMetadata bool
+		status        string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update a tenant's mutable fields",
-		Args:  cobra.ExactArgs(1),
+		Long: `Update a tenant's mutable fields. A flag that is not given leaves its
+field unchanged. --description "" clears the description; --metadata
+replaces the whole metadata map with the given key=value entries, and
+--clear-metadata removes every entry. --status moves the tenant to active,
+suspended or disabled (a disabled tenant cannot move to suspended); it needs
+tenants:set_status, which only a system-tenant Admin holds, and while a
+tenant is not active every principal of it is refused.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := &transport.UpdateTenantRequest{
 				TenantID:      args[0],
 				Name:          name,
 				IsolationType: transport.TenantIsolationType(isolationType),
+			}
+			if cmd.Flags().Changed("description") {
+				req.Description = &description
+			}
+			md, err := tenantMetadataFlag(metadata, clearMetadata)
+			if err != nil {
+				return err
+			}
+			req.Metadata = md
+			if cmd.Flags().Changed("status") {
+				s := transport.TenantStatus(status)
+				req.Status = &s
 			}
 
 			resp, err := client.Tenants().UpdateTenant(cmd.Context(), req)
@@ -265,8 +290,34 @@ func newTenantUpdateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&name, "name", "", "New human-readable tenant name")
 	cmd.Flags().StringVar(&isolationType, "isolation-type", "", "Isolation type (barrier|prefix)")
+	cmd.Flags().StringVar(&description, "description", "", "New tenant description (\"\" clears it)")
+	cmd.Flags().StringArrayVar(&metadata, "metadata", nil, "Metadata entry key=value; repeatable, replaces the whole map")
+	cmd.Flags().BoolVar(&clearMetadata, "clear-metadata", false, "Remove every metadata entry")
+	cmd.MarkFlagsMutuallyExclusive("metadata", "clear-metadata")
+	cmd.Flags().StringVar(&status, "status", "", "New tenant status (active|suspended|disabled)")
 
 	return cmd
+}
+
+// tenantMetadataFlag turns the --metadata and --clear-metadata flags into the
+// UpdateTenantRequest.Metadata patch: nil leaves the map unchanged, an empty
+// map clears it, and otherwise the entries replace it.
+func tenantMetadataFlag(entries []string, clear bool) (map[string]string, error) {
+	if clear {
+		return map[string]string{}, nil
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok || k == "" {
+			return nil, &InvalidFlagValueError{Flag: "metadata", Value: e, Want: "key=value"}
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // newTenantUpdateQuotasCmd creates the "tenant update-quotas" subcommand.
@@ -757,8 +808,17 @@ func printTenant(t transport.TenantInfo) error {
 		if t.IsolationType != "" {
 			_, _ = fmt.Fprintf(outputWriter, "Isolation:  %s\n", t.IsolationType)
 		}
+		if t.Status != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Status:     %s\n", t.Status)
+		}
 		if t.VolumePool != "" {
 			_, _ = fmt.Fprintf(outputWriter, "Pool:       %s\n", t.VolumePool)
+		}
+		if t.Description != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Description: %s\n", t.Description)
+		}
+		if len(t.Metadata) > 0 {
+			_, _ = fmt.Fprintf(outputWriter, "Metadata:   %s\n", formatTenantMetadata(t.Metadata))
 		}
 		_, _ = fmt.Fprintf(outputWriter, "CreatedAt:  %s\n", t.CreatedAt.String())
 		_, _ = fmt.Fprintf(outputWriter, "UpdatedAt:  %s\n", t.UpdatedAt.String())
@@ -774,7 +834,20 @@ func tenantRow(t transport.TenantInfo) []string {
 	return []string{
 		t.ID,
 		t.Name,
+		string(t.Status),
+		t.Description,
+		formatTenantMetadata(t.Metadata),
 		t.CreatedAt.String(),
 		t.UpdatedAt.String(),
 	}
+}
+
+// formatTenantMetadata renders tenant metadata as comma-separated key=value
+// entries in key order, so table output is stable.
+func formatTenantMetadata(md map[string]string) string {
+	entries := make([]string, 0, len(md))
+	for _, k := range slices.Sorted(maps.Keys(md)) {
+		entries = append(entries, k+"="+md[k])
+	}
+	return strings.Join(entries, ",")
 }
