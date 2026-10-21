@@ -1,6 +1,6 @@
 # Desktop GUI — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The same binary that gives you the CLI also gives you a desktop application, and
@@ -25,16 +25,17 @@ Over SSH on macOS you get the CLI, because `SSH_TTY` is set. That is deliberate.
 
 ## First run
 
-The setup wizard walks you through it:
+1. **Add Server** opens by itself when there is no saved connection. Choose
+   **Create Embedded Server** (a server inside this application: its data
+   directory, Raft discovery if you want a cluster, and the encryption barrier)
+   or an external server (transport, address, and the CA, certificate and key
+   files).
+2. In a browser, a server that has never been initialized opens the
+   initialization wizard instead: the barrier (none, passphrase or Shamir), the
+   share holders when it is Shamir, and the first admin credential.
 
-1. **Server mode** — embedded (a server inside this application) or remote.
-2. **Embedded**: storage backend (PebbleDB or memory), Raft configuration if you
-   want it, the encryption barrier (Shamir shares and threshold), a summary, then
-   initialization.
-3. **Remote**: the server address and TLS settings, a summary, done.
-
-After the wizard, if the server is sealed you get an unseal prompt; otherwise
-the full application.
+After that, if the server is sealed you get an unseal prompt; otherwise the
+full application.
 
 **Keeping an audit trail.** The embedded server can keep the same compliance
 audit trail as a qrdbd node: set `audit` to `{"enabled": true}` in its saved
@@ -107,9 +108,9 @@ detected. On macOS over SSH the latter is intentional.
 **"GUI unavailable".** The build lacks the `desktop` tag. It requires CGO;
 rebuild with `make build-client`.
 
-**`--transport embedded` fails.** The embedded transport is part of the
-desktop/GUI build. It is listed in the flag's values on every build but only
-works in that one.
+**`--transport embedded` fails.** The CLI does not run an embedded server;
+every verb given that transport fails. Open the GUI and use **Create Embedded
+Server** instead.
 
 **The GUI shows fewer views than you expect.** Views are gated on the server's
 capabilities. Check `qrdb admin capabilities`: the feature is either not

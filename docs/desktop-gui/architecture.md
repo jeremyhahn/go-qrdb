@@ -1,6 +1,6 @@
 # Desktop GUI — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** The GUI exists only in builds carrying `desktop`
@@ -42,7 +42,8 @@ two implementations of every view drifting apart.
 
 
 **Desktop flow:** Svelte → TS SDK (`WailsClient`) → Wails IPC → Go bindings →
-Go SDK → embedded `qrdbd` server.
+Go SDK → the embedded server, or a remote `qrdbd` when the connection profile
+is external.
 
 **Browser flow:** Svelte → TS SDK (`RestClient`) → `fetch()` + JSON → the
 `qrdbd` REST API.
@@ -80,50 +81,48 @@ window.
 
 ## App shell state machine
 
-The root `App.svelte` component manages application lifecycle as a state
-machine:
+The root `App.svelte` component routes on `AppState`. In a browser it reads
+the seal status of the server it was loaded from; on the desktop it goes
+straight to the app shell:
 
 ```
-loading --> wizard --> unseal --> main app
-  |           |
-  |           +--> (first run: setup wizard)
-  |
-  +--> unseal --> main app  (returning user)
+loading --> init   (browser: sealed, never initialized)
+        --> unseal (browser: sealed, initialized)
+        --> app    (unsealed; always on the desktop)
+        --> error
+init, unseal --> app once the server is unsealed
 ```
 
-| State     | Condition                                | View                     |
-|-----------|------------------------------------------|--------------------------|
-| `loading` | Initial load, fetching capabilities      | Splash/loading spinner   |
-| `wizard`  | First run (`isFirstRun()` returns true)  | Setup wizard             |
-| `unseal`  | Server is sealed                         | Unseal prompt            |
-| `main`    | Server is unsealed and connected         | Full application         |
+| State     | Condition                                    | View               |
+|-----------|----------------------------------------------|--------------------|
+| `loading` | SDK initializing                             | Loading spinner    |
+| `init`    | Browser; server sealed and never initialized | `ServerInitWizard` |
+| `unseal`  | Browser; server sealed and initialized       | Unseal prompt      |
+| `app`     | Ready                                        | `MainApp`          |
+| `error`   | Startup failed                               | Error screen       |
 
+`MainApp` handles connection profiles, connection errors and the seal flows of
+the server a profile reaches. With no saved profile it opens **Add Server**
+(`ConnectionManager`), where the user creates an embedded server, with its
+data directory, Raft discovery and barrier, or adds an external one.
 
-## Setup wizard
+## Initialization wizard
 
-The setup wizard guides first-time users through server configuration.
-The flow branches based on the selected server mode:
+`ServerInitWizard` initializes a server, reached from a browser, that has never
+been initialized. Its steps follow the barrier mode chosen in the first one:
 
 ```
-ServerMode --> [Embedded] --> StorageBackend --> [Raft] --> RaftConfig
-                                                       --> EncryptionBarrier
-                                                       --> Summary
-                                                       --> Initializing
-                                                       --> Complete
-
-ServerMode --> [Remote] --> ConnectionConfig --> Summary --> Complete
+barrier --> [shamir] --> officers --> admin --> applying --> complete
+barrier --> [none | passphrase]   --> admin --> applying --> complete
 ```
 
-| Step                | Description                                          |
-|---------------------|------------------------------------------------------|
-| `ServerMode`        | Choose embedded (in-process) or remote server        |
-| `StorageBackend`    | Select PebbleDB or memory storage                   |
-| `RaftConfig`        | Configure shard ID, replica ID, peers                |
-| `EncryptionBarrier` | Configure Shamir shares and threshold                |
-| `ConnectionConfig`  | Enter remote server address and TLS settings         |
-| `Summary`           | Review configuration before applying                 |
-| `Initializing`      | Start embedded server (shows progress)               |
-| `Complete`          | Wizard finished, transition to unseal or main        |
+| Step       | Description                                                   |
+|------------|---------------------------------------------------------------|
+| `barrier`  | Barrier mode: none, passphrase, or Shamir (threshold, shares) |
+| `officers` | Enrol the Shamir share holders                                |
+| `admin`    | The first admin credential                                    |
+| `applying` | Initialize the server (shows progress)                        |
+| `complete` | Finished; `App.svelte` initializes again                      |
 
 
 ## Component boundaries
@@ -145,7 +144,7 @@ ServerMode --> [Remote] --> ConnectionConfig --> Summary --> Complete
 - **The browser path is ordinary REST with CORS** — no privileged GUI-only
   endpoints exist, so the GUI cannot do anything a CLI user with the same
   certificate could not.
-- **The desktop path runs an embedded server in process**, which means the
+- **An embedded connection runs the server in process**, which means the
   operator's machine holds the data directory and the barrier. Treat a desktop
   deployment as a single-node server, because it is one.
 - Views are **capability-gated**: what the frontend shows follows

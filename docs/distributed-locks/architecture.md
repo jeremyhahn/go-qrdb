@@ -1,6 +1,6 @@
 # Distributed Locks — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -61,14 +61,17 @@ holder's write, even though the zombie is convinced it holds the lock.
 
 **Acquire (`TryLock`, non-blocking):** read the lock key; if unheld, propose a
 CAS that claims it and grants a lease; on commit, the resulting `ModRevision`
-becomes the `FencingToken`. If held by another holder, return immediately.
+becomes the `FencingToken`, stored in the lock record. If held by another
+holder, return `LockHeldError` immediately. A reentrant re-acquisition by the
+same holder increments `AcquireCount` and returns the stored token unchanged.
 
 **Acquire (`Lock`, blocking):** the same CAS; on contention, watch the lock key
-and retry the CAS when a release event arrives, until the wait timeout.
+and retry the CAS when a release event arrives, until the caller's context is
+done.
 
-**Release:** validate the caller's fencing token against the lock's current
-`ModRevision`. A stale token is refused. For a reentrant lock with
-`AcquireCount > 1`, decrement rather than release.
+**Release:** validate the caller's fencing token against the token stored at
+acquisition. A stale token is refused with `NotLockHolderError`. For a
+reentrant lock with `AcquireCount > 1`, decrement rather than release.
 
 **Expiry:** the lock's lease expires like any other; the lock key goes with it.
 That is what releases a crashed holder's lock without anyone intervening.
@@ -81,7 +84,7 @@ enumeration.
 
 The stored key is `__sys:lock/{key}` with the key supplied by the caller, and
 it carries **no tenant segment**. That is deliberate and is not what separates
-tenants — see the next-but-one section.
+tenants — see "Tenant isolation" below.
 
 ## Trust boundaries
 
@@ -111,40 +114,24 @@ service built over the `<tenant>/<database>/`-namespaced engines, so the
 physical record is at `<tenant>/<database>/__sys:lock/{key}` and the blocking
 watch, the lease and the CAS all address that same namespaced key.
 
-**This was not always true, and the failure mode is worth recording.** Until
-the accessor existed, every transport held ONE process-wide lock servicer built
-over the raw, pre-namespace engines. Under `prefix` isolation — where tenants
-share one state machine and are separated only by that prefix — two tenants
-locking the same name took the same lock, with three consequences:
-
-- **Denial.** One tenant holding `deploy` blocked every other tenant's
-  `deploy` until the TTL expired. Caller-supplied names collide by
-  construction, and common names — `migrate`, `leader`, `cron` — collide by
-  convention.
-- **Disclosure of coordination metadata.** `List` enumerated other tenants'
-  lock names and holder IDs, `Status` returned a foreign holder record, and
-  `LockHeldError` carried the foreign `HolderID` — a leak that survives the
-  caller being correctly refused, which is why it is asserted on the error's
-  contents and not merely on the refusal.
-- **The fencing token guarded release, and only bounded the rest.** Release and
-  extend already required a matching token, so this was never a trivial
-  cross-tenant unlock. A token is an `int64` obtained from a successful
-  acquire; it bounds the exposure rather than closing it, and it is not what
-  isolation rests on.
+A lock servicer shared across tenants under `prefix` isolation would make two
+tenants locking the same name take the same lock: one tenant's `deploy` would
+block every other's, and `List`, `Status` and `LockHeldError` would disclose
+foreign lock names and holder IDs. The fencing token does not prevent that; it
+guards release and extend only.
 
 ### The alternative that was rejected
 
 Namespacing the key *inside* the single lock service — writing
 `{tenant}/{database}/__sys:lock/{key}` from within `pkg/lock` — is cheaper and
-was rejected. It would be a SECOND tenancy mechanism alongside the registry
+is rejected. It would be a SECOND tenancy mechanism alongside the registry
 namespace, and [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
 rules that out by name: there is no exempt prefix, an exemption keyed on a
 string prefix is a second mechanism, and two mechanisms drift. Confinement
 comes from construction — the engines the servicer holds — not from a rule
 about the key.
 
-Two compositions legitimately keep a single lock servicer, and both are
-recorded rather than treated as exceptions to explain away:
+Two compositions keep a single lock servicer:
 
 - **A registry-less composition** — the embedded transport and single-database
   servers — where the whole store and the caller's own keyspace are the same
@@ -166,17 +153,14 @@ The semantics are identical in all run modes. In embedded and standalone the
 CAS and the expiry sweep are local; clustered, both go through Raft. A caller
 does not change code between them.
 
-*(Corrected: until 2026-10-01 mode `standalone` refused every lock verb with
-`requires mode: raft`, because the lease, watch and MVCC resolutions a lock is
-composed from were refused there. Standalone now serves all three over the same
-engine, lessor and watch hub as raft mode, and runs the lease-expiry sweeper
-itself, so a standalone lock has the TTL expiry and blocking acquisition this
-feature requires — see [../run-modes/architecture.md](../run-modes/architecture.md).)*
+Standalone serves the lease, watch and MVCC resolutions over the same engine,
+lessor and watch hub as raft mode and runs the lease-expiry sweeper itself —
+see [../run-modes/architecture.md](../run-modes/architecture.md).
 
 **A lock survives a restart in both modes.** Its lease is durable: a lock held
-when the server stops is still held by the same holder afterwards, with one
-full TTL to renew, and a holder that died with the process loses it one TTL
-after the restart. See [../leases/engineering.md](../leases/engineering.md#persistence).
+when the server stops is still held by the same holder afterwards; its TTL
+resumes from the lease's last checkpoint, or is a full TTL when it has none,
+and a holder that died with the process loses the lock when that runs out. See [../leases/engineering.md](../leases/engineering.md#persistence).
 
 **The storage engine bounds it.** A standalone node on the file or objstore
 backend keeps no leases, so every lock verb there is refused with a typed

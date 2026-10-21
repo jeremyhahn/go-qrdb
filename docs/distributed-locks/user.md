@@ -1,6 +1,6 @@
 # Distributed Locks — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 A distributed lock lets one process at a time into a critical section across
@@ -9,8 +9,9 @@ goes up — and using it is what separates a safe lock from a hopeful one.
 
 ## Prerequisites
 
-A reachable server running in raft mode, client certificates, an unsealed
-barrier, and the `locks:*` permissions for the verbs you use.
+A reachable server on the pebble or memory backend, standalone or raft, client
+certificates, an unsealed barrier, and the `locks:*` permissions for the verbs
+you use.
 
 ## What a lock name means
 
@@ -83,13 +84,13 @@ will happily write over the new holder's work.
 
 **Re-enter a lock you already hold.** With `--reentrant`, the same holder can
 take the lock again; the count goes up and you must release once per
-acquisition.
+acquisition. Every re-entry returns the fencing token of the first one.
 
 ```bash
-qrdb lock acquire cfg/rewrite --ttl 60 --holder worker-7 --reentrant
-qrdb lock acquire cfg/rewrite --ttl 60 --holder worker-7 --reentrant   # count = 2
-qrdb lock release cfg/rewrite --token <t2>                             # count = 1
-qrdb lock release cfg/rewrite --token <t1>                             # released
+qrdb lock acquire cfg/rewrite --ttl 60 --holder worker-7 --reentrant   # token T
+qrdb lock acquire cfg/rewrite --ttl 60 --holder worker-7 --reentrant   # token T, count = 2
+qrdb lock release cfg/rewrite --token <T>                              # count = 1
+qrdb lock release cfg/rewrite --token <T>                              # released
 ```
 
 **See who holds what.**
@@ -101,10 +102,10 @@ qrdb lock list --prefix jobs/
 
 ## Troubleshooting
 
-**`trylock` returns nothing / non-zero.** Somebody else holds the lock. That is
+**`trylock` exits non-zero with "held by".** Somebody else holds the lock. That is
 the answer, not an error. `qrdb lock status <key>` shows who.
 
-**Release or extend fails with "not lock holder".** Your fencing token is stale:
+**Release or extend fails with "caller is not the lock holder".** Your fencing token is stale:
 your TTL expired, the lock was taken by someone else, and your token no longer
 matches. Stop writing to the protected resource. Do not retry the release — the
 refusal is what prevented you from releasing a lock you no longer own.
@@ -130,9 +131,9 @@ backend is file or objstore, which keeps no leases to expire a lock. Run the
 server on the pebble or memory backend, in either mode.
 
 **A lock is still held after the server restarted.** That is deliberate: the
-lock's lease survives the restart and gets one full TTL from it. A holder that
-is still running keeps renewing; one that died loses the lock when that TTL
-runs out.
+lock's lease survives the restart, and its countdown resumes from its last
+checkpoint, or from a full TTL when it has none. A holder that is still running
+keeps renewing; one that died loses the lock when that TTL runs out.
 
 **`acquire` times out.** Raise `--wait`, or use `trylock` and skip the run. Note
 that `--wait 0` falls back to the global `--timeout`.
