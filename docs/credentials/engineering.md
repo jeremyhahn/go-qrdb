@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -166,8 +166,7 @@ than change the interface.
   reachable: a stale meta entry whose version key is already gone reads as
   expired, and a stale version key with no meta entry reads as not-found.
   Under `manual` the enclave-backed version map and meta sidecar are dropped
-  under the same lock as the current credential, so this was already true
-  there; the barrier strategy was the gap (go-qrdb creddel blocker).
+  under the same lock as the current credential.
 - **GC reaps only expired historical versions** — it never touches the current
   one.
 - **Secret references resolve to protected targets, not strings.** A protected
@@ -186,7 +185,7 @@ than change the interface.
 | Protected config field with no secret reference | resolution fails | **yes** |
 | Unresolvable `credential://` reference at boot | boot fails | **yes** |
 | Resolved value cannot be sealed (`NewSecretValue`) | `*secret.SealFailedError`, resolution fails | **yes** |
-| `ListCredentials` on a future HSM-only strategy | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
+| `ListCredentials` on a backend that cannot enumerate | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
 | Missing `credentials:*` permission | permission denied | **yes** |
 
 The "blocks rather than returns empty" property is the load-bearing one for the
@@ -197,7 +196,8 @@ continue with no credential at all.
 
 `credentials:submit`, `credentials:strategy`, `credentials:list`,
 `credentials:store`, `credentials:retrieve`, `credentials:rotate`,
-`credentials:delete`, plus the version-specific grants. **Write, rotate and
+`credentials:delete`, `credentials:retrieve_version`,
+`credentials:list_versions`, `credentials:gc_expired`. **Write, rotate and
 delete custody secret material and are gated separately from reads.**
 
 ## Configuration

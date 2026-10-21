@@ -1,6 +1,6 @@
 # Clustering — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 Covers peer discovery, cluster formation, membership, node administration and
 shard rebalancing. **Raft mode only** — see
@@ -867,9 +867,8 @@ already running. A diagnostic must never be what starts a tenant.
   as a non-voting observer in the first place (`service.ObserverMemberAdder`,
   `qrdb admin member add-observer`) reuses the identical permission for the
   identical reason — it is how an operator reaches `member promote`'s
-  success path at all: a plain `member add` always votes, so without
-  `add-observer` there was no way to create the observer `member promote`
-  promotes. Both are served on every transport — see
+  success path at all: a plain `member add` always votes, so `add-observer`
+  is the only way to create the observer `member promote` promotes. Both are served on every transport — see
   [api.md](api.md#capability-matrix--node-administration).
 - **Replica state hashes are cross-scope** (`admin:state_hash`): they cover
   every tenant's shards on the node. A digest and a record count disclose no
@@ -886,13 +885,11 @@ already running. A diagnostic must never be what starts a tenant.
   transport forwards a leader-only refusal -- `*service.NotLeaderError`, or
   ceremony-initialize's `*service.AdminCredentialNotLeaderError` -- through
   that transport's own leader-forwarding path
-  ([../replica-forwarding/](../replica-forwarding/)): REST's existing
+  ([../replica-forwarding/](../replica-forwarding/)): REST's
   system-leader forwarding (`tryForwardWrite`/`forwardToLeader`), and gRPC's,
   QUIC's and MCP's own leader methods on the same
-  `FrameForwarder`/`ReplicaForwarder` each already carries for the
-  per-database `NotAReplicaError` path. Before this, gRPC, QUIC and MCP
-  forwarded only the ceremony's refusal, so a membership change sent to a
-  follower over them answered `not leader`. The Unix socket
+  `FrameForwarder`/`ReplicaForwarder` each carries for the
+  per-database `NotAReplicaError` path. The Unix socket
   forwards as gRPC does -- it serves the gRPC services -- and the embedded
   transport forwards as its QUIC client transport does.
 - **A request holds through a leaderless moment instead of failing.** A

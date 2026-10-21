@@ -1,6 +1,6 @@
 # Secret-reference resolution (`pkg/secret`)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -50,7 +50,7 @@ Read a secret through `WithBytes` (or `Open`), which keeps the plaintext in
 mlocked memory and wipes the working copy when the callback returns:
 
 ```go
-err := sv.WithBytes(func(plaintext []byte) error {
+err := sv.WithBytes(ctx, func(plaintext []byte) error {
     return useSecret(plaintext) // valid only for this call; do not retain
 })
 ```
@@ -102,7 +102,7 @@ type DatabaseConfig struct {
 
 The config document does not change. `SecretValue` decodes from — and
 re-encodes to — the plain reference string in both YAML and JSON, so
-`password: "credential://db-key"` still reads exactly as it did, and a
+`password: "credential://db-key"` reads the same for either field type, and a
 re-serialized config emits the reference rather than the resolved value. A
 non-scalar node fails with `SecretValueDecodeError`, and so does JSON `null` —
 a null where a reference belongs is a configuration mistake, not an empty
@@ -112,7 +112,7 @@ or null key simply leaves the pointer nil.
 After `Process`, read the secret through the enclave-respecting accessor:
 
 ```go
-err := cfg.Database.Password.WithBytes(func(pw []byte) error {
+err := cfg.Database.Password.WithBytes(ctx, func(pw []byte) error {
     return db.Connect(cfg.Database.Host, pw)
 })
 ```
@@ -147,9 +147,8 @@ it.
 `ProcessResult.ProtectedUnresolved` is non-empty — choosing the type *is* the
 request to fail closed on that field, and a caller who reads only the error,
 which is the normal Go contract, must not be told a config is ready when a
-secret it declared protected is missing or unverified. The deprecated `string`
-path keeps its old contract: there, a failure is a diagnostic you opt into with
-`WithFailClosed()`.
+secret it declared protected is missing or unverified. On the deprecated `string`
+path a failure is a diagnostic you opt into with `WithFailClosed()`.
 
 **A plain `string` field whose value resolved but cannot be read back fails
 closed too.** The resolver's result is sealed on the way in; if it cannot be
@@ -237,8 +236,7 @@ Turn the option on, read the list, convert those fields to `SecretValue` one at
 a time, and the list shrinks to empty. Add `WithFailClosed()` once it is, and
 any boot that would have produced a plaintext string fails instead.
 
-Both options are opt-in. With no options the processor behaves exactly as it
-always has, so nothing breaks on upgrade.
+Both options are opt-in.
 
 ## Scheme ownership across the stack
 
