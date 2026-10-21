@@ -210,9 +210,27 @@ when:
   - expression: subject.email matches "^[a-z]+@example\\.com$"
 ```
 
+The escapes are exactly RFC 8259's: `\"`, `\\`, `\/`, `\b`, `\f`, `\n`,
+`\r`, `\t` and `\uXXXX` with four hex digits; a character outside the Basic
+Multilingual Plane is written as a UTF-16 surrogate pair of two `\uXXXX`
+escapes. A quoted value is decoded once, when the condition is parsed, and
+compares equal to the attribute value it decodes to:
+
+```yaml
+when:
+  # matches the attribute value: R&D, "core" and ops
+  - expression: subject.attrs.department == "R&D, \"core\" and ops"
+```
+
 An unquoted value keeps its meaning and is read as written. A quoted value is
 a whole operand or list element; JSON double quotes are the only quoting form.
 `Parse` returns `ConditionParseError` for an unterminated quote, an escape
-RFC 8259 does not define (a regular expression writes `\.` as `\\.`), an
-unescaped control character, text that is not UTF-8, text joined to a quoted
+RFC 8259 does not define (a regular expression writes `\.` as `\\.`), a
+`\uXXXX` escape without four hex digits, a surrogate escape that is not half
+of a high-then-low pair (RFC 8259 section 8.2 leaves its meaning
+unpredictable, so it is refused rather than replaced), an unescaped control
+character (U+0000 to U+001F), text that is not UTF-8, text joined to a quoted
 value, and a single-quoted value, whose error names the double-quoted form.
+The error's `Offset` is the byte offset in its `Expression` at which the
+failure was found: the offending byte of a quoted value, or the start of the
+operand that could not be parsed.

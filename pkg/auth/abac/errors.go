@@ -93,19 +93,26 @@ func (e *CompilationFailedError) Unwrap() error { return e.Err }
 
 // ConditionParseError is returned when a condition expression cannot be
 // parsed, including when a quoted value is unterminated, holds an escape
-// RFC 8259 does not define or an unescaped control character, or is quoted
-// with single quotes (the reason names the JSON double-quoted form).
+// RFC 8259 does not define, an unpaired UTF-16 surrogate escape or an
+// unescaped control character, or is quoted with single quotes (the reason
+// names the JSON double-quoted form).
 type ConditionParseError struct {
 	// Expression is the condition expression that failed to parse.
 	Expression string
+
+	// Offset is the byte offset in Expression at which the failure was
+	// found: the offending byte of a quoted value, or the start of the
+	// operand that could not be parsed.
+	Offset int
 
 	// Reason describes the parse failure.
 	Reason string
 }
 
-// Error returns a human-readable description of the parse failure.
+// Error implements the error interface.
 func (e *ConditionParseError) Error() string {
-	return "qrdb/auth/abac: failed to parse condition " + strconv.Quote(e.Expression) + ": " + e.Reason
+	return "qrdb/auth/abac: failed to parse condition " + strconv.Quote(e.Expression) +
+		" at byte " + strconv.Itoa(e.Offset) + ": " + e.Reason
 }
 
 // AttributeMatcherError is returned when a subject attribute matcher uses

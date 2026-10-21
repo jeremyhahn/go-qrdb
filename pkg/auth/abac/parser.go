@@ -157,11 +157,11 @@ func (p *ConditionParser) parseComparison(expr, mask string) (CompiledCondition,
 		if idx == -1 {
 			continue
 		}
-		left, err := parseOperand(expr, expr[:idx])
+		left, err := parseOperand(expr, 0, idx)
 		if err != nil {
 			return nil, err
 		}
-		right, err := parseOperand(expr, expr[idx+len(comparison.token):])
+		right, err := parseOperand(expr, idx+len(comparison.token), len(expr))
 		if err != nil {
 			return nil, err
 		}
@@ -172,7 +172,7 @@ func (p *ConditionParser) parseComparison(expr, mask string) (CompiledCondition,
 		if !strings.HasSuffix(mask, existence.token) {
 			continue
 		}
-		field, err := parseOperand(expr, strings.TrimSuffix(expr, existence.token))
+		field, err := parseOperand(expr, 0, len(expr)-len(existence.token))
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +180,7 @@ func (p *ConditionParser) parseComparison(expr, mask string) (CompiledCondition,
 	}
 
 	// Simple field reference (for boolean fields)
-	field, err := parseOperand(expr, expr)
+	field, err := parseOperand(expr, 0, len(expr))
 	if err != nil {
 		return nil, err
 	}
