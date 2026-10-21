@@ -631,7 +631,9 @@ func TestAll_TotalCount(t *testing.T) {
 	//   (go-qrdb#801) = 392 total.
 	// + 3 device perms (devices:onboard, ota:activate, ota:confirm), each
 	//   tenant acting on its own devices only (ScopeSelf) = 395 total.
-	const expectedTotal = 395
+	// + 8 verifiable-log perms (vlog:create/list/append/get/proof/head/
+	//   expire/sign_head), tenant-scoped (ScopeSelf) = 403 total.
+	const expectedTotal = 403
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)
