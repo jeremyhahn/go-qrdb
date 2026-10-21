@@ -1,6 +1,6 @@
 # Trust Anchors — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Packages
@@ -40,6 +40,8 @@ const MaxAnchorsPerTenant = 32
 
 func NewKVRegistry(store kvstore.KVStore, opts ...KVOption) *KVRegistry
 func WithClock(now func() time.Time) KVOption
+func WithAnchorAuditLogger(l audit.AuditLogger) KVOption
+func WithAnchorAuditPolicy(p audit.FailurePolicy) KVOption
 
 func Observe(r Registry, onChange func()) Registry
 type Changes struct{ /* lock-free subscriber list */ }
@@ -57,12 +59,21 @@ func VerifyClientCertificateAgainst(tenantID string, anchors []*x509.Certificate
 
 ## Storage (`KVRegistry`)
 
-Each anchor is one record at `__sys:trust-anchor/{fingerprint}` inside
-`tenant.IdentityNamespace(tenantID)` of the replicated store the login CA uses.
-The `__sys:` prefix cannot collide with data-plane keys, whose database names
-cannot contain `:`. `Add` validates the whole bundle with `ParseAnchors`
-before writing anything, skips anchors already registered, and refuses a
-result above `MaxAnchorsPerTenant`.
+A tenant's whole anchor set is one record, `__sys:trust-anchor-set`, keyed by
+fingerprint, inside `tenant.IdentityNamespace(tenantID)` of the replicated
+store the login CA uses. The `__sys:` prefix cannot collide with data-plane
+keys, whose database names cannot contain `:`. `Add` validates the whole
+bundle with `ParseAnchors` before writing anything, skips anchors already
+registered, and refuses a result above `MaxAnchorsPerTenant`. `Add` and
+`Remove` apply as one compare-and-swap of the set, so the cap check and the
+write cannot race; a store without `kvstore.AtomicKVStore` is refused with
+`AtomicStoreRequiredError`, and a swap that keeps losing ends in
+`ConcurrentUpdateError` with nothing applied.
+
+With `WithAnchorAuditLogger`, `Add` and `Remove` write `trust_anchor.add` and
+`trust_anchor.remove` to the audit trail before the change commits;
+`WithAnchorAuditPolicy` (`auth.audit_failure_policy`, fail-closed by default)
+decides whether a change the trail cannot record is refused.
 
 ## Composition
 
@@ -77,7 +88,9 @@ n.CertProv = cert.NewDefaultProvider(certStore, barrier,
 // ... later, over the tenant-routed IAM services:
 anchors := infra.TrustAnchors          // server.WithTrustAnchors, via ResolveCryptoOptions
 if anchors == nil {
-	anchors = trustanchor.NewKVRegistry(certStore)
+	anchors = trustanchor.NewKVRegistry(certStore,
+		trustanchor.WithAnchorAuditLogger(infra.AuditLogger),
+		trustanchor.WithAnchorAuditPolicy(infra.AuditFailurePolicy))
 }
 n.TrustAnchors = trustanchor.Observe(anchors, n.ClientTrustChanges.Notify)
 ```
@@ -113,8 +126,9 @@ consulted.
 
 `EmptyBundleError`, `InvalidAnchorError{Index, Reason}`, `TooManyAnchorsError`,
 `AnchorNotFoundError`, `ExternallyManagedError`, `InvalidTenantError`,
-`StoreError`, `CertificateNotTrustedError`, `NoAnchorsError`. Their transport
-classes are rows in `pkg/api/errclass` (see [api.md](api.md)).
+`StoreError`, `CertificateNotTrustedError`, `NoAnchorsError`,
+`BundleTooLargeError`, `AtomicStoreRequiredError`, `ConcurrentUpdateError`.
+Their transport classes are rows in `pkg/api/errclass` (see [api.md](api.md)).
 
 ## Testing
 
@@ -131,4 +145,9 @@ classes are rows in `pkg/api/errclass` (see [api.md](api.md)).
 
 ## Integration Target
 
-Run `make integration-test-trust-anchors` for this feature. The target intentionally selects zero Go integration tests today; the gap is recorded in `test/integration/COVERAGE.md` under `trust-anchors`.
+Run `make integration-test-trust-anchors` for this feature. It runs
+`test/integration/tenant_trust_anchors_cli_test.go`, which drives
+`qrdb tenant trust-anchors` on every protocol: add, list and remove, the
+32-anchor cap, the typed refusals, cross-tenant confinement, and a
+bring-your-own certificate admitted while its anchor is registered and refused
+once it is removed.

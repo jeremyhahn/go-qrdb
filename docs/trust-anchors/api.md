@@ -1,6 +1,6 @@
 # Trust Anchors — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Register, list and remove a tenant's trust anchors on every transport.
@@ -83,7 +83,11 @@ Every certificate in a bundle must:
 
 - be a CA certificate (basic constraints present, `CA` true);
 - permit certificate signing, when it declares a key usage at all;
-- be inside its validity window at the time of the request.
+- be inside its validity window at the time of the request;
+- not be signed with MD2, MD5, SHA-1 or DSA;
+- carry an RSA key of at least 2048 bits, an ECDSA P-256, P-384 or P-521
+  key, or an Ed25519 key;
+- have a DER encoding of at most 16 KiB.
 
 Duplicates inside a bundle are collapsed, and re-adding an anchor the tenant
 already has is not an error. A tenant holds at most **32** anchors.
