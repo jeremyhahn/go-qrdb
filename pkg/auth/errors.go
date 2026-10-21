@@ -100,6 +100,43 @@ func (e *TenantNameMismatchError) Error() string {
 	return "subject OU " + strconv.Quote(e.OU) + " and SPIFFE ID tenant " + strconv.Quote(e.SPIFFETenant) + " disagree"
 }
 
+// UnknownTenantError is the cause carried by a *CertificateTenantError when a
+// client certificate's Subject OU and SPIFFE ID trust domain agree on a tenant
+// that does not exist. A trust domain names a tenant only once the tenant is
+// created; until then, and after it is deleted, the certificate names no one.
+type UnknownTenantError struct {
+	// TenantID is the tenant both fields named.
+	TenantID string
+}
+
+// Error names the tenant.
+func (e *UnknownTenantError) Error() string {
+	return "tenant " + strconv.Quote(e.TenantID) + " does not exist"
+}
+
+// TenantLookupError reports that the tenant a client certificate names could
+// not be looked up. Like RevocationCheckError it is a refusal, not a denial:
+// the certificate may be good and this node could not read the tenant record,
+// so transports answer 503 / UNAVAILABLE and the client retries.
+type TenantLookupError struct {
+	// TenantID is the tenant the certificate named.
+	TenantID string
+	// Err is the underlying lookup failure.
+	Err error
+}
+
+// Error names the tenant and the lookup failure.
+func (e *TenantLookupError) Error() string {
+	msg := "qrdb/auth: tenant " + strconv.Quote(e.TenantID) + " lookup failed"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying lookup failure.
+func (e *TenantLookupError) Unwrap() error { return e.Err }
+
 // IssuerTenantMismatchError reports that a verified client certificate's
 // issuing CA is neither the cluster CA (Key A) nor the Key B CA registered
 // for the tenant the certificate's Subject names. It matches

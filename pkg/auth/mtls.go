@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Compile-time interface check.
@@ -76,6 +77,47 @@ type MTLSAuthenticator struct {
 	// tenant-issued delegations for (WithDelegatedPrincipal). Empty refuses
 	// every delegation.
 	delegatedPrincipal string
+
+	// tenants, when non-nil, is consulted on EVERY authentication naming a
+	// tenant other than the system tenant: the tenant must exist
+	// (WithTenantDirectory). Nil means the check is not enforced.
+	tenants TenantDirectory
+}
+
+// TenantDirectory reports whether a tenant exists. It is the seam through
+// which the mTLS authenticator holds a certificate's trust domain to the
+// tenants the cluster actually has: a SPIFFE ID names its tenant as the trust
+// domain, and a trust domain no tenant was created for names no one.
+type TenantDirectory interface {
+	// TenantExists reports whether tenantID names a tenant. An error is a
+	// failed lookup, never an absent tenant.
+	TenantExists(ctx context.Context, tenantID string) (bool, error)
+}
+
+// WithTenantDirectory makes the authenticator refuse a certificate naming a
+// tenant the directory does not know, with a *CertificateTenantError carrying
+// *UnknownTenantError, and a certificate whose tenant the directory could not
+// look up with a *TenantLookupError. The system tenant is never looked up: it
+// always exists, and it is the tenant a cluster bootstraps through.
+func WithTenantDirectory(d TenantDirectory) MTLSOption {
+	return func(a *MTLSAuthenticator) {
+		a.tenants = d
+	}
+}
+
+// checkTenantExists applies WithTenantDirectory's rule to tenantID.
+func (a *MTLSAuthenticator) checkTenantExists(ctx context.Context, tenantID string) error {
+	if a.tenants == nil || tenantid.IsSystem(tenantID) {
+		return nil
+	}
+	exists, err := a.tenants.TenantExists(ctx, tenantID)
+	if err != nil {
+		return &TenantLookupError{TenantID: tenantID, Err: err}
+	}
+	if !exists {
+		return &CertificateTenantError{Err: &UnknownTenantError{TenantID: tenantID}}
+	}
+	return nil
 }
 
 // IssuerVerifier binds a verified client certificate's claimed tenant
@@ -392,6 +434,10 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	// refused.
 	tenantID, err := a.TenantFromCert(cert)
 	if err != nil {
+		return nil, err
+	}
+	// The tenant they name must exist.
+	if err := a.checkTenantExists(ctx, tenantID); err != nil {
 		return nil, err
 	}
 	id.TenantID = tenantID

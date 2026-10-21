@@ -29,6 +29,8 @@
 package wiring
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -39,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -171,10 +174,18 @@ type AuthMiddlewareConfig struct {
 	StrictSeparation bool
 
 	// SPIFFETrustDomain, when non-empty, pins the mTLS authenticator to a
-	// SPIFFE trust domain (auth.NewMTLSAuthenticatorWithTrustDomain);
-	// empty uses auth.NewMTLSAuthenticator with the legacy Subject-OU
-	// tenant fallback.
+	// SPIFFE trust domain (auth.NewMTLSAuthenticatorWithTrustDomain), the
+	// cluster's own, which names no tenant; empty pins none and skips the
+	// cluster checks of auth.TenantFromClientCert.
 	SPIFFETrustDomain string
+
+	// Tenants is the tenant store the mTLS authenticator holds a
+	// certificate's tenant to (auth.WithTenantDirectory): a certificate
+	// whose OU and SPIFFE trust domain name a tenant this store does not
+	// have is refused. Nil means the node has no tenant service and so no
+	// tenant but the system tenant: a certificate naming any other is
+	// refused.
+	Tenants TenantGetter
 
 	// CertProvider, when non-nil, turns on per-request certificate-revocation
 	// enforcement: the mTLS authenticator consults it on every request and
@@ -370,6 +381,36 @@ func revocationChecker(provider cert.CertProvider, ttl time.Duration) auth.Revoc
 // *MissingServiceError so an embedder (e.g. an SDK node whose service graph
 // failed to construct one of them) fails loudly at boot instead of
 // silently serving every request unauthenticated.
+// TenantGetter reads a tenant's record; tenant.TenantServicer implements it.
+// A tenant that does not exist is tenant.ErrTenantNotFound.
+type TenantGetter interface {
+	GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
+}
+
+// tenantDirectory is the auth.TenantDirectory over a TenantGetter. With no
+// getter it knows no tenant.
+type tenantDirectory struct {
+	tenants TenantGetter
+}
+
+// Compile-time interface check.
+var _ auth.TenantDirectory = tenantDirectory{}
+
+// TenantExists reports whether tenantID has a tenant record.
+func (d tenantDirectory) TenantExists(ctx context.Context, tenantID string) (bool, error) {
+	if d.tenants == nil {
+		return false, nil
+	}
+	info, err := d.tenants.GetTenant(ctx, tenantID)
+	if errors.Is(err, tenant.ErrTenantNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info != nil, nil
+}
+
 func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, error) {
 	if !cfg.Enabled {
 		return nil, nil
@@ -412,7 +453,10 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	// nil checker leaves enforcement off — the same posture as before, reached
 	// explicitly.
 	revocation := revocationChecker(cfg.CertProvider, cfg.RevocationCacheTTL)
-	mtlsOpts := []auth.MTLSOption{auth.WithRevocationChecker(revocation)}
+	mtlsOpts := []auth.MTLSOption{
+		auth.WithRevocationChecker(revocation),
+		auth.WithTenantDirectory(tenantDirectory{tenants: cfg.Tenants}),
+	}
 	if cfg.IssuerVerifier != nil {
 		mtlsOpts = append(mtlsOpts, auth.WithIssuerVerifier(cfg.IssuerVerifier))
 	}

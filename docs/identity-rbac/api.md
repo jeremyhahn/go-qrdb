@@ -195,6 +195,22 @@ QUIC, MCP, and the gRPC and unix-socket `Connect`, which return the server's
 refusal as a typed `*transport.RequestError` of class `Unauthenticated` rather
 than a failed health check.
 
+**A login also needs the tenant to exist.** `TenantFromClientCert` checks only
+the certificate. The node's mTLS authenticator also requires that the tenant
+it names has been created. A trust domain names a tenant once that tenant is
+created, and stops naming one when the tenant is deleted. The authenticator
+reads this through `auth.WithTenantDirectory`, which qrdbd and the embedded
+node wire to the tenant service:
+
+- a certificate whose two fields agree on a tenant that does not exist is a
+  `*auth.CertificateTenantError` wrapping `*auth.UnknownTenantError` (401,
+  `UNAUTHENTICATED`);
+- a tenant record that cannot be read is a `*auth.TenantLookupError` (503,
+  `UNAVAILABLE`, retryable).
+
+The system tenant always exists and is not looked up. A node with no tenant
+service has no tenant except system.
+
 **Pass the cluster trust domain.** `clusterTrustDomain == ""` skips the two
 cluster checks and exists for tests. A composer passes the trust domain its CA
 issues under, the same value it configures the node with.
@@ -328,6 +344,8 @@ It never falls back to reading a delegation certificate as a user login.
 | Tenant | the SPIFFE SAN does not name the grant's tenant, or does not name the principal as a service | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
 | Tenant | the SPIFFE SAN is missing or malformed, the first Subject OU is missing and the SAN is not under the cluster trust domain, or names a different tenant from the SAN's trust domain, or names the cluster trust domain | 401 | `UNAUTHENTICATED` — `*auth.CertificateTenantError` |
 | Not the platform | the grant's tenant is the system tenant | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
+| Tenant exists | the grant's tenant was never created, or was deleted | 401 | `UNAUTHENTICATED` — `*auth.CertificateTenantError` wrapping `*auth.UnknownTenantError` |
+| Tenant exists | the tenant record cannot be read | 503 | `UNAVAILABLE` — `*auth.TenantLookupError` |
 | Issuer | the leaf's direct issuer is not that tenant's own registered login CA | 401 | `UNAUTHENTICATED` — `*auth.DelegationRefusedError` |
 
 `DelegationRefusedError` matches `auth.ErrInvalidCertificate`, so QUIC and MCP

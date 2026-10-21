@@ -1589,6 +1589,7 @@ var authSamples = []error{
 	&authmw.TenantOwnerUnresolvedError{},
 	&authmw.BarrierSealedError{Err: seal.ErrBarrierSealed},
 	&auth.RevocationCheckError{},
+	&auth.TenantLookupError{},
 	&authmw.UserDisabledError{},
 	&authmw.AuthMethodNotPermittedError{},
 	&authmw.CertBindingNotPermittedError{},

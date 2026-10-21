@@ -194,6 +194,9 @@ func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []
 	if tenantid.IsSystem(g.Tenant) {
 		return nil, &DelegationRefusedError{Reason: "the system tenant cannot delegate"}
 	}
+	if err := a.checkTenantExists(ctx, g.Tenant); err != nil {
+		return nil, err
+	}
 	tv, ok := a.issuerVerifier.(TenantIssuerVerifier)
 	if !ok || len(chain) < 2 {
 		return nil, &DelegationRefusedError{Reason: "issuer cannot be bound to the tenant"}

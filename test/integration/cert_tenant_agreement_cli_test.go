@@ -28,9 +28,12 @@
 package integration_test
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -168,5 +171,107 @@ func testCertTenantAgreementOverProtocol(t *testing.T, node *multiProtoNode, adm
 	}
 	if out, err := runCLIProto(t, node, proto, "roles", "delete", role.ID); err != nil {
 		t.Fatalf("[%s] roles delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+}
+
+// TestCertTenantAgreement_CLI_TenantCertNamesItsTenant_PerProtocol proves the
+// rule for a tenant other than system: a certificate whose OU and SPIFFE ID
+// SAN, spiffe://<tenant>/user/<name>, both name tenant A acts in tenant A on
+// every transport and in no other tenant; and a certificate whose two fields
+// agree on a tenant that was never created names no one.
+func TestCertTenantAgreement_CLI_TenantCertNamesItsTenant_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testTenantCertOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testTenantCertOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	tenantA := "spa-" + suffix
+	tenantB := "spb-" + suffix
+	dbA := "spdb-a-" + suffix
+	dbB := "spdb-b-" + suffix
+	const key = "greeting"
+
+	createTenant(t, node, proto, tenantA, "SPIFFE Tenant A", "prefix", false)
+	createTenant(t, node, proto, tenantB, "SPIFFE Tenant B", "prefix", false)
+	certA, keyA := provisionTenantIdentity(t, node, tenantA, "db-admin", dataPlanePermissions)
+	certB, keyB := provisionTenantIdentity(t, node, tenantB, "db-admin", dataPlanePermissions)
+	requireSPIFFEID(t, certA, "spiffe://"+tenantA+"/user/"+adminUser)
+	connA := tenantCLIArgsForProto(node, proto, certA, keyA)
+	connB := tenantCLIArgsForProto(node, proto, certB, keyB)
+
+	valueA := "tenant-a-" + suffix
+	valueB := "tenant-b-" + suffix
+	for _, step := range []struct {
+		conn []string
+		args []string
+	}{
+		{connA, []string{"database", "create", dbA, "--backend", "pebble"}},
+		{connB, []string{"database", "create", dbB, "--backend", "pebble"}},
+		{connA, []string{"--database", dbA, "kv", "put", key, valueA}},
+		{connB, []string{"--database", dbB, "kv", "put", key, valueB}},
+	} {
+		if out, err := runQRDB(t, node.cli, step.conn, step.args...); err != nil {
+			t.Fatalf("[%s] %v: %v\noutput: %s", proto.name, step.args, err, out)
+		}
+	}
+
+	// Tenant A's certificate acts in tenant A.
+	if out, err := runQRDB(t, node.cli, connA, "--database", dbA, "kv", "get", key); err != nil || strings.TrimSpace(out) != valueA {
+		t.Fatalf("[%s] tenant A reading its own database = %q (err=%v), want %q", proto.name, out, err, valueA)
+	}
+
+	// The same certificate is refused tenant B's data, read and write.
+	if out, err := runQRDB(t, node.cli, connA, "--database", dbB, "kv", "get", key); err == nil || strings.Contains(out, valueB) {
+		t.Fatalf("[%s] tenant A's certificate read tenant B's database: %s (err=%v)", proto.name, out, err)
+	}
+	if out, err := runQRDB(t, node.cli, connA, "--database", dbB, "kv", "put", key, "hostile"); err == nil {
+		t.Fatalf("[%s] tenant A's certificate wrote tenant B's database: %s", proto.name, out)
+	}
+	if out, err := runQRDB(t, node.cli, connB, "--database", dbB, "kv", "get", key); err != nil || strings.TrimSpace(out) != valueB {
+		t.Fatalf("[%s] tenant B's value after the refused write = %q (err=%v), want %q", proto.name, out, err, valueB)
+	}
+
+	// A certificate from the same CA whose OU and SPIFFE ID agree on a
+	// tenant that was never created is refused as a certificate, before any
+	// account or permission is consulted.
+	ghost := "spg-" + suffix
+	kp := node.ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(adminUser, ghost))
+	requireSPIFFEID(t, kp.CertPath, "spiffe://"+ghost+"/user/"+adminUser)
+	out, err := runQRDB(t, node.cli, tenantCLIArgsForProto(node, proto, kp.CertPath, kp.KeyPath), "--database", dbA, "kv", "get", key)
+	if err == nil {
+		t.Fatalf("[%s] a certificate for a tenant that does not exist was admitted: %s", proto.name, out)
+	}
+	if want := fmt.Sprintf("tenant %q does not exist", ghost); !strings.Contains(out, "client certificate is invalid or unverified") || !strings.Contains(out, want) {
+		t.Fatalf("[%s] want the invalid-certificate refusal naming %q, got: %s", proto.name, want, out)
+	}
+}
+
+// requireSPIFFEID fails t unless the PEM certificate at certPath carries
+// exactly one URI SAN, want.
+func requireSPIFFEID(t *testing.T, certPath, want string) {
+	t.Helper()
+	raw, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", certPath, err)
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		t.Fatalf("%s holds no PEM block", certPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse %s: %v", certPath, err)
+	}
+	if len(cert.URIs) != 1 || cert.URIs[0].String() != want {
+		t.Fatalf("%s URI SANs = %v, want [%s]", certPath, cert.URIs, want)
 	}
 }

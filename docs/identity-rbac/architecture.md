@@ -97,7 +97,10 @@ domain (`auth.spiffe_trust_domain`, which defaults to
 no tenant shares the cluster's trust bundle. A certificate missing either name,
 whose two names disagree (which is how a foreign trust domain presents), whose
 OU names the cluster trust domain, or with no OU and a SAN under a foreign
-trust domain is refused (`*auth.CertificateTenantError`). Both of qrdb's CAs
+trust domain is refused (`*auth.CertificateTenantError`). So is one whose two
+names agree on a tenant that was never created or has been deleted
+(`*auth.UnknownTenantError`): a trust domain names a tenant only while that
+tenant exists. The system tenant always exists. Both of qrdb's CAs
 always issue the pair and refuse to mint one whose SAN would disagree with its
 OU. See
 [../certificate-authority/](../certificate-authority/architecture.md#how-an-issued-certificate-names-its-tenant).

@@ -382,6 +382,12 @@ var authFailureRules = []struct {
 		var e *auth.RevocationCheckError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
+	// Likewise the tenant the certificate names: this node could not read
+	// its record, which says nothing about whether it exists.
+	{"auth.TenantLookupError", func(err error) (AuthFailureClass, bool) {
+		var e *auth.TenantLookupError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
 	{"UserDisabledError", func(err error) (AuthFailureClass, bool) {
 		var e *UserDisabledError
 		return AuthFailureUnauthorized, errors.As(err, &e)

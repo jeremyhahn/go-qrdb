@@ -65,6 +65,16 @@ var classCases = []struct {
 		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
 	{
+		name:  "TenantLookupError -- the certificate's tenant could not be read",
+		err:   &auth.TenantLookupError{TenantID: "acme", Err: errors.New("store down")},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		name:  "UnknownTenantError -- the certificate names no created tenant",
+		err:   &auth.CertificateTenantError{Err: &auth.UnknownTenantError{TenantID: "ghost"}},
+		class: AuthFailureUnauthenticated, http: http.StatusUnauthorized, grpc: codes.Unauthenticated,
+	},
+	{
 		name:  "rbac.PermissionDeniedError -- the ordinary denial",
 		err:   &rbac.PermissionDeniedError{Subject: "alice", Resource: "kv", Action: "put"},
 		class: AuthFailureUnauthorized, http: http.StatusForbidden, grpc: codes.PermissionDenied,
