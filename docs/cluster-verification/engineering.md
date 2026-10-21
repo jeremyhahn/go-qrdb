@@ -1,29 +1,7 @@
 # Cluster Verification — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> The design is [architecture.md](architecture.md), whose
-> [Decisions](architecture.md#decisions) settle the checker, the
-> container, the seal types, the soak length and the read mode.
->
-> Corrected 2026-10-12, when the soak landed, to the code as built: the
-> history is one record per operation (call and return in one line), not
-> invoke/complete pairs, and carries no revision, node or read mode; the
-> ledger is a check over the history, not a file of its own; nemesis events
-> go to their own file and meet the history in `timeline.jsonl`; the fault
-> names are the registered ones; and the bundle holds what the run can
-> observe today — node logs and metrics are not collected yet.
->
-> Updated 2026-10-12 for container mode:
-> [Container mode and BOOT-01](#container-mode-and-boot-01) and
-> [The inventory](#the-inventory).
->
-> Corrected 2026-10-12, when the seal types were ruled: the run names its
-> seal type in `PROOF_SEAL` instead of the targets file declaring it;
-> `declared.seal_type` is gone; `kill` re-unseals through a new `unseal`
-> template; the bundle format is `2`.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -63,11 +41,11 @@ module that requires porcupine.
 
 The `clusterproof` tag set is declared in the Makefile's `SUPPORTED_TAG_SETS`,
 and `make vet-tags` typechecks the module under every declared set that names
-the tag on every CI run; a declaration with no such set fails the sweep
+the tag on every push to `main`; a declaration with no such set fails the sweep
 rather than vetting nothing. The BOOT-01 test itself is behind a second tag,
 `clusterproof_container`: it needs a container runtime and a cluster that
 no unit run has. Its own set, `codec_json,raft,clusterproof,clusterproof_container`,
-is declared beside the first, so the test is typechecked on every CI run and
+is declared beside the first, so the test is typechecked by that sweep and
 runs only under `make cluster-proof-boot`.
 
 ## The workload
@@ -311,8 +289,7 @@ timeout 10 ticks), the follower's window is at least 1.6 s and the lease is
 - **A wall-clock step is a no-op for the lease, so the harness has no
   clock-skew fault.** Neither the lease nor the followers' election timers
   read the wall clock. Setting `CLOCK_REALTIME` leaves `CLOCK_MONOTONIC`
-  alone, so a skewed node keeps its lease exactly as before. The earlier
-  `clock-skew` fault was replaced by `clock-rate` for that reason.
+  alone, so a skewed node keeps its lease exactly as before.
 - **A rate difference is what the 1% margin is for.** If the leader's clock
   runs slow by a fraction `r`, its lease lasts `0.99 / (1 − r)` of the
   follower's window in real time. A follower whose clock runs fast shortens
@@ -377,7 +354,7 @@ The fault runs `-check` on its target before it injects, and maps either
 exit to a typed `RefusedError`. A refusal fails the inject, so no window
 runs against a node it would not reach.
 
-#### Lease-read results (2026-10-12)
+#### Lease-read results
 
 `TestClusterFault_LeaseReadAfterLeaderChange` reads one key through the
 leader from eight clients while the majority elects a successor and
@@ -393,7 +370,7 @@ kernel. **No stale read was observed in any case.**
 An isolated leader often stepped down before its lease ran out. That costs
 availability, not safety.
 
-#### Rate-nemesis results (2026-10-13)
+#### Rate-nemesis results
 
 The `pause` gate ran on three local nodes (one kernel) with seal `none`,
 `lease_read` on and debug logs. The workload was gRPC, six clients on 16

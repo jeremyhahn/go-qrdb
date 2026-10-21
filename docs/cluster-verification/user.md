@@ -1,34 +1,7 @@
 # Cluster Verification — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> Updated 2026-10-14: the list of ports `qrdbd` listens on moved here from
-> the clustering guide, as the pinned port set a test now checks. Corrected
-> in the move: the trust-anchor (63006) and CSR-join (63007) listeners run
-> only when qrdbd manages the cluster CA, never on operator-supplied TLS; the
-> list now names the multicast discovery socket and the Unix socket, and says
-> that ports are picked free when no config file is given.
->
-> Corrected 2026-10-12, when the soak landed: a run needs a targets file to
-> inject faults; the bundle holds no node logs or metrics, and an
-> indeterminate outcome is `indeterminate`, not `info`; a cluster that does
-> not recover is a violation (exit `1`), and exit `2` means the run cannot
-> support a verdict.
->
-> Corrected 2026-10-12, when the replica-state read landed in clustering: the
-> third criterion is now decided, so a clean run can pass; the soak's
-> credential needs `admin:replica_state`.
->
-> Updated 2026-10-12 for container mode: the harness can bring the cluster
-> up from the release image and check it as BOOT-01. The owner's decisions on
-> the deployment form, the seal types and the read mode replace the open
-> questions this guide listed.
->
-> Corrected 2026-10-12, when the seal types were ruled: a run names its seal
-> type in `PROOF_SEAL`, and a sealed type needs an `unseal` command in the
-> targets file.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -283,11 +256,11 @@ without needing a cluster.
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | exit `1`, E4 fails | a node did not come back within the recovery bound, a shard has no leader, or a node refused the probe write | check that node's own log; confirm it restarts by hand; keep the bundle |
-| exit `2`, "faults never healed" | the harness lost access to a node mid-fault | heal the fault by hand (the reason names it), restore access, rerun |
+| exit `2`, "a fault did not heal" | the harness lost access to a node mid-fault | heal the fault by hand (the reason names it), restore access, rerun |
 | exit `2` before the run, `PROOF_SEAL` | no seal type given, or one the release does not ship | set `PROOF_SEAL` to `none`, `passphrase` or `shamir` |
 | exit `2` before the run, `PROOF_TARGETS unseal` | `kill` under a sealed type with no `unseal` command | add the `unseal` template to the targets file |
 | exit `2`, "a fault did not heal: kill" under a sealed type | the `unseal` command failed, so the node stayed sealed | run the command by hand on that node; check its credential |
-| exit `2`, "no fault was injected" | `PROOF_NEMESIS=none`, or a run too short for its first window | expected for a baseline; otherwise lengthen the run |
+| exit `2`, "no nemesis configured" or "the nemesis never injected a fault" | `PROOF_NEMESIS=none`, or a run too short for its first window | expected for a baseline; otherwise lengthen the run |
 | exit `2`, E3 unavailable, "cannot read replica states" | a node was unreachable, or refused the read — most often the credential lacks `admin:replica_state` or is not a `system`-tenant identity | the reason names the node and its refusal; fix the credential's role and rerun ([api.md](api.md#permissions)) |
 | exit `2`, E3 unavailable, "did not quiesce" | a shard's replicas were at different applied indexes when read | check the lagging node's log; a node still catching up after the last fault needs a longer `recovery_timeout` |
 | exit `1`, E3 fails, "diverges at applied index" | two replicas of a shard hold different state at one index | keep the bundle; read `qrdb admin replica-states` on each node by hand on a quiet cluster to confirm, then report it |

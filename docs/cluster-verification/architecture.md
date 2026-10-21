@@ -1,13 +1,7 @@
 # Cluster Verification — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> This folder is the requirements contract for the cluster proof harness. Its
-> design decisions are in [Decisions](#decisions).
-> One question the seal-type decision raised is still open: how a joined
-> node enrolls Shamir share holders ([Seal types](#seal-types)).
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -103,8 +97,8 @@ the gate.
 
 E1 to E4 are **absolute**: a single violation fails the gate, whatever else
 the run shows, and a criterion that cannot be decided makes the run invalid,
-never proven. E5 to E7 have no number yet. The first soak measures them; the
-owner ratifies a bound from that measurement; later runs are held to it. A run
+never proven. E5 to E7 have no number yet. The first soak measures them; a
+bound is ratified from that measurement; later runs are held to it. A run
 before ratification reports the figures and makes no pass or fail claim on
 them.
 
@@ -147,7 +141,7 @@ signs on its first boot, and a node that joined an existing cluster holds no
 key to sign one. The proof accepts `shamir`, and a run against such a cluster
 works the same way as `passphrase`; the in-CI test runs `none` and
 `passphrase` until a joined node can enroll holders. How a joined node does so
-is an owner decision.
+is not decided.
 
 ## Components
 

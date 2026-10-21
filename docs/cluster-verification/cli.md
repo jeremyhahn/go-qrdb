@@ -1,26 +1,7 @@
 # Cluster Verification — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> Corrected 2026-10-12, when the soak landed: the fault names are the ones
-> the code registers (`partition-isolate-leader`,
-> `partition-majority-minority`, `disk-full`, `slow-disk`; there is no `stop`
-> or `restart-all`), the default duration is 5 minutes, and the exit-code
-> table now says which outcomes are `1` and which are `2`. Three variables
-> the draft did not name — `PROOF_WORKLOAD`, `PROOF_TARGETS`, `PROOF_SEED` —
-> carry what a run cannot do without.
->
-> Updated 2026-10-12 for container mode: `make cluster-proof-boot` and
-> `PROOF_INVENTORY`.
->
-> Corrected 2026-10-12, when the seal types were ruled: `PROOF_SEAL` is
-> required, the outcome line names the seal type, and the in-CI SIGKILL test
-> runs once per seal type.
->
-> Updated 2026-10-13 for the rate nemesis: `clusterproof clock-rate`, the
-> command the `clock-rate` fault runs on a node.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
