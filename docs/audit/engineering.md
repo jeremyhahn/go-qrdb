@@ -1,6 +1,6 @@
 # Audit — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -115,13 +115,10 @@ func EmitBestEffort(ctx context.Context, sink AuditLogger, component string, ev 
 `AuditFailClosed` / `AuditFailOpen` / `ParseAuditFailurePolicy` /
 `AuditGateError` / `InvalidAuditFailurePolicyError`.
 
-**The posture lives in `pkg/audit`, not in `pkg/auth/middleware`.** It started
-there and could not stay: `pkg/auth/middleware` imports `pkg/auth`, so the
-security-officer factor in `pkg/auth` could never read a policy the middleware
-owned — which is exactly why the SO gate ran on a weaker posture than the
-authorization gate it sits behind. `middleware.AuditFailurePolicy` and
-`middleware.AuditError` no longer exist; the canonical names are
-`audit.FailurePolicy` and `audit.GateError`.
+**The posture lives in `pkg/audit`, not in `pkg/auth/middleware`.**
+`pkg/auth/middleware` imports `pkg/auth`, so the security-officer factor in
+`pkg/auth` could not read a policy the middleware owned, and the SO gate
+would run on a weaker posture than the authorization gate it sits behind.
 
 ## Composition
 
@@ -149,7 +146,7 @@ any barrier is built. The same sink is then handed to:
   `ceremony.CeremonyService.SetAuditLogger`, and `ceremony.HolderDeps.Audit`
   carries it to every tenant and database holder authority;
 - the user and role stores, the credential service, the authorization and SO
-  gates, and every protocol server, as before.
+  gates, and every protocol server.
 
 `sdk/go/node` passes the caller's `server.WithAuditLogger` sink as
 `Infra.AuditLogger` for every graph it builds with a seal barrier -- the
@@ -181,15 +178,6 @@ tenant registry (`seal.WithAuditTrail`) and the database barrier manager
 (`database.WithBarrierAuditTrail`). There is one trail and one emitter per
 event.
 
-> **Correction (now applied throughout).** Earlier revisions of this document
-> described a `New(cfg, kvStore)` factory selecting between `kvLogger`,
-> `fileLogger`, `multiLogger` and `noopLogger` on `audit.enabled` /
-> `kv_backend` / `file_backend` / `file_path`. **None of those identifiers has
-> ever existed.** The canonical names are the ones above. The KV-backed sink
-> and its `__sys:audit/{tenantID}/{timestamp_nano}` key layout were likewise
-> never implemented — the durable sink is the NDJSON chain file. The remaining
-> references have now been corrected rather than flagged.
-
 ## The Emit error contract
 
 **`Emit` returns `nil` if and only if the event reached that sink's durability
@@ -217,32 +205,26 @@ boundary and the sink is healthy.**
    ones that mean the record is not durable.
 
 **The returned error describes whether the RECORD IS DURABLE, not whether every
-housekeeping step succeeded.** That cuts both ways, and both directions have
-been defects here: an fsync failure once skipped advancing the hash chain over
-a record already in the file, and a rotation failure once refused a request
-whose record had persisted. The second was the worse of the two, because it did
-not stay one refusal — `rotate()` reopens unconditionally and re-stats the same
-oversized file, so the size bound stays exceeded and **every** subsequent
-`Emit` re-attempted the rotation. A directory that became unwritable while the
-open handle stayed writable therefore took the node to 503-on-every-request,
-including the tenant-barrier unseal an operator would use to recover, with a
-healthy trail throughout.
-
-A failed rotation is now re-attempted at most once per minute, so the fault
+housekeeping step succeeded.** A rotation failure must not refuse a request
+whose record persisted: `rotate()` reopens and re-stats the same oversized
+file, so the size bound stays exceeded and every later `Emit` would retry the
+rotation, taking the node to 503 on every request, including the
+tenant-barrier unseal an operator needs to recover. A failed rotation is
+re-attempted at most once per minute (`rotateRetryInterval`), so the fault
 costs a bounded amount rather than a chain-anchor line and a full-file rescan
 per event.
 
 **Reporting a failure and recording what landed are separate obligations.**
 The hash chain and the size always advance over bytes that reached the file,
 *before* any error is returned. An fsync failure arrives after the append has
-already put the record in the file; returning early without advancing
-`prevDigest` left the next event linking to the pre-failure digest, so
-`VerifyChain` reported `ChainBrokenError` on honest, untampered data. The
+already put the record in the file; returning without advancing `prevDigest`
+would leave the next event linking to the pre-failure digest, and
+`VerifyChain` would report `ChainBrokenError` on honest, untampered data. The
 condition for advancing the chain is `n == len(line)` — a short write leaves a
 torn line, which is not a record, and both `initPrevDigest` and
 `verifyChainSegment` skip a line that will not unmarshal.
 
-Truncating back to the pre-write offset was the alternative and is worse: a
+Truncating back to the pre-write offset is rejected: a
 second I/O on a disk that just failed one, destroying a record that genuinely
 landed, with a crash before it runs leaving exactly the inconsistency it was
 meant to prevent. Advancing needs no crash handling, because `initPrevDigest`
@@ -261,8 +243,7 @@ state the same value.
 
 | Function | Question it answers |
 |---|---|
-| `verifyChainSegment(ctx, path)` | is this one file internally sound, and what does it hand to its successor? |
-| `verifyChainFile(ctx, path)` | the same, discarding the handoff |
+| `verifyChainSegment(ctx, dir, path)` | is this one file internally sound, and what does it hand to its successor? |
 | `verifyChainSetAt(ctx, dir, path, generation)` | are every file in the rotation set sound **and** do they form one chain? |
 | `ChainFileLogger.VerifyChain(ctx)` | `verifyChainSetAt` over the sink's own directory, verdict only |
 | `ChainFileLogger.VerifyChainSet(ctx)` | the same, returning a `ChainVerification` |
@@ -304,11 +285,9 @@ first record of the new file must carry. On the healthy path the branch is one
 32-byte comparison that is always equal — no second marshal.
 
 `initPrevDigest` seeds the same way, and it must: a file opened after a
-rotation begins mid-chain, so folding it from zero produced a digest no record
-in the file agrees with and the next event written after a restart linked to
-it. That was a second face of the same defect, reached by restarting rather
-than by rotating, and it broke the chain *for real* rather than only in the
-reader. It still never reads the LAST record's stored `PrevHash`; only the
+rotation begins mid-chain, and folding it from zero would produce a digest no
+record in the file agrees with, which the next event written after a restart
+would link to, breaking the chain for real. It never reads the LAST record's stored `PrevHash`; only the
 starting point comes from the file, and only from the one record whose
 predecessor is not in the file to be folded.
 
@@ -340,7 +319,7 @@ is the wrong trade — it reads the entire trail, and every authorization
 decision in the node would block behind it. So the listing is taken, the walk
 runs, the listing is taken again; archive names are only ever added, so an
 unchanged listing means the walk saw one generation. Up to five attempts with a
-doubling backoff, then `*ConcurrentRotationError` — which says the trail moved,
+doubling backoff (`verifyScanAttempts`), then `*ConcurrentRotationError` — which says the trail moved,
 **not** that anything is wrong with it. Reporting a tamper verdict from a race
 is the one outcome worse than reporting nothing.
 
@@ -363,9 +342,7 @@ recovered panic cannot leave it odd and mask every later finding -- before its
 first listing and after its second.
 An attempt counts only if both reads are the same even value; any other attempt
 is a race, never an absence, and a walk that never gets a still view ends in
-`*ConcurrentRotationError`. It takes no lock. *(Corrected: the absence was
-judged on the listings alone, and a stalled rotation under host load was
-reported as a missing audit log on an honest trail.)*
+`*ConcurrentRotationError`. It takes no lock.
 
 The one edit the walk cannot distinguish from healthy operation is the removal
 of a contiguous **prefix** of the archives, because retention pruning does
@@ -377,9 +354,8 @@ from.
 before the record's `PrevHash` is fixed, so each file is self-contained —
 requires marshalling to get the line's length, rotating, recomputing the digest
 and marshalling again, on the sink every authorization decision traverses.
-Measured at a fixed iteration count on either side of the change,
 `BenchmarkChainFileLogger_Emit_NoSync` and `BenchmarkChainFileLogger_Emit_Rotating`
-are identical in allocations and within noise in time.
+measure the write path.
 
 ## Fail-closed on audit write failure
 
@@ -415,7 +391,7 @@ the split this design exists to remove.
 
 `SOMiddleware` distinguishes *a bad PIN* from *an unrecordable verification* by
 the `AuthFailureAuditUnavailable` class, not by the wider
-`AuthFailureUnavailable` it used to be part of. Guarding on
+`AuthFailureUnavailable`. Guarding on
 `AuthFailureUnavailable` would sweep in `*StoreUnavailableError` wrapping
 `tenant.ErrTenantSealed`, which is the signal the sealed-window fallbacks exist
 to act on. A wrong PIN on a healthy node is still `401 SO PIN verification
@@ -431,13 +407,9 @@ what status to answer: the tenant-barrier bootstrap fallbacks
 not record the decision" (`AuthFailureAuditUnavailable`, from `*audit.GateError`),
 while "the tenant's barrier is sealed" (`AuthFailureUnavailable`, from
 `*StoreUnavailableError` wrapping `tenant.ErrTenantSealed`) is exactly the
-signal those same fallbacks exist to admit. Before the split both conditions
-were one class, and the only thing keeping a control-flow branch from
-conflating opposite instructions was a comment and a test at each call site
-(`isAuditFailure`) -- narrower than the class, but not enforced by it. Now the
-type itself carries the distinction, so a future fallback written anywhere in
-this package inherits it by construction rather than by re-deriving the
-concrete-type check from scratch.
+signal those same fallbacks exist to admit. The type carries the distinction,
+so a fallback written anywhere in this package inherits it by construction
+rather than re-deriving a concrete-type check (`isAuditFailure`).
 
 **`SetSOPIN` and `RotateSOPIN` keep `EmitBestEffort` for their own mutation
 records, deliberately.** Their success record is written *after* `store.Put`
@@ -467,9 +439,8 @@ than the middleware*), and a log line is not something anyone can alert on; the
 counter is.
 
 `qrdb_auth_audit_write_failures_total` and `qrdb_audit_gate_failures_total`
-are deliberately separate rather than one relabelled counter: the first is
-older, and an operator's alert on it must keep meaning exactly what it meant
-rather than silently acquiring a new component.
+are deliberately separate rather than one relabelled counter: an operator's
+alert on the authorization counter keeps meaning authorization decisions only.
 
 `qrdb_audit_rotation_failures_total` is **deliberately separate** from the
 write-failure counters. Those mean *a record was lost*; this one means *the
@@ -493,7 +464,7 @@ There are exactly two honest answers:
 
 | Answer | When | How |
 |---|---|---|
-| **Propagate** | the record **gates** an operation that has not yet happened | `audit.EmitGated(ctx, sink, component, policy, ev)` — the SO gates. The authorization middleware propagates through `auditDecision`, which predates `EmitGated` and keeps its own counter; `sdk/go/transport/embedded.EmitAudit` returns the sink's error verbatim, because there the emit IS the caller's operation |
+| **Propagate** | the record **gates** an operation that has not yet happened | `audit.EmitGated(ctx, sink, component, policy, ev)` — the SO gates. The authorization middleware propagates through `auditDecision`, which keeps its own counter; `sdk/go/transport/embedded.EmitAudit` returns the sink's error verbatim, because there the emit IS the caller's operation |
 | **Log and count** | the operation has **already committed** and this is its post-hoc record | `audit.EmitBestEffort(ctx, sink, component, ev)` |
 
 ```go
@@ -517,21 +488,18 @@ than by omission, and it counts
 measurable at those sites too.
 
 **It is not a way to avoid choosing.** A caller reaching for it where the
-record *is* part of the decision has put the compliance property back where
-this feature found it.
+record *is* part of the decision has given up the compliance property.
 
-**The asymmetry is gone.** The SO dual-factor middleware and
-`auth.SOAuthenticator.VerifySOPIN` used to use `EmitBestEffort` for every
-outcome, including the PIN-verified success, on the argument that `SOMiddleware`
-runs *behind* an already-fail-closed authorization decision. That argument was
-real but partial — the authorization decision and the SO factor are two
-distinct assertions, written separately, and only one was guaranteed recorded.
-Both now propagate, on the same lever, and the lever reaches them because the
-posture type moved to `pkg/audit`.
+**Both SO gates propagate.** The SO dual-factor middleware and
+`auth.SOAuthenticator.VerifySOPIN` use `EmitGated` for every outcome, including
+the PIN-verified success: the authorization decision and the SO factor are two
+distinct assertions, written separately, and each must be recorded. Both read
+the same `audit.FailurePolicy`, which is why the posture type lives in
+`pkg/audit`.
 
 ## Event schema
 
-Target compliance schema (`pkg/audit/types.go`):
+`audit.AuditEvent` (`pkg/audit/audit_event.go`):
 
 | Field | Meaning |
 |---|---|
@@ -545,13 +513,7 @@ Target compliance schema (`pkg/audit/types.go`):
 | `Attributes` | JSON-serializable custom attributes |
 | `ClientIP` | from `X-Forwarded-For` or the remote address |
 | `RequestID` | for tracing across logs |
-| `PrevHash` | `sha256:<hex>` of the previous entry — the tamper-detection chain |
-
-> **Phased implementation.** The source documents the schema above as the
-> target, with `Role`, extended `Outcome`, `Attributes`, `ClientIP`,
-> `RequestID`, `PrevHash`, hash-chain computation/verification and the query API
-> arriving in a later phase than the base `Entry`. **Verify individual fields
-> against `pkg/audit/types.go` before depending on them.**
+| `PrevHash` | hex SHA-256 chain digest standing before this entry, empty for the first — the tamper-detection chain |
 
 ## Invariants
 
@@ -559,7 +521,7 @@ Target compliance schema (`pkg/audit/types.go`):
 - **The trail is not in the key-value store.** There is no audit key space and
   no audit state-machine record; durability is the append-only chain file, and
   recency is the in-memory ring.
-- **`ChainFileLogger` opens with `O_CREATE|O_APPEND|O_WRONLY`, mode `0600`**,
+- **`ChainFileLogger` opens with `O_CREATE|O_APPEND|O_RDWR`, mode `0600`**,
   and a mutex serializes concurrent writes.
 - **A query reaches a sink already confined to the caller's tenant.** Every
   transport passes its filter through `tenant.ConfineAuditFilter` before
@@ -590,41 +552,35 @@ Target compliance schema (`pkg/audit/types.go`):
   counter is meant to measure exactly.
 - **`NoopLogger.Close()` and `SlogSink.Close()` are no-ops** — neither owns a
   resource. `ChainFileLogger.Close()` closes the file it opened.
-- **Permission denials are audited** as `auth.denied` with the `ResultDenied`
-  result value.
+- **Permission denials are audited** as action `auth.authorize` with the
+  `ResultDenied` result value.
 - **`PrevHash` chains entries**, so an edit or deletion is detectable.
 
 ## File output format
 
-One JSON object per line:
+One JSON-encoded `AuditEvent` per line:
 
 ```json
-{"time":"2026-02-26T12:00:00Z","level":"INFO","msg":"audit",
- "tenant_id":"system","subject":"1","action":"user.create",
- "resource":"user:operator","result":"success",
- "event_time":"2026-02-26T12:00:00Z"}
+{"timestamp":"2026-02-26T12:00:00Z","actor":"1","tenant_id":"system",
+ "resource":"user:2","action":"create","outcome":"success",
+ "attributes":{"username":"operator"},"prev_hash":"<hex>"}
 ```
 
-With metadata, as a nested group:
-
-```json
-{"...":"...","metadata":{"reason":"key compromise"}}
-```
+A decision record from the authorization middleware maps `audit.Entry`
+through `NewDecisionLogger`: `Subject` becomes `actor`, `Result` becomes
+`outcome`, and `Metadata` becomes `attributes`.
 
 ## Audited events
 
 | Action | Resource format | Emitted by |
 |---|---|---|
-| `user.create` / `update` / `delete` / `enable` / `disable` | `user:{username}` | user management |
-| `role.create` / `update` / `delete` / `assign` / `unassign` | `role:{name}` | role management |
+| `create` / `update` / `delete` / `enable` / `disable` / `add_cert_binding` / `remove_cert_binding` | `user:{id}` | user management (`pkg/user`) |
+| `create` / `update` / `delete` / `reconcile` | `role:{id}` | role management (`pkg/role`) |
 | `cert.issue` | `cert:{serial}` | every signature by a tenant's login CA (`CertEnrollmentService.SignCertificate`): CSR issuance for an existing account |
 | `cert.enroll` | `user:{id}` | a bring-your-own certificate bound to an existing account (`CertEnrollmentService.EnrollCertificate`) |
 | `cert.revoke` | `cert:{serial}` | every revocation (`DefaultCertProvider.RevokeCert`), deny-by-serial included |
-| `initialize` / `unseal` / `seal` / `quorum-complete` / `distribute` / `change_password` / `enable_encryption` / `import-root-key` / `import-sealed-blob` / `holder-record-conflict` | `barrier` | every barrier -- system, tenant, database -- through `seal.NewComplianceAuditLogger`; see [../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability) |
-| `admin.drain` | `node:{id}` | admin operations |
-| `admin.snapshot` | `shard:{id}` | admin operations |
-| `admin.member.add` / `admin.member.remove` | `shard:{id}` | membership management |
-| `auth.denied` | `{resource}` | authentication middleware |
+| `initialize` / `unseal` / `seal` / `quorum-complete` / `distribute` / `change_password` / `enable_encryption` / `import-sealed-blob` / `holder-record-conflict` | `barrier` | every barrier -- system, tenant, database -- through `seal.NewComplianceAuditLogger`; see [../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability) |
+| `auth.authorize` | `{permission}` | the authorization middleware, every decision (`success` or `denied`) |
 | `holder-register` / `holder-claim` / `holder-quorum-submit` / `holder-rekey-start` / `holder-revoked` / `holder-unenrol` | `share-holder` | the share-holder engine (`pkg/ceremony`), every scope |
 
 The share-holder events carry the scope's owning tenant as `tenant_id` and
@@ -745,9 +701,7 @@ func ConfineAuditFilter(ctx context.Context, f audit.Filter) (audit.Filter, erro
 `request_id`, `prev_hash`) differ from `transport.AuditFilter` and
 `transport.AuditEvent` (`tenantID`, `clientIP`, ...). The REST, QUIC and MCP SDK
 clients convert through `sdk/go/transport/internal/auditconv`, as the embedded
-client does. Before that the QUIC client sent `tenantID`, which the server
-never read, and the REST, QUIC and MCP clients decoded every event without its
-tenant, client IP, request id and chain hash.
+client does.
 
 
 ## Persistence
@@ -768,14 +722,14 @@ archives older than its retention window (90 days by default). Retention is
 therefore a **deletion deadline, not a backup**: nothing copies an archive
 anywhere before it is removed.
 
-## The replicated chain (cluster-wide, phase 1 and 2)
+## The replicated chain (cluster-wide)
 
 See [architecture.md](architecture.md#cluster-wide-replicated-trail) for the
 design rationale and [Status of the replicated chain](architecture.md#status-of-the-replicated-chain)
 for exactly what has and has not shipped. This section is the implementation
 map.
 
-**Package layout, phase 1 (the apply-time mechanism).**
+**Package layout: the apply-time mechanism.**
 
 | File | Contents |
 |---|---|
@@ -798,11 +752,11 @@ map.
 | `pkg/server/tenant_host.go` | `newDataPlaneCreateFunc` builds a `vlog.Chain` per tenant and database state machine, as `cmd/qrdbd/start.go`'s `buildSMCreateFunc` does per node group |
 | `pkg/store/storetest/logs.go` | `RequireOwnLogsPerStateMachine` — the two-groups proof that no two state machines from one create function share a registry, run over every create function above |
 
-**Package layout, phase 2 (the entitlement, the proposer, and the read API).**
+**Package layout: the entitlement, the proposer, and the read API.**
 
 | File | Contents |
 |---|---|
-| `pkg/audit/query_request.go` | `QueryRequest`, `VerifyRequest` — the `Lookup` query types phase 1's dispatch answers |
+| `pkg/audit/query_request.go` | `QueryRequest`, `VerifyRequest` — the `Lookup` query types the apply-time dispatch answers |
 | `pkg/quota/types.go` | `Entitlements.AllowReplicatedAudit` |
 | `pkg/tenant/service.go` | `TenantService.ReplicatedAuditEnabled` |
 | `pkg/service/audit_shard_resolver.go` | `AuditShardResolver`, `AuditIsolationLookup`, `SystemShardAuditResolver` |
@@ -819,8 +773,7 @@ map.
 embedded transport (`server.WithReplicatedAuditLogger`, surfaced as
 `CryptoOptions.ReplicatedAuditLogger`), so `--replicated` query and chain
 verification answer the replicated chain on every transport. A logger the
-caller passes as a server option comes last and replaces the node's. Before
-this, the network transports of an SDK node answered the local trail only.
+caller passes as a server option comes last and replaces the node's.
 
 **Error classification at apply time.** `Chain.Append`/`Chain.Prune` errors
 split into exactly two buckets, and the handler on both engine families
@@ -843,42 +796,36 @@ makes the identical split:
   a fault in this replica's own already-committed storage, so it always
   halts.
 
-Two defects this classification caught during review, now pinned by
-regression tests: both engine families' `Append` error branches were
-dead-code duplicates of each other before the split above existed, and the
-MVCC handler originally returned every `Chain.Append` error as a halt rather
-than isolating `*vlog.TableWriteError` as the only halting case.
+Regression tests pin both engine families to this split, and pin
+`*vlog.TableWriteError` as the only halting `Append` error.
 
-**The reserved-keyspace read/compare fix.** Adding a second raw-keyspace
-table (the lease table was the first) alongside direct `Lookup`, transaction
-compares and `OpGuarded` compares surfaced a pre-existing gap: a compare's
+**Reserved keys are refused at every compare.** A compare's
 result (`CompareResultLess`/`Greater`, or simply whether it held at all) is
 observable to the proposer regardless of outcome, so evaluating one against
-a reserved key made an ordinary transaction or guarded write an extraction
-oracle over state no caller may read directly, and a version compare alone
-leaked whether a reserved key existed. Closed with one shared predicate,
-`statemachine.IsReservedKey`, enforced by `statemachine.ReservedKeyRefusal`
-at every compare key (`statemachine.CompareKeys`, mirroring the existing
-`OpKeys`) on `MVCCEngine`, `KVEngine` and `PebbleStateMachine` alike —
-`KVEngine` had no reserved-key protection anywhere before this (`Put`,
-`PutIfAbsent`, `Delete`, `Batch`, `Transaction`, `Guarded`), and
-`MVCCEngine`'s `Transaction`/`Batch` had none either. Every combination
+a reserved key (lease, audit or node-local table) would make an ordinary
+transaction or guarded write an extraction oracle over state no caller may
+read directly, and a version compare alone would leak whether a reserved key
+exists. One shared predicate, `statemachine.IsReservedKey`, is enforced by
+`statemachine.ReservedKeyRefusal` at every op key (`statemachine.OpKeys`) and
+every compare key (`statemachine.CompareKeys`) on `MVCCEngine`, `KVEngine`
+and `PebbleStateMachine` alike. Every combination
 (transaction/guard compare × lease/audit/node-local key × engine family) is
 tested in `reserved_key_compare_test.go` in both `pkg/engine` and
 `pkg/store`.
 
 **Unconditional attachment, not an opt-in flag.** `cmd/qrdbd/start.go`'s
 `buildSMCreateFunc` and `pkg/server/lifecycle.NewLocalEngine` attach a
-`*audit.Chain` to every `mvcc`/`pebble` state machine they build, with no
-configuration surface that could ever omit it (review finding N4) — see
+`*vlog.Chain` (the audit `Chain` is `audit.ChainOn` over it) to every
+`mvcc`/`pebble` state machine they build, with no configuration surface that
+could omit it — see
 [architecture.md's Status section](architecture.md#status-of-the-replicated-chain)
 for why a conditional attachment would be a cluster-state-divergence bug,
 not a degraded feature.
 
 **One chain per state machine, by construction.** The create function
-`buildSMCreateFunc` returns builds a fresh `audit.NewChain()` for every state
+`buildSMCreateFunc` returns builds a fresh `vlog.NewChain()` for every state
 machine instance it creates, and `NewLocalEngine` one per call; the daemon
-keeps no node-wide `Chain`. `Chain.Restore` replaces the whole head table, so
+keeps no node-wide `Chain`. `vlog.Chain.Restore` replaces the whole head table, so
 a `Chain` shared by two Raft groups would interleave their sequence numbers
 and let one group's open or recovery overwrite the other's heads.
 `cmd/qrdbd/audit_chain_per_sm_test.go` starts two groups from one create
