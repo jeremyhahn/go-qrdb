@@ -1,39 +1,30 @@
 # Key Wrapping — Architecture
 
-> **Status: NORMATIVE; lands incrementally — see each section's own note.**
-> Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 > Conflicts with this document are defects. Fix them here first.
 
 Envelope encryption for every data-encrypting key (DEK) go-qrdb mints, through
 **one** key-encrypting-key (KEK) seam that go-xkms and quicbaas compose
-hardware and cloud KMS backends into. Backup is the first consumer; the
-per-tenant DEK keyring ([tenant-dek](../tenant-dek/architecture.md)) is the
-second — see [The tenant DEK keyring](#the-tenant-dek-keyring) below.
+hardware and cloud KMS backends into. Its consumers are backup and the
+per-tenant DEK keyring ([tenant-dek](../tenant-dek/architecture.md)) — see [The tenant DEK keyring](#the-tenant-dek-keyring) below.
 
 ## Problem
 
-Three features in this repository need the same primitive — encrypt some
+Two features in this repository need the same primitive — encrypt some
 bytes with a key that is itself protected, and know later which protected key
-to ask for when decrypting — and until now none of them had it in a form a
-hardware backend could plug into:
+to ask for when decrypting — in a form a hardware backend can plug into:
 
-- **Backup** promised AES-256 encryption (`EncryptionAES256`) and validated a
-  key's length, but never actually encrypted a shard with it: the key was
-  checked and discarded, and every backup, "encrypted" or not, was written in
-  plaintext and labelled otherwise. The restore path accepted any key,
-  including a wrong one, because there was no ciphertext whose authentication
-  could fail.
+- **Backup** encrypts every shard under AES-256 (`EncryptionAES256`). A
+  restore must fail on a wrong key or a tampered artifact, which needs
+  authenticated ciphertext and a record of which key protects it.
 - **The tenant DEK keyring** ([tenant-dek](../tenant-dek/architecture.md))
-  wrapped its per-version keys with the per-tenant barrier before this
-  feature — correct for an operator with no hardware KMS, and a dead end
-  for one who has a TPM, an HSM, or a cloud KMS and wants the tenant
-  keyring's *key-encrypting* key to live there instead of in a
-  software-sealed barrier.
-- **Neither surface agreed on a seam go-xkms could compose a hardware backend
-  into.** A TPM2, PKCS#11 or cloud-KMS-backed KEK has exactly one shape that
-  matters here — wrap and unwrap a short byte string under a reference the
-  caller already has — and nothing in this repository named that shape before
-  now.
+  needs its per-version keys wrapped under a key-encrypting key that an
+  operator with a TPM, an HSM, or a cloud KMS can keep there rather than in
+  a software-sealed barrier.
+- **Both need one seam go-xkms can compose a hardware backend into.** A
+  TPM2, PKCS#11 or cloud-KMS-backed KEK has exactly one shape that matters
+  here — wrap and unwrap a short byte string under a reference the caller
+  already has.
 
 `cakey.Provider` ([certificate-authority](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey))
 already solved the identical problem for **signing**: one small interface,
@@ -55,8 +46,8 @@ package keywrap
 // bytes, the same discipline cakey.Provider holds for a CA signing key.
 //
 // Thread-safe: implementations must support concurrent Wrap/Unwrap calls
-// from every caller that holds this provider (backup today; the tenant
-// DEK keyring is the second caller).
+// from every caller that holds this provider (backup and the tenant DEK
+// keyring).
 type Provider interface {
 	// ProviderID identifies this provider's kind -- "software", "tpm2",
 	// "pkcs11", "aws-kms", and so on. Stored verbatim in every envelope
@@ -123,6 +114,7 @@ func NewSoftwareProvider(keyDir string) (*SoftwareProvider, error)
 func (p *SoftwareProvider) ProviderID() string // "software"
 func (p *SoftwareProvider) Wrap(ctx context.Context, keyRef string, dek []byte) ([]byte, error)
 func (p *SoftwareProvider) Unwrap(ctx context.Context, keyRef string, wrapped []byte) ([]byte, error)
+func (p *SoftwareProvider) Close() error        // releases the *os.Root
 ```
 
 **Every key file this provider ever opens lives directly inside ONE
@@ -131,10 +123,10 @@ configured directory, `keyDir`, opened once at construction as an `*os.Root`**
 compliance trail. `keyRef` is a **bare file name** inside that directory,
 **never a path**: `Wrap`/`Unwrap` refuse a `keyRef` that is empty, `"."`,
 `".."`, or contains a path separator, before ever asking the filesystem.
-This closes a filesystem oracle and a denial-of-service lever a prior draft
-of this provider had: `BackupOptions.KeyRef` /
-`RestoreOptions.DecryptionKeyRef` are values a caller on a network transport
-supplies, and resolving them as an unconstrained path let that caller probe
+This closes a filesystem oracle and a denial-of-service lever:
+`BackupOptions.KeyRef` / `RestoreOptions.DecryptionKeyRef` are values a
+caller on a network transport supplies, and resolving them as an
+unconstrained path would let that caller probe
 the server's filesystem (existence, permissions, size, via the error
 returned) and point the read at an arbitrarily large or infinite file (e.g.
 `/dev/zero`). The read is capped at 33 bytes regardless of the named file's
@@ -168,11 +160,12 @@ backup) depends on; instead, an operator adds `backup-v2.key` alongside
 restore of an old backup keeps asking for whichever `keyRef` it was created
 under (`BackupEnvelope.KeyRef`, overridable per restore via
 `RestoreOptions.DecryptionKeyRef` when the file's name on this node
-differs). `pkg/keywrap`'s own tests prove a backup made under `v1` still
-restores after `v2` exists in the same directory.
+differs). `pkg/keywrap`'s own tests prove a DEK wrapped under `v1` still
+unwraps after `v2` exists in the same directory; `pkg/service`'s prove a
+backup made under an old key reference still restores.
 
 **The key directory is a server-side configuration value, never
-caller-supplied.** `BackupServiceOption.WithKeyDir` (service construction)
+caller-supplied.** `service.WithKeyDir` (service construction)
 and `lifecycle.Infra.KeyDir` (composition) set it once; `cmd/qrdbd` exposes
 it as `--backup-key-dir`. Resolving the built-in `"software"` provider with
 no key directory configured refuses with `*BackupKeyDirNotConfiguredError`
@@ -182,12 +175,9 @@ current working directory.
 ### Alternatives rejected
 
 - **A raw key passed as `[]byte` straight into `BackupOptions`, no
-  provider seam at all.** Rejected: this is the shape that shipped and
-  never actually encrypted anything (the problem this feature fixes), and
-  it has no composition point for a hardware backend. See
-  [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value) for the
-  narrow, explicitly-labelled exception this design keeps for operators who
-  are not using a key file.
+  provider seam at all.** Rejected: it has no composition point for a
+  hardware backend, and it puts key bytes on the wire (see
+  [No inline key](#no-inline-key)).
 - **Encrypting shards directly under the KEK, no DEK.** Rejected:
   envelope encryption exists specifically so the expensive-to-protect key
   (the KEK, possibly in hardware) is invoked once per backup rather than
@@ -285,29 +275,26 @@ wrapped under, the backup's own ID and destination, and the EXACT sorted
 set of shard IDs with a SHA-256 digest of each shard's stored ciphertext.
 Restore authenticates it before touching a single shard and cross-checks
 its own backup ID/destination/provider against the metadata it was read
-alongside — a security review of this feature (go-qrdb,
-backup-encrypt-default) found that without it: (1) a dropped shard (removed
-from storage after creation) went undetected when the default restore
-target was derived from whatever the artifact still had rather than from
-an authenticated original set, and (2) `RestoreBackup` decrypted and
-imported shard by shard, so a single tampered shard aborted ONLY that
-shard — every shard already imported before it stayed imported, with no
-top-level error. Restore now runs two passes: pass 1 authenticates and
+alongside. Without it, (1) a dropped shard (removed from storage after
+creation) would go undetected when the default restore target is derived
+from whatever the artifact still has rather than from an authenticated
+original set, and (2) a restore that decrypts and imports shard by shard
+leaves every shard imported before a tampered one in place, with no
+top-level error. Restore therefore runs two passes: pass 1 authenticates and
 decrypts (or, for a plaintext backup, confirms the presence of) EVERY
 target shard; only once ALL of them pass does pass 2 import any of them.
 A verification failure anywhere returns one typed, top-level
 `*BackupVerificationFailedError` and imports nothing.
 
 **The stored metadata (`BackupInfo.Encryption`) and the artifact must
-agree about whether a backup is encrypted.** The same review found that
-because `BackupInfo.Encryption` was the only signal restore read to decide
-whether to decrypt at all, an attacker able to edit a backup's metadata
-independently of its cryptographic artifact (unix permissions on a
-file-backed sink, for instance) could flip it to `"none"`, substitute
-plaintext of their own choosing, and recompute the plaintext-coverage
-checksum (which was never itself authenticated) — and restore would import
-the substitution outright, never consulting the envelope that remained on
-disk. Restore now refuses with `*BackupMetadataMismatchError` whenever an
+agree about whether a backup is encrypted.** If `BackupInfo.Encryption` were
+the only signal restore read to decide whether to decrypt, an attacker able
+to edit a backup's metadata independently of its cryptographic artifact
+(unix permissions on a file-backed sink, for instance) could flip it to
+`"none"`, substitute plaintext of their own choosing and recompute the
+unauthenticated plaintext checksum, and restore would import the
+substitution without consulting the envelope still on disk. Restore
+therefore refuses with `*BackupMetadataMismatchError` whenever an
 envelope is present but the metadata claims `"none"`, or the metadata
 claims encryption but no envelope is stored — in EITHER direction, before
 reading anything else. This cannot detect a WHOLESALE substitution (an
@@ -327,36 +314,31 @@ can read an old backup correctly rather than guessing from its absence.
 Version `1` is this document's format, above, with `algorithm` always
 recorded as `"aes-256-gcm"`.
 
-**`none` backups carry no envelope at all** and stay exactly as readable as
-they always were — this feature changes nothing about the `none` path
-except, per the owner's standing ruling
-([backup-restore/architecture.md](../backup-restore/architecture.md)),
-that it is reached only by explicit request, never by default.
+**`none` backups carry no envelope at all.** The `none` path is reached
+only by explicit request, never by default
+([backup-restore/architecture.md](../backup-restore/architecture.md)).
 
 **A tampered shard's own ciphertext failing authentication is
 `*BackupShardIntegrityError`, never `keywrap.UnwrapFailedError`.** The
-latter names a KEK/wrapped-DEK failure one layer up; conflating the two (an
-earlier draft of this feature did) reported plain ciphertext tampering as
-"wrong key-encrypting key", which is both inaccurate and, for an operator
-debugging a corrupt artifact, actively misleading.
+latter names a KEK/wrapped-DEK failure one layer up; conflating the two
+would report plain ciphertext tampering as "wrong key-encrypting key",
+which misleads an operator debugging a corrupt artifact.
 
 ## Backup integration
 
-**"Encrypted by default" now means a configured KEK provider or key
-reference, not merely a raw key byte slice.** `CreateBackup`'s refusal when
-the default applies and nothing is configured — `BackupEncryptionRequiredError`
-— is unchanged in spirit and in when it fires; what changed is what
-satisfies it: a `KeyProviderID` + `KeyRef` pair that resolves through the
-registry. There is no raw-bytes escape hatch (see
-[Owner ruling: the inline key is retired](#owner-ruling-the-inline-key-is-retired)
-below) — every KEK is referenced through a provider, never passed as bytes
-through this struct or over the wire.
+**"Encrypted by default" means a configured KEK provider and key
+reference.** `CreateBackup` refuses with `BackupEncryptionRequiredError`
+when the default applies and nothing is configured; a `KeyProviderID` +
+`KeyRef` pair that resolves through the registry satisfies it. There is no
+raw-bytes escape hatch (see [No inline key](#no-inline-key) below): every
+KEK is referenced through a provider, never passed as bytes through this
+struct or over the wire.
 
 ```go
 type BackupOptions struct {
 	Destination string
 	Compression CompressionType
-	Encryption  EncryptionType // unchanged: "aes256" (default) | "none"
+	Encryption  EncryptionType // "aes256" (default) | "none"
 
 	// KeyProviderID names the registered keywrap.Provider to wrap this
 	// backup's DEK with. Defaults to "software" when KeyRef is set and
@@ -374,29 +356,21 @@ type BackupOptions struct {
 }
 ```
 
-### Owner ruling: the inline key is retired
+### No inline key
 
-This document's own first draft flagged an open design question: keep
-`EncryptionKey` as an inline-bytes escape hatch alongside `KeyRef` (for
-backward compatibility with the already-shipped `--encryption-key` flag and
-the SDK field of the same name), or retire it outright in favor of `KeyRef`
-alone. **The owner's ruling: retire it.** `EncryptionKey` (Go SDK),
-`encryption_key` (REST/gRPC/QUIC/MCP wire field), `DecryptionKey`, and
-`decryption_key` are removed from every surface in the same change that
-lands this document, not merely deprecated — closing the "key rides in a
-flag value or over the wire" exposure outright, which is exactly the
-alternative [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value)
-below originally proposed only warning about. `--encryption-key` and
-`--decryption-key` are removed from the CLI alongside them; only
-`--encryption-key-file` / `--decryption-key-file` (and `--key-provider`)
-remain. `KeyRef` is always a reference the server resolves on its own
-node — the bare NAME of a key file inside its configured key directory for
-`"software"`, never a path and never bytes a client transmits;
-this is also why `--encryption-key-file` has no stdin form (`-`): there is
-no client-to-server channel for raw key bytes to travel over any more, so
-there is nothing for stdin to feed.
+No backup surface carries key bytes: the backup options and messages have
+no `EncryptionKey` or `DecryptionKey` field in the Go SDK, no
+`encryption_key` or `decryption_key` wire field on REST, gRPC, QUIC or
+MCP, and `qrdb backup` has no `--encryption-key` or `--decryption-key`
+flag. The CLI has
+`--encryption-key-file` / `--decryption-key-file` and `--key-provider`.
+`KeyRef` is always a reference the server resolves on its own node — the
+bare NAME of a key file inside its configured key directory for
+`"software"`, never a path and never bytes a client transmits. That is
+also why `--encryption-key-file` has no stdin form (`-`): there is no
+client-to-server channel for raw key bytes.
 
-`BackupInfo` gains one new field, safe to expose on every transport because
+`BackupInfo` carries one field for this feature, safe to expose on every transport because
 it names a provider, not a key: `KeyProviderID string` (empty for `none`
 backups). The wrapped DEK, key reference, and format version are NOT
 surfaced on `BackupInfo` — they live in the backup's own persisted manifest
@@ -410,13 +384,11 @@ transport. A shard's own `Open` failing (tampered shard ciphertext) is a
 DIFFERENT typed error, `*BackupShardIntegrityError` -- see
 [Envelope format](#envelope-format) above -- deliberately not the same
 type: the two causes are checked at different layers (the KEK/wrapped-DEK
-once per backup, each shard's own ciphertext per shard) and conflating them
-previously reported plain ciphertext tampering as "wrong key-encrypting
-key", which is misleading. Neither case distinguishes "wrong key" from
+once per backup, each shard's own ciphertext per shard). Neither case distinguishes "wrong key" from
 "tampered" WITHIN its own layer, so a caller cannot use that finer
 distinction to probe for the correct key one shard at a time.
 
-## Key hygiene: the key never rides in a flag value, by default
+## Key hygiene: the key never rides in a flag value
 
 **`--encryption-key-file <name>` is the only way** to supply the software
 provider's 32-byte key: the CLI passes the bare file NAME straight through
@@ -424,35 +396,23 @@ as `KeyRef`, and the server's own `SoftwareProvider` resolves it inside its
 one confined key directory and validates it on its own node when it
 actually wraps or unwraps the DEK. The CLI itself never opens the file.
 
-**`--encryption-key <base64>` is retired, not merely deprecated** — see
-[Owner ruling: the inline key is retired](#owner-ruling-the-inline-key-is-retired)
-above. A key passed as a flag value was visible in `ps`, in shell history,
-and in any process-listing tool on the host for the life of the process —
-closing that gap outright (there is no flag that accepts key bytes at all
-any more) is strictly better than warning about it on use, which is what an
-earlier draft of this document proposed.
+No flag accepts key bytes (see [No inline key](#no-inline-key)). A key
+passed as a flag value would be visible in `ps`, in shell history and in
+any process-listing tool on the host for the life of the process.
 
 The desktop/web UI's key-reference field is a plain text input (it carries a
 key file name, not a secret): the key file's bytes never pass through the
 browser or the Wails bridge in either direction.
 
-## Target: KMS references are not re-added here
+## Target: cloud-KMS references
 
-**An earlier round of this feature's own backup work promised a
-"KMS key reference" in error text, SDK doc comments, the TypeScript types,
-CLI help and the CHANGELOG — before this seam existed to make that promise
-true.** Every one of those mentions is removed in the same change that adds
-this document, not merely left stale: this seam is what makes a KMS
-reference meaningful (a `KeyProviderID` naming a go-xkms-registered cloud-KMS
-provider, with `KeyRef` as that KMS's own key identifier), and until a real
-provider is registered, naming "KMS" anywhere in this repository's
-qrdb-only documentation described a capability that did not exist.
-
-**Target, once go-xkms registers a cloud-KMS provider:** `KeyProviderID`
+go-qrdb registers no cloud-KMS provider, so its own documentation, error
+text and help name no KMS capability. **Target, once go-xkms registers a
+cloud-KMS provider:** `KeyProviderID`
 names it (`"aws-kms"`, `"gcp-kms"`, `"azure-kv"`, `"vault"`, matching
 whatever go-xkms calls its own registrations), and `KeyRef` carries that
 service's own key identifier (an ARN, a resource name, a path) — exactly
-the shape [Injection](#injection) below composes today for hardware.
+the shape [Injection](#injection) below composes for hardware.
 
 ## Injection
 
@@ -461,46 +421,41 @@ An embedder registers a hardware or cloud-KMS provider at composition time:
 ```go
 registry := keywrap.NewRegistry() // empty; NewDefaultRegistry(keyDir) pre-populates "software"
 registry.Register("tpm2", func() (keywrap.Provider, error) {
-	return xkmsKeywrap.NewTPM2Provider(tpmHandle), nil
+	return tpm2Provider, nil // a keywrap.Provider go-xkms constructs
 })
 ```
 
 and wires the registry into whichever composition root needs it through
 `server.WithKeyWrapRegistry(registry)`, the same `With*` composition shape
-`WithStrategyRegistry` already uses for sealing strategies:
-`server.ResolveCryptoOptions` carries it into `lifecycle.Infra.
-KeyWrapRegistry`, which `BuildServices` hands to the Backup service exactly
-as `StrategyRegistry` reaches the Tenant service.
-`server.WithKeyWrapProvider(p keywrap.Provider)` is the narrower sibling for
-an embedder with exactly one provider and no registry of its own, installing
-it under its own `ProviderID()` into the (otherwise software-only) default
-registry — and, since `NewBackupService` now returns an error, a collision
-with an ID already registered is returned typed rather than discarded.
+`WithStrategyRegistry` uses for sealing strategies:
+`server.ResolveCryptoOptions` carries it into
+`lifecycle.Infra.KeyWrapRegistry`, which `BuildServices` hands to the
+Backup service. `server.WithKeyWrapProvider(p keywrap.Provider)` is the
+narrower sibling for an embedder with exactly one provider and no registry
+of its own: it installs the provider under its own `ProviderID()` into the
+otherwise software-only default registry, and `NewBackupService` returns a
+collision with an ID already registered as a typed error.
 
 **This seam is wired on every composition root `sdk/go/node` reaches**
 (`NewStandaloneNode`/`NewClusteredNode`, seal-enabled and seal-disabled
 alike, via the shared `withCryptoInfra` helper) and the embedded SDK
 transport, which consumes whichever `BackupServicer` `sdk/go/node` built
-rather than constructing its own. `cmd/qrdbd` — `package main`, so nothing
-outside it can call a `With*` option on it directly — exposes the identical
-seam as a package-level variable, `keyWrapInjection`, read by BOTH its live
-`BuildServices` call (`start.go`) and its own OFFLINE, boot-time
-disaster-recovery restore path (`restoreShardFromBackup`, `restore.go`): a
-test overriding it proves an injected provider is honored on both paths
-identically, which a prior version of `restore.go` had no way to receive at
-all (it built a bare `NewBackupService` with no injection point).
+rather than constructing its own. `cmd/qrdbd` is `package main`, so
+nothing outside it can call a `With*` option on it; it exposes the same
+seam as a package-level variable, `keyWrapInjection`, read by both its live
+`BuildServices` call (`start.go`) and its offline, boot-time
+disaster-recovery restore path (`restoreShardFromBackup`, `restore.go`).
+`restore_test.go` overrides it to prove an injected registry or provider
+reaches the offline path.
 
 **Two options** (`WithKeyWrapRegistry`/`WithKeyWrapProvider`), not one
-role-parameterized option, for the same reason `certificate-authority`'s
-Key A / Key B split rejected a role parameter: a single shared argument
-would force a caller supplying ad hoc values (rather than composing a
-registry up front) to pick one shape and live with it everywhere. Backup
-and the tenant DEK keyring now consume the SAME `lifecycle.Infra.
-KeyWrapRegistry`/`KeyWrapProvider` — one KEK seam, two consumers, exactly
-as [The tenant DEK keyring](#the-tenant-dek-keyring) below describes —
-while each resolves its own independent "software" instance, confined to
-its own key directory (`KeyDir` for backup, `DEKKeyDir` for the keyring),
-when neither field is supplied.
+role-parameterized option: a caller with one ad hoc provider should not
+have to build a registry. Backup and the tenant DEK keyring consume the
+same `lifecycle.Infra.KeyWrapRegistry`/`KeyWrapProvider` (see
+[The tenant DEK keyring](#the-tenant-dek-keyring) below), while each
+resolves its own independent "software" instance, confined to its own key
+directory (`KeyDir` for backup, `DEKKeyDir` for the keyring), when neither
+field is supplied.
 
 ## The tenant DEK keyring
 
@@ -519,9 +474,8 @@ differ: the keyring's key reference defaults to the tenant ID itself
 operator-chosen name per backup. Each version's wrapped key, provider ID
 and key reference are recorded in the keyring's own stored record (never
 the plaintext key); `dek.Status` surfaces the provider ID and key
-reference that wrapped each version, for audit. A record written before
-this integration existed — a plaintext key per version — is refused with a
-typed error (`*dek.LegacyKeyringFormatError`) rather than migrated
+reference that wrapped each version, for audit. A stored record holding a
+plaintext key per version is refused with a typed error (`*dek.LegacyKeyringFormatError`) rather than migrated
 silently. See [tenant-dek/architecture.md](../tenant-dek/architecture.md)
 for the full design.
 
@@ -550,20 +504,17 @@ and [release/extension-seams.md](../release/extension-seams.md).
   encryption of the file itself, and backup of the key file (never inside a
   qrdb backup) are the operator's responsibility, exactly as for every
   other software-custody key in this repository.
-- **There is no flag-value key exposure to trade off.** The inline-bytes
-  path (`--encryption-key`) that would have created one is retired — see
+- **There is no flag-value key exposure to trade off.** No flag accepts
+  key bytes — see
   [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value).
 - **`secure.Wipe` zeroes the key buffer this package held, not every copy
   the AEAD implementation made of it.** `crypto/aes`'s software
   implementation expands a key into a round-key schedule it keeps for the
   lifetime of the `cipher.Block`, and Go's garbage collector may have
   relocated or retained copies of the original slice before `Wipe` ran; the
-  standard library gives no API to zero either. This is a property of
-  using a managed-memory language for software AES, not a defect specific
-  to this package — `pkg/secure`'s own documentation (the barrier's KEK
-  custody) carries the identical caveat — and it is why a HARDWARE provider
-  (the KEK never entering this process's memory at all) is the stronger
-  guarantee, not a convenience.
+  standard library gives no API to zero either. This is why a hardware
+  provider, whose KEK never enters this process's memory, is the stronger
+  guarantee.
 
 ## What this feature deliberately does not do
 

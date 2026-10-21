@@ -1,6 +1,6 @@
 # Key Wrapping — CLI
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 > Conflicts with this document are defects. Fix them here first.
 
 Key wrapping has no command group of its own — it is reached through
@@ -47,9 +47,8 @@ named after that tenant's ID, inside `--dek-key-dir`.
 
 ## `qrdb backup create` — new and changed flags
 
-**`--encryption-key` is retired** (owner ruling — see
-[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired)):
-there is no flag that takes key bytes directly any more.
+No flag takes key bytes directly (see
+[architecture.md](architecture.md#no-inline-key)).
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
@@ -60,13 +59,10 @@ there is no flag that takes key bytes directly any more.
 key directory, not a path on the node running the backup service and not
 the CLI operator's own machine — the CLI never opens it, it only forwards
 the string, and the server refuses a value containing a path separator or
-`".."` with a detail-free error (`*KeyAccessError`) rather than treating it
-as a filesystem path (go-qrdb security review, backup-encrypt-default:
-an unconstrained path let a caller probe the server's filesystem and point
-the read at an arbitrarily large file). This is also why there is no `-`
-(stdin) form: an earlier draft of this feature read a key's bytes from
-stdin and sent them inline, which is exactly the path the owner ruling
-retired.
+`".."` with a detail-free error (`*keywrap.KeyAccessError`) rather than
+treating it as a filesystem path: an unconstrained path would let a caller
+probe the server's filesystem and point the read at an arbitrarily large
+file. There is no `-` (stdin) form either: key bytes never travel inline.
 
 ```bash
 qrdbd start --backup-key-dir /etc/qrdb/keys ...
@@ -87,12 +83,12 @@ name never leaves the server's configured key directory. See
 
 ## `qrdb backup restore` — new flags
 
-**`--decryption-key` is retired** alongside `--encryption-key`.
+There is no `--decryption-key` flag either.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
 | `--decryption-key-file` | string | — | the NAME of a key file inside the server's `--backup-key-dir` that overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used |
-| `--allow-plaintext` | bool | `false` | explicit opt-in required to restore a backup whose OWN stored state is plaintext; refused with a typed error (`BackupPlaintextRestoreNotAllowedError`) when unset, never inferred from the backup's own metadata (round 4 security review -- see [architecture.md](architecture.md#envelope-format)) |
+| `--allow-plaintext` | bool | `false` | explicit opt-in required to restore a backup whose OWN stored state is plaintext; refused with a typed error (`BackupPlaintextRestoreNotAllowedError`) when unset, never inferred from the backup's own metadata (see [architecture.md](architecture.md#envelope-format)) |
 
 ```bash
 # The common case: no key flag at all -- the envelope's own stored
@@ -111,30 +107,29 @@ service error.
 
 ## `qrdb backup get` / `qrdb backup list` — new field
 
-Both now show `KeyProviderID` alongside the existing fields (empty for a
-`none` backup):
+`qrdb backup get` prints a `KeyProvider:` line when the backup has one (a
+`none` backup has none). `qrdb backup list`'s table has no provider column;
+its `--output json` and `--output yaml` carry `key_provider_id`.
 
 ```bash
 $ qrdb backup get bkp-20261004-0300
-ID:           bkp-20261004-0300
+ID:          bkp-20261004-0300
 ...
-Encryption:   aes256
-KeyProvider:  software
-Checksum:     ...
+Encryption:  aes256
+KeyProvider: software
+Checksum:    ...
 ```
 
 ## What this feature deliberately does not do here
 
-- **No standalone `qrdb keywrap` command group.** There is nothing to list,
-  create, or rotate at the CLI layer today — a provider is composed in
-  code (`WithKeyWrapRegistry`), not configured interactively. If go-xkms's
-  hardware providers eventually need operator-facing enrollment (pairing
-  with a TPM, say), that command lives in go-xkms's own CLI extension, not
-  here.
+- **No standalone `qrdb keywrap` command group.** A provider is composed in
+  code (`WithKeyWrapRegistry`), not configured interactively. Operator-facing
+  enrollment for a hardware provider (pairing with a TPM, say) belongs in
+  go-xkms's own CLI extension, not here.
 - **No key rotation flag on `backup create`/`restore`.** Rotating the KEK is
   an operator file-system operation BETWEEN backups -- add a new key file
   (a new NAME) inside `--backup-key-dir` and start naming it in fresh
   `--encryption-key-file` values; the old file and name stay in place so
-  backups already made under it keep restoring (see architecture.md's
-  rotation note). This CLI has no "re-wrap an existing backup's DEK under a
+  backups already made under it keep restoring (see the rotation note in
+  [architecture.md](architecture.md#shape-chosen)). This CLI has no "re-wrap an existing backup's DEK under a
   new key" verb and no automated rotation scheduler.
