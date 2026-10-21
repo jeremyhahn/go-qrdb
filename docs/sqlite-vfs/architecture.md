@@ -1,6 +1,6 @@
 # SQLite VFS Backend — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first. This is a
 > future feature: not scheduled, not implemented.
 
@@ -28,21 +28,18 @@ multi-tenant page store.
 
 ## Problem
 
-A virtual-table gateway that exposes qrdb's KV, entity, collection,
-timeseries and vector planes as SQLite virtual tables behind an interactive
-shell is not this feature, and qrdb does not ship one: it solves the inverse of the intended problem:
+The requirement is to run qrdb **under** existing SQLite *applications*: a
+drop-in replacement for their database file.
 
-- The gateway let a person run SQLite *syntax* **over** qrdb data.
-- The requirement was to run qrdb **under** existing SQLite *applications* —
-  a drop-in replacement for their database file.
-
-Virtual tables cannot deliver that: an application's own `CREATE TABLE`
-lands in the local SQLite database, not in qrdb, and virtual-table modules
-only exist inside the process that registers them. No amount of gateway
-work closes that gap. Applications migrating their SQL layer to qrdb are
-served today by the MySQL/PostgreSQL wire protocols and GORM (on the stock
-MySQL dialector);
-this proposal is for applications that must keep the SQLite engine itself.
+A virtual-table gateway, exposing qrdb's KV, entity, collection, timeseries and
+vector planes as SQLite virtual tables behind an interactive shell, is rejected:
+it lets a person run SQLite *syntax* **over** qrdb data, the inverse of the
+requirement. Virtual tables cannot deliver a drop-in: an application's own
+`CREATE TABLE` lands in the local SQLite database, not in qrdb, and
+virtual-table modules only exist inside the process that registers them.
+Applications migrating their SQL layer to qrdb are served by the
+MySQL/PostgreSQL wire protocols and GORM (on the stock MySQL dialector); this
+design is for applications that must keep the SQLite engine itself.
 
 ## The mechanism: SQLite's VFS layer
 
@@ -110,9 +107,7 @@ revision comparison at snapshot pin) keeps warm reads off the network.
 `SQLITE_IOCAP_BATCH_ATOMIC`, so SQLite skips its rollback journal and
 delegates atomicity to the VFS: at commit (`xFileControl(COMMIT_PHASETWO)` /
 `xSync`), the buffered pages plus the meta record are submitted as **one
-atomic batch proposal**. Rollback discards the buffer. This is the same
-coalescing the removed gateway used for virtual-table transactions, moved
-down to the page layer where it belongs.
+atomic batch proposal**. Rollback discards the buffer.
 
 ### Concurrency — two selectable modes
 
@@ -143,7 +138,7 @@ assume durable commits.
 
 Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 
-## Performance expectations (honest)
+## Performance expectations
 
 - **Reads**: page-cache-warm reads are local; cold reads are one round-trip
   per page miss. Read-heavy workloads are the sweet spot (mvsqlite's
@@ -158,15 +153,14 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 
 ## Component placement
 
-- A new package (e.g. `pkg/sqlitevfs`) implementing the page store against
-  the service layer, plus a thin engine binding per tier.
+- A new package implementing the page store against the service layer,
+  plus a thin engine binding per tier.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
-  lives in its **own Go module**, exactly as the removed gateway did — CGo
-  must not enter the root module's dependency graph. The pure-Go tier via
-  `modernc.org/sqlite` avoids CGo entirely and should be evaluated first.
-- No code from the removed `cmd/qrdb-sqlite` is a dependency of this
-  design; the SDK transports and the batch/write-mode plumbing it exercised
-  are already first-class SDK surfaces.
+  lives in its **own Go module**: CGo must not enter the root module's
+  dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
+  entirely and should be evaluated first.
+- The SDK transports and the batch and write-mode plumbing the VFS needs are
+  existing SDK surfaces.
 
 ## Open questions (blocking a build decision)
 
@@ -185,7 +179,7 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 
 ## Non-goals
 
-- Reintroducing the virtual-table gateway in any form.
+- A virtual-table gateway, in any form.
 - SQL-dialect compatibility work — that is the MySQL/PG wire protocols'
   charter, which GORM reaches through the stock MySQL dialector.
 - Emulating SQLite file-format compatibility on disk; the page store is
