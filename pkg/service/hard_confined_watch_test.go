@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,22 +28,18 @@ import (
 // fakeWatcher is a minimal watch.Watcher double that lets a test push
 // events directly onto its channel.
 type fakeWatcher struct {
-	events  chan watch.WatchResponse
-	closed  bool
-	closeCh chan struct{}
+	events    chan watch.WatchResponse
+	closeOnce sync.Once
 }
 
 func newFakeWatcher() *fakeWatcher {
-	return &fakeWatcher{events: make(chan watch.WatchResponse, 8), closeCh: make(chan struct{})}
+	return &fakeWatcher{events: make(chan watch.WatchResponse, 8)}
 }
 
 func (w *fakeWatcher) Events() <-chan watch.WatchResponse { return w.events }
 func (w *fakeWatcher) WatchID() int64                     { return 1 }
 func (w *fakeWatcher) Close() error {
-	if !w.closed {
-		w.closed = true
-		close(w.events)
-	}
+	w.closeOnce.Do(func() { close(w.events) })
 	return nil
 }
 func (w *fakeWatcher) Err() error { return nil }
@@ -380,5 +377,52 @@ func TestHardConfinedWatch_WatchPrefixOnAnOrdinaryPrefixIsNotWrapped(t *testing.
 	// the RAW watcher back, unwrapped -- proven here by identity.
 	if watcher != fake.prefixWatcher {
 		t.Fatal("WatchPrefix wrapped a watcher for a prefix that cannot overlap the confined namespace")
+	}
+}
+
+// TestHardConfinedFilteredWatcher_ConcurrentCloseClosesDoneOnce releases many
+// Close calls together, the shape admittedWatcher produces when its caller's
+// Close and its relay's end both close the inner watcher: done must be closed
+// once, every call must return the inner watcher's nil, and the pump must
+// still end.
+func TestHardConfinedFilteredWatcher_ConcurrentCloseClosesDoneOnce(t *testing.T) {
+	const rounds, closers = 50, 32
+	for range rounds {
+		w := newHardConfinedFilteredWatcher(newFakeWatcher())
+		release := make(chan struct{})
+		errs := make(chan error, closers)
+		var wg sync.WaitGroup
+		for range closers {
+			wg.Go(func() {
+				<-release
+				errs <- w.Close()
+			})
+		}
+		close(release)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("Close() = %v, want nil", err)
+			}
+		}
+		if _, ok := <-w.Events(); ok {
+			t.Fatal("Events() delivered after Close, want the channel closed")
+		}
+	}
+}
+
+// TestHardConfinedFilteredWatcher_CloseTwiceIsIdempotent closes the watcher
+// twice in sequence: the second call must not panic and must return nil.
+func TestHardConfinedFilteredWatcher_CloseTwiceIsIdempotent(t *testing.T) {
+	w := newHardConfinedFilteredWatcher(newFakeWatcher())
+	if err := w.Close(); err != nil {
+		t.Fatalf("first Close() = %v, want nil", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close() = %v, want nil", err)
+	}
+	if _, ok := <-w.Events(); ok {
+		t.Fatal("Events() delivered after Close, want the channel closed")
 	}
 }

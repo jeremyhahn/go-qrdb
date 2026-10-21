@@ -4063,19 +4063,15 @@ type mgmtBootstrapResult struct {
 	// to build one.
 	storeResolver tenant.StoreResolver
 
-	// tenantSvc is the tenant servicer the stores were built over; the auth
-	// middleware reads each principal's tenant Status from it. Nil when none
-	// was available.
+	// tenantSvc is the tenant servicer the stores were built over. The auth
+	// middleware reads each principal's tenant Status from it, and the mTLS
+	// authenticator holds a certificate's tenant to it, so a trust domain no
+	// tenant was created for names no one. Nil when none was available.
 	tenantSvc tenant.TenantServicer
 
 	// legacyFactorStore is the UNCONFINED root store the pre-tenant
 	// auth-factor records live in, handed to the go-qrdb#393 migration.
 	legacyFactorStore kvstore.KVStore
-
-	// tenantSvc is the tenant servicer the stores were built over. The mTLS
-	// authenticator holds a certificate's tenant to it: a trust domain no
-	// tenant was created for names no one. Nil when there is none.
-	tenantSvc tenant.TenantServicer
 }
 
 // authBootstrapResult holds the auth enforcement middleware and audit logger
@@ -4410,7 +4406,6 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		storeResolver:     storeResolver,
 		tenantSvc:         tenantSvc,
 		legacyFactorStore: runtimeStore,
-		tenantSvc:         tenantSvc,
 	}, nil
 }
 
