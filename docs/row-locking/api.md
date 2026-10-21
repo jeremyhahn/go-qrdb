@@ -1,6 +1,6 @@
 # Row Locking — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Row locking is reached two ways:
@@ -90,10 +90,10 @@ defaults; on MCP that is `qrdb_database_update_sql` with `concurrency` omitted
 | `SKIP LOCKED` | 1235 (42000) | 0A000 | 501 / `UNIMPLEMENTED` / `StatusUnimplemented` |
 
 The in-process driver reports the MySQL numbers through
-`*mysql.MySQLError` (`Number`), exactly as it reports 1213 today.
+`*mysql.MySQLError` (`Number`).
 
 ## Versioning
 
-`PATCH /v1/databases/{name}/sql` is new in this release. The `sql` field on
-the database object is additive: a client that does not know it ignores it, and
-a server that does not know it treats the database as `optimistic`.
+`PATCH /v1/databases/{name}/sql` is a `v1` route; nothing in this feature is
+deprecated. The `sql` field on the database object is optional: a client that
+does not know it ignores it.

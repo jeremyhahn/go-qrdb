@@ -1,6 +1,6 @@
 # Row Locking — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Design and boundaries are in [architecture.md](architecture.md). This file is
@@ -119,7 +119,7 @@ type SQLConfig struct {
 	Concurrency Concurrency `yaml:"concurrency" json:"concurrency,omitempty"`
 }
 
-// DatabaseConfig, DatabaseMeta and DatabaseInfo gain:
+// DatabaseConfig, DatabaseMeta and DatabaseInfo carry:
 //	SQL *SQLConfig `yaml:"sql" json:"sql,omitempty"`
 ```
 
@@ -135,9 +135,9 @@ type UpdateDatabaseSQLRequest struct {
 	SQL  *DatabaseSQLConfig `json:"sql"`
 }
 
-// DatabaseClient gains:
+// DatabaseClient has:
 //	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
-// CreateDatabaseRequest and DatabaseInfo gain:
+// CreateDatabaseRequest and DatabaseInfo carry:
 //	SQL *DatabaseSQLConfig `json:"sql,omitempty"`
 ```
 
@@ -154,10 +154,9 @@ updateProtocol(name: string, protocol: DatabaseProtocolConfig): Promise<Database
 // DatabaseInfo and CreateDatabaseRequest: protocol?: DatabaseProtocolConfig; sql?: DatabaseSQLConfig
 ```
 
-Until this feature the TypeScript `updateSQL` / `DatabaseSQLConfig` named the
-wire-protocol switches; they are now `updateProtocol` /
-`DatabaseProtocolConfig`, matching the Go SDK's `UpdateDatabaseProtocol` /
-`ProtocolConfig`, and the old names carry the SQL settings.
+The TypeScript `updateProtocol` / `DatabaseProtocolConfig` match the Go SDK's
+`UpdateDatabaseProtocol` / `ProtocolConfig`; `updateSQL` / `DatabaseSQLConfig`
+carry the SQL settings.
 
 ## The lock record
 
@@ -363,8 +362,7 @@ SET lock_timeout = '5s';                -- PostgreSQL wire
   0A000: these settings are session-scoped only, approximating a
   transaction-scoped one as a session setting would let it outlive its
   transaction, and accepting it as a no-op would leave the client believing a
-  timeout is in force that is not. `SET LOCAL` of any other setting stays the
-  no-op it always was.
+  timeout is in force that is not. `SET LOCAL` of any other setting is a no-op.
 - A simple-query message holding several statements is split at top-level
   semicolons (outside quotes, comments and dollar-quoting) before any `SET` is
   read, so every `SET` is applied with its own value. A placeholder spelling
@@ -404,7 +402,7 @@ The driver DSN parameter `concurrency=optimistic|pessimistic` sets
 - A `COMMIT` that fails -- a lost compare-and-swap, or the abort above -- ends
   the session's transaction, as InnoDB's rollback on ER_LOCK_DEADLOCK does.
   go-mysql-server ends its own transaction state only on a successful
-  `COMMIT`; the session now ends it on these failures too, so the next
+  `COMMIT`; the session ends it on these failures too, so the next
   statement starts a fresh transaction (and takes and releases its own locks)
   instead of running in a transaction that no longer exists.
 
@@ -454,8 +452,7 @@ ended release on their own. An infrastructure failure of the commit leaves
 the locks held, as invariant 5 says.
 
 A pessimistic autocommit `UPDATE` or `DELETE` of one row therefore costs two
-proposals — the enqueue, and the commit that also releases — where a lease
-per transaction and a release of its own cost five. The enqueue cannot be
+proposals: the enqueue, and the commit that also releases. The enqueue cannot be
 folded: the locks must be granted before the rows are read.
 
 The queue and current reads are per key, not per batch. The read surfaces

@@ -1,6 +1,6 @@
 # Row Locking — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Row locking has one configuration knob outside SQL — a database's concurrency
@@ -19,8 +19,7 @@ All verbs accept the root persistent flags documented in
 qrdb database create shop --sql-concurrency pessimistic
 ```
 
-Every other `create` flag is unchanged; see
-[../databases/cli.md](../databases/cli.md).
+The other `create` flags are in [../databases/cli.md](../databases/cli.md).
 
 ## `qrdb database update-sql <name>`
 
