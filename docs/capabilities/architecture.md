@@ -17,7 +17,7 @@ Build-tagged files register optional compile-time features with `Register`.
 Composition roots compute the runtime profile with
 `config.Config.EffectiveCapabilities`, then seal it with `capabilities.Seal`
 before serving traffic. After sealing, `Get` returns the sealed profile; before
-sealing it returns the legacy compile-time fallback.
+sealing it returns a fallback built from the compile-time registry alone.
 
 The public report flows through `service.AdminServicer.Capabilities`, then the
 REST, gRPC, QUIC, MCP, Unix socket and embedded transports. The CLI reaches it

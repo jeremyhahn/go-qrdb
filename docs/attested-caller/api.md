@@ -53,5 +53,4 @@ The ordinary `auth.authorize` decision record is written as well, with result
 
 ## Versioning
 
-Additive. The zero value of every configuration surface installs no gate, so
-existing deployments are unchanged.
+Additive. The zero value of every configuration surface installs no gate.

@@ -118,7 +118,7 @@ decision's outcome, so the ordinary trail stays complete; the gate's own record
   reason and security flag; an admission writes none; an unrecordable refusal
   follows `auth.audit_failure_policy`.
 - **Wiring**: `BuildAuthMiddleware` installs the gate it is given.
-- Each security property was mutation-checked: removing it fails a named test.
+- Removing any one security property fails a named test.
 
 ## Observability
 

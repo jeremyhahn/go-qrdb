@@ -53,8 +53,9 @@ type seamOptions struct {
 }
 
 // WithBackupSink sets the durable sink backup artifacts are persisted to. Nil
-// keeps the node's own default: no sink for an embedded node, the
-// <data-dir>/backups directory for qrdbd. The sink's owner closes it.
+// means no sink: backup artifacts are held in memory only and are lost on
+// restart. qrdbd passes a file-backed sink only when --backup-dir is set; its
+// default is empty. The sink's owner closes it.
 func WithBackupSink(sink service.BackupSink) ServerOption {
 	return func(o *serverOptions) { o.backupSink = sink }
 }

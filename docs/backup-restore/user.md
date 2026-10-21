@@ -1,6 +1,6 @@
 # Backup and Restore — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-backup-restore`; coverage row: `test/integration/COVERAGE.md` `[backup-restore](../../docs/backup-restore/)`.
@@ -16,8 +16,8 @@ This is disaster recovery. For undoing a handful of keys, use
 - A reachable server, client certificates, and the relevant `backup:*`
   permissions. Note `backup:restore` is a separate grant from `backup:create` —
   restore overwrites shard state.
-- For an object-store destination, a daemon built with the matching go-objstore
-  tag (`WITH_AWS_S3=1` and friends).
+- For backups that outlive the daemon process, start `qrdbd` with
+  `--backup-dir <dir>`. Without it, backups are held in memory only.
 
 ## Encryption is the default
 
@@ -37,7 +37,7 @@ On the server, before the daemon starts:
 ```bash
 mkdir -p /etc/qrdb/keys && chmod 700 /etc/qrdb/keys
 openssl rand -out /etc/qrdb/keys/backup.key 32 && chmod 600 /etc/qrdb/keys/backup.key
-qrdbd start --backup-key-dir /etc/qrdb/keys ...
+qrdbd start --backup-key-dir /etc/qrdb/keys --backup-dir /var/lib/qrdb/backups ...
 ```
 
 From the CLI, naming the file by NAME, not path:
@@ -51,13 +51,14 @@ Record the `id`. You will need it to verify or restore.
 
 ## Common tasks
 
-**A real nightly backup.** Compress, encrypt (the default), and send it off
-the box.
+**A nightly backup.** Encrypted (the default), labelled so you can tell it apart.
 
 ```bash
-qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption-key-file backup.key
+qrdb backup create --destination /backups/nightly --encryption-key-file backup.key
 ```
+
+The backup lands in the server's `--backup-dir`; `--destination` is a label
+recorded with it. Copy that directory off the machine with your usual tooling.
 
 `--encryption aes256` is implied here; naming it is optional as long as a key
 reference is supplied.
@@ -69,7 +70,7 @@ backup.
 **Verify on a schedule, not only when you need it.**
 
 ```bash
-qrdb backup verify bkp-20260819-0300 --output json
+qrdb backup verify 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --output json
 ```
 
 An unverified backup is a backup you have not got. Verification recomputes the
@@ -78,7 +79,7 @@ checksum and compares — the result shows you both values.
 **Restore everything, checking first.**
 
 ```bash
-qrdb backup restore --id bkp-20260819-0300 --validate
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --validate
 ```
 
 `--validate` runs verification before touching any shard, so a corrupt backup
@@ -87,21 +88,21 @@ aborts instead of half-applying.
 **Restore only some shards.**
 
 ```bash
-qrdb backup restore --id bkp-20260819-0300 --shards 1,2 --validate
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --shards 1,2 --validate
 ```
 
 **Restore an encrypted backup.** No key flag needed — qrdb remembers which
 key file a backup was wrapped under and resolves it automatically.
 
 ```bash
-qrdb backup restore --id bkp-20260819-0300 --validate
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --validate
 ```
 
 Supply `--decryption-key-file` only to OVERRIDE the stored reference (the
 key file moved, or you're restoring on a different machine):
 
 ```bash
-qrdb backup restore --id bkp-20260819-0300 \
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 \
      --decryption-key-file backup.key --validate
 ```
 
@@ -120,8 +121,8 @@ audits it, where a compliance audit trail is configured).
 
 ```bash
 qrdb backup list --output json          # newest first
-qrdb backup get bkp-20260819-0300
-qrdb backup delete bkp-20260712-0300
+qrdb backup get 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43
+qrdb backup delete a91d04e6-52c3-4f0b-8e7a-6b3c9f1d2e85
 ```
 
 There is no built-in retention policy — deleting old backups is your scheduler's
@@ -136,10 +137,9 @@ a key you don't have or falling back to plaintext you didn't ask for.
 Supply a key file, or say `--encryption none` if you actually want
 plaintext.
 
-**"encryption key required".** Same refusal, phrased slightly differently in
-older releases that required `--encryption aes256` to be named explicitly.
-Either way, the fix is the same: supply `--encryption-key-file`, or choose
-`--encryption none`.
+**"encryption key is required when encryption is enabled".** You named
+`--encryption aes256` explicitly and supplied no `--encryption-key-file`. The
+fix is the same: supply `--encryption-key-file`, or choose `--encryption none`.
 
 **A typed refusal on restore naming the key.** The backup's own stored key
 reference did not resolve (the key file is gone, or you overrode it with
@@ -171,24 +171,22 @@ backup that failed silently would just be an absence nobody noticed until it
 mattered.
 
 **Backups keep getting bigger and slower.** Every backup is a **full** capture
-of the shards it names; there are no incremental or differential backups. Use
-compression (`zstd` for ratio, `snappy` for speed) and prune old ones.
+of the shards it names; there are no incremental or differential backups, and
+shard data is stored uncompressed (`--compression` is recorded, not applied).
+Prune old ones.
 
 **`qrdb backup` says "requires mode: raft".** The server is standalone. Backups
 operate on shard snapshots and there are none.
 
-**Restoring a backup made before the file engine's hashed-layout change
-fails with a format-marker error.** `qrdbd restore --backup-dir` and any
+**Restore fails with a format-marker error (`FormatMarkerMissingError`).**
+`qrdbd start --restore-backup-id <id> --backup-dir <dir>` and any
 `sm_storage: file`/`BackendFile` restore target open the backup directory
-through the same `file.New` the data plane uses
-([storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)),
-so a backup written before that change is the OLD layout and is refused
-in-place (`FormatMarkerMissingError`) by a binary that carries the new one,
-by design — there is no migration, per the project's no-backward-
-compatibility policy. Restore that backup with a binary from before the
-change, or treat it as unrecoverable by this one. A backup made with
-`sm_storage: pebble`/`BackendPebble`/`BackendMemory` is unaffected: only the
-`file` engine's on-disk bytes changed.
+through the same `file.New` the data plane uses, which accepts only the hashed
+flat layout
+([storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking))
+and does not migrate a directory without its format marker. Restore that
+backup with the binary that wrote it. A backup made with
+`sm_storage: pebble`/`BackendPebble`/`BackendMemory` is unaffected.
 
 **You want to migrate data to a database with a different engine or backend.**
 Backup and restore is the usual route, but note the shard snapshot format is the

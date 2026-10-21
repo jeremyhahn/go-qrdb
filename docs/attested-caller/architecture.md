@@ -94,7 +94,7 @@ follows `auth.audit_failure_policy` like every other gate.
 ### Alternatives rejected
 
 - **An authenticator in the chain** that produces an identity only for attested
-  peers. Rejected by ruling: it would make "attested" unrevocable independently
+  peers. Rejected: it would make "attested" unrevocable independently
   of "authenticated", and conflate two claims.
 - **Fresh evidence per request.** Rejected: a quote per request is a TPM
   operation on the request path. Evidence comes from a background collector's

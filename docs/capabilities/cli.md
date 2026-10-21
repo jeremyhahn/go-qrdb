@@ -12,7 +12,7 @@ Purpose: print the effective feature profile of the connected node.
 Arguments: none.
 
 Flags: all root transport and authentication flags, plus `--output`
-(`text`, `json`, `yaml`; default `text`).
+(`table`, `json`, `yaml`; default `table`).
 
 Permission: `admin:capabilities`.
 

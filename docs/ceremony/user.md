@@ -1,6 +1,6 @@
 # Initialization Ceremony — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The ceremony is how a brand-new system gets its PINs, a CA, a barrier and, for
@@ -83,21 +83,14 @@ A login certificate for a user-facing account (admin, operator, user,
 auditor) is a SEPARATE path: the tenant Admin issues it through the certs
 CSR-sign or BYOC flow ([../certificate-authority/user.md](../certificate-authority/user.md)),
 which requires an authenticated, authorized caller rather than only the SO
-PIN. `sign-csr` refuses any other role with `ErrInvalidRole`.
+PIN. `sign-csr` refuses any other role with "invalid role".
 
-`sign-csr` is `PreOperationalOnly` in a specific sense: it is one of the
-sealed-window boot listener's allowlisted verbs, reachable there WITHOUT
-session authentication, only until the initialization ceremony goes
-operational. That bypass exists because, before the ceremony completes,
-there is no IAM plane yet to authenticate against -- Key A is still the
-in-memory bootstrap key, and the SO PIN is the only credential available.
-Once enrollment closes, `sign-csr` is refused everywhere, not just on the
-sealed-window listener: `SignCSRInit` (`pkg/ceremony/ceremony.go`) only
-accepts a call while the ceremony is still `enrolling`, and once it reaches
-`operational` no PIN, session or certificate on any transport reopens it.
-There is no operational path back to this verb. A holder's existing
-certificate still verifies normally; only *minting a new one* through
-`sign-csr` is pre-operational only.
+`sign-csr` works only before the ceremony is operational. Until then it is
+reachable on the sealed-window listener without session authentication:
+there is no IAM plane yet, and the SO PIN is the only credential. Once the
+ceremony is operational, `sign-csr` is refused on every transport, whatever
+PIN, session or certificate is presented. Certificates already issued keep
+verifying; only minting a new one through `sign-csr` is pre-operational.
 
 Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
 characters from letters and digits, or a 12-digit random number. Before

@@ -1,6 +1,6 @@
 # Initialization Ceremony — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -72,15 +72,10 @@ certify `key.Public()`, checks the returned certificate binds that key
 (re-exported from `sdk/go`) composes a device-held signer in, and without it
 each transport's leaf gets a fresh in-memory ECDSA P-256 key.
 
-> **Correction (2026-10-07):** this block showed `CACertificate()` without
-> its `ctx` argument; the interface has taken a context since the handshake
-> trust-path work. `IssueCertificate` used to generate the leaf key and
-> return it as `IssuedCert.KeyPEM`; that field is deleted.
-
 **The `SignCSR` contract is a MUST, and it is enforced.** The ceremony CA signs
 under the node's cluster CA, which the mTLS listener trusts for client logins,
 so every certificate it issues is a login claim. Every `CeremonyCA` —
-qrdb's `LocalCA` and any CA composed in from outside, such as go-xkms's —
+qrdb's `LocalCA` and `ProviderCA`, and any CA composed in from outside, such as go-xkms's —
 **MUST**:
 
 - sign with `SignCSROptions.RawSubject()` as the certificate's raw Subject:
@@ -157,11 +152,9 @@ durable, replicated state.
   the one shared validator (role validity, principal name, self-enrolment,
   CSR presence/parseability/key kind, the encryption KEM/key, and the
   resolved factor set) both `enrol` and the batch pre-flight
-  (`validateOfficerCredentials`) call — a prior, partial copy of these
-  checks in the batch path (CSR/key/KEM/factors only) let a bad username, a
-  bad role, or self-enrolment on a LATER officer slip through, leaving
-  every officer before it in the batch already signed and persisted by the
-  time `enrol`'s fuller check caught it.
+  (`validateOfficerCredentials`) call, so a bad username, role or
+  self-enrolment on any officer refuses the batch before the first officer
+  is signed or persisted.
 - **`Initialize`'s M-of-N officer loop is transactional for whatever can
   still fail AFTER that pre-flight** — a CA signing fault, a persist I/O
   error, a duplicate-key race against a concurrent enrolment the batch
@@ -221,8 +214,7 @@ durable, replicated state.
     another cannot deny it a seal, a rekey or a sign-csr. Only a context no
     transport ever decorated with ANY of identity, certificate or remote
     address -- in practice, a caller a test builds by hand -- falls back to
-    the single bare anonymous counter (`""`) that predates this address
-    keying. The address is keyed by HOST ONLY, with the port stripped and
+    the single bare anonymous counter (`""`). The address is keyed by HOST ONLY, with the port stripped and
     an IPv6 host normalized AND masked to its /64 (`auth.remoteHostOnly`):
     keying on host:port would give a rotating ephemeral client port -- or
     a new connection per request behind a pooling reverse proxy -- a FRESH
@@ -400,7 +392,7 @@ durable, replicated state.
 | The caller among the holders | `ErrSelfEnrolment` | **yes** |
 | Empty SO or User PIN | `ErrInvalidSOPIN` / `ErrInvalidUserPIN` | **yes** |
 | No PIN backend | `pin.ErrBackendNotConfigured` | **yes** |
-| No ceremony CA (an operator-supplied-TLS node, which has no Key A) | holder enrolment and sign-csr refuse with `ErrCANotInitialized` (FailedPrecondition); every verify-only holder operation is still served | **yes** |
+| No ceremony CA (an operator-supplied-TLS node, which has no CA key) | holder enrolment and sign-csr refuse with `ErrCANotInitialized` (FailedPrecondition); every verify-only holder operation is still served | **yes** |
 | Ceremony already performed | `ErrAlreadyInitialized` | **yes** |
 | Node restarts before every holder claims | unclaimed envelopes are lost; a rekey redistributes | **yes** |
 | Wrong SO PIN on sign-csr | `pin.ErrPINInvalid`, from the backend's constant-time hash comparison | **yes** |
