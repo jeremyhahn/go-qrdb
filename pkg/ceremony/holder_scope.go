@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -68,6 +69,11 @@ type HolderDeps struct {
 	// pkg/ratelimit engine).
 	QuorumLimiter QuorumLimitFunc
 
+	// Clock is the time a holder's claim challenge is issued and expires on
+	// (ChallengeResponse.ExpiresAt). Nil keeps the real clock; the node's
+	// composer installs its own (node.WithClock).
+	Clock clock.Clock
+
 	// Audit is the node's compliance audit trail. Every holder scope records
 	// its holder events on it -- registration, claim, quorum submission,
 	// rekey start and revocation -- keyed by the scope's owning tenant
@@ -90,6 +96,14 @@ type HolderDeps struct {
 	// readable after unseal (CeremonyService.ReplaceCA) -- reaches them
 	// all without a rebuild.
 	live *caCell
+}
+
+// now reads d's clock, or the real one when d carries none.
+func (d *HolderDeps) now() time.Time {
+	if d == nil || d.Clock == nil {
+		return time.Now()
+	}
+	return d.Clock.Now()
 }
 
 // ceremonyCA returns the CA holder certificates are issued by: the live
@@ -1130,7 +1144,7 @@ func (h *holderScope) committed(ctx context.Context, d *HolderDeps, roster *seal
 // certificate over mTLS, or claiming in process (WithInProcessClaim), where
 // the claim is bound to the enrolled certificate and completeClaim demands
 // the nonce signature by its key.
-func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint string) (*ChallengeResponse, error) {
+func (h *holderScope) beginClaim(ctx context.Context, d *HolderDeps, username, callerThumbprint string) (*ChallengeResponse, error) {
 	if username == "" {
 		return nil, ErrMissingUsername
 	}
@@ -1154,7 +1168,7 @@ func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, ErrInitFailed
 	}
-	c := &ChallengeResponse{Nonce: nonce, Username: username, ExpiresAt: time.Now().Add(challengeTTL)}
+	c := &ChallengeResponse{Nonce: nonce, Username: username, ExpiresAt: d.now().Add(challengeTTL)}
 	h.claims[username] = c
 	return c, nil
 }
@@ -1170,7 +1184,7 @@ func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint
 // claimant not having proved itself the holder.
 func (h *holderScope) completeClaim(ctx context.Context, d *HolderDeps, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
 	ev := holderEvent{action: ActionHolderClaim, holder: username, denied: true}
-	res, err := h.claim(ctx, username, nonceHex, signature, callerThumbprint, func(shareIndex int) error {
+	res, err := h.claim(ctx, d, username, nonceHex, signature, callerThumbprint, func(shareIndex int) error {
 		// The signature over the nonce, by the enrolled key, proved the
 		// caller is the holder.
 		ev.actor, ev.denied = username, false
@@ -1185,7 +1199,7 @@ func (h *holderScope) completeClaim(ctx context.Context, d *HolderDeps, username
 // holder's envelope exactly once, destroying the protected copy. admit is
 // called once the holder is proved and before the envelope is taken from the
 // store; its error refuses the claim with the envelope still held.
-func (h *holderScope) claim(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string, admit func(shareIndex int) error) (*ShareClaimResult, error) {
+func (h *holderScope) claim(ctx context.Context, d *HolderDeps, username, nonceHex string, signature []byte, callerThumbprint string, admit func(shareIndex int) error) (*ShareClaimResult, error) {
 	if username == "" {
 		return nil, ErrMissingUsername
 	}
@@ -1193,7 +1207,7 @@ func (h *holderScope) claim(ctx context.Context, username, nonceHex string, sign
 	if !ok {
 		return nil, ErrChallengeNotFound
 	}
-	if time.Now().After(c.ExpiresAt) {
+	if d.now().After(c.ExpiresAt) {
 		delete(h.claims, username)
 		return nil, ErrChallengeExpired
 	}

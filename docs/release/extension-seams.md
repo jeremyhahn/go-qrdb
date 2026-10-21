@@ -114,9 +114,17 @@ remaining gap, listed under [Open gaps](#open-gaps).
 
 `clock.Clock` is threaded through the lessor (lease time and its expiry
 sweeper), the key-delivery receiver (freshness and replay window), invitation
-expiry, and the token buckets behind the redeem and holder-act limiters. A nil
-clock keeps the real one. Two time gates still read the wall clock directly and
-are not yet behind the seam: PIN lockout and ceremony challenge expiry.
+expiry, the token buckets behind the redeem and holder-act limiters, the SO PIN
+lockout over the node's seal store (`pin.WithLockoutClock`: its backoffs,
+aggregate window and stale-counter eviction), and a share holder's claim
+challenge, which is issued and expires on it (`CeremonyService.SetClock`,
+carried to every tenant and database holder authority through
+`HolderDeps.Clock`). A nil clock keeps the real one. A PIN backend the composer
+injects is decorated with the lockout where it is handed over, so a composer
+that wants its own clock on that lockout decorates it first with
+`pin.NewLockoutBackend(b, pin.WithLockoutClock(c))`; the first decoration of a
+backend is the one every later wrapper shares. Certificate validity and
+enrolment stamps are records, not gates, and stay on the wall clock.
 
 ### The seal store
 
@@ -145,9 +153,6 @@ was a gap, fixed.
 - **Gap E, clustered replica storage.** `WithStorageFactory` reaches the
   standalone data plane. A clustered replica's storage is chosen by its state
   machine through a registry-level factory that node options do not reach.
-
-The time gates named under [The clock](#the-clock) are the only other places a
-composer-held time source does not yet reach.
 
 ## Scope note: service identity
 

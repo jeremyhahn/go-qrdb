@@ -3498,7 +3498,9 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		seal.WithPerTenantRegistry(perTenantReg),
 	)
 
-	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend)
+	// The SO PIN lockout runs on the composer's clock (WithClock); an
+	// injected backend is decorated where the composer hands it over.
+	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend, pin.WithLockoutClock(crypto.Clock))
 	if pinErr != nil {
 		closeOpenedVolumes(ctx, volumePoolRows, log)
 		_ = sealStore.Close()

@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -282,6 +283,15 @@ func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deps.QuorumLimiter = l
+}
+
+// SetClock installs the clock a holder's claim challenge is issued and
+// expires on (HolderDeps.Clock). It is carried to every tenant and database
+// holder authority built from HolderDeps. Nil keeps the real clock.
+func (s *CeremonyService) SetClock(c clock.Clock) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.Clock = c
 }
 
 // SetAuditLogger installs the compliance audit trail every holder event is
@@ -1014,7 +1024,7 @@ func (s *CeremonyService) BeginClaimShare(ctx context.Context, domain seal.Quoru
 	if err != nil {
 		return nil, err
 	}
-	return h.beginClaim(ctx, username, callerThumbprint)
+	return h.beginClaim(ctx, &s.deps, username, callerThumbprint)
 }
 
 // CompleteClaimShare verifies the holder's signature over the claim nonce and

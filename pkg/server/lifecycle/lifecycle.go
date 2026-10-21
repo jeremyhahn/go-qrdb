@@ -1714,6 +1714,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	// and one that does not is never left without a lockout.
 	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
 	svc.SetQuorumLimiter(QuorumLimitWith(infra.HolderActLimiter))
+	svc.SetClock(infra.Clock)
 	svc.SetAuditLogger(infra.AuditLogger)
 	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
 	return svc, nil

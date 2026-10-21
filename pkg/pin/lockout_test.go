@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 )
 
 const (
@@ -321,14 +322,19 @@ func TestWithLockoutClock_TheLockoutRunsOnTheInjectedClock(t *testing.T) {
 	if err := inner.SetSOPIN("", lockoutSOPIN); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Unix(1_000_000, 0)
-	b := NewLockoutBackend(inner, WithLockoutClock(func() time.Time { return now }))
+	clk := clocktest.NewAt(time.Unix(1_000_000, 0))
+	start := clk.Now()
+	b := NewLockoutBackend(inner, WithLockoutClock(clk))
 	spendFreeFailures(t, b)
 	requireLocked(t, b.VerifySOPIN(lockoutSOPIN), auth.SOPINBaseBackoff)
-	if status := b.GetLockoutStatus(); !status.IsLocked || !status.LockoutUntil.Equal(now.Add(auth.SOPINBaseBackoff)) {
+	if status := b.GetLockoutStatus(); !status.IsLocked || !status.LockoutUntil.Equal(start.Add(auth.SOPINBaseBackoff)) {
 		t.Fatalf("status = %+v, want locked until the injected now plus the base backoff", status)
 	}
-	now = now.Add(auth.SOPINBaseBackoff)
+	clk.Advance(auth.SOPINBaseBackoff - time.Nanosecond)
+	if err := b.VerifySOPIN(lockoutSOPIN); !errors.Is(err, ErrPINLocked) {
+		t.Fatalf("the right PIN one tick before the injected clock passed the backoff = %v, want ErrPINLocked", err)
+	}
+	clk.Advance(time.Nanosecond)
 	if err := b.VerifySOPIN(lockoutSOPIN); err != nil {
 		t.Fatalf("the right PIN once the injected clock passed the backoff = %v", err)
 	}
@@ -344,8 +350,8 @@ func TestWithLockoutClock_OnlyTheFirstDecorationIsConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen := time.Unix(1_000_000, 0)
-	first := NewLockoutBackend(inner, WithLockoutClock(func() time.Time { return frozen }))
-	second := NewLockoutBackend(inner, WithLockoutClock(func() time.Time { return frozen.Add(time.Hour) }))
+	first := NewLockoutBackend(inner, WithLockoutClock(clocktest.NewAt(frozen)))
+	second := NewLockoutBackend(inner, WithLockoutClock(clocktest.NewAt(frozen.Add(time.Hour))))
 	if first != second {
 		t.Fatal("a second decoration with other options is a different lockout")
 	}
