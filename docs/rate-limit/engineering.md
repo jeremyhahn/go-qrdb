@@ -1,6 +1,6 @@
 # Rate Limiting — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -30,6 +30,7 @@ type TokenBucketLimiter struct{ /* unexported */ }
 func NewTokenBucketLimiter(opts ...TokenBucketOption) *TokenBucketLimiter
 func WithIdleTTL(ttl time.Duration) TokenBucketOption
 func WithSweepInterval(interval time.Duration) TokenBucketOption
+func WithClock(c clock.Clock) TokenBucketOption
 ```
 
 `pkg/auth/middleware`:
@@ -50,15 +51,15 @@ type RateLimitedError struct {
 
 ```go
 type AuthMiddlewareConfig struct {
-	// ... existing fields ...
+	// ... other fields ...
 	RateLimitPolicies *ratelimit.Registry
 	RateLimiter       ratelimit.Limiter
 }
 ```
 
 `sdk/go` (an embedder consumes go-qrdb exclusively through `sdk/go`, so
-every type and constructor above is re-exported, under the `RateLimit*`
-prefix for the two ambiguous names):
+the `pkg/ratelimit` surface above, except `WithClock`, is re-exported, with
+the `RateLimit` prefix where the bare name would be ambiguous):
 
 ```go
 type RateLimitPolicy   = ratelimit.Policy
@@ -80,8 +81,8 @@ func WithRateLimitPolicies(policies *ratelimit.Registry) NodeOption
 func WithRateLimiter(l ratelimit.Limiter) NodeOption
 ```
 
-Both thread into the same `wiring.AuthMiddlewareConfig` the embedded node's
-`wireClientAndServer` builds for `cmd/qrdbd` itself, so a Policy declared
+Both thread into the same `wiring.AuthMiddlewareConfig`
+`Node.wireClientAndServer` builds for `cmd/qrdbd` itself, so a Policy declared
 through the SDK is enforced identically on every transport the node's auth
 middleware fronts.
 
@@ -97,7 +98,7 @@ starting a second one. `cfg.RateLimiter` is ignored when
 
 | `RateLimitPolicies` | `RateLimiter` | Result |
 |---|---|---|
-| nil | (ignored) | no rate limiting installed — behavior unchanged from before this feature |
+| nil | (ignored) | no rate limiting installed |
 | non-nil | nil | production `TokenBucketLimiter` constructed and installed |
 | non-nil | non-nil | the supplied `Limiter` installed, no new instance constructed |
 
@@ -118,9 +119,10 @@ own time. The caller that supplies a limiter closes it.
 ## Enforcement point
 
 `AuthMiddleware.authorize` — the single function every transport's
-authorization call funnels through (`RESTMiddleware`, `UnaryInterceptor`
-shared by gRPC and the unix-socket listener, `AuthorizeQUIC`, `AuthorizeMCP`)
-— runs the rate-limit check first, ahead of the `IdentityGated` short-circuit
+authorization call funnels through (`RESTMiddleware`, `UnaryInterceptor` and
+`StreamInterceptor` shared by gRPC and the unix-socket listener,
+`AuthorizeQUIC`, `AuthorizeMCP`) — re-verifies a delegated identity's
+certificate, then runs the rate-limit check (`checkRateLimit`), ahead of the `IdentityGated` short-circuit
 and the tenant-IAM-sealed allowance, whenever both `Limiter` and `Registry`
 are configured and the caller's identity is non-nil. It is a no-op (falls
 through unchanged) when either is nil, or when `perm` carries no `Policy` in
@@ -128,11 +130,9 @@ the `Registry`.
 
 ## Invariants
 
-- **Rate limiting never runs against a nil identity.** `authorize`'s only
-  caller path that reaches it with `identity == nil` is the
-  `permission.IdentityGated` case, which returns `auth.ErrUnauthenticated`
-  before any permission-checking logic runs; every other caller of
-  `authorize` has already established a non-nil identity.
+- **Rate limiting never runs against a nil identity.** `authorize` calls
+  `checkRateLimit` only when `identity` is non-nil; a nil identity goes
+  straight to the authorization decision.
 - **An unregistered permission is unlimited, not denied.** `Registry.Lookup`
   returning `ok == false` means "no policy," and `checkRateLimit` treats that
   identically to rate limiting being unconfigured at all: it returns nil.
@@ -161,7 +161,7 @@ the `Registry`.
   less.** A bucket concurrently touched by `Allow` at the instant the
   reaper's sweep reads it stale can be reclaimed just after that `Allow`
   call committed; the next `Allow` for that key then starts a fresh bucket
-  at full burst. This is documented and accepted: rate limiting is a
+  at full burst. This is accepted: rate limiting is a
   capacity control, not a security boundary, so trading a rare extra token
   for a sweep that never locks against `Allow` is the correct side of that
   trade.
@@ -172,12 +172,12 @@ the `Registry`.
 |---|---|
 | REST | `mapHTTPAuthError` returns **429** for `*RateLimitedError`; `RESTMiddleware` sets the `Retry-After` header (RFC 9110 §10.2.3, delay-seconds, rounded up to at least 1) before writing the response |
 | gRPC / unix | `mapGRPCAuthError` returns `codes.ResourceExhausted`. The unix-socket listener registers the same `UnaryInterceptor`, so a caller over its unix-transport quota sees the identical code a TCP gRPC caller would. |
-| QUIC | `authmw.AuthFailureRateLimited` maps to `wire.StatusResourceExhausted` (`pkg/api/quic/auth.go`); the frame carries `RateLimitedError.Error()` verbatim. *(Corrected 2026-10-06: this said QUIC had no status-code plane for authorization outcomes.)* |
-| MCP | The tool-authorization middleware returns `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the same error text it always returned. The code comes from `authmw.GRPCError`, the classifier REST and gRPC answer from, so the auth-failure classes keep their own codes instead of collapsing into "retryable or not" -- rate-limited is never confused with, say, a credential problem. (Two of the classes, `AuthFailureUnavailable` and `AuthFailureAuditUnavailable`, deliberately share `Unavailable` regardless: that pair exists for control flow inside `pkg/auth/middleware`, not for the wire, so every transport answers both alike.) |
+| QUIC | `authmw.AuthFailureRateLimited` maps to `wire.StatusResourceExhausted` (`pkg/api/quic/auth.go`); the frame carries `RateLimitedError.Error()` verbatim. |
+| MCP | The tool-authorization middleware (`pkg/api/mcp/auth.go`) returns `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the error text. The code comes from `authmw.GRPCError`, the classifier REST and gRPC answer from, so each auth-failure class keeps its own code. `AuthFailureUnavailable` and `AuthFailureAuditUnavailable` both map to `Unavailable` on every transport: the pair exists for control flow inside `pkg/auth/middleware`, not for the wire. |
 
 ## Test strategy
 
-**Integration target:** `make integration-test-rate-limit` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test yet, so the target runs zero tests and says so; this is a recorded gap (the `rate-limit` row marks it), not a pass. Enforcement is proved by the unit tests below. Per-transport accounting is the `rate-limit` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-rate-limit` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test, so the target runs zero tests and says so; this is a recorded gap (the `rate-limit` row marks it), not a pass. Enforcement is proved by the unit tests below. Per-transport accounting is the `rate-limit` row of `test/integration/COVERAGE.md`.
 
 - **Unit, `pkg/ratelimit`**: burst admission and refusal, refill over a
   simulated clock, retry-after computation, independent keys, invalid-policy
@@ -206,13 +206,10 @@ the `Registry`.
   own test — unconfigured stays unthrottled, `RateLimitPolicies` alone
   constructs and enforces the default limiter, and a supplied `RateLimiter`
   is the one consulted rather than a fresh default.
-- **Mutation discipline**: every integration-level test in this feature
-  (the `authorize`-ordering test, the REST 429 test, the gRPC
-  `ResourceExhausted` test) was confirmed to fail when the enforcement call
-  inside `authorize` was disabled, and to pass once restored — the
-  unit-level `checkRateLimit` tests, which call the helper directly rather
-  than through `authorize`, were confirmed to keep passing throughout, since
-  they are not testing the wiring.
+- **Wiring coverage**: the `authorize`-ordering test, the REST 429 test and
+  the gRPC `ResourceExhausted` test go through `authorize`, so they fail if
+  the enforcement call inside it is removed; the `checkRateLimit` tests call
+  the helper directly and do not cover the wiring.
 
 ## Known gaps
 
@@ -221,7 +218,7 @@ the `Registry`.
   daemon flag. See [cli.md](cli.md).
 - **The default `TokenBucketLimiter` a `BuildAuthMiddleware` call constructs
   is never explicitly closed.** `AuthMiddleware` has no `Close`/shutdown
-  lifecycle hook today, so the reaper goroutine a default limiter starts
+  lifecycle hook, so the reaper goroutine a default limiter starts
   runs for the life of the process — acceptable for a daemon whose node
   lifetime is the process lifetime, but an embedder that repeatedly
   constructs and discards `AuthMiddleware` instances (for example, an
