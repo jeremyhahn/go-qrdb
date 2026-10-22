@@ -96,24 +96,26 @@ func (m *AuthMiddleware) AuthenticateDelegation(ctx context.Context, chain []*x5
 
 ```go
 type User struct {
-	ID           uint64             `json:"id"`           // store-assigned Snowflake; never zero when persisted
-	Username     string             `json:"username"`     // unique within tenant; maps to cert CN
-	Email        string             `json:"email"`        // CANONICAL LOGIN KEY, unique within tenant
-	Name         string             `json:"name"`         // display only; never a lookup key
-	TenantID     string             `json:"tenantID"`     // maps to cert OU
-	RoleIDs      []string           `json:"roleIDs"`      // system-scoped role identifiers
-	Lifecycle    Lifecycle          `json:"lifecycle"`    // CANONICAL account state
-	System       bool               `json:"system"`       // built-in, cannot be deleted
-	AuthMethods  []string           `json:"authMethods"`  // permitted methods (policy), lowercased
-	LastAuth     *time.Time         `json:"lastAuth"`     // high-water mark; never moves backwards
-	RoleBindings []RoleBinding      `json:"roleBindings"` // {RoleID, TenantID} — tenant-scoped RBAC
-	Attributes   map[string]string  `json:"attributes"`   // ABAC
-	CertBindings []CertBinding      `json:"certBindings"` // mTLS SPKI thumbprints
-	Factors      []FactorEnrollment `json:"factors"`      // opaque; qrdb never interprets Data
-	CreatedAt    time.Time          `json:"createdAt"`
-	UpdatedAt    time.Time          `json:"updatedAt"`
+	ID           uint64            `json:"id"`                     // store-assigned Snowflake; never zero when persisted
+	Username     string            `json:"username"`               // unique within tenant; maps to cert CN
+	Email        string            `json:"email,omitempty"`        // CANONICAL LOGIN KEY, unique within tenant
+	Name         string            `json:"name,omitempty"`         // display only; never a lookup key
+	TenantID     string            `json:"tenantID"`               // maps to cert OU
+	RoleIDs      []string          `json:"roleIDs"`                // system-scoped role identifiers
+	Lifecycle    Lifecycle         `json:"lifecycle,omitempty"`    // CANONICAL account state
+	System       bool              `json:"system"`                 // built-in, cannot be deleted
+	AuthMethods  []string          `json:"authMethods,omitempty"`  // permitted methods (policy), lowercased
+	LastAuth     *time.Time        `json:"lastAuth,omitempty"`     // high-water mark; never moves backwards
+	RoleBindings []RoleBinding     `json:"roleBindings,omitempty"` // {RoleID, TenantID} — tenant-scoped RBAC
+	Attributes   map[string]string `json:"attributes,omitempty"`   // ABAC
+	CertBindings []CertBinding     `json:"certBindings,omitempty"` // mTLS SPKI thumbprints
+	CreatedAt    time.Time         `json:"createdAt"`
+	UpdatedAt    time.Time         `json:"updatedAt"`
 }
 ```
+
+`User` has no factors field: enrolled auth factors live in `pkg/auth.AuthFactor`,
+reached through `service.UserAuthFactorServicer`.
 
 `User.CanAuthenticate()` is the check a login or credential-registration
 ceremony makes. It is `Lifecycle == active` and nothing else: an absent
@@ -194,15 +196,13 @@ record to the mutator, and commits the resulting set **against those same
 bytes** via `updateUserAt` — the half of `UpdateUser` that takes the base rather
 than re-reading it.
 
-**Why that split exists.** `UpdateUser` reads the record and guards on ITS read.
-A caller that read the record itself and then called `UpdateUser` had two reads
-with a window between them, and the conditional commit did not cover that
-window: a request derived from the earlier snapshot swapped cleanly over
-whatever landed in between. On `CertBindings` that is not an abstract lost
-update — an enrolment that read the set before a concurrent withdrawal
-committed would put the withdrawn credential back, on an account whose operator
-had been told the withdrawal succeeded. Passing `base` straight through makes
-that a **lost swap** instead.
+**Why the split.** `UpdateUser` reads the record and guards on its own read. A
+caller that read the record itself and then called `UpdateUser` would hold two
+reads with a window between them that the conditional commit does not cover. On
+`CertBindings` that window matters: an enrolment that read the set before a
+concurrent withdrawal committed would put the withdrawn credential back, on an
+account whose operator was told the withdrawal succeeded. Passing `base` straight
+through makes that a **lost swap** instead.
 
 A lost swap is then **retried**, not reported, on the argument `mergeLastAuth`
 makes: "add T" and "remove T" are complete specifications of what to do to the
@@ -229,8 +229,8 @@ bootstrap admin's last two keys could fail the loser with an
 it as a lockout.
 
 **Withdrawal deliberately does not validate the thumbprint's shape.**
-`IsValidSPKIThumbprint` is a write-side gate added after the field existed, so a
-record written before it can hold a non-canonical string; refusing to withdraw
+`IsValidSPKIThumbprint` gates writes only, so a stored record can hold a
+non-canonical string; refusing to withdraw
 one would make exactly the entries the gate exists to keep out the only entries
 nobody can remove. A withdrawal that matches nothing returns
 `*CertBindingNotFoundError` (404 / `codes.NotFound`) rather than succeeding
@@ -239,13 +239,13 @@ vacuously, and a withdrawal that empties the set emits an audit event carrying
 
 `checkUnresolvedCertLogin` covers the subject that resolves to **no account**
 (user store answered not-found, or no user store is wired): it admits under
-`enrolled`, as before, and refuses a cert-bound method under `required` with
+`enrolled` and refuses a cert-bound method under `required` with
 `*CertBindingRequiredError{AccountResolved: false}`. The sealed-tenant branch of
 `finalizeIdentity` returns before either check, deliberately — see the
 architecture's list of what `required` does not reach.
 
 The policy is `auth.MTLSBindingPolicy` (`pkg/auth/binding_policy.go`), zero value
-`MTLSBindingEnrolled`, resolved from configuration by
+`MTLSBindingRequired`, resolved from configuration by
 `auth.ParseMTLSBindingPolicy` (an unknown spelling is
 `*InvalidMTLSBindingPolicyError`, never a guess) and threaded
 `wiring.AuthMiddlewareConfig.MTLSBindingPolicy` →
@@ -310,21 +310,20 @@ the identity fails.
 
 | scope | tenant-local identity | system-tenant identity |
 |---|---|---|
-| `ScopeSelf` | own tenant only | **own tenant only** (the system-tenant lift is removed; identical to `ScopeSelfStrict`) |
+| `ScopeSelf` | own tenant only | **own tenant only** (identical to `ScopeSelfStrict`) |
 | `ScopeCross` | denied | any tenant |
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
-| `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
+| `ScopeSelfStrict` | own tenant only | **own tenant only** |
 
 `ScopeSelfStrict` holds the `escrow:*`, `certs:*` and `trust_anchors:*`
-families (`pkg/permission/self_strict_scope.go`; `certs:revoke:cross` alone
-stays `ScopeCross`). `certs:*` moved there from `ScopeSelf` because a
-certificate minted for another tenant's user authenticates as that user, so
-the system-tenant lift on the former `certs:generate` was a lift to every
-tenant's identities (**BREAKING**). `TestCertsPermissions_AreSelfStrict` pins
-it. `certs:generate` is now removed altogether, replaced by `certs:issue`
-(sign a CSR for an existing account) and `certs:enroll` (bind a
-bring-your-own certificate), both held by the built-in SO and Admin roles
-(**BREAKING**).
+families (`pkg/permission/self_strict_scope.go`); the two exceptions are
+`certs:revoke:cross` (`ScopeCross`) and `certs:delegate` (`ScopeTenantOnly`).
+A certificate minted for another tenant's user authenticates as that user, so a
+system-tenant lift on `certs:*` would be a lift to every tenant's identities.
+`TestCertsPermissions_AreSelfStrict` pins it. `certs:issue` signs a CSR for an
+existing account and `certs:enroll` binds a bring-your-own certificate; the
+built-in SO and Admin roles hold both. `ScopeSelf` and `ScopeSelfStrict` behave
+the same; a new permission takes `ScopeSelf`.
 
 The audit query is not decided by scope at all: its permission is checked
 against the caller, and the filter is then confined to the caller's own tenant
@@ -335,7 +334,8 @@ general form: an empty requested tenant means the caller's own, any other is a
 no system-tenant lift.
 
 **Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
-re-exports each one (`sdk.PermissionCertsRevokeCross`, the `tenants`,
+re-exports each one (`sdk.PermissionCertsRevokeCross`,
+`sdk.PermissionAuditVerify`, the `tenants`,
 `volumepool`, `registration_config` and `credentials` families,
 the node-barrier `seal` and `ceremony` permissions, and the cluster `admin`,
 `rebalance` and `backup`
@@ -363,41 +363,24 @@ authorizer denies on that error. `TestEveryPermissionDeclaresItsScope` in
 `pkg/permission/scope_gate_test.go` walks the registry and fails the build on
 the first undeclared member, so a permission added without a scope is a red
 test rather than a quiet admit. `ScopeSelf` is the zero value of `Scope`, and
-it is declared like the other two — `pkg/permission/self_scope.go` names each
+it is declared like the others — `pkg/permission/self_scope.go` names each
 self-scoped permission individually.
 
-It used to be otherwise: `LookupScope` answered `ScopeSelf` for any permission
-nobody had tagged, and 221 of 362 permissions — not one of them registered
-`ScopeSelf` explicitly — took their scope by omission. An unconsidered
-permission was indistinguishable from one deliberately confined to its own
-tenant, and the unconsidered one is the one that admits. `certs:revoke` was the
-instance that surfaced it: no registry entry, defaulted to `ScopeSelf`, and a
-check that was vacuous on the ordinary REST path.
-
-The remaining hazard is the family call. **Declare each member of a family by
-name, never the family through a helper**: a helper that later gains a member
-tags that member silently. Measured:
-`RegisterScope(ScopeTenantOnly, brokerDataPlaneScopePermissions()...)` tagged
-the entire broker data-plane family, and `orchestrator:health` rode along. The
-result was that the operator persona — the one that exists to watch the node —
-was the single persona that could not see whether the node's orchestrator was
-alive:
-
-```
-GET /api/v1/orchestrator/health
-403 permission denied: admin cannot health on orchestrator:
-    tenant-only permission denied to system tenant
-```
-
-It now sits in `nodeStateScopePermissions()` and is declared `ScopeSelf` by
-name in `self_scope.go`.
+**Declare each member of a family by name, never the family through a helper**:
+a helper that later gains a member tags that member silently.
+`orchestrator:health` sits in the broker data-plane family
+(`brokerDataPlaneScopePermissions()`, `ScopeTenantOnly`) but reads the daemon's
+own state, so it is listed in `nodeStateScopePermissions()` and declared
+`ScopeSelf` by name in `self_scope.go`. Under the family's scope the operator
+persona, the one that exists to watch the node, could not read the
+orchestrator's health.
 
 **A tenant cannot re-scope a built-in permission.** Per-tenant scope
 definitions (`permission.TenantScopeStore`) exist for caller-defined
 permissions only. `SetScope` refuses any permission that has a built-in scope
 registration with `*BuiltInScopeOverrideError`, and `ResolveScope` fails closed
 with the same error -- so the authorizer denies -- if it finds a stored
-definition of one written before the refusal existed. Otherwise a tenant could
+definition of one. Otherwise a tenant could
 undo a platform decision such as the cross-scope tenant plan permissions
 (`tenant_provisioning_scope.go`) and widen its own Admin back onto the platform
 operator's surface.
@@ -412,20 +395,15 @@ tenant's behalf, so the platform operator must not exercise them.
 is exactly the case `ScopeSelfStrict` exists for: the system tenant needs one
 over its own namespace as much as any other tenant does, and `ScopeTenantOnly`
 would deny it that outright. `init()` tags the two groups with separate
-`RegisterScope` calls, each naming its members explicitly, so `secrets:*`
-cannot silently drift back onto the family's default the next time someone
-edits the list.
+`RegisterScope` calls, each naming its members explicitly, so an edit to the
+family's list cannot move `secrets:*` onto the family's scope.
 
 **`mvcc:compact` is `ScopeSelfStrict` for the same reason.** Compaction
 discards a database's revision history, and each tenant -- the system tenant
-included -- compacts only databases it owns. It was `ScopeCross` while
-compaction discarded the whole store's history; that made the platform
-operator the one identity able to destroy every tenant's history at once,
-which no role may do. With the floor per database
-([../key-value/architecture.md](../key-value/architecture.md)), the
+included -- compacts only databases it owns. The compaction floor is per database
+([../key-value/architecture.md](../key-value/architecture.md)), so the
 permission's material is the tenant's own history, and a system lift onto
-another tenant's would be a cross-tenant act. *(Corrected: this document
-listed `sdk.PermissionMVCCCompact` among the cross-scope permissions.)*
+another tenant's would be a cross-tenant act.
 
 **The counter-example is in the same family, and it is the more instructive
 one.** `orchestrator:status` looks like the same case and is not: it is
@@ -460,8 +438,8 @@ capability-specific wrapper over it), which injects the target so the same
 scope rule evaluates against the request rather than against the ambient
 tenant. The certificate-authority surface is the worked example — see
 [../certificate-authority/architecture.md](../certificate-authority/architecture.md#which-tenant-a-certs-call-may-act-on),
-where generate and list take the target from the request and revoke resolves it
-from the serial.
+where list takes the target from the request, revoke resolves it from the
+serial, and issue and enroll act on the caller's own tenant.
 
 **When the target cannot be established at all, that is not a self-scope
 operation.** A revocation of a serial no record matches names no tenant, so it
@@ -469,26 +447,22 @@ gets its own cross-scope permission (`certs:revoke:cross`) rather than riding
 on a self-scope one whose check can never fire. Declaring a second, cross-scope
 permission for the unattributable case is the pattern.
 
-**There is no `audit:read:cross`.** It was declared, granted to the built-in
-Admin and re-exported by the SDK, and nothing in qrdb enforced it -- yet its
-name promised a read of every tenant's audit trail. No caller reads another
-tenant's audit events (the query is confined by `tenant.ConfineAuditFilter`),
-so the permission is removed rather than left to suggest otherwise.
+**There is no `audit:read:cross`.** No caller reads another tenant's audit
+events (the query is confined by `tenant.ConfineAuditFilter`), so no permission
+names such a read.
 
-**Pin the scope of each member of a family, not the family.** Before that fix
-nothing asserted the scope of any individual permission in the family — the
-registration looped over one list and so did the test — so a single
-permission's classification could change without a failing test. The test now
-enumerates the **exceptions** and asserts everything else is tenant-only, which
-is the fail-closed direction: a permission added to the family and not listed
-as an exception is asserted tenant-only, so getting a new permission's scope
-wrong fails a test rather than passing a typed-in column.
+**Pin the scope of each member of a family, not the family.** A test that loops
+over the same list the registration loops over cannot see one permission's
+classification change. A family's scope test enumerates the **exceptions** and
+asserts every other member tenant-only, which is the fail-closed direction: a
+permission added to the family and not listed as an exception is asserted
+tenant-only, so getting a new permission's scope wrong fails a test.
 
 ## Stored ABAC policies
 
 The stored-policy API keeps ABAC policy documents (`pkg/auth/abac.Policy`) as
 records of a tenant. It stores and returns them; **it does not feed the
-evaluator yet**, which still reads only the `policy_dir` files and the SDK's
+evaluator**, which reads only the `policy_dir` files and the SDK's
 `ABACPolicySpec`.
 
 | Symbol | Where | What |
@@ -544,15 +518,12 @@ touches it). `lifecycle.Node.Invitations` is non-nil exactly when
 `Node.CertEnrollment` is: both require a certificate provider, and
 redemption issues through the same Key B CA `SignCertificate` does.
 
-**No separate target-authorization machinery.** An earlier design for this
-feature built its own permission-subset check for who may be invited by
-whom; that design was an owner-corrected dead end on this codebase (a tenant
-Admin does everything in its own tenant except SO/custodian custody — see
+**No separate target-authorization machinery.** A tenant Admin does everything
+in its own tenant except SO/custodian custody (see
 [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)), so
-`InviteUser` and the pending-account check in `RedeemInvitation` both call
-the SAME `certTargetGuard` function `certs:issue` already does, unchanged.
-Nothing here re-derives who may hold a certificate; the two callers just
-happen to be an invitation and a direct issuance.
+`InviteUser` and the pending-account check in `RedeemInvitation` both call the
+SAME `certTargetGuard` function `certs:issue` does. Nothing here re-derives who
+may hold a certificate.
 
 **The invitation-store layer (`pkg/invite`) is a bearer-secret store, not a
 generic KV wrapper.** `Entity.TokenHash` is the only representation of the
@@ -589,15 +560,10 @@ as every presented token being forged for as long as it lasts. See
 and [../../pkg/service/invitation_test.go](../../pkg/service/invitation_test.go)
 for the tests that pin this down.
 
-**`bootstrap.InvitationIssuer` and a deferred-tenant-admin tie-in were
-deliberately left out of this port.** The upstream design this was ported
-from returned a pending tenant admin's invitation token from
-`TenantProvisionResult`; `service.TenantOnboardingService.OnboardTenant` on
-this codebase does not yet expose a deferred-admin enrolment mode at all
-(it hard-codes `bootstrap.AdminEnrollCert`), so there is no live caller for
-that mechanism today. Add it when `OnboardTenant` grows deferred-admin
-support, not before — see
-[../multi-tenancy/architecture.md](../multi-tenancy/architecture.md).
+**No invitation for a tenant's first admin.**
+`service.TenantOnboardingService.OnboardTenant` enrols the first admin by
+certificate (`bootstrap.AdminEnrollCert`) and has no deferred-admin mode, so
+`TenantProvisionResult` carries no invitation token.
 
 **gRPC and the Unix socket carry invitations through the shared protobuf
 stubs.** `InviteUser` and `RedeemInvitation` are `qrdb.v1.QRDBService` RPCs
@@ -610,7 +576,7 @@ does, so it is correct even when the Unix socket is enabled without TCP
 gRPC. `InviteUser` is authorized like `IssueCert`/`EnrollCert`:
 `authorizeCertTenant` against the caller's own tenant, no `(tenant, id)`
 target-table entry needed. Every transport — REST, native QUIC, gRPC, the
-Unix socket, MCP and the embedded transport — now carries the full surface.
+Unix socket, MCP and the embedded transport — carries the full surface.
 
 ## Invariants
 
@@ -643,7 +609,7 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
 - **`ReconcileBuiltInRoles` is the ONLY writer to a built-in role's
   permissions.** `UpdateRole` returns `SystemRoleImmutableError{Op:
   "re-permissioned"}` and `DeleteRole` returns `SystemRoleImmutableError{Op:
-  "deleted"}` for every other caller, and that does not change. Reconciliation
+  "deleted"}` for every other caller. Reconciliation
   is admitted because its target is not caller-supplied: it is `BuiltInRoles()`,
   the definition the guard exists to protect. It writes the primary record
   directly rather than going through `UpdateRole`, so the guard has no
@@ -711,7 +677,7 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   handle cannot be claimed twice and a release cannot evict an entry another
   account has legitimately taken. A store lacking `kvstore.AtomicKVStore` is
   refused (`ErrStoreNotAtomic`) rather than degraded to check-then-write.
-- **`Update`, `Enable`, `Disable` and `Delete` commit conditionally** against
+- **`UpdateUser`, `EnableUser`, `DisableUser` and `DeleteUser` commit conditionally** against
   the version they read. A lost commit is `ConcurrentUpdateError` (re-read and
   retry), which is a different statement from a store failure.
 - **A store error from a conditional commit is AMBIGUOUS**, per
@@ -736,10 +702,8 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   `users:remove_cert_binding` is not folded into `users:add_cert_binding`
   because enrolment only narrows an account while withdrawal of the LAST
   binding widens it back to CN/OU admission. Both permissions declare
-  `ScopeSelf` beside their definitions rather than in `self_scope.go`: they
-  were the first pair declared deliberately, back when `LookupScope` still
-  answered `ScopeSelf` for anything nobody tagged and an omission was
-  indistinguishable from a decision, and these two decide which certificates
+  `ScopeSelf` beside their definitions (`pkg/permission/constants.go`) rather
+  than in `self_scope.go`, because these two decide which certificates
   authenticate as an account.
 - **Withdrawal and revocation are independent.** Revocation refuses a
   certificate; a binding is over the key and outlives every certificate issued
@@ -753,17 +717,14 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   `ResolveRolePermissions` exposes that resolution for inspection.
 - **`Parse` rejects unregistered permission strings.** The vocabulary cannot be
   extended at runtime by a caller.
-- **`FactorEnrollment.Data` is opaque.** qrdb stores it and never interprets it;
-  verification is the registered `authfactors.Factor`'s job.
-- **`Lifecycle` is the only account-state field.** The former `Enabled`
-  boolean — a derived projection of it — has been removed from the domain type
-  and from every transport; a second field describing the same state is how a
+- **`Lifecycle` is the only account-state field.** There is no `Enabled`
+  boolean on the domain type or on any transport; a second field describing the same state is how a
   record ends up claiming to be locked and active at once.
 - **An absent state fails closed.** The store writes `Lifecycle` on every
   create, so a persisted record always carries one. A record without it, or with
   a state this build does not recognize, cannot authenticate and cannot be
-  transitioned. There is no decode-time fallback and no migration: a record
-  written before the field existed must be recreated.
+  transitioned. There is no decode-time fallback: such a record must be
+  recreated.
 - **`deleting` is terminal and closes the registration-during-deletion window.**
   A deletion writes it before its first mutation; from that instant
   `CanAuthenticate` is false and neither `EnableUser`, `DisableUser` nor
@@ -780,21 +741,21 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
 - **A terminal record accepts NO mutation.** `UpdateUser` refuses every edit
   (`onlyReassertsLifecycle` is the sole exception, and is an exhaustive field
   list), the `LastAuth` fast path refuses, and `AddCertBinding` refuses.
-  Refusing only the lifecycle transition left every other field writable, so a
-  caller could still bind a certificate to an account whose deletion had begun —
+  Refusing only the lifecycle transition would leave every other field writable,
+  so a caller could bind a certificate to an account whose deletion had begun —
   the exact orphan the marker exists to prevent.
 - **`AuthMethods` is ENFORCED at qrdb's authentication gate**, not merely
   stored. `pkg/auth/middleware` carries the name of the authenticator that
   succeeded and refuses with `AuthMethodNotPermittedError` (403 /
   `PermissionDenied`) when the account's policy is non-empty and does not list
   it. Two limits are stated rather than assumed: an EMPTY policy states no
-  restriction, so accounts predating the field are unaffected; and the check
+  restriction; and the check
   applies only where the method is OBSERVABLE — a forwarded on-behalf assertion
   and a capability module's session token carry none qrdb can see, and the layer
   that ran that ceremony enforces the policy there. That distinction is carried
   by an explicit flag (`authMethod.known`), never by an empty name: an
   authenticator that names itself `""` is observed, not unobservable, and
-  conflating the two let it walk past a non-empty policy through the ordinary
+  conflating the two would let it walk past a non-empty policy through the ordinary
   chain. An observed method whose name does not normalize fails closed.
 - **A forwarded on-behalf request is not read until its presenter is a
   cluster node, and then only under a bound.** The leader must read the body
@@ -805,15 +766,12 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   refused with the same opaque 401 as every other assertion failure. A
   cluster node's body is then read under `forward.MaxBodyBytes`, which is
   the largest body any REST handler forwards (a test in `pkg/api/rest` keeps
-  every forwarding handler's bound within it). Previously any certificate
-  chaining to the cluster CA could make the node buffer an unbounded body
-  before the signature was checked.
+  every forwarding handler's bound within it).
 - **A forwarded holder stays a holder.** The on-behalf assertion
   (`forward.CallerAssertion`) carries the caller's subject and tenant, and,
   for a caller that authenticated with a holder certificate, its
   `holder_profile` (`security-officer` or `custodian`). The field is signed
-  with the rest of the assertion and omitted for users, so a user's
-  assertion is unchanged. The leader re-marks such an identity, so
+  with the rest of the assertion and omitted for users. The leader re-marks such an identity, so
   `finalizeIdentity` never resolves it to a user account; an assertion naming
   a profile the leader does not recognise is refused with the usual opaque
   401. A holder request is never forwarded unsigned, because an unsigned
@@ -822,7 +780,7 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   (`rest.UnsignedForwardRefusedError`) and logs the cause; the request never
   reaches the leader. A request authenticated with a tenant-issued delegation
   is refused the same way. A user request in the same situation is forwarded
-  as before.
+  without an assertion.
 - **A forwarded delegation is verified again on the leader.** For a caller
   that authenticated with a tenant-issued delegation certificate, the
   assertion carries the certificate itself (`delegation`, base64 DER), signed
@@ -866,7 +824,7 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   the built-in `mtls`, `piv` and `webauthn` plus the `Name()` of every
   authenticator in THAT node's chain — including those an embedder plugs in
   through `wiring.AuthMiddlewareConfig.ExtraAuthenticators` or the SDK node's
-  `WithAuthenticators` (the pluggable-auth-chain ruling). The middleware owns
+  `WithAuthenticators`. The middleware owns
   it (`AuthMiddleware.IsAuthMethod` / `AuthMethods`, fixed at `New`), and the
   node's user stores receive it through `user.WithAuthMethodVocabulary`,
   wired by `lifecycle.BuildServices` (`Infra.AuthMethodVocabulary`), the SDK
@@ -896,8 +854,8 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   de-duplicated by `NormalizeAuthMethods`, a blank entry is refused rather than
   dropped, and an entry outside the vocabulary is refused (above). On an update, `nil` means "leave alone" and an empty non-nil
   slice means "clear".
-- **There is no group-membership field.** The former `GroupIDs` (and the SDK's
-  `NormalizeGroupIDs`) is removed: no qrdb authorization path read it.
+- **There is no group-membership field.** No qrdb authorization path would
+  read one.
 - **`LastAuth` only moves forward.** A value at or before the stored one is
   ignored, so overlapping logins written out of order cannot roll an account's
   last-seen time backwards. It is stored in UTC.
@@ -907,8 +865,8 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   caller can decide what to do; `max(stored, requested)` has nothing stale to
   reconcile, so re-reading and recomputing is always correct. It matters because
   of who writes it: `LastAuth` is written on the login path, and routing a login
-  through the general update path made its timestamp lost — and lost *below* the
-  true high-water mark — whenever an administrator happened to be editing the
+  through the general update path would lose its timestamp — and lose it
+  *below* the true high-water mark — whenever an administrator was editing the
   same account. The retry is bounded (`lastAuthMergeAttempts`) with no sleep,
   and writes nothing at all when the stored value is already at or past the
   request. `lastAuthOnly` is an exhaustive field list: a field added to
@@ -929,7 +887,7 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   sentinel names the System record and is written in the same write as the
   flag: on the atomic create path it is one more guard and write in the
   create's guarded batch, and `PromoteToSystemUser` — which first boot calls
-  to heal an admin created before the flag existed — writes the flag and the
+  on an existing admin record that lacks the flag — writes the flag and the
   sentinel as ONE `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`,
   guarded on the sentinel being absent and the record being unchanged since
   it was read. No crash can leave one without the other, a concurrent
@@ -960,8 +918,8 @@ Unix socket, MCP and the embedded transport — now carries the full surface.
   `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates
   to `tenantid.IsSystem`, whose empty-string branch is safe only because
   the boundary already folded `""`. `auth/middleware.finalizeIdentity` performs
-  that fold — on the identity as well as the context, which is the fix for
-  #188; folding only the context left the authorizer reading the raw value.
+  that fold — on the identity as well as the context; folding only the
+  context would leave the authorizer reading the raw value.
   See [../multi-tenancy/engineering.md](../multi-tenancy/engineering.md) for
   the fold contract and for which token shapes mint an absent tenant.
 - **`rbac.IsSystemTenant(nil)` is true, and unreachable through the
@@ -1012,13 +970,12 @@ The user store then applies `user.NormalizeRoleBindings` to the request's
 bindings against the decoded record, before the first index mutation, so it
 holds on every path that writes a user and with or without the gate:
 
-- **Each `TenantID` is stored as `tenant.Normalize` folds it.** `boundRoleIDs`
+- **Each `TenantID` is stored as `tenantid.Normalize` folds it.** `boundRoleIDs`
   compares it with `tenant.FromContext`, which is always normalized, so a
   binding stored as `""` would never match a request. The request's slice is
   copied, not edited.
 - **Every binding must name its holder's own tenant**, for a system-tenant
-  user exactly as for any other (owner ruling, superseding the cross-tenant
-  part of the original design), so no binding grants anything outside its
+  user exactly as for any other, so no binding grants anything outside its
   holder's tenant. Any other is refused with `*user.RoleBindingTenantError`
   (`InvalidArgument`, 400). This does not by itself confine a system-tenant
   Admin: `tenant.EffectiveTenant` / `tenant.OwningTenant` route a
@@ -1064,8 +1021,8 @@ applying on every path — found, not found, tenant sealed, and no user store
 at all, where an authenticator-asserted binding has no record behind it. The
 bindings whose `TenantID` equals the check's target tenant are resolved
 SEPARATELY from `identity.Roles`, in that tenant, and the two permission sets
-are unioned. Resolving both as one role-id list in one tenant — the shape
-this replaced — failed the whole call whenever the tenants disagreed,
+are unioned. Resolving both as one role-id list in one tenant would fail
+the whole call whenever the tenants disagreed,
 because `kvRoleStore.ResolvePermissions` errors on any id absent from the
 tenant it resolves against. The FIPS 140-3 SO deny-list and the strict
 separation-of-duties Owner strip apply to that effective set: a bound SO
@@ -1095,29 +1052,21 @@ revocation (`AuthorizeCertTenant`, `AuthorizeCertRevoke`), audit queries
 (`AuthorizeAuditQuery`), and enabling encryption
 (`AuthorizeBarrierEnableEncryption`).
 
-**The tenant-administration surface is the other place embedded had no
-check of its own, and did not even call an ambient check.** A security probe
-found `GetTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`,
+**The embedded tenant-administration surface calls the network transports'
+helpers.** `GetTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`,
 `ReconcileDeletedTenants` and every `TenantBarrier*` operation on the
 embedded transport (`sdk/go/transport/embedded/tenant.go`,
-`tenant_seal.go`) performing no tenancy or permission check at all — a
-caller bound to one tenant could delete another's record, or the system
-tenant's. Each now calls the same helper the network transports resolve to:
+`tenant_seal.go`) call the same helper the network transports resolve to:
 `AuthMiddleware.AuthorizeTenant` for the record and
 `ScopeTenantOnly` barrier operations, `AuthorizeTenantUpdate` for a rename
 that may also change the isolation tier, `AuthorizeTenantBarrierInit` and
 `AuthorizeTenantBarrierSealedOp` for the two bootstrap/sealed-window
 fallbacks, and `FilterTenantList` to narrow `ListTenants` the same way REST's
 `handleListTenants` does. The per-tenant share-claim and quorum handshakes
-carry no RBAC permission on any transport (`permission.IdentityGated`); a
-later review pass found neither required even an authenticated caller on
-the embedded transport, let alone a permission, and both now call
-`requireIdentity` (the `IdentityGated` floor), exactly as every other
-`IdentityGated` operation does. The quorum handshakes also had a holder-
-provenance context marking (`claimContext`) that turned out to be a no-op
-— nothing downstream reads it on the quorum path, only on share-claim — and
-it was removed rather than left as dead code implying a protection it
-never provided. `tenant_authz_test.go`'s
+carry no RBAC permission on any transport (`permission.IdentityGated`); on
+the embedded transport both call `requireIdentity` (the `IdentityGated`
+floor), as every other `IdentityGated` operation does.
+`tenant_authz_test.go`'s
 `TestTenantClientAuthorizationSurface_CoversEveryMethod` enumerates every
 `transport.TenantClient` method via reflection and fails the build if a new
 one ships with no declared authorization mechanism;
@@ -1126,9 +1075,9 @@ matrix through both the embedded transport and a REST server sharing one
 `AuthMiddleware` and one `*authtest.Tenants` service, and fails if the two
 ever disagree.
 
-**The same gap existed across the embedded transport's ENTIRE operation
-surface, not only tenant administration.** The owner's "one pluggable auth
-chain on all transports" rule means an embedded KV `Put`, a `GetUser`, a
+**The embedded transport's ENTIRE operation surface is authorized, not only
+tenant administration.** One pluggable auth chain serves every transport, so
+an embedded KV `Put`, a `GetUser`, a
 `DeleteRole`, a `RevokeCert` — everything `*Transport` exports — authorizes
 through the SAME call and the SAME `pkg/permission` entry the equivalent
 network route does. `sdk/go/transport/embedded/transport_authz_registry.go`
@@ -1136,9 +1085,8 @@ is a transcription of `pkg/api/quic/dispatch.go`'s method→permission table
 (the one dispatcher that already states every operation's permission in
 one place) onto the embedded method names, checked with
 `AuthMiddleware.AuthorizeTenant(ctx, tenant.FromContext(ctx), perm)` for
-every operation — ambient-self throughout, now that a RoleBinding is
-confined to its holder's own tenant and there is no per-request target left
-to resolve. `transport_identity_authz.go` carries the user/role entry
+every operation — ambient-self throughout: a RoleBinding is confined to its
+holder's own tenant, so there is no per-request target to resolve. `transport_identity_authz.go` carries the user/role entry
 checks (`authorizeUserTarget`/`authorizeRoleTarget`), which authorize in the
 caller's own tenant and rely on the routed user/role service
 (`tenant.OwningTenant`) to confine a by-id lookup. `transport_authz_coverage_test.go`'s
@@ -1152,8 +1100,7 @@ added without stating its authorization mechanism fails the build.
 `*Transport` — a second gate closes that blind spot.** `FactorClient`'s
 four methods (`Enroll`/`List`/`Remove`/`Verify`, each keyed by a `userID`),
 `VolumePoolClient`, `PermissionClient`, and `RBACClient.ListPermissions`
-were an explicitly flagged, open gap for exactly this reason — a security
-review followed up and closed it. `FactorClient`'s four now call
+authorize as follows. `FactorClient`'s four call
 `authorizeUserTarget` against the SAME `user_authfactors` permissions the
 network's `userauthfactor.*` family checks for the identical underlying
 service (`Verify` maps to `user_authfactors:login`, the challenge-response
@@ -1184,20 +1131,17 @@ a future sub-client method is caught by construction. A behavioral
 sibling, `TestAmbientOperations_DenyANoPermissionIdentity`, invokes every
 declared operation (bare and dotted) with a no-permission identity and
 asserts a real denial — declaring a permission is not the same as the
-permission actually gating the call, and this gate found two places where
-it didn't: `ResolvePermissions` and `GetUserByCertThumbprint` both checked
-a service-nil guard before calling `authorize()`, so a misconfigured node
-answered an unauthenticated caller "not implemented" instead of a
-refusal. `authorize()` itself now fails CLOSED on an unregistered method
-key (`UnregisteredOperationError`) rather than silently admitting one,
+permission actually gating the call. A service-nil guard checked before
+`authorize()` would answer an unauthenticated caller "not implemented"
+instead of a refusal on a misconfigured node. `authorize()` itself fails
+CLOSED on an unregistered method key (`UnregisteredOperationError`) rather than silently admitting one,
 making the declaration gates load-bearing rather than advisory.
 
 `SealStore*` has no `pkg/permission` entry of its own because no network
-route exposes it (checked REST, gRPC, QUIC, MCP). Rather than leaving it
-behind the bare `IdentityGated` floor indefinitely, a new permission,
+route exposes it (REST, gRPC, QUIC, MCP). It is gated by
 `permission.SealStoreManage` (`seal:store_manage`, `ScopeCross`,
-SO-exclusive — explicitly not granted to the narrower Admin role), now
-gates all six methods.
+SO-exclusive — not granted to the narrower Admin role), not by the bare
+`IdentityGated` floor.
 
 `Health` and the sealed-window bootstrap/unseal verbs (`BarrierInitialize`,
 `BarrierUnseal`, `BarrierInitializeShamir`, `OfficerRegister`,
@@ -1213,11 +1157,10 @@ RBAC-gated, since REST gates them outside the sealed window too.
 method-permission table (`quic.Server.MethodPermissions()`) by
 `transport_authz_quic_drift_test.go`, so the transcription this whole
 mechanism depends on cannot silently drift from what QUIC enforces: every
-one of QUIC's 235 current methods is either mapped to its embedded
-counterpart and checked for permission equality, or named in a small,
-reasoned exclusion list (public / identity-gated / target-resolved),
-method by method — bare string transforms were tried and rejected because
-45 of the 235 collide by coincidence with an unrelated embedded key (e.g.
+QUIC method is either mapped to its embedded counterpart and checked for
+permission equality, or named in a small, reasoned exclusion list (public /
+identity-gated / target-resolved), method by method. A bare string transform
+would not do, because many QUIC methods collide with an unrelated embedded key (e.g.
 `cert.List` strips to `List`, already KV's unrelated key).
 
 `sdk/go/transport/embedded/probe_kv_users_roles_test.go` is the headline
@@ -1232,36 +1175,33 @@ the seam: it builds a synthetic `auth.Identity` from the login attempt's
 RESOLVED principal (never the caller-supplied lookup key, which is
 attacker-controlled before any proof is verified) and hands it to
 `checkRateLimit`, the exact engine and `(tenant, subject, permission)` key
-`authorize()` already uses — and now also audits a refusal the same way
-`authorize()` audits every decision. The embedded `LoginClient.FinishLogin`
+`authorize()` uses — and audits a refusal the same way `authorize()` audits
+every decision. The embedded `LoginClient.FinishLogin`
 (`sdk/go/transport/embedded/login.go`) charges it under
 `permission.UserAuthFactorsLogin` right after resolving the principal and
 before verifying its proof, so repeated guesses against one real account
 are throttled regardless of whether each individual guess's signature
 would fail.
 
-`BeginLogin` is now rate-limited too, under a SEPARATE sentinel
+`BeginLogin` is rate-limited too, under a SEPARATE sentinel
 permission, `permission.LoginBeginAttempt` — deliberately not
 `UserAuthFactorsLogin`. The two throttles are different threat models
 (volumetric challenge-issuance spam at `BeginLogin`, keyed by a fixed
 tenant-wide subject since there is no resolved principal yet, vs.
 per-account brute force at `FinishLogin`, keyed by the resolved
 principal) that need independently tunable `ratelimit.Policy` values:
-sharing one `Permission` key makes that impossible to tune in
-production, and surfaced as a real test collision during review (a
-single declared `Policy` exhausted BOTH buckets, so the SECOND
-`BeginLogin` call in a two-attempt test failed before the SECOND
-`FinishLogin` call was ever reached). `LoginBeginAttempt`, like
+sharing one `Permission` key would make one declared `Policy` drain BOTH
+buckets, so the two could not be tuned apart. `LoginBeginAttempt`, like
 `IdentityGated`, is deliberately not registered in the permission
 catalog — it exists purely as a rate-limit dimension key, never an RBAC
-grant. `sdk/go/node`'s `AuthMiddlewareConfig` wiring of
+grant. `sdk/go/node`'s wiring of `wiring.AuthMiddlewareConfig`'s
 `RateLimitPolicies`/`RateLimiter` (sourced from the node's own
 `WithRateLimitPolicies`/`WithRateLimiter` options) applies to both
 throttles on every transport of an embedded node, including this one.
 
-The REST create, lookup and role-assignment routes (`POST /users`,
-`/users/lookup`, `/roles`, `/roles/reconcile`, `/roles/assign`,
-`/roles/unassign`) decode their bodies under `maxIAMRequestBytes` (1 MiB):
+Every REST user, role and stored-policy route that takes a body (among them
+`POST /users`, `/users/lookup`, `/roles`, `/roles/reconcile`,
+`/roles/assign` and `/roles/unassign`) decodes it under `maxIAMRequestBytes` (1 MiB):
 a body past it is 413 (`RequestTooLargeError`) and one that does not decode
 400, before anything is written.
 
@@ -1301,10 +1241,10 @@ authenticated value — whether or not the authenticator set one.
 | Re-permissioning a built-in role through `UpdateRole` | `SystemRoleImmutableError{Op: "re-permissioned"}` | **yes** |
 | Reconciling another tenant's built-ins as a normal tenant caller | `tenant.CrossTenantDeniedError` | **yes** |
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
-| The linearizable user lookup misses its 5 s budget for a NON-system tenant | retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
+| The linearizable user lookup for a NON-system tenant does not answer | each attempt bounded at 2 s and retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s (`service.DefaultSettlePolicy`) or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
 | The user lookup fails with anything but an election (a corrupt record, a decrypt refusal, a cancelled request) | that error, at once, with no retry | **yes** |
 | The user lookup meets a sealed node barrier (`seal.ErrBarrierSealed` from go-quicraft on a node re-sealed at runtime, or `seal.ErrSealed`) | `*middleware.BarrierSealedError` (503, retryable once unsealed) — never `StoreUnavailableError`, and never logged as a store outage | **yes** |
-| The linearizable role resolution misses its 5 s budget for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
+| The linearizable role resolution for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) does not answer within the same settle policy | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
@@ -1319,20 +1259,16 @@ authenticated value — whether or not the authenticator set one.
 
 **The StaleRead user fallback answers for the system tenant only.** qrdbd
 builds it over a store confined to the system tenant's identity namespace, so
-it holds no other tenant's records. It used to be consulted for every tenant
-whenever the linearizable lookup missed its 500 ms budget, and its "no such
-user" was treated as authoritative: the identity then proceeded with no roles,
-and RBAC refused a correctly enrolled tenant user with a definitive 403. Under
-load this reddened the multi-node tenant suites about once in ten runs. For a
-non-system tenant the primary's transient error now stands, and the caller gets
-a retryable 503.
+it holds no other tenant's records, and its "no such user" says nothing about
+another tenant. For a non-system tenant the primary's transient error stands,
+and the caller gets a retryable 503 rather than a definitive 403.
 
-**The StaleRead role fallback (`rbac.WithRoleServiceFallback`, qrdbd's
-`bootRoleSvc`) has the same confinement, for the same reason, and the fix is
-the same rule applied in three places.** `resolvePermissionSet`, `systemRoleIDs`
-and `staleMayDenote` each consult `rolesFallback` only when
-`tenantid.IsSystem` holds for the tenant the resolve is scoped to;
-otherwise the primary's transient error stands.
+**The StaleRead role fallbacks have the same confinement, for the same
+reason.** `rbac.RBACAuthorizer.resolvePermissionSet` consults its
+`rolesFallback` (`rbac.WithRoleServiceFallback`, qrdbd's `bootRoleSvc`), and
+the middleware's TenantOwner check (`tenantOwner`) consults its own
+(`middleware.WithRoleResolverFallback`), only when `tenantid.IsSystem` holds
+for the tenant in question; otherwise the primary's transient error stands.
 
 **Both lookups are bounded on every tenant, and the size of the bound
 depends on whether a fallback can answer in the primary's place.** The bound
@@ -1345,16 +1281,13 @@ the primary (linearizable) read to `authLookupSyncTimeout` (500 ms) and
 (500 ms), so a blip fails over to the fallback promptly. For every other
 tenant there is nothing to fail over to, and the bound is the attempt bound
 of `service.DefaultSettlePolicy` (2 s, one election timeout at go-quicraft's
-default timing), which the wait below re-issues. A miss comes back as the retryable `StoreUnavailableError` or
-`*rbac.ResolveError`/503 the rows above describe; a correctly enrolled
-non-system tenant user gets the retryable error, never a silent deny.
-
-The 500 ms bound used to apply to every tenant. For a tenant with no fallback
-it did not make anything faster, it only turned a ReadIndex slowed past
-500 ms (for example by an election on a loaded host) into a 503 on a request
-that would have been answered. Every authenticated request pays the user
-lookup, and an MCP tool call is several requests, so under load this
-reddened the multi-node MCP replica-forwarding suite.
+default timing), which the wait below re-issues. A miss comes back as the
+retryable `StoreUnavailableError` or `*rbac.ResolveError`/503 the rows above
+describe; a correctly enrolled non-system tenant user gets the retryable
+error, never a silent deny. A 500 ms bound on a tenant with no fallback would
+make nothing faster: it would only turn a ReadIndex slowed past 500 ms (by an
+election on a loaded host, for example) into a 503 on a request that would
+have been answered.
 
 **The user lookup waits out an election of its store's shard.** The bound above
 limits one attempt, not the request. When an attempt fails because the
@@ -1363,10 +1296,9 @@ timeout, aborted, not-leader, shard-not-ready or ReadIndex-not-ready errors,
 or a `*service.NotLeaderError`, as `service.LeadershipTransient` names them —
 `lookupUser` tries again every 100 ms until a leader answers, the request's
 context ends, or the settle budget (10 s) passes, and only then lets the
-error stand as the retryable 503. A request that arrived during an election
-otherwise failed outright: the resolver's tenant-metadata read timed out in
-Raft while a peer restarted, and every transport answered 503 for a tenant
-whose users were all intact. Any other error ends the lookup at once, so a
+error stand as the retryable 503. Without the wait, a request that arrives
+during an election fails outright, with a 503 for a tenant whose users are all
+intact. Any other error ends the lookup at once, so a
 wait never masks a definitive answer. The wait lives in `lookupUser` alone
 because every transport authenticates through it; `resolvePermissionSet`
 waits the same way, under the same policy.
@@ -1381,11 +1313,8 @@ with nothing: the read waits for its context. So an attempt issued just after
 the leader dies costs its whole bound, and only a fresh attempt reaches the
 next leader. A bound longer than an election timeout buys nothing, because a
 live leader confirms a ReadIndex in one heartbeat round and one that cannot
-reach a quorum within an election timeout steps down. With a 5 s bound inside
-the 10 s budget, two lost reads spent the whole wait while a four-voter shard
-with three survivors was still electing, and a request through a node that
-does not hold the database was refused with `user store unavailable` after
-its leader was killed.
+reach a quorum within an election timeout steps down, and a longer bound lets
+two lost reads spend the whole budget while the shard is still electing.
 
 **The two grant-voiding controls need no fallback, or any store lookup, at
 all.** A system role's identifier is always its canonical, deterministic
@@ -1429,8 +1358,8 @@ through unclassified instead of silently becoming retryable:
   `Op`/`Detail` — those are free-text labels naming WHERE a failure happened
   (`GetRole`'s own key read vs `GetRoleByName`'s name-index read vs the
   tenant-metadata read `storeFor`'s resolve depends on), not WHAT KIND of
-  failure it is, and a future rename of one would have silently changed what
-  classified as retryable with no compiler or test signal. `newStoreError`
+  failure it is, and a rename of one would silently change what
+  classifies as retryable with no compiler or test signal. `newStoreError`
   decides transience from the cause it is actually given: a cryptographic
   refusal from a sealed-barrier-backed store's Decrypt
   (`seal.ErrDecryptionFailed` — a tampered ciphertext, or the wrong key) is
@@ -1457,8 +1386,8 @@ through unclassified instead of silently becoming retryable:
 account can still carry a deleted role's id through one of the two windows
 that strip leaves (see Invariants). A classifier that marked every
 `ResolveError` retryable would turn that permanent 401/403 into a permanent
-retryable 503 for every request such an account made. The fallback-consult rule has the same split: even for the
-system tenant, a DEFINITIVE `RoleNotFoundError` or `ValidationError` is never
+retryable 503 for every request such an account made. The fallback-consult
+rule has the same split: even for the system tenant, a DEFINITIVE `RoleNotFoundError` or `ValidationError` is never
 retried against the fallback, because a StaleRead replica that has not
 caught up to the deletion yet could still answer with the just-deleted
 role's permissions — resurrecting a revoked grant rather than reporting the
@@ -1471,7 +1400,7 @@ unchecked call panics rather than failing cleanly.
 
 - Users and roles live under the internal `__sys:` namespace, Raft-replicated,
   invisible to user KV enumeration.
-- Roles are at `__sys:role/<id>` with deterministic identifiers for the built-in
+- Roles are at `__sys:roles/id/<id>` with deterministic identifiers for the built-in
   five: RFC 9562 §5.8 **UUIDv8 over SHA-256** of a fixed
   `"go-qrdb:role-namespace/v8/"` prefix plus the length-framed tenant ID and
   role name (`pkg/role.SystemRoleID`).
@@ -1502,8 +1431,8 @@ and no resolution step a caller must go through to find it.
 | Identifier → role | A stored identifier is looked up verbatim, so `GetRole`, `ListRoles` and `ResolvePermissions` resolve it directly. |
 | Tenant + name → identifier | `pkg/role.SystemRoleID` derives the identifier directly from the tenant ID and role name. Bootstrap and first boot use it when assigning system roles. |
 | "Is this identifier role X?" (voiding a grant) | `roleIDsHoldSystemRole` (the SO deny-list) and `stripOwnerRole` (the strict-separation-of-duties Owner strip) compare a role id against the role NAME and the canonical identifier directly, in memory — see the paragraph above. |
-| Cluster permissions | `admin:add_member`, `admin:remove_member`, `admin:drain`, `admin:snapshot`, `admin:start_shard`, `admin:stop_shard`, `admin:shard_state`, `admin:topology`, `admin:replica_state` (every replica's applied index and state-machine hash, held by no built-in role but Owner), `admin:node_compaction` (the node keyspace's compaction policy, which the built-in Admin role carries and only the system tenant's Admin can therefore use), every `rebalance:*` and every `backup:*` permission are `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): they act on shards every tenant shares and name no tenant, so as ScopeSelf the built-in Admin and SO roles let any tenant's Admin remove replicas from the system shard. `admin:peers` stays ScopeSelf for the etcd listener's tenant-facing `Cluster.MemberList`. See [../auth/roles.md](../auth/roles.md#cluster-membership-permissions-are-platform-operator-only). |
-| Node-barrier permissions | Every `seal:*` permission but `seal:status` -- including `seal:officer_register`, `seal:officer_list` and `seal:officer_revoke` -- and `ceremony:initialize` and `ceremony:sign_csr` are `ScopeCross` (`pkg/permission/node_barrier_scope.go`): the node barrier is a platform singleton, so ScopeSelf -- which compares the caller's tenant with itself for an operation that names no tenant -- let any tenant's SO rekey it, and register officers into its unseal and recovery domains, each of which receives a share of the node key at every distribution. See [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only). |
+| Cluster permissions | `admin:add_member`, `admin:remove_member`, `admin:drain`, `admin:snapshot`, `admin:start_shard`, `admin:stop_shard`, `admin:shard_state`, `admin:topology`, `admin:replica_state` (every replica's applied index and state-machine hash, held by no built-in role but Owner), `admin:node_compaction` (the node keyspace's compaction policy, which the built-in Admin role carries and only the system tenant's Admin can therefore use), every `rebalance:*` and every `backup:*` permission are `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): they act on shards every tenant shares and name no tenant, so as ScopeSelf the built-in Admin and SO roles would let any tenant's Admin remove replicas from the system shard. `admin:peers` stays ScopeSelf for the etcd listener's tenant-facing `Cluster.MemberList`. See [../auth/roles.md](../auth/roles.md#cluster-membership-permissions-are-platform-operator-only). |
+| Node-barrier permissions | Every `seal:*` permission but `seal:status` -- including `seal:officer_register`, `seal:officer_list` and `seal:officer_revoke` -- and `ceremony:initialize` and `ceremony:sign_csr` are `ScopeCross` (`pkg/permission/node_barrier_scope.go`): the node barrier is a platform singleton, so ScopeSelf -- which compares the caller's tenant with itself for an operation that names no tenant -- would let any tenant's SO rekey it, and register officers into its unseal and recovery domains, each of which receives a share of the node key at every distribution. See [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only). |
 | "Does this caller hold role X?" (admitting) | `role.HoldsSystemRole` matches only the identifier the role store persists the role under, in the caller's own tenant. It never matches the role *name*: a control that ADMITS a caller must under-match, where a control that voids a grant over-matches. The SO dual-factor gate uses it. `Identity.Roles` holds role identifiers, so comparing a role name against it (`Identity.HasRole("so")`) refuses every real holder and admits any identity whose roles carry the literal string. |
 
 No capability is absent from a FIPS build as a result: the v8 derivation is the
