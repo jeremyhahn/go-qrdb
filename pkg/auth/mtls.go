@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net/url"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
@@ -347,7 +348,11 @@ func TenantPrincipalURIs(clusterTrustDomain, tenantID, kind, name string) ([]*ur
 // SAME IssuerVerifier an authenticator already holds; nil (no dynamic
 // trust pool wired) preserves the original behavior exactly: an empty
 // VerifiedChains with no verifier to ask is ErrInvalidCertificate, same as
-// it always was before Wire could ever leave it empty.
+// it always was before Wire could ever leave it empty. A verifier refusal is
+// ErrInvalidCertificate too, unless the verifier says it refused while it
+// could not read its trust state (TrustStateUnavailable): that is a
+// *TrustStateUnavailableError, which transports answer with a retryable 503
+// rather than telling the caller its certificate is bad.
 //
 // crypto/tls can report MORE THAN ONE verified chain for the same leaf
 // when multiple roots in a pool could validate it; verifyIssuer's own
@@ -380,9 +385,21 @@ func ResolveVerifiedChains(ctx context.Context, state *tls.ConnectionState, veri
 	}
 	chain, err := verifier.VerifyPeerChain(ctx, state.PeerCertificates[0], state.PeerCertificates[1:])
 	if err != nil {
+		if TrustStateUnavailable(err) {
+			return nil, &TrustStateUnavailableError{Err: err}
+		}
 		return nil, ErrInvalidCertificate
 	}
 	return [][]*x509.Certificate{chain}, nil
+}
+
+// TrustStateUnavailable reports whether err says the verifier refused a
+// chain while it could not read its trust state in full, so the refusal may
+// not outlast a retry. pkg/clienttrust.PeerCertificateNotTrustedError is the
+// implementation; any other error is a statement about the certificate.
+func TrustStateUnavailable(err error) bool {
+	var unavailable interface{ TrustStateUnavailable() bool }
+	return errors.As(err, &unavailable) && unavailable.TrustStateUnavailable()
 }
 
 // Authenticate extracts identity from the TLS peer certificate.

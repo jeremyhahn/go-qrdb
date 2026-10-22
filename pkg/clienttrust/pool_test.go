@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -2191,6 +2192,97 @@ func TestPool_AnchorBundles_PerTenantSourceErrorOmitsThatTenantOnly(t *testing.T
 	}
 	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
 		t.Errorf("expected tenant-a's anchor to still widen the pool: %v", err)
+	}
+}
+
+// TestPool_VerifyPeerChain_RefusalWhileAnchorUnreadIsUnavailable proves a
+// chain refused while its tenant's anchors could not be read says so
+// (Unread, TrustStateUnavailable), and that the next rebuild whose read
+// succeeds admits it: the refusal was the read's, not the certificate's.
+func TestPool_VerifyPeerChain_RefusalWhileAnchorUnreadIsUnavailable(t *testing.T) {
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{})
+
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-b", anchorPEM)
+	src := &partialErrSource{real: reg, failTenant: "tenant-b"}
+	pool.SetTrustAnchors(src, listerOf("tenant-b"))
+	rebuild(t, pool)
+
+	_, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil)
+	var notTrusted *PeerCertificateNotTrustedError
+	if !errors.As(err, &notTrusted) {
+		t.Fatalf("VerifyPeerChain while tenant-b's anchors are unread: err = %v, want *PeerCertificateNotTrustedError", err)
+	}
+	if notTrusted.Unread == nil || !notTrusted.TrustStateUnavailable() {
+		t.Fatalf("refusal while an anchor read failed: Unread = %v, want the failed read", notTrusted.Unread)
+	}
+
+	src.failTenant = ""
+	rebuild(t, pool)
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
+		t.Fatalf("VerifyPeerChain once the anchor read succeeds: %v", err)
+	}
+}
+
+// TestPool_VerifyPeerChain_RefusalWithEverySourceReadIsNotUnavailable proves a
+// chain nothing trusts is refused as untrusted, not as unavailable, when
+// every configured source answered -- including a node with no cluster CA
+// and no Key B provider, which no retry changes.
+func TestPool_VerifyPeerChain_RefusalWithEverySourceReadIsNotUnavailable(t *testing.T) {
+	_, strangerCert := genCAPEM(t)
+	for name, keyB := range map[string]cert.CertProvider{
+		"every source answered": &fakeCertProvider{},
+		"no Key B provider":     nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig(t, x509.NewCertPool())
+			pool := New()
+			pool.Wire(cfg)
+			pool.SetKeyBProvider(keyB)
+			pool.SetTrustAnchors(newRegistry(t), listerOf("tenant-a"))
+			rebuild(t, pool)
+
+			_, err := pool.VerifyPeerChain(context.Background(), strangerCert, nil)
+			var notTrusted *PeerCertificateNotTrustedError
+			if !errors.As(err, &notTrusted) {
+				t.Fatalf("VerifyPeerChain of an untrusted chain: err = %v, want *PeerCertificateNotTrustedError", err)
+			}
+			if notTrusted.Unread != nil || notTrusted.TrustStateUnavailable() {
+				t.Fatalf("refusal with every source read: Unread = %v, want nil", notTrusted.Unread)
+			}
+		})
+	}
+}
+
+// TestPool_VerifyPeerChain_RefusalWhileKeyBUnreadIsUnavailable proves a Key B
+// read that fails (the store not answering) and a rebuild still pending
+// after a trust setter both mark the refusal unavailable.
+func TestPool_VerifyPeerChain_RefusalWhileKeyBUnreadIsUnavailable(t *testing.T) {
+	keyBPEM, keyBCert := genCAPEM(t)
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}, err: errors.New("read index not ready")}
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(prov)
+	rebuild(t, pool)
+
+	_, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil)
+	if !auth.TrustStateUnavailable(err) {
+		t.Fatalf("refusal while Key B is unread: err = %v, want TrustStateUnavailable", err)
+	}
+
+	prov.err = nil
+	pool.SetKeyBProvider(prov)
+	if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); !auth.TrustStateUnavailable(err) {
+		t.Fatalf("refusal while the rebuild is pending: err = %v, want TrustStateUnavailable", err)
+	}
+	rebuild(t, pool)
+	if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err != nil {
+		t.Fatalf("VerifyPeerChain once Key B answers: %v", err)
 	}
 }
 

@@ -1617,6 +1617,7 @@ var authSamples = []error{
 	&authmw.BarrierSealedError{Err: seal.ErrBarrierSealed},
 	&auth.RevocationCheckError{},
 	&auth.TenantLookupError{},
+	&auth.TrustStateUnavailableError{},
 	&authmw.UserDisabledError{},
 	&authmw.TenantNotActiveError{},
 	&authmw.AuthMethodNotPermittedError{},

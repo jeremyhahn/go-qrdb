@@ -81,6 +81,10 @@ var refreshTimeout = 2 * time.Second
 // outlive its source of truth without bound.
 const snapshotMaxAge = 3 * poolCacheTTL
 
+// keyBRebuildPending is the KeyBUnavailableError reason of the snapshot a
+// trust setter publishes until Run's rebuild lands (withdraw).
+const keyBRebuildPending = "trust configuration changed; rebuild pending"
+
 // CertSource is the capability DefaultCertProvider provides: every tenant's
 // Key B CA certificate (or, with an injected cakey.Provider, the single one
 // that replaces them), and a load-only check of whether a given certificate
@@ -222,6 +226,14 @@ type trustSnapshot struct {
 	// change whose rebuild has not landed yet. widened is nil exactly when
 	// err is non-nil.
 	err error
+
+	// unread is the read that failed while this snapshot was built -- Key B
+	// or the cluster CA not answering, a rebuild still pending, or a
+	// tenant's trust anchors unreadable -- and nil when every source this
+	// node is configured with answered. A snapshot can lack trust because
+	// nothing grants it or because a source did not answer; only the
+	// second is a condition a retry can outlast (VerifyPeerChain).
+	unread error
 
 	// base is the static pool widened was built over (staticBase when the
 	// rebuild ran); extra is every certificate added to it.
@@ -365,10 +377,8 @@ func (p *Pool) SetTrustAnchors(src trustanchor.Source, tenants TenantLister) {
 // IsStaticallyTrusted's exemption to a registered Key B CA until the
 // rebuild lands.
 func (p *Pool) withdraw(keepKeyBOnly bool) {
-	next := &trustSnapshot{
-		built: time.Now(),
-		err:   &KeyBUnavailableError{Reason: "trust configuration changed; rebuild pending"},
-	}
+	pending := &KeyBUnavailableError{Reason: keyBRebuildPending}
+	next := &trustSnapshot{built: time.Now(), err: pending, unread: pending}
 	if prev := p.snapshot.Load(); prev != nil && keepKeyBOnly {
 		next.keyBOnly = prev.keyBOnly
 	}
@@ -483,17 +493,35 @@ func (p *Pool) build(ctx context.Context) *trustSnapshot {
 		snap.err = keyBErr
 	}
 	if snap.err != nil {
+		snap.unread = unansweredRead(snap.err)
 		return snap
 	}
 	if snap.clusterCA != nil {
 		snap.extra = append(snap.extra, snap.clusterCA)
 	}
 	snap.extra = append(snap.extra, keyBCerts...)
-	for _, bundle := range p.anchorBundles(ctx) {
+	bundles, anchorsErr := p.anchorBundles(ctx)
+	for _, bundle := range bundles {
 		snap.extra = append(snap.extra, parsePEMCertificates(bundle)...)
 	}
+	snap.unread = anchorsErr
 	snap.widened = widen(snap.base, snap.extra)
 	return snap
+}
+
+// unansweredRead returns err when it says a trust source did not answer --
+// the cluster CA resolver failing, or Key B's CACertPEMs failing or its
+// rebuild still pending -- and nil when it says no source is configured (no
+// cluster CA, no Key B provider), which no retry changes.
+func unansweredRead(err error) error {
+	var keyB *KeyBUnavailableError
+	switch {
+	case errors.As(err, new(*ClusterCAUnavailableError)):
+		return err
+	case errors.As(err, &keyB) && (keyB.Err != nil || keyB.Reason == keyBRebuildPending):
+		return err
+	}
+	return nil
 }
 
 // readKeyB returns every tenant's Key B CA certificate, or why Key B
@@ -948,6 +976,11 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 // operator-trusted leaf across a reseal, exactly as a new connection made
 // in that same sealed state would. Only a Key B-issued leaf -- never part
 // of the static baseline -- is refused once Key B stops resolving.
+//
+// A refusal made while a trust source did not answer carries that read in
+// PeerCertificateNotTrustedError.Unread: the chain may be one the next
+// rebuild admits, so the caller is told to retry rather than that its
+// certificate is bad. It is still a refusal.
 func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
 	if leaf == nil {
 		return nil, &PeerCertificateNotTrustedError{}
@@ -969,9 +1002,19 @@ func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, interm
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if verifyErr != nil {
-		return nil, &PeerCertificateNotTrustedError{Err: verifyErr}
+		return nil, &PeerCertificateNotTrustedError{Err: verifyErr, Unread: p.unread()}
 	}
 	return chains[0], nil
+}
+
+// unread returns the read that failed while the published snapshot was
+// built, or nil when every configured source answered (or no rebuild has
+// run yet).
+func (p *Pool) unread() error {
+	if snap := p.snapshot.Load(); snap != nil {
+		return snap.unread
+	}
+	return nil
 }
 
 // fallbackClientCAs returns the pool a FRESH handshake would be verified
@@ -998,23 +1041,29 @@ func (p *Pool) fallbackClientCAs() *x509.CertPool {
 // pool. A failure to enumerate the tenants omits every anchor, and a failure
 // to read one tenant's anchors omits that tenant's: an anchor the pool cannot
 // read is not trusted, and Key B trust does not depend on it. Either omission
-// lasts only until the next rebuild.
-func (p *Pool) anchorBundles(ctx context.Context) [][]byte {
+// lasts only until the next rebuild, and the first failure is returned with
+// the bundles that were read, so a chain refused meanwhile is told apart from
+// one nothing trusts.
+func (p *Pool) anchorBundles(ctx context.Context) ([][]byte, error) {
 	ab := p.anchors.Load()
 	if ab == nil || ab.tenants == nil {
-		return nil
+		return nil, nil
 	}
 	ids, err := ab.tenants.TenantIDs(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make([][]byte, 0, len(ids))
+	var firstErr error
 	for _, id := range ids {
 		bundle, err := ab.src.CABundle(ctx, id)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 		if err != nil || len(bundle) == 0 {
 			continue
 		}
 		out = append(out, bundle)
 	}
-	return out
+	return out, firstErr
 }

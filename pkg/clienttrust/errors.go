@@ -118,6 +118,11 @@ func (e *IssuerNotTrustedError) Unwrap() error {
 // connection Wire touched -- see VerifyPeerChain's own doc comment).
 type PeerCertificateNotTrustedError struct {
 	Err error
+
+	// Unread is the read that failed while the trust set the chain was
+	// verified against was built (VerifyPeerChain only), or nil when every
+	// configured source answered.
+	Unread error
 }
 
 // Error returns a human-readable description.
@@ -126,7 +131,16 @@ func (e *PeerCertificateNotTrustedError) Error() string {
 	if e.Err != nil {
 		msg += ": " + e.Err.Error()
 	}
+	if e.Unread != nil {
+		msg += " (trust state unavailable: " + e.Unread.Error() + ")"
+	}
 	return msg
+}
+
+// TrustStateUnavailable reports whether the chain was refused while a trust
+// source did not answer, so a retry may admit it (pkg/auth).
+func (e *PeerCertificateNotTrustedError) TrustStateUnavailable() bool {
+	return e.Unread != nil
 }
 
 // Unwrap returns the underlying error.

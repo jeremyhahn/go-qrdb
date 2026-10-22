@@ -137,6 +137,29 @@ func (e *TenantLookupError) Error() string {
 // Unwrap returns the underlying lookup failure.
 func (e *TenantLookupError) Unwrap() error { return e.Err }
 
+// TrustStateUnavailableError reports that a client certificate's chain did
+// not verify while this node could not read its client-auth trust state in
+// full: a tenant's trust anchors, Key B or the cluster CA did not answer.
+// Like TenantLookupError it is a refusal, not a denial: the certificate may
+// be one the node admits once the read succeeds, so transports answer 503 /
+// UNAVAILABLE and the client retries.
+type TrustStateUnavailableError struct {
+	// Err is the verifier's refusal, carrying the read that failed.
+	Err error
+}
+
+// Error describes the refusal and the read that failed.
+func (e *TrustStateUnavailableError) Error() string {
+	msg := "qrdb/auth: client trust state unavailable"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the verifier's refusal.
+func (e *TrustStateUnavailableError) Unwrap() error { return e.Err }
+
 // IssuerTenantMismatchError reports that a verified client certificate's
 // issuing CA is neither the cluster CA (Key A) nor the Key B CA registered
 // for the tenant the certificate's Subject names. It matches
