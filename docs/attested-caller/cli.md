@@ -1,13 +1,14 @@
 # Attested Caller — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 **There is no CLI or configuration-file surface for this feature.**
 
 `qrdbd` has no flag, and `pkg/config`'s YAML schema has no field, to enable
 the attested-caller gate. The gate needs a verifier, and the verifier is code —
-go-xkms's `PeerAttestationVerifier` — that a composer injects. A setting that
+an `sdk.PeerAttestationVerifier` implementation, which go-xkms provides — that a
+composer injects. A setting that
 named permissions to gate with no verifier behind it could only refuse every
 one of them, so the gate is composed in code, beside the verifier it depends
 on:

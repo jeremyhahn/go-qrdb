@@ -1,6 +1,6 @@
 # Attested Caller — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -47,12 +47,13 @@ func WithPeerAttestationGate(gate *middleware.PeerAttestationGate) NodeOption
 
 ## Where it runs
 
-`AuthMiddleware.authorize` is the single funnel; the gate is
-`checkPeerAttestation`, called:
+`AuthMiddleware.authorize` is the single funnel. It calls the gate,
+`checkPeerAttestation`, once, and only when `decide` granted the request
+(never on a denied one), whichever way it granted it:
 
-- after `authorizer.Authorize` returned nil (never on a denied request);
-- in the `permission.IdentityGated` branch, which skips RBAC;
-- in the sealed-tenant `admin:health` allowance, which also skips RBAC.
+- `authorizer.Authorize` returned nil;
+- the `permission.IdentityGated` sentinel, which skips RBAC;
+- the sealed-tenant `admin:health` allowance, which also skips RBAC.
 
 The decision record (`auth.authorize`) records the gate's refusal as the
 decision's outcome, so the ordinary trail stays complete; the gate's own record
@@ -98,7 +99,7 @@ decision's outcome, so the ordinary trail stays complete; the gate's own record
 
 ## Test strategy
 
-**Integration target:** `make integration-test-attested-caller` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test yet (the gate needs an injected verifier that a stock `qrdbd` does not carry), so the target runs zero tests and says so; this is a recorded gap, not a pass. Per-transport accounting is the `attested-caller` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-attested-caller` (no Docker; selection in `test/integration/features.mk`). The feature has no integration test: the gate needs an injected verifier that a stock `qrdbd` does not carry, so the target runs zero tests and says so. That is a gap, not a pass. Per-transport accounting is the `attested-caller` row of `test/integration/COVERAGE.md`.
 
 - **Fail-closed, case by case** (`pkg/auth/middleware/peer_attestation_test.go`),
   against the real mTLS authenticator and user store: no evidence, stale

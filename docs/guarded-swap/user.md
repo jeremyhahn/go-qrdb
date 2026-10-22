@@ -1,6 +1,6 @@
 # Guarded Swap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Use `GuardedSwap` whenever a record must move from one state to another and more
